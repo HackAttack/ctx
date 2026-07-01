@@ -56,7 +56,7 @@ pub enum SearchResultMode {
     Events,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SearchFilters {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<Uuid>,
@@ -84,22 +84,6 @@ pub struct ProviderSessionFilter {
     pub provider_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<Uuid>,
-}
-
-impl Default for SearchFilters {
-    fn default() -> Self {
-        Self {
-            session: None,
-            provider: None,
-            repo: None,
-            since: None,
-            primary_only: false,
-            include_subagents: false,
-            event_type: None,
-            file: None,
-            exclude_provider_session: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
