@@ -2597,6 +2597,54 @@ fn search_refresh_auto_tail_imports_appended_codex_session_event() {
         refreshed["freshness"]["totals"]
     );
     assert_search_provider_oracle(&refreshed, "codex", appended_needle, 1, "message");
+
+    let second_append_needle = "tail-refresh-second-append-oracle";
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&root_session)
+        .unwrap();
+    writeln!(
+        file,
+        "{}",
+        json!({
+            "timestamp": "2026-06-23T15:00:31.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": second_append_needle}]
+            }
+        })
+    )
+    .unwrap();
+
+    let second_refreshed = json_output(ctx(&temp).args([
+        "search",
+        second_append_needle,
+        "--provider",
+        "codex",
+        "--json",
+    ]));
+    assert_eq!(second_refreshed["freshness"]["status"], "completed");
+    assert_eq!(
+        second_refreshed["freshness"]["totals"]["imported_events"],
+        1
+    );
+    assert!(
+        second_refreshed["freshness"]["totals"]["skipped"]
+            .as_u64()
+            .unwrap()
+            < 20,
+        "second tail refresh unexpectedly reprocessed old events: {}",
+        second_refreshed["freshness"]["totals"]
+    );
+    assert_search_provider_oracle(
+        &second_refreshed,
+        "codex",
+        second_append_needle,
+        1,
+        "message",
+    );
 }
 
 #[test]

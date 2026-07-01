@@ -8022,7 +8022,8 @@ mod tests {
                         source_path: &session.source_path,
                         file_size_bytes: session.file_size_bytes,
                         file_modified_at_ms: session.file_modified_at_ms,
-                        event_count: 1,
+                        file_sha256: None,
+                        event_count: Some(1),
                         indexed_at_ms,
                     },
                 )

@@ -12,6 +12,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{Duration, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{json, Number, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod analytics;
@@ -4474,9 +4475,21 @@ fn import_incremental_codex_session_tree(
             &session.source_path,
         )?;
         let tail_start = state
-            .and_then(|state| state.indexed_file_size_bytes)
+            .as_ref()
+            .and_then(|state| state.last_imported_file_size_bytes)
             .filter(|indexed_size| *indexed_size > 0 && *indexed_size < session.file_size_bytes);
         if let Some(start_offset) = tail_start {
+            let checkpoint_hash = state
+                .as_ref()
+                .and_then(|state| state.last_imported_file_sha256.as_deref());
+            if !catalog_import_checkpoint_matches(
+                Path::new(&session.source_path),
+                start_offset,
+                checkpoint_hash,
+            )? {
+                full_import_sessions.push(session.clone());
+                continue;
+            }
             let tail_summary = match import_codex_session_jsonl_tail(
                 PathBuf::from(&session.source_path),
                 start_offset,
@@ -4504,7 +4517,28 @@ fn import_incremental_codex_session_tree(
                     return Err(err);
                 }
             };
-            mark_catalog_sessions_indexed(store, std::slice::from_ref(session), &tail_summary)?;
+            if tail_summary.failed > 0 {
+                mark_catalog_sessions_failed(
+                    store,
+                    std::slice::from_ref(session),
+                    "tail import failed for one or more appended events",
+                )?;
+                merge_provider_import_summary(&mut summary, tail_summary);
+                continue;
+            }
+            let tail_event_count = tail_summary
+                .imported_events
+                .saturating_add(tail_summary.skipped_events)
+                as u64;
+            let event_count = state
+                .and_then(|state| state.last_imported_event_count)
+                .map(|event_count| event_count.saturating_add(tail_event_count));
+            mark_catalog_session_indexed(
+                store,
+                session,
+                event_count,
+                Utc::now().timestamp_millis(),
+            )?;
             merge_provider_import_summary(&mut summary, tail_summary);
         } else {
             full_import_sessions.push(session.clone());
@@ -4551,26 +4585,74 @@ fn mark_catalog_sessions_indexed(
 ) -> Result<()> {
     let indexed_at_ms = Utc::now().timestamp_millis();
     let event_count = if sessions.len() == 1 {
-        summary
-            .imported_events
-            .saturating_add(summary.skipped_events) as u64
+        Some(
+            summary
+                .imported_events
+                .saturating_add(summary.skipped_events) as u64,
+        )
     } else {
-        0
+        None
     };
     for session in sessions {
-        store.mark_catalog_source_indexed(
-            session.provider,
-            CatalogSourceIndexUpdate {
-                source_root: &session.source_root,
-                source_path: &session.source_path,
-                file_size_bytes: session.file_size_bytes,
-                file_modified_at_ms: session.file_modified_at_ms,
-                event_count,
-                indexed_at_ms,
-            },
-        )?;
+        mark_catalog_session_indexed(store, session, event_count, indexed_at_ms)?;
     }
     Ok(())
+}
+
+fn mark_catalog_session_indexed(
+    store: &Store,
+    session: &CatalogSession,
+    event_count: Option<u64>,
+    indexed_at_ms: i64,
+) -> Result<()> {
+    let file_sha256 =
+        sha256_file_prefix_hex(Path::new(&session.source_path), session.file_size_bytes)
+            .with_context(|| format!("hash checkpoint prefix for {}", session.source_path))?;
+    store.mark_catalog_source_indexed(
+        session.provider,
+        CatalogSourceIndexUpdate {
+            source_root: &session.source_root,
+            source_path: &session.source_path,
+            file_size_bytes: session.file_size_bytes,
+            file_modified_at_ms: session.file_modified_at_ms,
+            file_sha256: Some(&file_sha256),
+            event_count,
+            indexed_at_ms,
+        },
+    )?;
+    Ok(())
+}
+
+fn catalog_import_checkpoint_matches(
+    path: &Path,
+    byte_count: u64,
+    expected_sha256: Option<&str>,
+) -> Result<bool> {
+    let Some(expected_sha256) = expected_sha256 else {
+        return Ok(true);
+    };
+    let actual_sha256 = sha256_file_prefix_hex(path, byte_count)?;
+    Ok(actual_sha256 == expected_sha256)
+}
+
+fn sha256_file_prefix_hex(path: &Path, byte_count: u64) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut remaining = byte_count;
+    let mut buffer = [0_u8; 8192];
+    while remaining > 0 {
+        let to_read = buffer.len().min(remaining as usize);
+        let read = file.read(&mut buffer[..to_read])?;
+        if read == 0 {
+            return Err(anyhow!(
+                "file ended before checkpoint byte offset {byte_count}: {}",
+                path.display()
+            ));
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn mark_catalog_sessions_failed(
@@ -4832,7 +4914,9 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote_arg;
+    use super::{catalog_import_checkpoint_matches, sha256_file_prefix_hex, shell_quote_arg};
+    use std::{fs, io::Write};
+    use tempfile::tempdir;
 
     #[test]
     fn shell_quote_arg_uses_single_quotes_for_shell_metacharacters() {
@@ -4841,5 +4925,21 @@ mod tests {
             shell_quote_arg("$(touch /tmp/ctx-owned)'s"),
             "'$(touch /tmp/ctx-owned)'\\''s'"
         );
+    }
+
+    #[test]
+    fn catalog_import_checkpoint_requires_matching_hash() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("session.jsonl");
+        {
+            let mut file = fs::File::create(&path).unwrap();
+            write!(file, "prefix\n").unwrap();
+        }
+        let prefix_hash = sha256_file_prefix_hex(&path, 7).unwrap();
+        assert!(catalog_import_checkpoint_matches(&path, 7, Some(&prefix_hash)).unwrap());
+        assert!(catalog_import_checkpoint_matches(&path, 7, None).unwrap());
+
+        fs::write(&path, "mutated\n").unwrap();
+        assert!(!catalog_import_checkpoint_matches(&path, 7, Some(&prefix_hash)).unwrap());
     }
 }

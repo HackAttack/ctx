@@ -93,7 +93,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
 const OBJECTS_DIR: &str = "objects";
 const SPOOL_DIR: &str = "spool";
@@ -235,14 +235,18 @@ pub struct CatalogSourceIndexUpdate<'a> {
     pub source_path: &'a str,
     pub file_size_bytes: u64,
     pub file_modified_at_ms: i64,
-    pub event_count: u64,
+    pub file_sha256: Option<&'a str>,
+    pub event_count: Option<u64>,
     pub indexed_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogSourceIndexState {
-    pub indexed_file_size_bytes: Option<u64>,
-    pub indexed_file_modified_at_ms: Option<i64>,
+    pub last_imported_file_size_bytes: Option<u64>,
+    pub last_imported_file_modified_at_ms: Option<i64>,
+    pub last_imported_event_count: Option<u64>,
+    pub last_imported_at_ms: Option<i64>,
+    pub last_imported_file_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -429,6 +433,26 @@ const CATALOG_SESSION_IMPORT_STATE_COLUMNS: &[ColumnSpec] = &[
         name: "indexed_event_count",
         definition: "indexed_event_count INTEGER",
     },
+    ColumnSpec {
+        name: "last_imported_at_ms",
+        definition: "last_imported_at_ms INTEGER",
+    },
+    ColumnSpec {
+        name: "last_imported_file_size_bytes",
+        definition: "last_imported_file_size_bytes INTEGER",
+    },
+    ColumnSpec {
+        name: "last_imported_file_modified_at_ms",
+        definition: "last_imported_file_modified_at_ms INTEGER",
+    },
+    ColumnSpec {
+        name: "last_imported_file_sha256",
+        definition: "last_imported_file_sha256 TEXT",
+    },
+    ColumnSpec {
+        name: "last_imported_event_count",
+        definition: "last_imported_event_count INTEGER",
+    },
 ];
 
 const CREATE_TABLES_SQL: &str = r#"
@@ -472,6 +496,11 @@ CREATE TABLE IF NOT EXISTS catalog_sessions (
     indexed_status TEXT NOT NULL DEFAULT 'pending' CHECK (indexed_status IN ('pending', 'indexed', 'failed')),
     indexed_error TEXT,
     indexed_event_count INTEGER,
+    last_imported_at_ms INTEGER,
+    last_imported_file_size_bytes INTEGER,
+    last_imported_file_modified_at_ms INTEGER,
+    last_imported_file_sha256 TEXT,
+    last_imported_event_count INTEGER,
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -1043,6 +1072,11 @@ SELECT
     indexed_status AS indexed_status,
     indexed_error AS indexed_error,
     indexed_event_count AS indexed_event_count,
+    last_imported_at_ms AS last_imported_at_ms,
+    last_imported_file_size_bytes AS last_imported_file_size_bytes,
+    last_imported_file_modified_at_ms AS last_imported_file_modified_at_ms,
+    last_imported_file_sha256 AS last_imported_file_sha256,
+    last_imported_event_count AS last_imported_event_count,
     is_stale AS is_stale
 FROM catalog_sessions;
 "#;
@@ -1325,6 +1359,9 @@ impl Store {
         if user_version < 13 {
             migrate_to_v13(&self.conn)?;
         }
+        if user_version < 14 {
+            migrate_to_v14(&self.conn)?;
+        }
         create_fts_tables_if_supported(&self.conn)?;
         Ok(())
     }
@@ -1502,19 +1539,19 @@ impl Store {
                     WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
                      AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
                     THEN catalog_sessions.indexed_at_ms
-                    ELSE catalog_sessions.indexed_at_ms
+                    ELSE NULL
                 END,
                 indexed_file_size_bytes = CASE
                     WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
                      AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
                     THEN catalog_sessions.indexed_file_size_bytes
-                    ELSE catalog_sessions.indexed_file_size_bytes
+                    ELSE NULL
                 END,
                 indexed_file_modified_at_ms = CASE
                     WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
                      AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
                     THEN catalog_sessions.indexed_file_modified_at_ms
-                    ELSE catalog_sessions.indexed_file_modified_at_ms
+                    ELSE NULL
                 END,
                 indexed_status = CASE
                     WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
@@ -1532,7 +1569,67 @@ impl Store {
                     WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
                      AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
                     THEN catalog_sessions.indexed_event_count
-                    ELSE catalog_sessions.indexed_event_count
+                    ELSE NULL
+                END,
+                last_imported_at_ms = CASE
+                    WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
+                     AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
+                    THEN catalog_sessions.last_imported_at_ms
+                    WHEN excluded.file_size_bytes > catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_status = 'indexed'
+                     AND catalog_sessions.indexed_file_size_bytes = catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_file_modified_at_ms = catalog_sessions.file_modified_at_ms
+                     AND catalog_sessions.last_imported_file_size_bytes = catalog_sessions.file_size_bytes
+                    THEN catalog_sessions.last_imported_at_ms
+                    ELSE NULL
+                END,
+                last_imported_file_size_bytes = CASE
+                    WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
+                     AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
+                    THEN catalog_sessions.last_imported_file_size_bytes
+                    WHEN excluded.file_size_bytes > catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_status = 'indexed'
+                     AND catalog_sessions.indexed_file_size_bytes = catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_file_modified_at_ms = catalog_sessions.file_modified_at_ms
+                     AND catalog_sessions.last_imported_file_size_bytes = catalog_sessions.file_size_bytes
+                    THEN catalog_sessions.last_imported_file_size_bytes
+                    ELSE NULL
+                END,
+                last_imported_file_modified_at_ms = CASE
+                    WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
+                     AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
+                    THEN catalog_sessions.last_imported_file_modified_at_ms
+                    WHEN excluded.file_size_bytes > catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_status = 'indexed'
+                     AND catalog_sessions.indexed_file_size_bytes = catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_file_modified_at_ms = catalog_sessions.file_modified_at_ms
+                     AND catalog_sessions.last_imported_file_size_bytes = catalog_sessions.file_size_bytes
+                    THEN catalog_sessions.last_imported_file_modified_at_ms
+                    ELSE NULL
+                END,
+                last_imported_file_sha256 = CASE
+                    WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
+                     AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
+                    THEN catalog_sessions.last_imported_file_sha256
+                    WHEN excluded.file_size_bytes > catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_status = 'indexed'
+                     AND catalog_sessions.indexed_file_size_bytes = catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_file_modified_at_ms = catalog_sessions.file_modified_at_ms
+                     AND catalog_sessions.last_imported_file_size_bytes = catalog_sessions.file_size_bytes
+                    THEN catalog_sessions.last_imported_file_sha256
+                    ELSE NULL
+                END,
+                last_imported_event_count = CASE
+                    WHEN catalog_sessions.file_size_bytes = excluded.file_size_bytes
+                     AND catalog_sessions.file_modified_at_ms = excluded.file_modified_at_ms
+                    THEN catalog_sessions.last_imported_event_count
+                    WHEN excluded.file_size_bytes > catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_status = 'indexed'
+                     AND catalog_sessions.indexed_file_size_bytes = catalog_sessions.file_size_bytes
+                     AND catalog_sessions.indexed_file_modified_at_ms = catalog_sessions.file_modified_at_ms
+                     AND catalog_sessions.last_imported_file_size_bytes = catalog_sessions.file_size_bytes
+                    THEN catalog_sessions.last_imported_event_count
+                    ELSE NULL
                 END,
                 metadata_json = excluded.metadata_json
             WHERE catalog_sessions.provider IS NOT excluded.provider
@@ -1689,7 +1786,12 @@ impl Store {
                 indexed_file_modified_at_ms = ?6,
                 indexed_status = ?8,
                 indexed_error = NULL,
-                indexed_event_count = ?7
+                indexed_event_count = ?7,
+                last_imported_at_ms = ?4,
+                last_imported_file_size_bytes = ?5,
+                last_imported_file_modified_at_ms = ?6,
+                last_imported_file_sha256 = ?9,
+                last_imported_event_count = ?7
             WHERE provider = ?1
               AND source_root = ?2
               AND source_path = ?3
@@ -1702,8 +1804,9 @@ impl Store {
                 update.indexed_at_ms,
                 capped_i64(update.file_size_bytes),
                 update.file_modified_at_ms,
-                capped_i64(update.event_count),
+                update.event_count.map(capped_i64),
                 CatalogIndexedStatus::Indexed.as_str(),
+                update.file_sha256,
             ],
         )?;
         Ok(changed)
@@ -1752,7 +1855,11 @@ impl Store {
         self.conn
             .query_row(
                 r#"
-                SELECT indexed_file_size_bytes, indexed_file_modified_at_ms
+                SELECT last_imported_file_size_bytes,
+                       last_imported_file_modified_at_ms,
+                       last_imported_event_count,
+                       last_imported_at_ms,
+                       last_imported_file_sha256
                 FROM catalog_sessions
                 WHERE provider = ?1
                   AND source_root = ?2
@@ -1761,13 +1868,20 @@ impl Store {
                 "#,
                 params![provider.as_str(), source_root, source_path],
                 |row| {
-                    let indexed_file_size_bytes = row
+                    let last_imported_file_size_bytes = row
                         .get::<_, Option<i64>>(0)?
                         .map(nonnegative_i64_to_u64)
                         .transpose()?;
+                    let last_imported_event_count = row
+                        .get::<_, Option<i64>>(2)?
+                        .map(nonnegative_i64_to_u64)
+                        .transpose()?;
                     Ok(CatalogSourceIndexState {
-                        indexed_file_size_bytes,
-                        indexed_file_modified_at_ms: row.get(1)?,
+                        last_imported_file_size_bytes,
+                        last_imported_file_modified_at_ms: row.get(1)?,
+                        last_imported_event_count,
+                        last_imported_at_ms: row.get(3)?,
+                        last_imported_file_sha256: row.get(4)?,
                     })
                 },
             )
@@ -4686,6 +4800,35 @@ fn migrate_to_v13(conn: &Connection) -> Result<()> {
     }
 }
 
+fn migrate_to_v14(conn: &Connection) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    let migration = (|| -> Result<()> {
+        conn.execute_batch(CREATE_TABLES_SQL)?;
+        ensure_columns(
+            conn,
+            "catalog_sessions",
+            CATALOG_SESSION_IMPORT_STATE_COLUMNS,
+        )?;
+        backfill_catalog_session_import_checkpoints(conn)?;
+        create_stable_sql_views(conn)?;
+        conn.execute_batch("PRAGMA user_version = 14;")?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(err) => {
+            if let Err(rollback_err) = conn.execute_batch("ROLLBACK;") {
+                return Err(StoreError::Sql(rollback_err));
+            }
+            Err(err)
+        }
+    }
+}
+
 fn create_stable_sql_views(conn: &Connection) -> Result<()> {
     conn.execute_batch(STABLE_SQL_VIEWS_SQL)?;
     Ok(())
@@ -4744,6 +4887,25 @@ fn invalidate_provider_import_indexes(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+fn backfill_catalog_session_import_checkpoints(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "catalog_sessions")? {
+        return Ok(());
+    }
+    conn.execute(
+        r#"
+        UPDATE catalog_sessions
+        SET last_imported_at_ms = indexed_at_ms,
+            last_imported_file_size_bytes = indexed_file_size_bytes,
+            last_imported_file_modified_at_ms = indexed_file_modified_at_ms,
+            last_imported_event_count = indexed_event_count
+        WHERE last_imported_file_size_bytes IS NULL
+          AND indexed_file_size_bytes IS NOT NULL
+        "#,
+        [],
+    )?;
     Ok(())
 }
 
@@ -4871,6 +5033,11 @@ fn rebuild_catalog_sessions_provider_check(conn: &Connection) -> Result<()> {
     if recreate_views {
         drop_stable_sql_views(conn)?;
     }
+    ensure_columns(
+        conn,
+        "catalog_sessions",
+        CATALOG_SESSION_IMPORT_STATE_COLUMNS,
+    )?;
     conn.execute_batch(
         r#"
         DROP TABLE IF EXISTS catalog_sessions_new;
@@ -4896,11 +5063,16 @@ fn rebuild_catalog_sessions_provider_check(conn: &Connection) -> Result<()> {
             indexed_status TEXT NOT NULL DEFAULT 'pending' CHECK (indexed_status IN ('pending', 'indexed', 'failed')),
             indexed_error TEXT,
             indexed_event_count INTEGER,
+            last_imported_at_ms INTEGER,
+            last_imported_file_size_bytes INTEGER,
+            last_imported_file_modified_at_ms INTEGER,
+            last_imported_file_sha256 TEXT,
+            last_imported_event_count INTEGER,
             metadata_json TEXT NOT NULL DEFAULT '{}'
         );
         INSERT INTO catalog_sessions_new
-        (source_path, provider, source_format, source_root, external_session_id, parent_external_session_id, agent_type, role_hint, external_agent_id, cwd, session_started_at_ms, file_size_bytes, file_modified_at_ms, cataloged_at_ms, is_stale, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_status, indexed_error, indexed_event_count, metadata_json)
-        SELECT source_path, provider, source_format, source_root, external_session_id, parent_external_session_id, agent_type, role_hint, external_agent_id, cwd, session_started_at_ms, file_size_bytes, file_modified_at_ms, cataloged_at_ms, is_stale, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_status, indexed_error, indexed_event_count, metadata_json
+        (source_path, provider, source_format, source_root, external_session_id, parent_external_session_id, agent_type, role_hint, external_agent_id, cwd, session_started_at_ms, file_size_bytes, file_modified_at_ms, cataloged_at_ms, is_stale, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_status, indexed_error, indexed_event_count, last_imported_at_ms, last_imported_file_size_bytes, last_imported_file_modified_at_ms, last_imported_file_sha256, last_imported_event_count, metadata_json)
+        SELECT source_path, provider, source_format, source_root, external_session_id, parent_external_session_id, agent_type, role_hint, external_agent_id, cwd, session_started_at_ms, file_size_bytes, file_modified_at_ms, cataloged_at_ms, is_stale, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_status, indexed_error, indexed_event_count, last_imported_at_ms, last_imported_file_size_bytes, last_imported_file_modified_at_ms, last_imported_file_sha256, last_imported_event_count, metadata_json
         FROM catalog_sessions;
         DROP TABLE catalog_sessions;
         ALTER TABLE catalog_sessions_new RENAME TO catalog_sessions;
@@ -7293,7 +7465,8 @@ mod catalog_tests {
                     source_path: "/home/user/.codex/sessions/2026/06/24/rollout.jsonl",
                     file_size_bytes: 42,
                     file_modified_at_ms: cataloged_at_ms,
-                    event_count: 3,
+                    file_sha256: None,
+                    event_count: Some(3),
                     indexed_at_ms: cataloged_at_ms + 10,
                 },
             )
@@ -7345,7 +7518,8 @@ mod catalog_tests {
                     source_path: "/home/user/.codex/sessions/2026/06/24/rollout.jsonl",
                     file_size_bytes: 42,
                     file_modified_at_ms: cataloged_at_ms,
-                    event_count: 3,
+                    file_sha256: None,
+                    event_count: Some(3),
                     indexed_at_ms: cataloged_at_ms + 10,
                 },
             )
@@ -7410,7 +7584,7 @@ mod catalog_tests {
     }
 
     #[test]
-    fn catalog_upsert_preserves_index_state_until_file_changes() {
+    fn catalog_upsert_clears_completion_metadata_but_preserves_append_checkpoint() {
         let temp = tempdir();
         let store = Store::open(temp.path().join("work.sqlite")).unwrap();
         let cataloged_at_ms = timestamp_ms(fixed_time());
@@ -7433,7 +7607,8 @@ mod catalog_tests {
                     source_path,
                     file_size_bytes: 42,
                     file_modified_at_ms: cataloged_at_ms,
-                    event_count: 3,
+                    file_sha256: None,
+                    event_count: Some(3),
                     indexed_at_ms: cataloged_at_ms + 10,
                 },
             )
@@ -7455,23 +7630,171 @@ mod catalog_tests {
         let counts = store.catalog_session_counts().unwrap();
         assert_eq!(counts.indexed, 0);
         assert_eq!(counts.pending, 1);
-        let (status, indexed_size, indexed_mtime, indexed_event_count): (
+        let (
+            status,
+            indexed_at_ms,
+            indexed_size,
+            indexed_mtime,
+            indexed_event_count,
+            checkpoint_at_ms,
+            checkpoint_size,
+            checkpoint_mtime,
+            checkpoint_event_count,
+        ): (
             String,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
             Option<i64>,
             Option<i64>,
             Option<i64>,
         ) = store
             .conn
             .query_row(
-                "SELECT indexed_status, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_event_count FROM catalog_sessions WHERE source_path = ?1",
+                "SELECT indexed_status, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_event_count, last_imported_at_ms, last_imported_file_size_bytes, last_imported_file_modified_at_ms, last_imported_event_count FROM catalog_sessions WHERE source_path = ?1",
                 [source_path],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
             )
             .unwrap();
         assert_eq!(status, CatalogIndexedStatus::Pending.as_str());
-        assert_eq!(indexed_size, Some(42));
-        assert_eq!(indexed_mtime, Some(cataloged_at_ms));
-        assert_eq!(indexed_event_count, Some(3));
+        assert_eq!(indexed_at_ms, None);
+        assert_eq!(indexed_size, None);
+        assert_eq!(indexed_mtime, None);
+        assert_eq!(indexed_event_count, None);
+        assert_eq!(checkpoint_at_ms, Some(cataloged_at_ms + 10));
+        assert_eq!(checkpoint_size, Some(42));
+        assert_eq!(checkpoint_mtime, Some(cataloged_at_ms));
+        assert_eq!(checkpoint_event_count, Some(3));
+
+        let checkpoint = store
+            .catalog_source_index_state(
+                CaptureProvider::Codex,
+                "/home/user/.codex/sessions",
+                source_path,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(checkpoint.last_imported_file_size_bytes, Some(42));
+        assert_eq!(
+            checkpoint.last_imported_file_modified_at_ms,
+            Some(cataloged_at_ms)
+        );
+        assert_eq!(checkpoint.last_imported_file_sha256, None);
+        assert_eq!(checkpoint.last_imported_event_count, Some(3));
+        assert_eq!(checkpoint.last_imported_at_ms, Some(cataloged_at_ms + 10));
+    }
+
+    #[test]
+    fn catalog_upsert_invalidates_checkpoint_for_shrink_and_same_size_change() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let cataloged_at_ms = timestamp_ms(fixed_time());
+        for (source_path, file_size_bytes) in [
+            ("/home/user/.codex/sessions/2026/06/24/shrink.jsonl", 41_u64),
+            (
+                "/home/user/.codex/sessions/2026/06/24/same-size.jsonl",
+                42_u64,
+            ),
+        ] {
+            store
+                .upsert_catalog_sessions(&[catalog_session(
+                    source_path,
+                    source_path,
+                    cataloged_at_ms,
+                )])
+                .unwrap();
+            store
+                .upsert_session(&imported_session(source_path))
+                .unwrap();
+            store
+                .mark_catalog_source_indexed(
+                    CaptureProvider::Codex,
+                    CatalogSourceIndexUpdate {
+                        source_root: "/home/user/.codex/sessions",
+                        source_path,
+                        file_size_bytes: 42,
+                        file_modified_at_ms: cataloged_at_ms,
+                        file_sha256: None,
+                        event_count: Some(3),
+                        indexed_at_ms: cataloged_at_ms + 10,
+                    },
+                )
+                .unwrap();
+
+            let mut changed = catalog_session(source_path, source_path, cataloged_at_ms + 1);
+            changed.file_size_bytes = file_size_bytes;
+            store.upsert_catalog_sessions(&[changed]).unwrap();
+
+            let (status, indexed_size, checkpoint_size): (String, Option<i64>, Option<i64>) =
+                store
+                    .conn
+                    .query_row(
+                        "SELECT indexed_status, indexed_file_size_bytes, last_imported_file_size_bytes FROM catalog_sessions WHERE source_path = ?1",
+                        [source_path],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .unwrap();
+            assert_eq!(status, CatalogIndexedStatus::Pending.as_str());
+            assert_eq!(indexed_size, None);
+            assert_eq!(checkpoint_size, None);
+        }
+    }
+
+    #[test]
+    fn catalog_index_checkpoint_event_count_can_be_unknown() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let cataloged_at_ms = timestamp_ms(fixed_time());
+        let source_path = "/home/user/.codex/sessions/2026/06/24/unknown-count.jsonl";
+        store
+            .upsert_catalog_sessions(&[catalog_session(
+                source_path,
+                "codex-session-unknown-count",
+                cataloged_at_ms,
+            )])
+            .unwrap();
+        store
+            .mark_catalog_source_indexed(
+                CaptureProvider::Codex,
+                CatalogSourceIndexUpdate {
+                    source_root: "/home/user/.codex/sessions",
+                    source_path,
+                    file_size_bytes: 42,
+                    file_modified_at_ms: cataloged_at_ms,
+                    file_sha256: Some("abc123"),
+                    event_count: None,
+                    indexed_at_ms: cataloged_at_ms + 10,
+                },
+            )
+            .unwrap();
+
+        let checkpoint = store
+            .catalog_source_index_state(
+                CaptureProvider::Codex,
+                "/home/user/.codex/sessions",
+                source_path,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(checkpoint.last_imported_event_count, None);
+        assert_eq!(
+            checkpoint.last_imported_file_sha256.as_deref(),
+            Some("abc123")
+        );
     }
 
     #[test]
@@ -7538,6 +7861,11 @@ mod catalog_tests {
         assert!(schema.contains("indexed_status TEXT NOT NULL DEFAULT 'pending'"));
         assert!(schema.contains("indexed_error TEXT"));
         assert!(schema.contains("indexed_event_count INTEGER"));
+        assert!(schema.contains("last_imported_at_ms INTEGER"));
+        assert!(schema.contains("last_imported_file_size_bytes INTEGER"));
+        assert!(schema.contains("last_imported_file_modified_at_ms INTEGER"));
+        assert!(schema.contains("last_imported_file_sha256 TEXT"));
+        assert!(schema.contains("last_imported_event_count INTEGER"));
     }
 
     #[test]
@@ -7791,6 +8119,58 @@ mod catalog_tests {
             )
             .unwrap();
         assert_eq!(file_status, ("pending".to_owned(), None, None, None));
+    }
+
+    #[test]
+    fn schema_v14_backfills_catalog_import_checkpoints() {
+        let temp = tempdir();
+        let path = temp.path().join("work.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            let legacy_sql = CREATE_TABLES_SQL
+                .replace("    last_imported_at_ms INTEGER,\n", "")
+                .replace("    last_imported_file_size_bytes INTEGER,\n", "")
+                .replace("    last_imported_file_modified_at_ms INTEGER,\n", "")
+                .replace("    last_imported_file_sha256 TEXT,\n", "")
+                .replace("    last_imported_event_count INTEGER,\n", "");
+            conn.execute_batch(&legacy_sql).unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO catalog_sessions
+                (
+                    source_path, provider, source_format, source_root, external_session_id,
+                    agent_type, file_size_bytes, file_modified_at_ms, cataloged_at_ms,
+                    indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms,
+                    indexed_status, indexed_event_count
+                )
+                VALUES
+                (
+                    '/tmp/codex/session.jsonl', 'codex', 'codex_rollout_jsonl', '/tmp/codex',
+                    'session-1', 'primary', 20, 30, 40, 50, 10, 15, 'pending', 7
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA user_version = 13;").unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let checkpoint: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = store
+            .conn
+            .query_row(
+                "SELECT last_imported_at_ms, last_imported_file_size_bytes, last_imported_file_modified_at_ms, last_imported_event_count FROM catalog_sessions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(checkpoint, (Some(50), Some(10), Some(15), Some(7)));
     }
 
     fn legacy_history_record_sql(sql: &str) -> String {
