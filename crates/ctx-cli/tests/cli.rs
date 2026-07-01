@@ -1194,6 +1194,14 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
     let sql_search = json_output(ctx(&temp).args(["docs", "search", "sql", "--json"]));
     assert_eq!(sql_search["results"][0]["id"], "sql");
 
+    let weak_search = json_output(ctx(&temp).args(["docs", "search", "a", "--json"]));
+    assert!(weak_search["results"].as_array().unwrap().is_empty());
+    assert!(weak_search["suggested_next_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command == "ctx docs list"));
+
     let show = json_output(ctx(&temp).args(["docs", "show", "cli-reference", "--format", "json"]));
     assert_eq!(show["schema_version"], 1);
     assert_eq!(show["id"], "cli-reference");

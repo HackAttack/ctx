@@ -240,16 +240,12 @@ fn list_docs(json_output: bool) -> Result<()> {
 }
 
 fn search_docs(query: &str, limit: usize, json_output: bool) -> Result<()> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(|term| term.to_ascii_lowercase())
-        .filter(|term| !term.is_empty())
-        .collect();
+    let terms = docs_query_terms(query);
     let mut results: Vec<(usize, &DocTopic)> = TOPICS
         .iter()
         .filter_map(|topic| {
             let score = score_doc_topic(topic, &terms);
-            (score > 0).then_some((score, topic))
+            (score >= docs_min_score(&terms)).then_some((score, topic))
         })
         .collect();
     results.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.id.cmp(right.1.id)));
@@ -268,11 +264,15 @@ fn search_docs(query: &str, limit: usize, json_output: bool) -> Result<()> {
             serde_json::to_string_pretty(&json!({
                 "schema_version": 1,
                 "query": query,
-                "results": rows
+                "results": rows,
+                "suggested_next_commands": docs_search_suggestions(query, rows.is_empty())
             }))?
         );
     } else if results.is_empty() {
         println!("no docs matched");
+        for command in docs_search_suggestions(query, true) {
+            println!("next: {command}");
+        }
     } else {
         for (index, (score, topic)) in results.iter().enumerate() {
             println!("{}. {} - {}", index + 1, topic.id, topic.title);
@@ -281,6 +281,22 @@ fn search_docs(query: &str, limit: usize, json_output: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn docs_query_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+fn docs_min_score(terms: &[String]) -> usize {
+    if terms.is_empty() {
+        usize::MAX
+    } else {
+        terms.len().max(2)
+    }
 }
 
 fn score_doc_topic(topic: &DocTopic, terms: &[String]) -> usize {
@@ -296,9 +312,45 @@ fn score_doc_topic(topic: &DocTopic, terms: &[String]) -> usize {
             let exact_topic_match = topic.id == term
                 || title == *term
                 || topic.tags.iter().any(|tag| tag.eq_ignore_ascii_case(term));
-            haystack.matches(term).count() + usize::from(exact_topic_match) * 1_000
+            let text_matches = if term.len() >= 3 {
+                haystack.matches(term).count()
+            } else {
+                0
+            };
+            text_matches + usize::from(exact_topic_match) * 1_000
         })
         .sum()
+}
+
+fn docs_search_suggestions(query: &str, no_results: bool) -> Vec<String> {
+    if no_results {
+        let mut suggestions = vec!["ctx docs list".to_owned()];
+        let trimmed = query.trim();
+        if !trimmed.is_empty() {
+            suggestions.push(format!(
+                "ctx docs search {}",
+                docs_shell_quote_arg(first_docs_search_term(trimmed))
+            ));
+        }
+        suggestions
+    } else {
+        Vec::new()
+    }
+}
+
+fn first_docs_search_term(query: &str) -> &str {
+    query.split_whitespace().next().unwrap_or(query)
+}
+
+fn docs_shell_quote_arg(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
 }
 
 fn show_doc(args: DocsShowArgs) -> Result<()> {
