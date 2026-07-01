@@ -682,15 +682,7 @@ fn event_hit_matches_filters(
             return false;
         }
     }
-    if filters.primary_only {
-        let is_primary = hit.session_is_primary.unwrap_or(false)
-            || hit.agent_type == Some(ctx_history_core::AgentType::Primary);
-        if !is_primary {
-            return false;
-        }
-    } else if !filters.include_subagents
-        && hit.agent_type == Some(ctx_history_core::AgentType::Subagent)
-    {
+    if !event_hit_matches_agent_scope(hit, filters) {
         return false;
     }
     if let Some(event_type) = filters.event_type {
@@ -1292,7 +1284,9 @@ fn search_sections(
         ),
         hit: record_hit.clone(),
     });
-    if !context_has_excluded_provider_session(context, filters) {
+    let include_record_text = record_text_matches_agent_scope(context, filters)
+        && !context_has_excluded_provider_session(context, filters);
+    if include_record_text {
         sections.push(SearchSection {
             reason: "primary_user_message",
             weight: 5.0,
@@ -1306,21 +1300,26 @@ fn search_sections(
             hit: record_hit.clone(),
         });
     }
-    for tag in &record.tags {
-        sections.push(SearchSection {
-            reason: "tag",
-            weight: 3.0,
-            text: tag.clone(),
-            citation: citation(
-                ContextCitationType::HistoryRecord,
-                record.id,
-                "session tag",
-                record.updated_at,
-            ),
-            hit: record_hit.clone(),
-        });
+    if include_record_text {
+        for tag in &record.tags {
+            sections.push(SearchSection {
+                reason: "tag",
+                weight: 3.0,
+                text: tag.clone(),
+                citation: citation(
+                    ContextCitationType::HistoryRecord,
+                    record.id,
+                    "session tag",
+                    record.updated_at,
+                ),
+                hit: record_hit.clone(),
+            });
+        }
     }
     for session in &context.sessions {
+        if !session_matches_agent_scope(session, filters) {
+            continue;
+        }
         let hit = session_hit(session, context);
         sections.push(SearchSection {
             reason: "session_metadata",
@@ -1344,6 +1343,9 @@ fn search_sections(
     }
 
     for run in &context.runs {
+        if !item_matches_agent_scope(run.session_id, run.source_id, context, filters) {
+            continue;
+        }
         let hit = run_hit(run, context);
         sections.push(SearchSection {
             reason: "run_command",
@@ -1369,6 +1371,9 @@ fn search_sections(
     }
 
     for event in &context.events {
+        if !item_matches_agent_scope(event.session_id, event.capture_source_id, context, filters) {
+            continue;
+        }
         let event_text = event_text(event);
         let hit = event_hit(event, context);
         sections.push(SearchSection {
@@ -1394,6 +1399,9 @@ fn search_sections(
     }
 
     for artifact in &context.artifacts {
+        if !item_matches_agent_scope(None, artifact.source_id, context, filters) {
+            continue;
+        }
         let hit = artifact_hit(artifact, context);
         sections.push(SearchSection {
             reason: "artifact",
@@ -1415,6 +1423,16 @@ fn search_sections(
     }
 
     for file in &context.files_touched {
+        let session_id = file.event_id.and_then(|id| {
+            context
+                .events
+                .iter()
+                .find(|event| event.id == id)
+                .and_then(|event| event.session_id)
+        });
+        if !item_matches_agent_scope(session_id, file.source_id, context, filters) {
+            continue;
+        }
         let hit = file_hit(file, context);
         sections.push(SearchSection {
             reason: "file_touched",
@@ -1431,6 +1449,9 @@ fn search_sections(
     }
 
     for change in &context.vcs_changes {
+        if !item_matches_agent_scope(None, change.source_id, context, filters) {
+            continue;
+        }
         let parent_change_ids = change.parent_change_ids.join(" ");
         let hit = source_hit(
             change.source_id,
@@ -1458,6 +1479,9 @@ fn search_sections(
     }
 
     for summary in &context.summaries {
+        if !item_matches_agent_scope(None, summary.source_id, context, filters) {
+            continue;
+        }
         let hit = source_hit(summary.source_id, summary.timestamps.updated_at, context);
         sections.push(SearchSection {
             reason: "summary",
@@ -1476,6 +1500,83 @@ fn search_sections(
     sections
 }
 
+fn session_matches_agent_scope(session: &Session, filters: &SearchFilters) -> bool {
+    if filters.session == Some(session.id) {
+        return true;
+    }
+    if filters.include_subagents && !filters.primary_only {
+        return true;
+    }
+    session_is_primary(session)
+        || (!filters.primary_only
+            && session.agent_type == ctx_history_core::AgentType::Unknown
+            && session.parent_session_id.is_none())
+}
+
+fn session_is_primary(session: &Session) -> bool {
+    session.is_primary || session.agent_type == ctx_history_core::AgentType::Primary
+}
+
+fn event_hit_matches_agent_scope(hit: &EventSearchHit, filters: &SearchFilters) -> bool {
+    if filters.session.is_some() && filters.session == hit.session_id {
+        return true;
+    }
+    if filters.include_subagents && !filters.primary_only {
+        return true;
+    }
+    if hit.session_is_primary == Some(true)
+        || hit.agent_type == Some(ctx_history_core::AgentType::Primary)
+    {
+        return true;
+    }
+    if filters.primary_only {
+        return false;
+    }
+    hit.session_is_primary.is_none() && hit.agent_type.is_none()
+}
+
+fn record_text_matches_agent_scope(context: &RecordContext, filters: &SearchFilters) -> bool {
+    context
+        .sessions
+        .iter()
+        .all(|session| session_matches_agent_scope(session, filters))
+}
+
+fn item_matches_agent_scope(
+    session_id: Option<Uuid>,
+    source_id: Option<Uuid>,
+    context: &RecordContext,
+    filters: &SearchFilters,
+) -> bool {
+    associated_session(session_id, source_id, context)
+        .map(|session| session_matches_agent_scope(session, filters))
+        .unwrap_or(true)
+}
+
+fn associated_session(
+    session_id: Option<Uuid>,
+    source_id: Option<Uuid>,
+    context: &RecordContext,
+) -> Option<&Session> {
+    session_id
+        .and_then(|id| context.sessions.iter().find(|session| session.id == id))
+        .or_else(|| source_id.and_then(|id| associated_session_for_source(id, context)))
+}
+
+fn associated_session_for_source(source_id: Uuid, context: &RecordContext) -> Option<&Session> {
+    context
+        .sessions
+        .iter()
+        .find(|session| session.capture_source_id == Some(source_id))
+        .or_else(|| {
+            let source = context.sources.get(&source_id)?;
+            context.sessions.iter().find(|session| {
+                session.provider == source.descriptor.provider
+                    && session.external_session_id == source.descriptor.external_session_id
+            })
+        })
+}
+
 fn record_context_display_hit(
     context: &RecordContext,
     filters: &SearchFilters,
@@ -1485,12 +1586,18 @@ fn record_context_display_hit(
         .sessions
         .iter()
         .find(|session| {
-            filters
-                .provider
-                .map_or(true, |provider| session.provider == provider)
+            session_matches_agent_scope(session, filters)
+                && filters
+                    .provider
+                    .map_or(true, |provider| session.provider == provider)
                 && filters.session.map_or(true, |id| session.id == id)
         })
-        .or_else(|| context.sessions.first())
+        .or_else(|| {
+            context
+                .sessions
+                .iter()
+                .find(|session| session_matches_agent_scope(session, filters))
+        })
         .map(|session| session_hit(session, context))
         .unwrap_or_else(|| empty_hit(time))
 }
@@ -1637,7 +1744,7 @@ fn source_hit(
         return empty_hit(time);
     };
     let raw_source_path = source.descriptor.raw_source_path.clone();
-    HitMetadata {
+    let mut hit = HitMetadata {
         time,
         provider: Some(source.descriptor.provider),
         provider_session_id: source.descriptor.external_session_id.clone(),
@@ -1652,7 +1759,15 @@ fn source_hit(
             .map(|path| Path::new(path).exists()),
         raw_source_path,
         cursor: source_cursor(source),
+    };
+    if let Some(session) = associated_session_for_source(source.id, context) {
+        hit.provider = Some(session.provider);
+        hit.provider_session_id = session.external_session_id.clone();
+        hit.session_id = Some(session.id);
+        hit.parent_session_id = session.parent_session_id;
+        hit.root_session_id = session.root_session_id;
     }
+    hit
 }
 
 fn source_for_id(
@@ -1912,20 +2027,12 @@ fn record_matches_filters(
         }
     }
 
-    if filters.primary_only {
-        if !context.sessions.iter().any(|session| {
-            session.is_primary || session.agent_type == ctx_history_core::AgentType::Primary
-        }) {
-            return false;
-        }
-    } else if !filters.include_subagents
-        && context
+    if (filters.primary_only || !filters.include_subagents)
+        && !context.sessions.is_empty()
+        && !context
             .sessions
             .iter()
-            .any(|session| session.agent_type == ctx_history_core::AgentType::Subagent)
-        && !context.sessions.iter().any(|session| {
-            session.is_primary || session.agent_type == ctx_history_core::AgentType::Primary
-        })
+            .any(|session| session_matches_agent_scope(session, filters))
     {
         return false;
     }
@@ -2060,7 +2167,10 @@ fn search_snippet(
             return matched_snippet(&section.text, &terms, max_chars);
         }
     }
-    if !record.body.trim().is_empty() && !context_has_excluded_provider_session(context, filters) {
+    if !record.body.trim().is_empty()
+        && record_text_matches_agent_scope(context, filters)
+        && !context_has_excluded_provider_session(context, filters)
+    {
         return local_snippet(&record.body, max_chars);
     }
     String::new()

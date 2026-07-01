@@ -2486,11 +2486,49 @@ fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
 
     let primary_default = json_output(ctx(&temp).args(["search", "subagent", "--json"]));
     assert_eq!(primary_default["filters"]["include_subagents"], false);
+    let primary_default_text = serde_json::to_string(&primary_default).unwrap();
+    assert!(
+        !primary_default_text.contains("codex-session-child"),
+        "{primary_default_text}"
+    );
+
+    let default_events = json_output(ctx(&temp).args(["search", "subagent", "--events", "--json"]));
+    assert_eq!(default_events["filters"]["include_subagents"], false);
+    let default_events_text = serde_json::to_string(&default_events).unwrap();
+    assert!(
+        !default_events_text.contains("codex-session-child"),
+        "{default_events_text}"
+    );
 
     let with_subagents =
         json_output(ctx(&temp).args(["search", "subagent", "--include-subagents", "--json"]));
     assert!(!with_subagents["results"].as_array().unwrap().is_empty());
     assert_eq!(with_subagents["filters"]["include_subagents"], true);
+    assert!(serde_json::to_string(&with_subagents)
+        .unwrap()
+        .contains("codex-session-child"));
+
+    let child_session_lookup = json_output(ctx(&temp).args([
+        "sql",
+        "SELECT ctx_session_id FROM ctx_sessions WHERE provider_session_id = 'codex-session-child'",
+        "--format",
+        "json",
+    ]));
+    let child_session_id = child_session_lookup["rows"][0][0].as_str().unwrap();
+    let explicit_child_session = json_output(ctx(&temp).args([
+        "search",
+        "subagent",
+        "--session",
+        child_session_id,
+        "--json",
+    ]));
+    assert_eq!(
+        explicit_child_session["filters"]["session"],
+        child_session_id
+    );
+    assert!(serde_json::to_string(&explicit_child_session)
+        .unwrap()
+        .contains("codex-session-child"));
 
     let primary_only =
         json_output(ctx(&temp).args(["search", "subagent", "--primary-only", "--json"]));
