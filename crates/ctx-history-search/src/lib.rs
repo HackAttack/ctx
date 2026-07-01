@@ -66,7 +66,7 @@ pub struct SearchFilters {
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<chrono::DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(skip_serializing)]
     pub primary_only: bool,
     #[serde(default)]
     pub include_subagents: bool,

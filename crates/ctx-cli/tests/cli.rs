@@ -2495,7 +2495,7 @@ fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
     let primary_only =
         json_output(ctx(&temp).args(["search", "subagent", "--primary-only", "--json"]));
     assert_eq!(primary_only["filters"]["include_subagents"], false);
-    assert_eq!(primary_only["filters"]["primary_only"], true);
+    assert!(primary_only["filters"]["primary_only"].is_null());
     assert!(
         primary_only["results"].as_array().unwrap().len()
             <= with_subagents["results"].as_array().unwrap().len()
