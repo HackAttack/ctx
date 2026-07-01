@@ -357,7 +357,7 @@ fn show_doc(args: DocsShowArgs) -> Result<()> {
     let topic = TOPICS
         .iter()
         .find(|topic| topic.id == args.id)
-        .ok_or_else(|| anyhow!("unknown ctx docs topic: {}", args.id))?;
+        .ok_or_else(|| unknown_doc_topic_error(&args.id))?;
     let body = if args.json || args.format == DocsFormat::Json {
         serde_json::to_string_pretty(&topic_json_with_body(topic))?
     } else {
@@ -401,7 +401,54 @@ fn man_page(name: &str) -> Result<(String, Command)> {
     man_pages()
         .into_iter()
         .find(|(candidate, _)| candidate == name)
-        .ok_or_else(|| anyhow!("unknown ctx man page: {name}"))
+        .ok_or_else(|| unknown_man_page_error(name))
+}
+
+fn unknown_doc_topic_error(id: &str) -> anyhow::Error {
+    let mut message = format!("unknown ctx docs topic: {id}");
+    let suggestions = suggested_doc_topics(id);
+    if !suggestions.is_empty() {
+        message.push_str("\nnearest topics:");
+        for topic in suggestions {
+            message.push_str(&format!(" {topic}"));
+        }
+    }
+    message.push_str("\ntry: ctx docs list");
+    message.push_str(&format!(
+        "\ntry: ctx docs search {}",
+        docs_shell_quote_arg(first_docs_search_term(id))
+    ));
+    anyhow!(message)
+}
+
+fn suggested_doc_topics(id: &str) -> Vec<&'static str> {
+    let query = id.to_ascii_lowercase();
+    let terms = docs_query_terms(id);
+    let mut scored: Vec<(usize, &'static str)> = TOPICS
+        .iter()
+        .filter_map(|topic| {
+            let score = score_doc_topic(topic, &terms)
+                + common_prefix_len(&query, topic.id)
+                + usize::from(topic.id.contains(&query)) * 20;
+            (score > 0).then_some((score, topic.id))
+        })
+        .collect();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+    scored.truncate(3);
+    scored.into_iter().map(|(_, id)| id).collect()
+}
+
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn unknown_man_page_error(name: &str) -> anyhow::Error {
+    anyhow!(
+        "unknown ctx man page: {name}\ntry: ctx docs man --print ctx\ntry: ctx docs man --out ./man"
+    )
 }
 
 fn man_pages() -> Vec<(String, Command)> {

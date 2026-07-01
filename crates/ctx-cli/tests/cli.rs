@@ -1207,6 +1207,12 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
     assert_eq!(show["id"], "cli-reference");
     assert!(show["body"].as_str().unwrap().contains("ctx search"));
 
+    let missing_topic = failure_stderr(ctx(&temp).args(["docs", "show", "cli"]));
+    assert!(missing_topic.contains("unknown ctx docs topic: cli"));
+    assert!(missing_topic.contains("nearest topics:"));
+    assert!(missing_topic.contains("ctx docs list"));
+    assert!(missing_topic.contains("ctx docs search cli"));
+
     let man = ctx(&temp)
         .args(["docs", "man", "--print", "ctx"])
         .assert()
