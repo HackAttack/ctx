@@ -5434,10 +5434,10 @@ fn hermes_decode_content(raw: Option<&str>) -> Value {
     Value::String(raw.to_owned())
 }
 
-fn native_event(
+struct NativeEventDraft {
     provider: CaptureProvider,
     source_format: &'static str,
-    provider_session_id: &str,
+    provider_session_id: String,
     provider_event_index: u64,
     provider_event_hash: Option<String>,
     cursor: String,
@@ -5447,31 +5447,33 @@ fn native_event(
     text: String,
     body: Value,
     metadata: Value,
-) -> ProviderEventEnvelope {
-    let (text, truncated) = provider_safe_preview(&text, PROVIDER_MAX_TEXT_CHARS);
+}
+
+fn native_event(draft: NativeEventDraft) -> ProviderEventEnvelope {
+    let (text, truncated) = provider_safe_preview(&draft.text, PROVIDER_MAX_TEXT_CHARS);
     ProviderEventEnvelope {
-        provider_event_index,
-        provider_event_hash,
-        cursor: Some(cursor),
-        event_type,
-        role,
-        occurred_at,
+        provider_event_index: draft.provider_event_index,
+        provider_event_hash: draft.provider_event_hash,
+        cursor: Some(draft.cursor),
+        event_type: draft.event_type,
+        role: draft.role,
+        occurred_at: draft.occurred_at,
         fidelity: Fidelity::Imported,
         redaction_state: RedactionState::SafePreview,
         idempotency_key: Some(format!(
             "provider-event:{}:{}:{}",
-            provider.as_str(),
-            provider_session_id,
-            provider_event_index
+            draft.provider.as_str(),
+            draft.provider_session_id,
+            draft.provider_event_index
         )),
         artifacts: Vec::new(),
         payload: json!({
             "text": text,
             "truncated": truncated,
-            "source_format": source_format,
-            "body": provider_capped_json(&body, PROVIDER_MAX_PREVIEW_CHARS),
+            "source_format": draft.source_format,
+            "body": provider_capped_json(&draft.body, PROVIDER_MAX_PREVIEW_CHARS),
         }),
-        metadata,
+        metadata: draft.metadata,
     }
 }
 
@@ -5669,16 +5671,18 @@ fn normalize_openclaw_jsonl_file(
             result.captures.push((
                 line_number,
                 openclaw_capture(
-                    &provider_session_id,
-                    agent_id.as_deref(),
-                    started_at,
-                    None,
-                    cwd.clone(),
-                    path,
+                    OpenClawCaptureDraft {
+                        provider_session_id: &provider_session_id,
+                        agent_id: agent_id.as_deref(),
+                        started_at,
+                        ended_at: None,
+                        cwd: cwd.clone(),
+                        path,
+                        indexes,
+                        header_raw: header_raw.clone(),
+                        event: None,
+                    },
                     context,
-                    indexes,
-                    header_raw.clone(),
-                    None,
                 ),
             ));
             continue;
@@ -5698,50 +5702,69 @@ fn normalize_openclaw_jsonl_file(
             result.captures.push((
                 line_number,
                 openclaw_capture(
-                    &provider_session_id,
-                    agent_id.as_deref(),
-                    started_at,
-                    None,
-                    cwd.clone(),
-                    path,
+                    OpenClawCaptureDraft {
+                        provider_session_id: &provider_session_id,
+                        agent_id: agent_id.as_deref(),
+                        started_at,
+                        ended_at: None,
+                        cwd: cwd.clone(),
+                        path,
+                        indexes,
+                        header_raw: header_raw.clone(),
+                        event: None,
+                    },
                     context,
-                    indexes,
-                    header_raw.clone(),
-                    None,
                 ),
             ));
         }
         result.captures.push((
             line_number,
             openclaw_capture(
-                &provider_session_id,
-                agent_id.as_deref(),
-                started_at,
-                None,
-                cwd.clone(),
-                path,
+                OpenClawCaptureDraft {
+                    provider_session_id: &provider_session_id,
+                    agent_id: agent_id.as_deref(),
+                    started_at,
+                    ended_at: None,
+                    cwd: cwd.clone(),
+                    path,
+                    indexes,
+                    header_raw: header_raw.clone(),
+                    event: Some(event),
+                },
                 context,
-                indexes,
-                header_raw.clone(),
-                Some(event),
             ),
         ));
     }
     Ok(result)
 }
 
-fn openclaw_capture(
-    provider_session_id: &str,
-    agent_id: Option<&str>,
+struct OpenClawCaptureDraft<'a> {
+    provider_session_id: &'a str,
+    agent_id: Option<&'a str>,
     started_at: DateTime<Utc>,
     ended_at: Option<DateTime<Utc>>,
     cwd: Option<String>,
-    path: &Path,
-    context: &ProviderAdapterContext,
-    indexes: &BTreeMap<String, Value>,
+    path: &'a Path,
+    indexes: &'a BTreeMap<String, Value>,
     header_raw: Value,
     event: Option<ProviderEventEnvelope>,
+}
+
+fn openclaw_capture(
+    draft: OpenClawCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
 ) -> ProviderCaptureEnvelope {
+    let OpenClawCaptureDraft {
+        provider_session_id,
+        agent_id,
+        started_at,
+        ended_at,
+        cwd,
+        path,
+        indexes,
+        header_raw,
+        event,
+    } = draft;
     let local_id = provider_session_id
         .rsplit_once('/')
         .map(|(_, id)| id)
@@ -5818,26 +5841,26 @@ fn openclaw_event(
         .or_else(|| message.get("output"))
         .and_then(provider_value_text)
         .unwrap_or_else(|| format!("OpenClaw {row_type}"));
-    native_event(
-        CaptureProvider::OpenClaw,
-        OPENCLAW_SOURCE_FORMAT,
-        provider_session_id,
-        event_index,
-        row.get("id").and_then(Value::as_str).map(str::to_owned),
-        format!("line:{line_number}"),
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::OpenClaw,
+        source_format: OPENCLAW_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index: event_index,
+        provider_event_hash: row.get("id").and_then(Value::as_str).map(str::to_owned),
+        cursor: format!("line:{line_number}"),
         event_type,
         role,
         occurred_at,
         text,
-        row.clone(),
-        json!({
+        body: row.clone(),
+        metadata: json!({
             "source": "openclaw_jsonl",
             "source_format": OPENCLAW_SOURCE_FORMAT,
             "row_type": row_type,
             "message_id": row.get("id").and_then(Value::as_str),
             "parent_id": row.get("parentId").or_else(|| row.get("parent_id")).cloned(),
         }),
-    )
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -5934,18 +5957,18 @@ fn normalize_hermes_sqlite(
         });
         let event_type = hermes_event_type(&row);
         let role = Some(provider_role(Some(&row.role)));
-        let event = native_event(
-            CaptureProvider::Hermes,
-            HERMES_SQLITE_SOURCE_FORMAT,
-            &provider_session_id,
-            row.id.max(0) as u64,
-            Some(format!("message:{}", row.id)),
-            format!("messages:id:{}", row.id),
+        let event = native_event(NativeEventDraft {
+            provider: CaptureProvider::Hermes,
+            source_format: HERMES_SQLITE_SOURCE_FORMAT,
+            provider_session_id: provider_session_id.clone(),
+            provider_event_index: row.id.max(0) as u64,
+            provider_event_hash: Some(format!("message:{}", row.id)),
+            cursor: format!("messages:id:{}", row.id),
             event_type,
             role,
             occurred_at,
             text,
-            json!({
+            body: json!({
                 "message_id": row.id,
                 "role": row.role,
                 "content": content,
@@ -5958,7 +5981,7 @@ fn normalize_hermes_sqlite(
                 "codex_reasoning_items": row.codex_reasoning_items.as_deref().map(provider_json_text),
                 "codex_message_items": row.codex_message_items.as_deref().map(provider_json_text),
             }),
-            json!({
+            metadata: json!({
                 "source": "hermes_state_db",
                 "source_format": HERMES_SQLITE_SOURCE_FORMAT,
                 "message_id": row.id,
@@ -5969,7 +5992,7 @@ fn normalize_hermes_sqlite(
                 "active": row.active != 0,
                 "compacted": row.compacted != 0,
             }),
-        );
+        });
         result.captures.push((
             row.id.max(0) as usize,
             native_provider_capture(
@@ -6291,23 +6314,23 @@ fn normalize_nanoclaw_project(
             } else {
                 Some(EventRole::Assistant)
             };
-            let event = native_event(
-                CaptureProvider::NanoClaw,
-                NANOCLAW_SOURCE_FORMAT,
-                &provider_session_id,
-                event_index,
-                Some(format!("{}:{}", message.source, message.id)),
-                format!(
+            let event = native_event(NativeEventDraft {
+                provider: CaptureProvider::NanoClaw,
+                source_format: NANOCLAW_SOURCE_FORMAT,
+                provider_session_id: provider_session_id.clone(),
+                provider_event_index: event_index,
+                provider_event_hash: Some(format!("{}:{}", message.source, message.id)),
+                cursor: format!(
                     "{}:{}:{}",
                     message.source,
                     session.id,
                     message.seq.unwrap_or_default()
                 ),
-                EventType::Message,
+                event_type: EventType::Message,
                 role,
                 occurred_at,
                 text,
-                json!({
+                body: json!({
                     "message_id": message.id,
                     "seq": message.seq,
                     "kind": message.kind,
@@ -6321,13 +6344,13 @@ fn normalize_nanoclaw_project(
                     "source_session_id": message.source_session_id,
                     "on_wake": message.on_wake,
                 }),
-                json!({
+                metadata: json!({
                     "source": format!("nanoclaw_{}", message.source),
                     "source_format": NANOCLAW_SOURCE_FORMAT,
                     "message_id": message.id,
                     "seq": message.seq,
                 }),
-            );
+            });
             result.captures.push((
                 event_index.min(usize::MAX as u64) as usize,
                 native_provider_capture(
@@ -6655,76 +6678,81 @@ fn normalize_astrbot_sqlite(
                 let role = astrbot_role(item);
                 let text = astrbot_item_text(item)
                     .unwrap_or_else(|| "AstrBot conversation item".to_owned());
-                let event = native_event(
-                    CaptureProvider::AstrBot,
-                    ASTRBOT_SQLITE_SOURCE_FORMAT,
-                    &provider_session_id,
-                    index as u64,
-                    astrbot_item_id(item).map(|id| format!("conversation:{id}")),
-                    format!("conversation:{}:item:{index}", conversation.conversation_id),
-                    EventType::Message,
+                let event = native_event(NativeEventDraft {
+                    provider: CaptureProvider::AstrBot,
+                    source_format: ASTRBOT_SQLITE_SOURCE_FORMAT,
+                    provider_session_id: provider_session_id.clone(),
+                    provider_event_index: index as u64,
+                    provider_event_hash: astrbot_item_id(item)
+                        .map(|id| format!("conversation:{id}")),
+                    cursor: format!("conversation:{}:item:{index}", conversation.conversation_id),
+                    event_type: EventType::Message,
                     role,
-                    started_at,
+                    occurred_at: started_at,
                     text,
-                    item.clone(),
-                    json!({
+                    body: item.clone(),
+                    metadata: json!({
                         "source": "astrbot_conversations",
                         "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
                         "conversation_id": conversation.conversation_id,
                         "inner_conversation_id": conversation.inner_conversation_id,
                         "item_index": index,
                     }),
-                );
+                });
                 result.captures.push((
                     index + 1,
                     astrbot_capture(
-                        conversation,
-                        &provider_session_id,
-                        started_at,
-                        ended_at,
-                        path,
+                        AstrBotCaptureDraft {
+                            conversation,
+                            provider_session_id: &provider_session_id,
+                            started_at,
+                            ended_at,
+                            path,
+                            user_version,
+                            schema_fingerprint: &schema_fingerprint,
+                            selected_conversation: selected_conversation.as_deref(),
+                            event: Some(event),
+                        },
                         context,
-                        user_version,
-                        &schema_fingerprint,
-                        selected_conversation.as_deref(),
-                        Some(event),
                     ),
                 ));
             }
         } else {
             let text =
                 provider_value_text(&content).unwrap_or_else(|| "AstrBot conversation".to_owned());
-            let event = native_event(
-                CaptureProvider::AstrBot,
-                ASTRBOT_SQLITE_SOURCE_FORMAT,
-                &provider_session_id,
-                0,
-                Some(format!("conversation-row:{}", conversation.row_id)),
-                format!("conversation:{}:content", conversation.conversation_id),
-                EventType::Message,
-                None,
-                started_at,
+            let event = native_event(NativeEventDraft {
+                provider: CaptureProvider::AstrBot,
+                source_format: ASTRBOT_SQLITE_SOURCE_FORMAT,
+                provider_session_id: provider_session_id.clone(),
+                provider_event_index: 0,
+                provider_event_hash: Some(format!("conversation-row:{}", conversation.row_id)),
+                cursor: format!("conversation:{}:content", conversation.conversation_id),
+                event_type: EventType::Message,
+                role: None,
+                occurred_at: started_at,
                 text,
-                content.clone(),
-                json!({
+                body: content.clone(),
+                metadata: json!({
                     "source": "astrbot_conversations",
                     "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
                     "conversation_id": conversation.conversation_id,
                 }),
-            );
+            });
             result.captures.push((
                 conversation.row_id.max(0) as usize,
                 astrbot_capture(
-                    conversation,
-                    &provider_session_id,
-                    started_at,
-                    ended_at,
-                    path,
+                    AstrBotCaptureDraft {
+                        conversation,
+                        provider_session_id: &provider_session_id,
+                        started_at,
+                        ended_at,
+                        path,
+                        user_version,
+                        schema_fingerprint: &schema_fingerprint,
+                        selected_conversation: selected_conversation.as_deref(),
+                        event: Some(event),
+                    },
                     context,
-                    user_version,
-                    &schema_fingerprint,
-                    selected_conversation.as_deref(),
-                    Some(event),
                 ),
             ));
         }
@@ -6765,18 +6793,18 @@ fn normalize_astrbot_sqlite(
             Some(EventRole::Assistant)
         };
         let event_index = 1_000_000u64.saturating_add(message.id.max(0) as u64);
-        let event = native_event(
-            CaptureProvider::AstrBot,
-            ASTRBOT_SQLITE_SOURCE_FORMAT,
-            &provider_session_id,
-            event_index,
-            Some(format!("platform-message:{}", message.id)),
-            format!("platform_message_history:id:{}", message.id),
-            EventType::Message,
+        let event = native_event(NativeEventDraft {
+            provider: CaptureProvider::AstrBot,
+            source_format: ASTRBOT_SQLITE_SOURCE_FORMAT,
+            provider_session_id: provider_session_id.clone(),
+            provider_event_index: event_index,
+            provider_event_hash: Some(format!("platform-message:{}", message.id)),
+            cursor: format!("platform_message_history:id:{}", message.id),
+            event_type: EventType::Message,
             role,
-            provider_timestamp_millis(message.created_at, started_at),
+            occurred_at: provider_timestamp_millis(message.created_at, started_at),
             text,
-            json!({
+            body: json!({
                 "message_id": message.id,
                 "platform_id": message.platform_id,
                 "user_id": message.user_id,
@@ -6785,28 +6813,30 @@ fn normalize_astrbot_sqlite(
                 "content": content,
                 "llm_checkpoint_id": message.llm_checkpoint_id,
             }),
-            json!({
+            metadata: json!({
                 "source": "astrbot_platform_message_history",
                 "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
                 "message_id": message.id,
             }),
-        );
+        });
         if let Some(conversation) = conversation {
             result.captures.push((
                 event_index.min(usize::MAX as u64) as usize,
                 astrbot_capture(
-                    conversation,
-                    &provider_session_id,
-                    started_at,
-                    conversation.updated_at.map(|timestamp| {
-                        provider_timestamp_millis(Some(timestamp), context.imported_at)
-                    }),
-                    path,
+                    AstrBotCaptureDraft {
+                        conversation,
+                        provider_session_id: &provider_session_id,
+                        started_at,
+                        ended_at: conversation.updated_at.map(|timestamp| {
+                            provider_timestamp_millis(Some(timestamp), context.imported_at)
+                        }),
+                        path,
+                        user_version,
+                        schema_fingerprint: &schema_fingerprint,
+                        selected_conversation: selected_conversation.as_deref(),
+                        event: Some(event),
+                    },
                     context,
-                    user_version,
-                    &schema_fingerprint,
-                    selected_conversation.as_deref(),
-                    Some(event),
                 ),
             ));
         } else {
@@ -6861,18 +6891,33 @@ fn astrbot_provider_session_id(conversation: &AstrBotConversationRow) -> String 
         .unwrap_or_else(|| format!("conversation-row-{}", conversation.row_id))
 }
 
-fn astrbot_capture(
-    conversation: &AstrBotConversationRow,
-    provider_session_id: &str,
+struct AstrBotCaptureDraft<'a> {
+    conversation: &'a AstrBotConversationRow,
+    provider_session_id: &'a str,
     started_at: DateTime<Utc>,
     ended_at: Option<DateTime<Utc>>,
-    path: &Path,
-    context: &ProviderAdapterContext,
+    path: &'a Path,
     user_version: i64,
-    schema_fingerprint: &str,
-    selected_conversation: Option<&str>,
+    schema_fingerprint: &'a str,
+    selected_conversation: Option<&'a str>,
     event: Option<ProviderEventEnvelope>,
+}
+
+fn astrbot_capture(
+    draft: AstrBotCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
 ) -> ProviderCaptureEnvelope {
+    let AstrBotCaptureDraft {
+        conversation,
+        provider_session_id,
+        started_at,
+        ended_at,
+        path,
+        user_version,
+        schema_fingerprint,
+        selected_conversation,
+        event,
+    } = draft;
     native_provider_capture(
         NativeSessionDraft {
             provider: CaptureProvider::AstrBot,
