@@ -3899,16 +3899,16 @@ fn normalize_custom_history_jsonl_v1_reader(
         }
     }
 
-    validate_custom_history_references(
-        &mut summary,
+    let reference_index = CustomHistoryReferenceIndex {
         manifest_line,
-        &sources,
-        &sessions,
-        &events,
-        &event_keys,
-        &file_touches,
-        &edges,
-    );
+        sources: &sources,
+        sessions: &sessions,
+        events: &events,
+        event_keys: &event_keys,
+        file_touches: &file_touches,
+        edges: &edges,
+    };
+    validate_custom_history_references(&mut summary, reference_index);
     if summary.failed > 0 {
         return Ok(custom_history_failed_normalization(summary));
     }
@@ -4057,17 +4057,21 @@ fn validate_custom_history_identifier(
     }
 }
 
+struct CustomHistoryReferenceIndex<'a> {
+    manifest_line: Option<usize>,
+    sources: &'a BTreeMap<String, (usize, CtxHistoryJsonlSourceRecord)>,
+    sessions: &'a BTreeMap<(String, String), (usize, CtxHistoryJsonlSessionRecord)>,
+    events: &'a [(usize, CtxHistoryJsonlEventRecord)],
+    event_keys: &'a BTreeSet<(String, String, u64)>,
+    file_touches: &'a [(usize, CtxHistoryJsonlFileTouchRecord)],
+    edges: &'a [(usize, CtxHistoryJsonlEdgeRecord)],
+}
+
 fn validate_custom_history_references(
     summary: &mut ProviderImportSummary,
-    manifest_line: Option<usize>,
-    sources: &BTreeMap<String, (usize, CtxHistoryJsonlSourceRecord)>,
-    sessions: &BTreeMap<(String, String), (usize, CtxHistoryJsonlSessionRecord)>,
-    events: &[(usize, CtxHistoryJsonlEventRecord)],
-    event_keys: &BTreeSet<(String, String, u64)>,
-    file_touches: &[(usize, CtxHistoryJsonlFileTouchRecord)],
-    edges: &[(usize, CtxHistoryJsonlEdgeRecord)],
+    references: CustomHistoryReferenceIndex<'_>,
 ) {
-    if manifest_line.is_none() {
+    if references.manifest_line.is_none() {
         push_provider_import_failure(
             summary,
             0,
@@ -4075,8 +4079,8 @@ fn validate_custom_history_references(
         );
     }
 
-    for (line_number, session) in sessions.values() {
-        if !sources.contains_key(&session.source_id) {
+    for (line_number, session) in references.sessions.values() {
+        if !references.sources.contains_key(&session.source_id) {
             push_provider_import_failure(
                 summary,
                 *line_number,
@@ -4088,7 +4092,7 @@ fn validate_custom_history_references(
         }
         if let Some(parent) = &session.parent_session_id {
             let key = (session.source_id.clone(), parent.clone());
-            if !sessions.contains_key(&key) {
+            if !references.sessions.contains_key(&key) {
                 push_provider_import_failure(
                     summary,
                     *line_number,
@@ -4098,7 +4102,7 @@ fn validate_custom_history_references(
         }
         if let Some(root) = &session.root_session_id {
             let key = (session.source_id.clone(), root.clone());
-            if root != &session.session_id && !sessions.contains_key(&key) {
+            if root != &session.session_id && !references.sessions.contains_key(&key) {
                 push_provider_import_failure(
                     summary,
                     *line_number,
@@ -4108,8 +4112,11 @@ fn validate_custom_history_references(
         }
     }
 
-    for (line_number, event) in events {
-        if !sessions.contains_key(&(event.source_id.clone(), event.session_id.clone())) {
+    for (line_number, event) in references.events {
+        if !references
+            .sessions
+            .contains_key(&(event.source_id.clone(), event.session_id.clone()))
+        {
             push_provider_import_failure(
                 summary,
                 *line_number,
@@ -4121,8 +4128,11 @@ fn validate_custom_history_references(
         }
     }
 
-    for (line_number, file_touch) in file_touches {
-        if !sessions.contains_key(&(file_touch.source_id.clone(), file_touch.session_id.clone())) {
+    for (line_number, file_touch) in references.file_touches {
+        if !references
+            .sessions
+            .contains_key(&(file_touch.source_id.clone(), file_touch.session_id.clone()))
+        {
             push_provider_import_failure(
                 summary,
                 *line_number,
@@ -4138,7 +4148,7 @@ fn validate_custom_history_references(
                 file_touch.session_id.clone(),
                 event_index,
             );
-            if !event_keys.contains(&key) {
+            if !references.event_keys.contains(&key) {
                 push_provider_import_failure(
                     summary,
                     *line_number,
@@ -4148,10 +4158,10 @@ fn validate_custom_history_references(
         }
     }
 
-    for (line_number, edge) in edges {
+    for (line_number, edge) in references.edges {
         let from_key = (edge.source_id.clone(), edge.from_session_id.clone());
         let to_key = (edge.source_id.clone(), edge.to_session_id.clone());
-        if !sessions.contains_key(&from_key) {
+        if !references.sessions.contains_key(&from_key) {
             push_provider_import_failure(
                 summary,
                 *line_number,
@@ -4161,7 +4171,7 @@ fn validate_custom_history_references(
                 ),
             );
         }
-        if !sessions.contains_key(&to_key) {
+        if !references.sessions.contains_key(&to_key) {
             push_provider_import_failure(
                 summary,
                 *line_number,
@@ -4172,7 +4182,7 @@ fn validate_custom_history_references(
             );
         }
         if edge.edge_type == SessionEdgeType::ParentChild {
-            let Some((_, child)) = sessions.get(&to_key) else {
+            let Some((_, child)) = references.sessions.get(&to_key) else {
                 continue;
             };
             if let Some(parent) = &child.parent_session_id {
