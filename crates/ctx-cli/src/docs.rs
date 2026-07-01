@@ -125,6 +125,15 @@ const TOPICS: &[DocTopic] = &[
         body: include_str!("../../../docs/search.md"),
     },
     DocTopic {
+        id: "sql",
+        title: "SQL",
+        audience: "agent",
+        summary: "Read-only SQL usage, stable view schemas, limits, and examples.",
+        tags: &["sql", "sqlite", "views", "advanced"],
+        source_path: "docs/sql.md",
+        body: include_str!("../../../docs/sql.md"),
+    },
+    DocTopic {
         id: "agent-usage",
         title: "Agent Usage",
         audience: "agent",
@@ -239,15 +248,7 @@ fn search_docs(query: &str, limit: usize, json_output: bool) -> Result<()> {
     let mut results: Vec<(usize, &DocTopic)> = TOPICS
         .iter()
         .filter_map(|topic| {
-            let haystack = format!(
-                "{} {} {} {}",
-                topic.id, topic.title, topic.summary, topic.body
-            )
-            .to_ascii_lowercase();
-            let score = terms
-                .iter()
-                .map(|term| haystack.matches(term).count())
-                .sum::<usize>();
+            let score = score_doc_topic(topic, &terms);
             (score > 0).then_some((score, topic))
         })
         .collect();
@@ -280,6 +281,24 @@ fn search_docs(query: &str, limit: usize, json_output: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn score_doc_topic(topic: &DocTopic, terms: &[String]) -> usize {
+    let haystack = format!(
+        "{} {} {} {}",
+        topic.id, topic.title, topic.summary, topic.body
+    )
+    .to_ascii_lowercase();
+    let title = topic.title.to_ascii_lowercase();
+    terms
+        .iter()
+        .map(|term| {
+            let exact_topic_match = topic.id == term
+                || title == *term
+                || topic.tags.iter().any(|tag| tag.eq_ignore_ascii_case(term));
+            haystack.matches(term).count() + usize::from(exact_topic_match) * 1_000
+        })
+        .sum()
 }
 
 fn show_doc(args: DocsShowArgs) -> Result<()> {

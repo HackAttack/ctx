@@ -1189,6 +1189,9 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
     assert_eq!(search["query"], "upgrade");
     assert!(!search["results"].as_array().unwrap().is_empty());
 
+    let sql_search = json_output(ctx(&temp).args(["docs", "search", "sql", "--json"]));
+    assert_eq!(sql_search["results"][0]["id"], "sql");
+
     let show = json_output(ctx(&temp).args(["docs", "show", "cli-reference", "--format", "json"]));
     assert_eq!(show["schema_version"], 1);
     assert_eq!(show["id"], "cli-reference");

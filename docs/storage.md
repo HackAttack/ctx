@@ -173,6 +173,7 @@ Stable read-only views are the preferred compatibility surface:
 - `ctx_files_touched`;
 - `ctx_sources`.
 
+Run `ctx docs show sql` for view schemas, examples, limits, and output formats.
 Internal tables remain local and queryable, but they are implementation details
 and can change across versions. SQL output is private local history by default.
 

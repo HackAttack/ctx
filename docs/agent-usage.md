@@ -24,7 +24,8 @@ query over the existing index.
 
 Use `ctx sql` only when normal search does not express the question, such as
 exact counts, joins, audits, or scripting over stable `ctx_*` views. It is
-read-only and does not refresh or import provider history.
+read-only and does not refresh or import provider history. See
+`ctx docs show sql` for stable view schemas and examples.
 
 When ctx runs inside Codex and `CODEX_THREAD_ID` is available, search excludes
 the active Codex session tree by default to avoid returning the current prompt
