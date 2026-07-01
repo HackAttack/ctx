@@ -499,13 +499,7 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
         CaptureProvider::FactoryAiDroid => "factory_ai_droid_sessions_jsonl",
         CaptureProvider::OpenClaw => "openclaw_session_jsonl_tree",
         CaptureProvider::Hermes => "hermes_state_sqlite",
-        CaptureProvider::NanoClaw => {
-            if path.file_name().and_then(|name| name.to_str()) == Some("v2.db") {
-                "nanoclaw_project"
-            } else {
-                "nanoclaw_project"
-            }
-        }
+        CaptureProvider::NanoClaw => "nanoclaw_project",
         CaptureProvider::AstrBot => "astrbot_data_v4_sqlite",
         _ => "unsupported",
     };
