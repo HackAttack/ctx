@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ctx.rs/contracts/agent-history-v1/schema.json",
+  "title": "ctx Agent History Contract v1",
+  "type": "object",
+  "required": ["contractVersion", "schemaVersion", "operation"],
+  "properties": {
+    "contractVersion": { "const": "agent-history-v1" },
+    "schemaVersion": { "const": 1 },
+    "operation": {
+      "enum": [
+        "status",
+        "init",
+        "sources",
+        "import",
+        "sync",
+        "search",
+        "showEvent",
+        "showSession",
+        "locateEvent",
+        "locateSession",
+        "error"
+      ]
+    },
+    "backend": { "$ref": "#/$defs/backend" },
+    "status": { "$ref": "#/$defs/status" },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/providerSource" }
+    },
+    "import": { "$ref": "#/$defs/importResult" },
+    "search": { "$ref": "#/$defs/searchResult" },
+    "event": { "$ref": "#/$defs/eventResult" },
+    "session": { "$ref": "#/$defs/sessionResult" },
+    "location": { "$ref": "#/$defs/locationResult" },
+    "error": { "$ref": "#/$defs/agentHistoryError" }
+  },
+  "$defs": {
+    "backend": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["local", "hosted"] },
+        "dataRoot": { "type": ["string", "null"] },
+        "baseUrl": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "status": {
+      "type": "object",
+      "required": ["initialized", "localOnly"],
+      "properties": {
+        "initialized": { "type": "boolean" },
+        "localOnly": { "type": "boolean" },
+        "dataRoot": { "type": ["string", "null"] },
+        "indexedItems": { "type": "integer", "minimum": 0 },
+        "indexedSources": { "type": "integer", "minimum": 0 },
+        "catalogedSessions": { "type": "integer", "minimum": 0 },
+        "pendingCatalogSessions": { "type": "integer", "minimum": 0 },
+        "failedCatalogSessions": { "type": "integer", "minimum": 0 },
+        "staleCatalogSessions": { "type": "integer", "minimum": 0 },
+        "freshness": { "$ref": "#/$defs/freshness" }
+      },
+      "additionalProperties": true
+    },
+    "providerSource": {
+      "type": "object",
+      "required": ["provider", "path", "status", "importable"],
+      "properties": {
+        "provider": { "type": "string" },
+        "path": { "type": "string" },
+        "exists": { "type": "boolean" },
+        "sourceFormat": { "type": ["string", "null"] },
+        "status": { "type": "string" },
+        "importSupport": { "type": ["string", "null"] },
+        "nativeImport": { "type": "boolean" },
+        "importable": { "type": "boolean" },
+        "rawRetention": { "type": ["string", "null"] },
+        "unsupportedReason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "importResult": {
+      "type": "object",
+      "required": ["resume", "totals"],
+      "properties": {
+        "resume": { "type": "boolean" },
+        "resumeMode": { "type": ["string", "null"] },
+        "totals": { "$ref": "#/$defs/totals" },
+        "sources": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "additionalProperties": true
+    },
+    "searchResult": {
+      "type": "object",
+      "required": ["query", "results"],
+      "properties": {
+        "query": { "type": ["string", "null"] },
+        "filters": { "type": "object", "additionalProperties": true },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "generatedAt": { "type": ["string", "null"] },
+        "results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/searchHit" }
+        },
+        "pagination": { "type": "object", "additionalProperties": true },
+        "truncation": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "searchHit": {
+      "type": "object",
+      "required": ["resultScope"],
+      "properties": {
+        "ctxEventId": { "type": ["string", "null"] },
+        "ctxSessionId": { "type": ["string", "null"] },
+        "providerSessionId": { "type": ["string", "null"] },
+        "eventSeq": { "type": ["integer", "null"] },
+        "title": { "type": ["string", "null"] },
+        "snippet": { "type": ["string", "null"] },
+        "rank": { "type": ["number", "null"] },
+        "resultScope": { "type": "string" },
+        "provider": { "type": ["string", "null"] },
+        "timestamp": { "type": ["string", "null"] },
+        "cwd": { "type": ["string", "null"] },
+        "sourcePath": { "type": ["string", "null"] },
+        "sourceExists": { "type": ["boolean", "null"] },
+        "cursor": { "type": ["string", "null"] },
+        "whyMatched": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "citations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/citation" }
+        },
+        "suggestedNextCommands": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "visibility": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "eventResult": {
+      "type": "object",
+      "required": ["events"],
+      "properties": {
+        "event": { "$ref": "#/$defs/event" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event" }
+        },
+        "source": { "$ref": "#/$defs/sourceLocation" }
+      },
+      "additionalProperties": true
+    },
+    "sessionResult": {
+      "type": "object",
+      "properties": {
+        "session": { "type": "object", "additionalProperties": true },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event" }
+        },
+        "source": { "$ref": "#/$defs/sourceLocation" },
+        "mode": { "type": ["string", "null"] },
+        "format": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "ctxEventId": { "type": ["string", "null"] },
+        "ctxSessionId": { "type": ["string", "null"] },
+        "sequence": { "type": ["integer", "null"] },
+        "eventType": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "occurredAt": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "cursor": { "type": ["string", "null"] },
+        "text": { "type": ["string", "null"] },
+        "preview": { "type": ["string", "null"] },
+        "redactionState": { "type": ["string", "null"] },
+        "citations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/citation" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "locationResult": {
+      "type": "object",
+      "required": ["ctxSessionId", "provider", "source"],
+      "properties": {
+        "ctxSessionId": { "type": "string" },
+        "ctxEventId": { "type": ["string", "null"] },
+        "provider": { "type": "string" },
+        "providerSessionId": { "type": ["string", "null"] },
+        "source": { "$ref": "#/$defs/sourceLocation" },
+        "resume": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "sourceLocation": {
+      "type": "object",
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "cursor": { "type": ["string", "null"] },
+        "exists": { "type": ["boolean", "null"] },
+        "sourceId": { "type": ["string", "null"] },
+        "sourceFormat": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "freshness": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "sourceCount": { "type": ["integer", "null"], "minimum": 0 },
+        "totals": { "$ref": "#/$defs/totals" },
+        "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "citation": {
+      "type": "object",
+      "properties": {
+        "itemId": { "type": ["string", "null"] },
+        "itemType": { "type": ["string", "null"] },
+        "ctxEventId": { "type": ["string", "null"] },
+        "ctxSessionId": { "type": ["string", "null"] },
+        "label": { "type": ["string", "null"] },
+        "time": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"] },
+        "sessionId": { "type": ["string", "null"] },
+        "eventSeq": { "type": ["integer", "null"] },
+        "sourcePath": { "type": ["string", "null"] },
+        "sourceExists": { "type": ["boolean", "null"] },
+        "cursor": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "sourceFiles": { "type": "integer", "minimum": 0 },
+        "sourceBytes": { "type": "integer", "minimum": 0 },
+        "importedSources": { "type": "integer", "minimum": 0 },
+        "failedSources": { "type": "integer", "minimum": 0 },
+        "importedSessions": { "type": "integer", "minimum": 0 },
+        "importedEvents": { "type": "integer", "minimum": 0 },
+        "importedEdges": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "agentHistoryError": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "enum": [
+            "invalid_request",
+            "not_found",
+            "not_initialized",
+            "backend_unavailable",
+            "timeout",
+            "cancelled",
+            "not_supported",
+            "adapter_error",
+            "decode_error",
+            "unknown"
+          ]
+        },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "details": { "type": "object", "additionalProperties": true },
+        "cause": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

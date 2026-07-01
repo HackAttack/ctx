@@ -1,0 +1,23 @@
+{
+  "name": "@ctx/agent-history",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental in-repo TypeScript/JavaScript SDK for the ctx agent-history-v1 API.",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js && npm run typecheck",
+    "typecheck": "tsc -p tsconfig.types.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}

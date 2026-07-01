@@ -1,0 +1,14 @@
+[package]
+name = "ctx-protocol"
+version = "0.12.0"
+description = "Experimental agent-history-v1 SDK contract types for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

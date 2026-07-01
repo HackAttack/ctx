@@ -24,7 +24,13 @@ init_env() {
   export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
   export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
   if [[ -z "${HOME:-}" ]]; then
-    export HOME="${PWD}/target/bazel-home"
+    local user_home
+    user_home="$(getent passwd "$(id -un)" | cut -d: -f6 || true)"
+    if [[ -n "${user_home}" && -d "${user_home}" ]]; then
+      export HOME="${user_home}"
+    else
+      export HOME="${PWD}/target/bazel-home"
+    fi
   fi
   mkdir -p "${HOME}"
 }
@@ -98,6 +104,12 @@ case "${mode}" in
     ;;
   package_audit_fast)
     CTX_AUDIT_SKIP_RELEASE_BUILD=1 run bash scripts/audit-search-mvp-package.sh
+    ;;
+  sdk_contract_checks)
+    run bash scripts/check-sdks.sh
+    ;;
+  sdk_package_dry_run)
+    run bash scripts/sdk-package-dry-run.sh
     ;;
   package_audit_release)
     run bash scripts/audit-search-mvp-package.sh

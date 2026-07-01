@@ -12,9 +12,11 @@ CTX_GATE_DATA = glob([
     "README.md",
     "SECURITY.md",
     "crates/**",
+    "contracts/**",
     "docs/**",
     "plugins/**",
     "scripts/**",
+    "sdks/**",
     "skills/**",
     "tests/**",
 ])
@@ -83,6 +85,20 @@ sh_test(
 )
 
 sh_test(
+    name = "sdk_contract_checks",
+    srcs = ["scripts/bazel-test.sh"],
+    args = ["sdk_contract_checks"],
+    data = CTX_GATE_DATA,
+)
+
+sh_test(
+    name = "sdk_package_dry_run",
+    srcs = ["scripts/bazel-test.sh"],
+    args = ["sdk_package_dry_run"],
+    data = CTX_GATE_DATA,
+)
+
+sh_test(
     name = "package_audit_release",
     srcs = ["scripts/bazel-test.sh"],
     args = ["package_audit_release"],
@@ -127,6 +143,7 @@ test_suite(
         ":buildkite_pipeline_check",
         ":source_diff_check",
         ":package_audit_fast",
+        ":sdk_contract_checks",
     ],
 )
 
@@ -147,6 +164,7 @@ test_suite(
     name = "ci",
     tests = [
         ":presubmit",
+        ":sdk_package_dry_run",
         ":package_audit_release",
     ],
 )

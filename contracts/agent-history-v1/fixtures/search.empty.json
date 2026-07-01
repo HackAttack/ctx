@@ -1,0 +1,31 @@
+{
+  "contractVersion": "agent-history-v1",
+  "schemaVersion": 1,
+  "operation": "search",
+  "backend": {
+    "kind": "local",
+    "dataRoot": "/tmp/ctx-sdk-fixture"
+  },
+  "search": {
+    "query": "no matches",
+    "filters": {
+      "provider": "codex"
+    },
+    "freshness": {
+      "mode": "off",
+      "status": "skipped",
+      "sourceCount": 0,
+      "totals": {},
+      "error": null
+    },
+    "generatedAt": "2026-07-01T12:05:00Z",
+    "results": [],
+    "pagination": {
+      "limit": 20,
+      "hasMore": false
+    },
+    "truncation": {
+      "truncated": false
+    }
+  }
+}

@@ -179,6 +179,15 @@ const TOPICS: &[DocTopic] = &[
         body: include_str!("../../../docs/agent-skill-install.md"),
     },
     DocTopic {
+        id: "sdks",
+        title: "SDKs",
+        audience: "human-agent",
+        summary: "Use experimental in-repo SDKs for ctx agent history search.",
+        tags: &["sdk", "agent-history", "contracts"],
+        source_path: "docs/sdks.md",
+        body: include_str!("../../../docs/sdks.md"),
+    },
+    DocTopic {
         id: "json-contracts",
         title: "JSON Contracts",
         audience: "agent",

@@ -1,0 +1,19 @@
+[package]
+name = "ctx-sdk"
+version = "0.12.0"
+description = "Experimental in-repo Rust SDK for ctx agent-history-v1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ctx-protocol = { version = "0.12.0", path = "../ctx-protocol" }
+
+[dev-dependencies]
+tempfile.workspace = true

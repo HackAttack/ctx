@@ -1,0 +1,20 @@
+{
+  "contractVersion": "agent-history-v1",
+  "schemaVersion": 1,
+  "operation": "init",
+  "backend": {
+    "kind": "local",
+    "dataRoot": "/tmp/ctx-sdk-fixture"
+  },
+  "status": {
+    "initialized": true,
+    "localOnly": true,
+    "dataRoot": "/tmp/ctx-sdk-fixture",
+    "indexedItems": 0,
+    "indexedSources": 0,
+    "catalogedSessions": 0,
+    "pendingCatalogSessions": 0,
+    "failedCatalogSessions": 0,
+    "staleCatalogSessions": 0
+  }
+}

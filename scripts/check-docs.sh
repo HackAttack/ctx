@@ -27,6 +27,7 @@ required_paths=(
   docs/provider-adapter-api.md
   docs/redaction-corpus.md
   docs/agent-skill-install.md
+  docs/sdks.md
   skills/ctx-agent-history-search/SKILL.md
   plugins/ctx-agent-history-search/skills/ctx-agent-history-search/SKILL.md
   plugins/ctx-agent-history-search/commands/ctx-history.md

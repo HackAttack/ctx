@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if ! command -v javac >/dev/null 2>&1; then
+  echo "javac not found; install a JDK to run sdks/jvm tests" >&2
+  exit 127
+fi
+
+if ! command -v java >/dev/null 2>&1; then
+  echo "java not found; install a JDK to run sdks/jvm tests" >&2
+  exit 127
+fi
+
+rm -rf build/classes build/test-classes build/example-classes
+mkdir -p build/classes build/test-classes build/example-classes build/tmp
+
+find src/main/java -name '*.java' | sort > build/tmp/main-sources.txt
+find src/test/java -name '*.java' | sort > build/tmp/test-sources.txt
+find examples -name '*.java' | sort > build/tmp/example-sources.txt
+
+javac --release 11 -d build/classes @build/tmp/main-sources.txt
+javac --release 11 -cp build/classes -d build/test-classes @build/tmp/test-sources.txt
+javac --release 11 -cp build/classes -d build/example-classes @build/tmp/example-sources.txt
+
+java -cp build/classes:build/test-classes rs.ctx.agenthistory.AgentHistoryClientTest
+java -cp build/classes:build/example-classes ToyAgentHistoryApp

@@ -337,6 +337,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctx-protocol"
+version = "0.12.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ctx-sdk"
+version = "0.12.0"
+dependencies = [
+ "ctx-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
