@@ -54,7 +54,7 @@ that support it.
 
 Search filters narrow both human output and JSON:
 
-- `--provider codex|pi|claude|opencode|antigravity|gemini|cursor|copilot-cli|factory-ai-droid`;
+- `--provider codex|pi|claude|opencode|openclaw|hermes|nanoclaw|astrbot|antigravity|gemini|cursor|copilot-cli|factory-ai-droid`;
 - `--workspace <name-or-path>`, substring match over stored workspace, cwd,
   source path, or repository-name text;
 - `--since <rfc3339-or-days>d`;
@@ -73,8 +73,9 @@ Search filters narrow both human output and JSON:
 - `--include-current-session`.
 
 CLI provider filters use the kebab-case names above. JSON output and stable SQL
-views use provider IDs in ctx output; multiword provider IDs may be snake_case, such as
-`copilot_cli` or `factory_ai_droid`.
+views use provider IDs in ctx output; multiword provider IDs may be snake_case,
+such as `copilot_cli` or `factory_ai_droid`, while compact IDs such as
+`openclaw`, `nanoclaw`, and `astrbot` stay compact.
 
 `--since` accepts RFC 3339 timestamps such as `2026-06-01T00:00:00Z` or a day
 window such as `30d`.
@@ -107,9 +108,9 @@ refresh fails. On large discovered sources or already-cataloged indexes, `auto`
 serves current results without a foreground catch-up scan; use
 `--refresh strict` or `ctx import --all` when you need a full catch-up before
 querying. `off` skips the pre-search refresh. `strict` fails the search if the
-refresh cannot run or import successfully. Search-only sources without native
-import support are searched from the existing index until they are explicitly
-imported through a supported path.
+refresh cannot run or import successfully. Preview native sources such as
+NanoClaw and AstrBot are searched from the existing index until they are
+explicitly imported through a supported path.
 
 Use `--refresh off` for a strictly read-only search over the existing ctx index.
 This avoids provider imports and avoids updating the ctx SQLite store.

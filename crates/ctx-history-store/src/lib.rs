@@ -93,7 +93,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
 const OBJECTS_DIR: &str = "objects";
 const SPOOL_DIR: &str = "spool";
@@ -471,7 +471,7 @@ const CREATE_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS capture_sources (
     id TEXT PRIMARY KEY NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('provider_import', 'provider_hook', 'direct_cli', 'manual')),
-    provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'shell', 'git', 'jj', 'gh', 'unknown')),
+    provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'openclaw', 'hermes', 'nanoclaw', 'astrbot', 'shell', 'git', 'jj', 'gh', 'unknown')),
     machine_id TEXT NOT NULL,
     process_id INTEGER,
     cwd TEXT,
@@ -488,7 +488,7 @@ CREATE TABLE IF NOT EXISTS capture_sources (
 
 CREATE TABLE IF NOT EXISTS catalog_sessions (
     source_path TEXT PRIMARY KEY NOT NULL,
-    provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'shell', 'git', 'jj', 'gh', 'unknown')),
+    provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'openclaw', 'hermes', 'nanoclaw', 'astrbot', 'shell', 'git', 'jj', 'gh', 'unknown')),
     source_format TEXT NOT NULL,
     source_root TEXT NOT NULL,
     external_session_id TEXT,
@@ -517,7 +517,7 @@ CREATE TABLE IF NOT EXISTS catalog_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS source_import_files (
-    provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'shell', 'git', 'jj', 'gh', 'unknown')),
+    provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'openclaw', 'hermes', 'nanoclaw', 'astrbot', 'shell', 'git', 'jj', 'gh', 'unknown')),
     source_format TEXT NOT NULL,
     source_root TEXT NOT NULL,
     source_path TEXT NOT NULL,
@@ -1384,6 +1384,9 @@ impl Store {
         }
         if user_version < 14 {
             migrate_to_v14(&self.conn)?;
+        }
+        if user_version < 15 {
+            migrate_to_v15(&self.conn)?;
         }
         create_fts_tables_if_supported(&self.conn)?;
         Ok(())
@@ -4875,6 +4878,43 @@ fn migrate_to_v14(conn: &Connection) -> Result<()> {
     }
 }
 
+fn migrate_to_v15(conn: &Connection) -> Result<()> {
+    let foreign_keys_enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
+    let migration = (|| -> Result<()> {
+        conn.execute_batch(CREATE_TABLES_SQL)?;
+        if stable_sql_views_exist(conn)? {
+            drop_stable_sql_views(conn)?;
+        }
+        rebuild_capture_sources_provider_check(conn)?;
+        rebuild_catalog_sessions_provider_check(conn)?;
+        rebuild_source_import_files_provider_check(conn)?;
+        conn.execute_batch(INDEXES_SQL)?;
+        create_stable_sql_views(conn)?;
+        conn.execute_batch("PRAGMA user_version = 15;")?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            if foreign_keys_enabled != 0 {
+                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if let Err(rollback_err) = conn.execute_batch("ROLLBACK;") {
+                return Err(StoreError::Sql(rollback_err));
+            }
+            if foreign_keys_enabled != 0 {
+                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            }
+            Err(err)
+        }
+    }
+}
+
 fn create_stable_sql_views(conn: &Connection) -> Result<()> {
     conn.execute_batch(STABLE_SQL_VIEWS_SQL)?;
     Ok(())
@@ -5041,7 +5081,7 @@ fn rebuild_capture_sources_provider_check(conn: &Connection) -> Result<()> {
         CREATE TABLE capture_sources_new (
             id TEXT PRIMARY KEY NOT NULL,
             kind TEXT NOT NULL CHECK (kind IN ('provider_import', 'provider_hook', 'direct_cli', 'manual')),
-            provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'shell', 'git', 'jj', 'gh', 'unknown')),
+            provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'openclaw', 'hermes', 'nanoclaw', 'astrbot', 'shell', 'git', 'jj', 'gh', 'unknown')),
             machine_id TEXT NOT NULL,
             process_id INTEGER,
             cwd TEXT,
@@ -5089,7 +5129,7 @@ fn rebuild_catalog_sessions_provider_check(conn: &Connection) -> Result<()> {
         DROP TABLE IF EXISTS catalog_sessions_new;
         CREATE TABLE catalog_sessions_new (
             source_path TEXT PRIMARY KEY NOT NULL,
-            provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'shell', 'git', 'jj', 'gh', 'unknown')),
+            provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'openclaw', 'hermes', 'nanoclaw', 'astrbot', 'shell', 'git', 'jj', 'gh', 'unknown')),
             source_format TEXT NOT NULL,
             source_root TEXT NOT NULL,
             external_session_id TEXT,
@@ -5122,6 +5162,50 @@ fn rebuild_catalog_sessions_provider_check(conn: &Connection) -> Result<()> {
         FROM catalog_sessions;
         DROP TABLE catalog_sessions;
         ALTER TABLE catalog_sessions_new RENAME TO catalog_sessions;
+        "#,
+    )?;
+    if recreate_views {
+        create_stable_sql_views(conn)?;
+    }
+    Ok(())
+}
+
+fn rebuild_source_import_files_provider_check(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "source_import_files")? {
+        conn.execute_batch(CREATE_TABLES_SQL)?;
+        return Ok(());
+    }
+
+    let recreate_views = stable_sql_views_exist(conn)?;
+    if recreate_views {
+        drop_stable_sql_views(conn)?;
+    }
+    conn.execute_batch(
+        r#"
+        DROP TABLE IF EXISTS source_import_files_new;
+        CREATE TABLE source_import_files_new (
+            provider TEXT NOT NULL CHECK (provider IN ('codex', 'claude', 'pi', 'opencode', 'antigravity', 'gemini', 'cursor', 'copilot_cli', 'factory_ai_droid', 'openclaw', 'hermes', 'nanoclaw', 'astrbot', 'shell', 'git', 'jj', 'gh', 'unknown')),
+            source_format TEXT NOT NULL,
+            source_root TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            file_size_bytes INTEGER NOT NULL,
+            file_modified_at_ms INTEGER NOT NULL,
+            observed_at_ms INTEGER NOT NULL,
+            is_stale INTEGER NOT NULL DEFAULT 0,
+            indexed_at_ms INTEGER,
+            indexed_file_size_bytes INTEGER,
+            indexed_file_modified_at_ms INTEGER,
+            indexed_status TEXT NOT NULL DEFAULT 'pending' CHECK (indexed_status IN ('pending', 'indexed', 'failed')),
+            indexed_error TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (provider, source_root, source_path)
+        );
+        INSERT INTO source_import_files_new
+        (provider, source_format, source_root, source_path, file_size_bytes, file_modified_at_ms, observed_at_ms, is_stale, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_status, indexed_error, metadata_json)
+        SELECT provider, source_format, source_root, source_path, file_size_bytes, file_modified_at_ms, observed_at_ms, is_stale, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_status, indexed_error, metadata_json
+        FROM source_import_files;
+        DROP TABLE source_import_files;
+        ALTER TABLE source_import_files_new RENAME TO source_import_files;
         "#,
     )?;
     if recreate_views {
@@ -8590,5 +8674,93 @@ mod catalog_tests {
             .unwrap();
         assert_eq!(source_count, 2);
         assert_eq!(catalog_count, 2);
+    }
+
+    #[test]
+    fn schema_v15_rebuilds_provider_checks_with_referenced_sources_and_indexes() {
+        let temp = tempdir();
+        let path = temp.path().join("work.sqlite");
+        let source_id = new_id();
+        let session_id;
+        let event_id;
+        {
+            let store = Store::open(&path).unwrap();
+            let source = CaptureSource {
+                id: source_id,
+                descriptor: CaptureSourceDescriptor {
+                    kind: ctx_history_core::CaptureSourceKind::ProviderImport,
+                    provider: CaptureProvider::Codex,
+                    machine_id: "test-machine".to_owned(),
+                    process_id: None,
+                    cwd: Some("/repo".to_owned()),
+                    raw_source_path: Some("/home/user/.codex/sessions/session.jsonl".to_owned()),
+                    external_session_id: Some("codex-session-1".to_owned()),
+                },
+                started_at: fixed_time(),
+                ended_at: None,
+                sync: sync_metadata(),
+            };
+            store.upsert_capture_source(&source).unwrap();
+
+            let mut session = imported_session("codex-session-1");
+            session.capture_source_id = Some(source_id);
+            session_id = session.id;
+            store.upsert_session(&session).unwrap();
+
+            let event = Event {
+                id: new_id(),
+                seq: 0,
+                history_record_id: None,
+                session_id: Some(session_id),
+                run_id: None,
+                event_type: EventType::Message,
+                role: Some(EventRole::User),
+                occurred_at: fixed_time(),
+                capture_source_id: Some(source_id),
+                payload: serde_json::json!({"text": "migration source reference"}),
+                payload_blob_id: None,
+                dedupe_key: None,
+                redaction_state: RedactionState::SafePreview,
+                sync: sync_metadata(),
+            };
+            event_id = event.id;
+            store.upsert_event(&event).unwrap();
+            store
+                .conn
+                .execute_batch("PRAGMA user_version = 14;")
+                .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let source_refs: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions s JOIN events e ON e.session_id = s.id \
+                 WHERE s.id = ?1 AND e.id = ?2 AND s.capture_source_id = ?3 AND e.capture_source_id = ?3",
+                params![session_id.to_string(), event_id.to_string(), source_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_refs, 1);
+        for index in [
+            "idx_capture_sources_external_session_id",
+            "idx_catalog_sessions_provider_source_root_import",
+            "idx_source_import_files_provider_source_root_import",
+        ] {
+            let exists: i64 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "missing rebuilt index {index}");
+        }
     }
 }

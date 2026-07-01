@@ -52,6 +52,13 @@ pub enum ProviderId {
     FactoryAiDroid,
     FactoryDroid,
     DroidFactoryAi,
+    #[serde(rename = "openclaw", alias = "open_claw")]
+    OpenClaw,
+    Hermes,
+    #[serde(rename = "nanoclaw", alias = "nano_claw")]
+    NanoClaw,
+    #[serde(rename = "astrbot", alias = "astr_bot")]
+    AstrBot,
     Goose,
     #[serde(rename = "openhands")]
     OpenHands,
@@ -69,7 +76,7 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 31] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::ClaudeCliCrp,
@@ -84,6 +91,10 @@ impl ProviderId {
         Self::FactoryAiDroid,
         Self::FactoryDroid,
         Self::DroidFactoryAi,
+        Self::OpenClaw,
+        Self::Hermes,
+        Self::NanoClaw,
+        Self::AstrBot,
         Self::Goose,
         Self::OpenHands,
         Self::Cagent,
@@ -393,13 +404,17 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let expected = [
             ProviderId::AntigravityCli,
+            ProviderId::AstrBot,
             ProviderId::ClaudeCode,
             ProviderId::Codex,
             ProviderId::Cursor,
             ProviderId::CopilotCli,
             ProviderId::FactoryAiDroid,
             ProviderId::GeminiCli,
+            ProviderId::Hermes,
+            ProviderId::NanoClaw,
             ProviderId::OpenCode,
+            ProviderId::OpenClaw,
             ProviderId::Pi,
         ]
         .into_iter()

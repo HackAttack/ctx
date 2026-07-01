@@ -26,8 +26,9 @@ ctx status --json
 ```
 
 `ctx setup` creates local storage, discovers supported provider history,
-catalogs Codex sessions, imports discovered sources, and optimizes the local
-search index. The default root is `~/.ctx`. Use a temporary root for trials:
+catalogs Codex sessions, imports discovered auto-importable sources, and
+optimizes the local search index. The default root is `~/.ctx`. Use a temporary
+root for trials:
 
 ```bash
 ctx --data-root /tmp/ctx-first-10 setup
@@ -41,11 +42,13 @@ ctx sources --json
 ```
 
 Expect rows for supported local import providers such as Codex, Pi,
-Antigravity, Claude, OpenCode, Gemini, Cursor, Copilot CLI, and Factory AI
-Droid. A row with `exists: false` means ctx knows the default path but did not
-find local history there. A JSON row with `status: "empty"` means the path
-exists but no provider-specific transcript files were found. A row with
-`status: "unknown"` means the bounded transcript probe hit its scan budget.
+Antigravity, Claude, OpenCode, OpenClaw, Hermes, Gemini, Cursor, Copilot CLI,
+and Factory AI Droid. NanoClaw and AstrBot can appear as preview rows when ctx
+can discover their local project or SQLite paths. A row with `exists: false`
+means ctx knows the default path but did not find local history there. A JSON
+row with `status: "empty"` means the path exists but no provider-specific
+transcript files were found. A row with `status: "unknown"` means the bounded
+transcript probe hit its scan budget.
 
 ## 4. Re-Run Or Target Imports
 
@@ -53,14 +56,23 @@ exists but no provider-specific transcript files were found. A row with
 ctx import --all
 ```
 
-Setup already imports discovered sources. Use `ctx import` when you want to
-repair, re-run, resume, or pass an explicit path:
+Setup already imports discovered auto-importable sources. Use `ctx import` when
+you want to repair, re-run, resume, or pass an explicit path:
 
 ```bash
 ctx import --provider codex --path ~/.codex/sessions
 ctx import --provider pi --path ~/.pi/sessions.jsonl
 ctx import --provider cursor --path ~/.cursor/projects
+ctx import --provider hermes --path ~/.hermes/state.db
+ctx import --provider nanoclaw --path /path/to/nanoclaw-project
+ctx import --provider astrbot --path /path/to/data/data_v4.db
 ```
+
+Preview providers such as NanoClaw and AstrBot are explicit-import only. Use
+`ctx import --provider nanoclaw` or `ctx import --provider astrbot` when
+discovery finds the desired source, or add `--path` to target a specific source.
+They are not included in `ctx import --all` or the default pre-search refresh
+until their storage contracts are promoted.
 
 After upgrading from an older ctx version, the first refresh or import can
 re-read previously indexed provider transcripts once so the local index includes

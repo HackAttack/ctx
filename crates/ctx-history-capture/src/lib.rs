@@ -22,7 +22,7 @@ use ctx_history_core::{
     SyncState, Visibility, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use ctx_history_store::{CatalogSession, Store, StoreError};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -430,6 +430,90 @@ impl Default for OpenCodeSqliteImportOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct OpenClawImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for OpenClawImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HermesSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for HermesSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NanoClawImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for NanoClawImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AstrBotSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for AstrBotSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct AntigravityCliImportOptions {
     pub machine_id: String,
     pub source_path: Option<PathBuf>,
@@ -735,6 +819,18 @@ pub struct ClaudeProjectsJsonlAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpenCodeSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenClawJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HermesSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NanoClawProjectAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AstrBotSqliteAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityCliJsonlAdapter;
@@ -1361,6 +1457,78 @@ impl ProviderCaptureAdapter for OpenCodeSqliteAdapter {
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
         normalize_opencode_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for OpenClawJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::OpenClaw
+    }
+
+    fn source_format(&self) -> &str {
+        OPENCLAW_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_openclaw_history(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for HermesSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Hermes
+    }
+
+    fn source_format(&self) -> &str {
+        HERMES_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_hermes_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for NanoClawProjectAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::NanoClaw
+    }
+
+    fn source_format(&self) -> &str {
+        NANOCLAW_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_nanoclaw_project(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for AstrBotSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::AstrBot
+    }
+
+    fn source_format(&self) -> &str {
+        ASTRBOT_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_astrbot_sqlite(path, context)
     }
 }
 
@@ -3076,6 +3244,127 @@ pub fn import_opencode_sqlite(
     )
 }
 
+pub fn import_openclaw_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: OpenClawImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        OpenClawJsonlAdapter,
+    )
+}
+
+pub fn import_hermes_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: HermesSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = HermesSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_nanoclaw_project(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: NanoClawImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = NanoClawProjectAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_astrbot_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: AstrBotSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = AstrBotSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
 pub fn import_antigravity_cli_history(
     path: impl AsRef<Path>,
     store: &mut Store,
@@ -3228,6 +3517,10 @@ pub fn import_normalized_provider_captures(
 const CODEX_SESSION_SOURCE_FORMAT: &str = "codex_session_jsonl";
 const CLAUDE_PROJECTS_SOURCE_FORMAT: &str = "claude_projects_jsonl_tree";
 const OPENCODE_SQLITE_SOURCE_FORMAT: &str = "opencode_sqlite";
+const OPENCLAW_SOURCE_FORMAT: &str = "openclaw_session_jsonl_tree";
+const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
+const NANOCLAW_SOURCE_FORMAT: &str = "nanoclaw_project";
+const ASTRBOT_SQLITE_SOURCE_FORMAT: &str = "astrbot_data_v4_sqlite";
 const ANTIGRAVITY_CLI_SOURCE_FORMAT: &str = "antigravity_cli_transcript_jsonl_tree";
 const GEMINI_CLI_SOURCE_FORMAT: &str = "gemini_cli_chat_recording_jsonl";
 const CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT: &str = "cursor_agent_transcript_jsonl";
@@ -4992,6 +5285,1777 @@ struct OpenCodeMessageRow {
     time_created: i64,
     time_updated: i64,
     data: String,
+}
+
+struct NativeSessionDraft {
+    provider: CaptureProvider,
+    source_format: &'static str,
+    provider_session_id: String,
+    parent_provider_session_id: Option<String>,
+    root_provider_session_id: Option<String>,
+    external_agent_id: Option<String>,
+    agent_type: AgentType,
+    role_hint: Option<String>,
+    is_primary: bool,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    fidelity: Fidelity,
+    raw_source_path: String,
+    trust: ProviderSourceTrust,
+    source_metadata: Value,
+    session_metadata: Value,
+}
+
+fn native_provider_capture(
+    draft: NativeSessionDraft,
+    context: &ProviderAdapterContext,
+    event: Option<ProviderEventEnvelope>,
+) -> ProviderCaptureEnvelope {
+    ProviderCaptureEnvelope {
+        schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+        provider: draft.provider,
+        source: ProviderSourceEnvelope {
+            source_format: draft.source_format.to_owned(),
+            machine_id: context.machine_id.clone(),
+            observed_at: context.imported_at,
+            raw_source_path: Some(draft.raw_source_path),
+            raw_retention: ProviderRawRetention::PathReference,
+            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+            trust: draft.trust,
+            fidelity: draft.fidelity,
+            cursor: event.as_ref().and_then(|event| {
+                event.cursor.as_ref().map(|cursor| ProviderCursorRange {
+                    before: None,
+                    after: Some(ProviderCursorCheckpoint {
+                        stream: provider_cursor_stream(draft.provider, draft.source_format),
+                        cursor: cursor.clone(),
+                        observed_at: event.occurred_at,
+                    }),
+                })
+            }),
+            idempotency_key: Some(format!(
+                "provider-source:{}:{}:{}",
+                draft.provider.as_str(),
+                draft.source_format,
+                draft.provider_session_id
+            )),
+            metadata: draft.source_metadata,
+        },
+        session: ProviderSessionEnvelope {
+            provider_session_id: draft.provider_session_id.clone(),
+            parent_provider_session_id: draft.parent_provider_session_id,
+            root_provider_session_id: draft.root_provider_session_id,
+            external_agent_id: draft.external_agent_id,
+            agent_type: draft.agent_type,
+            role_hint: draft.role_hint,
+            is_primary: draft.is_primary,
+            status: SessionStatus::Imported,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: draft.cwd,
+            fidelity: draft.fidelity,
+            idempotency_key: Some(format!(
+                "provider-session:{}:{}",
+                draft.provider.as_str(),
+                draft.provider_session_id
+            )),
+            artifacts: Vec::new(),
+            metadata: draft.session_metadata,
+        },
+        event,
+    }
+}
+
+fn open_provider_sqlite_readonly(path: &Path) -> Result<Connection> {
+    ensure_regular_provider_transcript_file(path)?;
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.pragma_update(None, "query_only", true)?;
+    Ok(conn)
+}
+
+fn provider_timestamp_seconds(value: Option<f64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    let Some(value) = value else {
+        return fallback;
+    };
+    if !value.is_finite() {
+        return fallback;
+    }
+    let millis = if value.abs() > 1_000_000_000_000.0 {
+        value.round() as i64
+    } else {
+        (value * 1000.0).round() as i64
+    };
+    DateTime::<Utc>::from_timestamp_millis(millis).unwrap_or(fallback)
+}
+
+fn provider_timestamp_millis(value: Option<i64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or(fallback)
+}
+
+fn provider_timestamp_value(value: Option<&Value>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    match value {
+        Some(Value::String(raw)) => parse_rfc3339_utc(raw)
+            .or_else(|| {
+                raw.parse::<f64>()
+                    .ok()
+                    .map(|ts| provider_timestamp_seconds(Some(ts), fallback))
+            })
+            .unwrap_or(fallback),
+        Some(Value::Number(number)) => number
+            .as_f64()
+            .map(|ts| provider_timestamp_seconds(Some(ts), fallback))
+            .unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+fn text_id_index(seed: &str, offset: u64) -> u64 {
+    offset.saturating_add(fnv1a64(seed.as_bytes()) & 0x0fff_ffff)
+}
+
+fn provider_json_text(raw: &str) -> Value {
+    serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
+}
+
+fn hermes_decode_content(raw: Option<&str>) -> Value {
+    let Some(raw) = raw else {
+        return Value::Null;
+    };
+    if let Some(json) = raw.strip_prefix("\0json:") {
+        return provider_json_text(json);
+    }
+    Value::String(raw.to_owned())
+}
+
+fn native_event(
+    provider: CaptureProvider,
+    source_format: &'static str,
+    provider_session_id: &str,
+    provider_event_index: u64,
+    provider_event_hash: Option<String>,
+    cursor: String,
+    event_type: EventType,
+    role: Option<EventRole>,
+    occurred_at: DateTime<Utc>,
+    text: String,
+    body: Value,
+    metadata: Value,
+) -> ProviderEventEnvelope {
+    let (text, truncated) = provider_safe_preview(&text, PROVIDER_MAX_TEXT_CHARS);
+    ProviderEventEnvelope {
+        provider_event_index,
+        provider_event_hash,
+        cursor: Some(cursor),
+        event_type,
+        role,
+        occurred_at,
+        fidelity: Fidelity::Imported,
+        redaction_state: RedactionState::SafePreview,
+        idempotency_key: Some(format!(
+            "provider-event:{}:{}:{}",
+            provider.as_str(),
+            provider_session_id,
+            provider_event_index
+        )),
+        artifacts: Vec::new(),
+        payload: json!({
+            "text": text,
+            "truncated": truncated,
+            "source_format": source_format,
+            "body": provider_capped_json(&body, PROVIDER_MAX_PREVIEW_CHARS),
+        }),
+        metadata,
+    }
+}
+
+fn openclaw_agent_id(path: &Path) -> Option<String> {
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    components.windows(2).find_map(|window| {
+        (window[0] == "agents" && !window[1].is_empty()).then(|| window[1].clone())
+    })
+}
+
+fn provider_path_has_component(path: &Path, expected: &str) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == expected)
+}
+
+fn openclaw_session_indexes(root: &Path) -> BTreeMap<String, Value> {
+    let mut indexes = BTreeMap::new();
+    let mut paths = Vec::new();
+    collect_named_paths(root, "sessions.json", &mut paths);
+    for path in paths {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let agent_id = openclaw_agent_id(&path);
+        for (key, value) in openclaw_session_index_entries(value) {
+            if let Some(session_id) = value
+                .get("sessionId")
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                if let Some(agent_id) = &agent_id {
+                    indexes
+                        .entry(format!("{agent_id}/{session_id}"))
+                        .or_insert(value.clone());
+                }
+                indexes
+                    .entry(session_id.to_owned())
+                    .or_insert(value.clone());
+            }
+            if let Some(agent_id) = &agent_id {
+                indexes
+                    .entry(format!("{agent_id}/{key}"))
+                    .or_insert(value.clone());
+            }
+            indexes.entry(key).or_insert(value);
+        }
+    }
+    indexes
+}
+
+fn openclaw_session_index_entries(value: Value) -> Vec<(String, Value)> {
+    match value {
+        Value::Array(items) => items
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let key = value
+                    .get("sessionId")
+                    .or_else(|| value.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| index.to_string());
+                (key, value)
+            })
+            .collect(),
+        Value::Object(mut map) => {
+            if let Some(Value::Array(items)) = map.remove("sessions") {
+                return openclaw_session_index_entries(Value::Array(items));
+            }
+            map.into_iter().collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn collect_named_paths(root: &Path, name: &str, paths: &mut Vec<PathBuf>) {
+    let Ok(metadata) = fs::symlink_metadata(root) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    if metadata.file_type().is_file() {
+        if root.file_name().and_then(|file_name| file_name.to_str()) == Some(name) {
+            paths.push(root.to_path_buf());
+        }
+        return;
+    }
+    if !metadata.file_type().is_dir() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        collect_named_paths(&entry.path(), name, paths);
+    }
+}
+
+fn normalize_openclaw_history(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut paths = Vec::new();
+    collect_jsonl_paths(path, &mut paths)?;
+    if !path.is_file() {
+        paths.retain(|candidate| provider_path_has_component(candidate, "sessions"));
+    }
+    paths.sort();
+    if paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no OpenClaw session JSONL transcripts found",
+        });
+    }
+    let indexes = openclaw_session_indexes(path);
+    let mut merged = ProviderNormalizationResult::default();
+    for transcript_path in paths {
+        let mut result = normalize_openclaw_jsonl_file(&transcript_path, context, &indexes)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    Ok(merged)
+}
+
+fn normalize_openclaw_jsonl_file(
+    path: &Path,
+    context: &ProviderAdapterContext,
+    indexes: &BTreeMap<String, Value>,
+) -> Result<ProviderNormalizationResult> {
+    ensure_regular_provider_transcript_file(path)?;
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut result = ProviderNormalizationResult::default();
+    let fallback_id = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("openclaw-session")
+        .to_owned();
+    let agent_id = openclaw_agent_id(path);
+    let mut provider_session_id = agent_id
+        .as_ref()
+        .map(|agent| format!("{agent}/{fallback_id}"))
+        .unwrap_or_else(|| fallback_id.clone());
+    let mut started_at = context.imported_at;
+    let mut cwd = None;
+    let mut header_raw = Value::Null;
+    let mut header_seen = false;
+    let mut line_number = 0usize;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(&line) {
+            Ok(value) => value,
+            Err(err) => {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+        let row_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("message");
+        if row_type == "session" {
+            if let Some(id) = value.get("id").and_then(Value::as_str) {
+                provider_session_id = agent_id
+                    .as_ref()
+                    .map(|agent| format!("{agent}/{id}"))
+                    .unwrap_or_else(|| id.to_owned());
+            }
+            started_at = provider_timestamp_value(value.get("timestamp"), context.imported_at);
+            cwd = value.get("cwd").and_then(Value::as_str).map(str::to_owned);
+            header_raw = value.clone();
+            header_seen = true;
+            result.captures.push((
+                line_number,
+                openclaw_capture(
+                    &provider_session_id,
+                    agent_id.as_deref(),
+                    started_at,
+                    None,
+                    cwd.clone(),
+                    path,
+                    context,
+                    indexes,
+                    header_raw.clone(),
+                    None,
+                ),
+            ));
+            continue;
+        }
+
+        let occurred_at = provider_timestamp_value(value.get("timestamp"), started_at);
+        let event_index = (line_number - 1) as u64;
+        let event = openclaw_event(
+            &provider_session_id,
+            event_index,
+            line_number,
+            &value,
+            occurred_at,
+        );
+        if !header_seen {
+            header_seen = true;
+            result.captures.push((
+                line_number,
+                openclaw_capture(
+                    &provider_session_id,
+                    agent_id.as_deref(),
+                    started_at,
+                    None,
+                    cwd.clone(),
+                    path,
+                    context,
+                    indexes,
+                    header_raw.clone(),
+                    None,
+                ),
+            ));
+        }
+        result.captures.push((
+            line_number,
+            openclaw_capture(
+                &provider_session_id,
+                agent_id.as_deref(),
+                started_at,
+                None,
+                cwd.clone(),
+                path,
+                context,
+                indexes,
+                header_raw.clone(),
+                Some(event),
+            ),
+        ));
+    }
+    Ok(result)
+}
+
+fn openclaw_capture(
+    provider_session_id: &str,
+    agent_id: Option<&str>,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    path: &Path,
+    context: &ProviderAdapterContext,
+    indexes: &BTreeMap<String, Value>,
+    header_raw: Value,
+    event: Option<ProviderEventEnvelope>,
+) -> ProviderCaptureEnvelope {
+    let local_id = provider_session_id
+        .rsplit_once('/')
+        .map(|(_, id)| id)
+        .unwrap_or(provider_session_id);
+    let index = indexes
+        .get(provider_session_id)
+        .or_else(|| indexes.get(local_id))
+        .cloned()
+        .unwrap_or(Value::Null);
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::OpenClaw,
+            source_format: OPENCLAW_SOURCE_FORMAT,
+            provider_session_id: provider_session_id.to_owned(),
+            parent_provider_session_id: index
+                .get("parentSessionId")
+                .or_else(|| index.get("parent_session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            root_provider_session_id: None,
+            external_agent_id: agent_id.map(str::to_owned),
+            agent_type: AgentType::Primary,
+            role_hint: Some("personal-agent".to_owned()),
+            is_primary: true,
+            started_at,
+            ended_at,
+            cwd,
+            fidelity: Fidelity::Partial,
+            raw_source_path: path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": OPENCLAW_SOURCE_FORMAT,
+                "index": provider_capped_json(&index, PROVIDER_MAX_PREVIEW_CHARS),
+                "header": provider_capped_json(&header_raw, PROVIDER_MAX_PREVIEW_CHARS),
+                "support_level": "beta",
+            }),
+            session_metadata: json!({
+                "source_format": OPENCLAW_SOURCE_FORMAT,
+                "agent_id": agent_id,
+                "session_index": provider_capped_json(&index, PROVIDER_MAX_PREVIEW_CHARS),
+                "fidelity_gap": "OpenClaw session JSONL is current native storage, but upstream keeps a storage-neutral accessor for future schema changes",
+            }),
+        },
+        context,
+        event,
+    )
+}
+
+fn openclaw_event(
+    provider_session_id: &str,
+    event_index: u64,
+    line_number: usize,
+    row: &Value,
+    occurred_at: DateTime<Utc>,
+) -> ProviderEventEnvelope {
+    let row_type = row.get("type").and_then(Value::as_str).unwrap_or("message");
+    let message = row.get("message").unwrap_or(row);
+    let role = message
+        .get("role")
+        .or_else(|| row.get("role"))
+        .and_then(Value::as_str)
+        .map(|role| provider_role(Some(role)));
+    let event_type = match row_type {
+        "message" => match role {
+            Some(EventRole::Tool) => EventType::ToolOutput,
+            _ => EventType::Message,
+        },
+        "leaf" | "compaction" | "custom" => EventType::Notice,
+        _ => EventType::Notice,
+    };
+    let text = message
+        .get("content")
+        .or_else(|| message.get("text"))
+        .or_else(|| message.get("output"))
+        .and_then(provider_value_text)
+        .unwrap_or_else(|| format!("OpenClaw {row_type}"));
+    native_event(
+        CaptureProvider::OpenClaw,
+        OPENCLAW_SOURCE_FORMAT,
+        provider_session_id,
+        event_index,
+        row.get("id").and_then(Value::as_str).map(str::to_owned),
+        format!("line:{line_number}"),
+        event_type,
+        role,
+        occurred_at,
+        text,
+        row.clone(),
+        json!({
+            "source": "openclaw_jsonl",
+            "source_format": OPENCLAW_SOURCE_FORMAT,
+            "row_type": row_type,
+            "message_id": row.get("id").and_then(Value::as_str),
+            "parent_id": row.get("parentId").or_else(|| row.get("parent_id")).cloned(),
+        }),
+    )
+}
+
+#[derive(Debug, Clone)]
+struct HermesSessionRow {
+    id: String,
+    source: String,
+    parent_session_id: Option<String>,
+    model: Option<String>,
+    model_config: Option<String>,
+    started_at: f64,
+    ended_at: Option<f64>,
+    end_reason: Option<String>,
+    message_count: i64,
+    tool_call_count: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    reasoning_tokens: i64,
+    cwd: Option<String>,
+    git_branch: Option<String>,
+    git_repo_root: Option<String>,
+    billing_provider: Option<String>,
+    billing_base_url: Option<String>,
+    billing_mode: Option<String>,
+    estimated_cost_usd: Option<f64>,
+    actual_cost_usd: Option<f64>,
+    title: Option<String>,
+    archived: i64,
+}
+
+#[derive(Debug, Clone)]
+struct HermesMessageRow {
+    id: i64,
+    session_id: String,
+    role: String,
+    content: Option<String>,
+    tool_call_id: Option<String>,
+    tool_calls: Option<String>,
+    tool_name: Option<String>,
+    timestamp: f64,
+    token_count: Option<i64>,
+    finish_reason: Option<String>,
+    reasoning: Option<String>,
+    reasoning_content: Option<String>,
+    reasoning_details: Option<String>,
+    codex_reasoning_items: Option<String>,
+    codex_message_items: Option<String>,
+    platform_message_id: Option<String>,
+    observed: i64,
+    active: i64,
+    compacted: i64,
+}
+
+fn normalize_hermes_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let sessions = hermes_sessions(&conn)?;
+    let messages = hermes_messages(&conn)?;
+    let sessions_by_id = sessions
+        .into_iter()
+        .map(|session| (session.id.clone(), session))
+        .collect::<BTreeMap<_, _>>();
+    let mut result = ProviderNormalizationResult::default();
+
+    for row in messages {
+        let Some(session) = sessions_by_id.get(&row.session_id) else {
+            result.summary.failed += 1;
+            result.summary.failures.push(ProviderImportFailure {
+                line: row.id.max(0) as usize,
+                error: format!(
+                    "Hermes message {} references missing session {}",
+                    row.id, row.session_id
+                ),
+            });
+            continue;
+        };
+        let provider_session_id = session.id.clone();
+        let occurred_at = provider_timestamp_seconds(Some(row.timestamp), context.imported_at);
+        let started_at = provider_timestamp_seconds(Some(session.started_at), occurred_at);
+        let ended_at = session
+            .ended_at
+            .map(|timestamp| provider_timestamp_seconds(Some(timestamp), context.imported_at));
+        let content = hermes_decode_content(row.content.as_deref());
+        let text = provider_value_text(&content).unwrap_or_else(|| {
+            row.tool_name
+                .as_ref()
+                .map(|name| format!("tool: {name}"))
+                .unwrap_or_else(|| format!("Hermes {}", row.role))
+        });
+        let event_type = hermes_event_type(&row);
+        let role = Some(provider_role(Some(&row.role)));
+        let event = native_event(
+            CaptureProvider::Hermes,
+            HERMES_SQLITE_SOURCE_FORMAT,
+            &provider_session_id,
+            row.id.max(0) as u64,
+            Some(format!("message:{}", row.id)),
+            format!("messages:id:{}", row.id),
+            event_type,
+            role,
+            occurred_at,
+            text,
+            json!({
+                "message_id": row.id,
+                "role": row.role,
+                "content": content,
+                "tool_call_id": row.tool_call_id,
+                "tool_calls": row.tool_calls.as_deref().map(provider_json_text),
+                "tool_name": row.tool_name,
+                "reasoning": row.reasoning,
+                "reasoning_content": row.reasoning_content,
+                "reasoning_details": row.reasoning_details.as_deref().map(provider_json_text),
+                "codex_reasoning_items": row.codex_reasoning_items.as_deref().map(provider_json_text),
+                "codex_message_items": row.codex_message_items.as_deref().map(provider_json_text),
+            }),
+            json!({
+                "source": "hermes_state_db",
+                "source_format": HERMES_SQLITE_SOURCE_FORMAT,
+                "message_id": row.id,
+                "platform_message_id": row.platform_message_id,
+                "token_count": row.token_count,
+                "finish_reason": row.finish_reason,
+                "observed": row.observed != 0,
+                "active": row.active != 0,
+                "compacted": row.compacted != 0,
+            }),
+        );
+        result.captures.push((
+            row.id.max(0) as usize,
+            native_provider_capture(
+                NativeSessionDraft {
+                    provider: CaptureProvider::Hermes,
+                    source_format: HERMES_SQLITE_SOURCE_FORMAT,
+                    provider_session_id: provider_session_id.clone(),
+                    parent_provider_session_id: session.parent_session_id.clone(),
+                    root_provider_session_id: None,
+                    external_agent_id: Some(session.source.clone()),
+                    agent_type: if session.parent_session_id.is_some() {
+                        AgentType::Subagent
+                    } else {
+                        AgentType::Primary
+                    },
+                    role_hint: Some(session.source.clone()),
+                    is_primary: session.parent_session_id.is_none(),
+                    started_at,
+                    ended_at,
+                    cwd: session.cwd.clone(),
+                    fidelity: Fidelity::Imported,
+                    raw_source_path: path.display().to_string(),
+                    trust: ProviderSourceTrust::ProviderNative,
+                    source_metadata: json!({
+                        "adapter": HERMES_SQLITE_SOURCE_FORMAT,
+                        "sqlite_user_version": user_version,
+                        "schema_fingerprint": schema_fingerprint,
+                        "upstream_schema_version_at_research": 17,
+                    }),
+                    session_metadata: json!({
+                        "source_format": HERMES_SQLITE_SOURCE_FORMAT,
+                        "source": session.source,
+                        "title": session.title,
+                        "model": session.model,
+                        "model_config": session.model_config.as_deref().map(provider_json_text),
+                        "end_reason": session.end_reason,
+                        "message_count": session.message_count,
+                        "tool_call_count": session.tool_call_count,
+                        "tokens": {
+                            "input": session.input_tokens,
+                            "output": session.output_tokens,
+                            "cache_read": session.cache_read_tokens,
+                            "cache_write": session.cache_write_tokens,
+                            "reasoning": session.reasoning_tokens,
+                        },
+                        "git": {
+                            "branch": session.git_branch,
+                            "repo_root": session.git_repo_root,
+                        },
+                        "billing": {
+                            "provider": session.billing_provider,
+                            "base_url": session.billing_base_url,
+                            "mode": session.billing_mode,
+                            "estimated_cost_usd": session.estimated_cost_usd,
+                            "actual_cost_usd": session.actual_cost_usd,
+                        },
+                        "archived": session.archived != 0,
+                    }),
+                },
+                context,
+                Some(event),
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+fn hermes_event_type(row: &HermesMessageRow) -> EventType {
+    if row.role == "tool" {
+        EventType::ToolOutput
+    } else if row
+        .tool_calls
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || row
+            .tool_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        EventType::ToolCall
+    } else {
+        EventType::Message
+    }
+}
+
+fn hermes_sessions(conn: &Connection) -> Result<Vec<HermesSessionRow>> {
+    if !sqlite_table_exists(conn, "sessions")? {
+        return Err(CaptureError::InvalidPayload(
+            "Hermes state.db is missing required sessions table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "sessions")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Hermes sessions table",
+        &["id", "source", "started_at"],
+    )?;
+    let parent_session_id = optional_column_expr(&columns, "parent_session_id", "NULL");
+    let model = optional_column_expr(&columns, "model", "NULL");
+    let model_config = optional_column_expr(&columns, "model_config", "NULL");
+    let ended_at = optional_column_expr(&columns, "ended_at", "NULL");
+    let end_reason = optional_column_expr(&columns, "end_reason", "NULL");
+    let message_count = optional_column_expr(&columns, "message_count", "0");
+    let tool_call_count = optional_column_expr(&columns, "tool_call_count", "0");
+    let input_tokens = optional_column_expr(&columns, "input_tokens", "0");
+    let output_tokens = optional_column_expr(&columns, "output_tokens", "0");
+    let cache_read_tokens = optional_column_expr(&columns, "cache_read_tokens", "0");
+    let cache_write_tokens = optional_column_expr(&columns, "cache_write_tokens", "0");
+    let reasoning_tokens = optional_column_expr(&columns, "reasoning_tokens", "0");
+    let cwd = optional_column_expr(&columns, "cwd", "NULL");
+    let git_branch = optional_column_expr(&columns, "git_branch", "NULL");
+    let git_repo_root = optional_column_expr(&columns, "git_repo_root", "NULL");
+    let billing_provider = optional_column_expr(&columns, "billing_provider", "NULL");
+    let billing_base_url = optional_column_expr(&columns, "billing_base_url", "NULL");
+    let billing_mode = optional_column_expr(&columns, "billing_mode", "NULL");
+    let estimated_cost_usd = optional_column_expr(&columns, "estimated_cost_usd", "NULL");
+    let actual_cost_usd = optional_column_expr(&columns, "actual_cost_usd", "NULL");
+    let title = optional_column_expr(&columns, "title", "NULL");
+    let archived = optional_column_expr(&columns, "archived", "0");
+    let sql = format!(
+        "select id, source, {parent_session_id}, {model}, {model_config}, started_at, \
+         {ended_at}, {end_reason}, {message_count}, {tool_call_count}, {input_tokens}, \
+         {output_tokens}, {cache_read_tokens}, {cache_write_tokens}, {reasoning_tokens}, \
+         {cwd}, {git_branch}, {git_repo_root}, {billing_provider}, {billing_base_url}, \
+         {billing_mode}, {estimated_cost_usd}, {actual_cost_usd}, {title}, {archived} \
+         from sessions order by started_at, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(HermesSessionRow {
+            id: row.get(0)?,
+            source: row.get(1)?,
+            parent_session_id: row.get(2)?,
+            model: row.get(3)?,
+            model_config: row.get(4)?,
+            started_at: row.get(5)?,
+            ended_at: row.get(6)?,
+            end_reason: row.get(7)?,
+            message_count: row.get(8)?,
+            tool_call_count: row.get(9)?,
+            input_tokens: row.get(10)?,
+            output_tokens: row.get(11)?,
+            cache_read_tokens: row.get(12)?,
+            cache_write_tokens: row.get(13)?,
+            reasoning_tokens: row.get(14)?,
+            cwd: row.get(15)?,
+            git_branch: row.get(16)?,
+            git_repo_root: row.get(17)?,
+            billing_provider: row.get(18)?,
+            billing_base_url: row.get(19)?,
+            billing_mode: row.get(20)?,
+            estimated_cost_usd: row.get(21)?,
+            actual_cost_usd: row.get(22)?,
+            title: row.get(23)?,
+            archived: row.get(24)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn hermes_messages(conn: &Connection) -> Result<Vec<HermesMessageRow>> {
+    if !sqlite_table_exists(conn, "messages")? {
+        return Err(CaptureError::InvalidPayload(
+            "Hermes state.db is missing required messages table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "messages")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Hermes messages table",
+        &["id", "session_id", "role", "timestamp"],
+    )?;
+    let content = optional_column_expr(&columns, "content", "NULL");
+    let tool_call_id = optional_column_expr(&columns, "tool_call_id", "NULL");
+    let tool_calls = optional_column_expr(&columns, "tool_calls", "NULL");
+    let tool_name = optional_column_expr(&columns, "tool_name", "NULL");
+    let token_count = optional_column_expr(&columns, "token_count", "NULL");
+    let finish_reason = optional_column_expr(&columns, "finish_reason", "NULL");
+    let reasoning = optional_column_expr(&columns, "reasoning", "NULL");
+    let reasoning_content = optional_column_expr(&columns, "reasoning_content", "NULL");
+    let reasoning_details = optional_column_expr(&columns, "reasoning_details", "NULL");
+    let codex_reasoning_items = optional_column_expr(&columns, "codex_reasoning_items", "NULL");
+    let codex_message_items = optional_column_expr(&columns, "codex_message_items", "NULL");
+    let platform_message_id = optional_column_expr(&columns, "platform_message_id", "NULL");
+    let observed = optional_column_expr(&columns, "observed", "0");
+    let active = optional_column_expr(&columns, "active", "1");
+    let compacted = optional_column_expr(&columns, "compacted", "0");
+    let visibility = if columns.contains("active") || columns.contains("compacted") {
+        format!("where ({active} = 1 or {compacted} = 1)")
+    } else {
+        String::new()
+    };
+    let sql = format!(
+        "select id, session_id, role, {content}, {tool_call_id}, {tool_calls}, {tool_name}, \
+         timestamp, {token_count}, {finish_reason}, {reasoning}, {reasoning_content}, \
+         {reasoning_details}, {codex_reasoning_items}, {codex_message_items}, \
+         {platform_message_id}, {observed}, {active}, {compacted} \
+         from messages {visibility} order by session_id, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(HermesMessageRow {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            tool_call_id: row.get(4)?,
+            tool_calls: row.get(5)?,
+            tool_name: row.get(6)?,
+            timestamp: row.get(7)?,
+            token_count: row.get(8)?,
+            finish_reason: row.get(9)?,
+            reasoning: row.get(10)?,
+            reasoning_content: row.get(11)?,
+            reasoning_details: row.get(12)?,
+            codex_reasoning_items: row.get(13)?,
+            codex_message_items: row.get(14)?,
+            platform_message_id: row.get(15)?,
+            observed: row.get(16)?,
+            active: row.get(17)?,
+            compacted: row.get(18)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+#[derive(Debug, Clone)]
+struct NanoClawSessionRow {
+    id: String,
+    agent_group_id: String,
+    messaging_group_id: Option<String>,
+    thread_id: Option<String>,
+    agent_provider: Option<String>,
+    status: Option<String>,
+    container_status: Option<String>,
+    last_active: Option<i64>,
+    created_at: Option<i64>,
+    agent_group_name: Option<String>,
+    agent_group_folder: Option<String>,
+    messaging_channel_type: Option<String>,
+    messaging_platform_id: Option<String>,
+    messaging_instance: Option<String>,
+    messaging_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NanoClawMessageRow {
+    source: &'static str,
+    id: String,
+    seq: Option<i64>,
+    kind: Option<String>,
+    timestamp: Option<i64>,
+    status: Option<String>,
+    in_reply_to: Option<String>,
+    platform_id: Option<String>,
+    channel_type: Option<String>,
+    thread_id: Option<String>,
+    content: Option<String>,
+    trigger: Option<String>,
+    source_session_id: Option<String>,
+    on_wake: Option<i64>,
+}
+
+fn normalize_nanoclaw_project(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let project_root = nanoclaw_project_root(path)?;
+    let central_path = project_root.join("data").join("v2.db");
+    let conn = open_provider_sqlite_readonly(&central_path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let sessions = nanoclaw_sessions(&conn)?;
+    let mut result = ProviderNormalizationResult::default();
+    for session in sessions {
+        let session_dir = project_root
+            .join("data")
+            .join("v2-sessions")
+            .join(&session.agent_group_id)
+            .join(&session.id);
+        let mut messages = Vec::new();
+        let inbound_path = session_dir.join("inbound.db");
+        if inbound_path.is_file() {
+            messages.extend(nanoclaw_inbound_messages(&inbound_path)?);
+        }
+        let outbound_path = session_dir.join("outbound.db");
+        if outbound_path.is_file() {
+            messages.extend(nanoclaw_outbound_messages(&outbound_path)?);
+        }
+        messages.sort_by_key(|message| {
+            (
+                message.timestamp.unwrap_or_default(),
+                message.seq.unwrap_or_default(),
+                message.source,
+                message.id.clone(),
+            )
+        });
+        for message in messages {
+            let provider_session_id = format!("{}/{}", session.agent_group_id, session.id);
+            let occurred_at = provider_timestamp_millis(message.timestamp, context.imported_at);
+            let started_at = provider_timestamp_millis(session.created_at, occurred_at);
+            let content = message
+                .content
+                .as_deref()
+                .map(provider_json_text)
+                .unwrap_or(Value::Null);
+            let text = provider_value_text(&content).unwrap_or_else(|| {
+                format!(
+                    "NanoClaw {}",
+                    message.kind.as_deref().unwrap_or(message.source)
+                )
+            });
+            let event_index = nanoclaw_event_index(&message);
+            let role = if message.source == "inbound" {
+                Some(EventRole::User)
+            } else {
+                Some(EventRole::Assistant)
+            };
+            let event = native_event(
+                CaptureProvider::NanoClaw,
+                NANOCLAW_SOURCE_FORMAT,
+                &provider_session_id,
+                event_index,
+                Some(format!("{}:{}", message.source, message.id)),
+                format!(
+                    "{}:{}:{}",
+                    message.source,
+                    session.id,
+                    message.seq.unwrap_or_default()
+                ),
+                EventType::Message,
+                role,
+                occurred_at,
+                text,
+                json!({
+                    "message_id": message.id,
+                    "seq": message.seq,
+                    "kind": message.kind,
+                    "content": content,
+                    "status": message.status,
+                    "in_reply_to": message.in_reply_to,
+                    "platform_id": message.platform_id,
+                    "channel_type": message.channel_type,
+                    "thread_id": message.thread_id,
+                    "trigger": message.trigger,
+                    "source_session_id": message.source_session_id,
+                    "on_wake": message.on_wake,
+                }),
+                json!({
+                    "source": format!("nanoclaw_{}", message.source),
+                    "source_format": NANOCLAW_SOURCE_FORMAT,
+                    "message_id": message.id,
+                    "seq": message.seq,
+                }),
+            );
+            result.captures.push((
+                event_index.min(usize::MAX as u64) as usize,
+                native_provider_capture(
+                    NativeSessionDraft {
+                        provider: CaptureProvider::NanoClaw,
+                        source_format: NANOCLAW_SOURCE_FORMAT,
+                        provider_session_id: provider_session_id.clone(),
+                        parent_provider_session_id: None,
+                        root_provider_session_id: None,
+                        external_agent_id: session.agent_provider.clone(),
+                        agent_type: AgentType::Primary,
+                        role_hint: Some("container-session".to_owned()),
+                        is_primary: true,
+                        started_at,
+                        ended_at: session.last_active.map(|timestamp| {
+                            provider_timestamp_millis(Some(timestamp), context.imported_at)
+                        }),
+                        cwd: session.agent_group_folder.clone(),
+                        fidelity: Fidelity::Partial,
+                        raw_source_path: project_root.display().to_string(),
+                        trust: ProviderSourceTrust::ProviderNative,
+                        source_metadata: json!({
+                            "adapter": NANOCLAW_SOURCE_FORMAT,
+                            "central_db": central_path.display().to_string(),
+                            "sqlite_user_version": user_version,
+                            "schema_fingerprint": schema_fingerprint,
+                            "support_level": "preview",
+                        }),
+                        session_metadata: json!({
+                            "source_format": NANOCLAW_SOURCE_FORMAT,
+                            "session_id": session.id,
+                            "agent_group_id": session.agent_group_id,
+                            "agent_group_name": session.agent_group_name,
+                            "agent_provider": session.agent_provider,
+                            "status": session.status,
+                            "container_status": session.container_status,
+                            "messaging_group_id": session.messaging_group_id,
+                            "messaging": {
+                                "channel_type": session.messaging_channel_type,
+                                "platform_id": session.messaging_platform_id,
+                                "instance": session.messaging_instance,
+                                "name": session.messaging_name,
+                                "thread_id": session.thread_id,
+                            },
+                        }),
+                    },
+                    context,
+                    Some(event),
+                ),
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn nanoclaw_project_root(path: &Path) -> Result<PathBuf> {
+    if path.is_dir() && path.join("data").join("v2.db").is_file() {
+        return Ok(path.to_path_buf());
+    }
+    if path.file_name().and_then(|name| name.to_str()) == Some("v2.db") {
+        if let Some(data_dir) = path.parent() {
+            if let Some(root) = data_dir.parent() {
+                return Ok(root.to_path_buf());
+            }
+        }
+    }
+    Err(CaptureError::InvalidProviderTranscriptPath {
+        path: path.to_path_buf(),
+        reason: "NanoClaw import path must be a project root or data/v2.db",
+    })
+}
+
+fn nanoclaw_event_index(message: &NanoClawMessageRow) -> u64 {
+    if let Some(seq) = message.seq {
+        let source_bucket = if message.source == "outbound" {
+            500_000
+        } else {
+            0
+        };
+        let row_bucket = fnv1a64(format!("{}:{}", message.source, message.id).as_bytes()) % 500_000;
+        return (seq.max(0) as u64)
+            .saturating_mul(1_000_000)
+            .saturating_add(source_bucket)
+            .saturating_add(row_bucket);
+    }
+    text_id_index(&format!("{}:{}", message.source, message.id), 2_000_000_000)
+}
+
+fn nanoclaw_sessions(conn: &Connection) -> Result<Vec<NanoClawSessionRow>> {
+    if !sqlite_table_exists(conn, "sessions")? {
+        return Err(CaptureError::InvalidPayload(
+            "NanoClaw data/v2.db is missing required sessions table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "sessions")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "NanoClaw sessions table",
+        &["id", "agent_group_id"],
+    )?;
+    let messaging_group_id = optional_column_expr(&columns, "messaging_group_id", "NULL");
+    let thread_id = optional_column_expr(&columns, "thread_id", "NULL");
+    let agent_provider = optional_column_expr(&columns, "agent_provider", "NULL");
+    let status = optional_column_expr(&columns, "status", "NULL");
+    let container_status = optional_column_expr(&columns, "container_status", "NULL");
+    let last_active = optional_column_expr(&columns, "last_active", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let agent_group_columns = if sqlite_table_exists(conn, "agent_groups")? {
+        sqlite_table_columns(conn, "agent_groups")?
+    } else {
+        BTreeSet::new()
+    };
+    let agent_group_name =
+        if agent_group_columns.contains("id") && agent_group_columns.contains("name") {
+            "(select name from agent_groups where agent_groups.id = sessions.agent_group_id)"
+        } else {
+            "NULL"
+        };
+    let agent_group_folder =
+        if agent_group_columns.contains("id") && agent_group_columns.contains("folder") {
+            "(select folder from agent_groups where agent_groups.id = sessions.agent_group_id)"
+        } else {
+            "NULL"
+        };
+    let (messaging_channel_type, messaging_platform_id, messaging_instance, messaging_name) =
+        if columns.contains("messaging_group_id") && sqlite_table_exists(conn, "messaging_groups")?
+        {
+            let messaging_columns = sqlite_table_columns(conn, "messaging_groups")?;
+            (
+                if messaging_columns.contains("id") && messaging_columns.contains("channel_type") {
+                    "(select channel_type from messaging_groups where messaging_groups.id = sessions.messaging_group_id)"
+                } else {
+                    "NULL"
+                },
+                if messaging_columns.contains("id") && messaging_columns.contains("platform_id") {
+                    "(select platform_id from messaging_groups where messaging_groups.id = sessions.messaging_group_id)"
+                } else {
+                    "NULL"
+                },
+                if messaging_columns.contains("id") && messaging_columns.contains("instance") {
+                    "(select instance from messaging_groups where messaging_groups.id = sessions.messaging_group_id)"
+                } else {
+                    "NULL"
+                },
+                if messaging_columns.contains("id") && messaging_columns.contains("name") {
+                    "(select name from messaging_groups where messaging_groups.id = sessions.messaging_group_id)"
+                } else {
+                    "NULL"
+                },
+            )
+        } else {
+            ("NULL", "NULL", "NULL", "NULL")
+        };
+    let sql = format!(
+        "select id, agent_group_id, {messaging_group_id}, {thread_id}, {agent_provider}, \
+         {status}, {container_status}, {last_active}, {created_at}, {agent_group_name}, \
+         {agent_group_folder}, {messaging_channel_type}, {messaging_platform_id}, \
+         {messaging_instance}, {messaging_name} from sessions order by created_at, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(NanoClawSessionRow {
+            id: row.get(0)?,
+            agent_group_id: row.get(1)?,
+            messaging_group_id: row.get(2)?,
+            thread_id: row.get(3)?,
+            agent_provider: row.get(4)?,
+            status: row.get(5)?,
+            container_status: row.get(6)?,
+            last_active: row.get(7)?,
+            created_at: row.get(8)?,
+            agent_group_name: row.get(9)?,
+            agent_group_folder: row.get(10)?,
+            messaging_channel_type: row.get(11)?,
+            messaging_platform_id: row.get(12)?,
+            messaging_instance: row.get(13)?,
+            messaging_name: row.get(14)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn nanoclaw_inbound_messages(path: &Path) -> Result<Vec<NanoClawMessageRow>> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    if !sqlite_table_exists(&conn, "messages_in")? {
+        return Ok(Vec::new());
+    }
+    let columns = sqlite_table_columns(&conn, "messages_in")?;
+    ensure_sqlite_table_columns(&columns, "NanoClaw inbound messages table", &["id"])?;
+    let seq = optional_column_expr(&columns, "seq", "NULL");
+    let kind = optional_column_expr(&columns, "kind", "NULL");
+    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let status = optional_column_expr(&columns, "status", "NULL");
+    let trigger = optional_column_expr(&columns, "trigger", "NULL");
+    let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
+    let channel_type = optional_column_expr(&columns, "channel_type", "NULL");
+    let thread_id = optional_column_expr(&columns, "thread_id", "NULL");
+    let content = optional_column_expr(&columns, "content", "NULL");
+    let source_session_id = optional_column_expr(&columns, "source_session_id", "NULL");
+    let on_wake = optional_column_expr(&columns, "on_wake", "NULL");
+    let sql = format!(
+        "select id, {seq}, {kind}, {timestamp}, {status}, {trigger}, {platform_id}, \
+         {channel_type}, {thread_id}, {content}, {source_session_id}, {on_wake} \
+         from messages_in order by {seq}, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(NanoClawMessageRow {
+            source: "inbound",
+            id: row.get(0)?,
+            seq: row.get(1)?,
+            kind: row.get(2)?,
+            timestamp: row.get(3)?,
+            status: row.get(4)?,
+            trigger: row.get(5)?,
+            platform_id: row.get(6)?,
+            channel_type: row.get(7)?,
+            thread_id: row.get(8)?,
+            content: row.get(9)?,
+            source_session_id: row.get(10)?,
+            on_wake: row.get(11)?,
+            in_reply_to: None,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn nanoclaw_outbound_messages(path: &Path) -> Result<Vec<NanoClawMessageRow>> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    if !sqlite_table_exists(&conn, "messages_out")? {
+        return Ok(Vec::new());
+    }
+    let columns = sqlite_table_columns(&conn, "messages_out")?;
+    ensure_sqlite_table_columns(&columns, "NanoClaw outbound messages table", &["id"])?;
+    let seq = optional_column_expr(&columns, "seq", "NULL");
+    let kind = optional_column_expr(&columns, "kind", "NULL");
+    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let in_reply_to = optional_column_expr(&columns, "in_reply_to", "NULL");
+    let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
+    let channel_type = optional_column_expr(&columns, "channel_type", "NULL");
+    let thread_id = optional_column_expr(&columns, "thread_id", "NULL");
+    let content = optional_column_expr(&columns, "content", "NULL");
+    let sql = format!(
+        "select id, {seq}, {kind}, {timestamp}, {in_reply_to}, {platform_id}, \
+         {channel_type}, {thread_id}, {content} from messages_out order by {seq}, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(NanoClawMessageRow {
+            source: "outbound",
+            id: row.get(0)?,
+            seq: row.get(1)?,
+            kind: row.get(2)?,
+            timestamp: row.get(3)?,
+            in_reply_to: row.get(4)?,
+            platform_id: row.get(5)?,
+            channel_type: row.get(6)?,
+            thread_id: row.get(7)?,
+            content: row.get(8)?,
+            status: None,
+            trigger: None,
+            source_session_id: None,
+            on_wake: None,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+#[derive(Debug, Clone)]
+struct AstrBotConversationRow {
+    row_id: i64,
+    inner_conversation_id: Option<String>,
+    conversation_id: String,
+    platform_id: Option<String>,
+    user_id: Option<String>,
+    content: String,
+    title: Option<String>,
+    persona_id: Option<String>,
+    token_usage: Option<String>,
+    created_at: Option<i64>,
+    updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct AstrBotPlatformMessageRow {
+    id: i64,
+    platform_id: Option<String>,
+    user_id: Option<String>,
+    sender_id: Option<String>,
+    sender_name: Option<String>,
+    content: Option<String>,
+    llm_checkpoint_id: Option<String>,
+    created_at: Option<i64>,
+}
+
+fn normalize_astrbot_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let conversations = astrbot_conversations(&conn)?;
+    let platform_messages = astrbot_platform_messages(&conn)?;
+    let selected_conversation = astrbot_selected_conversation(&conn).ok().flatten();
+    let mut result = ProviderNormalizationResult::default();
+    let mut checkpoint_sessions = BTreeMap::<String, String>::new();
+
+    for conversation in &conversations {
+        let provider_session_id = astrbot_provider_session_id(conversation);
+        let started_at = provider_timestamp_millis(conversation.created_at, context.imported_at);
+        let ended_at = conversation
+            .updated_at
+            .map(|timestamp| provider_timestamp_millis(Some(timestamp), context.imported_at));
+        let content = provider_json_text(&conversation.content);
+        if let Value::Array(items) = &content {
+            for (index, item) in items.iter().enumerate() {
+                if let Some(checkpoint) = astrbot_checkpoint_id(item) {
+                    checkpoint_sessions.insert(checkpoint, provider_session_id.clone());
+                    continue;
+                }
+                let role = astrbot_role(item);
+                let text = astrbot_item_text(item)
+                    .unwrap_or_else(|| "AstrBot conversation item".to_owned());
+                let event = native_event(
+                    CaptureProvider::AstrBot,
+                    ASTRBOT_SQLITE_SOURCE_FORMAT,
+                    &provider_session_id,
+                    index as u64,
+                    astrbot_item_id(item).map(|id| format!("conversation:{id}")),
+                    format!("conversation:{}:item:{index}", conversation.conversation_id),
+                    EventType::Message,
+                    role,
+                    started_at,
+                    text,
+                    item.clone(),
+                    json!({
+                        "source": "astrbot_conversations",
+                        "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                        "conversation_id": conversation.conversation_id,
+                        "inner_conversation_id": conversation.inner_conversation_id,
+                        "item_index": index,
+                    }),
+                );
+                result.captures.push((
+                    index + 1,
+                    astrbot_capture(
+                        conversation,
+                        &provider_session_id,
+                        started_at,
+                        ended_at,
+                        path,
+                        context,
+                        user_version,
+                        &schema_fingerprint,
+                        selected_conversation.as_deref(),
+                        Some(event),
+                    ),
+                ));
+            }
+        } else {
+            let text =
+                provider_value_text(&content).unwrap_or_else(|| "AstrBot conversation".to_owned());
+            let event = native_event(
+                CaptureProvider::AstrBot,
+                ASTRBOT_SQLITE_SOURCE_FORMAT,
+                &provider_session_id,
+                0,
+                Some(format!("conversation-row:{}", conversation.row_id)),
+                format!("conversation:{}:content", conversation.conversation_id),
+                EventType::Message,
+                None,
+                started_at,
+                text,
+                content.clone(),
+                json!({
+                    "source": "astrbot_conversations",
+                    "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                    "conversation_id": conversation.conversation_id,
+                }),
+            );
+            result.captures.push((
+                conversation.row_id.max(0) as usize,
+                astrbot_capture(
+                    conversation,
+                    &provider_session_id,
+                    started_at,
+                    ended_at,
+                    path,
+                    context,
+                    user_version,
+                    &schema_fingerprint,
+                    selected_conversation.as_deref(),
+                    Some(event),
+                ),
+            ));
+        }
+    }
+
+    let conversations_by_id = conversations
+        .iter()
+        .map(|conversation| (astrbot_provider_session_id(conversation), conversation))
+        .collect::<BTreeMap<_, _>>();
+    for message in platform_messages {
+        let provider_session_id = message
+            .llm_checkpoint_id
+            .as_ref()
+            .and_then(|checkpoint| checkpoint_sessions.get(checkpoint))
+            .cloned()
+            .unwrap_or_else(|| {
+                format!(
+                    "platform/{}/{}",
+                    message.platform_id.as_deref().unwrap_or("unknown"),
+                    message.user_id.as_deref().unwrap_or("unknown")
+                )
+            });
+        let conversation = conversations_by_id.get(&provider_session_id).copied();
+        let started_at = conversation
+            .and_then(|conversation| conversation.created_at)
+            .map(|timestamp| provider_timestamp_millis(Some(timestamp), context.imported_at))
+            .unwrap_or_else(|| provider_timestamp_millis(message.created_at, context.imported_at));
+        let content = message
+            .content
+            .as_deref()
+            .map(provider_json_text)
+            .unwrap_or(Value::Null);
+        let text =
+            provider_value_text(&content).unwrap_or_else(|| "AstrBot platform message".to_owned());
+        let role = if message.sender_id.as_deref() == message.user_id.as_deref() {
+            Some(EventRole::User)
+        } else {
+            Some(EventRole::Assistant)
+        };
+        let event_index = 1_000_000u64.saturating_add(message.id.max(0) as u64);
+        let event = native_event(
+            CaptureProvider::AstrBot,
+            ASTRBOT_SQLITE_SOURCE_FORMAT,
+            &provider_session_id,
+            event_index,
+            Some(format!("platform-message:{}", message.id)),
+            format!("platform_message_history:id:{}", message.id),
+            EventType::Message,
+            role,
+            provider_timestamp_millis(message.created_at, started_at),
+            text,
+            json!({
+                "message_id": message.id,
+                "platform_id": message.platform_id,
+                "user_id": message.user_id,
+                "sender_id": message.sender_id,
+                "sender_name": message.sender_name,
+                "content": content,
+                "llm_checkpoint_id": message.llm_checkpoint_id,
+            }),
+            json!({
+                "source": "astrbot_platform_message_history",
+                "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                "message_id": message.id,
+            }),
+        );
+        if let Some(conversation) = conversation {
+            result.captures.push((
+                event_index.min(usize::MAX as u64) as usize,
+                astrbot_capture(
+                    conversation,
+                    &provider_session_id,
+                    started_at,
+                    conversation.updated_at.map(|timestamp| {
+                        provider_timestamp_millis(Some(timestamp), context.imported_at)
+                    }),
+                    path,
+                    context,
+                    user_version,
+                    &schema_fingerprint,
+                    selected_conversation.as_deref(),
+                    Some(event),
+                ),
+            ));
+        } else {
+            result.captures.push((
+                event_index.min(usize::MAX as u64) as usize,
+                native_provider_capture(
+                    NativeSessionDraft {
+                        provider: CaptureProvider::AstrBot,
+                        source_format: ASTRBOT_SQLITE_SOURCE_FORMAT,
+                        provider_session_id: provider_session_id.clone(),
+                        parent_provider_session_id: None,
+                        root_provider_session_id: None,
+                        external_agent_id: message.platform_id.clone(),
+                        agent_type: AgentType::Primary,
+                        role_hint: Some("platform-history".to_owned()),
+                        is_primary: true,
+                        started_at,
+                        ended_at: None,
+                        cwd: None,
+                        fidelity: Fidelity::Partial,
+                        raw_source_path: path.display().to_string(),
+                        trust: ProviderSourceTrust::ProviderNative,
+                        source_metadata: json!({
+                            "adapter": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                            "sqlite_user_version": user_version,
+                            "schema_fingerprint": schema_fingerprint,
+                            "support_level": "preview",
+                        }),
+                        session_metadata: json!({
+                            "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                            "platform_id": message.platform_id,
+                            "user_id": message.user_id,
+                            "fidelity_gap": "platform history row was not linked to a conversations checkpoint",
+                        }),
+                    },
+                    context,
+                    Some(event),
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn astrbot_provider_session_id(conversation: &AstrBotConversationRow) -> String {
+    conversation
+        .inner_conversation_id
+        .as_ref()
+        .or(Some(&conversation.conversation_id))
+        .cloned()
+        .unwrap_or_else(|| format!("conversation-row-{}", conversation.row_id))
+}
+
+fn astrbot_capture(
+    conversation: &AstrBotConversationRow,
+    provider_session_id: &str,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    path: &Path,
+    context: &ProviderAdapterContext,
+    user_version: i64,
+    schema_fingerprint: &str,
+    selected_conversation: Option<&str>,
+    event: Option<ProviderEventEnvelope>,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::AstrBot,
+            source_format: ASTRBOT_SQLITE_SOURCE_FORMAT,
+            provider_session_id: provider_session_id.to_owned(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: conversation.platform_id.clone(),
+            agent_type: AgentType::Primary,
+            role_hint: Some("llm-context".to_owned()),
+            is_primary: true,
+            started_at,
+            ended_at,
+            cwd: None,
+            fidelity: Fidelity::Partial,
+            raw_source_path: path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": user_version,
+                "schema_fingerprint": schema_fingerprint,
+                "support_level": "preview",
+            }),
+            session_metadata: json!({
+                "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
+                "conversation_id": conversation.conversation_id,
+                "inner_conversation_id": conversation.inner_conversation_id,
+                "platform_id": conversation.platform_id,
+                "user_id": conversation.user_id,
+                "title": conversation.title,
+                "persona_id": conversation.persona_id,
+                "token_usage": conversation.token_usage.as_deref().map(provider_json_text),
+                "selected_conversation": selected_conversation,
+                "fidelity_gap": "AstrBot preview imports local LLM context plus available platform history; it may not be a complete raw IM transcript",
+            }),
+        },
+        context,
+        event,
+    )
+}
+
+fn astrbot_item_id(item: &Value) -> Option<&str> {
+    item.get("id")
+        .or_else(|| item.get("message_id"))
+        .or_else(|| item.get("checkpoint_id"))
+        .and_then(Value::as_str)
+}
+
+fn astrbot_checkpoint_id(item: &Value) -> Option<String> {
+    let item_type = item
+        .get("type")
+        .or_else(|| item.get("role"))
+        .and_then(Value::as_str)?;
+    if item_type != "_checkpoint" && item_type != "checkpoint" {
+        return None;
+    }
+    astrbot_item_id(item).map(str::to_owned)
+}
+
+fn astrbot_role(item: &Value) -> Option<EventRole> {
+    item.get("role")
+        .or_else(|| item.get("type"))
+        .and_then(Value::as_str)
+        .map(|role| provider_role(Some(role)))
+}
+
+fn astrbot_item_text(item: &Value) -> Option<String> {
+    item.get("content")
+        .or_else(|| item.get("text"))
+        .or_else(|| item.get("message"))
+        .and_then(provider_value_text)
+}
+
+fn astrbot_conversations(conn: &Connection) -> Result<Vec<AstrBotConversationRow>> {
+    if !sqlite_table_exists(conn, "conversations")? {
+        return Err(CaptureError::InvalidPayload(
+            "AstrBot data_v4.db is missing required conversations table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "conversations")?;
+    ensure_sqlite_table_columns(&columns, "AstrBot conversations table", &["content"])?;
+    let row_id = if columns.contains("id") {
+        "id"
+    } else {
+        "rowid"
+    };
+    let inner_conversation_id = optional_column_expr(&columns, "inner_conversation_id", "NULL");
+    let conversation_id = optional_column_expr(
+        &columns,
+        "conversation_id",
+        optional_column_expr(&columns, "inner_conversation_id", "CAST(rowid AS TEXT)"),
+    );
+    let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
+    let user_id = optional_column_expr(&columns, "user_id", "NULL");
+    let title = optional_column_expr(&columns, "title", "NULL");
+    let persona_id = optional_column_expr(&columns, "persona_id", "NULL");
+    let token_usage = optional_column_expr(&columns, "token_usage", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let sql = format!(
+        "select {row_id}, {inner_conversation_id}, {conversation_id}, {platform_id}, \
+         {user_id}, content, {title}, {persona_id}, {token_usage}, {created_at}, \
+         {updated_at} from conversations order by {created_at}, {row_id}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AstrBotConversationRow {
+            row_id: row.get(0)?,
+            inner_conversation_id: row.get(1)?,
+            conversation_id: row.get::<_, String>(2)?,
+            platform_id: row.get(3)?,
+            user_id: row.get(4)?,
+            content: row.get(5)?,
+            title: row.get(6)?,
+            persona_id: row.get(7)?,
+            token_usage: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn astrbot_platform_messages(conn: &Connection) -> Result<Vec<AstrBotPlatformMessageRow>> {
+    if !sqlite_table_exists(conn, "platform_message_history")? {
+        return Ok(Vec::new());
+    }
+    let columns = sqlite_table_columns(conn, "platform_message_history")?;
+    let id = if columns.contains("id") {
+        "id"
+    } else {
+        "rowid"
+    };
+    let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
+    let user_id = optional_column_expr(&columns, "user_id", "NULL");
+    let sender_id = optional_column_expr(&columns, "sender_id", "NULL");
+    let sender_name = optional_column_expr(&columns, "sender_name", "NULL");
+    let content = optional_column_expr(&columns, "content", "NULL");
+    let llm_checkpoint_id = optional_column_expr(&columns, "llm_checkpoint_id", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let sql = format!(
+        "select {id}, {platform_id}, {user_id}, {sender_id}, {sender_name}, \
+         {content}, {llm_checkpoint_id}, {created_at} from platform_message_history \
+         order by {created_at}, {id}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AstrBotPlatformMessageRow {
+            id: row.get(0)?,
+            platform_id: row.get(1)?,
+            user_id: row.get(2)?,
+            sender_id: row.get(3)?,
+            sender_name: row.get(4)?,
+            content: row.get(5)?,
+            llm_checkpoint_id: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn astrbot_selected_conversation(conn: &Connection) -> Result<Option<String>> {
+    if !sqlite_table_exists(conn, "preferences")? {
+        return Ok(None);
+    }
+    let columns = sqlite_table_columns(conn, "preferences")?;
+    if !columns.contains("key") || !columns.contains("value") {
+        return Ok(None);
+    }
+    let scope_filter = if columns.contains("scope") {
+        "AND scope = 'umo'"
+    } else {
+        ""
+    };
+    let sql =
+        format!("select value from preferences where key = 'sel_conv_id' {scope_filter} limit 1");
+    let value = conn
+        .query_row(&sql, [], |row| row.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    Ok(value)
 }
 
 fn normalize_opencode_sqlite(

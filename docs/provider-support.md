@@ -26,11 +26,21 @@ is:
 | Pi | `local_import_when_supported` | `~/.pi/sessions.jsonl` or an explicit Pi JSONL path. | Static local-history fixture smoke. |
 | Claude | `local_import_when_supported` | `~/.claude/projects` or an explicit Claude projects JSONL tree. | Static local-history fixture smoke. |
 | OpenCode | `local_import_when_supported` | `~/.local/share/opencode/opencode.db` or an explicit OpenCode SQLite DB. | Static local-history fixture smoke. |
+| OpenClaw | `local_import_when_supported` | `OPENCLAW_STATE_DIR`, `~/.openclaw`, legacy `~/.clawdbot`/`~/.moltbot`, or an explicit OpenClaw state tree. | Static local-history fixture smoke; beta storage-contract notes in the matrix. |
+| Hermes Agent | `local_import_when_supported` | `HERMES_HOME/state.db`, `~/.hermes/state.db`, or an explicit Hermes SQLite DB. | Static local-history fixture smoke. |
+| NanoClaw | `local_import_when_supported` | Preview/manual import from a NanoClaw project root or `data/v2.db`; cwd/ancestor discovery only. | Static local-history fixture smoke; excluded from `ctx import --all` and pre-search refresh until promoted. |
+| AstrBot | `local_import_when_supported` | Preview/manual import from `ASTRBOT_ROOT/data/data_v4.db`, `~/.astrbot/data/data_v4.db`, cwd/ancestor project DBs, or an explicit DB path. | Static local-history fixture smoke; imports LLM context plus available platform history, not guaranteed complete IM transcripts. |
 | Antigravity | `local_import_when_supported` | Antigravity `transcript_full.jsonl` or `transcript.jsonl` files under `~/.gemini/antigravity-cli/brain`, or an explicit Antigravity transcript JSONL tree. | Static local-history fixture smoke. |
 | Gemini | `local_import_when_supported` | Gemini chat JSONL files under `~/.gemini/tmp/**/chats`, or an explicit Gemini CLI history tree. | Static local-history fixture smoke. |
 | Cursor | `local_import_when_supported` | Cursor agent transcript JSONL files under `~/.cursor/projects/**/agent-transcripts`, or an explicit Cursor agent transcript path. | Static local-history fixture smoke. |
 | Copilot CLI | `local_import_when_supported` | Copilot CLI `events.jsonl` files under `~/.copilot/session-state`, or an explicit Copilot CLI session-state tree. | Static local-history fixture smoke. |
 | Factory AI Droid | `local_import_when_supported` | `~/.factory/sessions` or an explicit Factory AI Droid sessions tree. | Static local-history fixture smoke. |
+
+`ctx sources --json` uses `import_support: "preview"` and `native_import:
+false` for preview sources such as NanoClaw and AstrBot. Those paths can be
+imported explicitly with `ctx import --provider ...` when discovery finds them,
+or with `ctx import --provider ... --path ...` for a specific path. They are not
+swept up by `ctx import --all` or the default pre-search refresh.
 
 Fidelity fields in the machine-readable matrix describe the default public CLI
 import behavior and normalized ctx storage fields. Supported adapters record

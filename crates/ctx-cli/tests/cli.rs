@@ -809,6 +809,81 @@ fn import_all_skips_empty_gemini_source() {
 }
 
 #[test]
+fn sources_lists_personal_agent_provider_defaults() {
+    let temp = tempdir();
+    install_default_openclaw_fixture(&temp, "openclaw-sources-oracle");
+    install_default_hermes_fixture(&temp, "hermes-sources-oracle");
+    install_default_astrbot_fixture(&temp, "astrbot-sources-oracle");
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    for (provider, source_format, import_support, native_import) in [
+        ("openclaw", "openclaw_session_jsonl_tree", "native", true),
+        ("hermes", "hermes_state_sqlite", "native", true),
+        ("astrbot", "astrbot_data_v4_sqlite", "preview", false),
+    ] {
+        let source = sources["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| {
+                source["provider"] == provider && source["source_format"] == source_format
+            })
+            .unwrap_or_else(|| panic!("missing {provider} source in {sources:#}"));
+        assert_eq!(source["status"], "available");
+        assert_eq!(source["import_support"], import_support);
+        assert_eq!(source["native_import"], native_import);
+        assert_eq!(source["importable"], true);
+        assert!(source["unsupported_reason"].is_null());
+    }
+}
+
+#[test]
+fn preview_native_sources_are_listed_but_not_auto_imported() {
+    let temp = tempdir();
+    let query = "nanoclaw-preview-auto-refresh-oracle";
+    let project = PathBuf::from(write_native_nanoclaw_fixture(&temp, query));
+
+    let mut sources_command = ctx(&temp);
+    sources_command.current_dir(&project);
+    let sources = json_output(sources_command.args(["sources", "--json"]));
+    let nanoclaw = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "nanoclaw")
+        .unwrap();
+    assert_eq!(nanoclaw["status"], "available");
+    assert_eq!(nanoclaw["import_support"], "preview");
+    assert_eq!(nanoclaw["native_import"], false);
+    assert_eq!(nanoclaw["importable"], true);
+    assert!(nanoclaw["unsupported_reason"].is_null());
+
+    let mut search_command = ctx(&temp);
+    search_command.current_dir(&project);
+    let search =
+        json_output(search_command.args(["search", query, "--provider", "nanoclaw", "--json"]));
+    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["status"], "no_sources");
+    assert_eq!(search["freshness"]["source_count"], 0);
+    assert!(search["results"].as_array().unwrap().is_empty());
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "nanoclaw",
+        "--path",
+        project.to_str().unwrap(),
+        "--json",
+    ]));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sources"], 1);
+
+    let search_after_import =
+        json_output(ctx(&temp).args(["search", query, "--provider", "nanoclaw", "--json"]));
+    assert_search_provider_oracle(&search_after_import, "nanoclaw", query, 1, "message");
+}
+
+#[test]
 fn import_all_reports_source_failure_without_losing_successes() {
     let temp = tempdir();
     copy_dir_all(
@@ -885,6 +960,10 @@ fn provider_help_matches_implemented_importers() {
         "pi",
         "claude",
         "opencode",
+        "openclaw",
+        "hermes",
+        "nanoclaw",
+        "astrbot",
         "antigravity",
         "gemini",
         "cursor",
@@ -898,7 +977,13 @@ fn provider_help_matches_implemented_importers() {
 #[test]
 fn provider_json_names_are_accepted_as_cli_filter_aliases() {
     let temp = tempdir();
-    for provider in ["copilot_cli", "factory_ai_droid"] {
+    for (provider, expected) in [
+        ("copilot_cli", "copilot_cli"),
+        ("factory_ai_droid", "factory_ai_droid"),
+        ("open_claw", "openclaw"),
+        ("nano_claw", "nanoclaw"),
+        ("astr_bot", "astrbot"),
+    ] {
         let search = json_output(ctx(&temp).args([
             "search",
             "anything",
@@ -908,7 +993,7 @@ fn provider_json_names_are_accepted_as_cli_filter_aliases() {
             "off",
             "--json",
         ]));
-        assert_eq!(search["filters"]["provider"], provider);
+        assert_eq!(search["filters"]["provider"], expected);
     }
 }
 
@@ -1016,7 +1101,7 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             vec![
                 "Usage: ctx import",
                 "--provider <PROVIDER>",
-                "[possible values: codex, pi, claude, opencode, antigravity, gemini, cursor, copilot-cli, factory-ai-droid]",
+                "[possible values: codex, pi, claude, opencode, antigravity, gemini, cursor, copilot-cli, factory-ai-droid, openclaw, hermes, nanoclaw, astrbot]",
                 "--path <PATH>",
                 "--resume",
                 "--json",
@@ -3239,6 +3324,8 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
         ),
         ("pi", "pi", install_default_pi_fixture),
         ("cursor", "cursor", install_default_cursor_fixture),
+        ("openclaw", "openclaw", install_default_openclaw_fixture),
+        ("hermes", "hermes", install_default_hermes_fixture),
     ] {
         let temp = tempdir();
         let query = format!("{stored_provider}-default-refresh-oracle");
@@ -3581,6 +3668,30 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
             "factory_ai_droid_sessions_jsonl",
             write_native_factory_droid_fixture,
         ),
+        (
+            "openclaw",
+            "openclaw",
+            "openclaw_session_jsonl_tree",
+            write_native_openclaw_fixture,
+        ),
+        (
+            "hermes",
+            "hermes",
+            "hermes_state_sqlite",
+            write_native_hermes_fixture,
+        ),
+        (
+            "nanoclaw",
+            "nanoclaw",
+            "nanoclaw_project",
+            write_native_nanoclaw_fixture,
+        ),
+        (
+            "astrbot",
+            "astrbot",
+            "astrbot_data_v4_sqlite",
+            write_native_astrbot_fixture,
+        ),
     ] {
         let temp = tempdir();
         let query = format!("{stored_provider}-native-cli-oracle");
@@ -3604,6 +3715,24 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
         let search =
             json_output(ctx(&temp).args(["search", &query, "--provider", cli_provider, "--json"]));
         assert_search_provider_oracle(&search, stored_provider, &query, 1, "message");
+        let result = &search["results"].as_array().unwrap()[0];
+        let ctx_event_id = result["ctx_event_id"].as_str().unwrap();
+        let ctx_session_id = result["ctx_session_id"].as_str().unwrap();
+
+        let show_event =
+            json_output(ctx(&temp).args(["show", "event", ctx_event_id, "--format", "json"]));
+        assert_eq!(show_event["event"]["provider"], stored_provider);
+        assert!(show_event["event"]["source"]["source_format"].is_string());
+        assert!(show_event["event"]["source"]["path"].is_string());
+        assert!(show_event["event"]["cursor"].is_string());
+
+        let locate_event =
+            json_output(ctx(&temp).args(["locate", "event", ctx_event_id, "--json"]));
+        assert_eq!(locate_event["provider"], stored_provider);
+        assert_eq!(locate_event["ctx_session_id"], ctx_session_id);
+        assert!(locate_event["source"]["source_format"].is_string());
+        assert!(locate_event["source"]["path"].is_string());
+        assert!(locate_event["cursor"].is_string());
 
         let status = json_output(ctx(&temp).args(["status", "--json"]));
         assert!(status["indexed_items"].as_u64().unwrap() >= 2);
@@ -3611,6 +3740,95 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
 
         let doctor = json_output(ctx(&temp).args(["doctor", "--json"]));
         assert_eq!(doctor["ok"], true);
+
+        let second = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--path",
+            &path,
+            "--json",
+        ]));
+        assert_eq!(second["totals"]["failed"], 0);
+        assert_eq!(second["totals"]["imported_events"], 0);
+    }
+}
+
+#[test]
+fn personal_agent_provider_imports_are_idempotent_and_incremental() {
+    for (cli_provider, stored_provider, fixture, append_event) in [
+        (
+            "openclaw",
+            "openclaw",
+            write_native_openclaw_fixture as fn(&TempDir, &str) -> String,
+            append_native_openclaw_event as fn(&str, &str),
+        ),
+        (
+            "hermes",
+            "hermes",
+            write_native_hermes_fixture,
+            append_native_hermes_event,
+        ),
+        (
+            "nanoclaw",
+            "nanoclaw",
+            write_native_nanoclaw_fixture,
+            append_native_nanoclaw_event,
+        ),
+        (
+            "astrbot",
+            "astrbot",
+            write_native_astrbot_fixture,
+            append_native_astrbot_event,
+        ),
+    ] {
+        let temp = tempdir();
+        let initial_query = format!("{stored_provider}-incremental-initial-oracle");
+        let incremental_query = format!("{stored_provider}-incremental-next-oracle");
+        let path = fixture(&temp, &initial_query);
+
+        let first = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--path",
+            &path,
+            "--json",
+        ]));
+        assert_eq!(first["totals"]["failed"], 0);
+        assert!(first["totals"]["imported_events"].as_u64().unwrap() >= 1);
+
+        let second = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--path",
+            &path,
+            "--json",
+        ]));
+        assert_eq!(second["totals"]["failed"], 0);
+        assert_eq!(second["totals"]["imported_events"], 0);
+
+        append_event(&path, &incremental_query);
+        let third = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--path",
+            &path,
+            "--json",
+        ]));
+        assert_eq!(third["totals"]["failed"], 0);
+        assert!(third["totals"]["imported_events"].as_u64().unwrap() >= 1);
+
+        let search = json_output(ctx(&temp).args([
+            "search",
+            &incremental_query,
+            "--provider",
+            cli_provider,
+            "--json",
+        ]));
+        assert_search_provider_oracle(&search, stored_provider, &incremental_query, 1, "message");
     }
 }
 
@@ -3647,6 +3865,25 @@ fn install_default_pi_fixture(temp: &TempDir, query: &str) {
 fn install_default_cursor_fixture(temp: &TempDir, query: &str) {
     let source = PathBuf::from(write_native_cursor_fixture(temp, query));
     copy_dir_all(&source, &temp.path().join(".cursor").join("projects"));
+}
+
+fn install_default_openclaw_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_openclaw_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".openclaw"));
+}
+
+fn install_default_hermes_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_hermes_fixture(temp, query));
+    let target = temp.path().join(".hermes");
+    fs::create_dir_all(&target).unwrap();
+    fs::copy(source, target.join("state.db")).unwrap();
+}
+
+fn install_default_astrbot_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_astrbot_fixture(temp, query));
+    let target = temp.path().join(".astrbot/data");
+    fs::create_dir_all(&target).unwrap();
+    fs::copy(source, target.join("data_v4.db")).unwrap();
 }
 
 fn write_native_claude_fixture(temp: &TempDir, query: &str) -> String {
@@ -3872,6 +4109,479 @@ fn write_native_factory_droid_fixture(temp: &TempDir, query: &str) -> String {
         .to_owned()
 }
 
+fn write_native_openclaw_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-openclaw");
+    let sessions = root.join("agents/personal-agent/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join("sessions.json"),
+        serde_json::to_string(&json!({
+            "openclaw-cli-native": {
+                "sessionId": "openclaw-cli-native",
+                "sessionFile": sessions.join("openclaw-cli-native.jsonl"),
+                "sessionStartedAt": "2026-06-24T12:00:00Z",
+                "modelProvider": "openai",
+                "model": "gpt-5-mini",
+                "lastChannel": "telegram"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        sessions.join("openclaw-cli-native.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "type": "session",
+                "version": 1,
+                "id": "openclaw-cli-native",
+                "timestamp": "2026-06-24T12:00:00Z",
+                "cwd": "/workspace"
+            }),
+            json!({
+                "type": "message",
+                "id": "openclaw-cli-native-user",
+                "timestamp": "2026-06-24T12:00:01Z",
+                "message": {"role": "user", "content": query}
+            }),
+            json!({
+                "type": "message",
+                "id": "openclaw-cli-native-assistant",
+                "parentId": "openclaw-cli-native-user",
+                "timestamp": "2026-06-24T12:00:02Z",
+                "message": {"role": "assistant", "content": "native import ok"}
+            })
+        ),
+    )
+    .unwrap();
+    root.to_str().unwrap().to_owned()
+}
+
+fn write_native_hermes_fixture(temp: &TempDir, query: &str) -> String {
+    let path = temp.path().join("native-hermes-state.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "create table sessions (
+            id text primary key,
+            source text not null,
+            model text,
+            model_config text,
+            parent_session_id text,
+            started_at real not null,
+            ended_at real,
+            message_count integer default 0,
+            tool_call_count integer default 0,
+            input_tokens integer default 0,
+            output_tokens integer default 0,
+            cwd text,
+            title text,
+            archived integer default 0
+        );
+        create table messages (
+            id integer primary key autoincrement,
+            session_id text not null,
+            role text not null,
+            content text,
+            tool_calls text,
+            tool_call_id text,
+            tool_name text,
+            timestamp real not null,
+            active integer not null default 1,
+            compacted integer not null default 0
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "insert into sessions (
+            id, source, model, model_config, started_at, message_count, cwd, title
+        ) values (?1, 'acp', 'gpt-5-mini', ?2, 1782259200.0, 2, '/workspace', 'native hermes')",
+        [
+            "hermes-cli-native",
+            r#"{"cwd":"/workspace","provider":"openai"}"#,
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into messages (session_id, role, content, timestamp) values (?1, 'user', ?2, 1782259201.0)",
+        ["hermes-cli-native", query],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into messages (session_id, role, content, timestamp) values (?1, 'assistant', 'native import ok', 1782259202.0)",
+        ["hermes-cli-native"],
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+fn write_native_nanoclaw_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-nanoclaw");
+    let data = root.join("data");
+    let session_dir = data.join("v2-sessions/ag-1/session-1");
+    fs::create_dir_all(&session_dir).unwrap();
+    let central = Connection::open(data.join("v2.db")).unwrap();
+    central
+        .execute_batch(
+            "create table agent_groups (
+                id text primary key,
+                name text,
+                folder text,
+                agent_provider text
+            );
+            create table messaging_groups (
+                id text primary key,
+                channel_type text,
+                platform_id text,
+                instance text,
+                name text
+            );
+            create table sessions (
+                id text primary key,
+                agent_group_id text not null,
+                messaging_group_id text,
+                thread_id text,
+                agent_provider text,
+                status text,
+                container_status text,
+                last_active integer,
+                created_at integer
+            );",
+        )
+        .unwrap();
+    central
+        .execute(
+            "insert into agent_groups values ('ag-1', 'Personal', '/workspace', 'codex')",
+            [],
+        )
+        .unwrap();
+    central
+        .execute(
+            "insert into messaging_groups values ('mg-1', 'telegram', 'chat-1', 'default', 'DM')",
+            [],
+        )
+        .unwrap();
+    central
+        .execute(
+            "insert into sessions values (
+                'session-1', 'ag-1', 'mg-1', 'thread-1', 'codex', 'active',
+                'running', 1782259202000, 1782259200000
+            )",
+            [],
+        )
+        .unwrap();
+    let inbound = Connection::open(session_dir.join("inbound.db")).unwrap();
+    inbound
+        .execute_batch(
+            "create table messages_in (
+                id text primary key,
+                seq integer,
+                kind text,
+                timestamp integer,
+                status text,
+                trigger text,
+                platform_id text,
+                channel_type text,
+                thread_id text,
+                content text,
+                source_session_id text,
+                on_wake integer
+            );",
+        )
+        .unwrap();
+    inbound
+        .execute(
+            "insert into messages_in values (
+                'in-1', 1, 'chat', 1782259201000, 'done', 'message',
+                'chat-1', 'telegram', 'thread-1', ?1, null, 0
+            )",
+            [json!({"text": query}).to_string()],
+        )
+        .unwrap();
+    let outbound = Connection::open(session_dir.join("outbound.db")).unwrap();
+    outbound
+        .execute_batch(
+            "create table messages_out (
+                id text primary key,
+                seq integer,
+                in_reply_to text,
+                timestamp integer,
+                kind text,
+                platform_id text,
+                channel_type text,
+                thread_id text,
+                content text
+            );",
+        )
+        .unwrap();
+    outbound
+        .execute(
+            "insert into messages_out values (
+                'out-1', 2, 'in-1', 1782259202000, 'chat',
+                'chat-1', 'telegram', 'thread-1', ?1
+            )",
+            [json!({"text": "native import ok"}).to_string()],
+        )
+        .unwrap();
+    root.to_str().unwrap().to_owned()
+}
+
+fn write_native_astrbot_fixture(temp: &TempDir, query: &str) -> String {
+    let data = temp.path().join("native-astrbot/data");
+    fs::create_dir_all(&data).unwrap();
+    let path = data.join("data_v4.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "create table conversations (
+            id integer primary key,
+            inner_conversation_id text,
+            conversation_id text,
+            platform_id text,
+            user_id text,
+            content text not null,
+            title text,
+            persona_id text,
+            token_usage text,
+            created_at integer,
+            updated_at integer
+        );
+        create table preferences (
+            scope text,
+            key text,
+            value text
+        );
+        create table platform_message_history (
+            id integer primary key,
+            platform_id text,
+            user_id text,
+            sender_id text,
+            sender_name text,
+            content text,
+            llm_checkpoint_id text,
+            created_at integer
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "insert into conversations values (
+            1, 'umo-1', 'conv-1', 'webchat', 'user-1', ?1, 'native astrbot',
+            'default', ?2, 1782259200000, 1782259202000
+        )",
+        [
+            json!([
+                {"role": "user", "content": query},
+                {"type": "_checkpoint", "id": "checkpoint-1"},
+                {"role": "assistant", "content": "native import ok"}
+            ])
+            .to_string(),
+            json!({"prompt": 1, "completion": 1}).to_string(),
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into preferences values ('umo', 'sel_conv_id', 'conv-1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into platform_message_history values (
+            1, 'webchat', 'user-1', 'user-1', 'User', ?1, 'checkpoint-1', 1782259201000
+        )",
+        [json!({"text": query}).to_string()],
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+fn append_native_openclaw_event(path: &str, query: &str) {
+    let transcript =
+        Path::new(path).join("agents/personal-agent/sessions/openclaw-cli-native.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(transcript)
+        .unwrap();
+    writeln!(
+        file,
+        "{}",
+        json!({
+            "type": "message",
+            "id": "openclaw-cli-native-incremental",
+            "parentId": "openclaw-cli-native-assistant",
+            "timestamp": "2026-06-24T12:00:03Z",
+            "message": {"role": "user", "content": query}
+        })
+    )
+    .unwrap();
+}
+
+fn append_native_hermes_event(path: &str, query: &str) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute(
+        "insert into messages (session_id, role, content, timestamp) values (?1, 'user', ?2, 1782259203.0)",
+        ["hermes-cli-native", query],
+    )
+    .unwrap();
+}
+
+fn append_native_nanoclaw_event(path: &str, query: &str) {
+    let conn = Connection::open(
+        Path::new(path)
+            .join("data/v2-sessions/ag-1/session-1")
+            .join("inbound.db"),
+    )
+    .unwrap();
+    conn.execute(
+        "insert into messages_in values (
+            'in-2', 1, 'chat', 1782259203000, 'done', 'message',
+            'chat-1', 'telegram', 'thread-1', ?1, null, 0
+        )",
+        [json!({"text": query}).to_string()],
+    )
+    .unwrap();
+}
+
+fn append_native_astrbot_event(path: &str, query: &str) {
+    let conn = Connection::open(path).unwrap();
+    let content: String = conn
+        .query_row(
+            "select content from conversations where id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut content: Value = serde_json::from_str(&content).unwrap();
+    content
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"role": "assistant", "content": query}));
+    conn.execute(
+        "update conversations set content = ?1, updated_at = 1782259203000 where id = 1",
+        [content.to_string()],
+    )
+    .unwrap();
+}
+
+#[test]
+fn openclaw_import_accepts_explicit_session_jsonl_file() {
+    let temp = tempdir();
+    let query = "openclaw-explicit-file-oracle";
+    let path = temp.path().join("openclaw-single-session.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}\n{}\n",
+            json!({
+                "type": "session",
+                "id": "openclaw-single-session",
+                "timestamp": "2026-06-24T12:00:00Z"
+            }),
+            json!({
+                "type": "message",
+                "id": "openclaw-single-user",
+                "timestamp": "2026-06-24T12:00:01Z",
+                "message": {"role": "user", "content": query}
+            })
+        ),
+    )
+    .unwrap();
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "openclaw",
+        "--path",
+        path.to_str().unwrap(),
+        "--json",
+    ]));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sources"], 1);
+
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "openclaw", "--json"]));
+    assert_search_provider_oracle(&search, "openclaw", query, 1, "message");
+}
+
+#[test]
+fn nanoclaw_import_tolerates_partial_auxiliary_tables() {
+    let temp = tempdir();
+    let query = "nanoclaw-partial-auxiliary-schema-oracle";
+    let path = write_native_nanoclaw_fixture(&temp, query);
+    let conn = Connection::open(Path::new(&path).join("data/v2.db")).unwrap();
+    conn.execute_batch(
+        "drop table agent_groups;
+         create table agent_groups (id text primary key);
+         insert into agent_groups values ('ag-1');
+         drop table messaging_groups;
+         create table messaging_groups (id text primary key);
+         insert into messaging_groups values ('mg-1');",
+    )
+    .unwrap();
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "nanoclaw",
+        "--path",
+        &path,
+        "--json",
+    ]));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sources"], 1);
+
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "nanoclaw", "--json"]));
+    assert_search_provider_oracle(&search, "nanoclaw", query, 1, "message");
+}
+
+#[test]
+fn personal_agent_sqlite_imports_report_corrupt_databases() {
+    for (provider, path) in [
+        ("hermes", "corrupt-hermes-state.db"),
+        ("astrbot", "corrupt-astrbot-data_v4.db"),
+    ] {
+        let temp = tempdir();
+        let db_path = temp.path().join(path);
+        fs::write(&db_path, b"not sqlite").unwrap();
+        let output = ctx(&temp)
+            .args([
+                "import",
+                "--provider",
+                provider,
+                "--path",
+                db_path.to_str().unwrap(),
+                "--json",
+            ])
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let stderr = String::from_utf8(output).unwrap();
+        assert!(stderr.contains("not a database"), "{stderr}");
+    }
+
+    let temp = tempdir();
+    let root = temp.path().join("corrupt-nanoclaw");
+    fs::create_dir_all(root.join("data/v2-sessions")).unwrap();
+    fs::write(root.join("data/v2.db"), b"not sqlite").unwrap();
+    let output = ctx(&temp)
+        .args([
+            "import",
+            "--provider",
+            "nanoclaw",
+            "--path",
+            root.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(output).unwrap();
+    assert!(stderr.contains("not a database"), "{stderr}");
+}
+
 #[test]
 fn native_provider_cli_requires_existing_history_or_explicit_path() {
     for (cli_provider, expected_blocker) in [
@@ -3885,6 +4595,10 @@ fn native_provider_cli_requires_existing_history_or_explicit_path() {
             "factory-ai-droid",
             "no native factory_ai_droid history found",
         ),
+        ("openclaw", "no native openclaw history found"),
+        ("hermes", "no native hermes history found"),
+        ("nanoclaw", "no native nanoclaw history found"),
+        ("astrbot", "no native astrbot history found"),
     ] {
         let temp = tempdir();
         ctx(&temp)

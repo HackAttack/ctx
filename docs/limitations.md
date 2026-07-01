@@ -9,9 +9,14 @@ shipped.
 - Codex local import is supported for documented local JSONL sources.
 - Pi local import is supported only when a matching local `sessions.jsonl` file
   exists.
-- Antigravity, Claude, OpenCode, Gemini, Cursor, Copilot CLI, and Factory AI
-  Droid local import is supported only when their documented local history
-  paths exist and match the supported native formats in the provider matrix.
+- Antigravity, Claude, OpenCode, OpenClaw, Hermes, Gemini, Cursor, Copilot CLI,
+  and Factory AI Droid local import is supported only when their documented
+  local history paths exist and match the supported native formats in the
+  provider matrix.
+- NanoClaw and AstrBot local import are preview/manual-path support. They are
+  not included in `ctx import --all` or pre-search refresh, and AstrBot imports
+  local LLM context plus available platform history rather than guaranteeing a
+  complete raw IM transcript.
 - Unknown provider formats should not be parsed optimistically.
 
 ## Import Semantics

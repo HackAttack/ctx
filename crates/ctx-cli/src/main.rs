@@ -27,17 +27,20 @@ use analytics::{AnalyticsEvent, AnalyticsProperties};
 use config::{AppConfig, CONFIG_FILE};
 use ctx_history_capture::{
     catalog_codex_session_tree, discover_provider_sources, discover_provider_sources_for_provider,
-    import_antigravity_cli_history, import_claude_projects_jsonl_tree, import_codex_history_jsonl,
-    import_codex_session_jsonl, import_codex_session_jsonl_tail, import_codex_session_paths,
-    import_codex_session_tree, import_copilot_cli_session_events, import_cursor_native_history,
-    import_factory_ai_droid_sessions, import_gemini_cli_history, import_opencode_sqlite,
+    import_antigravity_cli_history, import_astrbot_sqlite, import_claude_projects_jsonl_tree,
+    import_codex_history_jsonl, import_codex_session_jsonl, import_codex_session_jsonl_tail,
+    import_codex_session_paths, import_codex_session_tree, import_copilot_cli_session_events,
+    import_cursor_native_history, import_factory_ai_droid_sessions, import_gemini_cli_history,
+    import_hermes_sqlite, import_nanoclaw_project, import_openclaw_history, import_opencode_sqlite,
     import_pi_session_jsonl, provider_source_for_path, provider_source_spec, stable_capture_uuid,
-    AntigravityCliImportOptions, CatalogSummary, ClaudeProjectsImportOptions, CodexEventImportMode,
-    CodexHistoryImportOptions, CodexSessionCatalogOptions, CodexSessionImportOptions,
-    CodexSessionImportProgress, CodexSessionImportProgressCallback, CodexToolOutputMode,
-    CopilotCliImportOptions, CursorNativeImportOptions, FactoryAiDroidImportOptions,
-    GeminiCliImportOptions, OpenCodeSqliteImportOptions, PiSessionImportOptions,
-    ProviderImportSummary, ProviderImportSupport, ProviderSource, ProviderSourceStatus,
+    AntigravityCliImportOptions, AstrBotSqliteImportOptions, CatalogSummary,
+    ClaudeProjectsImportOptions, CodexEventImportMode, CodexHistoryImportOptions,
+    CodexSessionCatalogOptions, CodexSessionImportOptions, CodexSessionImportProgress,
+    CodexSessionImportProgressCallback, CodexToolOutputMode, CopilotCliImportOptions,
+    CursorNativeImportOptions, FactoryAiDroidImportOptions, GeminiCliImportOptions,
+    HermesSqliteImportOptions, NanoClawImportOptions, OpenClawImportOptions,
+    OpenCodeSqliteImportOptions, PiSessionImportOptions, ProviderImportSummary,
+    ProviderImportSupport, ProviderSource, ProviderSourceStatus,
 };
 use ctx_history_core::{
     database_path, default_data_root, utc_now, CaptureProvider, ContextCitation,
@@ -516,6 +519,13 @@ enum ProviderArg {
         alias = "factory_ai_droid"
     )]
     FactoryAiDroid,
+    #[value(name = "openclaw", alias = "open-claw", alias = "open_claw")]
+    OpenClaw,
+    Hermes,
+    #[value(name = "nanoclaw", alias = "nano-claw", alias = "nano_claw")]
+    NanoClaw,
+    #[value(name = "astrbot", alias = "astr-bot", alias = "astr_bot")]
+    AstrBot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -538,6 +548,10 @@ impl ProviderArg {
             Self::Cursor => CaptureProvider::Cursor,
             Self::CopilotCli => CaptureProvider::CopilotCli,
             Self::FactoryAiDroid => CaptureProvider::FactoryAiDroid,
+            Self::OpenClaw => CaptureProvider::OpenClaw,
+            Self::Hermes => CaptureProvider::Hermes,
+            Self::NanoClaw => CaptureProvider::NanoClaw,
+            Self::AstrBot => CaptureProvider::AstrBot,
         }
     }
 
@@ -552,6 +566,10 @@ impl ProviderArg {
             Self::Cursor => "cursor",
             Self::CopilotCli => "copilot-cli",
             Self::FactoryAiDroid => "factory-ai-droid",
+            Self::OpenClaw => "openclaw",
+            Self::Hermes => "hermes",
+            Self::NanoClaw => "nanoclaw",
+            Self::AstrBot => "astrbot",
         }
     }
 }
@@ -1639,7 +1657,7 @@ fn run_sources(args: JsonArgs, analytics_properties: &mut AnalyticsProperties) -
         .iter()
         .filter(|source| {
             source.exists
-                && matches!(source.import_support, ProviderImportSupport::Native)
+                && source.import_support.is_importable()
                 && source.status == ProviderSourceStatus::Available
         })
         .count();
@@ -4008,7 +4026,7 @@ fn search_refresh_sources(provider: Option<ProviderArg>) -> Vec<SourceInfo> {
         .drain(..)
         .filter(|source| {
             source.exists
-                && matches!(source.import_support, ProviderImportSupport::Native)
+                && source.import_support.is_auto_importable()
                 && source.status == ProviderSourceStatus::Available
                 && source.source_format != "codex_history_jsonl"
         })
@@ -4179,7 +4197,7 @@ fn import_requests(args: &ImportArgs) -> Result<Vec<SourceInfo>> {
             .into_iter()
             .filter(|source| {
                 source.exists
-                    && matches!(source.import_support, ProviderImportSupport::Native)
+                    && source.import_support.is_auto_importable()
                     && source.status == ProviderSourceStatus::Available
             })
             .collect());
@@ -4195,7 +4213,12 @@ fn import_requests(args: &ImportArgs) -> Result<Vec<SourceInfo>> {
         .collect::<Vec<_>>();
     if sources.is_empty() {
         let spec = provider_source_spec(provider);
-        if let Some(reason) = spec.and_then(|spec| spec.unsupported_reason) {
+        if spec
+            .is_some_and(|spec| matches!(spec.import_support, ProviderImportSupport::Unsupported))
+        {
+            let reason = spec
+                .and_then(|spec| spec.unsupported_reason)
+                .unwrap_or("no native local-history parser is implemented");
             return Err(anyhow!(
                 "{} native import is unsupported: {reason}",
                 provider.as_str()
@@ -4215,6 +4238,7 @@ fn import_requests(args: &ImportArgs) -> Result<Vec<SourceInfo>> {
 fn validate_source_import_supported(source: &SourceInfo) -> Result<()> {
     match source.import_support {
         ProviderImportSupport::Native => Ok(()),
+        ProviderImportSupport::Preview => Ok(()),
         ProviderImportSupport::Unsupported => {
             let reason = source
                 .unsupported_reason
@@ -4376,6 +4400,50 @@ fn import_one_source_inner(
             },
         )
         .map_err(anyhow::Error::from),
+        CaptureProvider::OpenClaw => import_openclaw_history(
+            &source.path,
+            store,
+            OpenClawImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..OpenClawImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Hermes => import_hermes_sqlite(
+            &source.path,
+            store,
+            HermesSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..HermesSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::NanoClaw => import_nanoclaw_project(
+            &source.path,
+            store,
+            NanoClawImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..NanoClawImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::AstrBot => import_astrbot_sqlite(
+            &source.path,
+            store,
+            AstrBotSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..AstrBotSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
         CaptureProvider::Gemini => import_gemini_cli_history(
             &source.path,
             store,
@@ -4532,7 +4600,14 @@ fn import_manifested_source(
 }
 
 fn source_uses_import_file_manifest(source: &SourceInfo) -> bool {
-    source.source_format != "codex_session_jsonl_tree"
+    !matches!(
+        source.source_format,
+        "codex_session_jsonl_tree"
+            | "openclaw_session_jsonl_tree"
+            | "hermes_state_sqlite"
+            | "nanoclaw_project"
+            | "astrbot_data_v4_sqlite"
+    )
 }
 
 fn merge_provider_import_summary(
@@ -5005,9 +5080,9 @@ fn sources_json(sources: &[SourceInfo]) -> Vec<Value> {
                 "source_format": source.source_format,
                 "status": source.status.as_str(),
                 "import_support": import_support_json(source.import_support),
-                "native_import": matches!(source.import_support, ProviderImportSupport::Native),
+                "native_import": source.import_support.is_auto_importable(),
                 "importable": source.status == ProviderSourceStatus::Available
-                    && matches!(source.import_support, ProviderImportSupport::Native),
+                    && source.import_support.is_importable(),
                 "raw_retention": raw_retention_json(source.raw_retention),
                 "unsupported_reason": source.unsupported_reason,
             })
@@ -5018,6 +5093,7 @@ fn sources_json(sources: &[SourceInfo]) -> Vec<Value> {
 fn import_support_json(support: ProviderImportSupport) -> &'static str {
     match support {
         ProviderImportSupport::Native => "native",
+        ProviderImportSupport::Preview => "preview",
         ProviderImportSupport::Unsupported => "unsupported",
     }
 }
