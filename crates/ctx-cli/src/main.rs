@@ -5046,7 +5046,7 @@ mod tests {
         let path = temp.path().join("session.jsonl");
         {
             let mut file = fs::File::create(&path).unwrap();
-            write!(file, "prefix\n").unwrap();
+            writeln!(file, "prefix").unwrap();
         }
         let prefix_hash = sha256_file_prefix_hex(&path, 7).unwrap();
         assert!(catalog_import_checkpoint_matches(&path, 7, Some(&prefix_hash)).unwrap());

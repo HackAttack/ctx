@@ -7317,6 +7317,18 @@ mod search_order_tests {
 mod catalog_tests {
     use super::*;
 
+    type CatalogSessionCheckpointRow = (
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+
     fn tempdir() -> tempfile::TempDir {
         let root = std::env::current_dir().unwrap().join("target/test-data");
         fs::create_dir_all(&root).unwrap();
@@ -7667,17 +7679,7 @@ mod catalog_tests {
             checkpoint_size,
             checkpoint_mtime,
             checkpoint_event_count,
-        ): (
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-        ) = store
+        ): CatalogSessionCheckpointRow = store
             .conn
             .query_row(
                 "SELECT indexed_status, indexed_at_ms, indexed_file_size_bytes, indexed_file_modified_at_ms, indexed_event_count, last_imported_at_ms, last_imported_file_size_bytes, last_imported_file_modified_at_ms, last_imported_event_count FROM catalog_sessions WHERE source_path = ?1",
