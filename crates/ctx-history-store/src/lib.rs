@@ -1039,16 +1039,27 @@ SELECT
     ft.line_count_delta AS line_count_delta,
     ft.confidence AS confidence,
     ft.event_id AS ctx_event_id,
-    COALESCE(e.session_id, r.session_id) AS ctx_session_id,
-    COALESCE(e.history_record_id, r.history_record_id, ft.history_record_id) AS history_record_id,
-    s.provider AS provider,
-    s.external_session_id AS provider_session_id,
+    COALESCE(e.session_id, r.session_id, source_session.id) AS ctx_session_id,
+    COALESCE(
+        e.history_record_id,
+        r.history_record_id,
+        ft.history_record_id,
+        event_session.history_record_id,
+        run_session.history_record_id,
+        source_session.history_record_id
+    ) AS history_record_id,
+    COALESCE(s.provider, cs.provider) AS provider,
+    COALESCE(s.external_session_id, cs.external_session_id) AS provider_session_id,
     ft.created_at_ms AS created_at_ms,
     ft.updated_at_ms AS updated_at_ms
 FROM files_touched ft
 LEFT JOIN events e ON e.id = ft.event_id
 LEFT JOIN runs r ON r.id = ft.run_id
-LEFT JOIN sessions s ON s.id = COALESCE(e.session_id, r.session_id)
+LEFT JOIN capture_sources cs ON cs.id = ft.source_id
+LEFT JOIN sessions event_session ON event_session.id = e.session_id
+LEFT JOIN sessions run_session ON run_session.id = r.session_id
+LEFT JOIN sessions source_session ON source_session.capture_source_id = ft.source_id
+LEFT JOIN sessions s ON s.id = COALESCE(e.session_id, r.session_id, source_session.id)
 WHERE ft.deleted_at_ms IS NULL;
 
 DROP VIEW IF EXISTS ctx_sources;
@@ -7891,6 +7902,154 @@ mod catalog_tests {
         assert_eq!(result.columns[0].name, "session_count");
         assert_eq!(result.returned_rows, 1);
         assert_eq!(result.rows[0][0], RawSqlValue::Integer(0));
+    }
+
+    #[test]
+    fn ctx_files_touched_resolves_session_from_source_id() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let record_id = "018f45d0-0000-7000-8000-000000080001";
+        let source_id = "018f45d0-0000-7000-8000-000000080002";
+        let session_id = "018f45d0-0000-7000-8000-000000080003";
+        let touch_id = "018f45d0-0000-7000-8000-000000080004";
+        let detached_source_id = "018f45d0-0000-7000-8000-000000080005";
+        let detached_touch_id = "018f45d0-0000-7000-8000-000000080006";
+
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO history_records
+                (id, title, last_activity_at_ms, created_at_ms, updated_at_ms, body, created_at, updated_at)
+                VALUES (?1, 'Touched file view record', 1, 1, 1, '', '', '')
+                "#,
+                [record_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO capture_sources
+                (id, kind, provider, machine_id, raw_source_path, external_session_id, started_at_ms, fidelity)
+                VALUES (?1, 'provider_import', 'codex', 'test-machine', '/tmp/session.jsonl', 'codex-session-1', 1, 'imported')
+                "#,
+                [source_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO capture_sources
+                (id, kind, provider, machine_id, raw_source_path, external_session_id, started_at_ms, fidelity)
+                VALUES (?1, 'provider_import', 'opencode', 'test-machine', '/tmp/opencode.db', 'opencode-session-1', 1, 'imported')
+                "#,
+                [detached_source_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO sessions
+                (
+                    id, history_record_id, capture_source_id, provider, external_session_id,
+                    agent_type, is_primary, status, fidelity, started_at_ms, created_at_ms, updated_at_ms
+                )
+                VALUES (?1, ?2, ?3, 'codex', 'codex-session-1', 'primary', 1, 'imported', 'imported', 1, 1, 1)
+                "#,
+                params![session_id, record_id, source_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO files_touched
+                (id, source_id, path, change_kind, confidence, created_at_ms, updated_at_ms, fidelity)
+                VALUES (?1, ?2, 'src/main.rs', 'modified', 'explicit', 1, 1, 'imported')
+                "#,
+                params![touch_id, source_id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO files_touched
+                (id, source_id, path, change_kind, confidence, created_at_ms, updated_at_ms, fidelity)
+                VALUES (?1, ?2, 'detached.rs', 'modified', 'explicit', 1, 1, 'imported')
+                "#,
+                params![detached_touch_id, detached_source_id],
+            )
+            .unwrap();
+
+        let result = store
+            .raw_sql_query(
+                "SELECT provider, provider_session_id, ctx_session_id, history_record_id FROM ctx_files_touched WHERE path = 'src/main.rs'",
+                RawSqlOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(result.returned_rows, 1);
+        assert_eq!(
+            result.rows[0][0],
+            RawSqlValue::Text {
+                value: "codex".to_owned(),
+                bytes: 5,
+                truncated: false,
+            }
+        );
+        assert_eq!(
+            result.rows[0][1],
+            RawSqlValue::Text {
+                value: "codex-session-1".to_owned(),
+                bytes: 15,
+                truncated: false,
+            }
+        );
+        assert_eq!(
+            result.rows[0][2],
+            RawSqlValue::Text {
+                value: session_id.to_owned(),
+                bytes: session_id.len(),
+                truncated: false,
+            }
+        );
+        assert_eq!(
+            result.rows[0][3],
+            RawSqlValue::Text {
+                value: record_id.to_owned(),
+                bytes: record_id.len(),
+                truncated: false,
+            }
+        );
+
+        let detached = store
+            .raw_sql_query(
+                "SELECT provider, provider_session_id, ctx_session_id, history_record_id FROM ctx_files_touched WHERE path = 'detached.rs'",
+                RawSqlOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(detached.returned_rows, 1);
+        assert_eq!(
+            detached.rows[0][0],
+            RawSqlValue::Text {
+                value: "opencode".to_owned(),
+                bytes: 8,
+                truncated: false,
+            }
+        );
+        assert_eq!(
+            detached.rows[0][1],
+            RawSqlValue::Text {
+                value: "opencode-session-1".to_owned(),
+                bytes: 18,
+                truncated: false,
+            }
+        );
+        assert_eq!(detached.rows[0][2], RawSqlValue::Null);
+        assert_eq!(detached.rows[0][3], RawSqlValue::Null);
     }
 
     #[test]
