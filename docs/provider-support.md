@@ -41,11 +41,11 @@ modes import them explicitly.
 
 ## Provider Smoke
 
-Provider smoke coverage uses static local-history fixtures checked into the
-repository. The public smoke target exercises supported imports, blocked
-unsupported providers, provider filtering, citations, and deterministic search
-without executing provider CLIs, reading real user history, requiring API keys,
-or making network calls:
+Provider smoke coverage uses public fixture data and generated local-history
+trees. The public smoke target exercises supported imports, blocked unsupported
+providers, provider filtering, citations, and deterministic search without
+executing provider CLIs, reading real user history, requiring API keys, or
+making network calls:
 
 ```bash
 bazel test //:provider_fixture_e2e --config=ci

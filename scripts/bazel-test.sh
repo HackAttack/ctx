@@ -108,6 +108,9 @@ case "${mode}" in
   provider_fixture_e2e)
     run_cargo_test -p ctx --test cli codex_cli_provider_oracle_covers_retrieval_and_claimed_fidelity
     run_cargo_test -p ctx --test cli pi_cli_import_search_flow
+    run_cargo_test -p ctx --test cli native_provider_cli_flow_imports_new_supported_provider_paths
+    run_cargo_test -p ctx --test cli native_provider_cli_requires_existing_history_or_explicit_path
+    run_cargo_test -p ctx --test cli antigravity_cli_imports_native_transcript_tree
     ;;
   local_transcript_oracle)
     run_cargo_test -p ctx --test cli local_transcript_oracle_preserves_cli_json_and_sqlite

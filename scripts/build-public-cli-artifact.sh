@@ -110,4 +110,6 @@ case "${platform}" in
     ;;
 esac
 
+scripts/check-public-cli-artifact.sh "${platform}" "${out_dir}"
+
 printf 'built %s for %s sha256=%s\n' "${staged}" "${platform}" "$(cat "${sha_file}")"

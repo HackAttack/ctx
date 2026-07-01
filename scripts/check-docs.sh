@@ -40,6 +40,7 @@ done
 if command -v jq >/dev/null 2>&1; then
   jq empty docs/provider-support-matrix.json
 fi
+python3 scripts/check-provider-support-matrix.py
 
 public_docs=(
   README.md

@@ -75,11 +75,11 @@ if tracked_files | grep -E '^(\.ctx/exec-plans|docs/exec-plans|.*exec[_-]plan.*\
   fail 'execution plans are present in package-visible source'
 fi
 
-if tracked_files | grep -E '^(examples|assets)/' | grep -E -i 'dashboard|work-[r]ecord|ctx-records|capture-spool|evidence|link-pr|publish|shim' >/dev/null; then
+if tracked_files | grep -E '^(examples|assets)/' | grep -E -i 'dashboard|work-[r]ecord|ctx-records|capture-spool|evidence|link-pr|publish|shim|provider-live|completion-certificate|freebsd-native-release-proof|r2-' >/dev/null; then
   fail 'tracked examples or assets contain removed product-surface material'
 fi
 
-if grep_files 'dashboard|shim|shims|pull request|pull-request|pr evidence|pr-evidence|ctx publish|ctx evidence|ctx pr|ctx link-pr|ctx context|ctx update|ctx uninstall|\bADE\b|\b[Aa]mp\b|[Aa]mpcode|normalized-only|normalized only|normalized_import_only|normalized provider JSONL|CTX_PROVIDER_NORMALIZED_IMPORT_DEV|[W]ork Recorder|[w]ork recorder|\bwork-[r]ecord\b' \
+if grep_files 'dashboard|shim|shims|pull request|pull-request|pr evidence|pr-evidence|ctx publish|ctx evidence|ctx pr|ctx link-pr|ctx context|ctx update|ctx uninstall|\bADE\b|\b[Aa]mp\b|[Aa]mpcode|normalized-only|normalized only|normalized_import_only|normalized provider JSONL|CTX_PROVIDER_NORMALIZED_IMPORT_DEV|provider-live|completion-certificate|freebsd-native-release-proof|r2-|[W]ork Recorder|[w]ork recorder|\bwork-[r]ecord\b' \
   "${public_user_docs[@]}" >/dev/null 2>&1; then
   fail 'public docs contain removed product-surface wording'
 fi
@@ -93,7 +93,7 @@ if ! diff -u skills/ctx-agent-history-search/SKILL.md plugins/ctx-agent-history-
   fail 'plugin skill copy differs from public skill source'
 fi
 
-if grep_files '[W]ork Recorder|[w]ork recorder|ctx publish|ctx evidence|ctx pr|ctx link-pr|ctx context|ctx update|ctx uninstall|update checks|auto-update|update-state|auto_update|CTX_UPDATE|release manifest|dashboard export|gh CLI|GhCli|upsert_github|write-shim-command|write_shim_command|capture_shim_command|shim_command_envelope|\bADE\b|\b[Aa]mp\b|[Aa]mpcode' \
+if grep_files '[W]ork Recorder|[w]ork recorder|ctx publish|ctx evidence|ctx pr|ctx link-pr|ctx context|ctx update|ctx uninstall|update checks|auto-update|update-state|auto_update|CTX_UPDATE|release manifest|provider-live|completion-certificate|freebsd-native-release-proof|r2-|dashboard export|gh CLI|GhCli|upsert_github|write-shim-command|write_shim_command|capture_shim_command|shim_command_envelope|\bADE\b|\b[Aa]mp\b|[Aa]mpcode' \
   .bazelignore .bazelrc .bazelversion .buildkite .gitignore README.md SECURITY.md docs skills scripts crates/ctx-cli/src >/dev/null 2>&1; then
   fail 'public docs/help/release path contains removed product-surface text'
 fi
