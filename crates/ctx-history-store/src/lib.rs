@@ -6050,9 +6050,11 @@ mod archive_validation_tests {
 
     #[test]
     fn archive_version_validation_rejects_future_version() {
-        let mut archive = SessionHistoryArchive::default();
-        archive.schema_version = 3;
-        archive.version = 3;
+        let archive = SessionHistoryArchive {
+            schema_version: 3,
+            version: 3,
+            ..SessionHistoryArchive::default()
+        };
 
         let error = validate_archive_version(&archive).unwrap_err();
         assert!(matches!(
