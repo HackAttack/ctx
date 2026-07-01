@@ -1185,6 +1185,13 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
         .unwrap()
         .iter()
         .any(|topic| topic["id"] == "cli-reference"));
+    for topic_id in ["docs", "mcp", "sql", "upgrade"] {
+        assert!(list["topics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|topic| topic["id"] == topic_id));
+    }
 
     let search = json_output(ctx(&temp).args(["docs", "search", "upgrade", "--json"]));
     assert_eq!(search["schema_version"], 1);
@@ -1193,6 +1200,12 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
 
     let sql_search = json_output(ctx(&temp).args(["docs", "search", "sql", "--json"]));
     assert_eq!(sql_search["results"][0]["id"], "sql");
+
+    let mcp_search = json_output(ctx(&temp).args(["docs", "search", "mcp", "--json"]));
+    assert_eq!(mcp_search["results"][0]["id"], "mcp");
+
+    let upgrade_search = json_output(ctx(&temp).args(["docs", "search", "upgrade", "--json"]));
+    assert_eq!(upgrade_search["results"][0]["id"], "upgrade");
 
     let weak_search = json_output(ctx(&temp).args(["docs", "search", "a", "--json"]));
     assert!(weak_search["results"].as_array().unwrap().is_empty());
@@ -1206,6 +1219,15 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
     assert_eq!(show["schema_version"], 1);
     assert_eq!(show["id"], "cli-reference");
     assert!(show["body"].as_str().unwrap().contains("ctx search"));
+
+    let mcp = json_output(ctx(&temp).args(["docs", "show", "mcp", "--format", "json"]));
+    assert!(mcp["body"].as_str().unwrap().contains("ctx mcp serve"));
+
+    let upgrade = json_output(ctx(&temp).args(["docs", "show", "upgrade", "--format", "json"]));
+    assert!(upgrade["body"]
+        .as_str()
+        .unwrap()
+        .contains("ctx upgrade status"));
 
     let missing_topic = failure_stderr(ctx(&temp).args(["docs", "show", "cli"]));
     assert!(missing_topic.contains("unknown ctx docs topic: cli"));
