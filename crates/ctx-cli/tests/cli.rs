@@ -1057,8 +1057,6 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
                 "Filter by workspace path or name text",
                 "--since <SINCE>",
                 "Filter to recent history, as RFC3339 or a day window like 30d",
-                "--primary-only",
-                "Return only primary-agent sessions",
                 "--include-subagents",
                 "Include subagent sessions",
                 "--event-type <EVENT_TYPE>",
@@ -2396,7 +2394,11 @@ fn codex_cli_resume_is_idempotent_rescan_and_filters_subagents() {
     assert_eq!(first["totals"]["imported_events"], 4);
     assert_eq!(first["totals"]["imported_edges"], 1);
 
-    let with_subagents = json_output(ctx(&temp).args(["search", "subagent", "--json"]));
+    let primary_default = json_output(ctx(&temp).args(["search", "subagent", "--json"]));
+    assert_eq!(primary_default["filters"]["include_subagents"], false);
+
+    let with_subagents =
+        json_output(ctx(&temp).args(["search", "subagent", "--include-subagents", "--json"]));
     assert!(!with_subagents["results"].as_array().unwrap().is_empty());
     assert_eq!(with_subagents["filters"]["include_subagents"], true);
 

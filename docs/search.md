@@ -20,6 +20,7 @@ ctx search "token budget" --refresh off
 ctx search "signed metadata" --term checksum --term release
 ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
+ctx search "review findings" --include-subagents
 ctx search "this current task" --include-current-session
 ```
 
@@ -60,7 +61,6 @@ Search filters narrow both human output and JSON:
 - `--session <ctx-session-id>`;
 - `--term <query-or-keyword>`, repeatable broadening terms merged with the main query;
 - `--events`;
-- `--primary-only`;
 - `--include-subagents`;
 - `--limit <n>`;
 - `--refresh auto|off|strict`;
@@ -75,9 +75,9 @@ for a file, or combine it with query terms to find sessions that both mention a
 topic and touched that path. It searches paths recorded during import; it does
 not inspect the current filesystem.
 
-The default includes subagent material. `--primary-only` restricts results to
-primary sessions and excludes subagent material. `--include-subagents` keeps the
-default explicit; it does not override `--primary-only`.
+The default searches primary-agent sessions so human intent and decisions stay
+prominent. Use `--include-subagents` when you want implementation details, code
+review notes, test output, or failure analysis from subagent sessions too.
 
 `--limit` defaults to `20` and is capped at `200`.
 

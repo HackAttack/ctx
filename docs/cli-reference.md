@@ -154,6 +154,7 @@ ctx search "token budget" --refresh off
 ctx search "signed metadata" --term checksum --term release
 ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
+ctx search "review findings" --include-subagents
 ctx search "this current task" --include-current-session
 ```
 
@@ -176,6 +177,10 @@ search has identified a session to inspect; scoped session search returns dense
 event hits. Use `--events` without `--session` for dense event-level results
 across sessions. Repeat `--term <query-or-keyword>` when you want to broaden a
 search across several related words or phrases and merge the ranked results.
+Default search excludes subagent sessions so primary human-agent intent and
+decisions stay prominent. Use `--include-subagents` when implementation details,
+code review notes, test output, or failure analysis from subagent sessions
+should be searched too.
 
 When ctx is run from Codex and `CODEX_THREAD_ID` is available, search excludes
 the active Codex session tree by default so the current task and its subagents
@@ -201,7 +206,6 @@ Filters:
 - `--session <ctx-session-id>`, for dense event results within one session;
 - `--term <query-or-keyword>`, repeatable broadening terms merged with the main query;
 - `--events`, for dense event-level results instead of the default session-diverse results;
-- `--primary-only`;
 - `--include-subagents`;
 - `--limit <n>`, capped at `200`;
 - `--refresh auto|off|strict`;

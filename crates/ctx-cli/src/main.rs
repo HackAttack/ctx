@@ -231,11 +231,15 @@ struct SearchArgs {
         help = "Filter to recent history, as RFC3339 or a day window like 30d"
     )]
     since: Option<String>,
-    #[arg(long, help = "Return only primary-agent sessions")]
+    #[arg(
+        long,
+        hide = true,
+        help = "Deprecated alias for the default primary-agent search scope"
+    )]
     primary_only: bool,
     #[arg(
         long,
-        help = "Include subagent sessions; this is the default unless --primary-only is set"
+        help = "Include subagent sessions in addition to primary-agent sessions"
     )]
     include_subagents: bool,
     #[arg(long, help = "Filter by event type, such as message or tool_call")]
@@ -4844,7 +4848,7 @@ fn search_filters(
         repo: input.workspace,
         since: input.since.as_deref().map(parse_since_filter).transpose()?,
         primary_only: input.primary_only,
-        include_subagents: input.include_subagents || !input.primary_only,
+        include_subagents: input.include_subagents && !input.primary_only,
         event_type: input
             .event_type
             .as_deref()

@@ -324,7 +324,7 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     let workspace = optional_string(arguments, "workspace")?;
     let since = optional_string(arguments, "since")?;
     let primary_only = optional_bool(arguments, "primary_only")?.unwrap_or(false);
-    let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(!primary_only);
+    let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(false);
     let event_type = optional_string(arguments, "event_type")?;
     let file = optional_string(arguments, "file")?.map(PathBuf::from);
     let events = optional_bool(arguments, "events")?.unwrap_or(false) || session.is_some();
@@ -495,8 +495,7 @@ fn tool_definitions() -> Vec<Value> {
                 "provider": { "type": "string", "enum": provider_names() },
                 "workspace": { "type": "string", "description": "Workspace path or name text." },
                 "since": { "type": "string", "description": "RFC3339 timestamp or day window such as 30d." },
-                "primary_only": { "type": "boolean", "default": false },
-                "include_subagents": { "type": "boolean", "default": true },
+                "include_subagents": { "type": "boolean", "default": false, "description": "Include subagent sessions in addition to primary-agent sessions." },
                 "event_type": { "type": "string", "enum": event_type_names() },
                 "file": { "type": "string" },
                 "session": { "type": "string", "description": "ctx session id." },

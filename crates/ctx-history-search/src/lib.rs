@@ -94,7 +94,7 @@ impl Default for SearchFilters {
             repo: None,
             since: None,
             primary_only: false,
-            include_subagents: true,
+            include_subagents: false,
             event_type: None,
             file: None,
             exclude_provider_session: None,
