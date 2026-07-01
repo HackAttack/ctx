@@ -234,22 +234,31 @@ opt-outs such as `CTX_UPGRADE_OFF=1` or `CTX_DISABLE_AUTO_UPGRADE=1`. Upgrade
 metadata checks do not send provider transcript text, search queries, result
 snippets, source paths, repository names, or command output.
 
-First-party analytics are default-on and may create `install.json` and send
-coarse product metadata. They do not send session text, prompts, transcripts,
-search queries, result snippets, source paths, repository or branch names,
-native session IDs, command text, command output, or raw IP addresses.
+First-party analytics are default-on and may create `install.json` plus a
+separate device identity file in OS user state, then send coarse product
+metadata. They do not send session text, prompts, transcripts, search queries,
+result snippets, source paths, repository or branch names, native session IDs,
+command text, command output, usernames, hostnames, raw IP addresses, or
+hardware-derived machine fingerprints.
 
 Analytics may include:
 
-- a generated install identifier that is hashed server-side;
+- generated random install and device identifiers that are hashed server-side;
 - ctx version, OS, architecture, command name, success state, and duration
   bucket;
 - JSON-output and option booleans such as whether a search used filters;
 - bucketed counts such as indexed sessions, import totals, result counts, and
   validation finding counts;
+- bucketed search query length and term count, but not query content;
 - provider identifiers such as `codex` or `claude` when selected as filters;
 - coarse Cloudflare-derived geography such as country, region, colo, ASN, and
   AS organization.
+
+The install identifier lives in `install.json` under the configured ctx data
+root and represents that local index. The device identifier is a random UUID
+created only when analytics are enabled and an event is sent; it lives outside
+the ctx data root in OS user state, such as `$XDG_STATE_HOME/ctx/device.json` or
+`~/.local/state/ctx/device.json` on Linux.
 
 `ctx sql` and MCP do not send first-party analytics events.
 

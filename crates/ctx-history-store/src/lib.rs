@@ -279,6 +279,18 @@ pub struct CatalogCounts {
     pub failed: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexedHistoryCounts {
+    pub sessions: usize,
+    pub events: usize,
+}
+
+impl IndexedHistoryCounts {
+    pub fn items(self) -> usize {
+        self.sessions.saturating_add(self.events)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIndexedStatus {
     Pending,
@@ -2287,13 +2299,20 @@ impl Store {
     }
 
     pub fn indexed_history_item_count(&self) -> Result<usize> {
+        Ok(self.indexed_history_counts()?.items())
+    }
+
+    pub fn indexed_history_counts(&self) -> Result<IndexedHistoryCounts> {
         let sessions: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
         let events: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
-        Ok((sessions as usize).saturating_add(events as usize))
+        Ok(IndexedHistoryCounts {
+            sessions: sessions as usize,
+            events: events as usize,
+        })
     }
 
     pub fn upsert_session_edge(&self, edge: &SessionEdge) -> Result<()> {

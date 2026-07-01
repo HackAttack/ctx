@@ -86,13 +86,13 @@ impl AppConfig {
     }
 
     fn apply_env(&mut self) {
-        if env_flag("CTX_ANALYTICS_OFF") || env_flag("CTX_DISABLE_ANALYTICS") {
-            self.analytics.enabled = false;
-        }
         if let Ok(value) = env::var("CTX_ANALYTICS_ENABLED") {
             if let Some(enabled) = parse_bool_value(&value) {
                 self.analytics.enabled = enabled;
             }
+        }
+        if env_flag("CTX_ANALYTICS_OFF") || env_flag("CTX_DISABLE_ANALYTICS") {
+            self.analytics.enabled = false;
         }
         if let Ok(endpoint) = env::var("CTX_ANALYTICS_ENDPOINT") {
             if !endpoint.trim().is_empty() {

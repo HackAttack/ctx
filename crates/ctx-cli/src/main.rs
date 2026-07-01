@@ -1522,6 +1522,36 @@ fn indexed_history_item_count(store: &Store) -> Result<usize> {
     Ok(store.indexed_history_item_count()?)
 }
 
+fn insert_store_analytics_counts(
+    analytics_properties: &mut AnalyticsProperties,
+    store: &Store,
+) -> Result<()> {
+    let counts = store.indexed_history_counts()?;
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "indexed_sessions_bucket",
+        counts.sessions as u64,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "indexed_events_bucket",
+        counts.events as u64,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "indexed_items_bucket",
+        counts.items() as u64,
+    );
+    Ok(())
+}
+
+fn insert_db_size_bucket(analytics_properties: &mut AnalyticsProperties, db_path: &Path) {
+    let bytes = fs::metadata(db_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    analytics::insert_bytes_bucket(analytics_properties, "db_size_bucket", bytes);
+}
+
 fn setup_has_failed_sources(report: Option<&ImportReport>) -> bool {
     report.is_some_and(|report| report.totals.failed_sources > 0)
 }
@@ -1534,18 +1564,27 @@ fn run_status(
     let db_path = database_path(data_root.clone());
     let initialized = db_path.exists();
     let config_path = data_root.join(CONFIG_FILE);
-    let (records, sources, catalog_counts) = if initialized {
+    let (records, sessions, events, sources, catalog_counts) = if initialized {
         let store = Store::open(&db_path)?;
+        let counts = store.indexed_history_counts()?;
         (
-            indexed_history_item_count(&store)?,
+            counts.items(),
+            counts.sessions,
+            counts.events,
             store.capture_source_count()?,
             store.catalog_session_counts()?,
         )
     } else {
-        (0, 0, Default::default())
+        (0, 0, 0, 0, Default::default())
     };
     analytics::insert_bool(analytics_properties, "initialized", initialized);
     analytics::insert_count_bucket(analytics_properties, "indexed_items_bucket", records as u64);
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "indexed_sessions_bucket",
+        sessions as u64,
+    );
+    analytics::insert_count_bucket(analytics_properties, "indexed_events_bucket", events as u64);
     analytics::insert_count_bucket(
         analytics_properties,
         "indexed_sources_bucket",
@@ -1556,6 +1595,7 @@ fn run_status(
         "cataloged_sessions_bucket",
         catalog_counts.total as u64,
     );
+    insert_db_size_bucket(analytics_properties, &db_path);
 
     if args.json {
         print_json(json!({
@@ -1565,6 +1605,8 @@ fn run_status(
             "database_path": db_path,
             "config_path": config_path,
             "indexed_items": records,
+            "indexed_sessions": sessions,
+            "indexed_events": events,
             "indexed_sources": sources,
             "cataloged_sessions": catalog_counts.total,
             "indexed_catalog_sessions": catalog_counts.indexed,
@@ -3677,9 +3719,53 @@ fn run_search(
     data_root: PathBuf,
     analytics_properties: &mut AnalyticsProperties,
 ) -> Result<()> {
+    let refresh_started = Instant::now();
     let refresh = refresh_before_search(&args, &data_root)?;
-    let store = Store::open(database_path(data_root))?;
+    analytics::insert_duration(
+        analytics_properties,
+        "refresh_duration",
+        refresh_started.elapsed(),
+    );
+    analytics::insert_str(
+        analytics_properties,
+        "search_refresh_mode",
+        refresh.mode.as_str(),
+    );
+    analytics::insert_str(
+        analytics_properties,
+        "search_refresh_status",
+        refresh.status,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "search_refresh_source_count_bucket",
+        refresh.source_count as u64,
+    );
+    let db_path = database_path(data_root);
+    insert_db_size_bucket(analytics_properties, &db_path);
+    let store = Store::open(&db_path)?;
+    insert_store_analytics_counts(analytics_properties, &store)?;
     let query = args.query.unwrap_or_default();
+    let query_term_count = query
+        .split_whitespace()
+        .filter(|term| !term.trim().is_empty())
+        .count()
+        .saturating_add(
+            args.term
+                .iter()
+                .filter(|term| !term.trim().is_empty())
+                .count(),
+        );
+    analytics::insert_text_length_bucket(
+        analytics_properties,
+        "query_length_bucket",
+        query.chars().count(),
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "query_term_count_bucket",
+        query_term_count as u64,
+    );
     let event_results = args.events || args.session.is_some();
     let options = ctx_history_search::PacketOptions {
         limit: args.limit,
@@ -3705,11 +3791,17 @@ fn run_search(
         ..ctx_history_search::PacketOptions::default()
     };
     let uses_composed_terms = args.term.iter().any(|term| !term.trim().is_empty());
+    let query_started = Instant::now();
     let packet = if uses_composed_terms {
         ctx_history_search::search_packet_terms(&store, &query, &args.term, &options)?
     } else {
         ctx_history_search::search_packet(&store, &query, &options)?
     };
+    analytics::insert_duration(
+        analytics_properties,
+        "query_duration",
+        query_started.elapsed(),
+    );
     let result_count = packet.results.len();
     let citation_count = packet
         .results
@@ -3726,6 +3818,8 @@ fn run_search(
         "citation_count_bucket",
         citation_count as u64,
     );
+    analytics::insert_bool(analytics_properties, "zero_result", result_count == 0);
+    let render_started = Instant::now();
     if args.json {
         let suggested_next_query = (!uses_composed_terms).then_some(query.as_str());
         print_share_safe_value(SearchDto::packet(
@@ -3764,6 +3858,11 @@ fn run_search(
             }
         }
     }
+    analytics::insert_duration(
+        analytics_properties,
+        "render_duration",
+        render_started.elapsed(),
+    );
     Ok(())
 }
 

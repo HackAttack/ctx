@@ -34,6 +34,7 @@ fn send_cli_event_inner(
     config: &AppConfig,
     event: AnalyticsEvent<'_>,
 ) -> Result<()> {
+    let device_id = identity::device_id(data_root)?;
     let install_id = identity::install_id(data_root)?;
     let status = if event.success { "ok" } else { "error" };
     let duration_ms = event.duration.as_millis().min(i64::MAX as u128) as i64;
@@ -52,6 +53,7 @@ fn send_cli_event_inner(
     }
     let payload = json!({
         "broker_install_id": install_id,
+        "broker_device_id": device_id,
         "broker_runtime": "cli",
         "broker_app_version": env!("CARGO_PKG_VERSION"),
         "broker_os": std::env::consts::OS,
@@ -65,6 +67,7 @@ fn send_cli_event_inner(
             "delivery": "remote",
             "origin_runtime": "cli",
             "origin_install_id": install_id,
+            "origin_device_id": device_id,
             "app_version": env!("CARGO_PKG_VERSION"),
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -101,6 +104,18 @@ pub fn insert_bytes_bucket(properties: &mut AnalyticsProperties, key: &str, byte
     insert_str(properties, key, bytes_bucket(bytes));
 }
 
+pub fn insert_duration(properties: &mut AnalyticsProperties, prefix: &str, duration: Duration) {
+    insert_str(
+        properties,
+        &format!("{prefix}_bucket"),
+        duration_bucket(duration),
+    );
+}
+
+pub fn insert_text_length_bucket(properties: &mut AnalyticsProperties, key: &str, chars: usize) {
+    insert_str(properties, key, text_length_bucket(chars));
+}
+
 pub fn count_bucket(count: u64) -> &'static str {
     match count {
         0 => "0",
@@ -122,6 +137,16 @@ pub fn bytes_bucket(bytes: u64) -> &'static str {
         10_485_760..=104_857_599 => "10mb-100mb",
         104_857_600..=1_073_741_823 => "100mb-1gb",
         _ => "1gb+",
+    }
+}
+
+pub fn text_length_bucket(chars: usize) -> &'static str {
+    match chars {
+        0 => "0",
+        1..=20 => "1-20",
+        21..=100 => "21-100",
+        101..=500 => "101-500",
+        _ => "500+",
     }
 }
 
