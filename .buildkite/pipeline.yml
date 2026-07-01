@@ -115,12 +115,10 @@ steps:
     command: |
       scripts/build-public-cli-artifact.sh macos-arm64
     agents:
-      queue: "ctx-mac-gui-shared-arm64"
-      os: "darwin"
-      arch: "arm64"
-    concurrency: 1
-    concurrency_group: "ctx-mac-gui-shared-arm64"
-    concurrency_method: "eager"
+      queue: "release-linux-managed"
+      ctx-runner-class: "release-linux-control"
+      os: "linux"
+      arch: "x86_64"
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-artifacts/ctx-macos-arm64"
@@ -133,12 +131,10 @@ steps:
     command: |
       scripts/build-public-cli-artifact.sh macos-x64
     agents:
-      queue: "ctx-mac-gui-shared-arm64"
-      os: "darwin"
-      arch: "arm64"
-    concurrency: 1
-    concurrency_group: "ctx-mac-gui-shared-arm64"
-    concurrency_method: "eager"
+      queue: "release-linux-managed"
+      ctx-runner-class: "release-linux-control"
+      os: "linux"
+      arch: "x86_64"
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-artifacts/ctx-macos-x64"

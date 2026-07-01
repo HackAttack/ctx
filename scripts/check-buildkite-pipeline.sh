@@ -34,6 +34,14 @@ if command -v ruby >/dev/null 2>&1; then
       next unless step.is_a?(Hash)
       abort "artifact step #{step["key"]} must be gated" unless step["if"].to_s.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX")
     end
+    %w[public-cli-macos-arm64 public-cli-macos-x64].each do |key|
+      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
+      abort "missing macOS artifact step #{key}" unless step
+      abort "#{key} must cross-build on release-linux-managed" unless step.dig("agents", "queue") == "release-linux-managed"
+      abort "#{key} must run on linux" unless step.dig("agents", "os") == "linux"
+      abort "#{key} must run on x86_64" unless step.dig("agents", "arch") == "x86_64"
+      abort "#{key} must not serialize on the Mac GUI queue" if step.key?("concurrency_group")
+    end
   ' "${pipeline}"
 else
   top_level_steps="$(
@@ -62,11 +70,40 @@ for required in \
   'scripts/build-public-cli-artifact.sh windows-x64' \
   'scripts/build-public-cli-artifact.sh freebsd-x64' \
   'scripts/build-public-cli-artifact.sh macos-arm64' \
-  'scripts/build-public-cli-artifact.sh macos-x64'; do
+  'scripts/build-public-cli-artifact.sh macos-x64' \
+  'cargo zigbuild -p ctx --release --target "${target}" --locked' \
+  'CARGO_ZIGBUILD_VERSION' \
+  'ZIG_LINUX_X64_SHA256'; do
   if ! grep -F -q "${required}" "${pipeline}"; then
-    printf 'pipeline missing required snippet: %s\n' "${required}" >&2
-    exit 1
+    if ! grep -F -q "${required}" scripts/build-public-cli-artifact.sh; then
+      printf 'pipeline or artifact script missing required snippet: %s\n' "${required}" >&2
+      exit 1
+    fi
+    continue
   fi
+done
+
+if grep -F -q 'ctx-mac-gui-shared-arm64' "${pipeline}"; then
+  printf 'public CLI artifact matrix must not use the scarce Mac GUI queue\n' >&2
+  exit 1
+fi
+
+for mac_step in public-cli-macos-arm64 public-cli-macos-x64; do
+  for required in \
+    'queue: "release-linux-managed"' \
+    'ctx-runner-class: "release-linux-control"' \
+    'os: "linux"' \
+    'arch: "x86_64"'; do
+    if ! awk '
+        index($0, "key: \"" step "\"") { in_step = 1 }
+        in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
+        in_step && index($0, needle) { found = 1 }
+        END { exit found ? 0 : 1 }
+      ' step="${mac_step}" needle="${required}" "${pipeline}"; then
+      printf '%s artifact step missing required Linux runner snippet: %s\n' "${mac_step}" "${required}" >&2
+      exit 1
+    fi
+  done
 done
 
 if grep -E -q 'release-artifact|r2-|provider-live|OpenRouter|completion-certificate|freebsd-native-release-proof|CTX_PUBLIC_CLI_PERF_GATES|--mode=perf|public-perf' "${pipeline}"; then
