@@ -218,6 +218,10 @@ Filters:
 - `--refresh auto|off|strict`;
 - `--include-current-session`.
 
+CLI provider filters use kebab-case names. JSON output and stable SQL views use
+provider IDs in ctx output; multiword IDs may be snake_case, such as `copilot_cli` or
+`factory_ai_droid`.
+
 `search` reads discovered native provider files for pre-search refresh plus
 SQLite, and may write newly discovered native provider history into the local
 index before querying.

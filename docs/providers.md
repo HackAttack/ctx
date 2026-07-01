@@ -31,6 +31,10 @@ ctx sources
 ctx sources --json
 ```
 
+CLI provider flags use names such as `copilot-cli` and `factory-ai-droid`.
+Structured JSON and stable SQL views use provider IDs in ctx output; multiword IDs may be
+snake_case, such as `copilot_cli` or `factory_ai_droid`.
+
 `ctx sources --json` reports each known provider source with `import_support`
 and `importable` fields. A native source is marked available/importable only
 when provider-specific transcript files exist. Sources with

@@ -72,6 +72,10 @@ Search filters narrow both human output and JSON:
 - `--refresh auto|off|strict`;
 - `--include-current-session`.
 
+CLI provider filters use the kebab-case names above. JSON output and stable SQL
+views use provider IDs in ctx output; multiword provider IDs may be snake_case, such as
+`copilot_cli` or `factory_ai_droid`.
+
 `--since` accepts RFC 3339 timestamps such as `2026-06-01T00:00:00Z` or a day
 window such as `30d`.
 
