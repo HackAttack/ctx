@@ -28,8 +28,8 @@ ctx doctor --json
 
 - `setup` creates the data root, opens or creates `work.sqlite`, writes
   `config.toml` when needed, discovers known provider history locations,
-  catalogs Codex sessions, imports all discovered importable sources, optimizes
-  the local search index, and prints next steps.
+  catalogs Codex sessions, imports all discovered auto-importable sources,
+  optimizes the local search index, and prints next steps.
 - `setup --catalog-only` stops after discovery/cataloging. It is useful for
   fast inventory or troubleshooting, but it does not make history searchable.
 - `status` reports the ctx root, database path, config path, indexed item
@@ -57,8 +57,10 @@ machine. Current rows include:
 - Codex session trees at `~/.codex/sessions`;
 - Codex prompt history at `~/.codex/history.jsonl`;
 - Pi session JSONL at `~/.pi/sessions.jsonl`;
-- native rows for supported Antigravity, Claude, OpenCode, Gemini, Cursor,
-  Copilot CLI, and Factory AI Droid local history locations.
+- native rows for supported Antigravity, Claude, OpenCode, OpenClaw, Hermes,
+  Gemini, Cursor, Copilot CLI, and Factory AI Droid local history locations;
+- preview rows for NanoClaw project roots and AstrBot SQLite history when those
+  paths are discoverable.
 
 Each JSON row includes `provider`, `path`, `exists`, `source_format`, `status`,
 `import_support`, `native_import`, `importable`, `raw_retention`, and any
@@ -75,6 +77,10 @@ ctx import --provider pi
 ctx import --provider antigravity
 ctx import --provider claude
 ctx import --provider opencode
+ctx import --provider openclaw
+ctx import --provider hermes
+ctx import --provider nanoclaw --path /path/to/nanoclaw-project
+ctx import --provider astrbot --path /path/to/data/data_v4.db
 ctx import --provider gemini
 ctx import --provider cursor
 ctx import --provider copilot-cli
@@ -95,10 +101,16 @@ citations, and import totals to SQLite.
 
 Import selection rules:
 
-- with no arguments or with `--all`, import all discovered sources that exist;
+- with no arguments or with `--all`, import all discovered auto-importable
+  sources that exist;
 - with `--provider`, import discovered sources for that provider;
 - with `--path`, import exactly that path;
 - with `--path` and no provider, parse the path as Codex format.
+
+Preview providers such as NanoClaw and AstrBot are not included in `--all` or
+pre-search refresh. Import them explicitly with `--provider` when discovery
+finds the desired source, or add `--path` to target a specific source, then
+search the existing index.
 
 The current `--resume` flag is an idempotent-rescan mode marker. JSON reports
 `resume: true` and `resume_mode: "idempotent_rescan"`, but provider-native
@@ -166,7 +178,7 @@ results without a foreground catch-up scan; use `--refresh strict` or
 `ctx import --all` when you need a full catch-up before querying. Use
 `--refresh off` to search the existing index without refreshing, or
 `--refresh strict` to fail when the pre-search refresh cannot run or import
-successfully. Search-only sources without native import support are searched
+successfully. Preview native sources such as NanoClaw and AstrBot are searched
 from the existing index until they are explicitly imported through a supported
 path. The query argument is optional so file or metadata filters can drive a
 search. Default results are session-diverse: ctx
@@ -201,7 +213,7 @@ optimized for agent reading; use `--verbose` for expanded text diagnostics.
 
 Filters:
 
-- `--provider codex|pi|claude|opencode|antigravity|gemini|cursor|copilot-cli|factory-ai-droid`;
+- `--provider codex|pi|claude|opencode|openclaw|hermes|nanoclaw|astrbot|antigravity|gemini|cursor|copilot-cli|factory-ai-droid`;
 - `--workspace <name-or-path>`, substring match over stored workspace, cwd,
   source path, or repository-name text;
 - `--since <rfc3339-or-days>d`, for example `2026-06-01T00:00:00Z` or `30d`;
@@ -219,8 +231,9 @@ Filters:
 - `--include-current-session`.
 
 CLI provider filters use kebab-case names. JSON output and stable SQL views use
-provider IDs in ctx output; multiword IDs may be snake_case, such as `copilot_cli` or
-`factory_ai_droid`.
+provider IDs in ctx output; multiword IDs may be snake_case, such as
+`copilot_cli` or `factory_ai_droid`, while compact IDs such as `openclaw`,
+`nanoclaw`, and `astrbot` stay compact.
 
 `search` reads discovered native provider files for pre-search refresh plus
 SQLite, and may write newly discovered native provider history into the local

@@ -14,6 +14,15 @@ The current CLI imports local history for:
   supported JSONL format;
 - Claude Code project JSONL transcripts under `~/.claude/projects`;
 - OpenCode SQLite history under `~/.local/share/opencode/opencode.db`;
+- OpenClaw session JSONL trees under `OPENCLAW_STATE_DIR`, `~/.openclaw`,
+  legacy `~/.clawdbot`, or legacy `~/.moltbot`;
+- Hermes Agent SQLite history under `HERMES_HOME/state.db` or
+  `~/.hermes/state.db`;
+- NanoClaw project history from a project root with `data/v2.db` and
+  `data/v2-sessions` when imported explicitly;
+- AstrBot local SQLite history from `ASTRBOT_ROOT/data/data_v4.db`,
+  `~/.astrbot/data/data_v4.db`, or a project `data/data_v4.db` when imported
+  explicitly;
 - Antigravity transcript JSONL mirrors under
   `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl`
   or `transcript.jsonl`;
@@ -31,13 +40,20 @@ ctx sources
 ctx sources --json
 ```
 
-CLI provider flags use names such as `copilot-cli` and `factory-ai-droid`.
+CLI provider flags use names such as `openclaw`, `hermes`, `nanoclaw`,
+`astrbot`, `copilot-cli`, and `factory-ai-droid`.
 Structured JSON and stable SQL views use provider IDs in ctx output; multiword IDs may be
-snake_case, such as `copilot_cli` or `factory_ai_droid`.
+snake_case, such as `copilot_cli` or `factory_ai_droid`, while compact native
+IDs such as `openclaw`, `nanoclaw`, and `astrbot` stay compact.
 
 `ctx sources --json` reports each known provider source with `import_support`
 and `importable` fields. A native source is marked available/importable only
-when provider-specific transcript files exist. Sources with
+when provider-specific transcript files exist. Sources with `import_support:
+"preview"` are explicit-import preview paths: use `ctx import --provider
+nanoclaw` or `ctx import --provider astrbot` when discovery finds the desired
+source, or add `--path` to target a specific source before searching it. They
+are intentionally excluded from `ctx import --all` and pre-search refresh until
+promoted. Sources with
 `status: "unknown"` hit the bounded transcript probe budget before proving
 history exists, and sources with `import_support: "unsupported"` are detections
 or blockers, not importable native history.

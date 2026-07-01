@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    env,
+    path::{Path, PathBuf},
+};
 
 use ctx_history_core::{CaptureProvider, ProviderRawRetention, ProviderRedactionBoundary};
 
@@ -11,7 +15,18 @@ pub enum ProviderSourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderImportSupport {
     Native,
+    Preview,
     Unsupported,
+}
+
+impl ProviderImportSupport {
+    pub fn is_importable(self) -> bool {
+        matches!(self, Self::Native | Self::Preview)
+    }
+
+    pub fn is_auto_importable(self) -> bool {
+        matches!(self, Self::Native)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +151,38 @@ const FACTORY_DROID_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLoca
     source_kind: ProviderSourceKind::NativeHistory,
 }];
 
+const OPENCLAW_DEFAULTS: &[ProviderDefaultLocation] = &[
+    ProviderDefaultLocation {
+        path_components: &[".openclaw"],
+        source_format: "openclaw_session_jsonl_tree",
+        source_kind: ProviderSourceKind::NativeHistory,
+    },
+    ProviderDefaultLocation {
+        path_components: &[".clawdbot"],
+        source_format: "openclaw_session_jsonl_tree",
+        source_kind: ProviderSourceKind::NativeHistory,
+    },
+    ProviderDefaultLocation {
+        path_components: &[".moltbot"],
+        source_format: "openclaw_session_jsonl_tree",
+        source_kind: ProviderSourceKind::NativeHistory,
+    },
+];
+
+const HERMES_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
+    path_components: &[".hermes", "state.db"],
+    source_format: "hermes_state_sqlite",
+    source_kind: ProviderSourceKind::NativeHistory,
+}];
+
+const NANOCLAW_DEFAULTS: &[ProviderDefaultLocation] = &[];
+
+const ASTRBOT_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
+    path_components: &[".astrbot", "data", "data_v4.db"],
+    source_format: "astrbot_data_v4_sqlite",
+    source_kind: ProviderSourceKind::NativeHistory,
+}];
+
 const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     ProviderSourceSpec {
         provider: CaptureProvider::Codex,
@@ -227,6 +274,46 @@ const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
+    ProviderSourceSpec {
+        provider: CaptureProvider::OpenClaw,
+        display_name: "OpenClaw",
+        default_locations: OPENCLAW_DEFAULTS,
+        import_support: ProviderImportSupport::Native,
+        catalog_support: ProviderCatalogSupport::None,
+        raw_retention: ProviderRawRetention::PathReference,
+        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+        unsupported_reason: None,
+    },
+    ProviderSourceSpec {
+        provider: CaptureProvider::Hermes,
+        display_name: "Hermes Agent",
+        default_locations: HERMES_DEFAULTS,
+        import_support: ProviderImportSupport::Native,
+        catalog_support: ProviderCatalogSupport::None,
+        raw_retention: ProviderRawRetention::PathReference,
+        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+        unsupported_reason: None,
+    },
+    ProviderSourceSpec {
+        provider: CaptureProvider::NanoClaw,
+        display_name: "NanoClaw",
+        default_locations: NANOCLAW_DEFAULTS,
+        import_support: ProviderImportSupport::Preview,
+        catalog_support: ProviderCatalogSupport::None,
+        raw_retention: ProviderRawRetention::PathReference,
+        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+        unsupported_reason: None,
+    },
+    ProviderSourceSpec {
+        provider: CaptureProvider::AstrBot,
+        display_name: "AstrBot",
+        default_locations: ASTRBOT_DEFAULTS,
+        import_support: ProviderImportSupport::Preview,
+        catalog_support: ProviderCatalogSupport::None,
+        raw_retention: ProviderRawRetention::PathReference,
+        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+        unsupported_reason: None,
+    },
 ];
 
 pub fn provider_source_specs() -> &'static [ProviderSourceSpec] {
@@ -238,37 +325,140 @@ pub fn provider_source_spec(provider: CaptureProvider) -> Option<&'static Provid
 }
 
 pub fn discover_provider_sources(home: &Path) -> Vec<ProviderSource> {
-    PROVIDER_SPECS
-        .iter()
-        .flat_map(|spec| {
-            spec.default_locations.iter().map(|location| {
-                let path = location
-                    .path_components
-                    .iter()
-                    .fold(home.to_path_buf(), |path, component| path.join(component));
-                provider_source_from_location(spec, location, path)
-            })
-        })
-        .collect()
+    dedupe_sources(
+        PROVIDER_SPECS
+            .iter()
+            .flat_map(|spec| discover_provider_sources_for_spec(home, spec))
+            .collect(),
+    )
 }
 
 pub fn discover_provider_sources_for_provider(
     home: &Path,
     provider: CaptureProvider,
 ) -> Vec<ProviderSource> {
-    PROVIDER_SPECS
+    dedupe_sources(
+        PROVIDER_SPECS
+            .iter()
+            .filter(|spec| spec.provider == provider)
+            .flat_map(|spec| discover_provider_sources_for_spec(home, spec))
+            .collect(),
+    )
+}
+
+fn discover_provider_sources_for_spec(
+    home: &Path,
+    spec: &ProviderSourceSpec,
+) -> Vec<ProviderSource> {
+    let mut sources = spec
+        .default_locations
         .iter()
-        .filter(|spec| spec.provider == provider)
-        .flat_map(|spec| {
-            spec.default_locations.iter().map(|location| {
-                let path = location
-                    .path_components
-                    .iter()
-                    .fold(home.to_path_buf(), |path, component| path.join(component));
-                provider_source_from_location(spec, location, path)
-            })
+        .map(|location| {
+            let path = location
+                .path_components
+                .iter()
+                .fold(home.to_path_buf(), |path, component| path.join(component));
+            provider_source_from_location(spec, location, path)
         })
+        .collect::<Vec<_>>();
+
+    match spec.provider {
+        CaptureProvider::OpenClaw => {
+            if let Some(path) = env_path("OPENCLAW_STATE_DIR") {
+                sources.push(provider_source_from_parts(
+                    spec,
+                    path,
+                    "openclaw_session_jsonl_tree",
+                    ProviderSourceKind::NativeHistory,
+                ));
+            }
+        }
+        CaptureProvider::Hermes => {
+            if let Some(path) = env_path("HERMES_HOME") {
+                sources.push(provider_source_from_parts(
+                    spec,
+                    path.join("state.db"),
+                    "hermes_state_sqlite",
+                    ProviderSourceKind::NativeHistory,
+                ));
+            }
+        }
+        CaptureProvider::NanoClaw => {
+            for root in current_dir_ancestors_with(|candidate| {
+                candidate.join("data").join("v2.db").is_file()
+                    && candidate.join("data").join("v2-sessions").is_dir()
+            }) {
+                sources.push(provider_source_from_parts(
+                    spec,
+                    root,
+                    "nanoclaw_project",
+                    ProviderSourceKind::NativeHistory,
+                ));
+            }
+        }
+        CaptureProvider::AstrBot => {
+            if let Some(path) = env_path("ASTRBOT_ROOT") {
+                sources.push(provider_source_from_parts(
+                    spec,
+                    path.join("data").join("data_v4.db"),
+                    "astrbot_data_v4_sqlite",
+                    ProviderSourceKind::NativeHistory,
+                ));
+            }
+            for root in current_dir_ancestors_with(|candidate| {
+                candidate.join("data").join("data_v4.db").is_file()
+            }) {
+                sources.push(provider_source_from_parts(
+                    spec,
+                    root.join("data").join("data_v4.db"),
+                    "astrbot_data_v4_sqlite",
+                    ProviderSourceKind::NativeHistory,
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    sources
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn current_dir_ancestors_with(matches: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let Ok(current_dir) = env::current_dir() else {
+        return Vec::new();
+    };
+    current_dir
+        .ancestors()
+        .filter(|candidate| matches(candidate))
+        .map(Path::to_path_buf)
         .collect()
+}
+
+fn dedupe_sources(sources: Vec<ProviderSource>) -> Vec<ProviderSource> {
+    let mut seen = HashSet::new();
+    sources
+        .into_iter()
+        .filter(|source| seen.insert((source.provider, source.path.clone(), source.source_format)))
+        .collect()
+}
+
+fn provider_source_from_parts(
+    spec: &ProviderSourceSpec,
+    path: PathBuf,
+    source_format: &'static str,
+    source_kind: ProviderSourceKind,
+) -> ProviderSource {
+    let location = ProviderDefaultLocation {
+        path_components: &[],
+        source_format,
+        source_kind,
+    };
+    provider_source_from_location(spec, &location, path)
 }
 
 pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> ProviderSource {
@@ -307,10 +497,20 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
         CaptureProvider::Cursor => "cursor_agent_transcript_jsonl_tree",
         CaptureProvider::CopilotCli => "copilot_cli_session_events_jsonl",
         CaptureProvider::FactoryAiDroid => "factory_ai_droid_sessions_jsonl",
+        CaptureProvider::OpenClaw => "openclaw_session_jsonl_tree",
+        CaptureProvider::Hermes => "hermes_state_sqlite",
+        CaptureProvider::NanoClaw => {
+            if path.file_name().and_then(|name| name.to_str()) == Some("v2.db") {
+                "nanoclaw_project"
+            } else {
+                "nanoclaw_project"
+            }
+        }
+        CaptureProvider::AstrBot => "astrbot_data_v4_sqlite",
         _ => "unsupported",
     };
     let explicit_import_support = spec.import_support;
-    let source_kind = if matches!(explicit_import_support, ProviderImportSupport::Native) {
+    let source_kind = if explicit_import_support.is_importable() {
         ProviderSourceKind::NativeHistory
     } else {
         ProviderSourceKind::DetectionOnly
@@ -397,6 +597,14 @@ fn empty_source_reason(provider: CaptureProvider) -> Option<&'static str> {
         CaptureProvider::FactoryAiDroid => {
             Some("path exists but no Factory AI Droid session JSONL files were found")
         }
+        CaptureProvider::OpenClaw => {
+            Some("path exists but no OpenClaw agent session JSONL files were found")
+        }
+        CaptureProvider::Hermes => Some("path exists but no Hermes state.db file was found"),
+        CaptureProvider::NanoClaw => {
+            Some("path exists but no NanoClaw data/v2.db and data/v2-sessions store was found")
+        }
+        CaptureProvider::AstrBot => Some("path exists but no AstrBot data/data_v4.db was found"),
         _ => None,
     }
 }
@@ -424,6 +632,9 @@ fn unknown_source_reason(provider: CaptureProvider) -> Option<&'static str> {
         CaptureProvider::FactoryAiDroid => {
             Some("path exists but the Factory AI Droid transcript probe hit its scan budget")
         }
+        CaptureProvider::OpenClaw => {
+            Some("path exists but the OpenClaw transcript probe hit its scan budget")
+        }
         _ => None,
     }
 }
@@ -441,6 +652,10 @@ fn default_location_import_probe(
         CaptureProvider::Pi => BoundedProbe::from_bool(path.is_file()),
         CaptureProvider::OpenCode => BoundedProbe::from_bool(path.is_file()),
         CaptureProvider::Claude => has_jsonl_file_under_matching(path, 10_000, |_| true),
+        CaptureProvider::OpenClaw => has_openclaw_session_jsonl(path, 10_000),
+        CaptureProvider::Hermes => BoundedProbe::from_bool(path.is_file()),
+        CaptureProvider::NanoClaw => has_nanoclaw_project(path),
+        CaptureProvider::AstrBot => BoundedProbe::from_bool(path.is_file()),
         CaptureProvider::Antigravity => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             matches!(
                 candidate.file_name().and_then(|name| name.to_str()),
@@ -465,6 +680,29 @@ fn has_gemini_chat_jsonl(root: &Path, max_entries: usize) -> BoundedProbe {
         return BoundedProbe::NotFound;
     }
     has_jsonl_file_under_matching(&tmp, max_entries, |path| path_has_component(path, "chats"))
+}
+
+fn has_openclaw_session_jsonl(root: &Path, max_entries: usize) -> BoundedProbe {
+    if root.is_file() {
+        return BoundedProbe::from_bool(
+            root.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
+        );
+    }
+    let agents = root.join("agents");
+    if agents.is_dir() {
+        return has_jsonl_file_under_matching(&agents, max_entries, |path| {
+            path_has_component(path, "sessions")
+        });
+    }
+    has_jsonl_file_under_matching(root, max_entries, |path| {
+        path_has_component(path, "sessions")
+    })
+}
+
+fn has_nanoclaw_project(root: &Path) -> BoundedProbe {
+    BoundedProbe::from_bool(
+        root.join("data").join("v2.db").is_file() && root.join("data").join("v2-sessions").is_dir(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -656,6 +894,45 @@ mod tests {
             CaptureProvider::CopilotCli,
             ProviderSourceStatus::Available,
         );
+
+        let openclaw = temp.path().join(".openclaw/agents/personal/sessions");
+        std::fs::create_dir_all(&openclaw).unwrap();
+        assert_source_status(
+            temp.path(),
+            CaptureProvider::OpenClaw,
+            ProviderSourceStatus::Empty,
+        );
+        std::fs::write(openclaw.join("session.jsonl"), "{}\n").unwrap();
+        assert_source_status(
+            temp.path(),
+            CaptureProvider::OpenClaw,
+            ProviderSourceStatus::Available,
+        );
+
+        let hermes = temp.path().join(".hermes");
+        std::fs::create_dir_all(&hermes).unwrap();
+        std::fs::write(hermes.join("state.db"), b"sqlite fixture marker").unwrap();
+        let hermes_source = discover_provider_sources(temp.path())
+            .into_iter()
+            .find(|source| source.provider == CaptureProvider::Hermes)
+            .unwrap();
+        assert_eq!(hermes_source.status, ProviderSourceStatus::Available);
+        assert_eq!(hermes_source.import_support, ProviderImportSupport::Native);
+
+        let astrbot = temp.path().join(".astrbot/data");
+        std::fs::create_dir_all(&astrbot).unwrap();
+        std::fs::write(astrbot.join("data_v4.db"), b"sqlite fixture marker").unwrap();
+        let astrbot_source = discover_provider_sources(temp.path())
+            .into_iter()
+            .find(|source| source.provider == CaptureProvider::AstrBot)
+            .unwrap();
+        assert_eq!(astrbot_source.status, ProviderSourceStatus::Available);
+        assert_eq!(
+            astrbot_source.import_support,
+            ProviderImportSupport::Preview
+        );
+        assert!(astrbot_source.import_support.is_importable());
+        assert!(!astrbot_source.import_support.is_auto_importable());
     }
 
     #[test]
