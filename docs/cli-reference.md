@@ -69,9 +69,11 @@ Native JSON rows include `provider`, `path`, `exists`, `source_format`,
 `status`, `import_support`, `native_import`, `importable`, `raw_retention`, and
 any `unsupported_reason`. Plugin JSON rows use
 `kind: "history_source_plugin"` and include `plugin`, `history_source`,
-`provider_key`, `source_id`, `manifest_path`, and `enabled`. `sources` reads
-path metadata and plugin manifests, writes nothing to provider files or source
-repositories, and does not execute plugin commands.
+`provider_key`, `source_id`, `manifest_path`, and `enabled`. Invalid installed
+plugin manifests appear as non-importable plugin rows with `status: "invalid"`
+and an `error`. `sources` reads path metadata and plugin manifests, writes
+nothing to provider files or source repositories, and does not execute plugin
+commands.
 
 ## Import
 
@@ -94,11 +96,9 @@ ctx import --provider factory-ai-droid
 ctx import --path ~/.codex/sessions
 ctx import --provider pi --path ~/.pi/sessions.jsonl
 ctx import --format ctx-history-jsonl-v1 --path ./history.jsonl
-ctx import --history-source dorkos
-ctx import --plugin dorkos/default
+ctx import --history-source dorkos/default
 ctx import --history-source-manifest ./ctx-history-plugin.json
-ctx import --plugin-manifest ./ctx-history-plugin.json
-ctx import --history-source hermes --reset-cursor
+ctx import --history-source hermes/default --reset-cursor
 ctx import --resume
 ctx import --json
 ctx import --progress json --json
@@ -120,9 +120,10 @@ the schema and incremental semantics.
 History-source plugins are local command adapters that stream
 `ctx-history-jsonl-v1` to stdout. Use `--history-source <selector>` for an
 explicit plugin import, or `--history-source-manifest <path>` to test a manifest
-without installing it. `--plugin` and `--plugin-manifest` are aliases.
-`--reset-cursor` withholds the previous plugin cursor for that run and asks the
-plugin to perform a full rescan. See `docs/history-source-plugins.md`.
+without installing it. Selectors are exact `plugin/source` or
+`provider_key/source_id` values. `--reset-cursor` withholds the previous plugin
+cursor for that run and asks the plugin to perform a full rescan. See
+`docs/history-source-plugins.md`.
 
 Import selection rules:
 
@@ -198,6 +199,8 @@ ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
 ctx search "review findings" --include-subagents
 ctx search "this current task" --include-current-session
+ctx search "release notes" --history-source dorkos/default
+ctx search "release notes" --provider-key dorkos --source-id default
 ```
 
 `search` defaults to `--refresh auto`, which quietly refreshes discovered native
@@ -222,6 +225,10 @@ for dense event-level results across sessions. Repeat
 `--term <query-or-keyword>` when you want to broaden a search across several
 related words or phrases and merge the ranked results; `--term` is OR-style
 broadening, not a must-include filter.
+Custom history imports can be filtered by `--history-source` using
+`plugin/source` or `provider_key/source_id`, or by exact `--provider-key`,
+`--source-id`, and `--source-format` values. These filters imply
+`--provider custom` and cannot be combined with another provider.
 Default search excludes subagent sessions so primary human-agent intent and
 decisions stay prominent. Use `--include-subagents` when implementation details,
 code review notes, test output, or failure analysis from subagent sessions

@@ -80,7 +80,7 @@ analytics marker described under network behavior.
 | `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--format ctx-history-jsonl-v1 --path`, or stdout from an explicit history-source plugin command | data root, `config.toml` if missing, and SQLite index |
 | `ctx show` | SQLite index | selected `--out` path for `show session` when provided |
 | `ctx locate` | SQLite index and raw source path metadata | none |
-| `ctx search` | native provider transcript files, path metadata, and SQLite index | SQLite index for newly discovered native provider history |
+| `ctx search` | native provider transcript files, path metadata, enabled auto history-source plugin stdout, and SQLite index | SQLite index for newly discovered native provider or plugin history |
 | `ctx sql` | existing SQLite index only | none |
 | `ctx docs` | embedded documentation in the binary | selected topic `--out` path for `ctx docs show --out` or selected `--out` directory for `ctx docs man --out` |
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, `upgrade-state.json`, `upgrade.lock`, and `logs/upgrade.log` |
@@ -127,7 +127,7 @@ ctx import --all
 ctx import --resume
 ctx import --path ~/.codex/sessions
 ctx import --format ctx-history-jsonl-v1 --path ./history.jsonl
-ctx import --history-source dorkos
+ctx import --history-source dorkos/default
 ```
 
 Current adapters are safe to re-run. They rescan sources idempotently and keep

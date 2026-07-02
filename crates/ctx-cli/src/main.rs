@@ -58,7 +58,8 @@ use ctx_history_store::{
     RAW_SQL_MAX_TIMEOUT,
 };
 use history_source_plugins::{
-    discover_history_source_plugins, run_history_source_plugin, HistorySourcePluginRefresh,
+    discover_history_source_plugins, discover_history_source_plugins_with_diagnostics,
+    run_history_source_plugin, HistorySourcePluginManifestFailure, HistorySourcePluginRefresh,
     HistorySourcePluginRunOptions, HistorySourcePluginSource,
 };
 
@@ -134,15 +135,10 @@ struct ImportArgs {
     provider: Option<NativeProviderArg>,
     #[arg(long)]
     path: Option<PathBuf>,
-    #[arg(
-        long = "history-source",
-        alias = "plugin",
-        conflicts_with_all = ["provider", "path", "format", "all"]
-    )]
+    #[arg(long = "history-source", conflicts_with_all = ["provider", "path", "format", "all"])]
     history_source: Option<String>,
     #[arg(
         long = "history-source-manifest",
-        alias = "plugin-manifest",
         conflicts_with_all = ["provider", "path", "format"]
     )]
     history_source_manifest: Vec<PathBuf>,
@@ -270,6 +266,26 @@ struct SearchArgs {
     #[arg(long, help = "Search only one provider")]
     provider: Option<ProviderArg>,
     #[arg(
+        long = "history-source",
+        help = "Filter custom history imports by plugin/source or provider_key/source_id"
+    )]
+    history_source: Option<String>,
+    #[arg(
+        long = "provider-key",
+        help = "Filter custom history imports by provider_key"
+    )]
+    provider_key: Option<String>,
+    #[arg(
+        long = "source-id",
+        help = "Filter custom history imports by source_id"
+    )]
+    source_id: Option<String>,
+    #[arg(
+        long = "source-format",
+        help = "Filter custom history imports by source_format"
+    )]
+    source_format: Option<String>,
+    #[arg(
         long,
         help = "Filter by stored workspace, cwd, source path, or repo-name text"
     )]
@@ -373,6 +389,7 @@ impl SqlArgs {
 pub(crate) struct SearchFilterInput {
     session: Option<String>,
     provider: Option<ProviderArg>,
+    source_identity: SourceIdentityFilterArgs,
     workspace: Option<String>,
     since: Option<String>,
     primary_only: bool,
@@ -380,6 +397,66 @@ pub(crate) struct SearchFilterInput {
     event_type: Option<String>,
     file: Option<PathBuf>,
     include_current_session: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceIdentityFilterArgs {
+    history_source: Option<String>,
+    provider_key: Option<String>,
+    source_id: Option<String>,
+    source_format: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SourceIdentityFilters {
+    history_source: Option<String>,
+    provider_key: Option<String>,
+    source_id: Option<String>,
+    source_format: Option<String>,
+}
+
+impl SourceIdentityFilters {
+    fn is_empty(&self) -> bool {
+        self.history_source.is_none()
+            && self.provider_key.is_none()
+            && self.source_id.is_none()
+            && self.source_format.is_none()
+    }
+
+    fn matches_plugin_source(&self, source: &HistorySourcePluginSource) -> bool {
+        if let Some(selector) = &self.history_source {
+            if !source.matches_selector(selector) {
+                return false;
+            }
+        }
+        if let Some(provider_key) = &self.provider_key {
+            if source.provider_key != *provider_key {
+                return false;
+            }
+        }
+        if let Some(source_id) = &self.source_id {
+            if source.source_id != *source_id {
+                return false;
+            }
+        }
+        if let Some(source_format) = &self.source_format {
+            if source.source_format != *source_format {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl From<&SearchArgs> for SourceIdentityFilterArgs {
+    fn from(args: &SearchArgs) -> Self {
+        Self {
+            history_source: args.history_source.clone(),
+            provider_key: args.provider_key.clone(),
+            source_id: args.source_id.clone(),
+            source_format: args.source_format.clone(),
+        }
+    }
 }
 
 impl CommandRoot {
@@ -1765,7 +1842,9 @@ fn run_sources(
     analytics_properties: &mut AnalyticsProperties,
 ) -> Result<()> {
     let sources = discovered_sources();
-    let plugin_sources = discover_history_source_plugins(&data_root, &[])?;
+    let plugin_discovery = discover_history_source_plugins_with_diagnostics(&data_root, &[])?;
+    let plugin_sources = plugin_discovery.sources;
+    let plugin_failures = plugin_discovery.failures;
     let existing = sources.iter().filter(|source| source.exists).count();
     let importable = sources
         .iter()
@@ -1778,7 +1857,10 @@ fn run_sources(
     analytics::insert_count_bucket(
         analytics_properties,
         "providers_detected_bucket",
-        sources.len().saturating_add(plugin_sources.len()) as u64,
+        sources
+            .len()
+            .saturating_add(plugin_sources.len())
+            .saturating_add(plugin_failures.len()) as u64,
     );
     analytics::insert_count_bucket(
         analytics_properties,
@@ -1793,6 +1875,7 @@ fn run_sources(
     if args.json {
         let mut source_values = sources_json(&sources);
         source_values.extend(plugin_sources_json(&plugin_sources));
+        source_values.extend(plugin_manifest_failures_json(&plugin_failures));
         print_json(json!({
             "schema_version": 1,
             "sources": source_values,
@@ -1807,6 +1890,13 @@ fn run_sources(
                 source.source_format
             );
         }
+        for failure in plugin_failures {
+            println!(
+                "custom history-source-plugin invalid: {}: {}",
+                failure.manifest_path.display(),
+                failure.error
+            );
+        }
         for source in plugin_sources {
             println!(
                 "custom {} available (history-source-plugin:{})",
@@ -1816,6 +1906,13 @@ fn run_sources(
         }
     }
     Ok(())
+}
+
+pub(crate) fn discovered_plugin_sources_json(data_root: &Path) -> Result<Vec<Value>> {
+    let plugin_discovery = discover_history_source_plugins_with_diagnostics(data_root, &[])?;
+    let mut values = plugin_sources_json(&plugin_discovery.sources);
+    values.extend(plugin_manifest_failures_json(&plugin_discovery.failures));
+    Ok(values)
 }
 
 fn catalog_available_sources(
@@ -1975,7 +2072,7 @@ fn run_import_internal(
             &mut store,
             &plugin_source,
             &data_root,
-            args.resume || args.reset_cursor,
+            args.reset_cursor,
         ) {
             Ok((summary, stats)) => {
                 totals.add(&summary, &stats);
@@ -2020,6 +2117,7 @@ fn run_import_internal(
         }
     }
 
+    let native_import_requested = !planned_sources.is_empty();
     if should_parallelize_import(&planned_sources) {
         let final_refresh_required = store.event_search_projection_needs_backfill()?
             || planned_sources
@@ -2302,7 +2400,7 @@ fn run_import_internal(
         return Err(anyhow!("all import sources failed{detail}"));
     }
     Ok(ImportReport {
-        resume: args.resume,
+        resume: args.resume && native_import_requested,
         totals,
         sources: imported_sources,
     })
@@ -3643,6 +3741,11 @@ impl SearchDto {
                             .then_some(result.more_matches_in_session),
                         "provider": result.provider,
                         "provider_session_id": result.provider_session_id,
+                        "history_source": result.history_source,
+                        "history_source_plugin": result.history_source_plugin,
+                        "provider_key": result.provider_key,
+                        "source_id": result.source_id,
+                        "source_format": result.source_format,
                         "timestamp": result.timestamp,
                         "cwd": result.cwd,
                         "source_path": result.raw_source_path,
@@ -4198,6 +4301,7 @@ fn run_search(
     insert_db_size_bucket(analytics_properties, &db_path);
     let store = Store::open(&db_path)?;
     insert_store_analytics_counts(analytics_properties, &store)?;
+    let source_identity = SourceIdentityFilterArgs::from(&args);
     let query = args.query.unwrap_or_default();
     let query_term_count = query
         .split_whitespace()
@@ -4226,6 +4330,7 @@ fn run_search(
             SearchFilterInput {
                 session: args.session,
                 provider: args.provider,
+                source_identity,
                 workspace: args.workspace.clone(),
                 since: args.since.clone(),
                 primary_only: args.primary_only,
@@ -4356,6 +4461,18 @@ fn print_search_result_verbose(
     if let Some(provider_session_id) = &result.provider_session_id {
         println!("  provider_session_id: {provider_session_id}");
     }
+    if let Some(history_source) = &result.history_source {
+        println!("  history_source: {history_source}");
+    }
+    if let Some(provider_key) = &result.provider_key {
+        println!("  provider_key: {provider_key}");
+    }
+    if let Some(source_id) = &result.source_id {
+        println!("  source_id: {source_id}");
+    }
+    if let Some(source_format) = &result.source_format {
+        println!("  source_format: {source_format}");
+    }
     println!("  {}", result.snippet);
     println!("  rank: {:.2}", result.rank);
     if result.result_scope == ctx_history_search::SearchResultScope::Session {
@@ -4386,6 +4503,12 @@ fn search_result_summary(result: &ctx_history_search::SearchPacketResult) -> Vec
     let mut summary = Vec::new();
     if let Some(provider) = result.provider {
         summary.push(provider.as_str().to_owned());
+    }
+    if let Some(history_source) = &result.history_source {
+        summary.push(history_source.clone());
+    } else if let (Some(provider_key), Some(source_id)) = (&result.provider_key, &result.source_id)
+    {
+        summary.push(format!("{provider_key}/{source_id}"));
     }
     if result.result_scope == ctx_history_search::SearchResultScope::Session {
         summary.push(format!("importance {:.2}", result.session_importance));
@@ -4423,18 +4546,33 @@ fn refresh_before_search(args: &SearchArgs, data_root: &Path) -> Result<SearchRe
     if args.refresh == RefreshArg::Off {
         return Ok(SearchRefreshReport::skipped(RefreshArg::Off, "skipped"));
     }
-    let sources = search_refresh_sources(args.provider);
-    let plugin_sources = match search_refresh_plugin_sources(data_root, args.provider) {
-        Ok(sources) => sources,
-        Err(err) if args.refresh == RefreshArg::Auto => {
-            return Ok(SearchRefreshReport::failed(
-                RefreshArg::Auto,
-                sources.len(),
-                error_summary(&err),
-            ));
-        }
-        Err(err) => return Err(err.context("search refresh failed")),
+    let source_identity = normalize_source_identity_filters(SourceIdentityFilterArgs::from(args))?;
+    if !source_identity.is_empty()
+        && args
+            .provider
+            .is_some_and(|provider| !matches!(provider, ProviderArg::Custom))
+    {
+        return Err(anyhow!(
+            "custom history source filters can only be combined with --provider custom"
+        ));
+    }
+    let sources = if source_identity.is_empty() {
+        search_refresh_sources(args.provider)
+    } else {
+        Vec::new()
     };
+    let plugin_sources =
+        match search_refresh_plugin_sources(data_root, args.provider, &source_identity) {
+            Ok(sources) => sources,
+            Err(err) if args.refresh == RefreshArg::Auto => {
+                return Ok(SearchRefreshReport::failed(
+                    RefreshArg::Auto,
+                    sources.len(),
+                    error_summary(&err),
+                ));
+            }
+            Err(err) => return Err(err.context("search refresh failed")),
+        };
     if sources.is_empty() && plugin_sources.is_empty() {
         if args.refresh == RefreshArg::Strict {
             return Err(anyhow!(
@@ -4482,13 +4620,18 @@ fn search_refresh_sources(provider: Option<ProviderArg>) -> Vec<SourceInfo> {
 fn search_refresh_plugin_sources(
     data_root: &Path,
     provider: Option<ProviderArg>,
+    source_identity: &SourceIdentityFilters,
 ) -> Result<Vec<HistorySourcePluginSource>> {
     if !matches!(provider, None | Some(ProviderArg::Custom)) {
         return Ok(Vec::new());
     }
     Ok(discover_history_source_plugins(data_root, &[])?
         .into_iter()
-        .filter(|source| source.enabled && source.refresh == HistorySourcePluginRefresh::Auto)
+        .filter(|source| {
+            source.enabled
+                && source.refresh == HistorySourcePluginRefresh::Auto
+                && source_identity.matches_plugin_source(source)
+        })
         .collect())
 }
 
@@ -4851,19 +4994,20 @@ fn import_history_source_plugin(
         },
     )?;
     let _plugin_stderr = &run.stderr;
-    validate_history_source_plugin_output(source, &run.stdout, &machine_id)?;
-    let validation = validate_custom_history_jsonl_v1_reader(Cursor::new(run.stdout.as_slice()))
+    validate_history_source_plugin_output(source, &run.stdout, &machine_id, full_rescan)?;
+    let stdout = annotate_history_source_plugin_output(source, &run.stdout)?;
+    let validation = validate_custom_history_jsonl_v1_reader(Cursor::new(stdout.as_slice()))
         .map_err(anyhow::Error::from)?;
     if validation.failed > 0 {
         return Err(history_source_plugin_import_failure(source, &validation));
     }
     let stats = SourceStats {
         files: 1,
-        bytes: run.stdout.len() as u64,
+        bytes: stdout.len() as u64,
     };
     store.upsert_record(&record)?;
     let summary = import_custom_history_jsonl_v1_reader(
-        Cursor::new(run.stdout),
+        Cursor::new(stdout),
         store,
         CustomHistoryJsonlV1ImportOptions {
             machine_id,
@@ -4880,10 +5024,70 @@ fn import_history_source_plugin(
     Ok((summary, stats))
 }
 
+fn annotate_history_source_plugin_output(
+    source: &HistorySourcePluginSource,
+    stdout: &[u8],
+) -> Result<Vec<u8>> {
+    let text = std::str::from_utf8(stdout).with_context(|| {
+        format!(
+            "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output",
+            source.label()
+        )
+    })?;
+    let mut out = Vec::with_capacity(stdout.len());
+    for (index, line) in text.lines().enumerate() {
+        let line_number = index + 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut record: CtxHistoryJsonlRecord = serde_json::from_str(line).with_context(|| {
+            format!(
+                "history source plugin {} emitted invalid ctx-history-jsonl-v1 at line {line_number}",
+                source.label()
+            )
+        })?;
+        if let CtxHistoryJsonlRecord::Source(source_record) = &mut record {
+            let mut metadata = match std::mem::take(&mut source_record.metadata) {
+                Value::Object(map) => map,
+                Value::Null => serde_json::Map::new(),
+                other => {
+                    let mut map = serde_json::Map::new();
+                    map.insert("metadata".to_owned(), other);
+                    map
+                }
+            };
+            metadata.insert(
+                "ctx_history_plugin".to_owned(),
+                json!({
+                    "plugin_name": source.plugin_name,
+                    "plugin_source_id": source.id,
+                    "history_source": source.label(),
+                    "plugin_display_name": source.plugin_display_name,
+                    "plugin_version": source.plugin_version,
+                    "manifest_path": source.manifest_path,
+                    "provider_key": source.provider_key,
+                    "source_id": source.source_id,
+                    "source_format": source.source_format,
+                }),
+            );
+            source_record.metadata = Value::Object(metadata);
+        }
+        serde_json::to_writer(&mut out, &record).with_context(|| {
+            format!(
+                "serialize annotated history source plugin {} record at line {line_number}",
+                source.label()
+            )
+        })?;
+        out.push(b'\n');
+    }
+    Ok(out)
+}
+
 fn validate_history_source_plugin_output(
     source: &HistorySourcePluginSource,
     stdout: &[u8],
     machine_id: &str,
+    require_after_cursor: bool,
 ) -> Result<()> {
     let text = std::str::from_utf8(stdout).with_context(|| {
         format!(
@@ -4892,6 +5096,7 @@ fn validate_history_source_plugin_output(
         )
     })?;
     let mut saw_source = false;
+    let mut saw_after_cursor = false;
     for (index, line) in text.lines().enumerate() {
         let line_number = index + 1;
         if line.trim().is_empty() {
@@ -4907,6 +5112,14 @@ fn validate_history_source_plugin_output(
             continue;
         };
         saw_source = true;
+        if source_record
+            .cursor
+            .as_ref()
+            .and_then(|cursor| cursor.after.as_ref())
+            .is_some()
+        {
+            saw_after_cursor = true;
+        }
         if source_record.provider_key != source.provider_key
             || source_record.source_id != source.source_id
             || source_record.source_format != source.source_format
@@ -4934,6 +5147,12 @@ fn validate_history_source_plugin_output(
     if !saw_source {
         return Err(anyhow!(
             "history source plugin {} emitted no source record",
+            source.label()
+        ));
+    }
+    if require_after_cursor && !saw_after_cursor {
+        return Err(anyhow!(
+            "history source plugin {} was reset but emitted no source.cursor.after checkpoint; emit a fresh cursor after a full rescan",
             source.label()
         ));
     }
@@ -5913,6 +6132,37 @@ fn plugin_sources_json(sources: &[HistorySourcePluginSource]) -> Vec<Value> {
         .collect()
 }
 
+fn plugin_manifest_failures_json(failures: &[HistorySourcePluginManifestFailure]) -> Vec<Value> {
+    failures
+        .iter()
+        .map(|failure| {
+            json!({
+                "provider": CaptureProvider::Custom.as_str(),
+                "kind": "history_source_plugin",
+                "plugin": null,
+                "plugin_display_name": null,
+                "plugin_version": null,
+                "history_source": null,
+                "history_source_id": null,
+                "display_name": null,
+                "provider_key": null,
+                "source_id": null,
+                "source_format": null,
+                "manifest_path": failure.manifest_path,
+                "enabled": false,
+                "refresh": null,
+                "status": "invalid",
+                "import_support": "history_source_plugin",
+                "native_import": false,
+                "importable": false,
+                "raw_retention": "metadata_only",
+                "unsupported_reason": failure.error,
+                "error": failure.error,
+            })
+        })
+        .collect()
+}
+
 fn history_source_plugin_refresh_json(refresh: HistorySourcePluginRefresh) -> &'static str {
     match refresh {
         HistorySourcePluginRefresh::Manual => "manual",
@@ -5942,6 +6192,21 @@ fn search_filters(
     input: SearchFilterInput,
     store: Option<&Store>,
 ) -> Result<ctx_history_search::SearchFilters> {
+    let source_identity = normalize_source_identity_filters(input.source_identity)?;
+    if !source_identity.is_empty()
+        && input
+            .provider
+            .is_some_and(|provider| !matches!(provider, ProviderArg::Custom))
+    {
+        return Err(anyhow!(
+            "custom history source filters can only be combined with --provider custom"
+        ));
+    }
+    let provider = if !source_identity.is_empty() {
+        Some(CaptureProvider::Custom)
+    } else {
+        input.provider.map(ProviderArg::capture_provider)
+    };
     let session = input
         .session
         .as_deref()
@@ -5959,7 +6224,11 @@ fn search_filters(
     };
     Ok(ctx_history_search::SearchFilters {
         session,
-        provider: input.provider.map(ProviderArg::capture_provider),
+        provider,
+        history_source: source_identity.history_source,
+        provider_key: source_identity.provider_key,
+        source_id: source_identity.source_id,
+        source_format: source_identity.source_format,
         repo: input.workspace,
         since: input.since.as_deref().map(parse_since_filter).transpose()?,
         primary_only: input.primary_only,
@@ -5973,6 +6242,40 @@ fn search_filters(
         file: input.file.map(|path| path.display().to_string()),
         exclude_provider_session,
     })
+}
+
+fn normalize_source_identity_filters(
+    input: SourceIdentityFilterArgs,
+) -> Result<SourceIdentityFilters> {
+    let history_source = normalize_source_identity_filter("history-source", input.history_source)?;
+    if history_source
+        .as_deref()
+        .is_some_and(|value| !value.contains('/'))
+    {
+        return Err(anyhow!(
+            "--history-source expects plugin/source or provider_key/source_id"
+        ));
+    }
+    Ok(SourceIdentityFilters {
+        history_source,
+        provider_key: normalize_source_identity_filter("provider-key", input.provider_key)?,
+        source_id: normalize_source_identity_filter("source-id", input.source_id)?,
+        source_format: normalize_source_identity_filter("source-format", input.source_format)?,
+    })
+}
+
+fn normalize_source_identity_filter(label: &str, value: Option<String>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(anyhow!("--{label} cannot be empty"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(anyhow!("--{label} cannot contain control characters"));
+    }
+    Ok(Some(value.to_owned()))
 }
 
 fn current_codex_provider_session_filter(

@@ -17,7 +17,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 const PLUGIN_MANIFEST_FILE: &str = "ctx-history-plugin.json";
-const LEGACY_PLUGIN_MANIFEST_FILE: &str = "plugin.json";
 const DEFAULT_PLUGIN_TIMEOUT_SECONDS: u64 = 300;
 const MAX_PLUGIN_STDOUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLUGIN_STDERR_BYTES: usize = 256 * 1024;
@@ -74,11 +73,7 @@ impl HistorySourcePluginSource {
     }
 
     pub fn matches_selector(&self, selector: &str) -> bool {
-        selector == self.plugin_name
-            || selector == self.id
-            || selector == self.label()
-            || selector == self.provider_key
-            || selector == format!("{}/{}", self.provider_key, self.source_id)
+        selector == self.label() || selector == format!("{}/{}", self.provider_key, self.source_id)
     }
 }
 
@@ -103,6 +98,18 @@ pub struct HistorySourcePluginRunOptions<'a> {
     pub cursor: Option<&'a str>,
     pub cursor_stream: &'a str,
     pub full_rescan: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HistorySourcePluginDiscovery {
+    pub sources: Vec<HistorySourcePluginSource>,
+    pub failures: Vec<HistorySourcePluginManifestFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistorySourcePluginManifestFailure {
+    pub manifest_path: PathBuf,
+    pub error: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,11 +151,23 @@ pub fn discover_history_source_plugins(
     data_root: &Path,
     extra_manifests: &[PathBuf],
 ) -> Result<Vec<HistorySourcePluginSource>> {
+    let discovery = discover_history_source_plugins_with_diagnostics(data_root, extra_manifests)?;
+    Ok(discovery.sources)
+}
+
+pub fn discover_history_source_plugins_with_diagnostics(
+    data_root: &Path,
+    extra_manifests: &[PathBuf],
+) -> Result<HistorySourcePluginDiscovery> {
     let mut sources = Vec::new();
+    let mut failures = Vec::new();
     for manifest_path in plugin_manifest_paths(data_root) {
         match read_plugin_manifest(&manifest_path) {
             Ok(mut manifest_sources) => sources.append(&mut manifest_sources),
-            Err(_) => continue,
+            Err(error) => failures.push(HistorySourcePluginManifestFailure {
+                manifest_path,
+                error: error.to_string(),
+            }),
         }
     }
     for manifest_path in explicit_plugin_manifest_paths(extra_manifests)? {
@@ -156,7 +175,7 @@ pub fn discover_history_source_plugins(
         sources.append(&mut manifest_sources);
     }
     sources.sort_by_key(|source| source.label());
-    Ok(sources)
+    Ok(HistorySourcePluginDiscovery { sources, failures })
 }
 
 pub fn run_history_source_plugin(
@@ -202,16 +221,13 @@ pub fn run_history_source_plugin(
         })?;
         if cursor.len() <= MAX_INLINE_CURSOR_ENV_BYTES {
             command.env("CTX_HISTORY_CURSOR", cursor);
-            command.env("CTX_HISTORY_CURSOR_JSON", cursor);
         } else {
             command.env_remove("CTX_HISTORY_CURSOR");
-            command.env_remove("CTX_HISTORY_CURSOR_JSON");
         }
         command.env("CTX_HISTORY_CURSOR_FILE", &path);
         Some(path)
     } else {
         command.env_remove("CTX_HISTORY_CURSOR");
-        command.env_remove("CTX_HISTORY_CURSOR_JSON");
         command.env_remove("CTX_HISTORY_CURSOR_FILE");
         None
     };
@@ -450,7 +466,7 @@ fn inherit_safe_plugin_env(command: &mut Command) {
 
 fn write_private_temp_file(prefix: &str, contents: &str) -> Result<PathBuf> {
     for _ in 0..16 {
-        let path = env::temp_dir().join(format!("{prefix}-{}.json", Uuid::new_v4()));
+        let path = env::temp_dir().join(format!("{prefix}-{}.cursor", Uuid::new_v4()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -499,13 +515,14 @@ fn read_plugin_manifest(path: &Path) -> Result<Vec<HistorySourcePluginSource>> {
         let provider_key = source.provider_key.unwrap_or_else(|| manifest.name.clone());
         validate_plugin_id("provider_key", &provider_key)?;
         let source_id = source.source_id.unwrap_or_else(|| source.id.clone());
-        if source.source_format.trim().is_empty() {
-            return Err(anyhow!(
-                "history source plugin manifest {} source {} has empty source_format",
+        validate_plugin_id("source_id", &source_id)?;
+        validate_source_format(&source.source_format).with_context(|| {
+            format!(
+                "history source plugin manifest {} source {} has invalid source_format",
                 path.display(),
                 source.id
-            ));
-        }
+            )
+        })?;
         if source.command.is_empty() || source.command.iter().any(|part| part.trim().is_empty()) {
             return Err(anyhow!(
                 "history source plugin manifest {} source {} has empty command",
@@ -548,11 +565,6 @@ fn plugin_manifest_paths(data_root: &Path) -> Vec<PathBuf> {
             collect_manifest_path_candidates(&path, &mut candidates);
         }
     }
-    if let Some(paths) = env::var_os("CTX_PLUGIN_PATH") {
-        for path in env::split_paths(&paths) {
-            collect_manifest_path_candidates(&path, &mut candidates);
-        }
-    }
     candidates.into_iter().collect()
 }
 
@@ -584,10 +596,6 @@ fn collect_manifest_path_candidates(path: &Path, candidates: &mut BTreeSet<PathB
     if direct.is_file() {
         candidates.insert(direct);
     }
-    let legacy = path.join(LEGACY_PLUGIN_MANIFEST_FILE);
-    if legacy.is_file() {
-        candidates.insert(legacy);
-    }
     let Ok(entries) = fs::read_dir(path) else {
         return;
     };
@@ -608,6 +616,18 @@ fn collect_manifest_path_candidates(path: &Path, candidates: &mut BTreeSet<PathB
                 candidates.insert(manifest);
             }
         }
+    }
+}
+
+fn validate_source_format(value: &str) -> Result<()> {
+    let valid =
+        !value.trim().is_empty() && value.len() <= 512 && !value.chars().any(char::is_control);
+    if valid {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "source_format must be non-empty, at most 512 bytes, and contain no control characters"
+        ))
     }
 }
 

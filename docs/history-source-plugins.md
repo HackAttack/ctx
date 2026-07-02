@@ -21,11 +21,11 @@ manifest, cursor handoff, validation, import, and search index.
 Put a manifest at one of:
 
 - `$CTX_DATA_ROOT/plugins/<plugin>/ctx-history-plugin.json`;
-- any directory or manifest file listed in `CTX_HISTORY_PLUGIN_PATH`;
-- any directory or manifest file listed in `CTX_PLUGIN_PATH`.
+- any directory or manifest file listed in `CTX_HISTORY_PLUGIN_PATH`.
 
 `ctx sources` and `ctx sources --json` list plugin sources without executing
-their commands.
+their commands. Invalid installed manifests are listed as non-importable
+`history_source_plugin` rows so authors can diagnose broken local config.
 
 Manifest example:
 
@@ -61,18 +61,16 @@ imports can run a discovered source even when it is not enabled or is marked
 ## Import
 
 ```bash
-ctx import --history-source dorkos
-ctx import --plugin dorkos
 ctx import --history-source dorkos/default
 ctx import --history-source-manifest ./ctx-history-plugin.json
-ctx import --plugin-manifest ./ctx-history-plugin.json
 ctx import --all
-ctx import --history-source hermes --reset-cursor
+ctx import --history-source hermes/default --reset-cursor
 ```
 
-Selectors can match plugin name, source id, `plugin/source`, `provider_key`, or
-`provider_key/source_id`, but they must resolve to exactly one source before ctx
-executes a command. Prefer `plugin/source` when a machine has multiple plugins.
+Selectors match `plugin/source` or `provider_key/source_id`, and must resolve
+to exactly one source before ctx executes a command. ctx does not accept bare
+plugin names, bare source ids, or bare provider keys because many integrations
+use ids like `default`.
 
 `--history-source-manifest` is a development path: it adds that manifest for the
 current command without installing it. With no selector, ctx imports sources
@@ -80,13 +78,25 @@ from the supplied manifest path.
 
 `--reset-cursor` withholds the previous cursor and sets
 `CTX_HISTORY_FULL_RESCAN=1`. The plugin should emit a fresh `source.cursor.after`
-checkpoint if the rescan succeeds.
+checkpoint if the rescan succeeds; ctx rejects reset runs that do not emit a
+new after checkpoint so an old cursor cannot be reused accidentally.
 
 `ctx setup` does not execute plugins. `ctx search` defaults to `--refresh auto`
 and runs discovered plugin sources only when they are both `enabled: true` and
 `refresh: auto`; `--refresh off` never runs plugins, and `--refresh strict`
 fails if an auto plugin refresh fails. Plugin refresh is incremental because ctx
 passes the previously stored source cursor before invoking the command.
+
+Search can be limited to a custom history source after import:
+
+```bash
+ctx search "release notes" --history-source dorkos/default
+ctx search "release notes" --provider-key dorkos --source-id default
+ctx search "release notes" --source-format dorkos-claude-jsonl-v1
+```
+
+These filters imply `--provider custom`; combining them with another provider is
+an error.
 
 ## Runtime Environment
 
@@ -105,7 +115,6 @@ ctx sets these variables before invoking a plugin command:
 - `CTX_HISTORY_FULL_RESCAN`, `1` or `0`
 - `CTX_HISTORY_CURSOR`, when a previous cursor exists and is small enough for
   inline environment handoff
-- `CTX_HISTORY_CURSOR_JSON`, same value as `CTX_HISTORY_CURSOR` when set
 - `CTX_HISTORY_CURSOR_FILE`, a temporary file containing the cursor
 
 Use `CTX_HISTORY_CURSOR_FILE` for large native cursor maps. The file exists only
@@ -147,8 +156,9 @@ writing imported rows.
 
 ## Adapter Shapes
 
-The local research checkouts showed four different storage models, which is why
-ctx should not maintain native adapters for them.
+The examples below are illustrative shapes for plugin authors. Some of these
+providers also have native ctx support; plugins are still useful for custom
+forks, private variants, or newer schemas that ctx does not support yet.
 
 ### DorkOS
 
@@ -207,9 +217,12 @@ as Claude JSONL, when they need full internal tool/thinking events.
 ## Minimal Plugin Pseudocode
 
 ```python
-import json, os, sqlite3, sys
+import json, os, pathlib, sqlite3, sys
 
-cursor = json.loads(os.environ.get("CTX_HISTORY_CURSOR_JSON") or "{}")
+cursor_text = os.environ.get("CTX_HISTORY_CURSOR")
+if not cursor_text and os.environ.get("CTX_HISTORY_CURSOR_FILE"):
+    cursor_text = pathlib.Path(os.environ["CTX_HISTORY_CURSOR_FILE"]).read_text()
+cursor = json.loads(cursor_text or "{}")
 after_message_id = cursor.get("message_id", 0)
 db = sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
 

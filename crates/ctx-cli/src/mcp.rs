@@ -17,10 +17,11 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::{
-    compact_json, config::CONFIG_FILE, discovered_sources, event_window, event_window_json,
-    indexed_history_item_count, mark_share_safe, raw_sql_result_json, search_filters,
-    session_transcript_json, sources_json, OutputFormat, ProviderArg, RefreshArg, SearchDto,
-    SearchFilterInput, SearchRefreshReport, TranscriptMode, MAX_SEARCH_LIMIT,
+    compact_json, config::CONFIG_FILE, discovered_plugin_sources_json, discovered_sources,
+    event_window, event_window_json, indexed_history_item_count, mark_share_safe,
+    raw_sql_result_json, search_filters, session_transcript_json, sources_json, OutputFormat,
+    ProviderArg, RefreshArg, SearchDto, SearchFilterInput, SearchRefreshReport,
+    SourceIdentityFilterArgs, TranscriptMode, MAX_SEARCH_LIMIT,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -198,7 +199,7 @@ fn handle_tools_call(params: Value, data_root: &Path) -> Result<Value, Value> {
         }
         "sources" => {
             validate_argument_keys(&arguments, &[])?;
-            tool_sources()
+            tool_sources(data_root)
         }
         "search" => {
             validate_argument_keys(
@@ -207,6 +208,10 @@ fn handle_tools_call(params: Value, data_root: &Path) -> Result<Value, Value> {
                     "query",
                     "limit",
                     "provider",
+                    "history_source",
+                    "provider_key",
+                    "source_id",
+                    "source_format",
                     "workspace",
                     "since",
                     "primary_only",
@@ -303,11 +308,13 @@ fn tool_status(data_root: &Path) -> Result<Value> {
     }))
 }
 
-fn tool_sources() -> Result<Value> {
+fn tool_sources(data_root: &Path) -> Result<Value> {
     let sources = discovered_sources();
+    let mut source_values = sources_json(&sources);
+    source_values.extend(discovered_plugin_sources_json(data_root)?);
     Ok(json!({
         "schema_version": 1,
-        "sources": sources_json(&sources),
+        "sources": source_values,
         "read_only": true,
     }))
 }
@@ -320,6 +327,10 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
         return Err(anyhow!("limit must be between 1 and {MAX_SEARCH_LIMIT}"));
     }
     let provider = optional_provider(arguments, "provider")?;
+    let history_source = optional_string(arguments, "history_source")?;
+    let provider_key = optional_string(arguments, "provider_key")?;
+    let source_id = optional_string(arguments, "source_id")?;
+    let source_format = optional_string(arguments, "source_format")?;
     let session = optional_string(arguments, "session")?;
     let workspace = optional_string(arguments, "workspace")?;
     let since = optional_string(arguments, "since")?;
@@ -337,6 +348,12 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
             SearchFilterInput {
                 session,
                 provider,
+                source_identity: SourceIdentityFilterArgs {
+                    history_source,
+                    provider_key,
+                    source_id,
+                    source_format,
+                },
                 workspace,
                 since,
                 primary_only,
@@ -493,6 +510,10 @@ fn tool_definitions() -> Vec<Value> {
                 "query": { "type": "string" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_LIMIT, "default": 20 },
                 "provider": { "type": "string", "enum": provider_names() },
+                "history_source": { "type": "string", "description": "Custom history source selector as plugin/source or provider_key/source_id." },
+                "provider_key": { "type": "string", "description": "Custom history provider_key." },
+                "source_id": { "type": "string", "description": "Custom history source_id." },
+                "source_format": { "type": "string", "description": "Custom history source_format." },
                 "workspace": { "type": "string", "description": "Workspace path or name text." },
                 "since": { "type": "string", "description": "RFC3339 timestamp or day window such as 30d." },
                 "include_subagents": { "type": "boolean", "default": false, "description": "Include subagent sessions in addition to primary-agent sessions." },
@@ -570,6 +591,11 @@ fn provider_names() -> Vec<&'static str> {
         "copilot_cli",
         ProviderArg::FactoryAiDroid.cli_name(),
         "factory_ai_droid",
+        ProviderArg::OpenClaw.cli_name(),
+        ProviderArg::Hermes.cli_name(),
+        ProviderArg::NanoClaw.cli_name(),
+        ProviderArg::AstrBot.cli_name(),
+        ProviderArg::Custom.cli_name(),
     ];
     names.sort_unstable();
     names
@@ -650,6 +676,11 @@ fn optional_provider(arguments: &Value, key: &str) -> Result<Option<ProviderArg>
         "cursor" => Ok(Some(ProviderArg::Cursor)),
         "copilot-cli" | "copilot_cli" => Ok(Some(ProviderArg::CopilotCli)),
         "factory-ai-droid" | "factory_ai_droid" => Ok(Some(ProviderArg::FactoryAiDroid)),
+        "openclaw" => Ok(Some(ProviderArg::OpenClaw)),
+        "hermes" => Ok(Some(ProviderArg::Hermes)),
+        "nanoclaw" => Ok(Some(ProviderArg::NanoClaw)),
+        "astrbot" => Ok(Some(ProviderArg::AstrBot)),
+        "custom" => Ok(Some(ProviderArg::Custom)),
         _ => Err(anyhow!(
             "provider must be one of {}",
             provider_names().join(", ")

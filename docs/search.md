@@ -55,6 +55,10 @@ that support it.
 Search filters narrow both human output and JSON:
 
 - `--provider codex|pi|claude|opencode|openclaw|hermes|nanoclaw|astrbot|antigravity|gemini|cursor|copilot-cli|factory-ai-droid`;
+- `--history-source <plugin/source-or-provider_key/source_id>`, for custom
+  history imports;
+- `--provider-key <key>`, `--source-id <id>`, and
+  `--source-format <format>`, for exact custom history source filters;
 - `--workspace <name-or-path>`, substring match over stored workspace, cwd,
   source path, or repository-name text;
 - `--since <rfc3339-or-days>d`;

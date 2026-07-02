@@ -14,7 +14,7 @@ ctx import --format ctx-history-jsonl-v1 --path ./history.jsonl
 or from a local history-source plugin command:
 
 ```bash
-ctx import --history-source my-agent
+ctx import --history-source my-agent/default
 ```
 
 ctx does not discover a fixed storage location for this format. File imports
@@ -221,9 +221,10 @@ exporter-supplied cursor object in source metadata. Event `native_cursor` values
 are also preserved.
 
 For plugin imports, ctx passes the previously stored source cursor to the next
-command through `CTX_HISTORY_CURSOR_JSON` and `CTX_HISTORY_CURSOR_FILE`. The
-cursor string remains exporter-owned, so it can encode byte offsets, SQLite row
-ids, session sequence maps, or another native high-water mark.
+command through `CTX_HISTORY_CURSOR` for small cursors and always through
+`CTX_HISTORY_CURSOR_FILE` when a previous cursor exists. The cursor string
+remains exporter-owned, so it can encode byte offsets, SQLite row ids, session
+sequence maps, or another native high-water mark.
 
 If an import is interrupted, run the same command again. File imports perform
 another idempotent rescan. Plugin imports receive the last successfully stored

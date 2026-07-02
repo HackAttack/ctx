@@ -62,6 +62,14 @@ pub struct SearchFilters {
     pub session: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ctx_history_core::CaptureProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_format: Option<String>,
     #[serde(default, rename = "workspace", skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,6 +127,16 @@ pub struct SearchPacketResult {
     pub provider: Option<ctx_history_core::CaptureProvider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_source_plugin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<chrono::DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +213,11 @@ struct HitMetadata {
     time: chrono::DateTime<Utc>,
     provider: Option<ctx_history_core::CaptureProvider>,
     provider_session_id: Option<String>,
+    history_source: Option<String>,
+    history_source_plugin: Option<String>,
+    provider_key: Option<String>,
+    source_id: Option<String>,
+    source_format: Option<String>,
     session_id: Option<Uuid>,
     parent_session_id: Option<Uuid>,
     root_session_id: Option<Uuid>,
@@ -365,9 +388,34 @@ fn merge_search_result(existing: &mut SearchPacketResult, incoming: SearchPacket
         existing.event_seq = incoming.event_seq;
         existing.timestamp = incoming.timestamp;
         existing.cwd = incoming.cwd.clone();
+        existing.provider = incoming.provider;
+        existing.provider_session_id = incoming.provider_session_id.clone();
+        existing.history_source = incoming.history_source.clone();
+        existing.history_source_plugin = incoming.history_source_plugin.clone();
+        existing.provider_key = incoming.provider_key.clone();
+        existing.source_id = incoming.source_id.clone();
+        existing.source_format = incoming.source_format.clone();
         existing.raw_source_path = incoming.raw_source_path.clone();
         existing.raw_source_exists = incoming.raw_source_exists;
         existing.cursor = incoming.cursor.clone();
+    } else {
+        existing.history_source = existing
+            .history_source
+            .clone()
+            .or(incoming.history_source.clone());
+        existing.history_source_plugin = existing
+            .history_source_plugin
+            .clone()
+            .or(incoming.history_source_plugin.clone());
+        existing.provider_key = existing
+            .provider_key
+            .clone()
+            .or(incoming.provider_key.clone());
+        existing.source_id = existing.source_id.clone().or(incoming.source_id.clone());
+        existing.source_format = existing
+            .source_format
+            .clone()
+            .or(incoming.source_format.clone());
     }
     existing.rank = existing_rank.max(incoming_rank) + 0.08;
     existing.more_matches_in_session = existing
@@ -471,6 +519,19 @@ fn candidate_search_result(
         provider_session_id: display_hit
             .as_ref()
             .and_then(|hit| hit.provider_session_id.clone()),
+        history_source: display_hit
+            .as_ref()
+            .and_then(|hit| hit.history_source.clone()),
+        history_source_plugin: display_hit
+            .as_ref()
+            .and_then(|hit| hit.history_source_plugin.clone()),
+        provider_key: display_hit
+            .as_ref()
+            .and_then(|hit| hit.provider_key.clone()),
+        source_id: display_hit.as_ref().and_then(|hit| hit.source_id.clone()),
+        source_format: display_hit
+            .as_ref()
+            .and_then(|hit| hit.source_format.clone()),
         timestamp: display_hit.as_ref().map(|hit| hit.time),
         cwd: display_hit.as_ref().and_then(|hit| hit.cwd.clone()),
         raw_source_path: display_hit
@@ -499,6 +560,7 @@ fn candidate_display_hit(candidate: &Candidate, filters: &SearchFilters) -> Opti
             && filters
                 .session
                 .map_or(true, |id| hit.session_id == Some(id))
+            && hit_matches_history_source_filter(&hit, filters)
     }) {
         return Some(event_hit(event, &candidate.context));
     }
@@ -516,6 +578,10 @@ fn candidate_display_hit(candidate: &Candidate, filters: &SearchFilters) -> Opti
                 .provider
                 .map_or(true, |provider| session.provider == provider)
                 && filters.session.map_or(true, |id| session.id == id)
+                && hit_matches_history_source_filter(
+                    &session_hit(session, &candidate.context),
+                    filters,
+                )
         })
         .or_else(|| candidate.context.sessions.first())
         .map(|session| session_hit(session, &candidate.context))
@@ -528,6 +594,9 @@ fn fast_event_search_packet(
     file_scope: Option<&FileTouchScope>,
 ) -> Result<Option<SearchPacket>> {
     if query.trim().is_empty() {
+        return Ok(None);
+    }
+    if has_history_source_filter(&options.filters) {
         return Ok(None);
     }
     if !store.has_at_least_events(LARGE_EVENT_CORPUS_THRESHOLD)? {
@@ -861,6 +930,11 @@ fn event_search_result(
         session_importance: 0.0,
         provider: hit.provider,
         provider_session_id: hit.session_external_session_id.clone(),
+        history_source: hit.history_source.clone(),
+        history_source_plugin: hit.history_source_plugin.clone(),
+        provider_key: hit.provider_key.clone(),
+        source_id: hit.source_id.clone(),
+        source_format: hit.source_format.clone(),
         timestamp: Some(hit.occurred_at),
         cwd: hit.cwd.clone(),
         raw_source_path: hit.raw_source_path.clone(),
@@ -1317,7 +1391,9 @@ fn search_sections(
         }
     }
     for session in &context.sessions {
-        if !session_matches_agent_scope(session, filters) {
+        if !session_matches_agent_scope(session, filters)
+            || !source_id_matches_history_source_filter(session.capture_source_id, context, filters)
+        {
             continue;
         }
         let hit = session_hit(session, context);
@@ -1536,6 +1612,9 @@ fn event_hit_matches_agent_scope(hit: &EventSearchHit, filters: &SearchFilters) 
 }
 
 fn record_text_matches_agent_scope(context: &RecordContext, filters: &SearchFilters) -> bool {
+    if has_history_source_filter(filters) {
+        return false;
+    }
     context
         .sessions
         .iter()
@@ -1548,9 +1627,30 @@ fn item_matches_agent_scope(
     context: &RecordContext,
     filters: &SearchFilters,
 ) -> bool {
+    let item_source_id = source_id.or_else(|| {
+        session_id
+            .and_then(|id| context.sessions.iter().find(|session| session.id == id))
+            .and_then(|session| session.capture_source_id)
+    });
+    if !source_id_matches_history_source_filter(item_source_id, context, filters) {
+        return false;
+    }
     associated_session(session_id, source_id, context)
         .map(|session| session_matches_agent_scope(session, filters))
         .unwrap_or(true)
+}
+
+fn source_id_matches_history_source_filter(
+    source_id: Option<Uuid>,
+    context: &RecordContext,
+    filters: &SearchFilters,
+) -> bool {
+    if !has_history_source_filter(filters) {
+        return true;
+    }
+    source_id
+        .and_then(|id| context.sources.get(&id))
+        .is_some_and(|source| source_matches_history_source_filter(source, filters))
 }
 
 fn associated_session(
@@ -1591,6 +1691,7 @@ fn record_context_display_hit(
                     .provider
                     .map_or(true, |provider| session.provider == provider)
                 && filters.session.map_or(true, |id| session.id == id)
+                && hit_matches_history_source_filter(&session_hit(session, context), filters)
         })
         .or_else(|| {
             context
@@ -1639,6 +1740,11 @@ fn empty_hit(time: chrono::DateTime<Utc>) -> HitMetadata {
         time,
         provider: None,
         provider_session_id: None,
+        history_source: None,
+        history_source_plugin: None,
+        provider_key: None,
+        source_id: None,
+        source_format: None,
         session_id: None,
         parent_session_id: None,
         root_session_id: None,
@@ -1744,10 +1850,16 @@ fn source_hit(
         return empty_hit(time);
     };
     let raw_source_path = source.descriptor.raw_source_path.clone();
+    let identity = source_history_identity(source);
     let mut hit = HitMetadata {
         time,
         provider: Some(source.descriptor.provider),
         provider_session_id: source.descriptor.external_session_id.clone(),
+        history_source: identity.history_source,
+        history_source_plugin: identity.history_source_plugin,
+        provider_key: identity.provider_key,
+        source_id: identity.source_id,
+        source_format: identity.source_format,
         session_id: None,
         parent_session_id: None,
         root_session_id: None,
@@ -1786,6 +1898,175 @@ fn source_cursor(source: &ctx_history_core::CaptureSource) -> Option<String> {
         .and_then(|after| after.get("cursor"))
         .and_then(|value| value.as_str())
         .map(str::to_owned)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SourceHistoryIdentity {
+    history_source: Option<String>,
+    history_source_plugin: Option<String>,
+    provider_key: Option<String>,
+    source_id: Option<String>,
+    source_format: Option<String>,
+}
+
+fn source_history_identity(source: &ctx_history_core::CaptureSource) -> SourceHistoryIdentity {
+    let metadata = &source.sync.metadata;
+    let source_metadata = metadata
+        .get("source_metadata")
+        .and_then(serde_json::Value::as_object);
+    let plugin = source_metadata
+        .and_then(|metadata| metadata.get("ctx_history_plugin"))
+        .or_else(|| metadata.get("ctx_history_plugin"))
+        .and_then(serde_json::Value::as_object);
+    let custom = source_metadata
+        .and_then(|metadata| metadata.get("ctx_history_jsonl_v1"))
+        .or_else(|| metadata.get("ctx_history_jsonl_v1"))
+        .and_then(serde_json::Value::as_object);
+    let plugin_name = plugin
+        .and_then(|plugin| plugin.get("plugin_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let plugin_source_id = plugin
+        .and_then(|plugin| plugin.get("plugin_source_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let history_source = plugin
+        .and_then(|plugin| plugin.get("history_source"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            plugin_name
+                .as_deref()
+                .zip(plugin_source_id.as_deref())
+                .map(|(plugin_name, source_id)| format!("{plugin_name}/{source_id}"))
+        });
+    let provider_key = custom
+        .and_then(|custom| custom.get("provider_key"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let source_id = custom
+        .and_then(|custom| custom.get("source_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let source_format = custom
+        .and_then(|custom| custom.get("source_format"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            source_metadata
+                .and_then(|metadata| metadata.get("source_format"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            metadata
+                .get("source_format")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::to_owned);
+    SourceHistoryIdentity {
+        history_source,
+        history_source_plugin: plugin_name,
+        provider_key,
+        source_id,
+        source_format,
+    }
+}
+
+fn has_history_source_filter(filters: &SearchFilters) -> bool {
+    filters
+        .history_source
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .provider_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .source_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .source_format
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn source_matches_history_source_filter(
+    source: &ctx_history_core::CaptureSource,
+    filters: &SearchFilters,
+) -> bool {
+    let identity = source_history_identity(source);
+    source_identity_matches_history_source_filter(&identity, filters)
+}
+
+fn hit_matches_history_source_filter(hit: &HitMetadata, filters: &SearchFilters) -> bool {
+    if !has_history_source_filter(filters) {
+        return true;
+    }
+    source_identity_matches_history_source_filter(
+        &SourceHistoryIdentity {
+            history_source: hit.history_source.clone(),
+            history_source_plugin: hit.history_source_plugin.clone(),
+            provider_key: hit.provider_key.clone(),
+            source_id: hit.source_id.clone(),
+            source_format: hit.source_format.clone(),
+        },
+        filters,
+    )
+}
+
+fn source_identity_matches_history_source_filter(
+    identity: &SourceHistoryIdentity,
+    filters: &SearchFilters,
+) -> bool {
+    if let Some(selector) = filters
+        .history_source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let plugin_match = identity.history_source.as_deref() == Some(selector);
+        let provider_source_match = identity
+            .provider_key
+            .as_deref()
+            .zip(identity.source_id.as_deref())
+            .is_some_and(|(provider_key, source_id)| {
+                selector == format!("{provider_key}/{source_id}")
+            });
+        if !plugin_match && !provider_source_match {
+            return false;
+        }
+    }
+    if let Some(provider_key) = filters
+        .provider_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if identity.provider_key.as_deref() != Some(provider_key) {
+            return false;
+        }
+    }
+    if let Some(source_id) = filters
+        .source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if identity.source_id.as_deref() != Some(source_id) {
+            return false;
+        }
+    }
+    if let Some(source_format) = filters
+        .source_format
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if identity.source_format.as_deref() != Some(source_format) {
+            return false;
+        }
+    }
+    true
 }
 
 fn event_cursor(event: &Event) -> Option<String> {
@@ -1953,6 +2234,7 @@ fn has_filters(filters: &SearchFilters) -> bool {
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty())
         || filters.exclude_provider_session.is_some()
+        || has_history_source_filter(filters)
 }
 
 fn record_matches_filters(
@@ -2012,6 +2294,15 @@ fn record_matches_filters(
         if !session_match && !source_match {
             return false;
         }
+    }
+
+    if has_history_source_filter(filters)
+        && !context
+            .sources
+            .values()
+            .any(|source| source_matches_history_source_filter(source, filters))
+    {
+        return false;
     }
 
     if let Some(since) = filters.since {
@@ -2354,6 +2645,11 @@ mod tests {
             score: 1.0,
             provider: Some(CaptureProvider::Codex),
             session_external_session_id: Some("provider-session-1".into()),
+            history_source: None,
+            history_source_plugin: None,
+            provider_key: None,
+            source_id: None,
+            source_format: None,
             agent_type: Some(AgentType::Primary),
             session_is_primary: Some(true),
             cwd: None,
@@ -2405,6 +2701,11 @@ mod tests {
             score: 1.0,
             provider: None,
             session_external_session_id: None,
+            history_source: None,
+            history_source_plugin: None,
+            provider_key: None,
+            source_id: None,
+            source_format: None,
             agent_type: Some(AgentType::Subagent),
             session_is_primary: Some(false),
             cwd: None,
@@ -3234,6 +3535,280 @@ mod tests {
         )
         .unwrap();
         assert!(wrong_provider.results.is_empty());
+    }
+
+    #[test]
+    fn search_filters_custom_history_source_identity() {
+        let (_temp, store) = test_store();
+        let record = HistoryRecord::new(
+            "Custom plugin import",
+            "ordinary body",
+            Vec::new(),
+            "session",
+            Some("/workspace/custom".into()),
+        );
+        store.insert_record(&record).unwrap();
+
+        let source_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000000451").unwrap();
+        let source = CaptureSource {
+            id: source_id,
+            descriptor: CaptureSourceDescriptor {
+                kind: CaptureSourceKind::ProviderImport,
+                provider: CaptureProvider::Custom,
+                machine_id: "machine-1".into(),
+                process_id: None,
+                cwd: Some("/workspace/custom".into()),
+                raw_source_path: Some("/tmp/dorkos-plugin/ctx-history-plugin.json".into()),
+                external_session_id: Some("ctx-history-jsonl-v1-session".into()),
+            },
+            started_at: fixed_time(),
+            ended_at: None,
+            sync: SyncMetadata {
+                metadata: serde_json::json!({
+                    "ctx_history_plugin": {
+                        "plugin_name": "dorkos",
+                        "plugin_source_id": "default",
+                        "history_source": "dorkos/default"
+                    },
+                    "ctx_history_jsonl_v1": {
+                        "provider_key": "dorkos",
+                        "source_id": "default",
+                        "source_format": "dorkos-history-v1"
+                    }
+                }),
+                ..sync_metadata()
+            },
+        };
+        store.upsert_capture_source(&source).unwrap();
+
+        let session = Session {
+            id: Uuid::parse_str("018f45d0-0000-7000-8000-000000000452").unwrap(),
+            history_record_id: Some(record.id),
+            parent_session_id: None,
+            root_session_id: None,
+            capture_source_id: Some(source_id),
+            provider: CaptureProvider::Custom,
+            external_session_id: Some("ctx-history-jsonl-v1-session".into()),
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".into()),
+            is_primary: true,
+            status: SessionStatus::Imported,
+            transcript_blob_id: None,
+            started_at: fixed_time(),
+            ended_at: None,
+            timestamps: timestamps(),
+            sync: sync_metadata(),
+        };
+        store.upsert_session(&session).unwrap();
+
+        let event = Event {
+            id: Uuid::parse_str("018f45d0-0000-7000-8000-000000000453").unwrap(),
+            seq: 451,
+            history_record_id: Some(record.id),
+            session_id: Some(session.id),
+            run_id: None,
+            event_type: EventType::Message,
+            role: Some(EventRole::Assistant),
+            occurred_at: fixed_time(),
+            capture_source_id: Some(source_id),
+            payload: serde_json::json!({
+                "body": {
+                    "text": "dorkos-source-filter-needle"
+                }
+            }),
+            payload_blob_id: None,
+            dedupe_key: Some("custom-history-source-filter-event".into()),
+            redaction_state: RedactionState::SafePreview,
+            sync: sync_metadata(),
+        };
+        store.upsert_event(&event).unwrap();
+        store.upsert_record(&record).unwrap();
+
+        let packet = search_packet(
+            &store,
+            "dorkos-source-filter-needle",
+            &PacketOptions {
+                limit: 10,
+                filters: SearchFilters {
+                    provider: Some(CaptureProvider::Custom),
+                    history_source: Some("dorkos/default".into()),
+                    ..SearchFilters::default()
+                },
+                ..PacketOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(packet.results.len(), 1);
+        let result = &packet.results[0];
+        assert_eq!(result.provider, Some(CaptureProvider::Custom));
+        assert_eq!(result.history_source.as_deref(), Some("dorkos/default"));
+        assert_eq!(result.history_source_plugin.as_deref(), Some("dorkos"));
+        assert_eq!(result.provider_key.as_deref(), Some("dorkos"));
+        assert_eq!(result.source_id.as_deref(), Some("default"));
+        assert_eq!(result.source_format.as_deref(), Some("dorkos-history-v1"));
+
+        let provider_source_packet = search_packet(
+            &store,
+            "dorkos-source-filter-needle",
+            &PacketOptions {
+                limit: 10,
+                filters: SearchFilters {
+                    provider: Some(CaptureProvider::Custom),
+                    provider_key: Some("dorkos".into()),
+                    source_id: Some("default".into()),
+                    source_format: Some("dorkos-history-v1".into()),
+                    ..SearchFilters::default()
+                },
+                ..PacketOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(provider_source_packet.results.len(), 1);
+
+        let wrong_source = search_packet(
+            &store,
+            "dorkos-source-filter-needle",
+            &PacketOptions {
+                limit: 10,
+                filters: SearchFilters {
+                    provider: Some(CaptureProvider::Custom),
+                    history_source: Some("openclaw/default".into()),
+                    ..SearchFilters::default()
+                },
+                ..PacketOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(wrong_source.results.is_empty());
+    }
+
+    #[test]
+    fn fast_event_search_exposes_custom_history_source_identity() {
+        let (_temp, store) = test_store();
+        let record = HistoryRecord::new(
+            "Large custom plugin import",
+            "ordinary body",
+            Vec::new(),
+            "agent_history",
+            Some("/workspace/custom".into()),
+        );
+        store.insert_record(&record).unwrap();
+
+        let source_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000000481").unwrap();
+        store
+            .upsert_capture_source(&CaptureSource {
+                id: source_id,
+                descriptor: CaptureSourceDescriptor {
+                    kind: CaptureSourceKind::ProviderImport,
+                    provider: CaptureProvider::Custom,
+                    machine_id: "machine-1".into(),
+                    process_id: None,
+                    cwd: Some("/workspace/custom".into()),
+                    raw_source_path: Some("/tmp/large-dorkos/ctx-history-plugin.json".into()),
+                    external_session_id: Some("ctx-history-jsonl-v1-large".into()),
+                },
+                started_at: fixed_time(),
+                ended_at: None,
+                sync: SyncMetadata {
+                    metadata: serde_json::json!({
+                        "source_metadata": {
+                            "ctx_history_plugin": {
+                                "plugin_name": "dorkos",
+                                "plugin_source_id": "default",
+                                "history_source": "dorkos/default"
+                            },
+                            "ctx_history_jsonl_v1": {
+                                "provider_key": "dorkos",
+                                "source_id": "default",
+                                "source_format": "dorkos-history-v1"
+                            }
+                        }
+                    }),
+                    ..sync_metadata()
+                },
+            })
+            .unwrap();
+
+        let session = Session {
+            id: Uuid::parse_str("018f45d0-0000-7000-8000-000000000482").unwrap(),
+            history_record_id: Some(record.id),
+            parent_session_id: None,
+            root_session_id: None,
+            capture_source_id: Some(source_id),
+            provider: CaptureProvider::Custom,
+            external_session_id: Some("ctx-history-jsonl-v1-large".into()),
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".into()),
+            is_primary: true,
+            status: SessionStatus::Imported,
+            transcript_blob_id: None,
+            started_at: fixed_time(),
+            ended_at: None,
+            timestamps: timestamps(),
+            sync: sync_metadata(),
+        };
+        store.upsert_session(&session).unwrap();
+
+        let target_event_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000000483").unwrap();
+        for index in 0..=(LARGE_EVENT_CORPUS_THRESHOLD as u64) {
+            let event_id = if index == LARGE_EVENT_CORPUS_THRESHOLD as u64 {
+                target_event_id
+            } else {
+                Uuid::parse_str(&format!("018f45d0-0000-7000-8000-0000002{index:05x}")).unwrap()
+            };
+            let text = if event_id == target_event_id {
+                "large-custom-source-identity-needle"
+            } else {
+                "ordinary large custom event"
+            };
+            store
+                .upsert_event(&Event {
+                    id: event_id,
+                    seq: 40_000 + index,
+                    history_record_id: Some(record.id),
+                    session_id: Some(session.id),
+                    run_id: None,
+                    event_type: EventType::Message,
+                    role: Some(EventRole::Assistant),
+                    occurred_at: fixed_time() + chrono::Duration::milliseconds(index as i64),
+                    capture_source_id: Some(source_id),
+                    payload: serde_json::json!({
+                        "body": { "text": text }
+                    }),
+                    payload_blob_id: None,
+                    dedupe_key: Some(format!("large-custom-source-identity-{index}")),
+                    redaction_state: RedactionState::SafePreview,
+                    sync: sync_metadata(),
+                })
+                .unwrap();
+        }
+        store.refresh_search_index().unwrap();
+
+        let packet = search_packet(
+            &store,
+            "large-custom-source-identity-needle",
+            &PacketOptions {
+                limit: 5,
+                filters: SearchFilters {
+                    provider: Some(CaptureProvider::Custom),
+                    ..SearchFilters::default()
+                },
+                ..PacketOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(packet.results.len(), 1);
+        let result = &packet.results[0];
+        assert_eq!(result.event_id, Some(target_event_id));
+        assert_eq!(result.history_source.as_deref(), Some("dorkos/default"));
+        assert_eq!(result.history_source_plugin.as_deref(), Some("dorkos"));
+        assert_eq!(result.provider_key.as_deref(), Some("dorkos"));
+        assert_eq!(result.source_id.as_deref(), Some("default"));
+        assert_eq!(result.source_format.as_deref(), Some("dorkos-history-v1"));
     }
 
     #[test]

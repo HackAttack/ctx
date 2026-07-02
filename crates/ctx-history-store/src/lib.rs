@@ -324,6 +324,11 @@ pub struct EventSearchHit {
     pub score: f64,
     pub provider: Option<CaptureProvider>,
     pub session_external_session_id: Option<String>,
+    pub history_source: Option<String>,
+    pub history_source_plugin: Option<String>,
+    pub provider_key: Option<String>,
+    pub source_id: Option<String>,
+    pub source_format: Option<String>,
     pub agent_type: Option<AgentType>,
     pub session_is_primary: Option<bool>,
     pub cwd: Option<String>,
@@ -3716,6 +3721,8 @@ impl Store {
             |row| {
                 let payload_json = row.get::<_, String>(18)?;
                 let source_metadata_json = row.get::<_, Option<String>>(19)?;
+                let source_identity =
+                    event_search_source_identity(source_metadata_json.as_deref())?;
                 Ok(EventSearchHit {
                     event_id: parse_uuid(row.get::<_, String>(0)?)?,
                     history_record_id: parse_optional_uuid(row.get(1)?)?,
@@ -3729,6 +3736,11 @@ impl Store {
                     score: row.get(9)?,
                     provider: parse_optional_text_enum::<CaptureProvider>(row.get(10)?)?,
                     session_external_session_id: row.get(11)?,
+                    history_source: source_identity.history_source,
+                    history_source_plugin: source_identity.history_source_plugin,
+                    provider_key: source_identity.provider_key,
+                    source_id: source_identity.source_id,
+                    source_format: source_identity.source_format,
                     session_parent_session_id: parse_optional_uuid(row.get(12)?)?,
                     session_root_session_id: parse_optional_uuid(row.get(13)?)?,
                     agent_type: parse_optional_text_enum::<AgentType>(row.get(14)?)?,
@@ -7386,6 +7398,83 @@ fn event_search_cursor(
         .and_then(|after| after.get("cursor"))
         .and_then(|value| value.as_str())
         .map(str::to_owned))
+}
+
+#[derive(Default)]
+struct EventSearchSourceIdentity {
+    history_source: Option<String>,
+    history_source_plugin: Option<String>,
+    provider_key: Option<String>,
+    source_id: Option<String>,
+    source_format: Option<String>,
+}
+
+fn event_search_source_identity(
+    source_metadata_json: Option<&str>,
+) -> rusqlite::Result<EventSearchSourceIdentity> {
+    let Some(source_metadata_json) = source_metadata_json else {
+        return Ok(EventSearchSourceIdentity::default());
+    };
+    let metadata: serde_json::Value = serde_json::from_str(source_metadata_json)
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    let source_metadata = metadata
+        .get("source_metadata")
+        .and_then(serde_json::Value::as_object);
+    let plugin = source_metadata
+        .and_then(|metadata| metadata.get("ctx_history_plugin"))
+        .or_else(|| metadata.get("ctx_history_plugin"))
+        .and_then(serde_json::Value::as_object);
+    let custom = source_metadata
+        .and_then(|metadata| metadata.get("ctx_history_jsonl_v1"))
+        .or_else(|| metadata.get("ctx_history_jsonl_v1"))
+        .and_then(serde_json::Value::as_object);
+    let plugin_name = plugin
+        .and_then(|plugin| plugin.get("plugin_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let plugin_source_id = plugin
+        .and_then(|plugin| plugin.get("plugin_source_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let history_source = plugin
+        .and_then(|plugin| plugin.get("history_source"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            plugin_name
+                .as_deref()
+                .zip(plugin_source_id.as_deref())
+                .map(|(plugin_name, source_id)| format!("{plugin_name}/{source_id}"))
+        });
+    let provider_key = custom
+        .and_then(|custom| custom.get("provider_key"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let source_id = custom
+        .and_then(|custom| custom.get("source_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let source_format = custom
+        .and_then(|custom| custom.get("source_format"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            source_metadata
+                .and_then(|metadata| metadata.get("source_format"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            metadata
+                .get("source_format")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::to_owned);
+    Ok(EventSearchSourceIdentity {
+        history_source,
+        history_source_plugin: plugin_name,
+        provider_key,
+        source_id,
+        source_format,
+    })
 }
 
 fn collect_rows<T>(

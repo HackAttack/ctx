@@ -106,11 +106,11 @@ source_id = os.environ["CTX_HISTORY_SOURCE_ID"]
 provider_key = os.environ["CTX_HISTORY_PROVIDER_KEY"]
 source_format = os.environ["CTX_HISTORY_SOURCE_FORMAT"]
 cursor_stream = os.environ["CTX_HISTORY_CURSOR_STREAM"]
-cursor_json = os.environ.get("CTX_HISTORY_CURSOR_JSON")
+cursor_inline = os.environ.get("CTX_HISTORY_CURSOR")
 cursor_file = os.environ.get("CTX_HISTORY_CURSOR_FILE")
 pathlib.Path({run_marker_json}).write_text("ran\n")
 cursor_log = {cursor_log_py}
-cursor_text = cursor_json
+cursor_text = cursor_inline
 if not cursor_text and cursor_file:
     cursor_text = pathlib.Path(cursor_file).read_text()
 if cursor_log and cursor_text:
@@ -1111,6 +1111,110 @@ fn history_source_plugins_are_listed_without_running() {
 }
 
 #[test]
+fn invalid_installed_history_source_plugin_is_listed_as_invalid() {
+    let temp = tempdir();
+    let plugin_root = temp.path().join("history-plugins");
+    let bad_dir = plugin_root.join("bad");
+    fs::create_dir_all(&bad_dir).unwrap();
+    fs::write(bad_dir.join("ctx-history-plugin.json"), "{not-json").unwrap();
+
+    let sources = json_output(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin_root)
+            .args(["sources", "--json"]),
+    );
+    let invalid = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["kind"] == "history_source_plugin" && source["status"] == "invalid")
+        .unwrap();
+    assert_eq!(invalid["importable"], false);
+    assert_eq!(invalid["enabled"], false);
+    assert!(invalid["error"]
+        .as_str()
+        .unwrap()
+        .contains("parse history source plugin manifest"));
+}
+
+#[test]
+fn invalid_installed_history_source_plugin_does_not_block_valid_import() {
+    let temp = tempdir();
+    let plugin_root = temp.path().join("history-plugins");
+    let good = write_history_source_plugin_at(&plugin_root, "dorkos", false, None);
+    let bad_dir = plugin_root.join("bad");
+    fs::create_dir_all(&bad_dir).unwrap();
+    fs::write(bad_dir.join("ctx-history-plugin.json"), "{not-json").unwrap();
+
+    let imported = json_output(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin_root)
+            .args([
+                "import",
+                "--history-source",
+                "dorkos/default",
+                "--json",
+                "--progress",
+                "none",
+            ]),
+    );
+
+    assert_eq!(imported["totals"]["imported_sources"], 1);
+    assert!(good.run_marker.exists());
+}
+
+#[test]
+fn removed_history_source_plugin_aliases_and_legacy_discovery_are_ignored() {
+    let temp = tempdir();
+    let plugin = write_history_source_plugin(&temp, "dorkos", false, None);
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
+            .args(["import", "--plugin", "dorkos/default"]),
+    );
+    assert!(stderr.contains("--plugin"), "{stderr}");
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
+            .args(["import", "--plugin-manifest", "ctx-history-plugin.json"]),
+    );
+    assert!(stderr.contains("--plugin-manifest"), "{stderr}");
+
+    let sources = json_output(
+        ctx(&temp)
+            .env_remove("CTX_HISTORY_PLUGIN_PATH")
+            .env("CTX_PLUGIN_PATH", &plugin.manifest_dir)
+            .args(["sources", "--json"]),
+    );
+    assert!(!sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["history_source"] == "dorkos/default"));
+
+    let legacy_dir = temp.path().join("legacy-plugin");
+    fs::create_dir_all(&legacy_dir).unwrap();
+    fs::copy(
+        plugin.manifest_dir.join("ctx-history-plugin.json"),
+        legacy_dir.join("plugin.json"),
+    )
+    .unwrap();
+    let sources = json_output(
+        ctx(&temp)
+            .env_remove("CTX_PLUGIN_PATH")
+            .env("CTX_HISTORY_PLUGIN_PATH", &legacy_dir)
+            .args(["sources", "--json"]),
+    );
+    assert!(!sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["history_source"] == "dorkos/default"));
+}
+
+#[test]
 fn setup_does_not_execute_enabled_history_source_plugins() {
     let temp = tempdir();
     let plugin = write_history_source_plugin(&temp, "dorkos", true, None);
@@ -1125,7 +1229,7 @@ fn setup_does_not_execute_enabled_history_source_plugins() {
 }
 
 #[test]
-fn ambiguous_history_source_plugin_selector_fails_before_execution() {
+fn bare_history_source_plugin_selector_fails_before_execution() {
     let temp = tempdir();
     let plugin_root = temp.path().join("history-plugins");
     let dorkos = write_history_source_plugin_at(&plugin_root, "dorkos", false, None);
@@ -1134,16 +1238,13 @@ fn ambiguous_history_source_plugin_selector_fails_before_execution() {
     let stderr = failure_stderr(
         ctx(&temp)
             .env("CTX_HISTORY_PLUGIN_PATH", &plugin_root)
-            .args([
-                "import",
-                "--history-source",
-                "default",
-                "--progress",
-                "none",
-            ]),
+            .args(["import", "--history-source", "dorkos", "--progress", "none"]),
     );
 
-    assert!(stderr.contains("matched multiple sources"), "{stderr}");
+    assert!(
+        stderr.contains("no history source plugin matched"),
+        "{stderr}"
+    );
     assert!(!dorkos.run_marker.exists());
     assert!(!hermes.run_marker.exists());
 }
@@ -1242,6 +1343,42 @@ for record in records:
 }
 
 #[test]
+fn history_source_plugin_reset_requires_fresh_after_cursor() {
+    let temp = tempdir();
+    let script = r#"#!/usr/bin/env python3
+import json
+records = [
+  {"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"},
+  {"record_type":"source","source_id":"default","provider_key":"nocursor","source_format":"nocursor-history-v1"},
+  {"record_type":"session","source_id":"default","session_id":"run","started_at":"2026-07-01T12:00:00Z"},
+]
+for record in records:
+    print(json.dumps(record))
+"#;
+    let plugin = write_raw_history_source_plugin(&temp, "nocursor", script);
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
+            .args([
+                "import",
+                "--history-source",
+                "nocursor/default",
+                "--reset-cursor",
+                "--progress",
+                "none",
+            ]),
+    );
+
+    assert!(stderr.contains("source.cursor.after"), "{stderr}");
+    let conn = Connection::open(temp.path().join("work.sqlite")).unwrap();
+    assert_eq!(
+        sqlite_count(&conn, "SELECT COUNT(*) FROM history_records"),
+        0
+    );
+}
+
+#[test]
 fn large_history_source_plugin_cursor_uses_cursor_file_without_inline_env() {
     let temp = tempdir();
     let log = temp.path().join("large-cursor.log");
@@ -1253,7 +1390,7 @@ import os
 import pathlib
 
 cursor_file = os.environ.get("CTX_HISTORY_CURSOR_FILE")
-inline = os.environ.get("CTX_HISTORY_CURSOR_JSON")
+inline = os.environ.get("CTX_HISTORY_CURSOR")
 cursor_text = pathlib.Path(cursor_file).read_text() if cursor_file else inline
 if cursor_text:
     with open({log_json}, "a", encoding="utf-8") as handle:
@@ -1315,7 +1452,8 @@ fn import_history_source_plugin_is_searchable_and_receives_cursor() {
             .args([
                 "import",
                 "--history-source",
-                "hermes",
+                "hermes/default",
+                "--resume",
                 "--json",
                 "--progress",
                 "none",
@@ -1338,6 +1476,22 @@ fn import_history_source_plugin_is_searchable_and_receives_cursor() {
         !initial["results"].as_array().unwrap().is_empty(),
         "initial plugin import was not searchable: {initial:#}"
     );
+    let initial_by_history_source = json_output(ctx(&temp).args([
+        "search",
+        "hermes plugin initial marker",
+        "--history-source",
+        "hermes/default",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    let source_filtered_result = &initial_by_history_source["results"][0];
+    assert_eq!(source_filtered_result["provider"], "custom");
+    assert_eq!(source_filtered_result["history_source"], "hermes/default");
+    assert_eq!(source_filtered_result["history_source_plugin"], "hermes");
+    assert_eq!(source_filtered_result["provider_key"], "hermes");
+    assert_eq!(source_filtered_result["source_id"], "default");
+    assert_eq!(source_filtered_result["source_format"], "hermes-history-v1");
 
     let second = json_output(
         ctx(&temp)
@@ -1345,7 +1499,7 @@ fn import_history_source_plugin_is_searchable_and_receives_cursor() {
             .args([
                 "import",
                 "--history-source",
-                "hermes",
+                "hermes/default",
                 "--json",
                 "--progress",
                 "none",
@@ -1353,6 +1507,8 @@ fn import_history_source_plugin_is_searchable_and_receives_cursor() {
     );
     assert_eq!(second["totals"]["imported_sessions"], 0);
     assert_eq!(second["totals"]["imported_events"], 1);
+    assert_eq!(second["resume"], false);
+    assert_eq!(second["resume_mode"], "normal_scan");
 
     let incremental = json_output(ctx(&temp).args([
         "search",
@@ -3562,6 +3718,79 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
 }
 
 #[test]
+fn mcp_sources_and_search_support_history_source_plugins() {
+    let temp = tempdir();
+    let plugin = write_history_source_plugin(&temp, "hermes", false, None);
+    json_output(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
+            .args([
+                "import",
+                "--history-source",
+                "hermes/default",
+                "--json",
+                "--progress",
+                "none",
+            ]),
+    );
+
+    let responses = mcp_roundtrip_with_env(
+        &temp,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": { "name": "ctx-test", "version": "0" }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "sources",
+                "method": "tools/call",
+                "params": {
+                    "name": "sources",
+                    "arguments": {}
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "search",
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {
+                        "query": "hermes plugin initial marker",
+                        "provider": "custom",
+                        "history_source": "hermes/default",
+                        "limit": 5
+                    }
+                }
+            }),
+        ],
+        &[(
+            "CTX_HISTORY_PLUGIN_PATH",
+            plugin.manifest_dir.to_str().unwrap(),
+        )],
+    );
+
+    let sources = responses[1]["result"]["structuredContent"]["sources"]
+        .as_array()
+        .unwrap();
+    assert!(sources
+        .iter()
+        .any(|source| source["history_source"] == "hermes/default"));
+
+    let search = &responses[2]["result"]["structuredContent"];
+    assert_eq!(search["filters"]["provider"], "custom");
+    assert_eq!(search["filters"]["history_source"], "hermes/default");
+    assert_eq!(search["results"][0]["history_source"], "hermes/default");
+}
+
+#[test]
 fn mcp_search_excludes_active_codex_session_by_default_when_available() {
     let temp = tempdir();
     let fixture = provider_history_fixture("codex-sessions");
@@ -3892,6 +4121,49 @@ fn search_refresh_auto_runs_enabled_auto_history_source_plugins_incrementally() 
     let cursor_log = fs::read_to_string(cursor_log).unwrap();
     assert!(cursor_log.contains(r#""message_id":7"#), "{cursor_log}");
     assert!(cursor_log.contains("cursor_file="), "{cursor_log}");
+}
+
+#[test]
+fn search_refresh_history_source_filter_runs_only_matching_auto_plugin() {
+    let temp = tempdir();
+    let plugin_root = temp.path().join("history-plugins");
+    let dorkos = write_history_source_plugin_at_with_refresh(
+        &plugin_root,
+        "dorkos",
+        true,
+        Some("auto"),
+        None,
+    );
+    let hermes = write_history_source_plugin_at_with_refresh(
+        &plugin_root,
+        "hermes",
+        true,
+        Some("auto"),
+        None,
+    );
+
+    let search = json_output(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin_root)
+            .args([
+                "search",
+                "dorkos plugin initial marker",
+                "--history-source",
+                "dorkos/default",
+                "--json",
+            ]),
+    );
+
+    assert_eq!(search["filters"]["provider"], "custom");
+    assert_eq!(search["filters"]["history_source"], "dorkos/default");
+    assert_eq!(search["freshness"]["status"], "completed");
+    assert_eq!(search["freshness"]["source_count"], 1);
+    assert!(dorkos.run_marker.exists());
+    assert!(!hermes.run_marker.exists());
+    assert!(
+        !search["results"].as_array().unwrap().is_empty(),
+        "source-filtered refresh did not import matching plugin: {search:#}"
+    );
 }
 
 #[test]
