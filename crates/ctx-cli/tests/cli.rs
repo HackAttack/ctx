@@ -4747,6 +4747,22 @@ fn pi_cli_rejects_directory_import_path() {
 }
 
 #[test]
+fn import_rejects_nonexistent_path() {
+    let temp = tempdir();
+    let path = temp.path().join("missing-codex-history");
+    let path = path.to_str().unwrap();
+
+    ctx(&temp)
+        .args(["import", "--provider", "codex", "--path", path])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("import path does not exist")
+                .and(predicate::str::contains(path)),
+        );
+}
+
+#[test]
 fn codex_cli_marks_deleted_raw_source_citations_unavailable() {
     let temp = tempdir();
     let source = PathBuf::from(provider_history_fixture("codex-sessions"));
