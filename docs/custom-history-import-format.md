@@ -18,8 +18,8 @@ ctx import --history-source my-agent/default
 ```
 
 ctx does not discover a fixed storage location for this format. File imports
-are explicit paths. Plugin imports are explicit local command adapters declared
-by a local manifest; see `docs/history-source-plugins.md`.
+are explicit paths. Plugin imports run local commands declared by a local
+manifest; see `docs/history-source-plugins.md`.
 
 Each line is one JSON object. Every object has a `record_type` field with one
 of:

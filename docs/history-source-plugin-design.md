@@ -1,7 +1,7 @@
 # History Source Plugin Design
 
-This document describes the history source plugin architecture as implemented
-on `codex/history-source-plugins`.
+This document describes history source plugins as implemented on
+`codex/history-source-plugins`.
 
 ## Problem
 
@@ -10,8 +10,8 @@ ecosystem changes quickly and many tools use custom local storage. Maintaining a
 native adapter for every tool would couple ctx to unstable schemas owned by other
 projects.
 
-The goal is to let unsupported agents make their history searchable in ctx
-without ctx learning their native storage shape.
+Plugins let tools that ctx does not support natively make their history
+searchable without ctx learning their storage shape.
 
 The integration must:
 
@@ -61,7 +61,7 @@ invoke, or cursor an arbitrary file writer by itself.
 
 ## Public Contracts
 
-The architecture has two public contracts.
+The feature has two public contracts.
 
 ### Manifest Contract
 
@@ -246,10 +246,10 @@ path is to fix the plugin and run the same command again.
 
 ## Security And Trust
 
-This architecture reduces ctx's native schema maintenance burden, but it does
-not make third-party code harmless. A plugin command is local code. It can read
-whatever the current user can read unless the operating system or user wraps it
-in additional isolation.
+This reduces ctx's native schema maintenance burden. It does not make
+third-party code harmless. A plugin command is local code. It can read whatever
+the current user can read unless the operating system or user wraps it in
+additional isolation.
 
 The implemented mitigations are practical guardrails:
 
@@ -341,10 +341,9 @@ settling before a stable release:
 
 ## Recommendation
 
-Ship the plugin architecture after final API wording review. It solves a real
-integration problem with a small local contract, keeps ctx out of third-party
-storage schemas, and preserves the native-provider experience of incremental
-refresh before search.
+Ship this after final API wording review. It solves a real integration problem
+with a small local contract, keeps ctx out of third-party storage schemas, and
+preserves the native-provider experience of incremental refresh before search.
 
 Keep the batch file importer, but position it as an optional explicit path. The
 preferred ongoing integration should remain manifest plus command stdout.

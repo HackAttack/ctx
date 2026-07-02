@@ -127,7 +127,7 @@ ctx import --all
 ctx import --resume
 ctx import --path ~/.codex/sessions
 ctx import --format ctx-history-jsonl-v1 --path ./history.jsonl
-ctx import --history-source dorkos/default
+ctx import --history-source example-agent/default
 ```
 
 Current adapters are safe to re-run. They rescan sources idempotently and keep

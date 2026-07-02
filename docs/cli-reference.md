@@ -96,9 +96,9 @@ ctx import --provider factory-ai-droid
 ctx import --path ~/.codex/sessions
 ctx import --provider pi --path ~/.pi/sessions.jsonl
 ctx import --format ctx-history-jsonl-v1 --path ./history.jsonl
-ctx import --history-source dorkos/default
+ctx import --history-source example-agent/default
 ctx import --history-source-manifest ./ctx-history-plugin.json
-ctx import --history-source hermes/default --reset-cursor
+ctx import --history-source example-agent/default --reset-cursor
 ctx import --resume
 ctx import --json
 ctx import --progress json --json
@@ -117,10 +117,10 @@ Custom history can be imported from an explicit JSONL file with
 remembered as a provider home; see `docs/custom-history-import-format.md` for
 the schema and incremental semantics.
 
-History-source plugins are local command adapters that stream
-`ctx-history-jsonl-v1` to stdout. Use `--history-source <selector>` for an
-explicit plugin import, or `--history-source-manifest <path>` to test a manifest
-without installing it. Selectors are exact `plugin/source` or
+History-source plugins are local commands that stream `ctx-history-jsonl-v1` to
+stdout. Use `--history-source <selector>` for an explicit plugin import, or
+`--history-source-manifest <path>` to test a manifest without installing it.
+Selectors are exact `plugin/source` or
 `provider_key/source_id` values. `--reset-cursor` withholds the previous plugin
 cursor for that run and asks the plugin to perform a full rescan. See
 `docs/history-source-plugins.md`.
@@ -199,8 +199,8 @@ ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
 ctx search "review findings" --include-subagents
 ctx search "this current task" --include-current-session
-ctx search "release notes" --history-source dorkos/default
-ctx search "release notes" --provider-key dorkos --source-id default
+ctx search "release notes" --history-source example-agent/default
+ctx search "release notes" --provider-key example-agent --source-id default
 ```
 
 `search` defaults to `--refresh auto`, which quietly refreshes discovered native

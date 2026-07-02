@@ -1,9 +1,9 @@
 # History Source Plugins
 
-History source plugins let third-party tools make their local histories
-searchable in ctx without ctx owning their storage schemas.
+History source plugins let local tools make their histories searchable in ctx
+without ctx owning their storage schemas.
 
-The narrow waist is:
+A plugin integration works like this:
 
 1. A local manifest declares one or more history sources.
 2. ctx invokes enabled auto-refresh commands during search refresh, or any
@@ -12,9 +12,10 @@ The narrow waist is:
 4. The stream is checked and imported as one batch.
 5. ctx passes the previous source cursor back on the next run.
 
-Plugins are command-line adapters, not an in-process ABI and not a hosted plugin
-store. Plugin authors own their native JSONL, SQLite, or API reads. ctx owns the
-manifest, cursor handoff, validation, import, and search index.
+Plugins run as local commands. ctx does not load plugin code in-process or
+operate a plugin store. Plugin authors own their native JSONL, SQLite, or API
+reads. ctx owns the manifest, cursor handoff, validation, import, and search
+index.
 
 ## Install And Discover
 
@@ -32,18 +33,18 @@ Manifest example:
 ```json
 {
   "schema_version": 1,
-  "name": "dorkos",
-  "display_name": "DorkOS history",
+  "name": "example-agent",
+  "display_name": "Example Agent history",
   "version": "0.1.0",
   "history_sources": [
     {
       "id": "default",
-      "provider_key": "dorkos",
+      "provider_key": "example-agent",
       "source_id": "default",
-      "source_format": "dorkos-claude-jsonl-v1",
+      "source_format": "example-agent-sqlite-v1",
       "enabled": true,
       "refresh": "auto",
-      "command": ["ctx-history-source-dorkos", "export"],
+      "command": ["example-agent-to-ctx", "export"],
       "timeout_seconds": 300
     }
   ]
@@ -61,10 +62,10 @@ imports can run a discovered source even when it is not enabled or is marked
 ## Import
 
 ```bash
-ctx import --history-source dorkos/default
+ctx import --history-source example-agent/default
 ctx import --history-source-manifest ./ctx-history-plugin.json
 ctx import --all
-ctx import --history-source hermes/default --reset-cursor
+ctx import --history-source example-agent/default --reset-cursor
 ```
 
 Selectors match `plugin/source` or `provider_key/source_id`, and must resolve
@@ -90,9 +91,9 @@ passes the previously stored source cursor before invoking the command.
 Search can be limited to a custom history source after import:
 
 ```bash
-ctx search "release notes" --history-source dorkos/default
-ctx search "release notes" --provider-key dorkos --source-id default
-ctx search "release notes" --source-format dorkos-claude-jsonl-v1
+ctx search "release notes" --history-source example-agent/default
+ctx search "release notes" --provider-key example-agent --source-id default
+ctx search "release notes" --source-format example-agent-sqlite-v1
 ```
 
 These filters imply `--provider custom`; combining them with another provider is
@@ -106,7 +107,7 @@ ctx sets these variables before invoking a plugin command:
 - `CTX_HISTORY_PLUGIN=1`
 - `CTX_HISTORY_PLUGIN_NAME`
 - `CTX_HISTORY_PLUGIN_MANIFEST`
-- `CTX_HISTORY_SOURCE`, such as `dorkos/default`
+- `CTX_HISTORY_SOURCE`, such as `example-agent/default`
 - `CTX_HISTORY_SOURCE_ID`
 - `CTX_HISTORY_PROVIDER_KEY`
 - `CTX_HISTORY_SOURCE_FORMAT`
@@ -154,65 +155,58 @@ Every plugin run should emit a `source` record matching the manifest
 `provider_key`, `source_id`, and `source_format`. ctx rejects mismatches before
 writing imported rows.
 
-## Adapter Shapes
+## Common Storage Shapes
 
-The examples below are illustrative shapes for plugin authors. Some of these
-providers also have native ctx support; plugins are still useful for custom
-forks, private variants, or newer schemas that ctx does not support yet.
+Use the cursor format that matches your native storage. ctx treats it as an
+opaque string and passes it back on the next run.
 
-### DorkOS
+### Append-Only Files
 
-DorkOS currently derives history from Claude SDK JSONL files under
-`~/.claude/projects/<slug>/*.jsonl`. A DorkOS plugin should read those files by
-byte offset and use a cursor like:
+For one JSONL transcript per session, read each file from the last imported byte
+offset and store a cursor keyed by path:
 
 ```json
-{"files":{"/home/me/.claude/projects/x/session.jsonl":{"offset":12345,"size":13000,"mtimeMs":1780000000000}}}
+{"files":{"/home/me/.example-agent/sessions/a.jsonl":{"offset":12345,"size":13000,"mtimeMs":1780000000000}}}
 ```
 
-The plugin can enrich events with DorkOS metadata from `~/.dork/dork.db`, but
-the transcript source is still the Claude JSONL file.
+If a file shrinks or its fingerprint changes, rescan that file from the
+beginning and emit the same stable session and event IDs.
 
-### OpenClaw
+### SQLite
 
-OpenClaw currently has session metadata under
-`~/.openclaw/agents/<agentId>/sessions/sessions.json` and transcript JSONL
-files beside it. A plugin should use OpenClaw's session accessor where possible,
-resolve transcript paths, and cursor by byte offset:
-
-```json
-{"backend":"openclaw-file","transcripts":{"/home/me/.openclaw/agents/a/sessions/s.jsonl":{"offset":456,"size":900,"lastRecordId":"rec-2"}}}
-```
-
-If OpenClaw flips storage to SQLite, the OpenClaw-owned plugin can keep the same
-ctx stdout contract while changing its native reader.
-
-### Hermes
-
-Hermes Agent stores canonical history in `~/.hermes/state.db`. A Hermes plugin
-should read `sessions` and `messages` read-only, order by `messages.id`, and
-cursor by the maximum message row id:
+For a local database with monotonic message IDs, read rows above the previous
+high-water mark and advance the cursor to the largest imported ID:
 
 ```json
 {"message_id":1234}
 ```
 
-Session metadata-only changes may need a second cursor if Hermes exposes a
-reliable session update high-water mark.
-
-### NanoClaw
-
-NanoClaw uses a central `data/v2.db` plus per-session inbound and outbound
-SQLite databases under `data/v2-sessions/<agent_group_id>/<session_id>/`.
-Inbound messages use even `seq` values and outbound messages use odd `seq`
-values. A generic NanoClaw plugin can cursor by per-session sequence:
+Use a second field if session metadata has its own reliable update marker:
 
 ```json
-{"sessions":{"sess-abc":42,"sess-def":8}}
+{"message_id":1234,"session_updated_at":"2026-07-01T12:00:00Z"}
 ```
 
-Provider-specific NanoClaw plugins can instead read mounted provider state, such
-as Claude JSONL, when they need full internal tool/thinking events.
+### Split Stores
+
+Some tools keep session metadata in one place and transcripts somewhere else.
+Use a cursor map for each moving part:
+
+```json
+{"sessions_version":17,"transcripts":{"/home/me/.example-agent/transcripts/a.jsonl":{"offset":456,"size":900}}}
+```
+
+The plugin can change how it reads native storage later without changing the ctx
+manifest or stdout contract.
+
+### Local APIs Or Commands
+
+If the tool already has an export command or local API, call that API and store
+its sync token:
+
+```json
+{"sync_token":"opaque-provider-token"}
+```
 
 ## Minimal Plugin Pseudocode
 
@@ -224,7 +218,7 @@ if not cursor_text and os.environ.get("CTX_HISTORY_CURSOR_FILE"):
     cursor_text = pathlib.Path(os.environ["CTX_HISTORY_CURSOR_FILE"]).read_text()
 cursor = json.loads(cursor_text or "{}")
 after_message_id = cursor.get("message_id", 0)
-db = sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
+db = sqlite3.connect(os.path.expanduser("~/.example-agent/state.db"))
 
 print(json.dumps({"record_type": "manifest", "schema_version": "ctx-history-jsonl-v1"}))
 print(json.dumps({
