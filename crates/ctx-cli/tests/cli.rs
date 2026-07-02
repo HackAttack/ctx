@@ -778,6 +778,15 @@ fn import_all_discovers_and_imports_providers_together() {
 }
 
 #[test]
+fn import_all_without_sources_does_not_report_missing_explicit_path() {
+    let temp = tempdir();
+    let stderr = failure_stderr(ctx(&temp).args(["import", "--all", "--json"]));
+
+    assert!(stderr.contains("no importable provider history sources found"));
+    assert!(!stderr.contains("import path does not exist"), "{stderr}");
+}
+
+#[test]
 fn import_all_skips_empty_gemini_source() {
     let temp = tempdir();
     copy_dir_all(
@@ -4585,27 +4594,36 @@ fn personal_agent_sqlite_imports_report_corrupt_databases() {
 #[test]
 fn native_provider_cli_requires_existing_history_or_explicit_path() {
     for (cli_provider, expected_blocker) in [
-        ("claude", "no native claude history found"),
-        ("opencode", "no native opencode history found"),
-        ("antigravity", "no native antigravity history found"),
-        ("gemini", "no native gemini history found"),
-        ("cursor", "no native cursor history found"),
-        ("copilot-cli", "no native copilot_cli history found"),
+        ("claude", "no importable claude history found"),
+        ("opencode", "no importable opencode history found"),
+        ("antigravity", "no importable antigravity history found"),
+        ("gemini", "no importable gemini history found"),
+        ("cursor", "no importable cursor history found"),
+        ("copilot-cli", "no importable copilot_cli history found"),
         (
             "factory-ai-droid",
-            "no native factory_ai_droid history found",
+            "no importable factory_ai_droid history found",
         ),
-        ("openclaw", "no native openclaw history found"),
-        ("hermes", "no native hermes history found"),
-        ("nanoclaw", "no native nanoclaw history found"),
-        ("astrbot", "no native astrbot history found"),
+        ("openclaw", "no importable openclaw history found"),
+        ("hermes", "no importable hermes history found"),
+        ("nanoclaw", "no importable nanoclaw history found"),
+        ("astrbot", "no importable astrbot history found"),
     ] {
         let temp = tempdir();
-        ctx(&temp)
-            .args(["import", "--provider", cli_provider, "--json"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains(expected_blocker));
+        let stderr =
+            failure_stderr(ctx(&temp).args(["import", "--provider", cli_provider, "--json"]));
+
+        assert!(stderr.contains(expected_blocker), "{stderr}");
+        assert!(stderr.contains("use `ctx sources`"), "{stderr}");
+        if cli_provider == "nanoclaw" {
+            assert!(
+                stderr.contains("no default paths are registered for this provider"),
+                "{stderr}"
+            );
+        } else {
+            assert!(stderr.contains("checked paths:"), "{stderr}");
+            assert!(stderr.contains(temp.path().to_str().unwrap()), "{stderr}");
+        }
     }
 }
 
@@ -4743,7 +4761,32 @@ fn pi_cli_rejects_directory_import_path() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no importable pi history files"));
+        .stderr(
+            predicate::str::contains("no importable pi history files")
+                .and(predicate::str::contains(path.to_str().unwrap())),
+        );
+}
+
+#[test]
+fn pi_cli_rejects_wrong_file_import_path() {
+    let temp = tempdir();
+    let path = temp.path().join("pi-session.txt");
+    fs::write(&path, "{}\n").unwrap();
+
+    ctx(&temp)
+        .args([
+            "import",
+            "--provider",
+            "pi",
+            "--path",
+            path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("no importable pi history files")
+                .and(predicate::str::contains(path.to_str().unwrap())),
+        );
 }
 
 #[test]
@@ -4760,6 +4803,69 @@ fn import_rejects_nonexistent_path() {
             predicate::str::contains("import path does not exist")
                 .and(predicate::str::contains(path)),
         );
+
+    ctx(&temp)
+        .args(["import", "--path", path])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("import path does not exist")
+                .and(predicate::str::contains(path)),
+        );
+}
+
+#[cfg(unix)]
+#[test]
+fn import_rejects_symlinked_provider_root() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let target = temp.path().join("pi-sessions");
+    fs::create_dir_all(&target).unwrap();
+    let path = temp.path().join("pi-sessions-link");
+    symlink(&target, &path).unwrap();
+
+    ctx(&temp)
+        .args([
+            "import",
+            "--provider",
+            "pi",
+            "--path",
+            path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("symlinked provider transcript roots are rejected")
+                .and(predicate::str::contains(path.to_str().unwrap())),
+        );
+}
+
+#[cfg(unix)]
+#[test]
+fn import_reports_unreadable_directory_with_path_context() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempdir();
+    let path = temp.path().join("unreadable-pi-sessions");
+    fs::create_dir_all(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let stderr = failure_stderr(ctx(&temp).args([
+        "import",
+        "--provider",
+        "pi",
+        "--path",
+        path.to_str().unwrap(),
+    ]));
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(stderr.contains("read import source directory"), "{stderr}");
+    assert!(stderr.contains(path.to_str().unwrap()), "{stderr}");
 }
 
 #[test]

@@ -4213,13 +4213,16 @@ fn import_requests(args: &ImportArgs) -> Result<Vec<SourceInfo>> {
             .collect());
     }
     let provider = args.provider.expect("checked provider").capture_provider();
-    let sources = discovered_sources()
-        .into_iter()
+    let discovered = discovered_sources_for_provider(provider);
+    let sources = discovered
+        .iter()
         .filter(|source| {
             source.provider == provider
                 && source.exists
+                && source.import_support.is_importable()
                 && source.status == ProviderSourceStatus::Available
         })
+        .cloned()
         .collect::<Vec<_>>();
     if sources.is_empty() {
         let spec = provider_source_spec(provider);
@@ -4234,15 +4237,36 @@ fn import_requests(args: &ImportArgs) -> Result<Vec<SourceInfo>> {
                 provider.as_str()
             ));
         }
-        return Err(anyhow!(
-            "no native {} history found; use `ctx sources` to inspect discovered provider paths",
-            provider.as_str()
-        ));
+        return Err(no_importable_provider_sources_error(provider, &discovered));
     }
     for source in &sources {
         validate_source_import_supported(source)?;
     }
     Ok(sources)
+}
+
+fn no_importable_provider_sources_error(
+    provider: CaptureProvider,
+    sources: &[SourceInfo],
+) -> anyhow::Error {
+    let mut message = format!("no importable {} history found", provider.as_str());
+    if sources.is_empty() {
+        message.push_str("; no default paths are registered for this provider");
+    } else {
+        message.push_str("\nchecked paths:");
+        for source in sources {
+            message.push_str(&format!(
+                "\n  {} ({})",
+                source.path.display(),
+                source.status.as_str()
+            ));
+            if let Some(reason) = source.unsupported_reason {
+                message.push_str(&format!(" - {reason}"));
+            }
+        }
+    }
+    message.push_str("\nuse `ctx sources` to inspect discovery, or pass --path");
+    anyhow!(message)
 }
 
 fn validate_source_import_supported(source: &SourceInfo) -> Result<()> {
@@ -4660,7 +4684,8 @@ fn collect_source_import_files(source: &SourceInfo) -> Result<Vec<SourceImportFi
 }
 
 fn collect_source_import_paths(source: &SourceInfo) -> Result<Vec<PathBuf>> {
-    let metadata = fs::symlink_metadata(&source.path)?;
+    let metadata = fs::symlink_metadata(&source.path)
+        .with_context(|| format!("stat import source {}", source.path.display()))?;
     if metadata.file_type().is_symlink() {
         return Err(anyhow!(
             "symlinked provider transcript roots are rejected: {}",
@@ -4681,10 +4706,15 @@ fn collect_source_import_paths(source: &SourceInfo) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mut stack = vec![source.path.clone()];
     while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
+        for entry in fs::read_dir(&dir)
+            .with_context(|| format!("read import source directory {}", dir.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("read import source entry under {}", dir.display()))?;
             let path = entry.path();
-            let file_type = entry.file_type()?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("stat import source entry {}", path.display()))?;
             if file_type.is_dir() {
                 stack.push(path);
             } else if file_type.is_file() && source_import_file_matches(source, &path) {
@@ -5014,7 +5044,8 @@ fn codex_include_notices() -> bool {
 }
 
 fn source_stats(path: &Path) -> Result<SourceStats> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("stat import source {}", path.display()))?;
     if metadata.file_type().is_file() {
         return Ok(SourceStats {
             files: 1,
@@ -5028,13 +5059,21 @@ fn source_stats(path: &Path) -> Result<SourceStats> {
     let mut stats = SourceStats::default();
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
+        for entry in fs::read_dir(&dir)
+            .with_context(|| format!("read import source directory {}", dir.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("read import source entry under {}", dir.display()))?;
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("stat import source entry {}", entry_path.display()))?;
             if file_type.is_dir() {
-                stack.push(entry.path());
+                stack.push(entry_path);
             } else if file_type.is_file() {
-                let metadata = entry.metadata()?;
+                let metadata = entry
+                    .metadata()
+                    .with_context(|| format!("stat import source file {}", entry_path.display()))?;
                 stats.files += 1;
                 stats.bytes = stats.bytes.saturating_add(metadata.len());
             }
@@ -5068,6 +5107,13 @@ fn discovered_sources() -> Vec<SourceInfo> {
     home_dir()
         .as_deref()
         .map(discover_provider_sources)
+        .unwrap_or_default()
+}
+
+fn discovered_sources_for_provider(provider: CaptureProvider) -> Vec<SourceInfo> {
+    home_dir()
+        .as_deref()
+        .map(|home| discover_provider_sources_for_provider(home, provider))
         .unwrap_or_default()
 }
 
