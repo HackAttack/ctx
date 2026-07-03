@@ -3091,14 +3091,7 @@ fn resolve_session(
         .ok_or_else(|| {
             anyhow!("session lookup requires --provider-session when no ctx session id is provided")
         })?;
-    let matches = store
-        .list_sessions()?
-        .into_iter()
-        .filter(|session| {
-            session.provider == provider
-                && session.external_session_id.as_deref() == Some(provider_session)
-        })
-        .collect::<Vec<_>>();
+    let matches = store.sessions_by_external_session_limited(provider, provider_session, 2)?;
     match matches.as_slice() {
         [session] => Ok(session.clone()),
         [] => Err(anyhow!(

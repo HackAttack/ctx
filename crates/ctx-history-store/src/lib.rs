@@ -2284,6 +2284,29 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    pub fn sessions_by_external_session_limited(
+        &self,
+        provider: CaptureProvider,
+        external_session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
+        let mut stmt = self.conn.prepare(
+            session_select_sql(
+                "WHERE provider = ?1 AND external_session_id = ?2 ORDER BY started_at_ms DESC LIMIT ?3",
+            )
+            .as_str(),
+        )?;
+        let rows = stmt.query_map(
+            params![
+                provider.as_str(),
+                external_session_id,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            session_from_row,
+        )?;
+        collect_rows(rows)
+    }
+
     pub fn sessions_for_record(&self, record_id: Uuid) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
             session_select_sql("WHERE history_record_id = ?1 ORDER BY started_at_ms, id").as_str(),
@@ -8116,6 +8139,31 @@ mod catalog_tests {
             .map(|event| event.seq)
             .collect::<Vec<_>>();
         assert_eq!(last, vec![8, 9]);
+    }
+
+    #[test]
+    fn sessions_by_external_session_limited_caps_ambiguity_scan() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        for index in 0..5 {
+            let mut session = imported_session("shared-provider-session");
+            session.started_at = fixed_time() + chrono::Duration::seconds(index);
+            store.upsert_session(&session).unwrap();
+        }
+
+        let matches = store
+            .sessions_by_external_session_limited(
+                CaptureProvider::Codex,
+                "shared-provider-session",
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            matches[0].external_session_id.as_deref(),
+            Some("shared-provider-session")
+        );
     }
 
     #[test]
