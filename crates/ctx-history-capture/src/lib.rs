@@ -2908,7 +2908,9 @@ fn import_codex_provider_event_fast(
         &header.id,
         source_id,
         event.provider_event_index,
+        event.provider_event_index,
         &event_hash,
+        None,
     )?;
     let command_run = provider_command_run_from_event(ProviderCommandRunInput {
         provider,
@@ -10727,10 +10729,14 @@ fn pi_session_event(
     })?;
     let event_type = pi_event_type(entry_type, message);
     let role = message_role.map(pi_event_role);
-    let text = message.and_then(pi_message_text);
+    let text = pi_entry_text(entry, message);
+    let provider_event_index = (line_number - 1) as u64;
+    let provider_event_identity_index =
+        pi_provider_event_identity_index(header, entry).unwrap_or(provider_event_index);
+    let legacy_provider_event_index = provider_event_index;
 
     Ok(ProviderEventEnvelope {
-        provider_event_index: (line_number - 1) as u64,
+        provider_event_index,
         provider_event_hash: None,
         cursor: entry.get("id").and_then(Value::as_str).map(str::to_owned),
         event_type,
@@ -10738,7 +10744,7 @@ fn pi_session_event(
         occurred_at,
         fidelity: Fidelity::Imported,
         redaction_state: RedactionState::LocalPreview,
-        idempotency_key: Some(format!("provider-event:pi:{}:{line_number}", header.id)),
+        idempotency_key: Some(pi_event_idempotency_key(header, entry, line_number)),
         artifacts: Vec::new(),
         payload: json!({
             "entry_type": entry_type,
@@ -10755,6 +10761,8 @@ fn pi_session_event(
             "entry_type": entry_type,
             "entry_id": entry.get("id").and_then(Value::as_str),
             "parent_id": entry.get("parentId").and_then(Value::as_str),
+            "provider_event_identity_index": provider_event_identity_index,
+            "legacy_provider_event_index": legacy_provider_event_index,
             "message_role": message_role,
             "model": message
                 .and_then(|message| message.get("model"))
@@ -10765,6 +10773,23 @@ fn pi_session_event(
             "usage": message.and_then(|message| message.get("usage")).cloned(),
         }),
     })
+}
+
+fn pi_provider_event_identity_index(header: &PiSessionHeader, entry: &Value) -> Option<u64> {
+    entry
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| fnv1a64(format!("pi:{}:{id}", header.id).as_bytes()))
+}
+
+fn pi_event_idempotency_key(header: &PiSessionHeader, entry: &Value, line_number: usize) -> String {
+    entry
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!("provider-event:pi:{}:{id}", header.id))
+        .unwrap_or_else(|| format!("provider-event:pi:{}:{line_number}", header.id))
 }
 
 fn pi_event_type(entry_type: &str, message: Option<&Value>) -> EventType {
@@ -10812,6 +10837,47 @@ fn pi_message_has_tool_call(message: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn pi_entry_text(entry: &Value, message: Option<&Value>) -> Option<String> {
+    if let Some(text) = message.and_then(pi_message_text) {
+        return Some(text);
+    }
+    match entry
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+    {
+        "compaction" | "branch_summary" => entry
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "custom_message" => entry.get("content").and_then(pi_content_text),
+        "session_info" => entry.get("name").and_then(Value::as_str).map(str::to_owned),
+        "label" => entry
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "model_change" => {
+            let provider = entry.get("provider").and_then(Value::as_str).unwrap_or("");
+            let model = entry.get("modelId").and_then(Value::as_str).unwrap_or("");
+            let label = [provider, model]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("/");
+            (!label.is_empty()).then_some(label)
+        }
+        "thinking_level_change" => entry
+            .get("thinkingLevel")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "custom" => entry
+            .get("customType")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
 fn pi_message_text(message: &Value) -> Option<String> {
     if let Some(command) = message.get("command").and_then(Value::as_str) {
         let output = message.get("output").and_then(Value::as_str).unwrap_or("");
@@ -10828,7 +10894,10 @@ fn pi_message_text(message: &Value) -> Option<String> {
     {
         return Some(summary.to_owned());
     }
-    let content = message.get("content")?;
+    message.get("content").and_then(pi_content_text)
+}
+
+fn pi_content_text(content: &Value) -> Option<String> {
     if let Some(text) = content.as_str() {
         return Some(text.to_owned());
     }
@@ -11011,6 +11080,7 @@ struct ProviderImportCaches {
     imported_edges: BTreeSet<Uuid>,
     processed_edges: BTreeSet<Uuid>,
     session_exists: BTreeMap<Uuid, bool>,
+    pi_event_identities_by_entry_id: BTreeMap<Uuid, BTreeMap<String, ProviderEventImportIdentity>>,
     pending_edges: BTreeMap<Uuid, PendingProviderEdge>,
 }
 
@@ -11236,14 +11306,40 @@ fn import_provider_capture_line(
             .provider_event_hash
             .clone()
             .unwrap_or(compute_payload_hash(&payload)?);
-        let event_identity = provider_event_import_identity(
+        let pi_entry_id = event
+            .metadata
+            .get("entry_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty());
+        let legacy_provider_event_index = event
+            .metadata
+            .get("legacy_provider_event_index")
+            .and_then(Value::as_u64)
+            .filter(|_| !(provider == CaptureProvider::Pi && pi_entry_id.is_some()));
+        let provider_event_identity_index = event
+            .metadata
+            .get("provider_event_identity_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(event.provider_event_index);
+        let event_identity = match pi_existing_event_identity_by_entry_id(
             store,
             provider,
-            &session.provider_session_id,
-            source_id,
-            event.provider_event_index,
-            &event_hash,
-        )?;
+            session_id,
+            pi_entry_id,
+            caches,
+        )? {
+            Some(identity) => identity,
+            None => provider_event_import_identity(
+                store,
+                provider,
+                &session.provider_session_id,
+                source_id,
+                provider_event_identity_index,
+                event.provider_event_index,
+                &event_hash,
+                legacy_provider_event_index,
+            )?,
+        };
         let command_run = provider_command_run_from_event(ProviderCommandRunInput {
             provider,
             provider_session_id: &session.provider_session_id,
@@ -11916,20 +12012,119 @@ struct ProviderEventImportIdentity {
     run_source_id: Option<Uuid>,
 }
 
+fn pi_existing_event_identity_by_entry_id(
+    store: &Store,
+    provider: CaptureProvider,
+    session_id: Uuid,
+    entry_id: Option<&str>,
+    caches: &mut ProviderImportCaches,
+) -> Result<Option<ProviderEventImportIdentity>> {
+    if provider != CaptureProvider::Pi {
+        return Ok(None);
+    }
+    let Some(entry_id) = entry_id.filter(|id| !id.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if !caches
+        .pi_event_identities_by_entry_id
+        .contains_key(&session_id)
+    {
+        let mut identities = BTreeMap::new();
+        for event in store.events_for_session(session_id)? {
+            let Some(existing_entry_id) = pi_stored_event_entry_id(&event) else {
+                continue;
+            };
+            let Some(dedupe_key) = event.dedupe_key.clone() else {
+                continue;
+            };
+            identities
+                .entry(existing_entry_id.to_owned())
+                .or_insert(ProviderEventImportIdentity {
+                    id: event.id,
+                    seq: event.seq,
+                    dedupe_key,
+                    run_source_id: event.capture_source_id,
+                });
+        }
+        caches
+            .pi_event_identities_by_entry_id
+            .insert(session_id, identities);
+    }
+    Ok(caches
+        .pi_event_identities_by_entry_id
+        .get(&session_id)
+        .and_then(|identities| identities.get(entry_id).cloned()))
+}
+
+fn pi_stored_event_entry_id(event: &Event) -> Option<&str> {
+    event
+        .payload
+        .pointer("/body/entry_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .payload
+                .pointer("/body/body/id")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .sync
+                .metadata
+                .pointer("/metadata/entry_id")
+                .and_then(Value::as_str)
+        })
+}
+
 fn provider_event_import_identity(
     store: &Store,
     provider: CaptureProvider,
     provider_session_id: &str,
     source_id: Uuid,
     provider_event_index: u64,
+    provider_event_sequence_index: u64,
     event_hash: &str,
+    legacy_provider_event_index: Option<u64>,
 ) -> Result<ProviderEventImportIdentity> {
-    let source_identity =
-        provider_source_event_import_identity(source_id, provider_event_index, event_hash);
+    let source_identity = provider_source_event_import_identity_with_seq(
+        source_id,
+        provider_event_index,
+        provider_event_sequence_index,
+        event_hash,
+    );
+    let source_identity = avoid_provider_source_event_seq_collision(
+        store,
+        source_identity,
+        source_id,
+        provider_event_index,
+        provider_event_sequence_index,
+    )?;
     if provider_event_exists(store, &source_identity.dedupe_key)?
         || provider_event_id_exists(store, source_identity.id)?
     {
         return Ok(source_identity);
+    }
+
+    if let Some(legacy_index) = legacy_provider_event_index {
+        let legacy_source_identity =
+            provider_source_event_import_identity(source_id, legacy_index, event_hash);
+        if provider_event_exists(store, &legacy_source_identity.dedupe_key)?
+            || provider_event_id_exists(store, legacy_source_identity.id)?
+        {
+            return Ok(legacy_source_identity);
+        }
+
+        let legacy_provider_identity = provider_legacy_event_import_identity(
+            provider,
+            provider_session_id,
+            legacy_index,
+            event_hash,
+        );
+        if provider_event_exists(store, &legacy_provider_identity.dedupe_key)?
+            || provider_event_id_exists(store, legacy_provider_identity.id)?
+        {
+            return Ok(legacy_provider_identity);
+        }
     }
 
     let legacy_identity = provider_legacy_event_import_identity(
@@ -11952,15 +12147,72 @@ fn provider_source_event_import_identity(
     provider_event_index: u64,
     event_hash: &str,
 ) -> ProviderEventImportIdentity {
+    provider_source_event_import_identity_with_seq(
+        source_id,
+        provider_event_index,
+        provider_event_index,
+        event_hash,
+    )
+}
+
+fn provider_source_event_import_identity_with_seq(
+    source_id: Uuid,
+    provider_event_index: u64,
+    provider_event_sequence_index: u64,
+    event_hash: &str,
+) -> ProviderEventImportIdentity {
     ProviderEventImportIdentity {
         id: provider_source_event_uuid(source_id, provider_event_index),
-        seq: provider_source_event_seq(source_id, provider_event_index),
+        seq: provider_source_event_seq(source_id, provider_event_sequence_index),
         dedupe_key: Store::provider_source_event_dedupe_key(
             source_id,
             provider_event_index,
             event_hash,
         ),
         run_source_id: Some(source_id),
+    }
+}
+
+fn avoid_provider_source_event_seq_collision(
+    store: &Store,
+    mut identity: ProviderEventImportIdentity,
+    source_id: Uuid,
+    provider_event_index: u64,
+    provider_event_sequence_index: u64,
+) -> Result<ProviderEventImportIdentity> {
+    if provider_event_seq_available(store, identity.seq, identity.id)? {
+        return Ok(identity);
+    }
+
+    for candidate in [
+        provider_event_sequence_index ^ 0x0008_0000,
+        provider_event_index,
+        provider_event_index ^ 0x0008_0000,
+    ] {
+        let seq = provider_source_event_seq(source_id, candidate);
+        if provider_event_seq_available(store, seq, identity.id)? {
+            identity.seq = seq;
+            return Ok(identity);
+        }
+    }
+
+    for salt in 1..1024 {
+        let candidate = provider_event_sequence_index.wrapping_add(salt) & 0x000f_ffff;
+        let seq = provider_source_event_seq(source_id, candidate);
+        if provider_event_seq_available(store, seq, identity.id)? {
+            identity.seq = seq;
+            return Ok(identity);
+        }
+    }
+
+    Ok(identity)
+}
+
+fn provider_event_seq_available(store: &Store, seq: u64, event_id: Uuid) -> Result<bool> {
+    match store.event_id_by_seq(seq) {
+        Ok(existing_id) => Ok(existing_id == event_id),
+        Err(StoreError::Sql(rusqlite::Error::QueryReturnedNoRows)) => Ok(true),
+        Err(err) => Err(CaptureError::Store(err)),
     }
 }
 
@@ -13086,6 +13338,301 @@ mod tests {
             .error
             .contains("timestamp is not a valid RFC3339 timestamp"));
         assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pi_session_import_uses_entry_ids_when_lines_shift() {
+        let temp = tempdir();
+        let fixture = temp.path().join("pi-line-shift.jsonl");
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"pi-line-shift\",\"timestamp\":\"2026-06-24T12:00:00Z\",\"cwd\":\"/workspace\"}\n",
+                "{\"type\":\"message\",\"id\":\"stable-entry\",\"parentId\":null,\"timestamp\":\"2026-06-24T12:00:01Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"pi line shift stable\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_pi_session_jsonl(
+            &fixture,
+            &mut store,
+            PiSessionImportOptions {
+                source_path: Some(fixture.clone()),
+                imported_at: "2026-06-24T16:00:00Z".parse().unwrap(),
+                ..PiSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first.imported_events, 1);
+
+        let session_id = provider_session_uuid(CaptureProvider::Pi, "pi-line-shift");
+        let first_event_id = store.events_for_session(session_id).unwrap()[0].id;
+
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"pi-line-shift\",\"timestamp\":\"2026-06-24T12:00:00Z\",\"cwd\":\"/workspace\"}\n",
+                "{\"type\":\"model_change\",\"id\":\"inserted-entry\",\"parentId\":null,\"timestamp\":\"2026-06-24T12:00:00Z\",\"provider\":\"google\",\"modelId\":\"gemini-2.5-flash\"}\n",
+                "{\"type\":\"message\",\"id\":\"stable-entry\",\"parentId\":\"inserted-entry\",\"timestamp\":\"2026-06-24T12:00:01Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"pi line shift stable\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let second = import_pi_session_jsonl(
+            &fixture,
+            &mut store,
+            PiSessionImportOptions {
+                source_path: Some(fixture.clone()),
+                imported_at: "2026-06-24T16:01:00Z".parse().unwrap(),
+                ..PiSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_events, 1, "{second:?}");
+        assert_eq!(second.skipped_events, 1, "{second:?}");
+
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 2);
+        let shifted = events
+            .iter()
+            .find(|event| event.payload.to_string().contains("pi line shift stable"))
+            .unwrap();
+        assert_eq!(shifted.id, first_event_id);
+    }
+
+    #[test]
+    fn pi_session_identity_resolver_reuses_legacy_line_indexed_events() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let source_id = stable_capture_uuid("legacy-pi-source", "source");
+        let legacy_index = 1;
+        let event_hash = "0123456789abcdef";
+        let legacy_identity =
+            provider_source_event_import_identity(source_id, legacy_index, event_hash);
+        store
+            .upsert_event(&Event {
+                id: legacy_identity.id,
+                seq: legacy_identity.seq,
+                history_record_id: None,
+                session_id: None,
+                run_id: None,
+                event_type: EventType::Message,
+                role: Some(EventRole::User),
+                occurred_at: "2026-06-24T12:00:01Z".parse().unwrap(),
+                capture_source_id: None,
+                payload: json!({"text": "legacy line indexed pi event"}),
+                payload_blob_id: None,
+                dedupe_key: Some(legacy_identity.dedupe_key.clone()),
+                redaction_state: RedactionState::LocalPreview,
+                sync: provider_sync_metadata(Fidelity::Imported, json!({})),
+            })
+            .unwrap();
+
+        let header = PiSessionHeader {
+            id: "pi-legacy".to_owned(),
+            version: Some(3),
+            timestamp: "2026-06-24T12:00:00Z".parse().unwrap(),
+            cwd: Some("/workspace".to_owned()),
+            parent_session: None,
+            raw: json!({}),
+        };
+        let stable_index =
+            pi_provider_event_identity_index(&header, &json!({"id": "stable-entry"})).unwrap();
+
+        let resolved = provider_event_import_identity(
+            &store,
+            CaptureProvider::Pi,
+            "pi-legacy",
+            source_id,
+            stable_index,
+            legacy_index + 1,
+            event_hash,
+            Some(legacy_index as u64),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.id, legacy_identity.id);
+        assert_eq!(resolved.dedupe_key, legacy_identity.dedupe_key);
+    }
+
+    #[test]
+    fn pi_session_import_reuses_legacy_line_indexed_event_by_entry_id_after_line_shift() {
+        let temp = tempdir();
+        let fixture = temp.path().join("pi-legacy-line-shift.jsonl");
+        let provider_session_id = "pi-legacy-line-shift";
+        let raw_path = fixture.display().to_string();
+        let source_id = provider_scoped_source_uuid(
+            CaptureProvider::Pi,
+            provider_session_id,
+            "pi_session_jsonl",
+            Some(&raw_path),
+        );
+        let session_id = provider_session_uuid(CaptureProvider::Pi, provider_session_id);
+        let legacy_identity = provider_source_event_import_identity(source_id, 1, "legacy-hash");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let started_at = "2026-06-24T12:00:00Z".parse().unwrap();
+        store
+            .upsert_capture_source(&CaptureSource {
+                id: source_id,
+                descriptor: CaptureSourceDescriptor {
+                    kind: CaptureSourceKind::ProviderImport,
+                    provider: CaptureProvider::Pi,
+                    machine_id: "test-machine".to_owned(),
+                    process_id: None,
+                    cwd: Some("/workspace".to_owned()),
+                    raw_source_path: Some(raw_path.clone()),
+                    external_session_id: Some(provider_session_id.to_owned()),
+                },
+                started_at,
+                ended_at: None,
+                sync: provider_sync_metadata(Fidelity::Imported, json!({})),
+            })
+            .unwrap();
+        store
+            .upsert_session(&Session {
+                id: session_id,
+                history_record_id: None,
+                parent_session_id: None,
+                root_session_id: None,
+                capture_source_id: None,
+                provider: CaptureProvider::Pi,
+                external_session_id: Some(provider_session_id.to_owned()),
+                external_agent_id: None,
+                agent_type: AgentType::Primary,
+                role_hint: Some("primary".to_owned()),
+                is_primary: true,
+                status: SessionStatus::Imported,
+                transcript_blob_id: None,
+                started_at,
+                ended_at: None,
+                timestamps: timestamps(started_at),
+                sync: provider_sync_metadata(Fidelity::Imported, json!({})),
+            })
+            .unwrap();
+        store
+            .upsert_event(&Event {
+                id: legacy_identity.id,
+                seq: legacy_identity.seq,
+                history_record_id: None,
+                session_id: Some(session_id),
+                run_id: None,
+                event_type: EventType::Message,
+                role: Some(EventRole::User),
+                occurred_at: "2026-06-24T12:00:01Z".parse().unwrap(),
+                capture_source_id: Some(source_id),
+                payload: json!({
+                    "provider": "pi",
+                    "provider_session_id": provider_session_id,
+                    "provider_event_index": 1,
+                    "body": {
+                        "entry_id": "stable-entry",
+                        "text": "legacy stable oracle",
+                        "body": {"id": "stable-entry"}
+                    }
+                }),
+                payload_blob_id: None,
+                dedupe_key: Some(legacy_identity.dedupe_key.clone()),
+                redaction_state: RedactionState::LocalPreview,
+                sync: provider_sync_metadata(
+                    Fidelity::Imported,
+                    json!({"metadata": {"entry_id": "stable-entry"}}),
+                ),
+            })
+            .unwrap();
+
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"pi-legacy-line-shift\",\"timestamp\":\"2026-06-24T12:00:00Z\",\"cwd\":\"/workspace\"}\n",
+                "{\"type\":\"model_change\",\"id\":\"inserted-entry\",\"parentId\":null,\"timestamp\":\"2026-06-24T12:00:00Z\",\"provider\":\"google\",\"modelId\":\"gemini-2.5-flash\"}\n",
+                "{\"type\":\"message\",\"id\":\"stable-entry\",\"parentId\":\"inserted-entry\",\"timestamp\":\"2026-06-24T12:00:01Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"new stable oracle\"}]}}\n",
+            ),
+        )
+        .unwrap();
+
+        let summary = import_pi_session_jsonl(
+            &fixture,
+            &mut store,
+            PiSessionImportOptions {
+                source_path: Some(fixture.clone()),
+                imported_at: "2026-06-24T16:00:00Z".parse().unwrap(),
+                ..PiSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+        assert_eq!(summary.imported_events, 1);
+        assert_eq!(summary.skipped_events, 1);
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().any(|event| event.id == legacy_identity.id));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.payload.to_string().contains("stable-entry"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pi_session_import_extracts_text_from_non_message_entries() {
+        let temp = tempdir();
+        let fixture = temp.path().join("pi-non-message-text.jsonl");
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"pi-non-message-text\",\"timestamp\":\"2026-06-24T12:00:00Z\",\"cwd\":\"/workspace\"}\n",
+                "{\"type\":\"compaction\",\"id\":\"compact-entry\",\"timestamp\":\"2026-06-24T12:00:01Z\",\"summary\":\"compacted plan oracle\"}\n",
+                "{\"type\":\"branch_summary\",\"id\":\"branch-entry\",\"timestamp\":\"2026-06-24T12:00:02Z\",\"summary\":\"branch summary oracle\"}\n",
+                "{\"type\":\"custom_message\",\"id\":\"custom-message-entry\",\"timestamp\":\"2026-06-24T12:00:03Z\",\"content\":[{\"type\":\"text\",\"text\":\"custom message oracle\"}]}\n",
+                "{\"type\":\"session_info\",\"id\":\"session-info-entry\",\"timestamp\":\"2026-06-24T12:00:04Z\",\"name\":\"session info oracle\"}\n",
+                "{\"type\":\"model_change\",\"id\":\"model-entry\",\"timestamp\":\"2026-06-24T12:00:05Z\",\"provider\":\"google\",\"modelId\":\"gemini-2.5-flash\"}\n",
+                "{\"type\":\"thinking_level_change\",\"id\":\"thinking-entry\",\"timestamp\":\"2026-06-24T12:00:06Z\",\"thinkingLevel\":\"high\"}\n",
+                "{\"type\":\"label\",\"id\":\"label-entry\",\"timestamp\":\"2026-06-24T12:00:07Z\",\"label\":\"label oracle\"}\n",
+                "{\"type\":\"custom\",\"id\":\"custom-entry\",\"timestamp\":\"2026-06-24T12:00:08Z\",\"customType\":\"custom type oracle\"}\n",
+            ),
+        )
+        .unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_pi_session_jsonl(
+            &fixture,
+            &mut store,
+            PiSessionImportOptions {
+                source_path: Some(fixture.clone()),
+                imported_at: "2026-06-24T16:00:00Z".parse().unwrap(),
+                ..PiSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+        assert_eq!(summary.imported_events, 8);
+        let session_id = provider_session_uuid(CaptureProvider::Pi, "pi-non-message-text");
+        let events = store.events_for_session(session_id).unwrap();
+        let texts = events
+            .iter()
+            .filter_map(|event| event.payload.pointer("/body/text").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        for expected in [
+            "compacted plan oracle",
+            "branch summary oracle",
+            "custom message oracle",
+            "session info oracle",
+            "google/gemini-2.5-flash",
+            "high",
+            "label oracle",
+            "custom type oracle",
+        ] {
+            assert!(
+                texts.contains(&expected),
+                "missing {expected:?} in texts {texts:?}"
+            );
+        }
     }
 
     #[test]
