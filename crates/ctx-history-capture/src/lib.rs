@@ -40,6 +40,7 @@ pub use provider_sources::{
 };
 
 pub const CAPTURE_SCHEMA_VERSION: u32 = 1;
+const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
@@ -913,17 +914,18 @@ impl ProviderCaptureAdapter for ProviderFixtureJsonlAdapter {
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut result = ProviderNormalizationResult::default();
+        let mut line = Vec::new();
+        let mut line_number = 0usize;
 
-        for (index, line) in reader.lines().enumerate() {
-            let line_number = index + 1;
-            let line = line?;
-            if line.trim().is_empty() {
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
+            line_number += 1;
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
 
-            let fixture: ProviderFixtureLine = match serde_json::from_str(&line) {
+            let fixture: ProviderFixtureLine = match serde_json::from_slice(&line) {
                 Ok(fixture) => fixture,
                 Err(err) => {
                     result.summary.failed += 1;
@@ -975,19 +977,20 @@ impl ProviderCaptureAdapter for CodexHistoryJsonlAdapter {
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut result = ProviderNormalizationResult::default();
         let mut parsed = Vec::new();
         let mut first_seen = BTreeMap::new();
+        let mut line = Vec::new();
+        let mut line_number = 0usize;
 
-        for (index, line) in reader.lines().enumerate() {
-            let line_number = index + 1;
-            let line = line?;
-            if line.trim().is_empty() {
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
+            line_number += 1;
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
 
-            let history: CodexHistoryLine = match serde_json::from_str(&line) {
+            let history: CodexHistoryLine = match serde_json::from_slice(&line) {
                 Ok(history) => history,
                 Err(err) => {
                     result.summary.failed += 1;
@@ -1167,12 +1170,7 @@ impl ProviderCaptureAdapter for CodexSessionJsonlAdapter {
 
         let mut line_number = 0usize;
         let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
-            }
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
             line_number += 1;
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
@@ -1439,18 +1437,19 @@ fn normalize_pi_session_jsonl_file(
 ) -> Result<ProviderNormalizationResult> {
     ensure_regular_provider_transcript_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut header = None;
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
 
-        let value: Value = match serde_json::from_str(&line) {
+        let value: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -1853,18 +1852,20 @@ pub fn read_jsonl(path: impl AsRef<Path>) -> Result<Vec<CaptureEnvelope>> {
     let path = path.as_ref();
     ensure_regular_spool_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut envelopes = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let envelope: CaptureEnvelope =
-            serde_json::from_str(&line).map_err(|source| CaptureError::InvalidJsonLine {
+            serde_json::from_slice(&line).map_err(|source| CaptureError::InvalidJsonLine {
                 path: path.to_path_buf(),
-                line: index + 1,
+                line: line_number,
                 source,
             })?;
         validate_envelope(&envelope)?;
@@ -2192,22 +2193,21 @@ pub fn import_codex_session_jsonl_tail(
         let mut line_number = 0usize;
         let mut position = 0u64;
 
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
+        if !read_provider_jsonl_line(&mut reader, &mut line)? {
             return Ok(summary);
         }
         line_number += 1;
+        let read = line.len();
         position = position.saturating_add(read as u64);
         let header_value: Value = serde_json::from_slice(&line)?;
         let header = codex_session_header(header_value)?;
 
         while position < start_offset {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
+            if !read_provider_jsonl_line(&mut reader, &mut line)? {
                 return Ok(summary);
             }
             line_number += 1;
+            let read = line.len();
             position = position.saturating_add(read as u64);
         }
 
@@ -2225,13 +2225,9 @@ pub fn import_codex_session_jsonl_tail(
 
         let mut call_contexts: BTreeMap<String, CodexToolCallContext> = BTreeMap::new();
         let mut completed_bytes = 0u64;
-        loop {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
-            }
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
             line_number += 1;
+            let read = line.len();
             completed_bytes = completed_bytes.saturating_add(read as u64);
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
@@ -2729,12 +2725,7 @@ fn import_codex_session_path_fast(
     let mut call_contexts: BTreeMap<String, CodexToolCallContext> = BTreeMap::new();
     let mut line_number = 0usize;
     let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
         line_number += 1;
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -3858,16 +3849,18 @@ fn normalize_custom_history_jsonl_v1_reader(
     reader: impl BufRead,
     context: &ProviderAdapterContext,
 ) -> Result<CustomHistoryJsonlV1NormalizationResult> {
+    let mut reader = reader;
     let mut summary = ProviderImportSummary::default();
     let mut records = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        match serde_json::from_str::<CtxHistoryJsonlRecord>(&line) {
+        match serde_json::from_slice::<CtxHistoryJsonlRecord>(&line) {
             Ok(record) => records.push((line_number, record)),
             Err(err) => push_provider_import_failure(&mut summary, line_number, err.to_string()),
         }
@@ -4838,6 +4831,64 @@ fn ensure_regular_provider_transcript_file(path: &Path) -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn read_provider_jsonl_line(reader: &mut impl BufRead, buffer: &mut Vec<u8>) -> Result<bool> {
+    buffer.clear();
+    let mut total = 0usize;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(total > 0);
+        }
+        if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
+            let bytes_to_consume = newline_index + 1;
+            if total.saturating_add(bytes_to_consume) > MAX_PROVIDER_JSONL_LINE_BYTES {
+                reader.consume(bytes_to_consume);
+                return Err(provider_jsonl_line_too_large());
+            }
+            buffer.extend_from_slice(&available[..bytes_to_consume]);
+            reader.consume(bytes_to_consume);
+            return Ok(true);
+        }
+
+        let bytes_to_consume = available.len();
+        if total.saturating_add(bytes_to_consume) > MAX_PROVIDER_JSONL_LINE_BYTES {
+            reader.consume(bytes_to_consume);
+            discard_provider_jsonl_line(reader)?;
+            return Err(provider_jsonl_line_too_large());
+        }
+        buffer.extend_from_slice(available);
+        reader.consume(bytes_to_consume);
+        total = total.saturating_add(bytes_to_consume);
+    }
+}
+
+fn discard_provider_jsonl_line(reader: &mut impl BufRead) -> Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        let bytes_to_consume = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(available.len());
+        let found_newline = available
+            .get(bytes_to_consume.saturating_sub(1))
+            .is_some_and(|byte| *byte == b'\n');
+        reader.consume(bytes_to_consume);
+        if found_newline {
+            return Ok(());
+        }
+    }
+}
+
+fn provider_jsonl_line_too_large() -> CaptureError {
+    CaptureError::InvalidPayload(format!(
+        "provider JSONL line exceeds max bytes ({MAX_PROVIDER_JSONL_LINE_BYTES})"
+    ))
 }
 
 fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
@@ -6191,17 +6242,18 @@ fn normalize_claude_projects_jsonl_file(
 ) -> Result<ProviderNormalizationResult> {
     ensure_regular_provider_transcript_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let value: Value = match serde_json::from_str(&line) {
+        let value: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -6957,12 +7009,7 @@ fn normalize_openclaw_jsonl_file(
     let mut header_seen = false;
     let mut line_number = 0usize;
     let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
         line_number += 1;
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -9730,17 +9777,18 @@ fn normalize_native_jsonl_session_file(
 ) -> Result<ProviderNormalizationResult> {
     ensure_regular_provider_transcript_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let value: Value = match serde_json::from_str(&line) {
+        let value: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -12154,6 +12202,10 @@ mod tests {
         materialized_fixture("custom-history-jsonl", name)
     }
 
+    fn write_oversized_jsonl_line(path: &Path) {
+        fs::write(path, vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1]).unwrap();
+    }
+
     fn materialized_fixture(category: &str, name: &str) -> PathBuf {
         let source = match category {
             "provider" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -13370,6 +13422,18 @@ mod tests {
                     && reason == "symlinked provider transcript files are rejected"
         ));
         assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn codex_session_jsonl_rejects_oversized_line() {
+        let temp = tempdir();
+        let path = temp.path().join("oversized-codex.jsonl");
+        write_oversized_jsonl_line(&path);
+
+        let err = CodexSessionJsonlAdapter
+            .normalize_path(&path, &ProviderAdapterContext::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("provider JSONL line exceeds"));
     }
 
     #[test]
@@ -15992,6 +16056,24 @@ mod tests {
             .unwrap();
         assert_eq!(sessions, 0);
         assert_eq!(events, 0);
+    }
+
+    #[test]
+    fn custom_history_jsonl_rejects_oversized_line() {
+        let temp = tempdir();
+        let path = temp.path().join("oversized-custom.jsonl");
+        write_oversized_jsonl_line(&path);
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = import_custom_history_jsonl_v1(
+            &path,
+            &mut store,
+            CustomHistoryJsonlV1ImportOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("provider JSONL line exceeds"));
+        assert_eq!(store.capture_source_count().unwrap(), 0);
     }
 
     #[test]
