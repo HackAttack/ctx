@@ -1232,11 +1232,17 @@ impl ProviderCaptureAdapter for CodexSessionJsonlAdapter {
                 });
                 continue;
             };
-            let occurred_at = value
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_utc)
-                .unwrap_or(header.timestamp);
+            let occurred_at = match codex_session_line_timestamp(&value, header.timestamp) {
+                Ok(occurred_at) => occurred_at,
+                Err(err) => {
+                    result.summary.failed += 1;
+                    result.summary.failures.push(ProviderImportFailure {
+                        line: line_number,
+                        error: err.to_string(),
+                    });
+                    continue;
+                }
+            };
             let mut line_capture = codex_session_line_capture(
                 header,
                 &value,
@@ -1467,7 +1473,7 @@ fn normalize_pi_session_jsonl_file(
         if entry_type == "session" {
             match pi_session_header(value) {
                 Ok(parsed) => {
-                    let capture = pi_session_capture(&parsed, None, line_number, context);
+                    let capture = pi_session_capture(&parsed, None, line_number, context)?;
                     header = Some(parsed);
                     result.captures.push((line_number, capture));
                 }
@@ -1490,10 +1496,16 @@ fn normalize_pi_session_jsonl_file(
             });
             continue;
         };
-        result.captures.push((
-            line_number,
-            pi_session_capture(header, Some(value), line_number, context),
-        ));
+        match pi_session_capture(header, Some(value), line_number, context) {
+            Ok(capture) => result.captures.push((line_number, capture)),
+            Err(err) => {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: err.to_string(),
+                });
+            }
+        }
     }
 
     Ok(result)
@@ -2262,11 +2274,20 @@ pub fn import_codex_session_jsonl_tail(
             {
                 continue;
             }
-            let occurred_at = value
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_utc)
-                .unwrap_or(header.timestamp);
+            let occurred_at = match codex_session_line_timestamp(&value, header.timestamp) {
+                Ok(occurred_at) => occurred_at,
+                Err(err) => {
+                    summary.failed += 1;
+                    summary.failures.push(ProviderImportFailure {
+                        line: line_number,
+                        error: err.to_string(),
+                    });
+                    if !options.allow_partial_failures {
+                        return Ok(summary);
+                    }
+                    continue;
+                }
+            };
             let mut line_capture = codex_session_line_capture(
                 &header,
                 &value,
@@ -2803,11 +2824,20 @@ fn import_codex_session_path_fast(
             }
             continue;
         };
-        let occurred_at = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_utc)
-            .unwrap_or(header.timestamp);
+        let occurred_at = match codex_session_line_timestamp(&value, header.timestamp) {
+            Ok(occurred_at) => occurred_at,
+            Err(err) => {
+                summary.failed += 1;
+                summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: err.to_string(),
+                });
+                if !options.allow_partial_failures {
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         let mut line_capture = codex_session_line_capture(
             header,
             &value,
@@ -2886,7 +2916,7 @@ fn import_codex_provider_event_fast(
         event,
         payload: &payload,
         event_hash: &event_hash,
-    });
+    })?;
     let normalized_event = Event {
         id: event_identity.id,
         seq: event_identity.seq,
@@ -4918,6 +4948,27 @@ fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|time| time.with_timezone(&Utc))
+}
+
+fn parse_optional_rfc3339_field(
+    value: &Value,
+    field: &'static str,
+) -> Result<Option<DateTime<Utc>>> {
+    let Some(raw_value) = value.get(field) else {
+        return Ok(None);
+    };
+    let raw = raw_value.as_str().ok_or_else(|| {
+        CaptureError::InvalidPayload(format!("{field} must be an RFC3339 string"))
+    })?;
+    parse_rfc3339_utc(raw)
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload(format!("{field} is not a valid RFC3339 timestamp"))
+        })
+        .map(Some)
+}
+
+fn codex_session_line_timestamp(value: &Value, fallback: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    Ok(parse_optional_rfc3339_field(value, "timestamp")?.unwrap_or(fallback))
 }
 
 fn codex_session_header(value: Value) -> Result<CodexSessionHeader> {
@@ -10473,8 +10524,10 @@ fn pi_session_capture(
     entry: Option<Value>,
     line_number: usize,
     context: &ProviderAdapterContext,
-) -> ProviderCaptureEnvelope {
-    let event = entry.map(|entry| pi_session_event(header, &entry, line_number));
+) -> Result<ProviderCaptureEnvelope> {
+    let event = entry
+        .map(|entry| pi_session_event(header, &entry, line_number))
+        .transpose()?;
     let cursor = event.as_ref().and_then(|event| {
         event.cursor.as_ref().map(|cursor| ProviderCursorRange {
             before: None,
@@ -10486,7 +10539,7 @@ fn pi_session_capture(
         })
     });
 
-    ProviderCaptureEnvelope {
+    Ok(ProviderCaptureEnvelope {
         schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
         provider: CaptureProvider::Pi,
         source: ProviderSourceEnvelope {
@@ -10537,14 +10590,14 @@ fn pi_session_capture(
             }),
         },
         event,
-    }
+    })
 }
 
 fn pi_session_event(
     header: &PiSessionHeader,
     entry: &Value,
     line_number: usize,
-) -> ProviderEventEnvelope {
+) -> Result<ProviderEventEnvelope> {
     let entry_type = entry
         .get("type")
         .and_then(Value::as_str)
@@ -10553,17 +10606,14 @@ fn pi_session_event(
     let message_role = message
         .and_then(|message| message.get("role"))
         .and_then(Value::as_str);
-    let occurred_at = entry
-        .get("timestamp")
-        .and_then(Value::as_str)
-        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
-        .map(|time| time.with_timezone(&Utc))
-        .unwrap_or_else(utc_now);
+    let occurred_at = parse_optional_rfc3339_field(entry, "timestamp")?.ok_or_else(|| {
+        CaptureError::InvalidPayload("pi session event missing timestamp".to_owned())
+    })?;
     let event_type = pi_event_type(entry_type, message);
     let role = message_role.map(pi_event_role);
     let text = message.and_then(pi_message_text);
 
-    ProviderEventEnvelope {
+    Ok(ProviderEventEnvelope {
         provider_event_index: (line_number - 1) as u64,
         provider_event_hash: None,
         cursor: entry.get("id").and_then(Value::as_str).map(str::to_owned),
@@ -10598,7 +10648,7 @@ fn pi_session_event(
                 .and_then(Value::as_str),
             "usage": message.and_then(|message| message.get("usage")).cloned(),
         }),
-    }
+    })
 }
 
 fn pi_event_type(entry_type: &str, message: Option<&Value>) -> EventType {
@@ -11088,7 +11138,7 @@ fn import_provider_capture_line(
             event,
             payload: &payload,
             event_hash: &event_hash,
-        });
+        })?;
         let normalized_event = Event {
             id: event_identity.id,
             seq: event_identity.seq,
@@ -11899,7 +11949,7 @@ struct ProviderCommandRunInput<'a> {
     event_hash: &'a str,
 }
 
-fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option<Run> {
+fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Result<Option<Run>> {
     let ProviderCommandRunInput {
         provider,
         provider_session_id,
@@ -11912,7 +11962,7 @@ fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option
         event_hash,
     } = input;
     if event.event_type != EventType::CommandOutput {
-        return None;
+        return Ok(None);
     }
     let command_preview = payload
         .get("command")
@@ -11921,16 +11971,29 @@ fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option
         .map(str::to_owned);
     let call_id = payload.get("call_id").and_then(Value::as_str);
     let key = call_id.unwrap_or(event_hash);
-    let duration_ms = payload.get("duration_ms").and_then(Value::as_i64);
+    let duration_ms = provider_command_duration_ms(payload)?;
     let ended_at = Some(event.occurred_at);
-    let started_at = duration_ms
-        .and_then(|duration| {
+    let started_at = match duration_ms {
+        Some(duration) => {
+            let duration_value = duration;
+            let duration = chrono::Duration::try_milliseconds(duration_value).ok_or_else(|| {
+                CaptureError::InvalidPayload(format!(
+                    "duration_ms is not representable as milliseconds: {duration_value}"
+                ))
+            })?;
             event
                 .occurred_at
-                .checked_sub_signed(chrono::Duration::milliseconds(duration.max(0)))
-        })
-        .unwrap_or(event.occurred_at);
-    Some(Run {
+                .checked_sub_signed(duration)
+                .ok_or_else(|| {
+                    CaptureError::InvalidPayload(format!(
+                        "duration_ms moves command start before representable time: {}",
+                        duration_value
+                    ))
+                })?
+        }
+        None => event.occurred_at,
+    };
+    Ok(Some(Run {
         id: run_source_id
             .map(|source_id| provider_source_run_uuid(source_id, key))
             .unwrap_or_else(|| provider_run_uuid(provider, provider_session_id, key)),
@@ -11960,7 +12023,25 @@ fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option
                 "source": "provider_command_output",
             }),
         ),
-    })
+    }))
+}
+
+fn provider_command_duration_ms(payload: &Value) -> Result<Option<i64>> {
+    let Some(value) = payload.get("duration_ms") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let duration = value
+        .as_i64()
+        .ok_or_else(|| CaptureError::InvalidPayload("duration_ms must be an integer".to_owned()))?;
+    if duration < 0 {
+        return Err(CaptureError::InvalidPayload(format!(
+            "duration_ms must be nonnegative, got {duration}"
+        )));
+    }
+    Ok(Some(duration))
 }
 
 fn provider_command_run_status(payload: &Value) -> RunStatus {
@@ -12227,6 +12308,27 @@ mod tests {
 
     fn write_oversized_jsonl_line(path: &Path) {
         fs::write(path, vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1]).unwrap();
+    }
+
+    fn jsonl_line(value: Value) -> String {
+        serde_json::to_string(&value).unwrap() + "\n"
+    }
+
+    fn test_provider_event(event_type: EventType) -> ProviderEventEnvelope {
+        ProviderEventEnvelope {
+            provider_event_index: 0,
+            provider_event_hash: Some("event-hash".to_owned()),
+            cursor: None,
+            event_type,
+            role: Some(EventRole::Tool),
+            occurred_at: "2026-07-03T12:00:00Z".parse().unwrap(),
+            fidelity: Fidelity::Imported,
+            redaction_state: RedactionState::LocalPreview,
+            idempotency_key: None,
+            artifacts: Vec::new(),
+            payload: json!({}),
+            metadata: json!({}),
+        }
     }
 
     fn materialized_fixture(category: &str, name: &str) -> PathBuf {
@@ -12823,6 +12925,51 @@ mod tests {
         assert!(events[3].payload.to_string().contains("cargo test"));
         assert!(events[3].payload.to_string().contains("fixture-secret"));
         assert!(!events[3].payload.to_string().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn pi_session_import_rejects_malformed_event_timestamp() {
+        let temp = tempdir();
+        let path = temp.path().join("bad-timestamp-pi.jsonl");
+        fs::write(
+            &path,
+            [
+                jsonl_line(json!({
+                    "type": "session",
+                    "id": "pi-bad-timestamp",
+                    "timestamp": "2026-07-03T12:00:00Z",
+                    "version": 1
+                })),
+                jsonl_line(json!({
+                    "type": "message",
+                    "id": "pi-bad-event",
+                    "timestamp": "not-rfc3339",
+                    "message": {
+                        "role": "user",
+                        "content": "bad timestamp should not import"
+                    }
+                })),
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_pi_session_jsonl(
+            &path,
+            &mut store,
+            PiSessionImportOptions {
+                imported_at: "2026-07-03T12:30:00Z".parse().unwrap(),
+                ..PiSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+        assert!(summary.failures[0]
+            .error
+            .contains("timestamp is not a valid RFC3339 timestamp"));
+        assert!(store.list_sessions().unwrap().is_empty());
     }
 
     #[test]
@@ -13491,6 +13638,80 @@ mod tests {
             .normalize_path(&path, &ProviderAdapterContext::default())
             .unwrap_err();
         assert!(err.to_string().contains("provider JSONL line exceeds"));
+    }
+
+    #[test]
+    fn codex_session_jsonl_rejects_malformed_event_timestamp() {
+        let temp = tempdir();
+        let path = temp.path().join("bad-timestamp-codex.jsonl");
+        fs::write(
+            &path,
+            [
+                jsonl_line(json!({
+                    "timestamp": "2026-07-03T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "codex-bad-timestamp",
+                        "timestamp": "2026-07-03T12:00:00Z",
+                        "cwd": "/workspace",
+                        "originator": "codex-cli"
+                    }
+                })),
+                jsonl_line(json!({
+                    "timestamp": "not-rfc3339",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "bad timestamp should not import"}
+                        ]
+                    }
+                })),
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_codex_session_jsonl(
+            &path,
+            &mut store,
+            CodexSessionImportOptions {
+                imported_at: "2026-07-03T12:30:00Z".parse().unwrap(),
+                fast_event_inserts: false,
+                ..CodexSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+        assert!(summary.failures[0]
+            .error
+            .contains("timestamp is not a valid RFC3339 timestamp"));
+        assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_command_run_rejects_negative_duration() {
+        let event = test_provider_event(EventType::CommandOutput);
+        let err = provider_command_run_from_event(ProviderCommandRunInput {
+            provider: CaptureProvider::Codex,
+            provider_session_id: "duration-session",
+            session_id: new_id(),
+            source_id: new_id(),
+            run_source_id: None,
+            history_record_id: None,
+            event: &event,
+            payload: &json!({
+                "command": "cargo test",
+                "duration_ms": -1
+            }),
+            event_hash: "event-hash",
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("duration_ms must be nonnegative"));
     }
 
     #[test]
