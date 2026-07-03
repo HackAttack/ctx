@@ -9004,12 +9004,7 @@ fn normalize_opencode_sqlite(
     path: &Path,
     context: &ProviderAdapterContext,
 ) -> Result<ProviderNormalizationResult> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.pragma_update(None, "query_only", true)?;
+    let conn = open_provider_sqlite_readonly(path)?;
     let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
     let legacy_message_rows = opencode_count(&conn, "message").unwrap_or(0);
@@ -13888,6 +13883,25 @@ mod tests {
             events[0].sync.metadata["source_format"].as_str(),
             Some(OPENCODE_SQLITE_SOURCE_FORMAT)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_opencode_normalizer_rejects_symlinked_sqlite() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir();
+        let fixture = write_opencode_smoke_db(&temp, false);
+        let link = temp.path().join("linked-opencode.db");
+        symlink(&fixture, &link).unwrap();
+
+        let err = normalize_opencode_sqlite(&link, &ProviderAdapterContext::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            CaptureError::InvalidProviderTranscriptPath { path, reason }
+                if path.ends_with("linked-opencode.db")
+                    && reason == "symlinked provider transcript files are rejected"
+        ));
     }
 
     #[test]
