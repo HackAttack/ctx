@@ -3311,17 +3311,18 @@ fn catalog_codex_session_file(
     })
 }
 
-fn read_codex_session_meta(path: &Path) -> std::io::Result<Option<Value>> {
+fn read_codex_session_meta(path: &Path) -> Result<Option<Value>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    for line in reader.lines().take(32) {
-        let line = line?;
-        if !line.as_bytes().contains(&b'{')
-            || !contains_bytes(line.as_bytes(), br#""session_meta""#)
-        {
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    for _ in 0..32 {
+        if !read_provider_jsonl_line(&mut reader, &mut line)? {
+            break;
+        }
+        if !line.contains(&b'{') || !contains_bytes(&line, br#""session_meta""#) {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
@@ -13182,6 +13183,32 @@ mod tests {
         assert_eq!(third.cached_sessions, session_count - 1);
         assert_eq!(third.parsed_sessions, 1);
         assert_eq!(third.failed_sessions, 0);
+    }
+
+    #[test]
+    fn codex_session_catalog_rejects_oversized_metadata_line() {
+        let temp = tempdir();
+        let root = temp.path().join("sessions/2026/07/03");
+        fs::create_dir_all(&root).unwrap();
+        write_oversized_jsonl_line(&root.join("oversized.jsonl"));
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = catalog_codex_session_tree(
+            temp.path().join("sessions"),
+            &store,
+            CodexSessionCatalogOptions {
+                source_root: Some(temp.path().join("sessions")),
+                cataloged_at: "2026-07-03T12:00:00Z".parse().unwrap(),
+                allow_partial_failures: false,
+                ..CodexSessionCatalogOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("provider JSONL line exceeds"),
+            "{err}"
+        );
     }
 
     #[test]
