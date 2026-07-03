@@ -87,6 +87,11 @@ pub enum StoreError {
         min: usize,
         max: usize,
     },
+    #[error("SQL result preview budget {estimated_bytes} bytes exceeds maximum {max_result_bytes}; lower max_rows, max_columns, or max_value_bytes")]
+    RawSqlResultBudgetTooLarge {
+        estimated_bytes: usize,
+        max_result_bytes: usize,
+    },
     #[error("SQL query timed out after {timeout_ms}ms")]
     RawSqlTimedOut { timeout_ms: u64 },
 }
@@ -106,6 +111,7 @@ pub const RAW_SQL_DEFAULT_MAX_COLUMNS: usize = 64;
 pub const RAW_SQL_MAX_COLUMNS_CAP: usize = 256;
 pub const RAW_SQL_DEFAULT_MAX_VALUE_BYTES: usize = 512;
 pub const RAW_SQL_MAX_VALUE_BYTES_CAP: usize = 1_048_576;
+pub const RAW_SQL_MAX_RESULT_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
 const RAW_SQL_MIN_SQLITE_LENGTH_LIMIT_BYTES: usize = 64 * 1024;
 const RAW_SQL_VALUE_LENGTH_MARGIN_BYTES: usize = 1024;
 pub const RAW_SQL_DEFAULT_MAX_SQL_BYTES: usize = 64 * 1024;
@@ -3946,11 +3952,27 @@ fn validate_raw_sql_options(options: &RawSqlOptions) -> Result<()> {
             max: usize::try_from(duration_ms(RAW_SQL_MAX_TIMEOUT)).unwrap_or(usize::MAX),
         });
     }
+    validate_raw_sql_result_preview_budget(options)?;
     Ok(())
 }
 
 fn validate_raw_sql_statement_bytes(sql: &str, options: &RawSqlOptions) -> Result<()> {
     validate_raw_sql_usize("sql_bytes", sql.len(), 1, options.max_sql_bytes)
+}
+
+fn validate_raw_sql_result_preview_budget(options: &RawSqlOptions) -> Result<()> {
+    let per_cell_bytes = options.max_value_bytes.saturating_mul(2).max(32);
+    let estimated_bytes = options
+        .max_rows
+        .saturating_mul(options.max_columns)
+        .saturating_mul(per_cell_bytes);
+    if estimated_bytes > RAW_SQL_MAX_RESULT_PREVIEW_BYTES {
+        return Err(StoreError::RawSqlResultBudgetTooLarge {
+            estimated_bytes,
+            max_result_bytes: RAW_SQL_MAX_RESULT_PREVIEW_BYTES,
+        });
+    }
+    Ok(())
 }
 
 struct RawSqlLimitGuard<'a> {
@@ -8616,6 +8638,30 @@ mod catalog_tests {
         );
         assert!(result.truncated.rows);
         assert!(result.truncated.values);
+    }
+
+    #[test]
+    fn raw_sql_query_rejects_excessive_result_preview_budget() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let err = store
+            .raw_sql_query(
+                "SELECT 1",
+                RawSqlOptions {
+                    max_rows: RAW_SQL_MAX_ROWS_CAP,
+                    max_columns: RAW_SQL_MAX_COLUMNS_CAP,
+                    max_value_bytes: 32,
+                    ..RawSqlOptions::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::RawSqlResultBudgetTooLarge {
+                max_result_bytes: RAW_SQL_MAX_RESULT_PREVIEW_BYTES,
+                ..
+            }
+        ));
     }
 
     #[test]

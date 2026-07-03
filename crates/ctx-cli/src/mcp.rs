@@ -26,6 +26,12 @@ use super::{
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+const MCP_MAX_LINE_BYTES: usize = 1024 * 1024;
+
+enum McpInputLine {
+    Line(String),
+    TooLarge,
+}
 
 #[derive(Debug, Args)]
 pub(crate) struct McpArgs {
@@ -54,21 +60,93 @@ pub(crate) fn run(args: McpArgs, data_root: PathBuf) -> Result<()> {
 fn serve_stdio(data_root: PathBuf) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
+    let mut stdin = stdin.lock();
     let mut stdout = stdout.lock();
     let mut initialized = false;
 
-    for line in stdin.lock().lines() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(response) = handle_line(line, &data_root, &mut initialized) {
+    while let Some(input) = read_mcp_input_line(&mut stdin)? {
+        let response = match input {
+            McpInputLine::Line(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                handle_line(line, &data_root, &mut initialized)
+            }
+            McpInputLine::TooLarge => Some(error_response(
+                Value::Null,
+                -32700,
+                "Parse error",
+                Some(json!({
+                    "error": format!("MCP message exceeds max line bytes ({MCP_MAX_LINE_BYTES})")
+                })),
+            )),
+        };
+        if let Some(response) = response {
             writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
             stdout.flush()?;
         }
     }
     Ok(())
+}
+
+fn read_mcp_input_line(reader: &mut impl BufRead) -> Result<Option<McpInputLine>> {
+    let mut buffer = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
+            let bytes_to_consume = newline_index + 1;
+            if buffer.len().saturating_add(bytes_to_consume) > MCP_MAX_LINE_BYTES {
+                reader.consume(bytes_to_consume);
+                return Ok(Some(McpInputLine::TooLarge));
+            }
+            buffer.extend_from_slice(&available[..bytes_to_consume]);
+            reader.consume(bytes_to_consume);
+            break;
+        }
+
+        let bytes_to_consume = available.len();
+        if buffer.len().saturating_add(bytes_to_consume) > MCP_MAX_LINE_BYTES {
+            reader.consume(bytes_to_consume);
+            discard_until_newline(reader)?;
+            return Ok(Some(McpInputLine::TooLarge));
+        }
+        buffer.extend_from_slice(available);
+        reader.consume(bytes_to_consume);
+    }
+
+    Ok(Some(McpInputLine::Line(
+        String::from_utf8(buffer)
+            .map_err(|err| anyhow!("read MCP JSON-RPC line as UTF-8: {err}"))?,
+    )))
+}
+
+fn discard_until_newline(reader: &mut impl BufRead) -> Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        let bytes_to_consume = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(available.len());
+        let found_newline = bytes_to_consume <= available.len()
+            && available
+                .get(bytes_to_consume.saturating_sub(1))
+                .is_some_and(|byte| *byte == b'\n');
+        reader.consume(bytes_to_consume);
+        if found_newline {
+            return Ok(());
+        }
+    }
 }
 
 fn handle_line(line: &str, data_root: &Path, initialized: &mut bool) -> Option<Value> {

@@ -509,6 +509,22 @@ fn mcp_roundtrip_with_env(temp: &TempDir, messages: &[Value], envs: &[(&str, &st
         .collect()
 }
 
+fn mcp_raw_roundtrip(temp: &TempDir, stdin: String) -> Vec<Value> {
+    let output = ctx(temp)
+        .args(["mcp", "serve"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
 fn assert_omits_keys(value: &Value, forbidden_keys: &[&str]) {
     match value {
         Value::Object(map) => {
@@ -4090,6 +4106,38 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
         !temp.path().join("work.sqlite").exists(),
         "MCP status should not initialize the ctx store"
     );
+}
+
+#[test]
+fn mcp_rejects_oversized_input_line_and_continues() {
+    let temp = tempdir();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": { "name": "ctx-test", "version": "0" }
+        }
+    });
+    let mut stdin = "x".repeat(1024 * 1024 + 1);
+    stdin.push('\n');
+    stdin.push_str(&serde_json::to_string(&initialize).unwrap());
+    stdin.push('\n');
+
+    let responses = mcp_raw_roundtrip(&temp, stdin);
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["error"]["code"], -32700);
+    assert!(
+        responses[0]["error"]["data"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("exceeds max line bytes"),
+        "{:#}",
+        responses[0]
+    );
+    assert_eq!(responses[1]["result"]["serverInfo"]["name"], "ctx");
 }
 
 #[test]
