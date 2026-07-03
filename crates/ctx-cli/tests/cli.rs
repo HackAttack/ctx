@@ -2202,6 +2202,32 @@ fn sql_reads_existing_store_and_supports_formats_and_input_sources() {
         "value,n\n\"a,b\",2\n"
     );
 
+    let oversized_file_stderr = failure_stderr(
+        ctx(&temp)
+            .arg("sql")
+            .arg("--file")
+            .arg(&query_file)
+            .args(["--max-sql-bytes", "4"]),
+    );
+    assert!(
+        oversized_file_stderr.contains("exceeds max_sql_bytes (4)"),
+        "{oversized_file_stderr}"
+    );
+
+    let oversized_stdin_stderr = ctx(&temp)
+        .args(["sql", "-", "--max-sql-bytes", "4"])
+        .write_stdin("SELECT 1")
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let oversized_stdin_stderr = String::from_utf8(oversized_stdin_stderr).unwrap();
+    assert!(
+        oversized_stdin_stderr.contains("exceeds max_sql_bytes (4)"),
+        "{oversized_stdin_stderr}"
+    );
+
     let raw_output = ctx(&temp)
         .args(["sql", "-", "--format", "raw"])
         .write_stdin("SELECT 'abc' AS value")
@@ -3837,6 +3863,30 @@ fn fresh_home_search_mvp_flow() {
         "json",
     ]));
     assert_eq!(show_event_prefix["event"]["ctx_event_id"], ctx_event_id);
+
+    let oversized_after = failure_stderr(ctx(&temp).args([
+        "show",
+        "event",
+        &ctx_event_id,
+        "--after",
+        "18446744073709551615",
+    ]));
+    assert!(
+        oversized_after.contains("event window must be between 0 and 50"),
+        "{oversized_after}"
+    );
+
+    let oversized_window = failure_stderr(ctx(&temp).args([
+        "show",
+        "event",
+        &ctx_event_id,
+        "--window",
+        "18446744073709551615",
+    ]));
+    assert!(
+        oversized_window.contains("event window must be between 0 and 50"),
+        "{oversized_window}"
+    );
 
     let show_session =
         json_output(ctx(&temp).args(["show", "session", &ctx_session_id, "--format", "json"]));

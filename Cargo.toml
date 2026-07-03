@@ -28,6 +28,7 @@ directories = "5.0"
 ed25519-dalek = "2.1"
 libc = "0.2"
 predicates = "3.1"
+proptest = "1"
 regex = "1.10"
 ring = "0.17"
 rusqlite = { version = "0.32", features = ["bundled", "hooks", "limits"] }

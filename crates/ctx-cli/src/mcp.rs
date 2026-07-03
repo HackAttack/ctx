@@ -21,11 +21,11 @@ use super::{
     event_window, event_window_json, indexed_history_item_count, mark_share_safe,
     raw_sql_result_json, search_filters, search_has_intent, session_transcript_json, sources_json,
     OutputFormat, ProviderArg, RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput,
-    SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_SEARCH_LIMIT,
+    SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW,
+    MAX_SEARCH_LIMIT,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
-const MCP_MAX_EVENT_WINDOW: usize = 50;
 
 #[derive(Debug, Args)]
 pub(crate) struct McpArgs {
@@ -435,12 +435,12 @@ fn tool_show_event(arguments: &Value, data_root: &Path) -> Result<Value> {
     let before = optional_usize(arguments, "before")?.unwrap_or(0);
     let after = optional_usize(arguments, "after")?.unwrap_or(0);
     let window = optional_usize(arguments, "window")?;
-    if before > MCP_MAX_EVENT_WINDOW
-        || after > MCP_MAX_EVENT_WINDOW
-        || window.is_some_and(|window| window > MCP_MAX_EVENT_WINDOW)
+    if before > MAX_EVENT_WINDOW
+        || after > MAX_EVENT_WINDOW
+        || window.is_some_and(|window| window > MAX_EVENT_WINDOW)
     {
         return Err(anyhow!(
-            "show_event before/after/window must be {MCP_MAX_EVENT_WINDOW} or less"
+            "show_event before/after/window must be {MAX_EVENT_WINDOW} or less"
         ));
     }
     let event = store.get_event(event_id)?;
