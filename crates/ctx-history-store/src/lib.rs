@@ -2707,6 +2707,58 @@ impl Store {
         collect_rows(rows)
     }
 
+    pub fn events_for_session_window(
+        &self,
+        event: &Event,
+        before: usize,
+        after: usize,
+    ) -> Result<Vec<Event>> {
+        let Some(session_id) = event.session_id else {
+            return Ok(vec![event.clone()]);
+        };
+        let event_seq = i64::try_from(event.seq).unwrap_or(i64::MAX);
+        let mut events = if before == 0 {
+            Vec::new()
+        } else {
+            let mut stmt = self.conn.prepare(
+                event_select_sql(
+                    "WHERE session_id = ?1 AND seq < ?2 ORDER BY seq DESC, occurred_at_ms DESC LIMIT ?3",
+                )
+                .as_str(),
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    session_id.to_string(),
+                    event_seq,
+                    i64::try_from(before).unwrap_or(i64::MAX)
+                ],
+                event_from_row,
+            )?;
+            let mut rows = collect_rows(rows)?;
+            rows.reverse();
+            rows
+        };
+        events.push(event.clone());
+        if after > 0 {
+            let mut stmt = self.conn.prepare(
+                event_select_sql(
+                    "WHERE session_id = ?1 AND seq > ?2 ORDER BY seq, occurred_at_ms LIMIT ?3",
+                )
+                .as_str(),
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    session_id.to_string(),
+                    event_seq,
+                    i64::try_from(after).unwrap_or(i64::MAX)
+                ],
+                event_from_row,
+            )?;
+            events.extend(collect_rows(rows)?);
+        }
+        Ok(events)
+    }
+
     pub fn events_for_record(&self, record_id: Uuid) -> Result<Vec<Event>> {
         let mut stmt = self.conn.prepare(
             event_select_sql(
@@ -7943,6 +7995,25 @@ mod catalog_tests {
         }
     }
 
+    fn session_event(session_id: Uuid, index: u64) -> Event {
+        Event {
+            id: new_id(),
+            seq: index,
+            history_record_id: None,
+            session_id: Some(session_id),
+            run_id: None,
+            event_type: EventType::Message,
+            role: Some(EventRole::Assistant),
+            occurred_at: fixed_time() + chrono::Duration::seconds(index as i64),
+            capture_source_id: None,
+            payload: serde_json::json!({"index": index}),
+            payload_blob_id: None,
+            dedupe_key: None,
+            redaction_state: RedactionState::LocalPreview,
+            sync: sync_metadata(),
+        }
+    }
+
     fn artifact_record(id: Uuid, byte_size: u64) -> Artifact {
         Artifact {
             id,
@@ -8006,6 +8077,45 @@ mod catalog_tests {
             .query_row("SELECT total_changes()", [], |row| row.get(0))
             .unwrap();
         assert!(after_changed > after_noop);
+    }
+
+    #[test]
+    fn events_for_session_window_returns_bounded_neighbors() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let session = imported_session("window-session");
+        store.upsert_session(&session).unwrap();
+        let events = (0..10)
+            .map(|index| {
+                let event = session_event(session.id, index);
+                store.upsert_event(&event).unwrap();
+                event
+            })
+            .collect::<Vec<_>>();
+
+        let middle = store
+            .events_for_session_window(&events[5], 2, 3)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(middle, vec![3, 4, 5, 6, 7, 8]);
+
+        let first = store
+            .events_for_session_window(&events[0], 50, 1)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(first, vec![0, 1]);
+
+        let last = store
+            .events_for_session_window(&events[9], 1, 50)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(last, vec![8, 9]);
     }
 
     #[test]

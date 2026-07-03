@@ -3117,22 +3117,10 @@ fn event_window(
     after: usize,
     window: Option<usize>,
 ) -> Result<Vec<Event>> {
-    let Some(session_id) = event.session_id else {
-        return Ok(vec![event.clone()]);
-    };
-    let events = store.events_for_session(session_id)?;
-    let Some(index) = events.iter().position(|candidate| candidate.id == event.id) else {
-        return Ok(vec![event.clone()]);
-    };
     let (before, after) = window
         .map(|window| (window, window))
         .unwrap_or((before, after));
-    let start = index.saturating_sub(before);
-    let end = index
-        .saturating_add(after)
-        .saturating_add(1)
-        .min(events.len());
-    Ok(events[start..end].to_vec())
+    Ok(store.events_for_session_window(event, before, after)?)
 }
 
 fn write_rendered_session(
