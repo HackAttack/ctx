@@ -1491,6 +1491,31 @@ for record in records:
 }
 
 #[test]
+fn history_source_plugin_rejects_oversized_stdout_line() {
+    let temp = tempdir();
+    let script = r#"#!/usr/bin/env python3
+import sys
+sys.stdout.write("x" * (17 * 1024 * 1024) + "\n")
+"#;
+    let plugin = write_raw_history_source_plugin(&temp, "bigline", script);
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
+            .args([
+                "import",
+                "--history-source",
+                "bigline/default",
+                "--json",
+                "--progress",
+                "none",
+            ]),
+    );
+
+    assert!(stderr.contains("line 1 exceeding max bytes"), "{stderr}");
+}
+
+#[test]
 fn history_source_plugin_reset_requires_fresh_after_cursor() {
     let temp = tempdir();
     let script = r#"#!/usr/bin/env python3

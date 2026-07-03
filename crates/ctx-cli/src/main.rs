@@ -73,6 +73,7 @@ const LARGE_IMPORT_SOURCE_FILES_WARNING: usize = 10_000;
 const LARGE_IMPORT_SOURCE_BYTES_WARNING: u64 = 1024 * 1024 * 1024;
 const MAX_SEARCH_LIMIT: usize = 200;
 pub(crate) const MAX_EVENT_WINDOW: usize = 50;
+const MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "ctx", version, about = "Search local agent history")]
@@ -5169,15 +5170,8 @@ fn annotate_history_source_plugin_output(
     source: &HistorySourcePluginSource,
     stdout: &[u8],
 ) -> Result<Vec<u8>> {
-    let text = std::str::from_utf8(stdout).with_context(|| {
-        format!(
-            "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output",
-            source.label()
-        )
-    })?;
     let mut out = Vec::with_capacity(stdout.len());
-    for (index, line) in text.lines().enumerate() {
-        let line_number = index + 1;
+    for (line_number, line) in history_source_plugin_stdout_lines(source, stdout)? {
         if line.trim().is_empty() {
             continue;
         }
@@ -5230,16 +5224,9 @@ fn validate_history_source_plugin_output(
     machine_id: &str,
     require_after_cursor: bool,
 ) -> Result<()> {
-    let text = std::str::from_utf8(stdout).with_context(|| {
-        format!(
-            "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output",
-            source.label()
-        )
-    })?;
     let mut saw_source = false;
     let mut saw_after_cursor = false;
-    for (index, line) in text.lines().enumerate() {
-        let line_number = index + 1;
+    for (line_number, line) in history_source_plugin_stdout_lines(source, stdout)? {
         if line.trim().is_empty() {
             continue;
         }
@@ -5298,6 +5285,52 @@ fn validate_history_source_plugin_output(
         ));
     }
     Ok(())
+}
+
+fn history_source_plugin_stdout_lines<'a>(
+    source: &HistorySourcePluginSource,
+    stdout: &'a [u8],
+) -> Result<Vec<(usize, &'a str)>> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut line_number = 1usize;
+    for (index, byte) in stdout.iter().enumerate() {
+        let len = index.saturating_add(1).saturating_sub(start);
+        if len > MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES {
+            return Err(anyhow!(
+                "history source plugin {} emitted ctx-history-jsonl-v1 line {line_number} exceeding max bytes ({MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES})",
+                source.label()
+            ));
+        }
+        if *byte == b'\n' {
+            let line = std::str::from_utf8(&stdout[start..index]).with_context(|| {
+                format!(
+                    "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output at line {line_number}",
+                    source.label()
+                )
+            })?;
+            lines.push((line_number, line));
+            start = index + 1;
+            line_number += 1;
+        }
+    }
+    if start < stdout.len() {
+        let len = stdout.len().saturating_sub(start);
+        if len > MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES {
+            return Err(anyhow!(
+                "history source plugin {} emitted ctx-history-jsonl-v1 line {line_number} exceeding max bytes ({MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES})",
+                source.label()
+            ));
+        }
+        let line = std::str::from_utf8(&stdout[start..]).with_context(|| {
+            format!(
+                "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output at line {line_number}",
+                source.label()
+            )
+        })?;
+        lines.push((line_number, line));
+    }
+    Ok(lines)
 }
 
 fn history_source_plugin_import_failure(
