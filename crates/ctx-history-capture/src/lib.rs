@@ -25,7 +25,7 @@ use ctx_history_core::{
     CTX_HISTORY_JSONL_V1_SCHEMA_VERSION, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use ctx_history_store::{CatalogSession, Store, StoreError};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{limits::Limit, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -41,6 +41,7 @@ pub use provider_sources::{
 
 pub const CAPTURE_SCHEMA_VERSION: u32 = 1;
 const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize = MAX_PROVIDER_JSONL_LINE_BYTES;
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
@@ -6815,6 +6816,12 @@ fn open_provider_sqlite_readonly(path: &Path) -> Result<Connection> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    let value_limit = i32::try_from(MAX_PROVIDER_SQLITE_VALUE_BYTES).map_err(|_| {
+        CaptureError::InvalidPayload(format!(
+            "provider SQLite value byte limit is unrepresentable: {MAX_PROVIDER_SQLITE_VALUE_BYTES}"
+        ))
+    })?;
+    conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, value_limit);
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "query_only", true)?;
     Ok(conn)
@@ -14400,6 +14407,35 @@ mod tests {
                 .as_i64()
                 .is_some_and(|seq| seq >= 0)
         }));
+    }
+
+    #[test]
+    fn native_opencode_rejects_oversized_sqlite_text_value() {
+        let temp = tempdir();
+        let fixture = write_opencode_smoke_db(&temp, false);
+        let conn = Connection::open(&fixture).unwrap();
+        let oversized_data = format!(
+            "{{\"time\":{{\"created\":1782259200000}},\"text\":\"{}\"}}",
+            "x".repeat(MAX_PROVIDER_SQLITE_VALUE_BYTES + 1)
+        );
+        conn.execute(
+            "update session_message set data = ?1 where id = 'msg-user'",
+            [&oversized_data],
+        )
+        .unwrap();
+        drop(conn);
+
+        let err = import_opencode_sqlite(
+            &fixture,
+            &mut Store::open(temp.path().join("work.sqlite")).unwrap(),
+            OpenCodeSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("too big"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
