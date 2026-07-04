@@ -2984,7 +2984,8 @@ fn run_show(
     data_root: PathBuf,
     analytics_properties: &mut AnalyticsProperties,
 ) -> Result<()> {
-    let store = Store::open(database_path(data_root))?;
+    let db_path = database_path(data_root);
+    let store = open_existing_store_read_only(&db_path, "ctx show")?;
     match args.target {
         ShowTarget::Session(args) => {
             let session = resolve_session(
@@ -3031,7 +3032,8 @@ fn run_locate(
     data_root: PathBuf,
     _analytics_properties: &mut AnalyticsProperties,
 ) -> Result<()> {
-    let store = Store::open(database_path(data_root))?;
+    let db_path = database_path(data_root);
+    let store = open_existing_store_read_only(&db_path, "ctx locate")?;
     match args.target {
         LocateTarget::Session(args) => {
             let session = resolve_session(

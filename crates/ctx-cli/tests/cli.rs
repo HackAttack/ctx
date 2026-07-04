@@ -2398,6 +2398,22 @@ fn sql_is_read_only_and_does_not_initialize_store() {
 }
 
 #[test]
+fn show_does_not_initialize_store() {
+    let temp = tempdir();
+    let stderr = failure_stderr(ctx(&temp).args(["show", "event", "deadbeef"]));
+    assert!(stderr.contains("ctx store is not initialized"));
+    assert!(!temp.path().join("work.sqlite").exists());
+}
+
+#[test]
+fn locate_does_not_initialize_store() {
+    let temp = tempdir();
+    let stderr = failure_stderr(ctx(&temp).args(["locate", "event", "deadbeef"]));
+    assert!(stderr.contains("ctx store is not initialized"));
+    assert!(!temp.path().join("work.sqlite").exists());
+}
+
+#[test]
 fn docs_commands_expose_embedded_docs_and_man_pages() {
     let temp = tempdir();
 
