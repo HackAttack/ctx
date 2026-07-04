@@ -2491,10 +2491,7 @@ fn run_explicit_format_import(
         .try_exists()
         .with_context(|| format!("check import path {}", path.display()))?
     {
-        return Err(anyhow!(
-            "import path does not exist: {}",
-            path.display()
-        ));
+        return Err(anyhow!("import path does not exist: {}", path.display()));
     }
     let stats =
         source_stats(path).with_context(|| format!("scan import source {}", path.display()))?;
