@@ -1420,6 +1420,23 @@ fn explicit_history_source_manifest_reports_parse_errors() {
 }
 
 #[test]
+fn explicit_history_source_manifest_reports_nonexistent_path() {
+    let temp = tempdir();
+    let path = temp.path().join("no-such-manifest.json");
+
+    let stderr = failure_stderr(ctx(&temp).args([
+        "import",
+        "--history-source-manifest",
+        path.to_str().unwrap(),
+        "--progress",
+        "none",
+    ]));
+
+    assert!(stderr.contains("import path does not exist"), "{stderr}");
+    assert!(stderr.contains(path.to_str().unwrap()), "{stderr}");
+}
+
+#[test]
 fn failed_history_source_plugin_import_does_not_leave_record_metadata() {
     let temp = tempdir();
     let script = r#"#!/usr/bin/env python3

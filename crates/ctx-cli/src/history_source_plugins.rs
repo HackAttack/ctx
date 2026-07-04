@@ -647,6 +647,15 @@ fn plugin_manifest_paths(data_root: &Path) -> Vec<PathBuf> {
 fn explicit_plugin_manifest_paths(extra_manifests: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut candidates = BTreeSet::new();
     for path in extra_manifests {
+        if !path
+            .try_exists()
+            .with_context(|| format!("check import path {}", path.display()))?
+        {
+            return Err(anyhow!(
+                "import path does not exist: {}",
+                path.display()
+            ));
+        }
         let before = candidates.len();
         collect_manifest_path_candidates(path, &mut candidates);
         if candidates.len() == before {
