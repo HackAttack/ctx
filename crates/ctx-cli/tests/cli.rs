@@ -7272,6 +7272,22 @@ fn import_rejects_nonexistent_path() {
 }
 
 #[test]
+fn import_rejects_nonexistent_explicit_format_path() {
+    let temp = tempdir();
+    let path = temp.path().join("missing-file.jsonl");
+    let path = path.to_str().unwrap();
+
+    ctx(&temp)
+        .args(["import", "--format", "ctx-history-jsonl-v1", "--path", path])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("import path does not exist")
+                .and(predicate::str::contains(path)),
+        );
+}
+
+#[test]
 fn import_path_requires_provider_before_opening_store() {
     let temp = tempdir();
     let path = temp.path().join("missing-codex-history");
