@@ -651,10 +651,7 @@ fn explicit_plugin_manifest_paths(extra_manifests: &[PathBuf]) -> Result<Vec<Pat
             .try_exists()
             .with_context(|| format!("check import path {}", path.display()))?
         {
-            return Err(anyhow!(
-                "import path does not exist: {}",
-                path.display()
-            ));
+            return Err(anyhow!("import path does not exist: {}", path.display()));
         }
         let before = candidates.len();
         collect_manifest_path_candidates(path, &mut candidates);
