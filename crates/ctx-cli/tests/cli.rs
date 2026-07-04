@@ -43,7 +43,9 @@ fn copied_ctx_binary(temp: &TempDir) -> PathBuf {
     } else {
         "ctx-test-copy"
     });
-    fs::copy(&source, &target).unwrap();
+    if fs::hard_link(&source, &target).is_err() {
+        fs::copy(&source, &target).unwrap();
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -496,6 +498,26 @@ fn mcp_roundtrip_with_env(temp: &TempDir, messages: &[Value], envs: &[(&str, &st
         command.env(key, value);
     }
     let output = command
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn mcp_raw_roundtrip(temp: &TempDir, stdin: String) -> Vec<Value> {
+    mcp_raw_roundtrip_bytes(temp, stdin.into_bytes())
+}
+
+fn mcp_raw_roundtrip_bytes(temp: &TempDir, stdin: Vec<u8>) -> Vec<Value> {
+    let output = ctx(temp)
+        .args(["mcp", "serve"])
         .write_stdin(stdin)
         .assert()
         .success()
@@ -1236,6 +1258,36 @@ fn invalid_installed_history_source_plugin_is_listed_as_invalid() {
 }
 
 #[test]
+fn oversized_installed_history_source_plugin_is_listed_as_invalid() {
+    let temp = tempdir();
+    let plugin_root = temp.path().join("history-plugins");
+    let bad_dir = plugin_root.join("oversized");
+    fs::create_dir_all(&bad_dir).unwrap();
+    fs::write(
+        bad_dir.join("ctx-history-plugin.json"),
+        vec![b' '; 2 * 1024 * 1024],
+    )
+    .unwrap();
+
+    let sources = json_output(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin_root)
+            .args(["sources", "--json"]),
+    );
+    let invalid = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["kind"] == "history_source_plugin" && source["status"] == "invalid")
+        .unwrap();
+    assert_eq!(invalid["importable"], false);
+    assert!(invalid["error"]
+        .as_str()
+        .unwrap()
+        .contains("exceeds max bytes"));
+}
+
+#[test]
 fn invalid_installed_history_source_plugin_does_not_block_valid_import() {
     let temp = tempdir();
     let plugin_root = temp.path().join("history-plugins");
@@ -1438,6 +1490,31 @@ for record in records:
         sqlite_count(&conn, "SELECT COUNT(*) FROM history_records"),
         0
     );
+}
+
+#[test]
+fn history_source_plugin_rejects_oversized_stdout_line() {
+    let temp = tempdir();
+    let script = r#"#!/usr/bin/env python3
+import sys
+sys.stdout.write("x" * (17 * 1024 * 1024) + "\n")
+"#;
+    let plugin = write_raw_history_source_plugin(&temp, "bigline", script);
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
+            .args([
+                "import",
+                "--history-source",
+                "bigline/default",
+                "--json",
+                "--progress",
+                "none",
+            ]),
+    );
+
+    assert!(stderr.contains("line 1 exceeding max bytes"), "{stderr}");
 }
 
 #[test]
@@ -2200,6 +2277,32 @@ fn sql_reads_existing_store_and_supports_formats_and_input_sources() {
     assert_eq!(
         String::from_utf8(csv_output).unwrap(),
         "value,n\n\"a,b\",2\n"
+    );
+
+    let oversized_file_stderr = failure_stderr(
+        ctx(&temp)
+            .arg("sql")
+            .arg("--file")
+            .arg(&query_file)
+            .args(["--max-sql-bytes", "4"]),
+    );
+    assert!(
+        oversized_file_stderr.contains("exceeds max_sql_bytes (4)"),
+        "{oversized_file_stderr}"
+    );
+
+    let oversized_stdin_stderr = ctx(&temp)
+        .args(["sql", "-", "--max-sql-bytes", "4"])
+        .write_stdin("SELECT 1")
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let oversized_stdin_stderr = String::from_utf8(oversized_stdin_stderr).unwrap();
+    assert!(
+        oversized_stdin_stderr.contains("exceeds max_sql_bytes (4)"),
+        "{oversized_stdin_stderr}"
     );
 
     let raw_output = ctx(&temp)
@@ -3838,6 +3941,30 @@ fn fresh_home_search_mvp_flow() {
     ]));
     assert_eq!(show_event_prefix["event"]["ctx_event_id"], ctx_event_id);
 
+    let oversized_after = failure_stderr(ctx(&temp).args([
+        "show",
+        "event",
+        &ctx_event_id,
+        "--after",
+        "18446744073709551615",
+    ]));
+    assert!(
+        oversized_after.contains("event window must be between 0 and 50"),
+        "{oversized_after}"
+    );
+
+    let oversized_window = failure_stderr(ctx(&temp).args([
+        "show",
+        "event",
+        &ctx_event_id,
+        "--window",
+        "18446744073709551615",
+    ]));
+    assert!(
+        oversized_window.contains("event window must be between 0 and 50"),
+        "{oversized_window}"
+    );
+
     let show_session =
         json_output(ctx(&temp).args(["show", "session", &ctx_session_id, "--format", "json"]));
     assert_eq!(show_session["schema_version"], 1);
@@ -4043,6 +4170,65 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
 }
 
 #[test]
+fn mcp_rejects_oversized_input_line_and_continues() {
+    let temp = tempdir();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": { "name": "ctx-test", "version": "0" }
+        }
+    });
+    let mut stdin = "x".repeat(1024 * 1024 + 1);
+    stdin.push('\n');
+    stdin.push_str(&serde_json::to_string(&initialize).unwrap());
+    stdin.push('\n');
+
+    let responses = mcp_raw_roundtrip(&temp, stdin);
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["error"]["code"], -32700);
+    assert!(
+        responses[0]["error"]["data"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("exceeds max line bytes"),
+        "{:#}",
+        responses[0]
+    );
+    assert_eq!(responses[1]["result"]["serverInfo"]["name"], "ctx");
+}
+
+#[test]
+fn mcp_rejects_invalid_utf8_input_line_and_continues() {
+    let temp = tempdir();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": { "name": "ctx-test", "version": "0" }
+        }
+    });
+    let mut stdin = vec![0xff, b'\n'];
+    stdin.extend_from_slice(serde_json::to_string(&initialize).unwrap().as_bytes());
+    stdin.push(b'\n');
+
+    let responses = mcp_raw_roundtrip_bytes(&temp, stdin);
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["error"]["code"], -32700);
+    assert_eq!(
+        responses[0]["error"]["data"]["error"],
+        "MCP message is not valid UTF-8"
+    );
+    assert_eq!(responses[1]["result"]["serverInfo"]["name"], "ctx");
+}
+
+#[test]
 fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
     let temp = tempdir();
     ctx(&temp)
@@ -4086,6 +4272,23 @@ fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
                     }
                 }
             }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "budget",
+                "method": "tools/call",
+                "params": {
+                    "name": "sql",
+                    "arguments": {
+                        "sql": format!(
+                            "SELECT {}",
+                            (0..256).map(|index| format!("1 AS c{index}")).collect::<Vec<_>>().join(", ")
+                        ),
+                        "max_rows": 10000,
+                        "max_columns": 256,
+                        "max_value_bytes": 32
+                    }
+                }
+            }),
         ],
     );
 
@@ -4102,6 +4305,89 @@ fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
         .as_str()
         .unwrap()
         .contains("SQL query must be read-only"));
+
+    let budget = &responses[3]["result"];
+    assert_eq!(budget["isError"], true);
+    assert!(budget["structuredContent"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("SQL result preview budget"));
+}
+
+#[test]
+fn mcp_show_session_caps_transcript_events() {
+    let temp = tempdir();
+    ctx(&temp)
+        .args(["setup", "--catalog-only", "--progress", "none"])
+        .assert()
+        .success();
+
+    let session_id = "018f45d0-0000-7000-8000-000000010001";
+    let conn = Connection::open(temp.path().join("work.sqlite")).unwrap();
+    conn.execute(
+        r#"
+        INSERT INTO sessions
+        (
+            id, provider, external_session_id, agent_type, is_primary, status, fidelity,
+            started_at_ms, created_at_ms, updated_at_ms
+        )
+        VALUES (?1, 'codex', 'mcp-large-session', 'primary', 1, 'imported', 'imported', 1, 1, 1)
+        "#,
+        [session_id],
+    )
+    .unwrap();
+    for index in 0..201 {
+        let event_id = format!("018f45d0-0000-7000-8000-{index:012x}");
+        conn.execute(
+            r#"
+            INSERT INTO events
+            (id, seq, session_id, event_type, role, occurred_at_ms, payload_json)
+            VALUES (?1, ?2, ?3, 'message', 'assistant', ?4, ?5)
+            "#,
+            params![
+                event_id,
+                index,
+                session_id,
+                index + 1,
+                format!(r#"{{"text":"mcp transcript event {index}"}}"#)
+            ],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let responses = mcp_roundtrip(
+        &temp,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": { "name": "ctx-test", "version": "0" }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "show",
+                "method": "tools/call",
+                "params": {
+                    "name": "show_session",
+                    "arguments": {
+                        "ctx_session_id": session_id,
+                        "mode": "log"
+                    }
+                }
+            }),
+        ],
+    );
+
+    let transcript = &responses[1]["result"]["structuredContent"];
+    assert_eq!(transcript["truncated"]["events"], true);
+    assert_eq!(transcript["truncated"]["max_events"], 200);
+    assert_eq!(transcript["events"].as_array().unwrap().len(), 200);
 }
 
 #[test]

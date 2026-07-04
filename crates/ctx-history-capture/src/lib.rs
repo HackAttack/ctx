@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
     thread,
@@ -25,7 +25,7 @@ use ctx_history_core::{
     CTX_HISTORY_JSONL_V1_SCHEMA_VERSION, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use ctx_history_store::{CatalogSession, Store, StoreError};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{limits::Limit, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -40,6 +40,11 @@ pub use provider_sources::{
 };
 
 pub const CAPTURE_SCHEMA_VERSION: u32 = 1;
+const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize = MAX_PROVIDER_JSONL_LINE_BYTES;
+const MAX_OPENCLAW_SESSION_INDEX_BYTES: usize = 1024 * 1024;
+const MAX_OPENCLAW_SESSION_INDEX_PATHS: usize = 256;
+const MAX_OPENCLAW_SESSION_INDEX_VISITED_PATHS: usize = 4096;
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
@@ -913,17 +918,18 @@ impl ProviderCaptureAdapter for ProviderFixtureJsonlAdapter {
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut result = ProviderNormalizationResult::default();
+        let mut line = Vec::new();
+        let mut line_number = 0usize;
 
-        for (index, line) in reader.lines().enumerate() {
-            let line_number = index + 1;
-            let line = line?;
-            if line.trim().is_empty() {
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
+            line_number += 1;
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
 
-            let fixture: ProviderFixtureLine = match serde_json::from_str(&line) {
+            let fixture: ProviderFixtureLine = match serde_json::from_slice(&line) {
                 Ok(fixture) => fixture,
                 Err(err) => {
                     result.summary.failed += 1;
@@ -975,19 +981,20 @@ impl ProviderCaptureAdapter for CodexHistoryJsonlAdapter {
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut result = ProviderNormalizationResult::default();
         let mut parsed = Vec::new();
         let mut first_seen = BTreeMap::new();
+        let mut line = Vec::new();
+        let mut line_number = 0usize;
 
-        for (index, line) in reader.lines().enumerate() {
-            let line_number = index + 1;
-            let line = line?;
-            if line.trim().is_empty() {
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
+            line_number += 1;
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
 
-            let history: CodexHistoryLine = match serde_json::from_str(&line) {
+            let history: CodexHistoryLine = match serde_json::from_slice(&line) {
                 Ok(history) => history,
                 Err(err) => {
                     result.summary.failed += 1;
@@ -1167,12 +1174,7 @@ impl ProviderCaptureAdapter for CodexSessionJsonlAdapter {
 
         let mut line_number = 0usize;
         let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
-            }
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
             line_number += 1;
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
@@ -1234,11 +1236,17 @@ impl ProviderCaptureAdapter for CodexSessionJsonlAdapter {
                 });
                 continue;
             };
-            let occurred_at = value
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_utc)
-                .unwrap_or(header.timestamp);
+            let occurred_at = match codex_session_line_timestamp(&value, header.timestamp) {
+                Ok(occurred_at) => occurred_at,
+                Err(err) => {
+                    result.summary.failed += 1;
+                    result.summary.failures.push(ProviderImportFailure {
+                        line: line_number,
+                        error: err.to_string(),
+                    });
+                    continue;
+                }
+            };
             let mut line_capture = codex_session_line_capture(
                 header,
                 &value,
@@ -1439,18 +1447,19 @@ fn normalize_pi_session_jsonl_file(
 ) -> Result<ProviderNormalizationResult> {
     ensure_regular_provider_transcript_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut header = None;
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
 
-        let value: Value = match serde_json::from_str(&line) {
+        let value: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -1468,7 +1477,7 @@ fn normalize_pi_session_jsonl_file(
         if entry_type == "session" {
             match pi_session_header(value) {
                 Ok(parsed) => {
-                    let capture = pi_session_capture(&parsed, None, line_number, context);
+                    let capture = pi_session_capture(&parsed, None, line_number, context)?;
                     header = Some(parsed);
                     result.captures.push((line_number, capture));
                 }
@@ -1491,10 +1500,16 @@ fn normalize_pi_session_jsonl_file(
             });
             continue;
         };
-        result.captures.push((
-            line_number,
-            pi_session_capture(header, Some(value), line_number, context),
-        ));
+        match pi_session_capture(header, Some(value), line_number, context) {
+            Ok(capture) => result.captures.push((line_number, capture)),
+            Err(err) => {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: err.to_string(),
+                });
+            }
+        }
     }
 
     Ok(result)
@@ -1853,18 +1868,20 @@ pub fn read_jsonl(path: impl AsRef<Path>) -> Result<Vec<CaptureEnvelope>> {
     let path = path.as_ref();
     ensure_regular_spool_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut envelopes = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let envelope: CaptureEnvelope =
-            serde_json::from_str(&line).map_err(|source| CaptureError::InvalidJsonLine {
+            serde_json::from_slice(&line).map_err(|source| CaptureError::InvalidJsonLine {
                 path: path.to_path_buf(),
-                line: index + 1,
+                line: line_number,
                 source,
             })?;
         validate_envelope(&envelope)?;
@@ -2192,22 +2209,21 @@ pub fn import_codex_session_jsonl_tail(
         let mut line_number = 0usize;
         let mut position = 0u64;
 
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
+        if !read_provider_jsonl_line(&mut reader, &mut line)? {
             return Ok(summary);
         }
         line_number += 1;
+        let read = line.len();
         position = position.saturating_add(read as u64);
         let header_value: Value = serde_json::from_slice(&line)?;
         let header = codex_session_header(header_value)?;
 
         while position < start_offset {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
+            if !read_provider_jsonl_line(&mut reader, &mut line)? {
                 return Ok(summary);
             }
             line_number += 1;
+            let read = line.len();
             position = position.saturating_add(read as u64);
         }
 
@@ -2225,13 +2241,9 @@ pub fn import_codex_session_jsonl_tail(
 
         let mut call_contexts: BTreeMap<String, CodexToolCallContext> = BTreeMap::new();
         let mut completed_bytes = 0u64;
-        loop {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
-            }
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
             line_number += 1;
+            let read = line.len();
             completed_bytes = completed_bytes.saturating_add(read as u64);
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
@@ -2266,11 +2278,20 @@ pub fn import_codex_session_jsonl_tail(
             {
                 continue;
             }
-            let occurred_at = value
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_utc)
-                .unwrap_or(header.timestamp);
+            let occurred_at = match codex_session_line_timestamp(&value, header.timestamp) {
+                Ok(occurred_at) => occurred_at,
+                Err(err) => {
+                    summary.failed += 1;
+                    summary.failures.push(ProviderImportFailure {
+                        line: line_number,
+                        error: err.to_string(),
+                    });
+                    if !options.allow_partial_failures {
+                        return Ok(summary);
+                    }
+                    continue;
+                }
+            };
             let mut line_capture = codex_session_line_capture(
                 &header,
                 &value,
@@ -2729,12 +2750,7 @@ fn import_codex_session_path_fast(
     let mut call_contexts: BTreeMap<String, CodexToolCallContext> = BTreeMap::new();
     let mut line_number = 0usize;
     let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
         line_number += 1;
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -2812,11 +2828,20 @@ fn import_codex_session_path_fast(
             }
             continue;
         };
-        let occurred_at = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_utc)
-            .unwrap_or(header.timestamp);
+        let occurred_at = match codex_session_line_timestamp(&value, header.timestamp) {
+            Ok(occurred_at) => occurred_at,
+            Err(err) => {
+                summary.failed += 1;
+                summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: err.to_string(),
+                });
+                if !options.allow_partial_failures {
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         let mut line_capture = codex_session_line_capture(
             header,
             &value,
@@ -2895,7 +2920,7 @@ fn import_codex_provider_event_fast(
         event,
         payload: &payload,
         event_hash: &event_hash,
-    });
+    })?;
     let normalized_event = Event {
         id: event_identity.id,
         seq: event_identity.seq,
@@ -3290,17 +3315,18 @@ fn catalog_codex_session_file(
     })
 }
 
-fn read_codex_session_meta(path: &Path) -> std::io::Result<Option<Value>> {
+fn read_codex_session_meta(path: &Path) -> Result<Option<Value>> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    for line in reader.lines().take(32) {
-        let line = line?;
-        if !line.as_bytes().contains(&b'{')
-            || !contains_bytes(line.as_bytes(), br#""session_meta""#)
-        {
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    for _ in 0..32 {
+        if !read_provider_jsonl_line(&mut reader, &mut line)? {
+            break;
+        }
+        if !line.contains(&b'{') || !contains_bytes(&line, br#""session_meta""#) {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
@@ -3858,16 +3884,18 @@ fn normalize_custom_history_jsonl_v1_reader(
     reader: impl BufRead,
     context: &ProviderAdapterContext,
 ) -> Result<CustomHistoryJsonlV1NormalizationResult> {
+    let mut reader = reader;
     let mut summary = ProviderImportSummary::default();
     let mut records = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        match serde_json::from_str::<CtxHistoryJsonlRecord>(&line) {
+        match serde_json::from_slice::<CtxHistoryJsonlRecord>(&line) {
             Ok(record) => records.push((line_number, record)),
             Err(err) => push_provider_import_failure(&mut summary, line_number, err.to_string()),
         }
@@ -4798,6 +4826,7 @@ fn collect_jsonl_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
             reason: "symlinked provider transcript roots are rejected",
         });
     }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
     if file_type.is_file() {
         if root.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             ensure_regular_provider_transcript_file(root)?;
@@ -4837,13 +4866,128 @@ fn ensure_regular_provider_transcript_file(path: &Path) -> Result<()> {
             reason: "provider transcript paths must be regular files",
         });
     }
+    ensure_provider_path_parents_are_not_symlinks(path)?;
     Ok(())
+}
+
+fn ensure_provider_path_parents_are_not_symlinks(path: &Path) -> Result<()> {
+    let parent_count = path.components().count().saturating_sub(1);
+    let mut current = PathBuf::new();
+    for component in path.components().take(parent_count) {
+        current.push(component.as_os_str());
+        if current.as_os_str().is_empty() {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(CaptureError::InvalidProviderTranscriptPath {
+                path: path.to_path_buf(),
+                reason: "symlinked provider transcript path components are rejected",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn read_text_file_limited(path: &Path, max_bytes: usize, label: &str) -> Result<String> {
+    let file = File::open(path)?;
+    let mut reader = file.take((max_bytes as u64).saturating_add(1));
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(CaptureError::InvalidPayload(format!(
+            "{label} exceeds max bytes ({max_bytes})"
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|err| CaptureError::InvalidPayload(format!("{label} is not valid UTF-8: {err}")))
+}
+
+fn read_provider_jsonl_line(reader: &mut impl BufRead, buffer: &mut Vec<u8>) -> Result<bool> {
+    buffer.clear();
+    let mut total = 0usize;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(total > 0);
+        }
+        if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
+            let bytes_to_consume = newline_index + 1;
+            if total.saturating_add(bytes_to_consume) > MAX_PROVIDER_JSONL_LINE_BYTES {
+                reader.consume(bytes_to_consume);
+                return Err(provider_jsonl_line_too_large());
+            }
+            buffer.extend_from_slice(&available[..bytes_to_consume]);
+            reader.consume(bytes_to_consume);
+            return Ok(true);
+        }
+
+        let bytes_to_consume = available.len();
+        if total.saturating_add(bytes_to_consume) > MAX_PROVIDER_JSONL_LINE_BYTES {
+            reader.consume(bytes_to_consume);
+            discard_provider_jsonl_line(reader)?;
+            return Err(provider_jsonl_line_too_large());
+        }
+        buffer.extend_from_slice(available);
+        reader.consume(bytes_to_consume);
+        total = total.saturating_add(bytes_to_consume);
+    }
+}
+
+fn discard_provider_jsonl_line(reader: &mut impl BufRead) -> Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        let bytes_to_consume = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(available.len());
+        let found_newline = available
+            .get(bytes_to_consume.saturating_sub(1))
+            .is_some_and(|byte| *byte == b'\n');
+        reader.consume(bytes_to_consume);
+        if found_newline {
+            return Ok(());
+        }
+    }
+}
+
+fn provider_jsonl_line_too_large() -> CaptureError {
+    CaptureError::InvalidPayload(format!(
+        "provider JSONL line exceeds max bytes ({MAX_PROVIDER_JSONL_LINE_BYTES})"
+    ))
 }
 
 fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|time| time.with_timezone(&Utc))
+}
+
+fn parse_optional_rfc3339_field(
+    value: &Value,
+    field: &'static str,
+) -> Result<Option<DateTime<Utc>>> {
+    let Some(raw_value) = value.get(field) else {
+        return Ok(None);
+    };
+    let raw = raw_value.as_str().ok_or_else(|| {
+        CaptureError::InvalidPayload(format!("{field} must be an RFC3339 string"))
+    })?;
+    parse_rfc3339_utc(raw)
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload(format!("{field} is not a valid RFC3339 timestamp"))
+        })
+        .map(Some)
+}
+
+fn codex_session_line_timestamp(value: &Value, fallback: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    Ok(parse_optional_rfc3339_field(value, "timestamp")?.unwrap_or(fallback))
 }
 
 fn codex_session_header(value: Value) -> Result<CodexSessionHeader> {
@@ -6191,17 +6335,18 @@ fn normalize_claude_projects_jsonl_file(
 ) -> Result<ProviderNormalizationResult> {
     ensure_regular_provider_transcript_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let value: Value = match serde_json::from_str(&line) {
+        let value: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -6688,30 +6833,68 @@ fn open_provider_sqlite_readonly(path: &Path) -> Result<Connection> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    let value_limit = i32::try_from(MAX_PROVIDER_SQLITE_VALUE_BYTES).map_err(|_| {
+        CaptureError::InvalidPayload(format!(
+            "provider SQLite value byte limit is unrepresentable: {MAX_PROVIDER_SQLITE_VALUE_BYTES}"
+        ))
+    })?;
+    conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, value_limit);
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "query_only", true)?;
     Ok(conn)
 }
 
-fn provider_timestamp_seconds(value: Option<f64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
-    let Some(value) = value else {
-        return fallback;
-    };
+fn provider_nonnegative_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| {
+        CaptureError::InvalidPayload(format!("{field} must be nonnegative, got {value}"))
+    })
+}
+
+fn provider_line_from_index(index: u64) -> usize {
+    index.min(usize::MAX as u64) as usize
+}
+
+fn provider_timestamp_seconds_to_datetime(value: f64) -> Option<DateTime<Utc>> {
     if !value.is_finite() {
-        return fallback;
+        return None;
     }
     let millis = if value.abs() > 1_000_000_000_000.0 {
-        value.round() as i64
+        value.round()
     } else {
-        (value * 1000.0).round() as i64
+        (value * 1000.0).round()
     };
-    DateTime::<Utc>::from_timestamp_millis(millis).unwrap_or(fallback)
+    if millis < i64::MIN as f64 || millis > i64::MAX as f64 {
+        return None;
+    }
+    DateTime::<Utc>::from_timestamp_millis(millis as i64)
+}
+
+fn provider_timestamp_seconds(value: Option<f64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .and_then(provider_timestamp_seconds_to_datetime)
+        .unwrap_or(fallback)
+}
+
+fn provider_required_timestamp_seconds(value: f64, field: &'static str) -> Result<DateTime<Utc>> {
+    provider_timestamp_seconds_to_datetime(value).ok_or_else(|| {
+        CaptureError::InvalidPayload(format!(
+            "{field} is outside representable timestamp range: {value}"
+        ))
+    })
 }
 
 fn provider_timestamp_millis(value: Option<i64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
     value
         .and_then(DateTime::<Utc>::from_timestamp_millis)
         .unwrap_or(fallback)
+}
+
+fn provider_required_timestamp_millis(value: i64, field: &'static str) -> Result<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp_millis(value).ok_or_else(|| {
+        CaptureError::InvalidPayload(format!(
+            "{field} is outside representable timestamp range: {value}"
+        ))
+    })
 }
 
 fn provider_timestamp_value(value: Option<&Value>, fallback: DateTime<Utc>) -> DateTime<Utc> {
@@ -6810,9 +6993,21 @@ fn provider_path_has_component(path: &Path, expected: &str) -> bool {
 fn openclaw_session_indexes(root: &Path) -> BTreeMap<String, Value> {
     let mut indexes = BTreeMap::new();
     let mut paths = Vec::new();
-    collect_named_paths(root, "sessions.json", &mut paths);
+    let mut visited = 0usize;
+    collect_named_paths(
+        root,
+        "sessions.json",
+        &mut paths,
+        &mut visited,
+        MAX_OPENCLAW_SESSION_INDEX_PATHS,
+        MAX_OPENCLAW_SESSION_INDEX_VISITED_PATHS,
+    );
     for path in paths {
-        let Ok(text) = fs::read_to_string(&path) else {
+        let Ok(text) = read_text_file_limited(
+            &path,
+            MAX_OPENCLAW_SESSION_INDEX_BYTES,
+            "OpenClaw sessions.json",
+        ) else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -6871,7 +7066,18 @@ fn openclaw_session_index_entries(value: Value) -> Vec<(String, Value)> {
     }
 }
 
-fn collect_named_paths(root: &Path, name: &str, paths: &mut Vec<PathBuf>) {
+fn collect_named_paths(
+    root: &Path,
+    name: &str,
+    paths: &mut Vec<PathBuf>,
+    visited: &mut usize,
+    max_paths: usize,
+    max_visited: usize,
+) {
+    if paths.len() >= max_paths || *visited >= max_visited {
+        return;
+    }
+    *visited += 1;
     let Ok(metadata) = fs::symlink_metadata(root) else {
         return;
     };
@@ -6891,7 +7097,10 @@ fn collect_named_paths(root: &Path, name: &str, paths: &mut Vec<PathBuf>) {
         return;
     };
     for entry in entries.flatten() {
-        collect_named_paths(&entry.path(), name, paths);
+        if paths.len() >= max_paths || *visited >= max_visited {
+            break;
+        }
+        collect_named_paths(&entry.path(), name, paths, visited, max_paths, max_visited);
     }
 }
 
@@ -6947,12 +7156,7 @@ fn normalize_openclaw_jsonl_file(
     let mut header_seen = false;
     let mut line_number = 0usize;
     let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
         line_number += 1;
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -7246,23 +7450,58 @@ fn normalize_hermes_sqlite(
     let mut result = ProviderNormalizationResult::default();
 
     for row in messages {
+        let provider_event_index =
+            match provider_nonnegative_i64_to_u64(row.id, "Hermes message id") {
+                Ok(value) => value,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, 0, err.to_string());
+                    continue;
+                }
+            };
+        let line = provider_line_from_index(provider_event_index);
         let Some(session) = sessions_by_id.get(&row.session_id) else {
-            result.summary.failed += 1;
-            result.summary.failures.push(ProviderImportFailure {
-                line: row.id.max(0) as usize,
-                error: format!(
+            push_provider_import_failure(
+                &mut result.summary,
+                line,
+                format!(
                     "Hermes message {} references missing session {}",
                     row.id, row.session_id
                 ),
-            });
+            );
             continue;
         };
         let provider_session_id = session.id.clone();
-        let occurred_at = provider_timestamp_seconds(Some(row.timestamp), context.imported_at);
-        let started_at = provider_timestamp_seconds(Some(session.started_at), occurred_at);
-        let ended_at = session
+        let occurred_at =
+            match provider_required_timestamp_seconds(row.timestamp, "Hermes message timestamp") {
+                Ok(timestamp) => timestamp,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, line, err.to_string());
+                    continue;
+                }
+            };
+        let started_at = match provider_required_timestamp_seconds(
+            session.started_at,
+            "Hermes session started_at",
+        ) {
+            Ok(timestamp) => timestamp,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, line, err.to_string());
+                continue;
+            }
+        };
+        let ended_at = match session
             .ended_at
-            .map(|timestamp| provider_timestamp_seconds(Some(timestamp), context.imported_at));
+            .map(|timestamp| {
+                provider_required_timestamp_seconds(timestamp, "Hermes session ended_at")
+            })
+            .transpose()
+        {
+            Ok(timestamp) => timestamp,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, line, err.to_string());
+                continue;
+            }
+        };
         let content = hermes_decode_content(row.content.as_deref());
         let text = provider_value_text(&content).unwrap_or_else(|| {
             row.tool_name
@@ -7276,7 +7515,7 @@ fn normalize_hermes_sqlite(
             provider: CaptureProvider::Hermes,
             source_format: HERMES_SQLITE_SOURCE_FORMAT,
             provider_session_id: provider_session_id.clone(),
-            provider_event_index: row.id.max(0) as u64,
+            provider_event_index,
             provider_event_hash: Some(format!("message:{}", row.id)),
             cursor: format!("messages:id:{}", row.id),
             event_type,
@@ -7309,7 +7548,7 @@ fn normalize_hermes_sqlite(
             }),
         });
         result.captures.push((
-            row.id.max(0) as usize,
+            line,
             native_provider_capture(
                 NativeSessionDraft {
                     provider: CaptureProvider::Hermes,
@@ -7609,6 +7848,17 @@ fn normalize_nanoclaw_project(
             )
         });
         for message in messages {
+            let seq = match message
+                .seq
+                .map(|seq| provider_nonnegative_i64_to_u64(seq, "NanoClaw message seq"))
+                .transpose()
+            {
+                Ok(seq) => seq,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, 0, err.to_string());
+                    continue;
+                }
+            };
             let provider_session_id = format!("{}/{}", session.agent_group_id, session.id);
             let occurred_at = provider_timestamp_millis(message.timestamp, context.imported_at);
             let started_at = provider_timestamp_millis(session.created_at, occurred_at);
@@ -7623,7 +7873,7 @@ fn normalize_nanoclaw_project(
                     message.kind.as_deref().unwrap_or(message.source)
                 )
             });
-            let event_index = nanoclaw_event_index(&message);
+            let event_index = nanoclaw_event_index(&message, seq);
             let role = if message.source == "inbound" {
                 Some(EventRole::User)
             } else {
@@ -7738,15 +7988,15 @@ fn nanoclaw_project_root(path: &Path) -> Result<PathBuf> {
     })
 }
 
-fn nanoclaw_event_index(message: &NanoClawMessageRow) -> u64 {
-    if let Some(seq) = message.seq {
+fn nanoclaw_event_index(message: &NanoClawMessageRow, seq: Option<u64>) -> u64 {
+    if let Some(seq) = seq {
         let source_bucket = if message.source == "outbound" {
             500_000
         } else {
             0
         };
         let row_bucket = fnv1a64(format!("{}:{}", message.source, message.id).as_bytes()) % 500_000;
-        return (seq.max(0) as u64)
+        return seq
             .saturating_mul(1_000_000)
             .saturating_add(source_bucket)
             .saturating_add(row_bucket);
@@ -8560,6 +8810,16 @@ fn normalize_astrbot_sqlite(
     let mut checkpoint_sessions = BTreeMap::<String, String>::new();
 
     for conversation in &conversations {
+        let conversation_line = match provider_nonnegative_i64_to_u64(
+            conversation.row_id,
+            "AstrBot conversation row id",
+        ) {
+            Ok(value) => provider_line_from_index(value),
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, 0, err.to_string());
+                continue;
+            }
+        };
         let provider_session_id = astrbot_provider_session_id(conversation);
         let started_at = provider_timestamp_millis(conversation.created_at, context.imported_at);
         let ended_at = conversation
@@ -8636,7 +8896,7 @@ fn normalize_astrbot_sqlite(
                 }),
             });
             result.captures.push((
-                conversation.row_id.max(0) as usize,
+                conversation_line,
                 astrbot_capture(
                     AstrBotCaptureDraft {
                         conversation,
@@ -8660,6 +8920,14 @@ fn normalize_astrbot_sqlite(
         .map(|conversation| (astrbot_provider_session_id(conversation), conversation))
         .collect::<BTreeMap<_, _>>();
     for message in platform_messages {
+        let message_id =
+            match provider_nonnegative_i64_to_u64(message.id, "AstrBot platform message id") {
+                Ok(value) => value,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, 0, err.to_string());
+                    continue;
+                }
+            };
         let provider_session_id = message
             .llm_checkpoint_id
             .as_ref()
@@ -8689,7 +8957,7 @@ fn normalize_astrbot_sqlite(
         } else {
             Some(EventRole::Assistant)
         };
-        let event_index = 1_000_000u64.saturating_add(message.id.max(0) as u64);
+        let event_index = 1_000_000u64.saturating_add(message_id);
         let event = native_event(NativeEventDraft {
             provider: CaptureProvider::AstrBot,
             source_format: ASTRBOT_SQLITE_SOURCE_FORMAT,
@@ -9004,12 +9272,7 @@ fn normalize_opencode_sqlite(
     path: &Path,
     context: &ProviderAdapterContext,
 ) -> Result<ProviderNormalizationResult> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.pragma_update(None, "query_only", true)?;
+    let conn = open_provider_sqlite_readonly(path)?;
     let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
     let legacy_message_rows = opencode_count(&conn, "message").unwrap_or(0);
@@ -9017,15 +9280,16 @@ fn normalize_opencode_sqlite(
     let sessions = opencode_sessions(&conn)?;
     let messages = opencode_session_messages(&conn)?;
     let mut result = ProviderNormalizationResult::default();
-    let session_started = sessions
-        .iter()
-        .map(|session| {
-            (
-                session.id.clone(),
-                timestamp_millis_utc(session.time_created, context.imported_at),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut session_started = BTreeMap::new();
+    for session in &sessions {
+        session_started.insert(
+            session.id.clone(),
+            provider_required_timestamp_millis(
+                session.time_created,
+                "OpenCode session time_created",
+            )?,
+        );
+    }
     let sessions_by_id = sessions
         .into_iter()
         .map(|session| (session.id.clone(), session))
@@ -9033,36 +9297,59 @@ fn normalize_opencode_sqlite(
     let raw_source_path = path.display().to_string();
 
     for row in messages {
+        let provider_event_index =
+            match provider_nonnegative_i64_to_u64(row.seq, "OpenCode session_message seq") {
+                Ok(value) => value,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, 0, err.to_string());
+                    continue;
+                }
+            };
+        let line = provider_line_from_index(provider_event_index);
         let Some(session) = sessions_by_id.get(&row.session_id) else {
-            result.summary.failed += 1;
-            result.summary.failures.push(ProviderImportFailure {
-                line: row.seq.max(0) as usize,
-                error: format!(
+            push_provider_import_failure(
+                &mut result.summary,
+                line,
+                format!(
                     "OpenCode session_message {} references missing session {}",
                     row.id, row.session_id
                 ),
-            });
+            );
             continue;
         };
         let data: Value = match serde_json::from_str(&row.data) {
             Ok(data) => data,
             Err(err) => {
-                result.summary.failed += 1;
-                result.summary.failures.push(ProviderImportFailure {
-                    line: row.seq.max(0) as usize,
-                    error: format!("invalid JSON in session_message {}: {err}", row.id),
-                });
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line,
+                    format!("invalid JSON in session_message {}: {err}", row.id),
+                );
                 continue;
             }
         };
-        let occurred_at = opencode_event_time(&data)
-            .or_else(|| Some(timestamp_millis_utc(row.time_created, context.imported_at)))
-            .unwrap_or(context.imported_at);
+        let occurred_at = match opencode_event_time(&data) {
+            Ok(Some(time)) => time,
+            Ok(None) => match provider_required_timestamp_millis(
+                row.time_created,
+                "OpenCode session_message time_created",
+            ) {
+                Ok(time) => time,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, line, err.to_string());
+                    continue;
+                }
+            },
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, line, err.to_string());
+                continue;
+            }
+        };
         let started_at = session_started
             .get(&session.id)
             .copied()
             .unwrap_or(occurred_at);
-        let event = opencode_event(&row, &data, occurred_at);
+        let event = opencode_event(&row, &data, occurred_at, provider_event_index);
         result
             .files_touched
             .extend(provider_file_touches_from_raw_value(
@@ -9072,11 +9359,11 @@ fn normalize_opencode_sqlite(
                 Some(raw_source_path.as_str()),
                 &data,
                 &event,
-                row.seq.max(0) as usize,
+                line,
             ));
         let is_subagent = session.parent_id.is_some();
         result.captures.push((
-            row.seq.max(0) as usize,
+            line,
             ProviderCaptureEnvelope {
                 schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
                 provider: CaptureProvider::OpenCode,
@@ -9470,13 +9757,14 @@ fn opencode_event(
     row: &OpenCodeMessageRow,
     data: &Value,
     occurred_at: DateTime<Utc>,
+    provider_event_index: u64,
 ) -> ProviderEventEnvelope {
     let event_type = opencode_event_type(&row.entry_type, data);
     let role = Some(provider_role(Some(&row.entry_type)));
     let text = opencode_event_text(&row.entry_type, data, event_type);
     let (text, truncated) = provider_local_preview(&text, PROVIDER_MAX_TEXT_CHARS);
     ProviderEventEnvelope {
-        provider_event_index: row.seq.max(0) as u64,
+        provider_event_index,
         provider_event_hash: Some(row.id.clone()),
         cursor: Some(format!(
             "session_message:{}:seq:{}",
@@ -9563,14 +9851,16 @@ fn opencode_content_has_tool(data: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_event_time(data: &Value) -> Option<DateTime<Utc>> {
-    data.pointer("/time/created")
-        .and_then(Value::as_i64)
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
-}
-
-fn timestamp_millis_utc(millis: i64, fallback: DateTime<Utc>) -> DateTime<Utc> {
-    DateTime::<Utc>::from_timestamp_millis(millis).unwrap_or(fallback)
+fn opencode_event_time(data: &Value) -> Result<Option<DateTime<Utc>>> {
+    let Some(value) = data.pointer("/time/created") else {
+        return Ok(None);
+    };
+    let millis = value.as_i64().ok_or_else(|| {
+        CaptureError::InvalidPayload(
+            "OpenCode event time.created must be integer millis".to_owned(),
+        )
+    })?;
+    provider_required_timestamp_millis(millis, "OpenCode event time.created").map(Some)
 }
 
 fn parse_json_object_string(value: Option<&str>) -> Value {
@@ -9677,17 +9967,18 @@ fn normalize_native_jsonl_session_file(
 ) -> Result<ProviderNormalizationResult> {
     ensure_regular_provider_transcript_file(path)?;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line_number = index + 1;
-        let line = line?;
-        if line.trim().is_empty() {
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let value: Value = match serde_json::from_str(&line) {
+        let value: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -10349,8 +10640,10 @@ fn pi_session_capture(
     entry: Option<Value>,
     line_number: usize,
     context: &ProviderAdapterContext,
-) -> ProviderCaptureEnvelope {
-    let event = entry.map(|entry| pi_session_event(header, &entry, line_number));
+) -> Result<ProviderCaptureEnvelope> {
+    let event = entry
+        .map(|entry| pi_session_event(header, &entry, line_number))
+        .transpose()?;
     let cursor = event.as_ref().and_then(|event| {
         event.cursor.as_ref().map(|cursor| ProviderCursorRange {
             before: None,
@@ -10362,7 +10655,7 @@ fn pi_session_capture(
         })
     });
 
-    ProviderCaptureEnvelope {
+    Ok(ProviderCaptureEnvelope {
         schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
         provider: CaptureProvider::Pi,
         source: ProviderSourceEnvelope {
@@ -10413,14 +10706,14 @@ fn pi_session_capture(
             }),
         },
         event,
-    }
+    })
 }
 
 fn pi_session_event(
     header: &PiSessionHeader,
     entry: &Value,
     line_number: usize,
-) -> ProviderEventEnvelope {
+) -> Result<ProviderEventEnvelope> {
     let entry_type = entry
         .get("type")
         .and_then(Value::as_str)
@@ -10429,17 +10722,14 @@ fn pi_session_event(
     let message_role = message
         .and_then(|message| message.get("role"))
         .and_then(Value::as_str);
-    let occurred_at = entry
-        .get("timestamp")
-        .and_then(Value::as_str)
-        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
-        .map(|time| time.with_timezone(&Utc))
-        .unwrap_or_else(utc_now);
+    let occurred_at = parse_optional_rfc3339_field(entry, "timestamp")?.ok_or_else(|| {
+        CaptureError::InvalidPayload("pi session event missing timestamp".to_owned())
+    })?;
     let event_type = pi_event_type(entry_type, message);
     let role = message_role.map(pi_event_role);
     let text = message.and_then(pi_message_text);
 
-    ProviderEventEnvelope {
+    Ok(ProviderEventEnvelope {
         provider_event_index: (line_number - 1) as u64,
         provider_event_hash: None,
         cursor: entry.get("id").and_then(Value::as_str).map(str::to_owned),
@@ -10474,7 +10764,7 @@ fn pi_session_event(
                 .and_then(Value::as_str),
             "usage": message.and_then(|message| message.get("usage")).cloned(),
         }),
-    }
+    })
 }
 
 fn pi_event_type(entry_type: &str, message: Option<&Value>) -> EventType {
@@ -10964,7 +11254,7 @@ fn import_provider_capture_line(
             event,
             payload: &payload,
             event_hash: &event_hash,
-        });
+        })?;
         let normalized_event = Event {
             id: event_identity.id,
             seq: event_identity.seq,
@@ -11775,7 +12065,7 @@ struct ProviderCommandRunInput<'a> {
     event_hash: &'a str,
 }
 
-fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option<Run> {
+fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Result<Option<Run>> {
     let ProviderCommandRunInput {
         provider,
         provider_session_id,
@@ -11788,7 +12078,7 @@ fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option
         event_hash,
     } = input;
     if event.event_type != EventType::CommandOutput {
-        return None;
+        return Ok(None);
     }
     let command_preview = payload
         .get("command")
@@ -11797,16 +12087,29 @@ fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option
         .map(str::to_owned);
     let call_id = payload.get("call_id").and_then(Value::as_str);
     let key = call_id.unwrap_or(event_hash);
-    let duration_ms = payload.get("duration_ms").and_then(Value::as_i64);
+    let duration_ms = provider_command_duration_ms(payload)?;
     let ended_at = Some(event.occurred_at);
-    let started_at = duration_ms
-        .and_then(|duration| {
+    let started_at = match duration_ms {
+        Some(duration) => {
+            let duration_value = duration;
+            let duration = chrono::Duration::try_milliseconds(duration_value).ok_or_else(|| {
+                CaptureError::InvalidPayload(format!(
+                    "duration_ms is not representable as milliseconds: {duration_value}"
+                ))
+            })?;
             event
                 .occurred_at
-                .checked_sub_signed(chrono::Duration::milliseconds(duration.max(0)))
-        })
-        .unwrap_or(event.occurred_at);
-    Some(Run {
+                .checked_sub_signed(duration)
+                .ok_or_else(|| {
+                    CaptureError::InvalidPayload(format!(
+                        "duration_ms moves command start before representable time: {}",
+                        duration_value
+                    ))
+                })?
+        }
+        None => event.occurred_at,
+    };
+    Ok(Some(Run {
         id: run_source_id
             .map(|source_id| provider_source_run_uuid(source_id, key))
             .unwrap_or_else(|| provider_run_uuid(provider, provider_session_id, key)),
@@ -11836,7 +12139,25 @@ fn provider_command_run_from_event(input: ProviderCommandRunInput<'_>) -> Option
                 "source": "provider_command_output",
             }),
         ),
-    })
+    }))
+}
+
+fn provider_command_duration_ms(payload: &Value) -> Result<Option<i64>> {
+    let Some(value) = payload.get("duration_ms") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let duration = value
+        .as_i64()
+        .ok_or_else(|| CaptureError::InvalidPayload("duration_ms must be an integer".to_owned()))?;
+    if duration < 0 {
+        return Err(CaptureError::InvalidPayload(format!(
+            "duration_ms must be nonnegative, got {duration}"
+        )));
+    }
+    Ok(Some(duration))
 }
 
 fn provider_command_run_status(payload: &Value) -> RunStatus {
@@ -12099,6 +12420,31 @@ mod tests {
 
     fn custom_history_fixture(name: &str) -> PathBuf {
         materialized_fixture("custom-history-jsonl", name)
+    }
+
+    fn write_oversized_jsonl_line(path: &Path) {
+        fs::write(path, vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1]).unwrap();
+    }
+
+    fn jsonl_line(value: Value) -> String {
+        serde_json::to_string(&value).unwrap() + "\n"
+    }
+
+    fn test_provider_event(event_type: EventType) -> ProviderEventEnvelope {
+        ProviderEventEnvelope {
+            provider_event_index: 0,
+            provider_event_hash: Some("event-hash".to_owned()),
+            cursor: None,
+            event_type,
+            role: Some(EventRole::Tool),
+            occurred_at: "2026-07-03T12:00:00Z".parse().unwrap(),
+            fidelity: Fidelity::Imported,
+            redaction_state: RedactionState::LocalPreview,
+            idempotency_key: None,
+            artifacts: Vec::new(),
+            payload: json!({}),
+            metadata: json!({}),
+        }
     }
 
     fn materialized_fixture(category: &str, name: &str) -> PathBuf {
@@ -12698,6 +13044,51 @@ mod tests {
     }
 
     #[test]
+    fn pi_session_import_rejects_malformed_event_timestamp() {
+        let temp = tempdir();
+        let path = temp.path().join("bad-timestamp-pi.jsonl");
+        fs::write(
+            &path,
+            [
+                jsonl_line(json!({
+                    "type": "session",
+                    "id": "pi-bad-timestamp",
+                    "timestamp": "2026-07-03T12:00:00Z",
+                    "version": 1
+                })),
+                jsonl_line(json!({
+                    "type": "message",
+                    "id": "pi-bad-event",
+                    "timestamp": "not-rfc3339",
+                    "message": {
+                        "role": "user",
+                        "content": "bad timestamp should not import"
+                    }
+                })),
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_pi_session_jsonl(
+            &path,
+            &mut store,
+            PiSessionImportOptions {
+                imported_at: "2026-07-03T12:30:00Z".parse().unwrap(),
+                ..PiSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+        assert!(summary.failures[0]
+            .error
+            .contains("timestamp is not a valid RFC3339 timestamp"));
+        assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
     fn pi_session_import_replays_default_session_directory_tree() {
         let temp = tempdir();
         let root = temp.path().join(".pi/agent/sessions/--workspace--");
@@ -12907,6 +13298,32 @@ mod tests {
         assert_eq!(third.cached_sessions, session_count - 1);
         assert_eq!(third.parsed_sessions, 1);
         assert_eq!(third.failed_sessions, 0);
+    }
+
+    #[test]
+    fn codex_session_catalog_rejects_oversized_metadata_line() {
+        let temp = tempdir();
+        let root = temp.path().join("sessions/2026/07/03");
+        fs::create_dir_all(&root).unwrap();
+        write_oversized_jsonl_line(&root.join("oversized.jsonl"));
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = catalog_codex_session_tree(
+            temp.path().join("sessions"),
+            &store,
+            CodexSessionCatalogOptions {
+                source_root: Some(temp.path().join("sessions")),
+                cataloged_at: "2026-07-03T12:00:00Z".parse().unwrap(),
+                allow_partial_failures: false,
+                ..CodexSessionCatalogOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("provider JSONL line exceeds"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -13290,6 +13707,40 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn codex_session_file_rejects_symlinked_parent_components() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir();
+        let real_dir = temp.path().join("real-parent");
+        fs::create_dir_all(&real_dir).unwrap();
+        let fixture = provider_history_fixture("codex-sessions").join("2026/06/23/root.jsonl");
+        fs::copy(&fixture, real_dir.join("root.jsonl")).unwrap();
+        let link_dir = temp.path().join("linked-parent");
+        symlink(&real_dir, &link_dir).unwrap();
+        let linked_file = link_dir.join("root.jsonl");
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let err = import_codex_session_jsonl(
+            &linked_file,
+            &mut store,
+            CodexSessionImportOptions {
+                imported_at: "2026-06-23T16:30:00Z".parse().unwrap(),
+                ..CodexSessionImportOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CaptureError::InvalidProviderTranscriptPath { path, reason }
+                if path.ends_with("linked-parent/root.jsonl")
+                    && reason == "symlinked provider transcript path components are rejected"
+        ));
+        assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn codex_session_tree_rejects_symlinked_jsonl_files() {
         use std::os::unix::fs::symlink;
 
@@ -13317,6 +13768,92 @@ mod tests {
                     && reason == "symlinked provider transcript files are rejected"
         ));
         assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn codex_session_jsonl_rejects_oversized_line() {
+        let temp = tempdir();
+        let path = temp.path().join("oversized-codex.jsonl");
+        write_oversized_jsonl_line(&path);
+
+        let err = CodexSessionJsonlAdapter
+            .normalize_path(&path, &ProviderAdapterContext::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("provider JSONL line exceeds"));
+    }
+
+    #[test]
+    fn codex_session_jsonl_rejects_malformed_event_timestamp() {
+        let temp = tempdir();
+        let path = temp.path().join("bad-timestamp-codex.jsonl");
+        fs::write(
+            &path,
+            [
+                jsonl_line(json!({
+                    "timestamp": "2026-07-03T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "codex-bad-timestamp",
+                        "timestamp": "2026-07-03T12:00:00Z",
+                        "cwd": "/workspace",
+                        "originator": "codex-cli"
+                    }
+                })),
+                jsonl_line(json!({
+                    "timestamp": "not-rfc3339",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "bad timestamp should not import"}
+                        ]
+                    }
+                })),
+            ]
+            .concat(),
+        )
+        .unwrap();
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_codex_session_jsonl(
+            &path,
+            &mut store,
+            CodexSessionImportOptions {
+                imported_at: "2026-07-03T12:30:00Z".parse().unwrap(),
+                fast_event_inserts: false,
+                ..CodexSessionImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+        assert!(summary.failures[0]
+            .error
+            .contains("timestamp is not a valid RFC3339 timestamp"));
+        assert!(store.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_command_run_rejects_negative_duration() {
+        let event = test_provider_event(EventType::CommandOutput);
+        let err = provider_command_run_from_event(ProviderCommandRunInput {
+            provider: CaptureProvider::Codex,
+            provider_session_id: "duration-session",
+            session_id: new_id(),
+            source_id: new_id(),
+            run_source_id: None,
+            history_record_id: None,
+            event: &event,
+            payload: &json!({
+                "command": "cargo test",
+                "duration_ms": -1
+            }),
+            event_hash: "event-hash",
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("duration_ms must be nonnegative"));
     }
 
     #[test]
@@ -13891,6 +14428,55 @@ mod tests {
     }
 
     #[test]
+    fn native_hermes_rejects_out_of_range_message_timestamp() {
+        let temp = tempdir();
+        let fixture = write_hermes_smoke_db(&temp);
+        let conn = Connection::open(&fixture).unwrap();
+        conn.execute(
+            "update messages set timestamp = ?1 where content = 'bad timestamp'",
+            [1.0e300_f64],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_hermes_sqlite(
+            &fixture,
+            &mut store,
+            HermesSqliteImportOptions {
+                allow_partial_failures: true,
+                ..HermesSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1);
+        assert!(summary.failures[0]
+            .error
+            .contains("Hermes message timestamp"));
+        assert_eq!(summary.imported_events, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_opencode_normalizer_rejects_symlinked_sqlite() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir();
+        let fixture = write_opencode_smoke_db(&temp, false);
+        let link = temp.path().join("linked-opencode.db");
+        symlink(&fixture, &link).unwrap();
+
+        let err = normalize_opencode_sqlite(&link, &ProviderAdapterContext::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            CaptureError::InvalidProviderTranscriptPath { path, reason }
+                if path.ends_with("linked-opencode.db")
+                    && reason == "symlinked provider transcript files are rejected"
+        ));
+    }
+
+    #[test]
     fn native_opencode_synthesizes_session_message_seq_when_missing() {
         let temp = tempdir();
         let fixture = write_opencode_session_message_without_seq_db(&temp);
@@ -13922,6 +14508,103 @@ mod tests {
             Some(2)
         );
         assert_ne!(events[0].id, events[1].id);
+    }
+
+    #[test]
+    fn native_opencode_rejects_negative_session_message_seq() {
+        let temp = tempdir();
+        let fixture = write_opencode_smoke_db(&temp, false);
+        let conn = Connection::open(&fixture).unwrap();
+        conn.execute(
+            "update session_message set seq = -1 where id = 'msg-user'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_opencode_sqlite(
+            &fixture,
+            &mut store,
+            OpenCodeSqliteImportOptions {
+                allow_partial_failures: true,
+                ..OpenCodeSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1);
+        assert!(summary.failures[0]
+            .error
+            .contains("OpenCode session_message seq must be nonnegative"));
+        assert_eq!(summary.imported_events, 2);
+        let session_id = provider_session_uuid(CaptureProvider::OpenCode, "opencode-root");
+        let events = store.events_for_session(session_id).unwrap();
+        assert!(events.iter().all(|event| {
+            event.payload["body"]["session_message_seq"]
+                .as_i64()
+                .is_some_and(|seq| seq >= 0)
+        }));
+    }
+
+    #[test]
+    fn native_opencode_rejects_out_of_range_message_timestamp() {
+        let temp = tempdir();
+        let fixture = write_opencode_smoke_db(&temp, false);
+        let conn = Connection::open(&fixture).unwrap();
+        let data_without_payload_time = json!({"text": "bad timestamp fallback"}).to_string();
+        conn.execute(
+            "update session_message set time_created = ?1, data = ?2 where id = 'msg-user'",
+            rusqlite::params![i64::MAX, data_without_payload_time],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_opencode_sqlite(
+            &fixture,
+            &mut store,
+            OpenCodeSqliteImportOptions {
+                allow_partial_failures: true,
+                ..OpenCodeSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1);
+        assert!(summary.failures[0]
+            .error
+            .contains("OpenCode session_message time_created"));
+        assert_eq!(summary.imported_events, 2);
+    }
+
+    #[test]
+    fn native_opencode_rejects_oversized_sqlite_text_value() {
+        let temp = tempdir();
+        let fixture = write_opencode_smoke_db(&temp, false);
+        let conn = Connection::open(&fixture).unwrap();
+        let oversized_data = format!(
+            "{{\"time\":{{\"created\":1782259200000}},\"text\":\"{}\"}}",
+            "x".repeat(MAX_PROVIDER_SQLITE_VALUE_BYTES + 1)
+        );
+        conn.execute(
+            "update session_message set data = ?1 where id = 'msg-user'",
+            [&oversized_data],
+        )
+        .unwrap();
+        drop(conn);
+
+        let err = import_opencode_sqlite(
+            &fixture,
+            &mut Store::open(temp.path().join("work.sqlite")).unwrap(),
+            OpenCodeSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("too big"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -14013,6 +14696,62 @@ mod tests {
         assert!(err
             .to_string()
             .contains("OpenCode SQLite message table missing required column(s): data"));
+    }
+
+    #[test]
+    fn openclaw_import_ignores_oversized_session_index_sidecar() {
+        let temp = tempdir();
+        let root = temp.path().join("openclaw");
+        let sessions = root.join("agents/personal-agent/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("sessions.json"),
+            vec![b'x'; MAX_OPENCLAW_SESSION_INDEX_BYTES + 1],
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("openclaw-oversized-index.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session",
+                    "id": "openclaw-oversized-index",
+                    "timestamp": "2026-06-24T12:00:00Z",
+                    "cwd": "/workspace"
+                }),
+                json!({
+                    "type": "message",
+                    "id": "openclaw-oversized-index-user",
+                    "timestamp": "2026-06-24T12:00:01Z",
+                    "message": {"role": "user", "content": "oversized sidecar should not block import"}
+                })
+            ),
+        )
+        .unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_openclaw_history(
+            &root,
+            &mut store,
+            OpenClawImportOptions {
+                allow_partial_failures: true,
+                ..OpenClawImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 1);
+        let session_id = provider_session_uuid(
+            CaptureProvider::OpenClaw,
+            "personal-agent/openclaw-oversized-index",
+        );
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(
+            session.external_session_id.as_deref(),
+            Some("personal-agent/openclaw-oversized-index")
+        );
     }
 
     #[test]
@@ -14454,6 +15193,44 @@ mod tests {
         conn.execute(
             "insert into session_message values (?1, ?2, 'assistant', 1, 1782259202000, 1782259202000, ?3)",
             ["msg-child", "opencode-child", child_data],
+        )
+        .unwrap();
+        path
+    }
+
+    fn write_hermes_smoke_db(temp: &TempDir) -> PathBuf {
+        let path = temp.path().join("hermes-state.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "create table sessions (
+                id text primary key,
+                source text not null,
+                started_at real not null
+            );
+            create table messages (
+                id integer primary key autoincrement,
+                session_id text not null,
+                role text not null,
+                content text,
+                timestamp real not null,
+                active integer not null default 1,
+                compacted integer not null default 0
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "insert into sessions values (?1, 'acp', 1782259200.0)",
+            ["hermes-root"],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into messages (session_id, role, content, timestamp) values (?1, 'user', 'bad timestamp', 1782259201.0)",
+            ["hermes-root"],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into messages (session_id, role, content, timestamp) values (?1, 'assistant', 'good timestamp', 1782259202.0)",
+            ["hermes-root"],
         )
         .unwrap();
         path
@@ -15883,6 +16660,24 @@ mod tests {
             .unwrap();
         assert_eq!(sessions, 0);
         assert_eq!(events, 0);
+    }
+
+    #[test]
+    fn custom_history_jsonl_rejects_oversized_line() {
+        let temp = tempdir();
+        let path = temp.path().join("oversized-custom.jsonl");
+        write_oversized_jsonl_line(&path);
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = import_custom_history_jsonl_v1(
+            &path,
+            &mut store,
+            CustomHistoryJsonlV1ImportOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("provider JSONL line exceeds"));
+        assert_eq!(store.capture_source_count().unwrap(), 0);
     }
 
     #[test]

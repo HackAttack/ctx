@@ -87,6 +87,11 @@ pub enum StoreError {
         min: usize,
         max: usize,
     },
+    #[error("SQL result preview budget {estimated_bytes} bytes exceeds maximum {max_result_bytes}; lower max_rows, max_columns, or max_value_bytes")]
+    RawSqlResultBudgetTooLarge {
+        estimated_bytes: usize,
+        max_result_bytes: usize,
+    },
     #[error("SQL query timed out after {timeout_ms}ms")]
     RawSqlTimedOut { timeout_ms: u64 },
 }
@@ -106,6 +111,8 @@ pub const RAW_SQL_DEFAULT_MAX_COLUMNS: usize = 64;
 pub const RAW_SQL_MAX_COLUMNS_CAP: usize = 256;
 pub const RAW_SQL_DEFAULT_MAX_VALUE_BYTES: usize = 512;
 pub const RAW_SQL_MAX_VALUE_BYTES_CAP: usize = 1_048_576;
+pub const RAW_SQL_MAX_RESULT_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+pub const RAW_SQL_MAX_RESULT_CELLS: usize = 262_144;
 const RAW_SQL_MIN_SQLITE_LENGTH_LIMIT_BYTES: usize = 64 * 1024;
 const RAW_SQL_VALUE_LENGTH_MARGIN_BYTES: usize = 1024;
 pub const RAW_SQL_DEFAULT_MAX_SQL_BYTES: usize = 64 * 1024;
@@ -1209,6 +1216,7 @@ impl Store {
                 max_columns: options.max_columns,
             });
         }
+        validate_raw_sql_result_preview_budget(&options, column_count)?;
 
         let columns = stmt
             .column_names()
@@ -2276,6 +2284,29 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    pub fn sessions_by_external_session_limited(
+        &self,
+        provider: CaptureProvider,
+        external_session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
+        let mut stmt = self.conn.prepare(
+            session_select_sql(
+                "WHERE provider = ?1 AND external_session_id = ?2 ORDER BY started_at_ms DESC LIMIT ?3",
+            )
+            .as_str(),
+        )?;
+        let rows = stmt.query_map(
+            params![
+                provider.as_str(),
+                external_session_id,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            session_from_row,
+        )?;
+        collect_rows(rows)
+    }
+
     pub fn sessions_for_record(&self, record_id: Uuid) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
             session_select_sql("WHERE history_record_id = ?1 ORDER BY started_at_ms, id").as_str(),
@@ -2682,6 +2713,73 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![session_id.to_string()], event_from_row)?;
         collect_rows(rows)
+    }
+
+    pub fn events_for_session_limited(&self, session_id: Uuid, limit: usize) -> Result<Vec<Event>> {
+        let mut stmt = self.conn.prepare(
+            event_select_sql("WHERE session_id = ?1 ORDER BY seq, occurred_at_ms LIMIT ?2")
+                .as_str(),
+        )?;
+        let rows = stmt.query_map(
+            params![
+                session_id.to_string(),
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            event_from_row,
+        )?;
+        collect_rows(rows)
+    }
+
+    pub fn events_for_session_window(
+        &self,
+        event: &Event,
+        before: usize,
+        after: usize,
+    ) -> Result<Vec<Event>> {
+        let Some(session_id) = event.session_id else {
+            return Ok(vec![event.clone()]);
+        };
+        let event_seq = i64::try_from(event.seq).unwrap_or(i64::MAX);
+        let mut events = if before == 0 {
+            Vec::new()
+        } else {
+            let mut stmt = self.conn.prepare(
+                event_select_sql(
+                    "WHERE session_id = ?1 AND seq < ?2 ORDER BY seq DESC, occurred_at_ms DESC LIMIT ?3",
+                )
+                .as_str(),
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    session_id.to_string(),
+                    event_seq,
+                    i64::try_from(before).unwrap_or(i64::MAX)
+                ],
+                event_from_row,
+            )?;
+            let mut rows = collect_rows(rows)?;
+            rows.reverse();
+            rows
+        };
+        events.push(event.clone());
+        if after > 0 {
+            let mut stmt = self.conn.prepare(
+                event_select_sql(
+                    "WHERE session_id = ?1 AND seq > ?2 ORDER BY seq, occurred_at_ms LIMIT ?3",
+                )
+                .as_str(),
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    session_id.to_string(),
+                    event_seq,
+                    i64::try_from(after).unwrap_or(i64::MAX)
+                ],
+                event_from_row,
+            )?;
+            events.extend(collect_rows(rows)?);
+        }
+        Ok(events)
     }
 
     pub fn events_for_record(&self, record_id: Uuid) -> Result<Vec<Event>> {
@@ -3753,7 +3851,7 @@ impl Store {
                     history_record_id: parse_optional_uuid(row.get(1)?)?,
                     session_id: parse_optional_uuid(row.get(2)?)?,
                     run_id: parse_optional_uuid(row.get(3)?)?,
-                    seq: row.get::<_, i64>(4)? as u64,
+                    seq: nonnegative_i64_to_u64(row.get(4)?)?,
                     event_type: parse_text_enum::<EventType>(row.get::<_, String>(5)?)?,
                     role: parse_optional_text_enum::<EventRole>(row.get(6)?)?,
                     occurred_at: ms_to_time(row.get(7)?)?,
@@ -3951,6 +4049,31 @@ fn validate_raw_sql_options(options: &RawSqlOptions) -> Result<()> {
 
 fn validate_raw_sql_statement_bytes(sql: &str, options: &RawSqlOptions) -> Result<()> {
     validate_raw_sql_usize("sql_bytes", sql.len(), 1, options.max_sql_bytes)
+}
+
+fn validate_raw_sql_result_preview_budget(
+    options: &RawSqlOptions,
+    column_count: usize,
+) -> Result<()> {
+    let estimated_cells = options.max_rows.saturating_mul(column_count);
+    let per_cell_bytes = options
+        .max_value_bytes
+        .saturating_mul(4)
+        .saturating_add(64)
+        .max(128);
+    let estimated_bytes = options
+        .max_rows
+        .saturating_mul(column_count)
+        .saturating_mul(per_cell_bytes);
+    if estimated_cells > RAW_SQL_MAX_RESULT_CELLS
+        || estimated_bytes > RAW_SQL_MAX_RESULT_PREVIEW_BYTES
+    {
+        return Err(StoreError::RawSqlResultBudgetTooLarge {
+            estimated_bytes,
+            max_result_bytes: RAW_SQL_MAX_RESULT_PREVIEW_BYTES,
+        });
+    }
+    Ok(())
 }
 
 struct RawSqlLimitGuard<'a> {
@@ -5518,6 +5641,10 @@ fn nonnegative_i64_to_u64(value: i64) -> rusqlite::Result<u64> {
     u64::try_from(value).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
 }
 
+fn nonnegative_i64_to_u32(value: i64) -> rusqlite::Result<u32> {
+    u32::try_from(value).map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
+}
+
 fn time_ms(value: i64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp_millis(value).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
@@ -6918,7 +7045,10 @@ fn capture_source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureS
             kind: parse_text_enum::<ctx_history_core::CaptureSourceKind>(row.get::<_, String>(1)?)?,
             provider: parse_text_enum::<CaptureProvider>(row.get::<_, String>(2)?)?,
             machine_id: row.get(3)?,
-            process_id: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
+            process_id: row
+                .get::<_, Option<i64>>(4)?
+                .map(nonnegative_i64_to_u32)
+                .transpose()?,
             cwd: row.get(5)?,
             raw_source_path: row.get(6)?,
             external_session_id: row.get(7)?,
@@ -6929,7 +7059,7 @@ fn capture_source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureS
             fidelity: parse_text_enum::<Fidelity>(row.get::<_, String>(10)?)?,
             visibility: parse_text_enum::<Visibility>(row.get::<_, String>(11)?)?,
             sync_state: parse_text_enum::<SyncState>(row.get::<_, String>(12)?)?,
-            sync_version: row.get::<_, i64>(13)? as u64,
+            sync_version: nonnegative_i64_to_u64(row.get(13)?)?,
             deleted_at: None,
             metadata: parse_json(row.get::<_, String>(14)?)?,
         },
@@ -7092,7 +7222,7 @@ fn event_select_sql(tail: &str) -> String {
 fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
     Ok(Event {
         id: parse_uuid(row.get::<_, String>(0)?)?,
-        seq: row.get::<_, i64>(1)? as u64,
+        seq: nonnegative_i64_to_u64(row.get(1)?)?,
         history_record_id: parse_optional_uuid(row.get(2)?)?,
         session_id: parse_optional_uuid(row.get(3)?)?,
         run_id: parse_optional_uuid(row.get(4)?)?,
@@ -7123,7 +7253,7 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Artifact> {
         kind: parse_text_enum::<ArtifactKind>(row.get::<_, String>(1)?)?,
         blob_hash: row.get(2)?,
         blob_path: row.get(3)?,
-        byte_size: row.get::<_, i64>(4)? as u64,
+        byte_size: nonnegative_i64_to_u64(row.get(4)?)?,
         media_type: row.get(5)?,
         preview_text: row.get(6)?,
         redaction_state: parse_text_enum::<RedactionState>(row.get::<_, String>(7)?)?,
@@ -7299,7 +7429,7 @@ fn sync_metadata_from_row(
         visibility: parse_text_enum::<Visibility>(row.get::<_, String>(visibility_index)?)?,
         fidelity: parse_text_enum::<Fidelity>(row.get::<_, String>(fidelity_index)?)?,
         sync_state: parse_text_enum::<SyncState>(row.get::<_, String>(sync_state_index)?)?,
-        sync_version: row.get::<_, i64>(sync_version_index)? as u64,
+        sync_version: nonnegative_i64_to_u64(row.get(sync_version_index)?)?,
         deleted_at: optional_ms_to_time(row.get(deleted_at_index)?)?,
         metadata: parse_json(row.get::<_, String>(metadata_index)?)?,
     })
@@ -7888,6 +8018,48 @@ mod catalog_tests {
         }
     }
 
+    fn session_event(session_id: Uuid, index: u64) -> Event {
+        Event {
+            id: new_id(),
+            seq: index,
+            history_record_id: None,
+            session_id: Some(session_id),
+            run_id: None,
+            event_type: EventType::Message,
+            role: Some(EventRole::Assistant),
+            occurred_at: fixed_time() + chrono::Duration::seconds(index as i64),
+            capture_source_id: None,
+            payload: serde_json::json!({"index": index}),
+            payload_blob_id: None,
+            dedupe_key: None,
+            redaction_state: RedactionState::LocalPreview,
+            sync: sync_metadata(),
+        }
+    }
+
+    fn artifact_record(id: Uuid, byte_size: u64) -> Artifact {
+        Artifact {
+            id,
+            kind: ArtifactKind::Markdown,
+            blob_hash: format!("{:064x}", 1),
+            blob_path: format!("{OBJECTS_DIR}/00/test-artifact"),
+            byte_size,
+            media_type: Some("text/markdown".to_owned()),
+            preview_text: Some("artifact preview".to_owned()),
+            redaction_state: RedactionState::LocalPreview,
+            timestamps: timestamps(),
+            source_id: None,
+            sync: sync_metadata(),
+        }
+    }
+
+    fn assert_sql_conversion_error<T: std::fmt::Debug>(result: Result<T>) {
+        assert!(
+            matches!(result, Err(StoreError::Sql(_))),
+            "expected sqlite conversion error, got {result:?}"
+        );
+    }
+
     #[test]
     fn catalog_session_upsert_skips_unchanged_rows() {
         let temp = tempdir();
@@ -7928,6 +8100,70 @@ mod catalog_tests {
             .query_row("SELECT total_changes()", [], |row| row.get(0))
             .unwrap();
         assert!(after_changed > after_noop);
+    }
+
+    #[test]
+    fn events_for_session_window_returns_bounded_neighbors() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let session = imported_session("window-session");
+        store.upsert_session(&session).unwrap();
+        let events = (0..10)
+            .map(|index| {
+                let event = session_event(session.id, index);
+                store.upsert_event(&event).unwrap();
+                event
+            })
+            .collect::<Vec<_>>();
+
+        let middle = store
+            .events_for_session_window(&events[5], 2, 3)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(middle, vec![3, 4, 5, 6, 7, 8]);
+
+        let first = store
+            .events_for_session_window(&events[0], 50, 1)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(first, vec![0, 1]);
+
+        let last = store
+            .events_for_session_window(&events[9], 1, 50)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(last, vec![8, 9]);
+    }
+
+    #[test]
+    fn sessions_by_external_session_limited_caps_ambiguity_scan() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        for index in 0..5 {
+            let mut session = imported_session("shared-provider-session");
+            session.started_at = fixed_time() + chrono::Duration::seconds(index);
+            store.upsert_session(&session).unwrap();
+        }
+
+        let matches = store
+            .sessions_by_external_session_limited(
+                CaptureProvider::Codex,
+                "shared-provider-session",
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            matches[0].external_session_id.as_deref(),
+            Some("shared-provider-session")
+        );
     }
 
     #[test]
@@ -8616,6 +8852,131 @@ mod catalog_tests {
         );
         assert!(result.truncated.rows);
         assert!(result.truncated.values);
+    }
+
+    #[test]
+    fn row_readers_reject_negative_unsigned_columns() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let bad_process_id = new_id();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO capture_sources
+                (
+                    id, kind, provider, machine_id, process_id, cwd, raw_source_path,
+                    external_session_id, started_at_ms, fidelity, sync_version
+                )
+                VALUES (?1, 'provider_import', 'codex', 'test-machine', -1, '/repo', '/tmp/session.jsonl', 'session', 1, 'imported', 0)
+                "#,
+                params![bad_process_id.to_string()],
+            )
+            .unwrap();
+        assert_sql_conversion_error(store.get_capture_source(bad_process_id));
+
+        let bad_sync_version = new_id();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO capture_sources
+                (
+                    id, kind, provider, machine_id, cwd, raw_source_path,
+                    external_session_id, started_at_ms, fidelity, sync_version
+                )
+                VALUES (?1, 'provider_import', 'codex', 'test-machine', '/repo', '/tmp/session.jsonl', 'session', 1, 'imported', -1)
+                "#,
+                params![bad_sync_version.to_string()],
+            )
+            .unwrap();
+        assert_sql_conversion_error(store.get_capture_source(bad_sync_version));
+
+        let event = Event {
+            id: new_id(),
+            seq: 1,
+            history_record_id: None,
+            session_id: None,
+            run_id: None,
+            event_type: EventType::Message,
+            role: Some(EventRole::Assistant),
+            occurred_at: fixed_time(),
+            capture_source_id: None,
+            payload: serde_json::json!({"text": "negative seq marker"}),
+            payload_blob_id: None,
+            dedupe_key: None,
+            redaction_state: RedactionState::LocalPreview,
+            sync: sync_metadata(),
+        };
+        store.upsert_event(&event).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE events SET seq = -1 WHERE id = ?1",
+                params![event.id.to_string()],
+            )
+            .unwrap();
+        assert_sql_conversion_error(store.get_event(event.id));
+        assert_sql_conversion_error(store.search_event_hits("negative seq marker", 1));
+
+        let artifact = artifact_record(new_id(), 1);
+        store.upsert_artifact(&artifact).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE artifacts SET byte_size = -1 WHERE id = ?1",
+                params![artifact.id.to_string()],
+            )
+            .unwrap();
+        assert_sql_conversion_error(store.list_artifacts());
+    }
+
+    #[test]
+    fn raw_sql_query_rejects_excessive_result_preview_budget() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let many_columns = (0..RAW_SQL_MAX_COLUMNS_CAP)
+            .map(|index| format!("1 AS c{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let err = store
+            .raw_sql_query(
+                &format!("SELECT {many_columns}"),
+                RawSqlOptions {
+                    max_rows: RAW_SQL_MAX_ROWS_CAP,
+                    max_columns: RAW_SQL_MAX_COLUMNS_CAP,
+                    max_value_bytes: 32,
+                    ..RawSqlOptions::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::RawSqlResultBudgetTooLarge {
+                max_result_bytes: RAW_SQL_MAX_RESULT_PREVIEW_BYTES,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn raw_sql_query_budgets_against_actual_column_count() {
+        let temp = tempdir();
+        let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let result = store
+            .raw_sql_query(
+                "SELECT 1",
+                RawSqlOptions {
+                    max_rows: RAW_SQL_MAX_ROWS_CAP,
+                    max_columns: RAW_SQL_MAX_COLUMNS_CAP,
+                    max_value_bytes: 32,
+                    ..RawSqlOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(result.returned_rows, 1);
+        assert_eq!(result.rows[0][0], RawSqlValue::Integer(1));
     }
 
     #[test]

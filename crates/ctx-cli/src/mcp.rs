@@ -21,11 +21,19 @@ use super::{
     event_window, event_window_json, indexed_history_item_count, mark_share_safe,
     raw_sql_result_json, search_filters, search_has_intent, session_transcript_json, sources_json,
     OutputFormat, ProviderArg, RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput,
-    SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_SEARCH_LIMIT,
+    SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW,
+    MAX_SEARCH_LIMIT,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
-const MCP_MAX_EVENT_WINDOW: usize = 50;
+const MCP_MAX_LINE_BYTES: usize = 1024 * 1024;
+const MCP_MAX_SESSION_EVENTS: usize = 200;
+
+enum McpInputLine {
+    Line(String),
+    InvalidUtf8,
+    TooLarge,
+}
 
 #[derive(Debug, Args)]
 pub(crate) struct McpArgs {
@@ -54,21 +62,99 @@ pub(crate) fn run(args: McpArgs, data_root: PathBuf) -> Result<()> {
 fn serve_stdio(data_root: PathBuf) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
+    let mut stdin = stdin.lock();
     let mut stdout = stdout.lock();
     let mut initialized = false;
 
-    for line in stdin.lock().lines() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(response) = handle_line(line, &data_root, &mut initialized) {
+    while let Some(input) = read_mcp_input_line(&mut stdin)? {
+        let response = match input {
+            McpInputLine::Line(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                handle_line(line, &data_root, &mut initialized)
+            }
+            McpInputLine::InvalidUtf8 => Some(error_response(
+                Value::Null,
+                -32700,
+                "Parse error",
+                Some(json!({ "error": "MCP message is not valid UTF-8" })),
+            )),
+            McpInputLine::TooLarge => Some(error_response(
+                Value::Null,
+                -32700,
+                "Parse error",
+                Some(json!({
+                    "error": format!("MCP message exceeds max line bytes ({MCP_MAX_LINE_BYTES})")
+                })),
+            )),
+        };
+        if let Some(response) = response {
             writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
             stdout.flush()?;
         }
     }
     Ok(())
+}
+
+fn read_mcp_input_line(reader: &mut impl BufRead) -> Result<Option<McpInputLine>> {
+    let mut buffer = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if let Some(newline_index) = available.iter().position(|byte| *byte == b'\n') {
+            let bytes_to_consume = newline_index + 1;
+            if buffer.len().saturating_add(bytes_to_consume) > MCP_MAX_LINE_BYTES {
+                reader.consume(bytes_to_consume);
+                return Ok(Some(McpInputLine::TooLarge));
+            }
+            buffer.extend_from_slice(&available[..bytes_to_consume]);
+            reader.consume(bytes_to_consume);
+            break;
+        }
+
+        let bytes_to_consume = available.len();
+        if buffer.len().saturating_add(bytes_to_consume) > MCP_MAX_LINE_BYTES {
+            reader.consume(bytes_to_consume);
+            discard_until_newline(reader)?;
+            return Ok(Some(McpInputLine::TooLarge));
+        }
+        buffer.extend_from_slice(available);
+        reader.consume(bytes_to_consume);
+    }
+
+    Ok(Some(match String::from_utf8(buffer) {
+        Ok(line) => McpInputLine::Line(line),
+        Err(_) => McpInputLine::InvalidUtf8,
+    }))
+}
+
+fn discard_until_newline(reader: &mut impl BufRead) -> Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        let bytes_to_consume = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(available.len());
+        let found_newline = bytes_to_consume <= available.len()
+            && available
+                .get(bytes_to_consume.saturating_sub(1))
+                .is_some_and(|byte| *byte == b'\n');
+        reader.consume(bytes_to_consume);
+        if found_newline {
+            return Ok(());
+        }
+    }
 }
 
 fn handle_line(line: &str, data_root: &Path, initialized: &mut bool) -> Option<Value> {
@@ -419,14 +505,24 @@ fn tool_show_session(arguments: &Value, data_root: &Path) -> Result<Value> {
     let session_id = required_uuid(arguments, "ctx_session_id")?;
     let mode = optional_transcript_mode(arguments, "mode")?.unwrap_or(TranscriptMode::Lite);
     let session = store.get_session(session_id)?;
-    let events = store.events_for_session(session.id)?;
-    Ok(session_transcript_json(
-        &store,
-        &session,
-        &events,
-        mode,
-        OutputFormat::Json,
-    ))
+    let mut events = store.events_for_session_limited(session.id, MCP_MAX_SESSION_EVENTS + 1)?;
+    let truncated = events.len() > MCP_MAX_SESSION_EVENTS;
+    if truncated {
+        events.truncate(MCP_MAX_SESSION_EVENTS);
+    }
+    let mut value = session_transcript_json(&store, &session, &events, mode, OutputFormat::Json);
+    if truncated {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "truncated".to_owned(),
+                json!({
+                    "events": true,
+                    "max_events": MCP_MAX_SESSION_EVENTS,
+                }),
+            );
+        }
+    }
+    Ok(value)
 }
 
 fn tool_show_event(arguments: &Value, data_root: &Path) -> Result<Value> {
@@ -435,12 +531,12 @@ fn tool_show_event(arguments: &Value, data_root: &Path) -> Result<Value> {
     let before = optional_usize(arguments, "before")?.unwrap_or(0);
     let after = optional_usize(arguments, "after")?.unwrap_or(0);
     let window = optional_usize(arguments, "window")?;
-    if before > MCP_MAX_EVENT_WINDOW
-        || after > MCP_MAX_EVENT_WINDOW
-        || window.is_some_and(|window| window > MCP_MAX_EVENT_WINDOW)
+    if before > MAX_EVENT_WINDOW
+        || after > MAX_EVENT_WINDOW
+        || window.is_some_and(|window| window > MAX_EVENT_WINDOW)
     {
         return Err(anyhow!(
-            "show_event before/after/window must be {MCP_MAX_EVENT_WINDOW} or less"
+            "show_event before/after/window must be {MAX_EVENT_WINDOW} or less"
         ));
     }
     let event = store.get_event(event_id)?;

@@ -25,6 +25,9 @@ mod mcp;
 mod net;
 mod upgrade;
 
+#[cfg(test)]
+mod parser_prop_tests;
+
 use analytics::{AnalyticsEvent, AnalyticsProperties};
 use config::{AppConfig, CONFIG_FILE};
 use ctx_history_capture::{
@@ -57,7 +60,7 @@ use ctx_history_store::{
     CatalogSession, CatalogSourceIndexUpdate, RawSqlOptions, RawSqlResult, RawSqlValue,
     SourceImportFile, SourceImportFileIndexUpdate, Store, StoreError, RAW_SQL_DEFAULT_MAX_COLUMNS,
     RAW_SQL_DEFAULT_MAX_ROWS, RAW_SQL_DEFAULT_MAX_SQL_BYTES, RAW_SQL_DEFAULT_MAX_VALUE_BYTES,
-    RAW_SQL_MAX_TIMEOUT,
+    RAW_SQL_MAX_SQL_BYTES_CAP, RAW_SQL_MAX_TIMEOUT,
 };
 use history_source_plugins::{
     discover_history_source_plugins, discover_history_source_plugins_with_diagnostics,
@@ -69,6 +72,8 @@ const WAL_TRUNCATE_MIN_BYTES: u64 = 64 * 1024 * 1024;
 const LARGE_IMPORT_SOURCE_FILES_WARNING: usize = 10_000;
 const LARGE_IMPORT_SOURCE_BYTES_WARNING: u64 = 1024 * 1024 * 1024;
 const MAX_SEARCH_LIMIT: usize = 200;
+pub(crate) const MAX_EVENT_WINDOW: usize = 50;
+const MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "ctx", version, about = "Search local agent history")]
@@ -202,11 +207,11 @@ struct ShowSessionArgs {
 struct ShowEventArgs {
     #[arg(help = "ctx event id or unambiguous id prefix")]
     id: String,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, value_parser = parse_event_window_limit)]
     before: usize,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, value_parser = parse_event_window_limit)]
     after: usize,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_event_window_limit)]
     window: Option<usize>,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
@@ -3087,14 +3092,7 @@ fn resolve_session(
         .ok_or_else(|| {
             anyhow!("session lookup requires --provider-session when no ctx session id is provided")
         })?;
-    let matches = store
-        .list_sessions()?
-        .into_iter()
-        .filter(|session| {
-            session.provider == provider
-                && session.external_session_id.as_deref() == Some(provider_session)
-        })
-        .collect::<Vec<_>>();
+    let matches = store.sessions_by_external_session_limited(provider, provider_session, 2)?;
     match matches.as_slice() {
         [session] => Ok(session.clone()),
         [] => Err(anyhow!(
@@ -3113,19 +3111,10 @@ fn event_window(
     after: usize,
     window: Option<usize>,
 ) -> Result<Vec<Event>> {
-    let Some(session_id) = event.session_id else {
-        return Ok(vec![event.clone()]);
-    };
-    let events = store.events_for_session(session_id)?;
-    let Some(index) = events.iter().position(|candidate| candidate.id == event.id) else {
-        return Ok(vec![event.clone()]);
-    };
     let (before, after) = window
         .map(|window| (window, window))
         .unwrap_or((before, after));
-    let start = index.saturating_sub(before);
-    let end = (index + after + 1).min(events.len());
-    Ok(events[start..end].to_vec())
+    Ok(store.events_for_session_window(event, before, after)?)
 }
 
 fn write_rendered_session(
@@ -4001,6 +3990,18 @@ fn parse_search_limit(value: &str) -> std::result::Result<usize, String> {
     Ok(limit)
 }
 
+fn parse_event_window_limit(value: &str) -> std::result::Result<usize, String> {
+    let limit = value
+        .parse::<usize>()
+        .map_err(|err| format!("invalid event window: {err}"))?;
+    if limit > MAX_EVENT_WINDOW {
+        return Err(format!(
+            "event window must be between 0 and {MAX_EVENT_WINDOW}"
+        ));
+    }
+    Ok(limit)
+}
+
 fn parse_sql_timeout(value: &str) -> std::result::Result<StdDuration, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -4091,23 +4092,37 @@ fn run_sql(args: SqlArgs, data_root: PathBuf) -> Result<()> {
 }
 
 fn read_sql_input(args: &SqlArgs) -> Result<String> {
+    let max_sql_bytes = args.max_sql_bytes.min(RAW_SQL_MAX_SQL_BYTES_CAP);
     match (&args.sql, &args.file) {
         (Some(sql), None) if sql == "-" => {
-            let mut input = String::new();
-            std::io::stdin()
-                .read_to_string(&mut input)
-                .context("read SQL from stdin")?;
-            Ok(input)
+            read_sql_limited(std::io::stdin().lock(), max_sql_bytes, "stdin")
         }
         (Some(sql), None) => Ok(sql.clone()),
         (None, Some(path)) => {
-            fs::read_to_string(path).with_context(|| format!("read SQL from {}", path.display()))
+            let file = fs::File::open(path)
+                .with_context(|| format!("read SQL from {}", path.display()))?;
+            read_sql_limited(file, max_sql_bytes, &path.display().to_string())
         }
         (None, None) => Err(anyhow!(
             "SQL is required; pass a statement, --file <path>, or '-' for stdin"
         )),
         (Some(_), Some(_)) => unreachable!("clap rejects --file with inline SQL"),
     }
+}
+
+fn read_sql_limited(mut reader: impl Read, max_sql_bytes: usize, label: &str) -> Result<String> {
+    let mut input = String::new();
+    reader
+        .by_ref()
+        .take((max_sql_bytes as u64).saturating_add(1))
+        .read_to_string(&mut input)
+        .with_context(|| format!("read SQL from {label}"))?;
+    if input.len() > max_sql_bytes {
+        return Err(anyhow!(
+            "SQL input from {label} exceeds max_sql_bytes ({max_sql_bytes})"
+        ));
+    }
+    Ok(input)
 }
 
 fn print_sql_table(result: &RawSqlResult) -> Result<()> {
@@ -5155,15 +5170,8 @@ fn annotate_history_source_plugin_output(
     source: &HistorySourcePluginSource,
     stdout: &[u8],
 ) -> Result<Vec<u8>> {
-    let text = std::str::from_utf8(stdout).with_context(|| {
-        format!(
-            "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output",
-            source.label()
-        )
-    })?;
     let mut out = Vec::with_capacity(stdout.len());
-    for (index, line) in text.lines().enumerate() {
-        let line_number = index + 1;
+    for (line_number, line) in history_source_plugin_stdout_lines(source, stdout)? {
         if line.trim().is_empty() {
             continue;
         }
@@ -5216,16 +5224,9 @@ fn validate_history_source_plugin_output(
     machine_id: &str,
     require_after_cursor: bool,
 ) -> Result<()> {
-    let text = std::str::from_utf8(stdout).with_context(|| {
-        format!(
-            "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output",
-            source.label()
-        )
-    })?;
     let mut saw_source = false;
     let mut saw_after_cursor = false;
-    for (index, line) in text.lines().enumerate() {
-        let line_number = index + 1;
+    for (line_number, line) in history_source_plugin_stdout_lines(source, stdout)? {
         if line.trim().is_empty() {
             continue;
         }
@@ -5284,6 +5285,52 @@ fn validate_history_source_plugin_output(
         ));
     }
     Ok(())
+}
+
+fn history_source_plugin_stdout_lines<'a>(
+    source: &HistorySourcePluginSource,
+    stdout: &'a [u8],
+) -> Result<Vec<(usize, &'a str)>> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut line_number = 1usize;
+    for (index, byte) in stdout.iter().enumerate() {
+        let len = index.saturating_add(1).saturating_sub(start);
+        if len > MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES {
+            return Err(anyhow!(
+                "history source plugin {} emitted ctx-history-jsonl-v1 line {line_number} exceeding max bytes ({MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES})",
+                source.label()
+            ));
+        }
+        if *byte == b'\n' {
+            let line = std::str::from_utf8(&stdout[start..index]).with_context(|| {
+                format!(
+                    "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output at line {line_number}",
+                    source.label()
+                )
+            })?;
+            lines.push((line_number, line));
+            start = index + 1;
+            line_number += 1;
+        }
+    }
+    if start < stdout.len() {
+        let len = stdout.len().saturating_sub(start);
+        if len > MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES {
+            return Err(anyhow!(
+                "history source plugin {} emitted ctx-history-jsonl-v1 line {line_number} exceeding max bytes ({MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES})",
+                source.label()
+            ));
+        }
+        let line = std::str::from_utf8(&stdout[start..]).with_context(|| {
+            format!(
+                "history source plugin {} emitted non-UTF-8 ctx-history-jsonl-v1 output at line {line_number}",
+                source.label()
+            )
+        })?;
+        lines.push((line_number, line));
+    }
+    Ok(lines)
 }
 
 fn history_source_plugin_import_failure(
@@ -6446,8 +6493,8 @@ fn parse_since_filter(value: &str) -> Result<chrono::DateTime<Utc>> {
         let days: i64 = days
             .parse()
             .with_context(|| format!("invalid --since day window: {value}"))?;
-        let duration =
-            Duration::try_days(days).ok_or_else(|| anyhow!("invalid --since day window: {value}: value too large"))?;
+        let duration = Duration::try_days(days)
+            .ok_or_else(|| anyhow!("invalid --since day window: {value}: value too large"))?;
         let since = utc_now()
             .checked_sub_signed(duration)
             .ok_or_else(|| anyhow!("invalid --since day window: {value}: value too large"))?;
@@ -6480,8 +6527,12 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog_import_checkpoint_matches, parse_since_filter, sha256_file_prefix_hex, shell_quote_arg};
-    use std::{fs, io::Write};
+    use super::{
+        catalog_import_checkpoint_matches, normalize_uuid_prefix, parse_event_window_limit,
+        parse_search_limit, parse_since_filter, parse_sql_timeout, sha256_file_prefix_hex,
+        shell_quote_arg,
+    };
+    use std::{fs, io::Write, panic};
     use tempfile::tempdir;
 
     #[test]
@@ -6501,6 +6552,56 @@ mod tests {
             msg.contains("invalid --since day window"),
             "expected error about invalid day window, got: {msg}"
         );
+    }
+
+    #[test]
+    fn cli_value_parsers_do_not_panic_on_adversarial_inputs() {
+        let inputs = [
+            "",
+            " ",
+            "0",
+            "-1",
+            "1",
+            "30d",
+            "500000000d",
+            "9223372036854775807d",
+            "-9223372036854775808d",
+            "999999999999999999999999999999d",
+            "NaN",
+            "inf",
+            "1e309",
+            "1.5d",
+            "1970-01-01T00:00:00Z",
+            "999999-99-99T99:99:99Z",
+            "zzzzzzzz",
+            "ffffffff",
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "\0",
+            "１２３",
+        ];
+
+        for input in inputs {
+            assert!(
+                panic::catch_unwind(|| parse_since_filter(input)).is_ok(),
+                "parse_since_filter panicked for {input:?}"
+            );
+            assert!(
+                panic::catch_unwind(|| parse_search_limit(input)).is_ok(),
+                "parse_search_limit panicked for {input:?}"
+            );
+            assert!(
+                panic::catch_unwind(|| parse_event_window_limit(input)).is_ok(),
+                "parse_event_window_limit panicked for {input:?}"
+            );
+            assert!(
+                panic::catch_unwind(|| parse_sql_timeout(input)).is_ok(),
+                "parse_sql_timeout panicked for {input:?}"
+            );
+            assert!(
+                panic::catch_unwind(|| normalize_uuid_prefix(input, "test")).is_ok(),
+                "normalize_uuid_prefix panicked for {input:?}"
+            );
+        }
     }
 
     #[test]
