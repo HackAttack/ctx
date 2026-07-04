@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
     thread,
@@ -42,6 +42,9 @@ pub use provider_sources::{
 pub const CAPTURE_SCHEMA_VERSION: u32 = 1;
 const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize = MAX_PROVIDER_JSONL_LINE_BYTES;
+const MAX_OPENCLAW_SESSION_INDEX_BYTES: usize = 1024 * 1024;
+const MAX_OPENCLAW_SESSION_INDEX_PATHS: usize = 256;
+const MAX_OPENCLAW_SESSION_INDEX_VISITED_PATHS: usize = 4096;
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("io error: {0}")]
@@ -4888,6 +4891,20 @@ fn ensure_provider_path_parents_are_not_symlinks(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn read_text_file_limited(path: &Path, max_bytes: usize, label: &str) -> Result<String> {
+    let file = File::open(path)?;
+    let mut reader = file.take((max_bytes as u64).saturating_add(1));
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(CaptureError::InvalidPayload(format!(
+            "{label} exceeds max bytes ({max_bytes})"
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|err| CaptureError::InvalidPayload(format!("{label} is not valid UTF-8: {err}")))
+}
+
 fn read_provider_jsonl_line(reader: &mut impl BufRead, buffer: &mut Vec<u8>) -> Result<bool> {
     buffer.clear();
     let mut total = 0usize;
@@ -6954,9 +6971,21 @@ fn provider_path_has_component(path: &Path, expected: &str) -> bool {
 fn openclaw_session_indexes(root: &Path) -> BTreeMap<String, Value> {
     let mut indexes = BTreeMap::new();
     let mut paths = Vec::new();
-    collect_named_paths(root, "sessions.json", &mut paths);
+    let mut visited = 0usize;
+    collect_named_paths(
+        root,
+        "sessions.json",
+        &mut paths,
+        &mut visited,
+        MAX_OPENCLAW_SESSION_INDEX_PATHS,
+        MAX_OPENCLAW_SESSION_INDEX_VISITED_PATHS,
+    );
     for path in paths {
-        let Ok(text) = fs::read_to_string(&path) else {
+        let Ok(text) = read_text_file_limited(
+            &path,
+            MAX_OPENCLAW_SESSION_INDEX_BYTES,
+            "OpenClaw sessions.json",
+        ) else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -7015,7 +7044,18 @@ fn openclaw_session_index_entries(value: Value) -> Vec<(String, Value)> {
     }
 }
 
-fn collect_named_paths(root: &Path, name: &str, paths: &mut Vec<PathBuf>) {
+fn collect_named_paths(
+    root: &Path,
+    name: &str,
+    paths: &mut Vec<PathBuf>,
+    visited: &mut usize,
+    max_paths: usize,
+    max_visited: usize,
+) {
+    if paths.len() >= max_paths || *visited >= max_visited {
+        return;
+    }
+    *visited += 1;
     let Ok(metadata) = fs::symlink_metadata(root) else {
         return;
     };
@@ -7035,7 +7075,10 @@ fn collect_named_paths(root: &Path, name: &str, paths: &mut Vec<PathBuf>) {
         return;
     };
     for entry in entries.flatten() {
-        collect_named_paths(&entry.path(), name, paths);
+        if paths.len() >= max_paths || *visited >= max_visited {
+            break;
+        }
+        collect_named_paths(&entry.path(), name, paths, visited, max_paths, max_visited);
     }
 }
 
@@ -14527,6 +14570,62 @@ mod tests {
         assert!(err
             .to_string()
             .contains("OpenCode SQLite message table missing required column(s): data"));
+    }
+
+    #[test]
+    fn openclaw_import_ignores_oversized_session_index_sidecar() {
+        let temp = tempdir();
+        let root = temp.path().join("openclaw");
+        let sessions = root.join("agents/personal-agent/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("sessions.json"),
+            vec![b'x'; MAX_OPENCLAW_SESSION_INDEX_BYTES + 1],
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("openclaw-oversized-index.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session",
+                    "id": "openclaw-oversized-index",
+                    "timestamp": "2026-06-24T12:00:00Z",
+                    "cwd": "/workspace"
+                }),
+                json!({
+                    "type": "message",
+                    "id": "openclaw-oversized-index-user",
+                    "timestamp": "2026-06-24T12:00:01Z",
+                    "message": {"role": "user", "content": "oversized sidecar should not block import"}
+                })
+            ),
+        )
+        .unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_openclaw_history(
+            &root,
+            &mut store,
+            OpenClawImportOptions {
+                allow_partial_failures: true,
+                ..OpenClawImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 1);
+        let session_id = provider_session_uuid(
+            CaptureProvider::OpenClaw,
+            "personal-agent/openclaw-oversized-index",
+        );
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(
+            session.external_session_id.as_deref(),
+            Some("personal-agent/openclaw-oversized-index")
+        );
     }
 
     #[test]
