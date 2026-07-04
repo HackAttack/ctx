@@ -43,7 +43,9 @@ fn copied_ctx_binary(temp: &TempDir) -> PathBuf {
     } else {
         "ctx-test-copy"
     });
-    fs::copy(&source, &target).unwrap();
+    if fs::hard_link(&source, &target).is_err() {
+        fs::copy(&source, &target).unwrap();
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
