@@ -1,11 +1,12 @@
 use std::{
     collections::HashSet,
-    env,
+    env, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 
 use ctx_history_core::{CaptureProvider, ProviderRawRetention, ProviderRedactionBoundary};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderSourceKind {
@@ -390,6 +391,9 @@ fn discover_provider_sources_for_spec(
                 ));
             }
         }
+        CaptureProvider::Pi => {
+            sources.extend(discover_pi_custom_session_sources(home, spec));
+        }
         CaptureProvider::Hermes => {
             if let Some(path) = env_path("HERMES_HOME") {
                 sources.push(provider_source_from_parts(
@@ -449,10 +453,104 @@ fn discover_provider_sources_for_spec(
     sources
 }
 
+fn discover_pi_custom_session_sources(
+    home: &Path,
+    spec: &ProviderSourceSpec,
+) -> Vec<ProviderSource> {
+    let project_settings_dirs = env::current_dir()
+        .ok()
+        .map(|current_dir| {
+            current_dir
+                .ancestors()
+                .map(|candidate| candidate.join(".pi"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    discover_pi_custom_session_sources_with_project_settings(home, spec, &project_settings_dirs)
+}
+
+fn discover_pi_custom_session_sources_with_project_settings(
+    home: &Path,
+    spec: &ProviderSourceSpec,
+    project_settings_dirs: &[PathBuf],
+) -> Vec<ProviderSource> {
+    let mut sources = Vec::new();
+    if let Some(path) = env_path_with_home("PI_CODING_AGENT_SESSION_DIR", home) {
+        sources.push(pi_session_source(spec, path));
+    }
+
+    let agent_dir = pi_agent_dir(home);
+    if let Some(path) = pi_settings_session_dir(&agent_dir.join("settings.json"), home, &agent_dir)
+    {
+        sources.push(pi_session_source(spec, path));
+    }
+
+    for project_settings_dir in project_settings_dirs {
+        if let Some(path) = pi_settings_session_dir(
+            &project_settings_dir.join("settings.json"),
+            home,
+            project_settings_dir,
+        ) {
+            sources.push(pi_session_source(spec, path));
+        }
+    }
+
+    sources
+}
+
+fn pi_session_source(spec: &ProviderSourceSpec, path: PathBuf) -> ProviderSource {
+    provider_source_from_parts(
+        spec,
+        path,
+        "pi_session_jsonl",
+        ProviderSourceKind::NativeHistory,
+    )
+}
+
+fn pi_agent_dir(home: &Path) -> PathBuf {
+    env_path_with_home("PI_CODING_AGENT_DIR", home).unwrap_or_else(|| home.join(".pi/agent"))
+}
+
+fn pi_settings_session_dir(
+    settings_path: &Path,
+    home: &Path,
+    relative_base: &Path,
+) -> Option<PathBuf> {
+    let settings = fs::read_to_string(settings_path).ok()?;
+    let value: Value = serde_json::from_str(&settings).ok()?;
+    let session_dir = value
+        .get("sessionDir")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
+    Some(resolve_pi_config_path(session_dir, home, relative_base))
+}
+
 fn env_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn env_path_with_home(name: &str, home: &Path) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(|value| resolve_pi_config_path(&value.to_string_lossy(), home, home))
+}
+
+fn resolve_pi_config_path(value: &str, home: &Path, relative_base: &Path) -> PathBuf {
+    let trimmed = value.trim();
+    if trimmed == "~" {
+        return home.to_path_buf();
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        path
+    } else {
+        relative_base.join(path)
+    }
 }
 
 fn current_dir_ancestors_with(matches: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
@@ -931,6 +1029,38 @@ fn path_has_component(path: &Path, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        name: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let original = env::var_os(name);
+            env::set_var(name, value);
+            Self { name, original }
+        }
+
+        fn remove(name: &'static str) -> Self {
+            let original = env::var_os(name);
+            env::remove_var(name);
+            Self { name, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                env::set_var(self.name, value);
+            } else {
+                env::remove_var(self.name);
+            }
+        }
+    }
 
     #[test]
     fn gemini_default_source_is_empty_until_chat_transcripts_exist() {
@@ -1117,6 +1247,69 @@ mod tests {
     }
 
     #[test]
+    fn pi_discovery_uses_env_session_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let custom = temp.path().join("pi-env-sessions");
+        write_pi_discovery_session(&custom);
+        let _session_dir = EnvGuard::set("PI_CODING_AGENT_SESSION_DIR", custom.as_os_str());
+        let _agent_dir = EnvGuard::remove("PI_CODING_AGENT_DIR");
+
+        let sources = discover_provider_sources(temp.path());
+        let source = sources
+            .iter()
+            .find(|source| source.provider == CaptureProvider::Pi && source.path == custom)
+            .unwrap();
+
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+    }
+
+    #[test]
+    fn pi_discovery_uses_global_and_project_settings_session_dirs() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _session_dir = EnvGuard::remove("PI_CODING_AGENT_SESSION_DIR");
+        let _agent_dir = EnvGuard::remove("PI_CODING_AGENT_DIR");
+
+        let global = temp.path().join("global-pi-sessions");
+        write_pi_discovery_session(&global);
+        std::fs::create_dir_all(temp.path().join(".pi/agent")).unwrap();
+        std::fs::write(
+            temp.path().join(".pi/agent/settings.json"),
+            r#"{"sessionDir":"~/global-pi-sessions"}"#,
+        )
+        .unwrap();
+
+        let project_sessions = project.path().join(".pi/custom-sessions");
+        write_pi_discovery_session(&project_sessions);
+        std::fs::write(
+            project.path().join(".pi/settings.json"),
+            r#"{"sessionDir":"custom-sessions"}"#,
+        )
+        .unwrap();
+
+        let spec = provider_source_spec(CaptureProvider::Pi).unwrap();
+        let project_settings_dirs = [
+            project.path().join("subdir/.pi"),
+            project.path().join(".pi"),
+        ];
+        let sources = discover_pi_custom_session_sources_with_project_settings(
+            temp.path(),
+            spec,
+            &project_settings_dirs,
+        );
+        for path in [&global, &project_sessions] {
+            let source = sources
+                .iter()
+                .find(|source| source.provider == CaptureProvider::Pi && source.path == *path)
+                .unwrap();
+            assert_eq!(source.status, ProviderSourceStatus::Available);
+        }
+    }
+
+    #[test]
     fn bounded_probe_reports_budget_exhausted_source_as_unknown() {
         let temp = tempfile::tempdir().unwrap();
         let claude = temp.path().join(".claude/projects");
@@ -1213,6 +1406,16 @@ mod tests {
         let source = source.unwrap();
         assert_eq!(source.status, ProviderSourceStatus::Available);
         assert_eq!(source.unsupported_reason, None);
+    }
+
+    fn write_pi_discovery_session(root: &Path) {
+        let project = root.join("--workspace--");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("2026-07-03T12-00-00-000Z_pi-discovery.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
     }
 
     fn assert_source_status(

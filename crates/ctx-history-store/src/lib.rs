@@ -2688,6 +2688,16 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    pub fn event_id_by_seq(&self, seq: u64) -> Result<Uuid> {
+        self.conn
+            .query_row(
+                "SELECT id FROM events WHERE seq = ?1",
+                params![seq as i64],
+                |row| parse_uuid(row.get::<_, String>(0)?),
+            )
+            .map_err(StoreError::from)
+    }
+
     pub fn get_event(&self, id: Uuid) -> Result<Event> {
         self.conn
             .query_row(

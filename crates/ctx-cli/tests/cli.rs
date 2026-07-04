@@ -7123,6 +7123,47 @@ fn pi_cli_imports_directory_tree_path() {
 }
 
 #[test]
+fn pi_cli_discovers_env_session_dir_for_sources_and_search_refresh() {
+    let temp = tempdir();
+    let path = temp.path().join("pi-env-sessions");
+    let project = path.join("--workspace--");
+    fs::create_dir_all(&project).unwrap();
+    write_pi_session_jsonl(
+        &project.join("2026-06-24T12-00-00-000Z_pi-env-refresh.jsonl"),
+        "pi-env-refresh",
+        "pi env refresh oracle",
+    );
+
+    let sources = json_output(
+        ctx(&temp)
+            .env("PI_CODING_AGENT_SESSION_DIR", &path)
+            .args(["sources", "--json"]),
+    );
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| {
+            source["provider"] == "pi"
+                && source["source_format"] == "pi_session_jsonl"
+                && source["path"] == path.to_str().unwrap()
+        })
+        .unwrap_or_else(|| panic!("missing env Pi source in {sources:#}"));
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["native_import"], true);
+    assert_eq!(source["importable"], true);
+
+    let search = json_output(ctx(&temp).env("PI_CODING_AGENT_SESSION_DIR", &path).args([
+        "search",
+        "pi env refresh oracle",
+        "--provider",
+        "pi",
+        "--json",
+    ]));
+    assert_search_provider_oracle(&search, "pi", "pi env refresh oracle", 1, "message");
+}
+
+#[test]
 fn pi_cli_rejects_wrong_file_import_path() {
     let temp = tempdir();
     let path = temp.path().join("pi-session.txt");
