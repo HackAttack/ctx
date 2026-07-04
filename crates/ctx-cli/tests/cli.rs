@@ -22,18 +22,26 @@ fn tempdir() -> TempDir {
 
 fn ctx(temp: &TempDir) -> Command {
     let mut command = Command::cargo_bin("ctx").unwrap();
-    command.env("CTX_DATA_ROOT", temp.path());
-    command.env("HOME", temp.path());
-    command.env("CTX_ANALYTICS_OFF", "1");
+    apply_hermetic_env(&mut command, temp);
     command
 }
 
 fn ctx_from_binary(temp: &TempDir, binary: &Path) -> Command {
     let mut command = Command::new(binary);
+    apply_hermetic_env(&mut command, temp);
+    command
+}
+
+fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
     command.env("CTX_DATA_ROOT", temp.path());
     command.env("HOME", temp.path());
     command.env("CTX_ANALYTICS_OFF", "1");
-    command
+    // Drop provider override variables inherited from the developer
+    // machine so discovery never escapes the temp directory.
+    command.env_remove("OPENCLAW_STATE_DIR");
+    command.env_remove("HERMES_HOME");
+    command.env_remove("ASTRBOT_ROOT");
+    command.env_remove("SHELLEY_DB");
 }
 
 fn copied_ctx_binary(temp: &TempDir) -> PathBuf {
@@ -1793,6 +1801,29 @@ fn import_all_without_sources_does_not_report_missing_explicit_path() {
 }
 
 #[test]
+fn import_all_discovers_sources_when_home_unset_and_userprofile_set() {
+    let temp = tempdir();
+    copy_dir_all(
+        Path::new(&provider_history_fixture("codex-sessions")),
+        &temp.path().join(".codex").join("sessions"),
+    );
+
+    let imported = json_output(
+        ctx(&temp)
+            .env_remove("HOME")
+            .env("USERPROFILE", temp.path())
+            .args(["import", "--all", "--json", "--progress", "none"]),
+    );
+    assert_eq!(imported["totals"]["imported_sources"], 1);
+    assert_eq!(imported["totals"]["failed_sources"], 0);
+    assert!(imported["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["provider"] == "codex"));
+}
+
+#[test]
 fn import_all_skips_empty_gemini_source() {
     let temp = tempdir();
     copy_dir_all(
@@ -1877,6 +1908,29 @@ fn sources_discovers_shelley_db_env_override() {
     assert_eq!(source["status"], "available");
     assert_eq!(source["import_support"], "native");
     assert_eq!(source["path"], db_path.to_str().unwrap());
+}
+
+#[test]
+fn sources_falls_back_to_userprofile_when_home_unset() {
+    let temp = tempdir();
+    copy_dir_all(
+        Path::new(&provider_history_fixture("codex-sessions")),
+        &temp.path().join(".codex").join("sessions"),
+    );
+
+    let sources = json_output(
+        ctx(&temp)
+            .env_remove("HOME")
+            .env("USERPROFILE", temp.path())
+            .args(["sources", "--json"]),
+    );
+    let codex = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "codex" && source["status"] == "available")
+        .unwrap_or_else(|| panic!("missing codex source in {sources:#}"));
+    assert!(Path::new(codex["path"].as_str().unwrap()).starts_with(temp.path()));
 }
 
 #[test]

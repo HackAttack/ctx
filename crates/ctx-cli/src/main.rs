@@ -6522,7 +6522,7 @@ fn mark_share_safe(value: &mut Value) {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    identity::home_dir()
 }
 
 #[cfg(test)]

@@ -134,7 +134,9 @@ fn non_empty_env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn home_dir() -> Option<PathBuf> {
+/// Resolve the user home directory from `HOME`, falling back to the
+/// Windows `USERPROFILE` and `HOMEDRIVE`+`HOMEPATH` conventions.
+pub(crate) fn home_dir() -> Option<PathBuf> {
     non_empty_env_path("HOME")
         .or_else(|| non_empty_env_path("USERPROFILE"))
         .or_else(|| {
