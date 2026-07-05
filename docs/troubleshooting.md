@@ -1,5 +1,31 @@
 # Troubleshooting
 
+## ctx: Command Not Found After Install
+
+On Unix, the hosted installer places `ctx` in
+`${CTX_BIN_DIR:-$HOME/.local/bin}`. If that directory was not already on
+`PATH`, the installer updates your shell startup file and prints the command to
+use immediately. Existing shells do not inherit startup-file edits
+automatically, so open a new terminal or run:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+ctx status
+```
+
+On Windows, the hosted installer places `ctx.exe` in `$HOME\.local\bin` by
+default, adds that directory to the user `Path`, and updates the current
+PowerShell session. If `ctx` is still unavailable, open a new PowerShell window
+or run:
+
+```powershell
+$env:Path = "$HOME\.local\bin;$env:Path"
+ctx status
+```
+
+If you installed with `--no-modify-path`, `-NoModifyPath`, or
+`CTX_INSTALL_NO_MODIFY_PATH=1`, add the install directory to `PATH` yourself.
+
 ## No Sources Found
 
 Run:

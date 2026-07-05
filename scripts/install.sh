@@ -3,11 +3,12 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: scripts/install.sh --metadata PATH_OR_URL [--platform PLATFORM] [--bin-dir DIR] [--no-setup] [--no-man]
+usage: scripts/install.sh --metadata PATH_OR_URL [--platform PLATFORM] [--bin-dir DIR] [--no-modify-path] [--no-setup] [--no-skill] [--skill-agent AGENT] [--all-skill-agents] [--no-man]
 
 Installs the ctx binary from explicit release metadata with pinned SHA-256
-checksums, then runs ctx setup to index discovered local history. The installer
-never evaluates remote scripts or metadata as shell.
+checksums, installs the bundled ctx agent skill, then runs ctx setup to index
+discovered local history. The installer never evaluates remote scripts or
+metadata as shell.
 
 This helper is for local development and explicit-metadata testing. The
 production hosted installer is https://cli.ctx.rs/install and verifies detached
@@ -17,8 +18,16 @@ Options:
   --metadata PATH_OR_URL  Required. Local metadata file or HTTPS URL.
   --platform PLATFORM    linux-x64, macos-arm64, macos-x64, or freebsd-x64.
                          Defaults to the current host when it can be detected.
-  --bin-dir DIR          Install directory. Defaults to $HOME/.local/bin.
-  --no-setup             Install only; do not run ctx setup after install.
+  --bin-dir DIR          Install directory. Defaults to
+                         ${CTX_BIN_DIR:-$HOME/.local/bin}.
+  --no-modify-path       Do not update shell startup files when the install
+                         directory is not on PATH.
+  --no-setup             Install only; do not install the skill or run ctx setup
+                         unless a skill flag is also passed.
+  --no-skill             Do not install the bundled ctx agent skill.
+  --skill-agent AGENT    Install the skill into a specific agent skill dir.
+                         Repeat for multiple agents.
+  --all-skill-agents     Install the skill into all supported agent skill dirs.
   --no-man               Do not install generated man pages.
   --man-dir DIR          Man page directory. Defaults to $HOME/.local/share/man/man1.
   --dry-run              Validate metadata and print the planned install.
@@ -157,8 +166,200 @@ sha256_file() {
   fail "sha256sum, shasum, or sha256 is required"
 }
 
+lowercase() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+shell_double_quote_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g'
+}
+
+path_contains_dir() {
+  local dir="${1%/}"
+  local entry old_ifs path_entries
+
+  old_ifs="${IFS}"
+  IFS=:
+  read -r -a path_entries <<< "${PATH:-}"
+  IFS="${old_ifs}"
+  for entry in "${path_entries[@]}"; do
+    if [[ "${entry%/}" == "${dir}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+profile_has_path_line() {
+  local profile="$1"
+  local needle="$2"
+
+  awk -v needle="${needle}" '
+    $0 ~ /^[[:space:]]*#/ { next }
+    index($0, needle) && ($0 ~ /PATH/ || $0 ~ /fish_user_paths/ || $0 ~ /fish_add_path/) {
+      found = 1
+      exit
+    }
+    END { exit found ? 0 : 1 }
+  ' "${profile}"
+}
+
+path_setup_profile() {
+  local shell_name="$1"
+
+  test -n "${HOME:-}" || return 1
+
+  case "${shell_name}" in
+    fish)
+      printf '%s/.config/fish/config.fish\n' "${HOME}"
+      ;;
+    zsh)
+      printf '%s/.zshrc\n' "${ZDOTDIR:-${HOME}}"
+      ;;
+    bash)
+      if [[ -f "${HOME}/.bashrc" ]]; then
+        printf '%s/.bashrc\n' "${HOME}"
+      elif [[ -f "${HOME}/.bash_profile" ]]; then
+        printf '%s/.bash_profile\n' "${HOME}"
+      elif [[ -f "${HOME}/.profile" ]]; then
+        printf '%s/.profile\n' "${HOME}"
+      elif [[ "${platform}" == macos-* ]]; then
+        printf '%s/.bash_profile\n' "${HOME}"
+      else
+        printf '%s/.bashrc\n' "${HOME}"
+      fi
+      ;;
+    *)
+      printf '%s/.profile\n' "${HOME}"
+      ;;
+  esac
+}
+
+profile_contains_path_setup() {
+  local profile="$1"
+  local dir="${2%/}"
+  local dir_escaped home_prefix rel
+
+  [[ -f "${profile}" ]] || return 1
+  profile_has_path_line "${profile}" "${dir}" && return 0
+  dir_escaped="$(shell_double_quote_escape "${dir}")"
+  profile_has_path_line "${profile}" "${dir_escaped}" && return 0
+
+  if [[ -n "${HOME:-}" ]]; then
+    home_prefix="${HOME%/}/"
+    if [[ "${dir}" == "${home_prefix}"* ]]; then
+      rel="${dir#"${home_prefix}"}"
+      profile_has_path_line "${profile}" "\$HOME/${rel}" && return 0
+      profile_has_path_line "${profile}" "~/${rel}" && return 0
+    fi
+  fi
+
+  return 1
+}
+
+path_setup_snippet() {
+  local shell_name="$1"
+  local dir_escaped
+  dir_escaped="$(shell_double_quote_escape "$2")"
+
+  case "${shell_name}" in
+    fish)
+      cat <<EOF
+
+# ctx installer PATH setup
+if not contains -- "${dir_escaped}" \$PATH
+    set -gx PATH "${dir_escaped}" \$PATH
+end
+EOF
+      ;;
+    *)
+      cat <<EOF
+
+# ctx installer PATH setup
+case ":\${PATH}:" in
+  *":${dir_escaped}:"*) ;;
+  *) export PATH="${dir_escaped}:\${PATH}" ;;
+esac
+EOF
+      ;;
+  esac
+}
+
+print_current_path_command() {
+  local shell_name="$1"
+  local dir_escaped
+  dir_escaped="$(shell_double_quote_escape "$2")"
+
+  case "${shell_name}" in
+    fish)
+      printf '  set -gx PATH "%s" $PATH\n' "${dir_escaped}"
+      ;;
+    *)
+      printf '  export PATH="%s:${PATH}"\n' "${dir_escaped}"
+      ;;
+  esac
+}
+
+configure_path_if_needed() {
+  local dir="${bin_dir%/}"
+  local shell_name profile profile_dir
+
+  if path_contains_dir "${dir}"; then
+    return 0
+  fi
+
+  shell_name="${SHELL:-}"
+  shell_name="${shell_name##*/}"
+  if [[ -z "${shell_name}" ]]; then
+    shell_name="sh"
+  fi
+
+  if (( ! modify_path )); then
+    printf '%s is not on PATH; shell startup file update skipped\n' "${dir}"
+    printf 'for this shell session, run:\n'
+    print_current_path_command "${shell_name}" "${dir}"
+    return 0
+  fi
+
+  if [[ -n "${GITHUB_PATH:-}" ]]; then
+    printf '%s\n' "${dir}" >> "${GITHUB_PATH}"
+    printf 'added %s to GITHUB_PATH for later GitHub Actions steps\n' "${dir}"
+    return 0
+  fi
+
+  if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
+    printf '%s is not on PATH; CI detected, not editing shell startup files\n' "${dir}"
+    printf 'for this shell session, run:\n'
+    print_current_path_command "${shell_name}" "${dir}"
+    return 0
+  fi
+
+  if ! profile="$(path_setup_profile "${shell_name}")"; then
+    printf '%s is not on PATH; HOME is unavailable, so no shell startup file was updated\n' "${dir}"
+    printf 'for this shell session, run:\n'
+    print_current_path_command "${shell_name}" "${dir}"
+    return 0
+  fi
+
+  if profile_contains_path_setup "${profile}" "${dir}"; then
+    printf 'found existing PATH setup for %s in %s\n' "${dir}" "${profile}"
+  else
+    profile_dir="$(dirname "${profile}")"
+    if mkdir -p "${profile_dir}" && path_setup_snippet "${shell_name}" "${dir}" >> "${profile}"; then
+      printf 'added ctx PATH setup to %s\n' "${profile}"
+    else
+      printf 'warning: could not update shell startup file %s\n' "${profile}" >&2
+    fi
+  fi
+
+  printf '%s is not on the current PATH; restart your shell or run:\n' "${dir}"
+  print_current_path_command "${shell_name}" "${dir}"
+  printf 'then verify with:\n'
+  printf '  ctx status\n'
 }
 
 write_install_marker() {
@@ -190,10 +391,16 @@ EOF
 
 metadata_source=""
 platform=""
-bin_dir="${HOME:-}/.local/bin"
+bin_dir="${CTX_BIN_DIR:-${HOME:-}/.local/bin}"
 man_dir="${CTX_MAN_DIR:-${HOME:-}/.local/share/man/man1}"
 dry_run=0
+modify_path=1
 run_setup=1
+run_skill=1
+no_skill_requested=0
+explicit_skill_request=0
+all_skill_agents=0
+skill_agents=()
 install_man=1
 
 while (($# > 0)); do
@@ -210,8 +417,25 @@ while (($# > 0)); do
       shift
       bin_dir="${1:-}"
       ;;
+    --no-modify-path)
+      modify_path=0
+      ;;
     --no-setup)
       run_setup=0
+      ;;
+    --no-skill)
+      run_skill=0
+      no_skill_requested=1
+      ;;
+    --skill-agent)
+      shift
+      test -n "${1:-}" || fail "--skill-agent requires a value"
+      skill_agents+=("$1")
+      explicit_skill_request=1
+      ;;
+    --all-skill-agents)
+      all_skill_agents=1
+      explicit_skill_request=1
       ;;
     --no-man)
       install_man=0
@@ -284,10 +508,72 @@ case "${artifact}" in
 esac
 install_path="${bin_dir%/}/${install_name}"
 
+if [[ "${CTX_INSTALL_NO_MAN:-0}" == "1" ]]; then
+  install_man=0
+fi
+
+if [[ "${CTX_INSTALL_NO_MODIFY_PATH:-0}" == "1" ]]; then
+  modify_path=0
+fi
+
+if [[ "${CTX_INSTALL_NO_SETUP:-0}" == "1" ]]; then
+  run_setup=0
+fi
+
+if [[ "${CTX_INSTALL_ALL_SKILL_AGENTS:-0}" == "1" ]]; then
+  all_skill_agents=1
+  explicit_skill_request=1
+fi
+
+if [[ -n "${CTX_INSTALL_SKILL_AGENTS:-}" ]]; then
+  explicit_skill_request=1
+  IFS=',' read -r -a env_skill_agents <<< "${CTX_INSTALL_SKILL_AGENTS}"
+  for agent in "${env_skill_agents[@]}"; do
+    agent="${agent//[[:space:]]/}"
+    if [[ -n "${agent}" ]]; then
+      skill_agents+=("${agent}")
+    fi
+  done
+fi
+
+if [[ "${CTX_INSTALL_NO_SKILL:-0}" == "1" ]]; then
+  run_skill=0
+  no_skill_requested=1
+fi
+
+if ((no_skill_requested && explicit_skill_request)); then
+  fail "cannot combine --no-skill or CTX_INSTALL_NO_SKILL=1 with skill agent options"
+fi
+
+if ((all_skill_agents && ${#skill_agents[@]} > 0)); then
+  fail "cannot combine --all-skill-agents with --skill-agent or CTX_INSTALL_SKILL_AGENTS"
+fi
+
+if ((! run_setup && ! explicit_skill_request)); then
+  run_skill=0
+fi
+
 printf 'ctx install plan: version=%s platform=%s artifact=%s bin=%s\n' \
   "${version}" "${platform}" "${artifact}" "${install_path}"
 if ((install_man)); then
   printf 'ctx man page plan: dir=%s\n' "${man_dir}"
+fi
+if path_contains_dir "${bin_dir%/}"; then
+  :
+elif ((modify_path)); then
+  printf 'ctx PATH plan: add %s to shell startup files when installing\n' "${bin_dir%/}"
+else
+  printf 'ctx PATH plan: do not update shell startup files\n'
+fi
+if ((run_skill)); then
+  if ((all_skill_agents)); then
+    printf 'ctx skill plan: install bundled skill for all supported agents\n'
+  elif ((${#skill_agents[@]} > 0)); then
+    skill_agent_list="$(IFS=,; printf '%s' "${skill_agents[*]}")"
+    printf 'ctx skill plan: install bundled skill for agents=%s\n' "${skill_agent_list}"
+  else
+    printf 'ctx skill plan: install universal skill plus detected agent-specific folders\n'
+  fi
 fi
 
 if ((dry_run)); then
@@ -296,7 +582,7 @@ fi
 
 download_file "${artifact_url}" "${download_path}"
 actual_checksum="$(sha256_file "${download_path}")"
-if [[ "${actual_checksum,,}" != "${checksum,,}" ]]; then
+if [[ "$(lowercase "${actual_checksum}")" != "$(lowercase "${checksum}")" ]]; then
   fail "checksum mismatch for ${artifact}: expected ${checksum}, got ${actual_checksum}"
 fi
 
@@ -307,10 +593,6 @@ printf 'installed ctx to %s\n' "${install_path}"
 write_install_marker "${install_path}.install.json" "${metadata_source}" "${source_commit}" "${published_at}"
 printf 'wrote ctx managed install marker to %s\n' "${install_path}.install.json"
 
-if [[ "${CTX_INSTALL_NO_MAN:-0}" == "1" ]]; then
-  install_man=0
-fi
-
 if ((install_man)); then
   mkdir -p "${man_dir}"
   if "${install_path}" docs man --out "${man_dir}"; then
@@ -320,14 +602,40 @@ if ((install_man)); then
   fi
 fi
 
-if [[ "${CTX_INSTALL_NO_SETUP:-0}" == "1" ]]; then
-  run_setup=0
+if ((run_skill)); then
+  skill_args=(skill install)
+  if ((all_skill_agents)); then
+    skill_args+=(--all-agents)
+  else
+    for agent in "${skill_agents[@]}"; do
+      skill_args+=(--agent "${agent}")
+    done
+  fi
+  printf 'installing ctx agent skill (pass --no-skill or set CTX_INSTALL_NO_SKILL=1 to skip next time)\n'
+  if ! "${install_path}" "${skill_args[@]}"; then
+    printf 'warning: ctx skill install failed after install; run %s skill install to retry\n' "${install_path}" >&2
+  fi
+else
+  printf 'skill setup skipped; run %s skill install to install the bundled agent skill\n' "${install_path}"
 fi
 
 if ((run_setup)); then
   setup_progress="${CTX_SETUP_PROGRESS:-auto}"
   printf 'running ctx setup to index local history (pass --no-setup or set CTX_INSTALL_NO_SETUP=1 to skip next time)\n'
-  "${install_path}" setup --progress "${setup_progress}"
+  setup_status=0
+  if "${install_path}" setup --progress "${setup_progress}"; then
+    :
+  else
+    setup_status=$?
+    printf 'warning: ctx setup failed after install; run %s setup --progress %s to retry\n' "${install_path}" "${setup_progress}" >&2
+  fi
 else
+  setup_status=0
   printf 'setup skipped; run %s setup to index local history\n' "${install_path}"
+fi
+
+configure_path_if_needed
+
+if ((setup_status != 0)); then
+  exit "${setup_status}"
 fi

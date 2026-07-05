@@ -4,3 +4,13 @@
 *.db
 *.sqlite
 *.sqlite3
+
+# SDK build artifacts
+/sdks/dotnet/**/bin/
+/sdks/dotnet/**/obj/
+/sdks/jvm/build/
+/sdks/swift/.build/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

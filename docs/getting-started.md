@@ -12,9 +12,29 @@ curl -fsSL https://ctx.rs/install | sh
 The Unix installer requires `curl` and OpenSSL to verify signed release
 metadata. On Windows, use `irm https://ctx.rs/install.ps1 | iex`.
 
-The install script installs `ctx` and runs `ctx setup` so discovered local
-history is indexed before it exits. Use `sh -s -- --no-setup` on Unix, or set
+On Unix, the installer places `ctx` in `${CTX_BIN_DIR:-$HOME/.local/bin}`. If
+that directory is not already on `PATH`, the installer adds an idempotent ctx
+PATH snippet to your shell startup file and prints the command to use for the
+current shell session. On Windows, the installer places `ctx.exe` in
+`$HOME\.local\bin` by default, adds that directory to the user `Path`, and
+updates the current PowerShell session. Use `sh -s -- --no-modify-path` on Unix,
+`-NoModifyPath` on Windows, or set `CTX_INSTALL_NO_MODIFY_PATH=1` when you want
+to manage `PATH` yourself.
+
+The install script installs `ctx`, runs the bundled agent-history skill
+installer, and runs `ctx setup` so discovered local history is indexed before it
+exits. The skill installer opens an agent picker when interactive; otherwise it
+installs the universal `~/.agents/skills` copy plus detected agent-specific
+folders for tools that need them. Use `sh -s -- --no-setup` on Unix, or set
 `CTX_INSTALL_NO_SETUP=1` on Windows, for install-only CI or packaging flows.
+Install-only mode also skips skill setup unless you explicitly pass a skill
+option.
+
+To skip only the skill step, use `--no-skill` on Unix or `-NoSkill` on Windows,
+or set `CTX_INSTALL_NO_SKILL=1`. To target agent-specific skill folders during
+install, use `--skill-agent codex`, repeat `--skill-agent`, or use
+`--all-skill-agents`; Windows exposes the same controls as `-SkillAgent` and
+`-AllSkillAgents`.
 
 When working from source, use `cargo build -p ctx` or
 `cargo install --path crates/ctx-cli`.
