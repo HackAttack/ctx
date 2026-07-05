@@ -422,6 +422,12 @@ fn show_doc(args: DocsShowArgs) -> Result<()> {
         }
     };
     if let Some(path) = args.out {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
     } else {
         println!("{body}");
