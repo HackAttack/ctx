@@ -6423,7 +6423,9 @@ fn search_filters(
         provider_key: source_identity.provider_key,
         source_id: source_identity.source_id,
         source_format: source_identity.source_format,
-        repo: input.workspace,
+        repo: input
+            .workspace
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) }),
         since: input.since.as_deref().map(parse_since_filter).transpose()?,
         primary_only: input.primary_only,
         include_subagents: input.include_subagents && !input.primary_only,
@@ -6433,7 +6435,10 @@ fn search_filters(
             .map(EventType::from_str)
             .transpose()
             .map_err(|err| anyhow!("{err}"))?,
-        file: input.file.map(|path| path.display().to_string()),
+        file: input.file.and_then(|path| {
+            let s = path.display().to_string();
+            if s.trim().is_empty() { None } else { Some(s) }
+        }),
         exclude_provider_session,
     })
 }

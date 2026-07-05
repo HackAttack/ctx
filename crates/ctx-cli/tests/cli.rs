@@ -7172,6 +7172,31 @@ fn file_only_search_returns_touched_file_matches() {
 }
 
 #[test]
+fn search_normalizes_whitespace_only_filters() {
+    let temp = tempdir();
+    let no_file = json_output(
+        ctx(&temp).args(["search", "test", "--file", " ", "--json"]),
+    );
+    assert!(
+        !no_file["filters"].as_object().unwrap().contains_key("file"),
+        "expected no \"file\" key in filters, got: {}",
+        no_file["filters"],
+    );
+
+    let no_workspace = json_output(
+        ctx(&temp).args(["search", "test", "--workspace", " ", "--json"]),
+    );
+    assert!(
+        !no_workspace["filters"]
+            .as_object()
+            .unwrap()
+            .contains_key("workspace"),
+        "expected no \"workspace\" key in filters, got: {}",
+        no_workspace["filters"],
+    );
+}
+
+#[test]
 fn pi_cli_imports_directory_tree_path() {
     let temp = tempdir();
     let path = temp.path().join("pi-sessions-dir");
