@@ -2519,7 +2519,10 @@ fn docs_show_out_creates_parent_directories() {
         .assert()
         .success();
 
-    assert!(out.exists(), "docs show --out should write the requested file");
+    assert!(
+        out.exists(),
+        "docs show --out should write the requested file"
+    );
     let body = fs::read_to_string(&out).unwrap();
     assert!(body.contains("CLI Reference"), "{body}");
 }
