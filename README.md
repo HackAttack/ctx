@@ -17,13 +17,10 @@ ctx indexes those logs into SQLite on your machine, then gives current and futur
 curl -fsSL https://ctx.rs/install | sh
 ```
 
-The hosted installer also runs the bundled agent-history skill installer and
-`ctx setup` by default. For source builds, package-manager installs, or later
-skill refreshes, run:
+Optional but recommended for agent sessions:
 
 ```bash
-ctx skill install
-ctx setup
+npx skills add ctxrs/ctx
 ```
 
 For marketplace/plugin installs in Codex, Claude Code, Cursor, and raw Agent
@@ -121,7 +118,7 @@ ctx keeps retrieval tied to sessions and events, so another agent can inspect th
 | --- | --- |
 | [Install](https://ctx.rs/getting-started/install) | Install ctx, initialize local storage, and index discovered local history. |
 | [Quickstart](https://ctx.rs/first-search) | Search local history, inspect an event, open the session, and use JSON output. |
-| [Install the ctx skill](https://ctx.rs/skill) | Install or refresh the bundled agent-history search skill with `ctx skill install`. |
+| [Install the ctx skill](https://ctx.rs/skill) | Install the agent-history search skill with the open skills installer. |
 | [Agent plugin installs](docs/agent-skill-install.md) | Install the ctx skill through Codex, Claude Code, Cursor, or a raw skill folder. |
 | [SDKs](docs/sdks.md) | Use ctx agent history search from TypeScript, Python, Rust, Go, JVM, Swift, or .NET code. |
 | [Custom history plugins](docs/history-source-plugins.md) | Build an advanced local adapter for agent formats ctx does not support natively. |
