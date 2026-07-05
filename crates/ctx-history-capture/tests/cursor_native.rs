@@ -48,6 +48,13 @@ fn imports_cursor_agent_transcript_jsonl_tree() {
     let temp = tempdir();
     let db_path = temp.path().join("work.sqlite");
     let fixture = materialized_provider_history_fixture(&temp, "cursor/2026.06.24/projects");
+    let aborted = fixture.join("sanitized-workspace/agent-transcripts/cursor-aborted-stub-session");
+    fs::create_dir_all(&aborted).unwrap();
+    fs::write(
+        aborted.join("cursor-aborted-stub-session.jsonl"),
+        r#"{"type":"turn_ended","status":"aborted","error":"User aborted/interrupted manually."}"#,
+    )
+    .unwrap();
     let mut store = Store::open(&db_path).unwrap();
 
     let summary = import_cursor_native_history(
@@ -62,7 +69,7 @@ fn imports_cursor_agent_transcript_jsonl_tree() {
     )
     .unwrap();
 
-    assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+    assert_eq!(summary.failed, 2, "{:?}", summary.failures);
     assert_eq!(summary.imported_sessions, 2);
     assert_eq!(summary.imported_events, 6);
     drop(store);
@@ -118,4 +125,29 @@ fn reports_malformed_cursor_agent_transcript_when_partial_disallowed() {
     assert_eq!(summary.failed, 1);
     assert_eq!(summary.imported_events, 0);
     assert!(summary.failures[0].error.contains("malformed JSONL"));
+}
+
+#[test]
+fn reports_aborted_stub_cursor_agent_transcript_when_partial_disallowed() {
+    let temp = tempdir();
+    let fixture = temp
+        .path()
+        .join("cursor/projects/sanitized-workspace/agent-transcripts/cursor-aborted-stub-session");
+    fs::create_dir_all(&fixture).unwrap();
+    fs::write(
+        fixture.join("cursor-aborted-stub-session.jsonl"),
+        r#"{"type":"turn_ended","status":"aborted","error":"User aborted/interrupted manually."}"#,
+    )
+    .unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let options = CursorNativeImportOptions::default();
+    let summary = import_cursor_native_history(&fixture, &mut store, options).unwrap();
+
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.imported_events, 0);
+    assert_eq!(
+        summary.failures[0].error,
+        "no importable native JSONL session header"
+    );
 }

@@ -10007,6 +10007,14 @@ fn normalize_native_jsonl_session_file(
             .iter()
             .position(|(_, value)| native_jsonl_header_session_id(provider, value).is_some())
         else {
+            if let Some((line_number, _)) = rows.first() {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: *line_number,
+                    error: "no importable native JSONL session header".to_owned(),
+                });
+                return Ok(result);
+            }
             return Err(CaptureError::InvalidProviderTranscriptPath {
                 path: path.to_path_buf(),
                 reason: native_jsonl_missing_reason(provider),
@@ -15641,7 +15649,7 @@ mod tests {
     }
 
     #[test]
-    fn native_jsonl_tree_rejects_headerless_native_files() {
+    fn native_jsonl_tree_skips_headerless_native_files() {
         let temp = tempdir();
         let root = temp.path().join("gemini/.gemini/tmp/project/chats");
         fs::create_dir_all(&root).unwrap();
@@ -15652,7 +15660,7 @@ mod tests {
         .unwrap();
         let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
 
-        let err = import_gemini_cli_history(
+        let summary = import_gemini_cli_history(
             temp.path().join("gemini/.gemini"),
             &mut store,
             GeminiCliImportOptions {
@@ -15660,11 +15668,13 @@ mod tests {
                 ..GeminiCliImportOptions::default()
             },
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err
-            .to_string()
-            .contains("no Gemini CLI chat JSONL transcripts found under chats"));
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.imported_events, 0);
+        assert!(summary.failures[0]
+            .error
+            .contains("no importable native JSONL session header"));
     }
 
     fn write_claude_smoke_fixture(temp: &TempDir) -> PathBuf {
