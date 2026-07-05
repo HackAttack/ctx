@@ -18,6 +18,12 @@ curl -fsSL https://ctx.rs/install | sh
 The Unix installer requires `curl` and OpenSSL to verify signed release
 metadata. On Windows, use `irm https://ctx.rs/install.ps1 | iex`.
 
+The hosted installer runs the bundled agent-history skill installer and
+`ctx setup` by default. The skill step opens an agent picker when interactive
+and otherwise installs the universal skill copy plus detected agent-specific
+folders. Use `--no-setup` only for install-only automation; it also skips skill
+setup unless you pass an explicit skill option.
+
 ## 2. Set Up And Index
 
 ```bash

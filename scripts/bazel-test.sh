@@ -96,6 +96,9 @@ case "${mode}" in
   docs_check)
     run bash scripts/check-docs.sh
     ;;
+  installer_path_smoke)
+    run bash scripts/install-path-smoke.sh
+    ;;
   buildkite_pipeline_check)
     run bash scripts/check-buildkite-pipeline.sh
     ;;

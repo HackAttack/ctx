@@ -23,6 +23,7 @@ mod identity;
 mod install_marker;
 mod mcp;
 mod net;
+mod skill;
 mod upgrade;
 
 #[cfg(test)]
@@ -104,6 +105,8 @@ enum CommandRoot {
     Sql(SqlArgs),
     #[command(about = "Read embedded ctx documentation")]
     Docs(docs::DocsArgs),
+    #[command(about = "Install or inspect the bundled ctx agent skill")]
+    Skill(skill::SkillArgs),
     #[command(about = "Serve read-only ctx tools over MCP")]
     Mcp(mcp::McpArgs),
     #[command(about = "Check or apply signed ctx CLI upgrades")]
@@ -526,6 +529,7 @@ impl CommandRoot {
             Self::Search(_) => "search",
             Self::Sql(_) => "sql",
             Self::Docs(_) => "docs",
+            Self::Skill(_) => "skill",
             Self::Mcp(_) => "mcp",
             Self::Upgrade(_) => "upgrade",
             Self::Doctor(_) => "doctor",
@@ -551,6 +555,7 @@ impl CommandRoot {
             Self::Search(args) => args.json,
             Self::Sql(args) => args.json_output(),
             Self::Docs(args) => args.json_output(),
+            Self::Skill(args) => args.json_output(),
             Self::Mcp(_) => false,
             Self::Upgrade(args) => args.json_output(),
             Self::Doctor(args) => args.json,
@@ -1427,6 +1432,7 @@ fn main() -> Result<()> {
         CommandRoot::Search(args) => run_search(args, data_root.clone(), &mut analytics_properties),
         CommandRoot::Sql(args) => run_sql(args, data_root.clone()),
         CommandRoot::Docs(args) => docs::run(args),
+        CommandRoot::Skill(args) => skill::run(args, &mut analytics_properties),
         CommandRoot::Mcp(args) => mcp::run(args, data_root.clone()),
         CommandRoot::Upgrade(args) => upgrade::run(args, data_root.clone(), config.clone()),
         CommandRoot::Doctor(args) => run_doctor(args, data_root.clone(), &mut analytics_properties),
@@ -1583,6 +1589,9 @@ fn command_analytics_properties(command: &CommandRoot) -> AnalyticsProperties {
         }
         CommandRoot::Mcp(_) => {}
         CommandRoot::Docs(_) => {}
+        CommandRoot::Skill(args) => {
+            args.add_initial_analytics(&mut properties);
+        }
         CommandRoot::Upgrade(args) => {
             analytics::insert_bool(&mut properties, "dry_run", args.dry_run);
             analytics::insert_bool(&mut properties, "background", args.background());

@@ -45,6 +45,36 @@ structured. Installer-managed binaries can run a signed background upgrade
 check after successful non-JSON commands; that check is separate from provider
 history indexing.
 
+## Agent Skill
+
+```bash
+ctx skill install
+ctx skill install --agent codex --agent claude-code
+ctx skill install --all-agents
+ctx skill install --project
+ctx skill install --force
+ctx skill status
+ctx skill status --agent codex --json
+```
+
+`skill install` installs or refreshes ctx's bundled
+`ctx-agent-history-search` skill. With no target flags in an interactive
+terminal, it opens a small agent picker with the universal `~/.agents/skills`
+location selected plus detected agent-specific folders for tools that need
+them. In non-interactive runs, it installs to the universal folder and also
+writes detected agent-specific folders, such as Claude Code, only when ctx sees
+evidence that the agent is installed. `--agent` targets native global skill
+folders for supported agents such as Claude Code, Codex, Cursor, OpenCode,
+Gemini CLI, Antigravity, GitHub Copilot, Pi, and Goose. `--all-agents` writes
+all supported target folders. `--project` switches from global paths to the
+current project's skill folders.
+
+`skill status` reports whether the bundled skill is `current`, `stale`,
+`modified`, or `missing`. `skill install` refreshes stale bundled copies
+automatically, but it refuses to overwrite locally modified skill files unless
+you pass `--force`. The command only manages the bundled ctx skill and does not
+fetch arbitrary remote skills.
+
 ## Sources
 
 ```bash

@@ -3,7 +3,11 @@ param(
     [string]$Metadata,
     [string]$Platform = "",
     [string]$BinDir = "",
+    [switch]$NoModifyPath,
     [switch]$NoSetup,
+    [switch]$NoSkill,
+    [string[]]$SkillAgent = @(),
+    [switch]$AllSkillAgents,
     [string]$SetupProgress = "",
     [switch]$DryRun
 )
@@ -64,6 +68,95 @@ function Get-Sha256([string]$Path) {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Normalize-PathEntry([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ""
+    }
+    return $Path.Trim().Trim('"').TrimEnd("\", "/")
+}
+
+function Test-PathContainsDirectory([string]$PathValue, [string]$Directory) {
+    $needle = Normalize-PathEntry $Directory
+    if ([string]::IsNullOrWhiteSpace($needle)) {
+        return $false
+    }
+    foreach ($entry in ($PathValue -split [regex]::Escape([System.IO.Path]::PathSeparator))) {
+        if ((Normalize-PathEntry $entry).Equals($needle, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Format-CurrentPathCommand([string]$Directory) {
+    $escaped = $Directory.Replace('`', '``').Replace('"', '`"')
+    return "`$env:Path = `"$escaped;`$env:Path`""
+}
+
+function Write-CurrentPathCommand([string]$Directory) {
+    Write-Host "for this PowerShell session, run:"
+    Write-Host ("  " + (Format-CurrentPathCommand $Directory))
+}
+
+function Add-InstallDirToPathIfNeeded([string]$Directory, [bool]$ModifyPath) {
+    $dir = $Directory.TrimEnd("\", "/")
+    if (Test-PathContainsDirectory -PathValue $env:Path -Directory $dir) {
+        return
+    }
+
+    if (-not $ModifyPath) {
+        Write-Host "$dir is not on PATH; user PATH update skipped"
+        Write-CurrentPathCommand $dir
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_PATH)) {
+        Add-Content -LiteralPath $env:GITHUB_PATH -Value $dir
+        if (-not (Test-PathContainsDirectory -PathValue $env:Path -Directory $dir)) {
+            $env:Path = "$dir$([System.IO.Path]::PathSeparator)$env:Path"
+        }
+        Write-Host "added $dir to GITHUB_PATH for later GitHub Actions steps"
+        return
+    }
+
+    if ($env:CI -eq "1" -or $env:CI -eq "true") {
+        $env:Path = "$dir$([System.IO.Path]::PathSeparator)$env:Path"
+        Write-Host "$dir is not on PATH; CI detected, not editing the user PATH"
+        Write-CurrentPathCommand $dir
+        return
+    }
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (Test-PathContainsDirectory -PathValue $userPath -Directory $dir) {
+        Write-Host "found existing user PATH setup for $dir"
+    } else {
+        if ([string]::IsNullOrWhiteSpace($userPath)) {
+            $newUserPath = $dir
+        } else {
+            $newUserPath = "$dir$([System.IO.Path]::PathSeparator)$userPath"
+        }
+        try {
+            [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+            Write-Host "added $dir to the user PATH"
+        } catch {
+            Write-Warning "could not update the user PATH: $($_.Exception.Message)"
+        }
+    }
+
+    $updatedCurrentPath = $false
+    if (-not (Test-PathContainsDirectory -PathValue $env:Path -Directory $dir)) {
+        $env:Path = "$dir$([System.IO.Path]::PathSeparator)$env:Path"
+        $updatedCurrentPath = $true
+    }
+    if ($updatedCurrentPath) {
+        Write-Host "$dir was not on PATH at startup; this PowerShell session has been updated"
+    }
+    Write-Host "open a new PowerShell window or run:"
+    Write-Host ("  " + (Format-CurrentPathCommand $dir))
+    Write-Host "then verify with:"
+    Write-Host "  ctx status"
+}
+
 if ([string]::IsNullOrWhiteSpace($Platform)) {
     $Platform = Detect-Platform
 }
@@ -115,7 +208,62 @@ try {
     $downloadPath = Join-Path $tempRoot $artifact
     $installPath = Join-Path $BinDir "ctx.exe"
 
+    $skillAgents = @()
+    foreach ($agent in $SkillAgent) {
+        $trimmed = $agent.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+            $skillAgents += $trimmed
+        }
+    }
+    $allSkillAgentsRequested = [bool]$AllSkillAgents
+    $explicitSkillRequest = $allSkillAgentsRequested -or $skillAgents.Count -gt 0
+
+    if ($env:CTX_INSTALL_ALL_SKILL_AGENTS -eq "1") {
+        $allSkillAgentsRequested = $true
+        $explicitSkillRequest = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:CTX_INSTALL_SKILL_AGENTS)) {
+        foreach ($agent in ($env:CTX_INSTALL_SKILL_AGENTS -split ",")) {
+            $trimmed = $agent.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $skillAgents += $trimmed
+                $explicitSkillRequest = $true
+            }
+        }
+    }
+
+    $noSkillRequested = [bool]$NoSkill -or $env:CTX_INSTALL_NO_SKILL -eq "1"
+    if ($noSkillRequested -and $explicitSkillRequest) {
+        Fail "cannot combine -NoSkill or CTX_INSTALL_NO_SKILL=1 with skill agent options"
+    }
+    if ($allSkillAgentsRequested -and $skillAgents.Count -gt 0) {
+        Fail "cannot combine -AllSkillAgents with -SkillAgent or CTX_INSTALL_SKILL_AGENTS"
+    }
+
+    $runSetup = -not $NoSetup -and $env:CTX_INSTALL_NO_SETUP -ne "1"
+    $runSkill = -not $noSkillRequested
+    if (-not $runSetup -and -not $explicitSkillRequest) {
+        $runSkill = $false
+    }
+    $modifyPath = -not $NoModifyPath -and $env:CTX_INSTALL_NO_MODIFY_PATH -ne "1"
+
     Write-Host "ctx install plan: version=$version platform=$Platform artifact=$artifact bin=$installPath"
+    if (-not (Test-PathContainsDirectory -PathValue $env:Path -Directory $BinDir)) {
+        if ($modifyPath) {
+            Write-Host "ctx PATH plan: add $BinDir to the user PATH when installing"
+        } else {
+            Write-Host "ctx PATH plan: do not update the user PATH"
+        }
+    }
+    if ($runSkill) {
+        if ($allSkillAgentsRequested) {
+            Write-Host "ctx skill plan: install bundled skill for all supported agents"
+        } elseif ($skillAgents.Count -gt 0) {
+            Write-Host ("ctx skill plan: install bundled skill for agents=" + ($skillAgents -join ","))
+        } else {
+            Write-Host "ctx skill plan: install universal skill plus detected agent-specific folders"
+        }
+    }
     if ($DryRun) {
         exit 0
     }
@@ -154,7 +302,25 @@ try {
     [System.IO.File]::WriteAllText($markerPath, $markerJson + [Environment]::NewLine, $utf8NoBom)
     Write-Host "wrote ctx managed install marker to $markerPath"
 
-    $runSetup = -not $NoSetup -and $env:CTX_INSTALL_NO_SETUP -ne "1"
+    if ($runSkill) {
+        $skillArgs = @("skill", "install")
+        if ($allSkillAgentsRequested) {
+            $skillArgs += "--all-agents"
+        } else {
+            foreach ($agent in $skillAgents) {
+                $skillArgs += @("--agent", $agent)
+            }
+        }
+        Write-Host "installing ctx agent skill (pass -NoSkill or set CTX_INSTALL_NO_SKILL=1 to skip next time)"
+        & $installPath @skillArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "ctx skill install failed after install; run $installPath skill install to retry"
+        }
+    } else {
+        Write-Host "skill setup skipped; run $installPath skill install to install the bundled agent skill"
+    }
+
+    $setupStatus = 0
     if ($runSetup) {
         if ([string]::IsNullOrWhiteSpace($SetupProgress)) {
             if ([string]::IsNullOrWhiteSpace($env:CTX_SETUP_PROGRESS)) {
@@ -166,10 +332,17 @@ try {
         Write-Host "running ctx setup to index local history (pass -NoSetup or set CTX_INSTALL_NO_SETUP=1 to skip next time)"
         & $installPath setup --progress $SetupProgress
         if ($LASTEXITCODE -ne 0) {
-            Fail "ctx setup failed after install"
+            $setupStatus = $LASTEXITCODE
+            Write-Warning "ctx setup failed after install; run $installPath setup --progress $SetupProgress to retry"
         }
     } else {
         Write-Host "setup skipped; run $installPath setup to index local history"
+    }
+
+    Add-InstallDirToPathIfNeeded -Directory $BinDir -ModifyPath $modifyPath
+
+    if ($setupStatus -ne 0) {
+        exit $setupStatus
     }
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
