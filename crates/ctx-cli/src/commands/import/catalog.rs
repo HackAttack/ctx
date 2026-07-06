@@ -16,18 +16,21 @@ pub(crate) fn import_incremental_codex_session_tree(
     include_notices: bool,
     progress: Option<CodexSessionImportProgressCallback>,
     allow_partial_failures: bool,
+    catalog_before_import: bool,
 ) -> Result<ProviderImportSummary> {
     let source_root = source.path.display().to_string();
-    catalog_codex_session_tree(
-        &source.path,
-        store,
-        CodexSessionCatalogOptions {
-            source_root: Some(source.path.clone()),
-            allow_partial_failures,
-            ..CodexSessionCatalogOptions::default()
-        },
-    )
-    .with_context(|| format!("catalog Codex sessions from {}", source.path.display()))?;
+    if catalog_before_import {
+        catalog_codex_session_tree(
+            &source.path,
+            store,
+            CodexSessionCatalogOptions {
+                source_root: Some(source.path.clone()),
+                allow_partial_failures,
+                ..CodexSessionCatalogOptions::default()
+            },
+        )
+        .with_context(|| format!("inventory Codex sessions from {}", source.path.display()))?;
+    }
 
     let pending = store.list_pending_catalog_sessions(CaptureProvider::Codex, &source_root)?;
     if pending.is_empty() {

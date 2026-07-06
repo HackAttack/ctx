@@ -114,7 +114,7 @@ are intentionally looking for material from the active session tree.
 `--refresh` defaults to `auto`. `auto` attempts a best-effort pre-search import
 of discovered native provider sources and enabled auto history-source plugins,
 then serves the existing index if that refresh fails. On large discovered
-sources or already-cataloged indexes, `auto` serves current results without a
+sources or already-inventoried indexes, `auto` serves current results without a
 foreground catch-up scan; use `--refresh strict` or `ctx import --all` when you
 need a full catch-up before querying. `off` skips the pre-search refresh and
 never runs plugin commands. `strict` fails the search if the refresh cannot run

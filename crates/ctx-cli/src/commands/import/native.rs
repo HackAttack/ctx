@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::commands::import::catalog::{
     codex_event_import_mode, codex_include_notices, codex_tool_output_mode, system_time_ms,
@@ -25,6 +27,7 @@ pub(crate) fn import_one_source(
     progress: Option<CodexSessionImportProgressCallback>,
     full_rescan: bool,
     allow_partial_failures: bool,
+    preinventory: &SourcePreinventory,
 ) -> Result<ProviderImportSummary> {
     let event_search_needs_backfill = store.event_search_projection_needs_backfill()?;
     let refresh_search_after_import =
@@ -36,6 +39,7 @@ pub(crate) fn import_one_source(
         refresh_search_after_import,
         full_rescan,
         allow_partial_failures,
+        preinventory,
     )
 }
 
@@ -45,6 +49,7 @@ pub(crate) fn import_one_source_without_search_refresh(
     progress: Option<CodexSessionImportProgressCallback>,
     full_rescan: bool,
     allow_partial_failures: bool,
+    preinventory: &SourcePreinventory,
 ) -> Result<ProviderImportSummary> {
     import_one_source_inner(
         store,
@@ -53,6 +58,7 @@ pub(crate) fn import_one_source_without_search_refresh(
         false,
         full_rescan,
         allow_partial_failures,
+        preinventory,
     )
 }
 
@@ -63,6 +69,7 @@ pub(crate) fn import_one_source_inner(
     refresh_search_after_import: bool,
     full_rescan: bool,
     allow_partial_failures: bool,
+    preinventory: &SourcePreinventory,
 ) -> Result<ProviderImportSummary> {
     let tool_output_mode = codex_tool_output_mode()?;
     let event_mode = codex_event_import_mode()?;
@@ -80,6 +87,7 @@ pub(crate) fn import_one_source_inner(
             include_notices,
             progress,
             allow_partial_failures,
+            preinventory.source_import_files(),
         )
     } else {
         match source.provider {
@@ -111,6 +119,7 @@ pub(crate) fn import_one_source_inner(
                             include_notices,
                             progress.clone(),
                             allow_partial_failures,
+                            !preinventory.codex_session_tree_cataloged(),
                         )
                     }
                 } else if source
@@ -586,12 +595,20 @@ pub(crate) fn import_one_source_inner(
     let summary = match summary {
         Ok(summary) => {
             if !allow_partial_failures && summary.failed > 0 {
+                mark_source_root_inventory_failed(
+                    store,
+                    source,
+                    preinventory,
+                    &format!("provider import reported {} failure(s)", summary.failed),
+                )?;
                 let _ = store.delete_orphan_record(record_id);
                 return Err(provider_import_summary_failure(source, &summary));
             }
+            mark_source_root_inventory_indexed(store, preinventory)?;
             summary
         }
         Err(err) => {
+            mark_source_root_inventory_failed(store, source, preinventory, &err.to_string())?;
             if !allow_partial_failures {
                 let _ = store.delete_orphan_record(record_id);
             }
@@ -602,6 +619,45 @@ pub(crate) fn import_one_source_inner(
         store.refresh_search_index()?;
     }
     Ok(summary)
+}
+
+fn mark_source_root_inventory_indexed(
+    store: &Store,
+    preinventory: &SourcePreinventory,
+) -> Result<()> {
+    let Some(file) = preinventory.source_root_file() else {
+        return Ok(());
+    };
+    store.mark_source_import_file_indexed(
+        file.provider,
+        SourceImportFileIndexUpdate {
+            source_root: &file.source_root,
+            source_path: &file.source_path,
+            file_size_bytes: file.file_size_bytes,
+            file_modified_at_ms: file.file_modified_at_ms,
+            indexed_at_ms: utc_now().timestamp_millis(),
+        },
+    )?;
+    Ok(())
+}
+
+fn mark_source_root_inventory_failed(
+    store: &Store,
+    source: &SourceInfo,
+    preinventory: &SourcePreinventory,
+    error: &str,
+) -> Result<()> {
+    let Some(file) = preinventory.source_root_file() else {
+        return Ok(());
+    };
+    store.mark_source_import_file_failed(
+        source.provider,
+        &file.source_root,
+        &file.source_path,
+        error,
+        utc_now().timestamp_millis(),
+    )?;
+    Ok(())
 }
 
 pub(crate) fn provider_import_summary_failure(
@@ -630,10 +686,20 @@ pub(crate) fn import_manifested_source(
     include_notices: bool,
     progress: Option<CodexSessionImportProgressCallback>,
     allow_partial_failures: bool,
+    preinventoried_files: Option<&[SourceImportFile]>,
 ) -> Result<ProviderImportSummary> {
     let source_root = source.path.display().to_string();
-    let files = collect_source_import_files(source)
-        .with_context(|| format!("catalog import files from {}", source.path.display()))?;
+    let collected_files;
+    let files = match preinventoried_files {
+        Some(files) => files,
+        None => {
+            collected_files = collect_source_import_files(source).with_context(|| {
+                format!("inventory import files from {}", source.path.display())
+            })?;
+            persist_source_import_files(store, source, &collected_files)?;
+            &collected_files
+        }
+    };
     if files.is_empty() {
         return Err(anyhow!(
             "no importable {} history files found under {}",
@@ -641,37 +707,21 @@ pub(crate) fn import_manifested_source(
             source.path.display()
         ));
     }
-    let current_paths = files
-        .iter()
-        .map(|file| file.source_path.clone())
-        .collect::<Vec<_>>();
-    let observed_at_ms = utc_now().timestamp_millis();
-    store.begin_immediate_batch()?;
-    let persist = (|| -> Result<()> {
-        store.upsert_source_import_files(&files)?;
-        store.mark_source_import_missing_paths_stale(
-            source.provider,
-            &source_root,
-            &current_paths,
-            observed_at_ms,
-        )?;
-        Ok(())
-    })();
-    match persist {
-        Ok(()) => store.commit_batch()?,
-        Err(err) => {
-            let _ = store.rollback_batch();
-            return Err(err);
-        }
-    }
-
     let pending = store.list_pending_source_import_files(source.provider, &source_root)?;
     if pending.is_empty() {
         return Ok(ProviderImportSummary::default());
     }
 
     if !allow_partial_failures {
-        let imported = import_one_source_inner(store, source, progress, false, true, false);
+        let imported = import_one_source_inner(
+            store,
+            source,
+            progress,
+            false,
+            true,
+            false,
+            &SourcePreinventory::None,
+        );
         match imported {
             Ok(summary) => {
                 for pending_file in pending {
@@ -717,6 +767,7 @@ pub(crate) fn import_manifested_source(
             false,
             true,
             allow_partial_failures,
+            &SourcePreinventory::None,
         );
         match imported {
             Ok(file_summary) => {
@@ -750,6 +801,38 @@ pub(crate) fn import_manifested_source(
     let _ = event_mode;
     let _ = include_notices;
     Ok(summary)
+}
+
+pub(crate) fn persist_source_import_files(
+    store: &Store,
+    source: &SourceInfo,
+    files: &[SourceImportFile],
+) -> Result<()> {
+    let source_root = source.path.display().to_string();
+    let current_paths = files
+        .iter()
+        .map(|file| file.source_path.clone())
+        .collect::<Vec<_>>();
+    let observed_at_ms = utc_now().timestamp_millis();
+    store.begin_immediate_batch()?;
+    let persist = (|| -> Result<()> {
+        store.upsert_source_import_files(files)?;
+        store.mark_source_import_missing_paths_stale(
+            source.provider,
+            &source_root,
+            &current_paths,
+            observed_at_ms,
+        )?;
+        Ok(())
+    })();
+    match persist {
+        Ok(()) => store.commit_batch()?,
+        Err(err) => {
+            let _ = store.rollback_batch();
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn source_uses_import_file_manifest(source: &SourceInfo) -> bool {
@@ -847,8 +930,62 @@ pub(crate) fn collect_source_import_paths(source: &SourceInfo) -> Result<Vec<Pat
             }
         }
     }
+    paths = preferred_source_import_paths(source, paths);
     paths.sort();
     Ok(paths)
+}
+
+fn preferred_source_import_paths(source: &SourceInfo, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    match source.provider {
+        CaptureProvider::Antigravity => antigravity_preferred_import_paths(paths),
+        _ => paths,
+    }
+}
+
+fn antigravity_preferred_import_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut by_session: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for path in paths {
+        let session = antigravity_session_key_from_path(&path);
+        let prefer_new =
+            path.file_name().and_then(|name| name.to_str()) == Some("transcript_full.jsonl");
+        let replace = by_session
+            .get(&session)
+            .map(|current| {
+                prefer_new
+                    && current.file_name().and_then(|name| name.to_str())
+                        != Some("transcript_full.jsonl")
+            })
+            .unwrap_or(true);
+        if replace {
+            by_session.insert(session, path);
+        }
+    }
+    by_session.into_values().collect()
+}
+
+fn antigravity_session_key_from_path(path: &Path) -> String {
+    let components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    components
+        .windows(2)
+        .find_map(|window| {
+            (window[0] == "brain" && !window[1].trim().is_empty()).then(|| window[1].clone())
+        })
+        .or_else(|| {
+            components.windows(2).find_map(|window| {
+                (window[1] == ".system_generated" && !window[0].trim().is_empty())
+                    .then(|| window[0].clone())
+            })
+        })
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|stem| !stem.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 pub(crate) fn source_import_file_matches(source: &SourceInfo, path: &Path) -> bool {

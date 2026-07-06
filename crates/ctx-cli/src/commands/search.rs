@@ -17,8 +17,8 @@ use ctx_history_store::Store;
 use crate::analytics::AnalyticsProperties;
 use crate::commands::import::{
     error_summary, import_history_source_plugin, import_one_source_without_search_refresh,
-    import_totals_json, one_line_error, should_parallelize_import, ImportSourceOutcome,
-    ImportTotals, SourceStats,
+    import_totals_json, inventory_import_sources, one_line_error, should_parallelize_import,
+    ImportSourceOutcome, ImportTotals, SourceStats,
 };
 use crate::commands::setup::{
     indexed_history_item_count, insert_db_size_bucket, insert_store_analytics_counts,
@@ -405,10 +405,11 @@ pub(crate) fn refresh_sources_for_search(
     fs::create_dir_all(data_root)?;
     config::write_default_config(data_root)?;
     let db_path = database_path(data_root.to_path_buf());
-    let planned_sources = sources
-        .into_iter()
-        .map(|source| (source, SourceStats::default()))
-        .collect::<Vec<_>>();
+    let store = Store::open(&db_path)?;
+    let inventory = inventory_import_sources(&store, sources, false)?;
+    let planned_sources = inventory.sources;
+    let planned_total_bytes = inventory.totals.source_bytes;
+    drop(store);
     if planned_sources.is_empty() && plugin_sources.is_empty() {
         return Ok(ImportTotals::default());
     }
@@ -418,26 +419,31 @@ pub(crate) fn refresh_sources_for_search(
         RefreshArg::Strict => ProgressArg::Auto,
         RefreshArg::Auto | RefreshArg::Off => ProgressArg::None,
     };
-    let progress = ProgressReporter::new(progress_arg, json_output, "search-refresh", 0);
+    let progress = ProgressReporter::new(
+        progress_arg,
+        json_output,
+        "search-refresh",
+        planned_total_bytes,
+    );
     let mut totals = ImportTotals::default();
     let mut first_refresh_failure = None::<String>;
     if should_parallelize_import(&planned_sources) {
         let source_states = Arc::new(Mutex::new(
             planned_sources
                 .iter()
-                .map(|(_, stats)| SourceProgressSnapshot {
+                .map(|plan| SourceProgressSnapshot {
                     completed_bytes: 0,
-                    total_bytes: stats.bytes,
+                    total_bytes: plan.stats.bytes,
                 })
                 .collect::<Vec<_>>(),
         ));
         let handles = planned_sources
             .into_iter()
             .enumerate()
-            .map(|(index, (source, stats))| {
+            .map(|(index, plan)| {
                 let db_path = db_path.clone();
                 let progress_callback = progress.parallel_codex_import_callback(
-                    &source,
+                    &plan.source,
                     index,
                     Arc::clone(&source_states),
                 );
@@ -445,15 +451,16 @@ pub(crate) fn refresh_sources_for_search(
                     let mut store = Store::open(&db_path)?;
                     let summary = import_one_source_without_search_refresh(
                         &mut store,
-                        &source,
+                        &plan.source,
                         progress_callback,
                         false,
                         false,
+                        &plan.preinventory,
                     )?;
                     Ok(ImportSourceOutcome {
                         index,
-                        source,
-                        stats,
+                        source: plan.source,
+                        stats: plan.stats,
                         summary,
                     })
                 })
@@ -481,38 +488,40 @@ pub(crate) fn refresh_sources_for_search(
     } else {
         let mut store = Store::open(&db_path)?;
         let mut completed_source_bytes = 0u64;
-        for (source, stats) in planned_sources {
+        for plan in planned_sources {
             progress.message(
                 "refreshing",
-                format!("importing {}", source.provider.as_str()),
+                format!("importing {}", plan.source.provider.as_str()),
             );
-            let source_progress = progress.codex_import_callback(&source, completed_source_bytes);
-            completed_source_bytes = completed_source_bytes.saturating_add(stats.bytes);
+            let source_progress =
+                progress.codex_import_callback(&plan.source, completed_source_bytes);
+            completed_source_bytes = completed_source_bytes.saturating_add(plan.stats.bytes);
             let import_result = import_one_source_without_search_refresh(
                 &mut store,
-                &source,
+                &plan.source,
                 source_progress,
                 false,
                 false,
+                &plan.preinventory,
             );
             match import_result {
                 Ok(summary) => {
-                    totals.add(&summary, &stats);
+                    totals.add(&summary, &plan.stats);
                     progress.done(
                         "refreshing",
-                        format!("refreshed {}", source.provider.as_str()),
+                        format!("refreshed {}", plan.source.provider.as_str()),
                         completed_source_bytes,
                     );
                 }
                 Err(err) if refresh == RefreshArg::Auto => {
                     let error = error_summary(&err);
                     first_refresh_failure.get_or_insert_with(|| error.clone());
-                    totals.add_source_failure(&stats);
+                    totals.add_source_failure(&plan.stats);
                     progress.done(
                         "refreshing",
                         format!(
                             "skipped {}: {}",
-                            source.provider.as_str(),
+                            plan.source.provider.as_str(),
                             one_line_error(&error)
                         ),
                         completed_source_bytes,

@@ -782,6 +782,79 @@ fn source_import_manifest_upsert_ignores_observed_at_for_unchanged_files() {
 }
 
 #[test]
+fn source_import_file_counts_track_pending_indexed_failed_and_stale() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let observed_at_ms = timestamp_ms(fixed_time());
+    let root = "/home/user/.claude/projects";
+    let files = ["indexed.jsonl", "pending.jsonl", "failed.jsonl"]
+        .into_iter()
+        .map(|name| SourceImportFile {
+            provider: CaptureProvider::Claude,
+            source_format: "claude_projects_jsonl_tree".into(),
+            source_root: root.into(),
+            source_path: format!("{root}/{name}"),
+            file_size_bytes: 42,
+            file_modified_at_ms: observed_at_ms,
+            observed_at_ms,
+            metadata: serde_json::json!({}),
+        })
+        .collect::<Vec<_>>();
+
+    store.upsert_source_import_files(&files).unwrap();
+    store
+        .mark_source_import_file_indexed(
+            CaptureProvider::Claude,
+            SourceImportFileIndexUpdate {
+                source_root: root,
+                source_path: &files[0].source_path,
+                file_size_bytes: 42,
+                file_modified_at_ms: observed_at_ms,
+                indexed_at_ms: observed_at_ms + 10,
+            },
+        )
+        .unwrap();
+    store
+        .mark_source_import_file_failed(
+            CaptureProvider::Claude,
+            root,
+            &files[2].source_path,
+            "bad json",
+            observed_at_ms + 20,
+        )
+        .unwrap();
+    store
+        .mark_source_import_missing_paths_stale(
+            CaptureProvider::Claude,
+            root,
+            &[files[0].source_path.clone(), files[2].source_path.clone()],
+            observed_at_ms + 30,
+        )
+        .unwrap();
+
+    let counts = store.source_import_file_counts().unwrap();
+    assert_eq!(counts.total, 2);
+    assert_eq!(counts.indexed, 1);
+    assert_eq!(counts.pending, 1);
+    assert_eq!(counts.failed, 1);
+    assert_eq!(counts.stale, 1);
+
+    let mut changed_indexed = files[0].clone();
+    changed_indexed.file_size_bytes = 43;
+    changed_indexed.observed_at_ms = observed_at_ms + 40;
+    store
+        .upsert_source_import_files(&[changed_indexed])
+        .unwrap();
+
+    let counts = store.source_import_file_counts().unwrap();
+    assert_eq!(counts.total, 2);
+    assert_eq!(counts.indexed, 0);
+    assert_eq!(counts.pending, 2);
+    assert_eq!(counts.failed, 1);
+    assert_eq!(counts.stale, 1);
+}
+
+#[test]
 fn catalog_schema_includes_import_state_columns() {
     let temp = tempdir();
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();

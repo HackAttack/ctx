@@ -14,19 +14,33 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
     let db_path = database_path(data_root.clone());
     let initialized = db_path.exists();
     let config_path = data_root.join(CONFIG_FILE);
-    let (records, sessions, events, sources, catalog_counts) = if initialized {
-        let store = open_existing_store_snapshot_read_only(&db_path, "status")?;
-        let counts = store.indexed_history_counts()?;
-        (
-            counts.items(),
-            counts.sessions,
-            counts.events,
-            store.capture_source_count()?,
-            store.catalog_session_counts()?,
-        )
-    } else {
-        (0, 0, 0, 0, Default::default())
-    };
+    let (records, sessions, events, sources, catalog_counts, source_import_file_counts) =
+        if initialized {
+            let store = open_existing_store_snapshot_read_only(&db_path, "status")?;
+            let counts = store.indexed_history_counts()?;
+            (
+                counts.items(),
+                counts.sessions,
+                counts.events,
+                store.capture_source_count()?,
+                store.catalog_session_counts()?,
+                store.source_import_file_counts()?,
+            )
+        } else {
+            (0, 0, 0, 0, Default::default(), Default::default())
+        };
+    let inventory_units = catalog_counts
+        .total
+        .saturating_add(source_import_file_counts.total);
+    let pending_inventory_units = catalog_counts
+        .pending
+        .saturating_add(source_import_file_counts.pending);
+    let failed_inventory_units = catalog_counts
+        .failed
+        .saturating_add(source_import_file_counts.failed);
+    let stale_inventory_units = catalog_counts
+        .stale
+        .saturating_add(source_import_file_counts.stale);
 
     if args.json {
         print_json(json!({
@@ -39,11 +53,20 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
             "indexed_sessions": sessions,
             "indexed_events": events,
             "indexed_sources": sources,
+            "inventory_units": inventory_units,
+            "pending_inventory_units": pending_inventory_units,
+            "failed_inventory_units": failed_inventory_units,
+            "stale_inventory_units": stale_inventory_units,
             "cataloged_sessions": catalog_counts.total,
             "indexed_catalog_sessions": catalog_counts.indexed,
             "pending_catalog_sessions": catalog_counts.pending,
             "failed_catalog_sessions": catalog_counts.failed,
             "stale_catalog_sessions": catalog_counts.stale,
+            "source_import_files": source_import_file_counts.total,
+            "indexed_source_import_files": source_import_file_counts.indexed,
+            "pending_source_import_files": source_import_file_counts.pending,
+            "failed_source_import_files": source_import_file_counts.failed,
+            "stale_source_import_files": source_import_file_counts.stale,
             "local_only": true,
             "read_only": true,
         }))?;
@@ -54,11 +77,32 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
         println!("initialized: {initialized}");
         println!("indexed_items: {records}");
         println!("indexed_sources: {sources}");
+        println!("inventory_units: {inventory_units}");
+        println!("pending_inventory_units: {pending_inventory_units}");
+        println!("failed_inventory_units: {failed_inventory_units}");
+        println!("stale_inventory_units: {stale_inventory_units}");
         println!("cataloged_sessions: {}", catalog_counts.total);
         println!("indexed_catalog_sessions: {}", catalog_counts.indexed);
         println!("pending_catalog_sessions: {}", catalog_counts.pending);
         println!("failed_catalog_sessions: {}", catalog_counts.failed);
         println!("stale_catalog_sessions: {}", catalog_counts.stale);
+        println!("source_import_files: {}", source_import_file_counts.total);
+        println!(
+            "indexed_source_import_files: {}",
+            source_import_file_counts.indexed
+        );
+        println!(
+            "pending_source_import_files: {}",
+            source_import_file_counts.pending
+        );
+        println!(
+            "failed_source_import_files: {}",
+            source_import_file_counts.failed
+        );
+        println!(
+            "stale_source_import_files: {}",
+            source_import_file_counts.stale
+        );
         println!("local_only: true");
         println!("read_only: true");
     }

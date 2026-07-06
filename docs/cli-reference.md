@@ -35,18 +35,19 @@ ctx doctor --json
 
 - `setup` creates the data root, opens or creates `work.sqlite`, writes
   `config.toml` when needed, discovers known provider history locations,
-  catalogs Codex sessions, imports discovered native provider sources, optimizes
-  the local search index, and prints next steps. It does not execute
+  inventories local history sources, imports discovered native provider sources,
+  optimizes the local search index, and prints next steps. It does not execute
   history-source plugin commands.
-- `setup --catalog-only` stops after discovery/cataloging. It is useful for
-  fast inventory or troubleshooting, but it does not make history searchable.
+- `setup --catalog-only` stops after source discovery and inventory. The flag
+  name is kept for compatibility; it is useful for fast troubleshooting, but it
+  does not make history searchable.
 - `setup --quiet` performs setup without printing success status lines, import
   summaries, data-root details, or get-started tips. It still exits nonzero and
   prints errors on failure.
 - `status` reports the ctx root, database path, config path, indexed item
-  count, indexed source count, catalog session counters, initialization state,
-  local-only marker, and read-only marker. It does not initialize, migrate, or
-  repair the store.
+  count, indexed source count, inventory counters, legacy Codex catalog
+  counters, initialization state, local-only marker, and read-only marker. It
+  does not initialize, migrate, or repair the store.
 - `status --quiet` performs the same local checks but prints nothing on
   success. Use `status --json` when scripts need the actual state.
 - `doctor` opens local storage and reports validation findings.
@@ -272,7 +273,7 @@ ctx search "release notes" --provider-key example-agent --source-id default
 `search` defaults to `--refresh auto`, which quietly refreshes discovered native
 provider sources and enabled auto history-source plugins before querying indexed
 sessions and events. The refresh is best-effort and keeps JSON stdout reserved
-for the search result object. On large discovered sources or already-cataloged
+for the search result object. On large discovered sources or already-inventoried
 indexes, `auto` serves current results without a foreground catch-up scan; use
 `--refresh strict` or `ctx import --all` when you need a full catch-up before
 querying. Use `--refresh off` to search the existing index without refreshing, or
@@ -365,7 +366,7 @@ Prefer stable read-only `ctx_*` views for scripts:
 - `ctx_sessions`, one row per indexed session;
 - `ctx_events`, one row per indexed event;
 - `ctx_files_touched`, one row per normalized touched-file record;
-- `ctx_sources`, one row per cataloged provider source session.
+- `ctx_sources`, one row per indexed provider source session.
 
 Advanced users can query internal tables directly, but internal table details
 are not the compatibility surface. SQL output is private local history and can

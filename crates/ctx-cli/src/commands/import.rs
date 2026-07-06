@@ -59,7 +59,9 @@ use crate::history_source_plugins::{
     HistorySourcePluginSource,
 };
 use crate::output::print_json;
-use crate::progress::{format_bytes, ProgressArg, ProgressReporter, SourceProgressSnapshot};
+use crate::progress::{
+    format_bytes, format_count, plural, ProgressArg, ProgressReporter, SourceProgressSnapshot,
+};
 use crate::provider_args::ImportFormatArg;
 use crate::provider_sources::{
     discovered_sources, discovered_sources_for_provider, explicit_path_source, import_support_json,
@@ -73,6 +75,7 @@ use crate::{
 
 mod catalog;
 mod explicit;
+mod inventory;
 mod native;
 mod report;
 mod requests;
@@ -81,10 +84,13 @@ mod requests;
 pub(crate) use catalog::{catalog_import_checkpoint_matches, sha256_file_prefix_hex};
 use catalog::{
     import_incremental_codex_session_tree, import_record_for_custom_history,
-    import_record_for_history_source_plugin, import_record_for_source, source_import_stats,
-    source_stats, source_uses_incremental_event_search,
+    import_record_for_history_source_plugin, import_record_for_source, source_stats,
+    source_uses_incremental_event_search,
 };
 use explicit::run_explicit_format_import;
+pub(crate) use inventory::{
+    inventory_available_sources, inventory_import_sources, ImportInventory,
+};
 pub(crate) use native::import_one_source_without_search_refresh;
 use native::{import_one_source, validate_source_import_supported};
 use report::{
@@ -117,6 +123,9 @@ pub(crate) struct ImportTotals {
 pub(crate) struct ImportReport {
     pub(crate) resume: bool,
     pub(crate) totals: ImportTotals,
+    pub(crate) inventory: InventoryTotals,
+    pub(crate) catalog: CatalogTotals,
+    pub(crate) catalog_sources: Vec<Value>,
     pub(crate) sources: Vec<Value>,
 }
 
@@ -125,6 +134,9 @@ impl ImportReport {
         Self {
             resume,
             totals: ImportTotals::default(),
+            inventory: InventoryTotals::default(),
+            catalog: CatalogTotals::default(),
+            catalog_sources: Vec::new(),
             sources: Vec::new(),
         }
     }
@@ -174,7 +186,7 @@ impl ImportTotals {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CatalogTotals {
     pub(crate) sources: usize,
     pub(crate) source_files: usize,
@@ -199,10 +211,56 @@ impl CatalogTotals {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InventoryTotals {
+    pub(crate) sources: usize,
+    pub(crate) source_files: usize,
+    pub(crate) source_bytes: u64,
+    pub(crate) codex_catalog_sources: usize,
+    pub(crate) codex_catalog_sessions: usize,
+    pub(crate) source_import_files: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) enum SourcePreinventory {
+    #[default]
+    None,
+    CodexSessionCatalog,
+    SourceImportFiles(Vec<SourceImportFile>),
+    SourceRoot(SourceImportFile),
+}
+
+impl SourcePreinventory {
+    pub(crate) fn codex_session_tree_cataloged(&self) -> bool {
+        matches!(self, Self::CodexSessionCatalog)
+    }
+
+    pub(crate) fn source_import_files(&self) -> Option<&[SourceImportFile]> {
+        match self {
+            Self::SourceImportFiles(files) => Some(files),
+            Self::None | Self::CodexSessionCatalog | Self::SourceRoot(_) => None,
+        }
+    }
+
+    pub(crate) fn source_root_file(&self) -> Option<&SourceImportFile> {
+        match self {
+            Self::SourceRoot(file) => Some(file),
+            Self::None | Self::CodexSessionCatalog | Self::SourceImportFiles(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SourceStats {
     pub(crate) files: usize,
     pub(crate) bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlannedImportSource {
+    pub(crate) source: SourceInfo,
+    pub(crate) stats: SourceStats,
+    pub(crate) preinventory: SourcePreinventory,
 }
 
 pub(crate) fn run_import(
@@ -268,14 +326,27 @@ pub(crate) fn run_import_internal(
         ));
     }
 
-    let mut planned_sources = Vec::new();
-    let mut planned_total_bytes = 0u64;
-    for source in requests {
-        let stats = source_import_stats(&source)
-            .with_context(|| format!("scan import source {}", source.path.display()))?;
-        planned_total_bytes = planned_total_bytes.saturating_add(stats.bytes);
-        planned_sources.push((source, stats));
-    }
+    let inventory_progress =
+        ProgressReporter::new(options.progress, options.json, options.operation, 0);
+    inventory_progress.message("inventorying", "Preparing local history...");
+    let inventory = inventory_import_sources(&store, requests, args.resume)
+        .context("inventory local history sources")?;
+    let planned_sources = inventory.sources;
+    let planned_total_bytes = inventory.totals.source_bytes;
+    inventory_progress.done(
+        "inventorying",
+        format!(
+            "Found {} history {} ({}).",
+            format_count(planned_sources.len().saturating_add(plugin_requests.len())),
+            plural(
+                planned_sources.len().saturating_add(plugin_requests.len()),
+                "source",
+                "sources"
+            ),
+            format_bytes(planned_total_bytes)
+        ),
+        planned_total_bytes,
+    );
     analytics::insert_count_bucket(
         analytics_properties,
         "sources_seen_bucket",
@@ -294,19 +365,11 @@ pub(crate) fn run_import_internal(
         planned_total_bytes,
     );
     let allow_source_failures = args.all && args.path.is_none();
-    progress.message(
-        "discovering",
-        format!(
-            "found {} import source(s), {}",
-            planned_sources.len().saturating_add(plugin_requests.len()),
-            format_bytes(planned_total_bytes)
-        ),
-    );
     if let Some(warning) = low_disk_space_warning(&db_path, planned_total_bytes) {
         progress.warning(warning);
     }
-    if let Some(warning) = large_import_warning(&planned_sources, planned_total_bytes) {
-        progress.warning(warning);
+    if let Some(notice) = large_import_notice(&planned_sources, planned_total_bytes) {
+        progress.notice(notice);
     }
 
     for plugin_source in plugin_requests {
@@ -373,19 +436,19 @@ pub(crate) fn run_import_internal(
         let final_refresh_required = store.event_search_projection_needs_backfill()?
             || planned_sources
                 .iter()
-                .any(|(source, _)| !source_uses_incremental_event_search(source));
+                .any(|plan| !source_uses_incremental_event_search(&plan.source));
         drop(store);
 
         if options.print_human {
             progress.finish_line();
             println!("sources:");
-            for (source, stats) in &planned_sources {
+            for plan in &planned_sources {
                 println!(
                     "  {} {} ({} files, {})",
-                    source.provider.as_str(),
-                    source.path.display(),
-                    stats.files,
-                    format_bytes(stats.bytes)
+                    plan.source.provider.as_str(),
+                    plan.source.path.display(),
+                    plan.stats.files,
+                    format_bytes(plan.stats.bytes)
                 );
             }
         }
@@ -393,57 +456,59 @@ pub(crate) fn run_import_internal(
         let source_states = Arc::new(Mutex::new(
             planned_sources
                 .iter()
-                .map(|(_, stats)| SourceProgressSnapshot {
+                .map(|plan| SourceProgressSnapshot {
                     completed_bytes: 0,
-                    total_bytes: stats.bytes,
+                    total_bytes: plan.stats.bytes,
                 })
                 .collect::<Vec<_>>(),
         ));
         let handles = planned_sources
             .into_iter()
             .enumerate()
-            .map(|(index, (source, stats))| {
+            .map(|(index, plan)| {
                 let db_path = db_path.clone();
                 let progress_callback = progress.parallel_codex_import_callback(
-                    &source,
+                    &plan.source,
                     index,
                     Arc::clone(&source_states),
                 );
                 let full_rescan = args.resume;
                 let allow_partial_failures = args.partial;
-                let join_source = source.clone();
-                let join_stats = stats;
+                let join_source = plan.source.clone();
+                let join_stats = plan.stats;
+                let failure_source = plan.source.clone();
                 let handle = thread::spawn(move || -> ImportSourceRun {
                     let result = (|| -> Result<ProviderImportSummary> {
                         let mut store = Store::open(&db_path)?;
                         import_one_source_without_search_refresh(
                             &mut store,
-                            &source,
+                            &plan.source,
                             progress_callback,
                             full_rescan,
                             allow_partial_failures,
+                            &plan.preinventory,
                         )
                         .with_context(|| {
                             format!(
                                 "import {} source {}",
-                                source.provider.as_str(),
-                                source.path.display()
+                                plan.source.provider.as_str(),
+                                plan.source.path.display()
                             )
                         })
                     })();
                     match result {
                         Ok(summary) => ImportSourceRun::Imported(ImportSourceOutcome {
                             index,
-                            source,
-                            stats,
+                            source: plan.source,
+                            stats: plan.stats,
                             summary,
                         }),
                         Err(err) => {
                             let error = error_summary(&err);
                             ImportSourceRun::Failed(ImportSourceFailure {
                                 index,
-                                source,
-                                stats,
+                                source: failure_source,
+                                stats: join_stats,
                                 error,
                             })
                         }
@@ -532,52 +597,54 @@ pub(crate) fn run_import_internal(
         }
 
         if final_refresh_required {
-            progress.message("finalizing", "refreshing search index");
+            progress.message("finalizing", "Refreshing search index...");
             let store = Store::open(&db_path)?;
             store.refresh_search_index()?;
         }
     } else {
         let mut completed_source_bytes = 0u64;
-        for (source, stats) in planned_sources {
+        for plan in planned_sources {
             if options.print_human {
                 progress.finish_line();
                 println!(
                     "importing {} {} ({} files, {})",
-                    source.provider.as_str(),
-                    source.path.display(),
-                    stats.files,
-                    format_bytes(stats.bytes)
+                    plan.source.provider.as_str(),
+                    plan.source.path.display(),
+                    plan.stats.files,
+                    format_bytes(plan.stats.bytes)
                 );
             }
-            let source_progress = progress.codex_import_callback(&source, completed_source_bytes);
-            completed_source_bytes = completed_source_bytes.saturating_add(stats.bytes);
+            let source_progress =
+                progress.codex_import_callback(&plan.source, completed_source_bytes);
+            completed_source_bytes = completed_source_bytes.saturating_add(plan.stats.bytes);
             match import_one_source(
                 &mut store,
-                &source,
+                &plan.source,
                 source_progress,
                 args.resume,
                 args.partial,
+                &plan.preinventory,
             ) {
                 Ok(summary) => {
-                    totals.add(&summary, &stats);
+                    totals.add(&summary, &plan.stats);
                     progress.done(
                         "indexing",
-                        format!("imported {}", source.provider.as_str()),
+                        format!("Indexed {}.", source_provider_label(&plan.source)),
                         completed_source_bytes,
                     );
                     if options.print_human {
                         progress.finish_line();
-                        print_source_imported(&source, &summary);
+                        print_source_imported(&plan.source, &summary);
                     }
-                    imported_sources.push(source_import_json(&source, &stats, &summary));
+                    imported_sources.push(source_import_json(&plan.source, &plan.stats, &summary));
                 }
                 Err(err) => {
                     let error = error_summary(&err);
                     if allow_source_failures && !import_error_is_systemic(&error) {
                         let failure = ImportSourceFailure {
                             index: imported_sources.len(),
-                            source,
-                            stats,
+                            source: plan.source,
+                            stats: plan.stats,
                             error,
                         };
                         totals.add_source_failure(&failure.stats);
@@ -604,11 +671,11 @@ pub(crate) fn run_import_internal(
     }
 
     if totals.imported_sessions > 0 || totals.imported_events > 0 || totals.imported_edges > 0 {
-        progress.message("finalizing", "optimizing search index");
+        progress.message("finalizing", "Optimizing search index...");
         Store::open(&db_path)?.optimize_search_index()?;
     }
 
-    progress.message("finalizing", "checkpointing search database");
+    progress.message("finalizing", "Checkpointing search database...");
     Store::open(&db_path)?.checkpoint_wal_truncate_if_larger_than(WAL_TRUNCATE_MIN_BYTES)?;
 
     if options.print_human {
@@ -616,7 +683,11 @@ pub(crate) fn run_import_internal(
     }
     progress.done(
         "finalizing",
-        format!("indexed {} source file(s)", totals.source_files),
+        format!(
+            "Indexed {} source {}.",
+            format_count(totals.source_files),
+            plural(totals.source_files, "file", "files")
+        ),
         totals.source_bytes,
     );
     analytics::insert_count_bucket(
@@ -661,8 +732,17 @@ pub(crate) fn run_import_internal(
     Ok(ImportReport {
         resume: args.resume && native_import_requested,
         totals,
+        inventory: inventory.totals,
+        catalog: inventory.catalog,
+        catalog_sources: inventory.catalog_sources,
         sources: imported_sources,
     })
+}
+
+fn source_provider_label(source: &SourceInfo) -> &'static str {
+    provider_source_spec(source.provider)
+        .map(|spec| spec.display_name)
+        .unwrap_or_else(|| source.provider.as_str())
 }
 
 #[derive(Debug)]
@@ -696,18 +776,18 @@ impl ImportSourceRun {
     }
 }
 
-pub(crate) fn should_parallelize_import(planned_sources: &[(SourceInfo, SourceStats)]) -> bool {
+pub(crate) fn should_parallelize_import(planned_sources: &[PlannedImportSource]) -> bool {
     let _ = planned_sources;
     false
 }
 
-pub(crate) fn large_import_warning(
-    planned_sources: &[(SourceInfo, SourceStats)],
+pub(crate) fn large_import_notice(
+    planned_sources: &[PlannedImportSource],
     planned_total_bytes: u64,
 ) -> Option<String> {
     let planned_total_files = planned_sources
         .iter()
-        .map(|(_, stats)| stats.files)
+        .map(|plan| plan.stats.files)
         .sum::<usize>();
     if planned_total_files < LARGE_IMPORT_SOURCE_FILES_WARNING
         && planned_total_bytes < LARGE_IMPORT_SOURCE_BYTES_WARNING
@@ -715,8 +795,9 @@ pub(crate) fn large_import_warning(
         return None;
     }
     Some(format!(
-        "large import: {} source file(s), {}; initial indexing may use sustained CPU and disk",
-        planned_total_files,
+        "Large first import: scanning {} existing history {} ({}). This may take a while.",
+        format_count(planned_total_files),
+        plural(planned_total_files, "file", "files"),
         format_bytes(planned_total_bytes)
     ))
 }

@@ -88,7 +88,7 @@ impl ProgressReporter {
             return;
         }
         let message = message.into();
-        self.emit(ProgressLine {
+        self.emit_status(ProgressLine {
             phase,
             message,
             completed_bytes: 0,
@@ -110,7 +110,7 @@ impl ProgressReporter {
         if !self.is_enabled() {
             return;
         }
-        self.emit(ProgressLine {
+        self.emit_status(ProgressLine {
             phase,
             message: message.into(),
             completed_bytes,
@@ -151,6 +151,28 @@ impl ProgressReporter {
                 );
             }
             ProgressRenderMode::Plain { .. } => eprintln!("warning: {}", message.as_ref()),
+            ProgressRenderMode::None => {}
+        }
+    }
+
+    pub(crate) fn notice(&self, message: impl AsRef<str>) {
+        if matches!(self.mode, ProgressRenderMode::None) {
+            return;
+        }
+        self.finish_line();
+        match self.mode {
+            ProgressRenderMode::Json => {
+                eprintln!(
+                    "{}",
+                    json!({
+                        "type": "ctx_progress",
+                        "operation": self.operation,
+                        "level": "info",
+                        "message": message.as_ref(),
+                    })
+                );
+            }
+            ProgressRenderMode::Plain { .. } => eprintln!("{}\n", message.as_ref()),
             ProgressRenderMode::None => {}
         }
     }
@@ -326,8 +348,7 @@ impl ProgressReporter {
             ProgressRenderMode::Plain { interactive } => {
                 let rendered = render_progress_line(&line, elapsed);
                 if interactive {
-                    let padding = state.last_line_len.saturating_sub(rendered.len());
-                    eprint!("\r{}{}", rendered, " ".repeat(padding));
+                    eprint!("\r\u{1b}[2K{}", rendered);
                     if line.done {
                         eprintln!();
                         state.last_line_len = 0;
@@ -338,6 +359,25 @@ impl ProgressReporter {
                 } else {
                     eprintln!("{rendered}");
                 }
+            }
+        }
+    }
+
+    fn emit_status(&self, line: ProgressLine) {
+        match self.mode {
+            ProgressRenderMode::None => {}
+            ProgressRenderMode::Json => {
+                let elapsed = self
+                    .state
+                    .lock()
+                    .expect("progress state poisoned")
+                    .started
+                    .elapsed();
+                eprintln!("{}", progress_json(self.operation, &line, elapsed));
+            }
+            ProgressRenderMode::Plain { .. } => {
+                self.finish_line();
+                eprintln!("{}", line.message);
             }
         }
     }
@@ -368,36 +408,96 @@ struct ProgressLine {
 }
 
 fn render_progress_line(line: &ProgressLine, elapsed: StdDuration) -> String {
+    render_progress_line_for_width(line, elapsed, progress_render_width())
+}
+
+fn render_progress_line_for_width(
+    line: &ProgressLine,
+    elapsed: StdDuration,
+    target_width: usize,
+) -> String {
     let percent = progress_percent(line.completed_bytes, line.total_bytes);
-    let bar = progress_bar(percent, 20);
-    let eta = eta_seconds(line.completed_bytes, line.total_bytes, elapsed)
-        .map(format_seconds)
-        .unwrap_or_else(|| "estimating".to_owned());
-    let files = match (line.completed_files, line.total_files) {
-        (Some(done), Some(total)) if total > 0 => format!(" {done}/{total} files"),
-        _ => String::new(),
-    };
-    let events = line
-        .imported_events
-        .map(|events| format!(" {events} events"))
+    let phase = progress_phase_label(line.phase);
+    let bar = progress_bar(percent, 10);
+    let bytes = format_byte_range(line.completed_bytes, line.total_bytes);
+    let files = line
+        .completed_files
+        .filter(|_| !line.done)
+        .map(|done| format!(" {} files", format_count(done)))
         .unwrap_or_default();
     let remaining = if line.done {
         "done".to_owned()
+    } else if let Some(eta) = eta_seconds(line.completed_bytes, line.total_bytes, elapsed) {
+        format_eta_compact(eta)
     } else {
-        format!("{eta} left")
+        "working".to_owned()
     };
-    format!(
-        "{:<10} [{}] {:>5.1}% {}/{}{}{} {} - {}",
-        line.phase,
-        bar,
-        percent,
-        format_bytes(line.completed_bytes),
-        format_bytes(line.total_bytes),
-        files,
-        events,
-        remaining,
-        line.message
-    )
+    let target_width = target_width.clamp(36, 76);
+    let candidates = [
+        format!(
+            "{phase} [{bar}] {:>3.0}%  {bytes}{files}  {remaining}",
+            percent
+        ),
+        format!("{phase} [{bar}] {:>3.0}%  {bytes}  {remaining}", percent),
+        format!("{phase} [{bar}] {:>3.0}%  {remaining}", percent),
+    ];
+    candidates
+        .into_iter()
+        .find(|line| line.chars().count() <= target_width)
+        .map(|line| truncate_progress_line(&line, target_width))
+        .unwrap_or_else(|| {
+            truncate_progress_line(
+                &format!("{phase} {:>3.0}% {remaining}", percent),
+                target_width,
+            )
+        })
+}
+
+fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDuration) -> String {
+    json!({
+        "type": "ctx_progress",
+        "operation": operation,
+        "phase": line.phase,
+        "message": line.message,
+        "completed_bytes": line.completed_bytes,
+        "total_bytes": line.total_bytes,
+        "percent": progress_percent(line.completed_bytes, line.total_bytes),
+        "elapsed_seconds": elapsed.as_secs_f64(),
+        "eta_seconds": eta_seconds(line.completed_bytes, line.total_bytes, elapsed),
+        "completed_files": line.completed_files,
+        "total_files": line.total_files,
+        "imported_events": line.imported_events,
+        "done": line.done,
+    })
+    .to_string()
+}
+
+fn progress_render_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value >= 40)
+        .unwrap_or(80)
+        .saturating_sub(1)
+        .min(76)
+}
+
+fn progress_phase_label(phase: &str) -> String {
+    let mut chars = phase.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => "Working".to_owned(),
+    }
+}
+
+fn truncate_progress_line(line: &str, target_width: usize) -> String {
+    if line.chars().count() <= target_width {
+        return line.to_owned();
+    }
+    let keep = target_width.saturating_sub(1);
+    let mut truncated = line.chars().take(keep).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn progress_percent(completed: u64, total: u64) -> f64 {
@@ -427,29 +527,81 @@ fn progress_bar(percent: f64, width: usize) -> String {
     )
 }
 
-fn format_seconds(seconds: f64) -> String {
+fn format_eta_compact(seconds: f64) -> String {
     let seconds = seconds.max(0.0).round() as u64;
     if seconds < 60 {
-        format!("{seconds}s")
+        format!("~{}s", seconds.max(1))
+    } else if seconds < 3600 {
+        format!("~{}m", (seconds + 30) / 60)
     } else {
-        let minutes = seconds / 60;
-        let rem = seconds % 60;
-        format!("{minutes}m{rem:02}s")
+        format!("~{}h", (seconds + 1800) / 3600)
     }
 }
 
 pub(crate) fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let (value, unit) = scaled_bytes(bytes);
+    if unit == "B" {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {unit}")
+    }
+}
+
+fn format_byte_range(completed: u64, total: u64) -> String {
+    let (_, total_unit) = scaled_bytes(total);
+    if total_unit == "B" {
+        return format!("{completed}/{total} B");
+    }
+    let completed_value = bytes_in_unit(completed, total_unit);
+    let total_value = bytes_in_unit(total, total_unit);
+    format!("{completed_value:.1}/{total_value:.1} {total_unit}")
+}
+
+fn scaled_bytes(bytes: u64) -> (f64, &'static str) {
     let mut value = bytes as f64;
     let mut unit = 0usize;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
+    while value >= 1024.0 && unit + 1 < BYTE_UNITS.len() {
         value /= 1024.0;
         unit += 1;
     }
-    if unit == 0 {
-        format!("{bytes}B")
+    (value, BYTE_UNITS[unit])
+}
+
+fn bytes_in_unit(bytes: u64, target_unit: &str) -> f64 {
+    let mut value = bytes as f64;
+    let target_index = BYTE_UNITS
+        .iter()
+        .position(|unit| *unit == target_unit)
+        .unwrap_or(0);
+    for _ in 0..target_index {
+        value /= 1024.0;
+    }
+    value
+}
+
+const BYTE_UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+pub(crate) fn format_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    let first_group_len = digits.len() % 3;
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0
+            && (index == first_group_len
+                || (index > first_group_len && (index - first_group_len) % 3 == 0))
+        {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+pub(crate) fn plural(value: usize, singular: &'static str, plural: &'static str) -> &'static str {
+    if value == 1 {
+        singular
     } else {
-        format!("{value:.1}{}", UNITS[unit])
+        plural
     }
 }
 pub(crate) fn progress_mode_name(progress: ProgressArg) -> &'static str {
@@ -458,5 +610,47 @@ pub(crate) fn progress_mode_name(progress: ProgressArg) -> &'static str {
         ProgressArg::Plain => "plain",
         ProgressArg::Json => "json",
         ProgressArg::None => "none",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_line() -> ProgressLine {
+        ProgressLine {
+            phase: "indexing",
+            message: "codex".to_owned(),
+            completed_bytes: 7 * 1024 * 1024 * 1024,
+            total_bytes: 14 * 1024 * 1024 * 1024,
+            completed_files: Some(8_420),
+            total_files: Some(32_581),
+            imported_events: Some(418_204),
+            done: false,
+            force: false,
+        }
+    }
+
+    #[test]
+    fn compact_progress_line_omits_trailing_message_and_events() {
+        let rendered =
+            render_progress_line_for_width(&sample_line(), StdDuration::from_secs(120), 76);
+
+        assert!(rendered.chars().count() <= 76, "{rendered}");
+        assert!(rendered.starts_with("Indexing ["), "{rendered}");
+        assert!(rendered.contains("7.0/14.0 GiB"), "{rendered}");
+        assert!(rendered.contains("8,420 files"), "{rendered}");
+        assert!(!rendered.contains("codex"), "{rendered}");
+        assert!(!rendered.contains("events"), "{rendered}");
+    }
+
+    #[test]
+    fn compact_progress_line_drops_files_on_narrow_widths() {
+        let rendered =
+            render_progress_line_for_width(&sample_line(), StdDuration::from_secs(120), 45);
+
+        assert!(rendered.chars().count() <= 45, "{rendered}");
+        assert!(rendered.starts_with("Indexing ["), "{rendered}");
+        assert!(!rendered.contains("files"), "{rendered}");
     }
 }

@@ -3,23 +3,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 
-use ctx_history_capture::{
-    catalog_codex_session_tree, CodexSessionCatalogOptions, ProviderSourceStatus,
-};
-use ctx_history_core::{database_path, CaptureProvider};
+use ctx_history_core::database_path;
 use ctx_history_store::Store;
 
 use crate::analytics::AnalyticsProperties;
 use crate::commands::import::{
-    import_totals_json, run_import_internal, CatalogTotals, ImportReport, ImportRunOptions,
+    import_totals_json, inventory_available_sources, run_import_internal, CatalogTotals,
+    ImportInventory, ImportReport, ImportRunOptions, InventoryTotals,
 };
 use crate::config::CONFIG_FILE;
 use crate::output::print_json;
-use crate::progress::{ProgressArg, ProgressReporter};
-use crate::provider_sources::{discovered_sources, sources_json, SourceInfo};
+use crate::progress::{format_count, plural, ProgressArg, ProgressReporter};
+use crate::provider_sources::{discovered_sources, sources_json};
 use crate::{analytics, config, ImportArgs, SetupArgs};
 
 pub(crate) fn run_setup(
@@ -36,35 +34,21 @@ pub(crate) fn run_setup(
     let sources = discovered_sources();
     let progress_arg = setup_progress_arg(args.progress, quiet);
     let progress = ProgressReporter::new(progress_arg, args.json, "setup", 0);
-    progress.message("cataloging", "cataloging discovered Codex sessions");
-    let (catalog, catalog_sources) = catalog_available_sources(&store, &sources)?;
-    progress.done(
-        "cataloging",
-        format!("cataloged {} Codex sessions", catalog.cataloged_sessions),
-        catalog.source_bytes,
-    );
-    let catalog_counts = store.catalog_session_counts()?;
-    analytics::insert_count_bucket(
-        analytics_properties,
-        "providers_detected_bucket",
-        sources.len() as u64,
-    );
-    analytics::insert_count_bucket(
-        analytics_properties,
-        "cataloged_sessions_bucket",
-        catalog.cataloged_sessions as u64,
-    );
-    analytics::insert_count_bucket(
-        analytics_properties,
-        "pending_sessions_bucket",
-        catalog_counts.pending as u64,
-    );
-    analytics::insert_bytes_bucket(
-        analytics_properties,
-        "catalog_source_bytes_bucket",
-        catalog.source_bytes,
-    );
+    let mut inventory_only = None;
     let import_report = if args.catalog_only {
+        progress.message("inventorying", "Preparing local history...");
+        let inventory = inventory_available_sources(&store, &sources)?;
+        progress.done(
+            "inventorying",
+            format!(
+                "Found {} history {} ({}).",
+                format_count(inventory.totals.sources),
+                plural(inventory.totals.sources, "source", "sources"),
+                crate::progress::format_bytes(inventory.totals.source_bytes)
+            ),
+            inventory.totals.source_bytes,
+        );
+        inventory_only = Some(inventory);
         None
     } else {
         drop(store);
@@ -95,8 +79,50 @@ pub(crate) fn run_setup(
             },
         )?)
     };
+    let inventory_totals = setup_inventory_totals(import_report.as_ref(), inventory_only.as_ref());
+    let catalog = setup_catalog_totals(import_report.as_ref(), inventory_only.as_ref());
+    let catalog_sources = setup_catalog_sources(import_report.as_ref(), inventory_only.as_ref());
     let setup_store = Store::open(&db_path)?;
     let catalog_counts = setup_store.catalog_session_counts()?;
+    let source_import_file_counts = setup_store.source_import_file_counts()?;
+    let pending_inventory_units = catalog_counts
+        .pending
+        .saturating_add(source_import_file_counts.pending);
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "providers_detected_bucket",
+        sources.len() as u64,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "cataloged_sessions_bucket",
+        catalog.cataloged_sessions as u64,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "inventory_sources_bucket",
+        inventory_totals.sources as u64,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "inventory_source_files_bucket",
+        inventory_totals.source_files as u64,
+    );
+    analytics::insert_count_bucket(
+        analytics_properties,
+        "pending_sessions_bucket",
+        catalog_counts.pending as u64,
+    );
+    analytics::insert_bytes_bucket(
+        analytics_properties,
+        "catalog_source_bytes_bucket",
+        catalog.source_bytes,
+    );
+    analytics::insert_bytes_bucket(
+        analytics_properties,
+        "inventory_source_bytes_bucket",
+        inventory_totals.source_bytes,
+    );
     let indexed_items = indexed_history_item_count(&setup_store)?;
 
     if args.json {
@@ -108,6 +134,11 @@ pub(crate) fn run_setup(
             "mode": if args.catalog_only { "catalog_only" } else { "ready" },
             "indexed_items": indexed_items,
             "sources": sources_json(&sources),
+            "inventory": inventory_totals_json(
+                &inventory_totals,
+                &catalog_counts,
+                &source_import_file_counts
+            ),
             "catalog": {
                 "sources": catalog.sources,
                 "source_files": catalog.source_files,
@@ -130,14 +161,20 @@ pub(crate) fn run_setup(
     } else {
         progress.finish_line();
         if !quiet {
+            if progress.is_enabled() {
+                println!();
+            }
             print_setup_status_line(
                 import_report.as_ref(),
                 args.catalog_only,
-                catalog_counts.pending,
+                pending_inventory_units,
                 indexed_items,
             );
             if !setup_has_indexed_content(indexed_items) && catalog.cataloged_sessions > 0 {
-                println!("Cataloged {} session(s).", catalog.cataloged_sessions);
+                println!(
+                    "Prepared {} Codex sessions.",
+                    format_count(catalog.cataloged_sessions)
+                );
             }
             if let Some(report) = &import_report {
                 if report.totals.imported_sources > 0
@@ -145,14 +182,21 @@ pub(crate) fn run_setup(
                     || report.totals.imported_events > 0
                 {
                     println!(
-                        "Imported {} session(s), {} event(s) from {} source(s).",
-                        report.totals.imported_sessions,
-                        report.totals.imported_events,
-                        report.totals.imported_sources
+                        "Indexed {} {}, {} {} from {} {}.",
+                        format_count(report.totals.imported_sessions),
+                        plural(report.totals.imported_sessions, "session", "sessions"),
+                        format_count(report.totals.imported_events),
+                        plural(report.totals.imported_events, "event", "events"),
+                        format_count(report.totals.imported_sources),
+                        plural(report.totals.imported_sources, "source", "sources")
                     );
                 }
                 if report.totals.failed_sources > 0 {
-                    println!("Skipped {} source(s).", report.totals.failed_sources);
+                    println!(
+                        "Skipped {} {}.",
+                        format_count(report.totals.failed_sources),
+                        plural(report.totals.failed_sources, "source", "sources")
+                    );
                 }
             }
             println!("Data: {}", data_root.display());
@@ -202,17 +246,74 @@ pub(crate) fn setup_import_json(report: Option<&ImportReport>) -> Value {
     }
 }
 
+pub(crate) fn inventory_totals_json(
+    inventory: &InventoryTotals,
+    catalog_counts: &ctx_history_store::CatalogCounts,
+    source_import_file_counts: &ctx_history_store::SourceImportFileCounts,
+) -> Value {
+    let units = catalog_counts
+        .total
+        .saturating_add(source_import_file_counts.total);
+    json!({
+        "sources": inventory.sources,
+        "units": units,
+        "source_files": inventory.source_files,
+        "source_bytes": inventory.source_bytes,
+        "source_import_files": inventory.source_import_files,
+        "indexed_source_import_files": source_import_file_counts.indexed,
+        "pending_source_import_files": source_import_file_counts.pending,
+        "failed_source_import_files": source_import_file_counts.failed,
+        "stale_source_import_files": source_import_file_counts.stale,
+        "codex_catalog_sources": inventory.codex_catalog_sources,
+        "codex_catalog_sessions": inventory.codex_catalog_sessions,
+        "indexed_catalog_sessions": catalog_counts.indexed,
+        "pending_catalog_sessions": catalog_counts.pending,
+        "failed_catalog_sessions": catalog_counts.failed,
+        "stale_catalog_sessions": catalog_counts.stale,
+    })
+}
+
+fn setup_inventory_totals(
+    report: Option<&ImportReport>,
+    inventory_only: Option<&ImportInventory>,
+) -> InventoryTotals {
+    report
+        .map(|report| report.inventory.clone())
+        .or_else(|| inventory_only.map(|inventory| inventory.totals.clone()))
+        .unwrap_or_default()
+}
+
+fn setup_catalog_totals(
+    report: Option<&ImportReport>,
+    inventory_only: Option<&ImportInventory>,
+) -> CatalogTotals {
+    report
+        .map(|report| report.catalog.clone())
+        .or_else(|| inventory_only.map(|inventory| inventory.catalog.clone()))
+        .unwrap_or_default()
+}
+
+fn setup_catalog_sources(
+    report: Option<&ImportReport>,
+    inventory_only: Option<&ImportInventory>,
+) -> Vec<Value> {
+    report
+        .map(|report| report.catalog_sources.clone())
+        .or_else(|| inventory_only.map(|inventory| inventory.catalog_sources.clone()))
+        .unwrap_or_default()
+}
+
 pub(crate) fn print_setup_status_line(
     report: Option<&ImportReport>,
     catalog_only: bool,
-    pending_catalog_sessions: usize,
+    pending_inventory_units: usize,
     indexed_items: usize,
 ) {
     if catalog_only {
-        if pending_catalog_sessions > 0 {
-            println!("ctx catalog is ready; import is still pending");
+        if pending_inventory_units > 0 {
+            println!("ctx local history inventory is ready; import is still pending");
         } else {
-            println!("ctx catalog is ready");
+            println!("ctx local history inventory is ready");
         }
         return;
     }
@@ -272,44 +373,4 @@ pub(crate) fn insert_db_size_bucket(
 
 pub(crate) fn setup_has_failed_sources(report: Option<&ImportReport>) -> bool {
     report.is_some_and(|report| report.totals.failed_sources > 0)
-}
-pub(crate) fn catalog_available_sources(
-    store: &Store,
-    sources: &[SourceInfo],
-) -> Result<(CatalogTotals, Vec<Value>)> {
-    let mut totals = CatalogTotals::default();
-    let mut catalog_sources = Vec::new();
-    for source in sources {
-        if source.provider != CaptureProvider::Codex
-            || source.source_format != "codex_session_jsonl_tree"
-            || !source.exists
-            || source.status != ProviderSourceStatus::Available
-        {
-            continue;
-        }
-        let summary = catalog_codex_session_tree(
-            &source.path,
-            store,
-            CodexSessionCatalogOptions {
-                source_root: Some(source.path.clone()),
-                allow_partial_failures: true,
-                ..CodexSessionCatalogOptions::default()
-            },
-        )
-        .with_context(|| format!("catalog Codex sessions from {}", source.path.display()))?;
-        totals.add(&summary);
-        catalog_sources.push(json!({
-            "provider": source.provider.as_str(),
-            "path": source.path,
-            "source_format": source.source_format,
-            "source_files": summary.source_files,
-            "source_bytes": summary.source_bytes,
-            "cataloged_sessions": summary.cataloged_sessions,
-            "cached_sessions": summary.cached_sessions,
-            "parsed_sessions": summary.parsed_sessions,
-            "skipped_sessions": summary.skipped_sessions,
-            "failed_sessions": summary.failed_sessions,
-        }));
-    }
-    Ok((totals, catalog_sources))
 }

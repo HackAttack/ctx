@@ -1302,6 +1302,7 @@ fn antigravity_cli_imports_native_transcript_tree() {
         "antigravity",
         "--path",
         &fixture,
+        "--partial",
         "--json",
     ]));
     assert_eq!(imported["schema_version"], 1);
@@ -1322,6 +1323,69 @@ fn antigravity_cli_imports_native_transcript_tree() {
         "--json",
     ]));
     assert_search_provider_oracle(&search, "antigravity", "write_to_file", 1, "tool_call");
+}
+
+#[test]
+fn antigravity_cli_inventory_prefers_full_transcript_over_live_partial() {
+    let temp = tempdir();
+    let source_fixture = PathBuf::from(provider_history_fixture("antigravity/v1/brain"));
+    let brain = temp.path().join("brain");
+    let logs = brain
+        .join("agy-success")
+        .join(".system_generated")
+        .join("logs");
+    fs::create_dir_all(&logs).unwrap();
+    fs::copy(
+        source_fixture
+            .join("agy-success")
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript_full.jsonl"),
+        logs.join("transcript_full.jsonl"),
+    )
+    .unwrap();
+    fs::write(logs.join("transcript.jsonl"), b"{\"type\":\"partial\"\n").unwrap();
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "antigravity",
+        "--path",
+        brain.to_str().unwrap(),
+        "--partial",
+        "--json",
+    ]));
+    assert_eq!(imported["totals"]["source_files"], 1, "{imported:#}");
+    assert_eq!(imported["totals"]["failed"], 0, "{imported:#}");
+    assert_eq!(imported["totals"]["imported_sessions"], 1, "{imported:#}");
+}
+
+#[test]
+fn antigravity_cli_malformed_default_import_is_atomic() {
+    let temp = tempdir();
+    let fixture = provider_history_fixture("antigravity/v1/brain");
+
+    let stderr = failure_stderr(ctx(&temp).args([
+        "import",
+        "--provider",
+        "antigravity",
+        "--path",
+        &fixture,
+        "--json",
+    ]));
+    assert!(stderr.contains("failed with 1 failure"), "{stderr}");
+    assert_import_store_empty_after_atomic_failure(&temp);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "write_to_file",
+        "--provider",
+        "antigravity",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert!(search["results"].as_array().unwrap().is_empty());
 }
 
 #[test]

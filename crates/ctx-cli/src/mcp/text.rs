@@ -29,7 +29,15 @@ fn render_status_text(value: &Value) -> String {
     push_key_value(&mut out, "data_root", value.get("data_root"));
     push_key_value(&mut out, "database_path", value.get("database_path"));
     push_key_value(&mut out, "indexed_items", value.get("indexed_items"));
+    push_key_value(&mut out, "indexed_sessions", value.get("indexed_sessions"));
+    push_key_value(&mut out, "indexed_events", value.get("indexed_events"));
     push_key_value(&mut out, "indexed_sources", value.get("indexed_sources"));
+    push_key_value(&mut out, "inventory_units", value.get("inventory_units"));
+    push_key_value(
+        &mut out,
+        "pending_inventory_units",
+        value.get("pending_inventory_units"),
+    );
     push_key_value(
         &mut out,
         "cataloged_sessions",
@@ -49,6 +57,16 @@ fn render_status_text(value: &Value) -> String {
         &mut out,
         "failed_catalog_sessions",
         value.get("failed_catalog_sessions"),
+    );
+    push_key_value(
+        &mut out,
+        "source_import_files",
+        value.get("source_import_files"),
+    );
+    push_key_value(
+        &mut out,
+        "pending_source_import_files",
+        value.get("pending_source_import_files"),
     );
     push_key_value(&mut out, "read_only", value.get("read_only"));
     push_key_value(&mut out, "local_only", value.get("local_only"));

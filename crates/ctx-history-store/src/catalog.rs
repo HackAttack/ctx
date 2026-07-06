@@ -77,6 +77,15 @@ pub struct CatalogCounts {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceImportFileCounts {
+    pub total: usize,
+    pub indexed: usize,
+    pub stale: usize,
+    pub pending: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexedHistoryCounts {
     pub sessions: usize,
     pub events: usize,
@@ -623,15 +632,10 @@ impl Store {
                 "{} WHERE provider = ?1
                        AND source_root = ?2
                        AND is_stale = 0
-                       AND (
-                           indexed_status != 'indexed'
-                           OR indexed_file_size_bytes IS NULL
-                           OR indexed_file_modified_at_ms IS NULL
-                           OR indexed_file_size_bytes != file_size_bytes
-                           OR indexed_file_modified_at_ms != file_modified_at_ms
-                       )
+                       AND {}
                      ORDER BY source_path",
-                source_import_file_select_sql("")
+                source_import_file_select_sql(""),
+                source_import_file_pending_condition_sql("source_import_files")
             )
             .as_str(),
         )?;
@@ -756,6 +760,52 @@ impl Store {
         })
     }
 
+    pub fn source_import_file_counts(&self) -> Result<SourceImportFileCounts> {
+        let total = self.conn.query_row(
+            "SELECT COUNT(*) FROM source_import_files WHERE is_stale = 0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let indexed = self.conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM source_import_files
+            WHERE is_stale = 0
+              AND indexed_status = 'indexed'
+              AND indexed_file_size_bytes = file_size_bytes
+              AND indexed_file_modified_at_ms = file_modified_at_ms
+            "#,
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let stale = self.conn.query_row(
+            "SELECT COUNT(*) FROM source_import_files WHERE is_stale != 0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let pending = self.conn.query_row(
+            format!(
+                "SELECT COUNT(*) FROM source_import_files WHERE is_stale = 0 AND {}",
+                source_import_file_pending_condition_sql("source_import_files")
+            )
+            .as_str(),
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let failed = self.conn.query_row(
+            "SELECT COUNT(*) FROM source_import_files WHERE is_stale = 0 AND indexed_status = 'failed'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        Ok(SourceImportFileCounts {
+            total,
+            indexed,
+            stale,
+            pending,
+            failed,
+        })
+    }
+
     pub fn indexed_history_item_count(&self) -> Result<usize> {
         Ok(self.indexed_history_counts()?.items())
     }
@@ -842,6 +892,20 @@ fn catalog_pending_import_condition_sql(alias: &str) -> String {
                   )
                 LIMIT 1
             )
+        )
+        "#
+    )
+}
+
+fn source_import_file_pending_condition_sql(alias: &str) -> String {
+    format!(
+        r#"
+        (
+            {alias}.indexed_status != 'indexed'
+            OR {alias}.indexed_file_size_bytes IS NULL
+            OR {alias}.indexed_file_modified_at_ms IS NULL
+            OR {alias}.indexed_file_size_bytes != {alias}.file_size_bytes
+            OR {alias}.indexed_file_modified_at_ms != {alias}.file_modified_at_ms
         )
         "#
     )

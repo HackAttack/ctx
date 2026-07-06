@@ -22,11 +22,10 @@ use text::render_tool_text;
 
 use super::{
     cli_supported_provider, compact_json, config::CONFIG_FILE, discovered_plugin_sources_json,
-    discovered_sources, event_window, event_window_json, indexed_history_item_count,
-    mark_share_safe, raw_sql_result_json, search_filters, search_has_intent,
-    session_transcript_json, sources_json, OutputFormat, ProviderArg, RefreshArg, SearchDto,
-    SearchFilterInput, SearchIntentInput, SearchRefreshReport, SourceIdentityFilterArgs,
-    TranscriptMode, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
+    discovered_sources, event_window, event_window_json, mark_share_safe, raw_sql_result_json,
+    search_filters, search_has_intent, session_transcript_json, sources_json, OutputFormat,
+    ProviderArg, RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput, SearchRefreshReport,
+    SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -357,28 +356,49 @@ fn tool_status(data_root: &Path) -> Result<Value> {
     let initialized = db_path.exists();
     let (
         indexed_items,
+        indexed_sessions,
+        indexed_events,
         indexed_sources,
         cataloged_sessions,
         indexed_catalog_sessions,
         pending_catalog_sessions,
         failed_catalog_sessions,
         stale_catalog_sessions,
+        source_import_files,
+        indexed_source_import_files,
+        pending_source_import_files,
+        failed_source_import_files,
+        stale_source_import_files,
     ) = if initialized {
         let store = Store::open_read_only(&db_path)
             .with_context(|| format!("open read-only ctx store {}", db_path.display()))?;
         let catalog_counts = store.catalog_session_counts()?;
+        let source_import_file_counts = store.source_import_file_counts()?;
+        let indexed_counts = store.indexed_history_counts()?;
         (
-            indexed_history_item_count(&store)?,
+            indexed_counts.items(),
+            indexed_counts.sessions,
+            indexed_counts.events,
             store.capture_source_count()?,
             catalog_counts.total,
             catalog_counts.indexed,
             catalog_counts.pending,
             catalog_counts.failed,
             catalog_counts.stale,
+            source_import_file_counts.total,
+            source_import_file_counts.indexed,
+            source_import_file_counts.pending,
+            source_import_file_counts.failed,
+            source_import_file_counts.stale,
         )
     } else {
-        (0, 0, 0, 0, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     };
+    let inventory_units = cataloged_sessions.saturating_add(source_import_files);
+    let pending_inventory_units =
+        pending_catalog_sessions.saturating_add(pending_source_import_files);
+    let failed_inventory_units = failed_catalog_sessions.saturating_add(failed_source_import_files);
+    let stale_inventory_units = stale_catalog_sessions.saturating_add(stale_source_import_files);
 
     Ok(json!({
         "schema_version": 1,
@@ -387,12 +407,23 @@ fn tool_status(data_root: &Path) -> Result<Value> {
         "database_path": db_path,
         "config_path": data_root.join(CONFIG_FILE),
         "indexed_items": indexed_items,
+        "indexed_sessions": indexed_sessions,
+        "indexed_events": indexed_events,
         "indexed_sources": indexed_sources,
+        "inventory_units": inventory_units,
+        "pending_inventory_units": pending_inventory_units,
+        "failed_inventory_units": failed_inventory_units,
+        "stale_inventory_units": stale_inventory_units,
         "cataloged_sessions": cataloged_sessions,
         "indexed_catalog_sessions": indexed_catalog_sessions,
         "pending_catalog_sessions": pending_catalog_sessions,
         "failed_catalog_sessions": failed_catalog_sessions,
         "stale_catalog_sessions": stale_catalog_sessions,
+        "source_import_files": source_import_files,
+        "indexed_source_import_files": indexed_source_import_files,
+        "pending_source_import_files": pending_source_import_files,
+        "failed_source_import_files": failed_source_import_files,
+        "stale_source_import_files": stale_source_import_files,
         "local_only": true,
         "read_only": true,
     }))
