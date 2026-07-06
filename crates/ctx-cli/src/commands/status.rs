@@ -10,7 +10,11 @@ use crate::output::print_json;
 use crate::store_util::open_existing_store_snapshot_read_only;
 use crate::JsonArgs;
 
-pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf) -> Result<()> {
+pub(crate) fn run_status(
+    args: JsonArgs,
+    data_root: PathBuf,
+    quiet: bool,
+) -> Result<()> {
     let db_path = database_path(data_root.clone());
     let initialized = db_path.exists();
     let config_path = data_root.join(CONFIG_FILE);
@@ -47,7 +51,7 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf) -> Result<()> {
             "local_only": true,
             "read_only": true,
         }))?;
-    } else {
+    } else if !quiet {
         println!("data_root: {}", data_root.display());
         println!("database_path: {}", db_path.display());
         println!("config_path: {}", config_path.display());

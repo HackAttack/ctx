@@ -26,6 +26,7 @@ pub(crate) fn run_setup(
     args: SetupArgs,
     data_root: PathBuf,
     analytics_properties: &mut AnalyticsProperties,
+    quiet: bool,
 ) -> Result<()> {
     fs::create_dir_all(&data_root)?;
     let db_path = database_path(data_root.clone());
@@ -133,42 +134,44 @@ pub(crate) fn run_setup(
             catalog_counts.pending,
             indexed_items,
         );
-        if !setup_has_indexed_content(indexed_items) && catalog.cataloged_sessions > 0 {
-            println!("Cataloged {} session(s).", catalog.cataloged_sessions);
-        }
-        if let Some(report) = &import_report {
-            if report.totals.imported_sources > 0
-                || report.totals.imported_sessions > 0
-                || report.totals.imported_events > 0
-            {
-                println!(
-                    "Imported {} session(s), {} event(s) from {} source(s).",
-                    report.totals.imported_sessions,
-                    report.totals.imported_events,
-                    report.totals.imported_sources
-                );
+        if !quiet {
+            if !setup_has_indexed_content(indexed_items) && catalog.cataloged_sessions > 0 {
+                println!("Cataloged {} session(s).", catalog.cataloged_sessions);
             }
-            if report.totals.failed_sources > 0 {
-                println!("Skipped {} source(s).", report.totals.failed_sources);
+            if let Some(report) = &import_report {
+                if report.totals.imported_sources > 0
+                    || report.totals.imported_sessions > 0
+                    || report.totals.imported_events > 0
+                {
+                    println!(
+                        "Imported {} session(s), {} event(s) from {} source(s).",
+                        report.totals.imported_sessions,
+                        report.totals.imported_events,
+                        report.totals.imported_sources
+                    );
+                }
+                if report.totals.failed_sources > 0 {
+                    println!("Skipped {} source(s).", report.totals.failed_sources);
+                }
             }
-        }
-        println!("Data: {}", data_root.display());
-        println!();
-        println!("Get started:");
-        if args.catalog_only {
-            println!("  ctx import --all");
-            println!("  ctx sources");
-        } else if setup_has_indexed_content(indexed_items) {
-            println!("  ctx search \"test failure\"");
-            println!("  ctx show event <event-id> --window 3");
-            println!("  ctx show session <session-id>");
-            println!("  ctx sources");
-            if setup_has_failed_sources(import_report.as_ref()) {
-                println!("  ctx import --provider <provider>");
+            println!("Data: {}", data_root.display());
+            println!();
+            println!("Get started:");
+            if args.catalog_only {
+                println!("  ctx import --all");
+                println!("  ctx sources");
+            } else if setup_has_indexed_content(indexed_items) {
+                println!("  ctx search \"test failure\"");
+                println!("  ctx show event <event-id> --window 3");
+                println!("  ctx show session <session-id>");
+                println!("  ctx sources");
+                if setup_has_failed_sources(import_report.as_ref()) {
+                    println!("  ctx import --provider <provider>");
+                }
+            } else {
+                println!("  ctx sources");
+                println!("  ctx import --all");
             }
-        } else {
-            println!("  ctx sources");
-            println!("  ctx import --all");
         }
     }
     Ok(())

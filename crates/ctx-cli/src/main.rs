@@ -1,4 +1,5 @@
 use std::{
+    env,
     path::PathBuf,
     time::{Duration as StdDuration, Instant},
 };
@@ -77,6 +78,12 @@ const DEFAULT_VISIBLE_SOURCE_PROVIDERS: &[CaptureProvider] = &[
 struct Cli {
     #[arg(long, env = "CTX_DATA_ROOT", global = true)]
     data_root: Option<PathBuf>,
+    #[arg(
+        long,
+        global = true,
+        help = "Suppress non-essential setup/status output (also via CTX_QUIET=1)"
+    )]
+    quiet: bool,
     #[command(subcommand)]
     command: CommandRoot,
 }
@@ -508,6 +515,7 @@ fn main() -> Result<()> {
     let json_output = cli.command.json_output();
     let allow_background_upgrade = cli.command.allows_background_upgrade();
     let mut analytics_properties = command_analytics_properties(&cli.command);
+    let quiet = quiet_output(cli.quiet);
     let data_root = cli
         .data_root
         .clone()
@@ -530,8 +538,10 @@ fn main() -> Result<()> {
     }
 
     let result = match cli.command {
-        CommandRoot::Setup(args) => run_setup(args, data_root.clone(), &mut analytics_properties),
-        CommandRoot::Status(args) => run_status(args, data_root.clone()),
+        CommandRoot::Setup(args) => {
+            run_setup(args, data_root.clone(), &mut analytics_properties, quiet)
+        }
+        CommandRoot::Status(args) => run_status(args, data_root.clone(), quiet),
         CommandRoot::Sources(args) => {
             run_sources(args, data_root.clone(), &mut analytics_properties)
         }
