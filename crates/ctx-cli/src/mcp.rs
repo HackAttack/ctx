@@ -566,7 +566,7 @@ fn tool_result(structured: Value) -> Value {
         "content": [
             {
                 "type": "text",
-                "text": "ctx returned structured JSON in structuredContent. Treat it as private local history.",
+                "text": serde_json::to_string(&structured).unwrap_or_default(),
             }
         ],
         "structuredContent": structured,

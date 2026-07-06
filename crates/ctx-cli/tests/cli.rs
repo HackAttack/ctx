@@ -4610,7 +4610,12 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     assert!(providers.iter().any(|provider| provider == "cline"));
     assert!(providers.iter().any(|provider| provider == "roo"));
     assert!(providers.iter().any(|provider| provider == "roo_code"));
-    let status = &responses[2]["result"]["structuredContent"];
+    let status: Value = serde_json::from_str(
+        responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["initialized"], false);
     assert_eq!(status["read_only"], true);
@@ -4743,7 +4748,12 @@ fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
         ],
     );
 
-    let sql = &responses[1]["result"]["structuredContent"];
+    let sql: Value = serde_json::from_str(
+        responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(sql["item_type"], "sql_result");
     assert_eq!(sql["read_only"], true);
     assert_eq!(sql["share_safe"], false);
@@ -4752,14 +4762,14 @@ fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
 
     let write = &responses[2]["result"];
     assert_eq!(write["isError"], true);
-    assert!(write["structuredContent"]["error"]
+    assert!(write["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("SQL query must be read-only"));
 
     let budget = &responses[3]["result"];
     assert_eq!(budget["isError"], true);
-    assert!(budget["structuredContent"]["error"]
+    assert!(budget["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("SQL result preview budget"));
@@ -4835,7 +4845,12 @@ fn mcp_show_session_caps_transcript_events() {
         ],
     );
 
-    let transcript = &responses[1]["result"]["structuredContent"];
+    let transcript: Value = serde_json::from_str(
+        responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(transcript["truncated"]["events"], true);
     assert_eq!(transcript["truncated"]["max_events"], 200);
     assert_eq!(transcript["events"].as_array().unwrap().len(), 200);
@@ -4885,16 +4900,17 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
             }),
         ],
     );
-    let search = &search_responses[1]["result"]["structuredContent"];
+    let search: Value = serde_json::from_str(
+        search_responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(search["schema_version"], 1);
     assert_eq!(search["query"], "onboarding");
     assert_eq!(search["freshness"]["mode"], "off");
     assert_eq!(search["freshness"]["status"], "skipped");
     assert_eq!(search["share_safe"], false);
-    assert_eq!(
-        search_responses[1]["result"]["content"][0]["text"],
-        "ctx returned structured JSON in structuredContent. Treat it as private local history."
-    );
     let first_result = &search["results"][0];
     let ctx_session_id = first_result["ctx_session_id"].as_str().unwrap();
     let ctx_event_id = first_result["ctx_event_id"].as_str().unwrap();
@@ -4939,7 +4955,12 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
         ],
     );
 
-    let session = &show_responses[1]["result"]["structuredContent"];
+    let session: Value = serde_json::from_str(
+        show_responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(session["item_type"], "session_transcript");
     assert_eq!(session["ctx_session_id"], ctx_session_id);
     assert_eq!(session["mode"], "lite");
@@ -4947,7 +4968,12 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
         event["ctx_session_id"] == ctx_session_id && event["ctx_event_id"].is_string()
     }));
 
-    let event = &show_responses[2]["result"]["structuredContent"];
+    let event: Value = serde_json::from_str(
+        show_responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(event["item_type"], "event_window");
     assert_eq!(event["ctx_event_id"], ctx_event_id);
     assert_eq!(event["ctx_session_id"], ctx_session_id);
@@ -5013,19 +5039,19 @@ fn mcp_search_requires_query_term_or_file_without_opening_store() {
 
     let result = &responses[1]["result"];
     assert_eq!(result["isError"], true);
-    assert!(result["structuredContent"]["error"]
+    assert!(result["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("search needs a query or file"));
     let hidden_provider = &responses[2]["result"];
     assert_eq!(hidden_provider["isError"], true);
-    assert!(hidden_provider["structuredContent"]["error"]
+    assert!(hidden_provider["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("provider must be one of"));
     let alias_result = &responses[3]["result"];
     assert_eq!(alias_result["isError"], true);
-    assert!(alias_result["structuredContent"]["error"]
+    assert!(alias_result["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("ctx store is not initialized"));
@@ -5095,14 +5121,24 @@ fn mcp_sources_and_search_support_history_source_plugins() {
         )],
     );
 
-    let sources = responses[1]["result"]["structuredContent"]["sources"]
+    let sources: Value = serde_json::from_str(
+        responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(sources["sources"]
         .as_array()
-        .unwrap();
-    assert!(sources
+        .unwrap()
         .iter()
         .any(|source| source["history_source"] == "hermes/default"));
 
-    let search = &responses[2]["result"]["structuredContent"];
+    let search: Value = serde_json::from_str(
+        responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(search["filters"]["provider"], "custom");
     assert_eq!(search["filters"]["history_source"], "hermes/default");
     assert_eq!(search["results"][0]["history_source"], "hermes/default");
@@ -5152,7 +5188,12 @@ fn mcp_search_excludes_active_codex_session_by_default_when_available() {
         ],
         &[("CODEX_THREAD_ID", "codex-session-root")],
     );
-    let excluded_search = &excluded[1]["result"]["structuredContent"];
+    let excluded_search: Value = serde_json::from_str(
+        excluded[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(excluded_search["results"].as_array().unwrap().len(), 0);
     assert_eq!(
         excluded_search["filters"]["exclude_provider_session"]["provider"],
@@ -5189,7 +5230,12 @@ fn mcp_search_excludes_active_codex_session_by_default_when_available() {
         ],
         &[("CODEX_THREAD_ID", "codex-session-root")],
     );
-    let included_search = &included[1]["result"]["structuredContent"];
+    let included_search: Value = serde_json::from_str(
+        included[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(included_search["results"].as_array().unwrap().len(), 1);
     assert!(included_search["filters"]["exclude_provider_session"].is_null());
 }
