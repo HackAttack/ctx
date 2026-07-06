@@ -10,28 +10,10 @@ use crate::{
 pub const PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 pub const PROVIDER_SUPPORT_MATRIX_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderMatrixPriority {
-    P0,
-    P1,
-    #[default]
-    P2,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderSupportStatus {
-    LocalImport,
-    LocalImportWhenSupported,
-    SupportedLive,
-    SupportedImport,
-    SupportedWrapper,
-    NormalizedImportOnly,
-    FixtureOnly,
-    DetectedUnsupported,
-    #[default]
-    Blocked,
+    Supported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
@@ -381,8 +363,6 @@ pub struct ProviderSupportPath {
     #[serde(default)]
     pub fidelity: Fidelity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub proof: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
@@ -391,9 +371,6 @@ pub struct ProviderSupportEntry {
     pub id: ProviderId,
     #[serde(alias = "name", default)]
     pub display_name: String,
-    #[serde(default)]
-    pub priority: ProviderMatrixPriority,
-    #[serde(default)]
     pub status: ProviderSupportStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_provider: Option<CaptureProvider>,
@@ -418,13 +395,9 @@ pub struct ProviderSupportEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redaction_notes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blockers: Vec<String>,
+    pub limitations: Vec<String>,
     #[serde(default)]
     pub public_docs: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tests: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fixture_paths: Vec<String>,
     #[serde(default = "super::default_metadata")]
     pub metadata: Value,
 }
@@ -519,23 +492,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_support_matrix_records_local_import_statuses() {
+    fn provider_support_matrix_records_supported_statuses() {
         let matrix = fs::read_to_string(workspace_file("docs/provider-support-matrix.json"))
             .expect("provider support matrix scaffold should exist");
         let parsed: ProviderSupportMatrixDocument =
             serde_json::from_str(&matrix).expect("matrix scaffold should parse");
 
         for (id, status, env_name) in [
-            (
-                ProviderId::Codex,
-                ProviderSupportStatus::LocalImport,
-                "Codex",
-            ),
-            (
-                ProviderId::Pi,
-                ProviderSupportStatus::LocalImportWhenSupported,
-                "Pi",
-            ),
+            (ProviderId::Codex, ProviderSupportStatus::Supported, "Codex"),
+            (ProviderId::Pi, ProviderSupportStatus::Supported, "Pi"),
         ] {
             let entry = parsed
                 .providers
@@ -545,6 +510,32 @@ mod tests {
             assert_eq!(entry.status, status, "{id:?} support status changed");
             assert_eq!(entry.display_name, env_name);
         }
+    }
+
+    #[test]
+    fn provider_support_matrix_rejects_missing_or_legacy_statuses() {
+        let missing_status = r#"{
+          "schema_version": 1,
+          "providers": [{
+            "id": "codex",
+            "display_name": "Codex",
+            "capture_provider": "codex",
+            "implemented_paths": [{"kind": "native_import", "source_format": "codex_session_jsonl"}]
+          }]
+        }"#;
+        assert!(serde_json::from_str::<ProviderSupportMatrixDocument>(missing_status).is_err());
+
+        let legacy_status = r#"{
+          "schema_version": 1,
+          "providers": [{
+            "id": "codex",
+            "display_name": "Codex",
+            "status": "local_import_when_supported",
+            "capture_provider": "codex",
+            "implemented_paths": [{"kind": "native_import", "source_format": "codex_session_jsonl"}]
+          }]
+        }"#;
+        assert!(serde_json::from_str::<ProviderSupportMatrixDocument>(legacy_status).is_err());
     }
 
     #[test]

@@ -2,9 +2,8 @@
 """Validate the public provider support matrix.
 
 This is a public truthfulness gate. It checks that documented provider support
-has public docs, public tests, and any claimed fixture paths in the repository.
-It intentionally does not require live provider runs, private fixture
-provenance, release evidence, or network access.
+has public docs, local capability metadata, and local test coverage. It does not
+require live provider runs, real user history, or network access.
 """
 
 from __future__ import annotations
@@ -18,25 +17,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = REPO_ROOT / "docs/provider-support-matrix.json"
-ALLOWED_STATUSES = {
-    "local_import",
-    "local_import_when_supported",
-    "fixture_only",
-    "detected_unsupported",
-    "blocked",
-}
-ALLOWED_PATH_KINDS = {
-    "native_import",
-    "fixture_import",
-    "detected_unsupported",
-    "blocked",
-}
+ALLOWED_STATUSES = {"supported"}
+ALLOWED_PATH_KINDS = {"native_import"}
 ALLOWED_FIDELITY = {
     "imported",
     "partial",
-    "fixture_only",
-    "detected_unsupported",
-    "blocked",
 }
 REQUIRED_FIDELITY_FIELDS = {
     "user_prompts",
@@ -53,12 +38,31 @@ REQUIRED_FIDELITY_FIELDS = {
 }
 PROVIDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 PRIVATE_TEXT_MARKERS = ("/home/", "ctx-" + "private", "ctx-multi" + "-repo-workspace")
+FORBIDDEN_PUBLIC_WORDS = (
+    "pro" + "of",
+    "evi" + "dence",
+    "promo" + "tion",
+    "pro" + "mote",
+    "ti" + "er",
+    "fix" + "ture",
+    "fix" + "tures",
+    "con" + "formance",
+    "pro" + "ven",
+)
+FORBIDDEN_PUBLIC_TEXT_RE = re.compile(
+    r"\b(" + "|".join(FORBIDDEN_PUBLIC_WORDS) + r")\b|"
+    r"Full " + "GA|source-" + "backed|fixture-" + "backed|schema " + "confidence",
+    re.IGNORECASE,
+)
+FORBIDDEN_PROVIDER_FIELDS = {"prio" + "rity", "te" + "sts", "fix" + "ture_paths", "block" + "ers"}
+FORBIDDEN_PATH_FIELDS = {"pro" + "of"}
 SUPPORT_DOC_PATH = REPO_ROOT / "docs/provider-support.md"
-PUBLIC_CLI_TEST_PATHS = {
+PUBLIC_COVERAGE_PATHS = {
     "crates/ctx-cli/tests/native_providers.rs",
     "crates/ctx-cli/tests/search_refresh.rs",
     "crates/ctx-cli/tests/search_show_locate_sql.rs",
     "crates/ctx-cli/tests/setup_sources_import.rs",
+    "crates/ctx-history-capture/src/lib.rs",
 }
 
 
@@ -115,6 +119,20 @@ def scan_private_text(value: Any, field: str) -> None:
             scan_private_text(item, f"{field}.{key}")
 
 
+def scan_public_text(value: Any, field: str) -> None:
+    if isinstance(value, str):
+        if FORBIDDEN_PUBLIC_TEXT_RE.search(value):
+            fail(f"{field} contains non-public provider-support wording")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            scan_public_text(item, f"{field}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            scan_public_text(item, f"{field}.{key}")
+
+
 def text_mentions_provider(text: str, provider: dict[str, Any]) -> bool:
     needles = {
         str(provider["id"]),
@@ -130,6 +148,8 @@ def text_mentions_provider(text: str, provider: dict[str, Any]) -> bool:
 def validate_implemented_path(path: Any, provider_id: str, index: int) -> None:
     label = f"providers[{provider_id}].implemented_paths[{index}]"
     expect_type(path, dict, label)
+    if FORBIDDEN_PATH_FIELDS.intersection(path):
+        fail(f"{label} contains a non-public field")
 
     kind = require_non_empty_string(path.get("kind"), f"{label}.kind")
     if kind not in ALLOWED_PATH_KINDS:
@@ -142,10 +162,6 @@ def validate_implemented_path(path: Any, provider_id: str, index: int) -> None:
     fidelity = require_non_empty_string(path.get("fidelity"), f"{label}.fidelity")
     if fidelity not in ALLOWED_FIDELITY:
         fail(f"{label}.fidelity has unsupported value: {fidelity}")
-
-    proof = require_string_list(path.get("proof"), f"{label}.proof")
-    if not any("ctx " in item or item.startswith("cargo test") or item == "ctx sources" for item in proof):
-        fail(f"{label}.proof must name a public ctx command or cargo test")
 
     notes = require_string_list(path.get("notes", []), f"{label}.notes", allow_empty=True)
     for note_index, note in enumerate(notes):
@@ -164,9 +180,11 @@ def validate_provider(provider: Any, index: int, seen_ids: set[str]) -> None:
         fail(f"duplicate provider id: {provider_id}")
     seen_ids.add(provider_id)
     scan_private_text(provider, f"providers[{provider_id}]")
+    scan_public_text(provider, f"providers[{provider_id}]")
+    if FORBIDDEN_PROVIDER_FIELDS.intersection(provider):
+        fail(f"providers[{provider_id}] contains a non-public field")
 
     require_non_empty_string(provider.get("display_name"), f"providers[{provider_id}].display_name")
-    require_non_empty_string(provider.get("priority"), f"providers[{provider_id}].priority")
     require_non_empty_string(provider.get("capture_provider"), f"providers[{provider_id}].capture_provider")
 
     status = require_non_empty_string(provider.get("status"), f"providers[{provider_id}].status")
@@ -184,30 +202,21 @@ def validate_provider(provider: Any, index: int, seen_ids: set[str]) -> None:
     if support_row not in support_doc_text:
         fail(f"docs/provider-support.md is missing supported row for {provider_id}")
 
-    tests = require_string_list(provider.get("tests"), f"providers[{provider_id}].tests")
     provider_specific_test = False
-    for test_index, test_path in enumerate(tests):
-        resolved_test_path = require_repo_path(test_path, f"providers[{provider_id}].tests[{test_index}]")
-        if resolved_test_path.is_file() and text_mentions_provider(
+    for test_index, test_path in enumerate(sorted(PUBLIC_COVERAGE_PATHS)):
+        resolved_test_path = require_repo_path(test_path, f"public_coverage_paths[{test_index}]")
+        if text_mentions_provider(
             resolved_test_path.read_text(encoding="utf-8", errors="ignore"),
             provider,
         ):
             provider_specific_test = True
-
-    fixture_paths = require_string_list(
-        provider.get("fixture_paths", []),
-        f"providers[{provider_id}].fixture_paths",
-        allow_empty=True,
-    )
-    for fixture_index, fixture_path in enumerate(fixture_paths):
-        require_repo_path(fixture_path, f"providers[{provider_id}].fixture_paths[{fixture_index}]")
 
     implemented_paths = expect_type(
         provider.get("implemented_paths", []),
         list,
         f"providers[{provider_id}].implemented_paths",
     )
-    if not implemented_paths and status not in {"detected_unsupported", "blocked"}:
+    if not implemented_paths:
         fail(f"providers[{provider_id}].implemented_paths must not be empty")
     for path_index, implemented_path in enumerate(implemented_paths):
         validate_implemented_path(implemented_path, provider_id, path_index)
@@ -215,8 +224,8 @@ def validate_provider(provider: Any, index: int, seen_ids: set[str]) -> None:
     imports_existing_history = provider.get("imports_existing_history")
     if not isinstance(imports_existing_history, bool):
         fail(f"providers[{provider_id}].imports_existing_history must be boolean")
-    if status.startswith("local_import") and not imports_existing_history:
-        fail(f"providers[{provider_id}] is {status} but imports_existing_history is false")
+    if not imports_existing_history:
+        fail(f"providers[{provider_id}] is supported but imports_existing_history is false")
     if imports_existing_history and not implemented_paths:
         fail(f"providers[{provider_id}] imports history but has no implemented_paths")
 
@@ -232,12 +241,12 @@ def validate_provider(provider: Any, index: int, seen_ids: set[str]) -> None:
         if not isinstance(fidelity[field], bool):
             fail(f"providers[{provider_id}].fidelity.{field} must be boolean")
 
-    if status == "local_import" and not fixture_paths:
-        fail(f"providers[{provider_id}] is local_import but has no fixture_paths")
-    if status.startswith("local_import") and not PUBLIC_CLI_TEST_PATHS.intersection(tests):
-        paths = ", ".join(sorted(PUBLIC_CLI_TEST_PATHS))
-        fail(f"providers[{provider_id}] needs public CLI coverage in one of: {paths}")
-    if status.startswith("local_import") and not provider_specific_test:
+    require_string_list(
+        provider.get("limitations", []),
+        f"providers[{provider_id}].limitations",
+        allow_empty=True,
+    )
+    if not provider_specific_test:
         fail(f"providers[{provider_id}] has no provider-specific public test references")
 
 

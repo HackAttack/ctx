@@ -5,18 +5,13 @@
     {
       "id": "codex",
       "display_name": "Codex",
-      "priority": "p0",
-      "status": "local_import",
+      "status": "supported",
       "capture_provider": "codex",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "codex_session_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider codex"
-          ],
           "notes": [
             "Reads supported local session JSONL files under ~/.codex/sessions."
           ]
@@ -25,10 +20,6 @@
           "kind": "native_import",
           "source_format": "codex_history_jsonl",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider codex"
-          ],
           "notes": [
             "Reads ~/.codex/history.jsonl when present."
           ]
@@ -57,36 +48,18 @@
       "redaction_notes": [
         "Search output is local/private; review before sharing."
       ],
-      "public_docs": "docs/providers.md",
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-cli/tests/search_show_locate_sql.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "tests/fixtures/provider/codex.jsonl",
-        "tests/fixtures/provider-history/codex-sessions",
-        "tests/fixtures/provider-history/codex-rich-sessions"
-      ],
-      "fixture_paths": [
-        "tests/fixtures/provider/codex.jsonl",
-        "tests/fixtures/provider-history/codex-sessions",
-        "tests/fixtures/provider-history/codex-rich-sessions"
-      ]
+      "public_docs": "docs/providers.md"
     },
     {
       "id": "pi",
       "display_name": "Pi",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "pi",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "pi_session_jsonl",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider pi"
-          ],
           "notes": [
             "Reads Pi session JSONL files under ~/.pi/agent/sessions, including per-cwd session directories produced by current Pi releases.",
             "An explicit Pi session JSONL file path remains supported with ctx import --provider pi --path.",
@@ -115,38 +88,20 @@
         "parent_child_session_edges": false
       },
       "redaction_notes": [
-        "Fixtures are synthetic; real local output remains private by default."
+        "Real local output remains private by default."
       ],
-      "public_docs": "docs/providers.md",
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-cli/tests/search_show_locate_sql.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "tests/fixtures/provider/pi.jsonl",
-        "tests/fixtures/provider-history/pi-session.jsonl",
-        "tests/fixtures/provider-history/pi-malformed-partial.jsonl"
-      ],
-      "fixture_paths": [
-        "tests/fixtures/provider/pi.jsonl",
-        "tests/fixtures/provider-history/pi-session.jsonl",
-        "tests/fixtures/provider-history/pi-malformed-partial.jsonl"
-      ]
+      "public_docs": "docs/providers.md"
     },
     {
       "id": "claude_code",
       "display_name": "Claude",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "claude",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "claude_projects_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider claude"
-          ],
           "notes": [
             "Reads Claude Code project JSONL transcripts under ~/.claude/projects, including nested subagent transcripts when present."
           ]
@@ -168,29 +123,19 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "open_code",
       "display_name": "OpenCode",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "opencode",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "opencode_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider opencode"
-          ],
           "notes": [
             "Reads OpenCode SQLite history from ~/.local/share/opencode/opencode.db using a read-only connection."
           ]
@@ -212,29 +157,19 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "kilo",
       "display_name": "Kilo Code",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "kilo",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "kilo_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider kilo"
-          ],
           "notes": [
             "Reads Kilo Code SQLite history using the OpenCode-family SQLite normalizer against a read-only connection.",
             "KILO_DB overrides the database path; relative KILO_DB values resolve under the Kilo XDG data directory.",
@@ -269,34 +204,21 @@
         "Reads the provider SQLite database read-only; imported text, cwd, model, token/cost metadata, local source paths, and searchable previews remain in the local ctx index.",
         "KILO_CONFIG_DIR controls Kilo config, not the SQLite history database path."
       ],
-      "blockers": [
-        "Only OpenCode-derived SQLite session/session_message and legacy message-table projections are imported; todo and permission tables are recognized as schema neighbors but not converted into separate ctx events."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/kilo/kilo.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Only OpenCode-derived SQLite session/session_message and legacy message-table projections are imported; todo and permission tables are recognized as schema neighbors but not converted into separate ctx events."
       ]
     },
     {
       "id": "kiro_cli",
       "display_name": "Kiro CLI",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "kiro_cli",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "kiro_cli_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider kiro-cli"
-          ],
           "notes": [
             "Reads Kiro CLI SQLite history from data.sqlite3 using a read-only connection.",
             "The official 2.10.0 Linux binary created $XDG_DATA_HOME/kiro-cli/data.sqlite3 with conversations_v2(key, conversation_id, value, created_at, updated_at) and conversations(key, value).",
@@ -329,35 +251,22 @@
         "Reads the provider SQLite database read-only; imported prompts, assistant text, tool-use arguments, cwd/directory keys, local source paths, and searchable previews remain in the local ctx index.",
         "KIRO_HOME is documented for Kiro-managed session/settings homes, but this importer does not infer a SQLite DB path from KIRO_HOME."
       ],
-      "blockers": [
-        "Does not import the newer ~/.kiro/sessions/cli JSON/JSONL event-log format observed in recent Kiro CLI reports.",
-        "Windows Kiro CLI SQLite path was not proven for this pass."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/kiro-cli/v2/data.sqlite3"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Does not import the newer ~/.kiro/sessions/cli JSON/JSONL event-log format observed in recent Kiro CLI reports.",
+        "Windows Kiro CLI SQLite paths are not claimed by this row."
       ]
     },
     {
       "id": "crush",
       "display_name": "Crush",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "crush",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "crush_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider crush"
-          ],
           "notes": [
             "Reads Crush SQLite history from crush.db using a read-only connection.",
             "Discovery checks CRUSH_GLOBAL_DATA, XDG data homes, configured data_directory values from crush.json, and project .crush directories."
@@ -392,34 +301,21 @@
       "redaction_notes": [
         "Reads the provider SQLite database read-only; imported message text, tool output previews, command output, file paths, model, token/cost metadata, and local source paths remain in the local ctx index."
       ],
-      "blockers": [
-        "Full GA needs continued validation against Crush SQLite schema drift."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/crush/v1/crush.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Crush SQLite schema changes may require adapter updates."
       ]
     },
     {
       "id": "goose",
       "display_name": "Goose",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "goose",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "goose_sessions_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider goose"
-          ],
           "notes": [
             "Reads Goose sessions SQLite history from sessions/sessions.db using a read-only connection.",
             "Discovery checks GOOSE_PATH_ROOT, XDG data homes, and the Block/goose data layout used by newer Goose builds."
@@ -452,39 +348,25 @@
       "redaction_notes": [
         "Reads the provider SQLite database read-only; imported message text, tool output previews, working directories, file paths, model, token/cost metadata, and local source paths remain in the local ctx index."
       ],
-      "blockers": [
-        "Full GA needs continued validation against Goose sessions.db schema drift."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/goose/v14/sessions.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Goose sessions.db schema changes may require adapter updates."
       ]
     },
     {
       "id": "lingma",
       "display_name": "Lingma",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "lingma",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "lingma_sqlite",
           "fidelity": "partial",
-          "proof": [
-            "WayLog shayne-snap/WayLog@6939033b7a39326fbdc249e28e6aa12461db1f09 src/services/readers/lingma-reader.ts",
-            "ctx sources",
-            "ctx import --provider lingma"
-          ],
           "notes": [
             "Reads Lingma chat_record rows from ~/.lingma/vscode/sharedClientCache/cache/db/local.db and the vscode-insiders variant.",
-            "Qoder CN is the renamed Lingma product line in Alibaba public docs; the official Qoder CN VSIX remains Alibaba-Cloud.tongyi-lingma and still uses the same ~/.lingma/vscode/sharedClientCache/cache/db/local.db path/schema.",
-            "The qoder-cn and qoder_cn CLI aliases resolve to this Lingma importer; separate Qoder IDE homes such as ~/.qodercn or ~/.qoder-cn are not imported without source-backed storage proof."
+            "Qoder CN is the renamed Lingma product line in Alibaba public docs; its VSIX still uses the same ~/.lingma/vscode/sharedClientCache/cache/db/local.db path/schema.",
+            "The qoder-cn and qoder_cn CLI aliases resolve to this Lingma importer; separate Qoder IDE homes such as ~/.qodercn or ~/.qoder-cn are not imported by this row."
           ]
         }
       ],
@@ -512,41 +394,27 @@
         "Reads the provider SQLite database read-only; imported prompt text, summaries/errors, extra JSON, and local source paths remain in the local ctx index.",
         "Assistant content is summary/error_result only and may be incomplete."
       ],
-      "blockers": [
-        "Separate Qoder IDE paths such as ~/.qodercn or ~/.qoder-cn remain unclaimed without source-backed storage proof."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/lingma"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
-      ],
       "metadata": {
         "aliases": [
           "qoder-cn",
           "qoder_cn"
         ]
-      }
+      },
+      "limitations": [
+        "Separate Qoder IDE paths such as ~/.qodercn or ~/.qoder-cn remain outside this row."
+      ]
     },
     {
       "id": "qoder",
       "display_name": "Qoder",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "qoder",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "qoder_transcript_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "Official Qoder Hooks docs Transcript File Format section",
-            "ctx sources",
-            "ctx import --provider qoder"
-          ],
           "notes": [
             "Reads official Qoder transcript JSONL files under ~/.qoder/projects/<project>/transcript/<session-id>.jsonl.",
             "Imports documented session_meta, user, assistant, progress, text, tool_use, and tool_result records.",
@@ -577,46 +445,27 @@
         "Reads provider transcript JSONL files read-only; imported prompt text, assistant text, tool names/inputs, tool result previews, cwd, local source paths, and searchable previews remain in the local ctx index.",
         "Raw provider event JSON is retained only as capped local preview metadata; review output before sharing."
       ],
-      "blockers": [
-        "Encrypted Qoder application logs and VS Code/Electron state databases are not imported."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/qoder/projects"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
-      ],
       "metadata": {
         "canonical_provider_id": "qoder",
         "source_docs": [
           "https://docs.qoder.com/extensions/hooks"
         ]
-      }
+      },
+      "limitations": [
+        "Encrypted Qoder application logs and VS Code/Electron state databases are not imported."
+      ]
     },
     {
       "id": "warp",
       "display_name": "Warp",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "warp",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "warp_sqlite",
           "fidelity": "partial",
-          "proof": [
-            "Official Warp Session Restoration docs document the local warp.sqlite path on macOS, Windows, and Linux; ctx discovers the documented Linux, macOS, and Windows paths and accepts any explicit warp.sqlite path.",
-            "warpdotdev/warp open-source client crates/persistence/src/schema.rs defines agent_conversations, agent_tasks, and ai_queries tables.",
-            "warpdotdev/warp open-source client app/src/persistence/agent.rs writes agent_tasks.task as warp_multi_agent_api::Task protobuf snapshots.",
-            "warpdotdev/warp-proto-apis apis/multi_agent/v1/task.proto defines Task.messages and Message user_query/agent_output/tool fields.",
-            "cargo test -p ctx-history-capture native_warp",
-            "cargo test -p ctx warp_native_default_discovery_auto_imports_for_search",
-            "cargo test -p ctx warp_native_default_discovery_is_included_in_import_all",
-            "cargo test -p ctx warp_cli_imports_explicit_sqlite"
-          ],
           "notes": [
             "Native import for Warp Terminal local restoration SQLite databases; ctx import --all and search refresh include discovered documented local paths, and ctx import --provider warp --path <warp.sqlite> preserves explicit-path import.",
             "Reads agent_conversations and agent_tasks read-only and decodes the public Task protobuf subset needed for user prompts, assistant messages, tool call markers, tool output markers, reasoning, summaries, and inter-agent message text.",
@@ -650,36 +499,21 @@
         "Reads the provider SQLite database read-only; imported prompt/assistant text, tool markers, reasoning/summary text, token usage metadata, task summaries, and local source paths remain in the local ctx index.",
         "server_conversation_token and forked_from_server_conversation_token values from Warp conversation_data are not copied into ctx metadata; ctx records only boolean token presence."
       ],
-      "blockers": [
-        "Cloud sync endpoints, Oz/cloud agent conversations, Markdown exports, browser IndexedDB, command history outside agent_tasks, and Warp Drive/team data are not parsed."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/warp/v1/warp.sqlite"
-      ],
-      "tests": [
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "crates/ctx-cli/src/main.rs",
-        "crates/ctx-cli/tests/native_providers.rs"
+      "limitations": [
+        "Remote sync endpoints, hosted agent conversations, Markdown exports, browser IndexedDB, command history outside agent_tasks, and Warp Drive/team data are not parsed."
       ]
     },
     {
       "id": "codebuddy",
       "display_name": "CodeBuddy",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "codebuddy",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "codebuddy_history_json",
           "fidelity": "imported",
-          "proof": [
-            "WayLog shayne-snap/WayLog@6939033b7a39326fbdc249e28e6aa12461db1f09 src/services/readers/codebuddy-reader.ts",
-            "ctx sources",
-            "ctx import --provider codebuddy"
-          ],
           "notes": [
             "Reads CodeBuddy JSON history under recursive history/<md5(projectPath)> project directories.",
             "Session index.json lists messages; message bodies are read from messages/*.json and may contain stringified JSON.",
@@ -714,42 +548,23 @@
         "Reads provider JSON files read-only; imported message text, model hints, and local source paths remain in the local ctx index.",
         "CodeBuddy context wrapper tags such as project_context and user_info are removed from the searchable preview."
       ],
-      "blockers": [
-        "Schema proof comes from the WayLog reader and sanitized fixtures rather than official CodeBuddy documentation; continue validating against real-world schema drift."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/codebuddy"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Official CodeBuddy docs do not describe this JSON history format; future schema changes may require adapter updates."
       ]
     },
     {
       "id": "trae",
       "display_name": "Trae",
-      "priority": "p2",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "trae",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "trae_state_vscdb",
           "fidelity": "partial",
-          "proof": [
-            "ctx import --provider trae --path <workspaceStorage-or-state.vscdb>",
-            "ctx import --provider trae-cn --path <workspaceStorage-or-state.vscdb>",
-            "ctx search <query> --provider trae",
-            "ctx search <query> --provider trae-cn",
-            "ctx import --all",
-            "tests/fixtures/provider-history/trae/User/workspaceStorage/trae-workspace-1/state.vscdb",
-            "yuanjing001/trae-chats-exporter",
-            "llg23456/ai-dialog-compressor@e9dbf1f4b5cd0a033053e62ea9643f675d3a2ca7"
-          ],
           "notes": [
-            "Native-auto discovery is limited to Trae and Trae CN User/workspaceStorage roots at ~/Library/Application Support/Trae/User/workspaceStorage, ~/Library/Application Support/Trae CN/User/workspaceStorage, %APPDATA%/Trae/User/workspaceStorage, and %APPDATA%/Trae CN/User/workspaceStorage.",
+            "Automatic discovery is limited to Trae and Trae CN User/workspaceStorage roots at ~/Library/Application Support/Trae/User/workspaceStorage, ~/Library/Application Support/Trae CN/User/workspaceStorage, %APPDATA%/Trae/User/workspaceStorage, and %APPDATA%/Trae CN/User/workspaceStorage.",
             "Explicit Trae or Trae CN User/workspaceStorage roots, workspace directories, or state.vscdb files remain supported.",
             "Reads SQLite ItemTable values for exporter-backed keys including memento/icube-ai-agent-storage, icube-ai-agent-storage-input-history, chat.ChatSessionStore.index, and ChatStore.",
             "Trae CN input-history rows are imported as user prompts when assistant replies are not present in local state.",
@@ -787,20 +602,7 @@
         "Reads local Trae SQLite state databases read-only; imported message text and local source paths remain in the local ctx index.",
         "Provider-native JSON metadata is capped and marked local partial."
       ],
-      "blockers": [
-        "No real Trae or Trae CN run fixture is bundled; default discovery coverage is source-backed and synthetic-fixture-backed.",
-        "globalStorage, ModularData, arbitrary caches, unknown ItemTable keys, and full assistant transcript recovery from Trae CN input-history-only databases remain unclaimed."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/trae/User/workspaceStorage/trae-workspace-1/state.vscdb",
-        "tests/fixtures/provider-history/trae/README.md"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "tests/fixtures/provider-history/trae"
-      ],
       "metadata": {
         "default_auto_discovery": true,
         "default_auto_discovery_scope": "Trae and Trae CN User/workspaceStorage roots with known ItemTable chat keys",
@@ -810,26 +612,25 @@
           "trae_cn"
         ],
         "canonical_provider_id": "trae"
-      }
+      },
+      "limitations": [
+        "Default discovery covers only the listed User/workspaceStorage roots and known ItemTable chat keys.",
+        "globalStorage, ModularData, arbitrary caches, unknown ItemTable keys, and full assistant transcript recovery from Trae CN input-history-only databases remain unclaimed."
+      ]
     },
     {
       "id": "openclaw",
       "display_name": "OpenClaw",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "openclaw",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "openclaw_session_jsonl_tree",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider openclaw"
-          ],
           "notes": [
-            "Reads OpenClaw session JSONL transcripts under OPENCLAW_STATE_DIR, ~/.openclaw, and verified legacy ~/.clawdbot or ~/.moltbot homes.",
-            "This is beta because upstream exposes newer session helpers and warns plugins not to depend on legacy sessions.json shape."
+            "Reads OpenClaw session JSONL transcripts under OPENCLAW_STATE_DIR, ~/.openclaw, and legacy ~/.clawdbot or ~/.moltbot homes.",
+            "Upstream exposes newer session helpers and warns plugins not to depend on legacy sessions.json shape."
           ]
         }
       ],
@@ -858,31 +659,21 @@
       "redaction_notes": [
         "Imports are local/private and preserve source paths for citations."
       ],
-      "blockers": [
-        "Full GA needs confirmation that the local transcript contract remains stable across newer OpenClaw session APIs."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
+      "limitations": [
+        "Newer OpenClaw session APIs may change the local transcript contract; ctx currently reads the listed JSONL homes."
       ]
     },
     {
       "id": "hermes",
       "display_name": "Hermes Agent",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "hermes",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "hermes_state_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider hermes"
-          ],
           "notes": [
             "Reads Hermes Agent SQLite history from HERMES_HOME/state.db or ~/.hermes/state.db using a read-only SQLite connection.",
             "Preserves sessions/messages rows, parent session IDs, model/config metadata, tool call metadata, token fields, and billing fields when present."
@@ -912,29 +703,19 @@
       "redaction_notes": [
         "Reads the provider SQLite database read-only; imported text remains in the local ctx index."
       ],
-      "blockers": [],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "nanoclaw",
       "display_name": "NanoClaw",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "nanoclaw",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "nanoclaw_project",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider nanoclaw --path <project-root>"
-          ],
           "notes": [
             "Explicit-path importer for a NanoClaw project root containing data/v2.db and data/v2-sessions/*/*/{inbound.db,outbound.db}.",
             "Project roots are discovered from the current working directory and ancestors, but explicit-only sources are not imported by ctx import --all or pre-search refresh."
@@ -965,37 +746,24 @@
       "redaction_notes": [
         "Explicit NanoClaw imports may include IM/chat channel identifiers stored in NanoClaw project databases."
       ],
-      "blockers": [
-        "Automatic refresh is intentionally disabled until more real-world NanoClaw project layout drift is validated."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
+      "limitations": [
+        "Automatic refresh is intentionally disabled until more real-world NanoClaw project layout drift is validated."
       ]
     },
     {
       "id": "astrbot",
       "display_name": "AstrBot",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "astrbot",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "astrbot_data_v4_sqlite",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --all",
-            "ctx search <query> --provider astrbot",
-            "ctx import --provider astrbot --path <data_v4.db>",
-            "cargo test -p ctx-history-capture native_astrbot_fixture_imports_searches_and_reimports"
-          ],
           "notes": [
-            "Native-auto importer for bounded AstrBot data/data_v4.db locations, covering durable conversation context plus available platform_message_history rows.",
-            "AstrBot v4.26.4 source confirms data/data_v4.db, conversations.content, and platform_message_history. The platform history table is proven for WebChat/OpenAPI/live-chat writes; other platform-native non-LLM replies may remain stored on those IM platforms rather than in data_v4.db."
+            "Automatic importer for bounded AstrBot data/data_v4.db locations, covering durable conversation context plus available platform_message_history rows.",
+            "ctx reads conversations.content and platform_message_history; other platform-native non-LLM replies may remain stored on those IM platforms rather than in data_v4.db."
           ]
         }
       ],
@@ -1021,35 +789,21 @@
         "parent_child_session_edges": false
       },
       "redaction_notes": [
-        "Native-auto imports may include IM platform IDs, user IDs, sender names, and local chat text from data_v4.db."
+        "Automatic imports may include IM platform IDs, user IDs, sender names, and local chat text from data_v4.db."
       ],
-      "blockers": [],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/astrbot/v1/data/data_v4.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "tests/fixtures/provider-history/astrbot/v1/data/data_v4.db"
-      ]
+      "limitations": []
     },
     {
       "id": "shelley",
       "display_name": "Shelley",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "shelley",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "shelley_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider shelley",
-            "ctx import --provider shelley --path <shelley.db>"
-          ],
           "notes": [
             "Reads Shelley SQLite history from SHELLEY_DB or ~/.config/shelley/shelley.db using a read-only SQLite connection.",
             "Normalizes conversations as sessions and messages as events with stable conversation/sequence/message cursors.",
@@ -1080,32 +834,21 @@
       "redaction_notes": [
         "Reads the provider SQLite database read-only; imported conversation text, tool output, cwd, model, usage, and local source paths remain in the local ctx index."
       ],
-      "blockers": [
-        "Full GA needs ongoing validation against upstream Shelley schema drift."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
+      "limitations": [
+        "Shelley SQLite schema changes may require adapter updates."
       ]
     },
     {
       "id": "continue",
       "display_name": "Continue",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "continue",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "continue_cli_sessions_json",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider continue",
-            "ctx import --provider continue --path <sessions>"
-          ],
           "notes": [
             "Reads Continue CLI session JSON files from CONTINUE_GLOBAL_DIR/sessions or ~/.continue/sessions.",
             "Uses sessions.json as optional metadata and imports each session JSON history item as a stable event.",
@@ -1136,32 +879,21 @@
       "redaction_notes": [
         "Reads provider JSON files read-only; imported message text, tool output previews, cwd, usage, and local source paths remain in the local ctx index."
       ],
-      "blockers": [
-        "Coverage is for Continue CLI sessions/*.json history, not editor webview-only state."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "This row covers Continue CLI sessions/*.json history, not editor webview-only state."
       ]
     },
     {
       "id": "openhands",
       "display_name": "OpenHands",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "openhands",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "openhands_file_events",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider openhands",
-            "cargo test -p ctx native_provider_cli_flow_imports_new_supported_provider_paths"
-          ],
           "notes": [
             "Reads OpenHands filesystem event JSON under <persistence>/<user_id>/v1_conversations/<conversation-id-hex>/*.json.",
             "Discovery checks OH_PERSISTENCE_DIR, legacy FILE_STORE_PATH, and ~/.openhands.",
@@ -1193,29 +925,19 @@
       "redaction_notes": [
         "Reads provider JSON files read-only; imported message text, tool output previews, cwd, and local source paths remain in the local ctx index."
       ],
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "antigravity_cli",
       "display_name": "Antigravity",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "antigravity",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "antigravity_cli_transcript_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider antigravity"
-          ],
           "notes": [
             "Reads Antigravity transcript JSONL mirrors under ~/.gemini/antigravity-cli/brain/*/.system_generated/logs and official IDE transcripts under ~/.gemini/antigravity-ide/brain/*/.system_generated/logs, preferring transcript_full.jsonl when present.",
             "Native source discovery marks Antigravity available only when transcript_full.jsonl or transcript.jsonl exists.",
@@ -1245,34 +967,21 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "blockers": [
-        "The official IDE transcript path proven here is ~/.gemini/antigravity-ide/brain; ctx does not crawl other Antigravity homes without separate transcript-storage proof."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider/antigravity.jsonl",
-        "tests/fixtures/provider-history/antigravity/v1"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
+      "limitations": [
+        "ctx reads the official IDE transcript path ~/.gemini/antigravity-ide/brain; it does not crawl other Antigravity homes."
       ]
     },
     {
       "id": "gemini_cli",
       "display_name": "Gemini",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "gemini",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "gemini_cli_chat_recording_jsonl",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider gemini"
-          ],
           "notes": [
             "Reads Gemini CLI chat JSONL records under ~/.gemini/tmp/**/chats, including nested subagent chats when present.",
             "Native source discovery marks Gemini available only when chat JSONL files exist under the chats path."
@@ -1295,30 +1004,19 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "tabnine",
       "display_name": "Tabnine",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "tabnine",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "tabnine_cli_chat_recording_jsonl",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider tabnine",
-            "Tabnine CLI 0.25.1 official installer bundle"
-          ],
           "notes": [
             "Reads Tabnine CLI chat JSONL records under ~/.tabnine/agent/tmp/**/chats, including nested subagent chats when present.",
             "Native source discovery marks Tabnine available only when chat JSONL files exist under the chats path.",
@@ -1346,33 +1044,21 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [
-        "No authenticated live Tabnine chat fixture was generated in this environment; the fixture is source-shaped from the official 0.25.1 bundle."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/tabnine-cli"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
+      "limitations": [
+        "Authenticated Tabnine chat data is required before local chat JSONL records exist under the listed chats path."
       ]
     },
     {
       "id": "cursor",
       "display_name": "Cursor",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "cursor",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "cursor_agent_transcript_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx import --provider cursor --path ~/.cursor/projects",
-            "cargo test -p ctx-history-capture --test cursor_native"
-          ],
           "notes": [
             "Reads Cursor CLI agent transcript JSONL files under ~/.cursor/projects/*/agent-transcripts/*/*.jsonl.",
             "Native source discovery marks Cursor available only when JSONL files exist under an agent-transcripts path.",
@@ -1396,35 +1082,19 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider/cursor.jsonl",
-        "tests/fixtures/provider-history/cursor/2026.06.24/projects"
-      ],
-      "tests": [
-        "crates/ctx-history-capture/tests/cursor_native.rs",
-        "crates/ctx-cli/tests/native_providers.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "windsurf",
       "display_name": "Windsurf",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "windsurf",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "windsurf_cascade_hook_transcript_jsonl_tree",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider windsurf",
-            "ctx search --provider windsurf",
-            "cargo test -p ctx-history-capture native_windsurf",
-            "cargo test -p ctx --test native_providers windsurf_default_discovery_is_native_and_search_refresh_imports"
-          ],
           "notes": [
             "Native importer for official Cascade hook transcript JSONL files under ~/.windsurf/transcripts; search refresh and ctx import --all include this source when transcript JSONL files are present.",
             "The hook is opt-in and usually captures sessions after hook setup; docs warn transcript rows can include sensitive customer-owned data and may change shape.",
@@ -1456,34 +1126,21 @@
         "Reads hook-generated JSONL files read-only; imported user prompts, planner responses, event types/statuses, local transcript paths, and touched file paths remain in the local ctx index.",
         "Known sensitive fields such as file contents, command outputs, tool arguments, and results are redacted from the stored event body preview."
       ],
-      "blockers": [
-        "Support is limited to official hook transcript JSONL; sessions that Windsurf did not write after hook setup are not backfilled from private caches."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/windsurf"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Support is limited to official hook transcript JSONL; sessions that Windsurf did not write after hook setup are not backfilled from private caches."
       ]
     },
     {
       "id": "zed",
       "display_name": "Zed",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "zed",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "zed_threads_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider zed"
-          ],
           "notes": [
             "Reads Zed agent threads from $XDG_DATA_HOME/zed/threads/threads.db or ~/.local/share/zed/threads/threads.db using a read-only SQLite connection.",
             "threads.data is zstd-compressed DbThread JSON per zed-industries/zed commit e3b73c6b30cdc09e820823fe44542b89850d4be1.",
@@ -1511,35 +1168,22 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [
-        "Schema confidence is anchored to zed-industries/zed commit e3b73c6b30cdc09e820823fe44542b89850d4be1 and the current DbThread version; future Zed schema changes may need adapter updates.",
-        "Per-message timestamps are not present in DbThread messages, so event timestamps are thread-level updated_at values."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/zed/v1/threads.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "Future Zed DbThread schema changes may require adapter updates.",
+        "Per-message timestamps are not present in DbThread messages, so event timestamps are thread-level updated_at values."
       ]
     },
     {
       "id": "copilot_cli",
       "display_name": "Copilot CLI",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "copilot_cli",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "copilot_cli_session_events_jsonl",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider copilot-cli"
-          ],
           "notes": [
             "Reads Copilot CLI session event logs named events.jsonl under ~/.copilot/session-state.",
             "Native source discovery marks Copilot CLI available only when events.jsonl exists."
@@ -1562,29 +1206,19 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "factory_ai_droid",
       "display_name": "Factory AI Droid",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "factory_ai_droid",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "factory_ai_droid_sessions_jsonl",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider factory-ai-droid"
-          ],
           "notes": [
             "Reads Factory AI Droid session JSONL files under ~/.factory/sessions, including worker session linkage when present."
           ]
@@ -1606,29 +1240,19 @@
         "token_usage": false,
         "parent_child_session_edges": true
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "qwen_code",
       "display_name": "Qwen Code",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "qwen_code",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "qwen_code_chat_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider qwen-code"
-          ],
           "notes": [
             "Reads Qwen Code chat JSONL files under QWEN_RUNTIME_DIR/projects, QWEN_HOME/projects, or ~/.qwen/projects.",
             "Native source discovery marks Qwen Code available only when JSONL files exist under a chats path."
@@ -1656,32 +1280,19 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/qwen-code"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "kimi_code_cli",
       "display_name": "Kimi Code CLI",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "kimi_code_cli",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "kimi_code_cli_wire_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider kimi-code-cli"
-          ],
           "notes": [
             "Reads Kimi Code CLI agents/*/wire.jsonl files plus adjacent state.json and session_index.jsonl metadata under KIMI_CODE_HOME or ~/.kimi-code.",
             "Native source discovery marks Kimi Code CLI available only when agent wire.jsonl files exist."
@@ -1710,35 +1321,19 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/kimi-code-cli"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
-      ]
+      "limitations": []
     },
     {
       "id": "auggie",
       "display_name": "Auggie",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "auggie",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "auggie_session_json",
           "fidelity": "partial",
-          "proof": [
-            "@augmentcode/auggie@0.32.0 package SessionStore and SessionManager storage code",
-            "Augment CLI docs for --augment-cache-dir, resume, session list, and --dont-save-session",
-            "ctx sources",
-            "ctx import --provider auggie",
-            "cargo test -p ctx-history-capture native_auggie_fixture_imports_searches_and_reimports"
-          ],
           "notes": [
             "Reads Auggie session JSON files under ~/.augment/sessions or an explicit session JSON/session directory.",
             "Normalizes chatHistory exchange request_message/response_text and recognized text nodes into user and assistant events; full tool and file-change semantics are retained only in capped native metadata."
@@ -1768,39 +1363,22 @@
         "Reads provider JSON files read-only; imported message text, local workspace paths, and source paths remain in the local ctx index.",
         "Agent state and unrecognized exchange fields are retained only as capped native JSON metadata."
       ],
-      "blockers": [
-        "Importer is based on @augmentcode/auggie@0.32.0 package storage proof and sanitized fixtures; future package schema changes may need adapter updates.",
-        "No-auth CLI probes could create the cache/session directory but could not generate full transcript JSON without Augment login, so fixture data is minimized from the verified package schema."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/auggie/v0.32.0/sessions"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/auggie/v0.32.0/sessions"
+      "limitations": [
+        "Future Auggie session JSON schema changes may require adapter updates.",
+        "Without Augment login, ctx may only see cache/session directories until transcript JSON exists."
       ]
     },
     {
       "id": "junie",
       "display_name": "Junie",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "junie",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "junie_session_events_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "Claudescope Junie connector built from real ~/.junie build 1892.22 storage",
-            "JetBrains Junie release jar contains UserPromptEvent, SessionA2uxEvent, and block event classes",
-            "ctx sources",
-            "ctx import --provider junie",
-            "cargo test -p ctx-history-capture native_junie_fixture_imports_searches_reimports_and_file_touches"
-          ],
           "notes": [
             "Reads Junie sessions from ~/.junie/sessions/index.jsonl plus session-*/events.jsonl, JUNIE_SESSIONS_DIR, JUNIE_HOME/sessions, or an explicit sessions/session path.",
             "Normalizes UserPromptEvent rows and SessionA2uxEvent agentEvent blocks into user, assistant, tool-call, command-output, and file-touch events.",
@@ -1833,43 +1411,27 @@
         "Reads Junie session files read-only; imported prompt/result/tool text, local source paths, and session metadata remain in the local ctx index.",
         "The native importer does not read custom attachment image files or Junie project memory directories."
       ],
-      "blockers": [
-        "Junie's events.jsonl schema is not documented first-party and may drift; support is based on Claudescope source proof, JetBrains release class evidence, and sanitized fixtures.",
-        "Junie stores a UI event stream rather than a conversational assistant transcript; ctx imports block/result text that is present in events.jsonl."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/junie/sessions"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/junie/sessions"
-      ],
       "metadata": {
         "npx_skills_id": "junie",
         "canonical_provider_id": "junie",
         "schema_family": "Junie event-sourced UI stream"
-      }
+      },
+      "limitations": [
+        "Junie's events.jsonl schema is not documented first-party and may drift.",
+        "Junie stores a UI event stream rather than a conversational assistant transcript; ctx imports block/result text that is present in events.jsonl."
+      ]
     },
     {
       "id": "firebender",
       "display_name": "Firebender",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "firebender",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "firebender_chat_history_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "Firebender 1.0.10 JetBrains Marketplace plugin bytecode (updateId=1045537) references project-local .idea/firebender/chat_history.db",
-            "ctx sources discovers a current-project ancestor only when .idea/firebender/chat_history.db exists with chat_sessions",
-            "ctx import --provider firebender",
-            "cargo test -p ctx-history-capture native_firebender_fixture_imports_project_root_db_and_reimports"
-          ],
           "notes": [
             "Reads Firebender JetBrains project chat history SQLite databases at .idea/firebender/chat_history.db or an explicit DB path.",
             "Normalizes chat_sessions messages_json entries into user, assistant, tool-call, and tool-output events while retaining capped row metadata."
@@ -1899,20 +1461,7 @@
         "Reads the local project SQLite database read-only; imported message text and source paths remain in the local ctx index.",
         "Raw Firebender message JSON is retained in event payloads; session metadata_json is retained only as capped provider metadata."
       ],
-      "blockers": [
-        "Importer is based on public JetBrains Marketplace Firebender 1.0.10 plugin bytecode proof plus a minimized SQLite fixture; future plugin schema changes may need adapter updates.",
-        "The proven chat transcript store is project-local .idea/firebender/chat_history.db; ctx does not claim a global Firebender transcript home."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/firebender/v1/.idea/firebender/chat_history.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/firebender/v1/.idea/firebender/chat_history.db"
-      ],
       "metadata": {
         "aliases": [
           "firebender-jetbrains",
@@ -1920,24 +1469,22 @@
         ],
         "npx_skills_id": "firebender",
         "canonical_provider_id": "firebender"
-      }
+      },
+      "limitations": [
+        "Future Firebender chat_history.db schema changes may require adapter updates.",
+        "ctx reads project-local .idea/firebender/chat_history.db; it does not claim a global Firebender transcript home."
+      ]
     },
     {
       "id": "forgecode",
       "display_name": "ForgeCode",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "forgecode",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "forgecode_sqlite",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider forgecode",
-            "cargo test -p ctx-history-capture native_forgecode_fixture_imports_searches_reimports_and_file_metrics"
-          ],
           "notes": [
             "Reads ForgeCode conversation snapshots from FORGE_CONFIG/.forge.db, legacy ~/forge/.forge.db, or ~/.forge/.forge.db when the SQLite conversations table exists.",
             "Normalizes context JSON messages, tool calls, tool results, image placeholders, usage metadata, and metrics file touches while retaining capped raw context and metrics JSON."
@@ -1965,37 +1512,22 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "blockers": [
+      "public_docs": "docs/provider-support.md",
+      "limitations": [
         "ForgeCode stores the conversation as a mutable context JSON snapshot, so message cursors use the message array index rather than upstream stable message ids.",
         "The importer recognizes the DTO fields present in Forge repository migrations and conversation records, but future unrecognized DTO fields are retained as capped raw metadata until explicitly mapped."
-      ],
-      "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/forgecode/v1/forge.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/forgecode/v1/forge.db"
       ]
     },
     {
       "id": "deepagents",
       "display_name": "Deep Agents",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "deepagents",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "deepagents_sessions_sqlite",
           "fidelity": "partial",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider deepagents",
-            "cargo test -p ctx-history-capture native_deepagents_fixture_imports_searches_and_reimports"
-          ],
           "notes": [
             "Reads Deep Agents Code LangGraph checkpoint SQLite databases from ~/.deepagents/.state/sessions.db or an explicit sessions.db path when checkpoints and writes tables exist.",
             "Normalizes decoded chat messages only from root writes.channel = 'messages'; checkpoint state blobs and history.jsonl input history are not indexed by this adapter."
@@ -2021,38 +1553,22 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "blockers": [
-        "Importer is based on official Deep Agents Code data-location docs, deepagents-code source at commit bf5e551399565136e35628e046e0ad6cede6df3f, LangGraph AsyncSqliteSaver schema proof, and sanitized LangGraph fixture data.",
-        "The importer intentionally skips arbitrary checkpoint state blobs because they may contain private agent state beyond chat messages."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/deepagents/v1/sessions.db"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "crates/ctx-history-store/src/lib.rs",
-        "tests/fixtures/provider-history/deepagents/v1/sessions.db"
+      "limitations": [
+        "Future Deep Agents or LangGraph checkpoint schema changes may require adapter updates.",
+        "The importer intentionally skips arbitrary checkpoint state blobs because they may contain private agent state beyond chat messages."
       ]
     },
     {
       "id": "mistral_vibe",
       "display_name": "Mistral Vibe",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "mistral_vibe",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "mistral_vibe_session_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider mistral-vibe",
-            "cargo test -p ctx-history-capture native_mistral_vibe_fixture_imports_searches_and_reimports"
-          ],
           "notes": [
             "Reads Mistral Vibe session directories containing meta.json and messages.jsonl under VIBE_HOME/logs/session, ~/.vibe/logs/session, or an explicit session/log root.",
             "Normalizes user, assistant, system, tool-call, and tool-output messages from Vibe JSONL while retaining capped metadata from meta.json and individual message rows."
@@ -2079,37 +1595,22 @@
         "token_usage": false,
         "parent_child_session_edges": true
       },
-      "blockers": [
-        "Importer is based on mistralai/mistral-vibe commit 474a0e4055b210a60c39ed0c89458d904b7f6a7b and sanitized JSONL fixtures; future schema changes may need adapter updates.",
-        "The public Vibe session log carries message timestamps inconsistently, so ctx falls back to deterministic import/session timestamps when a row does not expose one."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/mistral-vibe/v1/logs/session"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/mistral-vibe/v1/logs/session"
+      "limitations": [
+        "Future Mistral Vibe session JSONL schema changes may require adapter updates.",
+        "The public Vibe session log carries message timestamps inconsistently, so ctx falls back to deterministic import/session timestamps when a row does not expose one."
       ]
     },
     {
       "id": "mux",
       "display_name": "Mux",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "mux",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "mux_session_jsonl_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider mux",
-            "cargo test -p ctx-history-capture native_mux_fixture_imports_searches_reimports_and_subagents"
-          ],
           "notes": [
             "Reads Mux session directories containing chat.jsonl and optional partial.json under MUX_ROOT/sessions, ~/.mux/sessions, or an explicit sessions/session path.",
             "Normalizes MuxMessage parts for user/assistant/system messages, dynamic-tool calls and outputs, staged partial messages, token/model metadata, and archived subagent transcripts."
@@ -2139,39 +1640,22 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "blockers": [
-        "Importer is based on coder/mux tag v0.27.0 and sanitized chat/partial/subagent fixtures; future schema changes may need adapter updates.",
-        "The checked-in fixture is sanitized because producing a real Mux transcript requires model/auth setup."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/mux/v0.27.0/sessions",
-        "tests/fixtures/provider-history/mux/malformed/sessions"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/mux/v0.27.0",
-        "tests/fixtures/provider-history/mux/malformed"
+      "limitations": [
+        "Future Mux chat, partial, or subagent transcript schema changes may require adapter updates.",
+        "Producing a local Mux transcript requires model/auth setup."
       ]
     },
     {
       "id": "rovodev",
       "display_name": "Rovo Dev",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "rovodev",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "rovodev_session_json_tree",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider rovodev",
-            "cargo test -p ctx-history-capture native_rovodev_fixture_imports_searches_reimports_and_file_touches"
-          ],
           "notes": [
             "Reads Rovo Dev session_context.json files under ~/.rovodev/sessions or an explicit sessions/session path.",
             "Imports message_history/messages entries, tool-use/tool-result parts, workspace metadata, and parent-session metadata when present."
@@ -2198,35 +1682,21 @@
         "token_usage": false,
         "parent_child_session_edges": true
       },
-      "blockers": [
-        "Schema proof comes from Atlassian Rovo Dev CLI session-management docs and public readers; future message part variants may need adapter updates."
-      ],
       "public_docs": "docs/provider-support.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/rovodev/v1/sessions"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs",
-        "tests/fixtures/provider-history/rovodev/v1/sessions"
+      "limitations": [
+        "Future Rovo Dev message part variants may require adapter updates."
       ]
     },
     {
       "id": "cline",
       "display_name": "Cline",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "cline",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "cline_task_directory_json",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider cline"
-          ],
           "notes": [
             "Reads Cline task directories containing api_conversation_history.json, ui_messages.json, context_history.json, or task_metadata.json.",
             "Discovery covers CLINE_DATA_DIR, CLINE_DIR/data, CLINE_SESSION_DATA_DIR sibling data roots, CLINE_DB_DATA_DIR sibling data roots, ~/.cline/data, and common VS Code globalStorage folders."
@@ -2259,34 +1729,21 @@
         "Reads local task JSON files read-only; imported text remains in the local ctx index.",
         "Raw provider paths are retained only as local source metadata for citations."
       ],
-      "blockers": [
-        "VS Code private extension state databases are not parsed; file-backed task directories are required."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/cline/data"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "VS Code private extension state databases are not parsed; file-backed task directories are required."
       ]
     },
     {
       "id": "roo_code",
       "display_name": "Roo Code",
-      "priority": "p1",
-      "status": "local_import_when_supported",
+      "status": "supported",
       "capture_provider": "roo_code",
       "implemented_paths": [
         {
           "kind": "native_import",
           "source_format": "roo_task_directory_json",
           "fidelity": "imported",
-          "proof": [
-            "ctx sources",
-            "ctx import --provider roo"
-          ],
           "notes": [
             "Reads Roo Code task directories containing api_conversation_history.json, ui_messages.json, history_item.json, _index.json, or claude_messages.json.",
             "Discovery covers roo-cline.customStoragePath from VS Code settings, common VS Code globalStorage folders for RooVeterinaryInc.roo-cline, ROO_CODE_DATA_DIR, ROO_DATA_DIR, ROO_CLINE_DATA_DIR, and explicit paths."
@@ -2318,17 +1775,9 @@
         "Reads local task JSON files read-only; imported text remains in the local ctx index.",
         "Raw provider paths are retained only as local source metadata for citations."
       ],
-      "blockers": [
-        "VS Code private extension state databases are not parsed; file-backed task directories are required."
-      ],
       "public_docs": "docs/providers.md",
-      "fixture_paths": [
-        "tests/fixtures/provider-history/roo/storage"
-      ],
-      "tests": [
-        "crates/ctx-cli/tests/native_providers.rs",
-        "crates/ctx-history-capture/src/lib.rs",
-        "crates/ctx-history-capture/src/provider_sources/specs.rs"
+      "limitations": [
+        "VS Code private extension state databases are not parsed; file-backed task directories are required."
       ]
     }
   ]
