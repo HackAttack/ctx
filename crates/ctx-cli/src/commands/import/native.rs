@@ -677,6 +677,7 @@ pub(crate) fn provider_import_summary_failure(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn import_manifested_source(
     store: &mut Store,
     source: &SourceInfo,

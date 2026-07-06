@@ -42,9 +42,8 @@ pub(crate) fn pi_existing_event_identity_by_entry_id(
     let Some(entry_id) = entry_id.filter(|id| !id.trim().is_empty()) else {
         return Ok(None);
     };
-    if !caches
-        .pi_event_identities_by_entry_id
-        .contains_key(&session_id)
+    if let std::collections::btree_map::Entry::Vacant(entry) =
+        caches.pi_event_identities_by_entry_id.entry(session_id)
     {
         let mut identities = BTreeMap::new();
         for event in store.events_for_session(session_id)? {
@@ -63,9 +62,7 @@ pub(crate) fn pi_existing_event_identity_by_entry_id(
                     run_source_id: event.capture_source_id,
                 });
         }
-        caches
-            .pi_event_identities_by_entry_id
-            .insert(session_id, identities);
+        entry.insert(identities);
     }
     Ok(caches
         .pi_event_identities_by_entry_id
@@ -93,6 +90,7 @@ pub(crate) fn pi_stored_event_entry_id(event: &Event) -> Option<&str> {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn provider_event_import_identity(
     store: &Store,
     provider: CaptureProvider,

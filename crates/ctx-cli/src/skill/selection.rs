@@ -244,7 +244,7 @@ pub(super) fn parse_picker_selection(
     }
     let mut selected = Vec::new();
     for raw in input
-        .split(|ch: char| ch == ',' || ch == ' ' || ch == '\t')
+        .split([',', ' ', '\t'])
         .filter(|part| !part.trim().is_empty())
     {
         let token = raw.trim();

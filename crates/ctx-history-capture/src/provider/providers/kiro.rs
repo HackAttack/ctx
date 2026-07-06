@@ -194,6 +194,7 @@ pub(crate) struct KiroAssistantMessage {
     pub(crate) tool_uses: Option<Value>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn kiro_event(
     row: &KiroConversationRow,
     provider_session_id: &str,

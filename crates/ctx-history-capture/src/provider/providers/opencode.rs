@@ -283,13 +283,10 @@ pub(crate) fn opencode_sessions(
     dialect: &OpenCodeSqliteDialect,
 ) -> Result<Vec<OpenCodeSessionRow>> {
     if !sqlite_table_exists(conn, "session")? {
-        return Err(CaptureError::InvalidPayload(
-            format!(
-                "{} SQLite database is missing required session table",
-                dialect.display_name
-            )
-            .into(),
-        ));
+        return Err(CaptureError::InvalidPayload(format!(
+            "{} SQLite database is missing required session table",
+            dialect.display_name
+        )));
     }
     let columns = sqlite_table_columns(conn, "session")?;
     ensure_sqlite_table_columns(

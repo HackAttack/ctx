@@ -342,6 +342,7 @@ pub(crate) fn firebender_message_text(message: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn firebender_capture(
     row: &FirebenderChatSessionRow,
     metadata: &Value,

@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 pub(crate) use assert_cmd::Command;
 pub(crate) use predicates::prelude::*;

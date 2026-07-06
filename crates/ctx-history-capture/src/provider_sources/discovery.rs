@@ -450,10 +450,7 @@ fn kilo_channel_db_paths(data_dir: &Path) -> Vec<PathBuf> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !entry
-            .file_type()
-            .map_or(false, |file_type| file_type.is_file())
-        {
+        if !entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
             continue;
         }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {

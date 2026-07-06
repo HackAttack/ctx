@@ -219,6 +219,7 @@ pub(crate) fn normalize_warp_sqlite(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn warp_capture(
     conversation_id: &str,
     parent_conversation_id: Option<String>,
