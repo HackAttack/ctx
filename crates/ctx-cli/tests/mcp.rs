@@ -92,6 +92,8 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     let status = &responses[2]["result"]["structuredContent"];
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["initialized"], false);
+    assert_eq!(status["indexed_sessions"], 0);
+    assert_eq!(status["indexed_events"], 0);
     assert_eq!(status["read_only"], true);
     assert_useful_mcp_text(
         &responses[2]["result"],
@@ -100,6 +102,8 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
             "initialized: false",
             "database_path:",
             "indexed_items: 0",
+            "indexed_sessions: 0",
+            "indexed_events: 0",
             "read_only: true",
             "local_only: true",
         ],

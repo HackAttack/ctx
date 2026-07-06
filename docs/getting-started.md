@@ -47,10 +47,10 @@ ctx status
 ```
 
 Setup creates the configured ctx data root, initializes SQLite, writes
-`config.toml` when missing, discovers known provider history paths, catalogs
-Codex sessions, imports discovered native provider sources, optimizes the local
-search index, and prints next steps. It does not execute history-source plugin
-commands. The default data root is `~/.ctx`.
+`config.toml` when missing, discovers known provider history paths, inventories
+local history sources, imports discovered native provider sources, optimizes
+the local search index, and prints next steps. It does not execute
+history-source plugin commands. The default data root is `~/.ctx`.
 
 Use a different root when testing:
 
@@ -126,7 +126,7 @@ eight hex characters. Search also accepts filters such as `--provider`,
 `--limit` is capped at `200`.
 Search defaults to `--refresh auto`, a best-effort refresh of discovered native
 provider sources before querying. On large discovered sources or
-already-cataloged indexes, `auto` serves current results without a foreground
+already-inventoried indexes, `auto` serves current results without a foreground
 catch-up scan; use
 `--refresh strict` or `ctx import --all` when you need a full
 catch-up before querying.

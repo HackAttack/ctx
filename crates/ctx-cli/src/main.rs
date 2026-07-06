@@ -32,7 +32,6 @@ mod parser_prop_tests;
 
 use analytics::{AnalyticsEvent, AnalyticsProperties};
 use commands::search::{RefreshArg, SearchRefreshReport};
-use commands::setup::indexed_history_item_count;
 use commands::sql::{parse_sql_timeout, raw_sql_result_json};
 use commands::{
     doctor::run_doctor, import::run_import, locate::run_locate, search::run_search,
@@ -120,7 +119,11 @@ enum CommandRoot {
 
 #[derive(Debug, Args)]
 struct SetupArgs {
-    #[arg(long, alias = "no-import")]
+    #[arg(
+        long,
+        alias = "no-import",
+        help = "Prepare local history inventory without importing searchable history"
+    )]
     catalog_only: bool,
     #[arg(long)]
     json: bool,

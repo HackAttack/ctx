@@ -22,6 +22,7 @@ Writes local storage and returns:
 - `mode`, either `ready` or `catalog_only`;
 - `indexed_items`;
 - `sources`;
+- `inventory`;
 - `catalog`;
 - `catalog_sources`;
 - `import`;
@@ -31,6 +32,14 @@ Writes local storage and returns:
 `import.ran` is true for the default setup path and false for
 `ctx setup --catalog-only`. When it runs, `import.totals` and `import.sources`
 use the same shape as `ctx import --json`.
+
+`inventory` reports the shared local-history inventory across all native
+sources. It includes `sources`, `units`, `source_files`, `source_bytes`,
+`source_import_files`, `indexed_source_import_files`,
+`pending_source_import_files`, `failed_source_import_files`,
+`stale_source_import_files`, and Codex compatibility counters. The legacy
+`catalog` and `catalog_sources` blocks are retained for Codex session catalog
+consumers.
 
 ## Status
 
@@ -47,11 +56,20 @@ Reads local storage state and returns:
 - `config_path`;
 - `indexed_items`;
 - `indexed_sources`;
+- `inventory_units`;
+- `pending_inventory_units`;
+- `failed_inventory_units`;
+- `stale_inventory_units`;
 - `cataloged_sessions`;
 - `indexed_catalog_sessions`;
 - `pending_catalog_sessions`;
 - `failed_catalog_sessions`;
 - `stale_catalog_sessions`;
+- `source_import_files`;
+- `indexed_source_import_files`;
+- `pending_source_import_files`;
+- `failed_source_import_files`;
+- `stale_source_import_files`;
 - `local_only: true`;
 - `read_only: true`.
 

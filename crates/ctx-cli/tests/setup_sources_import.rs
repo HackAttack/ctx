@@ -268,12 +268,17 @@ fn setup_catalog_only_catalogs_codex_sessions_without_import() {
     .unwrap();
 
     let setup = json_output(ctx(&temp).args(["setup", "--catalog-only", "--json"]));
+    assert_eq!(setup["inventory"]["sources"], 1);
+    assert_eq!(setup["inventory"]["units"], 1);
+    assert_eq!(setup["inventory"]["codex_catalog_sessions"], 1);
     assert_eq!(setup["catalog"]["cataloged_sessions"], 1);
     assert_eq!(setup["catalog"]["source_files"], 1);
     assert_eq!(setup["catalog"]["failed_sessions"], 0);
     assert_eq!(setup["import"]["ran"], false);
 
     let status = json_output(ctx(&temp).args(["status", "--json"]));
+    assert_eq!(status["inventory_units"], 1);
+    assert_eq!(status["pending_inventory_units"], 1);
     assert_eq!(status["cataloged_sessions"], 1);
     assert_eq!(status["indexed_catalog_sessions"], 0);
     assert_eq!(status["indexed_items"], 0);
@@ -287,9 +292,33 @@ fn setup_catalog_only_catalogs_codex_sessions_without_import() {
         .stdout
         .clone();
     let human_setup = String::from_utf8(human_setup).unwrap();
-    assert!(human_setup.contains("ctx catalog is ready; import is still pending"));
+    assert!(human_setup.contains("ctx local history inventory is ready; import is still pending"));
     assert!(human_setup.contains("  ctx import --all"));
     assert!(!human_setup.contains("ctx search \"test failure\""));
+}
+
+#[test]
+fn setup_catalog_only_reports_pending_non_codex_inventory() {
+    let temp = tempdir();
+    install_default_claude_fixture(&temp, "catalog-only claude inventory");
+
+    let setup = json_output(ctx(&temp).args(["setup", "--catalog-only", "--json"]));
+    assert_eq!(setup["inventory"]["sources"], 1);
+    assert_eq!(setup["inventory"]["source_import_files"], 1);
+    assert_eq!(setup["inventory"]["pending_source_import_files"], 1);
+    assert_eq!(setup["catalog"]["cataloged_sessions"], 0);
+    assert_eq!(setup["import"]["ran"], false);
+
+    let human_setup = ctx(&temp)
+        .args(["setup", "--catalog-only", "--progress", "none"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human_setup = String::from_utf8(human_setup).unwrap();
+    assert!(human_setup.contains("ctx local history inventory is ready; import is still pending"));
+    assert!(human_setup.contains("  ctx import --all"));
 }
 
 #[test]
@@ -369,6 +398,9 @@ fn setup_imports_discovered_codex_sessions_by_default() {
     write_codex_setup_session(&temp);
 
     let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    assert_eq!(setup["inventory"]["sources"], 1);
+    assert_eq!(setup["inventory"]["units"], 1);
+    assert_eq!(setup["inventory"]["codex_catalog_sessions"], 1);
     assert_eq!(setup["catalog"]["cataloged_sessions"], 1);
     assert_eq!(setup["import"]["ran"], true);
     assert_eq!(setup["import"]["totals"]["failed_sources"], 0);
@@ -381,6 +413,8 @@ fn setup_imports_discovered_codex_sessions_by_default() {
     );
 
     let status = json_output(ctx(&temp).args(["status", "--json"]));
+    assert_eq!(status["inventory_units"], 1);
+    assert_eq!(status["pending_inventory_units"], 0);
     assert_eq!(status["cataloged_sessions"], 1);
     assert_eq!(status["indexed_catalog_sessions"], 1);
     assert_eq!(status["pending_catalog_sessions"], 0);
@@ -398,8 +432,66 @@ fn setup_imports_discovered_codex_sessions_by_default() {
         .clone();
     let human_setup = String::from_utf8(human_setup).unwrap();
     assert!(human_setup.contains("ctx local agent history search is ready"));
-    assert!(human_setup.contains("from 1 source(s)."));
+    assert!(human_setup.contains("from 1 source."));
     assert!(human_setup.contains("  ctx search \"test failure\""));
+}
+
+#[test]
+fn setup_inventories_and_imports_claude_sources_by_default() {
+    let temp = tempdir();
+    let project = temp.path().join(".claude").join("projects").join("-repo");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("claude-session-setup.jsonl"),
+        concat!(
+            r#"{"sessionId":"claude-session-setup","timestamp":"2026-06-24T10:00:00Z","cwd":"/repo","version":"test","type":"user","message":{"role":"user","content":[{"type":"text","text":"setup should import claude"}]},"uuid":"claude-setup-1"}"#,
+            "\n",
+            r#"{"sessionId":"claude-session-setup","timestamp":"2026-06-24T10:00:01Z","cwd":"/repo","version":"test","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"imported"}]},"uuid":"claude-setup-2"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+
+    let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    assert_eq!(setup["inventory"]["sources"], 1);
+    assert_eq!(setup["inventory"]["units"], 1);
+    assert_eq!(setup["inventory"]["source_import_files"], 1);
+    assert_eq!(setup["inventory"]["indexed_source_import_files"], 1);
+    assert_eq!(setup["inventory"]["pending_source_import_files"], 0);
+    assert_eq!(setup["catalog"]["cataloged_sessions"], 0);
+    assert_eq!(setup["import"]["totals"]["imported_sources"], 1);
+    assert_eq!(setup["import"]["totals"]["imported_sessions"], 1);
+    assert_eq!(setup["import"]["totals"]["failed_sources"], 0);
+
+    let status = json_output(ctx(&temp).args(["status", "--json"]));
+    assert_eq!(status["inventory_units"], 1);
+    assert_eq!(status["source_import_files"], 1);
+    assert_eq!(status["indexed_source_import_files"], 1);
+    assert_eq!(status["pending_inventory_units"], 0);
+    assert_eq!(status["indexed_catalog_sessions"], 0);
+    assert!(status["indexed_items"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn setup_inventories_whole_source_sqlite_providers() {
+    let temp = tempdir();
+    install_default_hermes_fixture(&temp, "setup should inventory hermes");
+
+    let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    assert_eq!(setup["inventory"]["sources"], 1);
+    assert_eq!(setup["inventory"]["units"], 1);
+    assert_eq!(setup["inventory"]["source_import_files"], 1);
+    assert_eq!(setup["inventory"]["indexed_source_import_files"], 1);
+    assert_eq!(setup["inventory"]["pending_source_import_files"], 0);
+    assert_eq!(setup["catalog"]["cataloged_sessions"], 0);
+    assert_eq!(setup["import"]["totals"]["imported_sources"], 1);
+    assert_eq!(setup["import"]["totals"]["failed_sources"], 0);
+
+    let status = json_output(ctx(&temp).args(["status", "--json"]));
+    assert_eq!(status["inventory_units"], 1);
+    assert_eq!(status["source_import_files"], 1);
+    assert_eq!(status["indexed_source_import_files"], 1);
+    assert_eq!(status["pending_inventory_units"], 0);
 }
 
 #[test]

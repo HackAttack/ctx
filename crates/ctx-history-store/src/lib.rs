@@ -21,7 +21,8 @@ mod vcs;
 pub use archive::validate_archive_version;
 pub use catalog::{
     CatalogCounts, CatalogIndexedStatus, CatalogSession, CatalogSourceIndexState,
-    CatalogSourceIndexUpdate, IndexedHistoryCounts, SourceImportFile, SourceImportFileIndexUpdate,
+    CatalogSourceIndexUpdate, IndexedHistoryCounts, SourceImportFile, SourceImportFileCounts,
+    SourceImportFileIndexUpdate,
 };
 pub use error::{Result, StoreError};
 pub use files::FileTouchScope;

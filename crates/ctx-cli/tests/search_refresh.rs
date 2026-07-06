@@ -484,6 +484,7 @@ fn search_refresh_auto_imports_fresh_work_despite_large_existing_catalog() {
         }
     }
     tx.commit().unwrap();
+    drop(conn);
     let search =
         json_output(ctx(&temp).args(["search", "onboarding", "--provider", "codex", "--json"]));
     assert_eq!(search["freshness"]["mode"], "auto");
@@ -656,6 +657,16 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
                 >= 1
         );
         assert_search_provider_oracle(&search, stored_provider, &query, 1, "message");
+
+        let status = json_output(ctx(&temp).args(["status", "--json"]));
+        assert!(
+            status["inventory_units"].as_u64().unwrap() >= 1,
+            "{cli_provider} did not record search-refresh inventory: {status:#}"
+        );
+        assert_eq!(
+            status["pending_inventory_units"], 0,
+            "{cli_provider} left inventory pending after search refresh: {status:#}"
+        );
 
         let started = Instant::now();
         let refreshed =

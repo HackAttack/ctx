@@ -32,7 +32,7 @@ pub(crate) fn run_explicit_format_import(
     progress.message(
         "discovering",
         format!(
-            "found 1 {} source, {}",
+            "Found 1 {} source ({}).",
             format.as_str(),
             format_bytes(stats.bytes)
         ),
@@ -44,12 +44,13 @@ pub(crate) fn run_explicit_format_import(
         || stats.bytes >= LARGE_IMPORT_SOURCE_BYTES_WARNING)
         && stats.files > 0
     {
-        let warning = format!(
-            "large import: {} source file(s), {}; initial indexing may use sustained CPU and disk",
-            stats.files,
+        let notice = format!(
+            "Large first import: scanning {} existing history {} ({}). This may take a while.",
+            format_count(stats.files),
+            plural(stats.files, "file", "files"),
             format_bytes(stats.bytes)
         );
-        progress.warning(warning);
+        progress.notice(notice);
     }
 
     let validation = match format {
@@ -128,6 +129,14 @@ pub(crate) fn run_explicit_format_import(
     Ok(ImportReport {
         resume: args.resume,
         totals,
+        inventory: InventoryTotals {
+            sources: 1,
+            source_files: stats.files,
+            source_bytes: stats.bytes,
+            ..InventoryTotals::default()
+        },
+        catalog: CatalogTotals::default(),
+        catalog_sources: Vec::new(),
         sources: vec![custom_format_import_json(format, path, &stats, &summary)],
     })
 }
