@@ -109,12 +109,19 @@ metadata="${tmp_dir}/metadata.env"
 base_env=(CURL_CA_BUNDLE="${tmp_dir}/cert.pem" CTX_INSTALL_NO_MAN=1)
 installer=(bash "${repo_root}/scripts/install.sh" --metadata "${metadata}" --platform linux-x64)
 
+home_dry_run="${tmp_dir}/home-dry-run"
+mkdir -p "${home_dry_run}"
+env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" HOME="${home_dry_run}" SHELL="/bin/bash" "${installer[@]}" --dry-run --no-setup > "${tmp_dir}/dry-run.out"
+grep -F 'Dry run: would install ctx 0.0.0-smoke (linux-x64)' "${tmp_dir}/dry-run.out" >/dev/null
+! grep -F 'Installing ctx 0.0.0-smoke (linux-x64)' "${tmp_dir}/dry-run.out" >/dev/null
+! grep -F 'Installed ctx binary.' "${tmp_dir}/dry-run.out" >/dev/null
+
 home_idem="${tmp_dir}/home-idem"
 mkdir -p "${home_idem}"
 env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" HOME="${home_idem}" SHELL="/bin/bash" "${installer[@]}" --no-setup > "${tmp_dir}/idem-1.out"
 env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" HOME="${home_idem}" SHELL="/bin/bash" "${installer[@]}" --no-setup > "${tmp_dir}/idem-2.out"
 test "$(grep -c 'ctx installer PATH setup' "${home_idem}/.bashrc")" = 1
-grep -F 'found existing PATH setup' "${tmp_dir}/idem-2.out" >/dev/null
+grep -F 'Found existing PATH setup' "${tmp_dir}/idem-2.out" >/dev/null
 
 home_on_path="${tmp_dir}/home-on-path"
 mkdir -p "${home_on_path}"

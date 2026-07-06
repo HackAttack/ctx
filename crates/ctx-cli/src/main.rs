@@ -1636,9 +1636,7 @@ struct ProgressLine {
 fn render_progress_line(line: &ProgressLine, elapsed: StdDuration) -> String {
     let percent = progress_percent(line.completed_bytes, line.total_bytes);
     let bar = progress_bar(percent, 20);
-    let eta = eta_seconds(line.completed_bytes, line.total_bytes, elapsed)
-        .map(format_seconds)
-        .unwrap_or_else(|| "estimating".to_owned());
+    let eta = eta_seconds(line.completed_bytes, line.total_bytes, elapsed).map(format_seconds);
     let files = match (line.completed_files, line.total_files) {
         (Some(done), Some(total)) if total > 0 => format!(" {done}/{total} files"),
         _ => String::new(),
@@ -1649,8 +1647,10 @@ fn render_progress_line(line: &ProgressLine, elapsed: StdDuration) -> String {
         .unwrap_or_default();
     let remaining = if line.done {
         "done".to_owned()
-    } else {
+    } else if let Some(eta) = eta {
         format!("{eta} left")
+    } else {
+        "working".to_owned()
     };
     format!(
         "{:<10} [{}] {:>5.1}% {}/{}{}{} {} - {}",
@@ -2003,7 +2003,7 @@ fn run_setup(
             ImportRunOptions {
                 progress: args.progress,
                 json: args.json,
-                print_human: !args.json,
+                print_human: false,
                 allow_empty_sources: true,
                 include_history_source_plugins: false,
                 operation: "setup",
@@ -2050,32 +2050,35 @@ fn run_setup(
             catalog_counts.pending,
             indexed_items,
         );
-        println!("data_root: {}", data_root.display());
-        println!("database_path: {}", db_path.display());
-        println!("config_path: {}", config_path.display());
-        println!("indexed_items: {indexed_items}");
-        println!("cataloged_sessions: {}", catalog.cataloged_sessions);
-        println!("cached_catalog_sessions: {}", catalog.cached_sessions);
-        println!("parsed_catalog_sessions: {}", catalog.parsed_sessions);
-        println!("indexed_catalog_sessions: {}", catalog_counts.indexed);
-        println!("pending_catalog_sessions: {}", catalog_counts.pending);
-        println!("failed_catalog_sessions: {}", catalog_counts.failed);
-        println!("stale_catalog_sessions: {}", catalog_counts.stale);
-        println!("catalog_source_files: {}", catalog.source_files);
-        println!("catalog_source_bytes: {}", catalog.source_bytes);
-        if let Some(report) = &import_report {
-            println!("imported_sources: {}", report.totals.imported_sources);
-            println!("failed_sources: {}", report.totals.failed_sources);
-            println!("imported_sessions: {}", report.totals.imported_sessions);
-            println!("imported_events: {}", report.totals.imported_events);
-            println!("imported_edges: {}", report.totals.imported_edges);
+        if !setup_has_indexed_content(indexed_items) && catalog.cataloged_sessions > 0 {
+            println!("Cataloged {} session(s).", catalog.cataloged_sessions);
         }
-        println!("next_steps:");
+        if let Some(report) = &import_report {
+            if report.totals.imported_sources > 0
+                || report.totals.imported_sessions > 0
+                || report.totals.imported_events > 0
+            {
+                println!(
+                    "Imported {} session(s), {} event(s) from {} source(s).",
+                    report.totals.imported_sessions,
+                    report.totals.imported_events,
+                    report.totals.imported_sources
+                );
+            }
+            if report.totals.failed_sources > 0 {
+                println!("Skipped {} source(s).", report.totals.failed_sources);
+            }
+        }
+        println!("Data: {}", data_root.display());
+        println!();
+        println!("Get started:");
         if args.catalog_only {
             println!("  ctx import --all");
             println!("  ctx sources");
         } else if setup_has_indexed_content(indexed_items) {
-            println!("  ctx search \"what failed before\"");
+            println!("  ctx search \"test failure\"");
+            println!("  ctx show event <event-id> --window 3");
+            println!("  ctx show session <session-id>");
             println!("  ctx sources");
             if setup_has_failed_sources(import_report.as_ref()) {
                 println!("  ctx import --provider <provider>");

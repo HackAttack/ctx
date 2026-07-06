@@ -319,38 +319,39 @@ configure_path_if_needed() {
   fi
 
   if (( ! modify_path )); then
-    printf '%s is not on PATH; shell startup file update skipped\n' "${dir}"
-    printf 'for this shell session, run:\n'
+    printf '\n%s is not on PATH; shell startup file update skipped.\n' "${dir}"
+    printf 'For this shell session, run:\n'
     print_current_path_command "${shell_name}" "${dir}"
     return 0
   fi
 
   if [[ -n "${GITHUB_PATH:-}" ]]; then
     printf '%s\n' "${dir}" >> "${GITHUB_PATH}"
-    printf 'added %s to GITHUB_PATH for later GitHub Actions steps\n' "${dir}"
+    printf '\nAdded %s to GITHUB_PATH for later GitHub Actions steps.\n' "${dir}"
     return 0
   fi
 
   if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
-    printf '%s is not on PATH; CI detected, not editing shell startup files\n' "${dir}"
-    printf 'for this shell session, run:\n'
+    printf '\n%s is not on PATH; CI detected, not editing shell startup files.\n' "${dir}"
+    printf 'For this shell session, run:\n'
     print_current_path_command "${shell_name}" "${dir}"
     return 0
   fi
 
   if ! profile="$(path_setup_profile "${shell_name}")"; then
-    printf '%s is not on PATH; HOME is unavailable, so no shell startup file was updated\n' "${dir}"
-    printf 'for this shell session, run:\n'
+    printf '\n%s is not on PATH; HOME is unavailable, so no shell startup file was updated.\n' "${dir}"
+    printf 'For this shell session, run:\n'
     print_current_path_command "${shell_name}" "${dir}"
     return 0
   fi
 
+  printf '\n'
   if profile_contains_path_setup "${profile}" "${dir}"; then
-    printf 'found existing PATH setup for %s in %s\n' "${dir}" "${profile}"
+    printf 'Found existing PATH setup for %s in %s.\n' "${dir}" "${profile}"
   else
     profile_dir="$(dirname "${profile}")"
     if mkdir -p "${profile_dir}" && path_setup_snippet "${shell_name}" "${dir}" >> "${profile}"; then
-      printf 'added ctx PATH setup to %s\n' "${profile}"
+      printf 'Added ctx PATH setup to %s.\n' "${profile}"
     else
       printf 'warning: could not update shell startup file %s\n' "${profile}" >&2
     fi
@@ -358,7 +359,7 @@ configure_path_if_needed() {
 
   printf '%s is not on the current PATH; restart your shell or run:\n' "${dir}"
   print_current_path_command "${shell_name}" "${dir}"
-  printf 'then verify with:\n'
+  printf 'Then verify with:\n'
   printf '  ctx status\n'
 }
 
@@ -528,12 +529,14 @@ fi
 if [[ -n "${CTX_INSTALL_SKILL_AGENTS:-}" ]]; then
   explicit_skill_request=1
   IFS=',' read -r -a env_skill_agents <<< "${CTX_INSTALL_SKILL_AGENTS}"
-  for agent in "${env_skill_agents[@]}"; do
-    agent="${agent//[[:space:]]/}"
-    if [[ -n "${agent}" ]]; then
-      skill_agents+=("${agent}")
-    fi
-  done
+  if ((${#env_skill_agents[@]} > 0)); then
+    for agent in "${env_skill_agents[@]}"; do
+      agent="${agent//[[:space:]]/}"
+      if [[ -n "${agent}" ]]; then
+        skill_agents+=("${agent}")
+      fi
+    done
+  fi
 fi
 
 if [[ "${CTX_INSTALL_NO_SKILL:-0}" == "1" ]]; then
@@ -553,27 +556,28 @@ if ((! run_setup && ! explicit_skill_request)); then
   run_skill=0
 fi
 
-printf 'ctx install plan: version=%s platform=%s artifact=%s bin=%s\n' \
-  "${version}" "${platform}" "${artifact}" "${install_path}"
-if ((install_man)); then
-  printf 'ctx man page plan: dir=%s\n' "${man_dir}"
-fi
-if path_contains_dir "${bin_dir%/}"; then
-  :
-elif ((modify_path)); then
-  printf 'ctx PATH plan: add %s to shell startup files when installing\n' "${bin_dir%/}"
+if ((dry_run)); then
+  printf 'Dry run: would install ctx %s (%s)\n' "${version}" "${platform}"
 else
-  printf 'ctx PATH plan: do not update shell startup files\n'
+  printf 'Installing ctx %s (%s)\n' "${version}" "${platform}"
 fi
+printf '  binary: %s\n' "${install_path}"
 if ((run_skill)); then
   if ((all_skill_agents)); then
-    printf 'ctx skill plan: install bundled skill for all supported agents\n'
+    printf '  skill: all supported agents\n'
   elif ((${#skill_agents[@]} > 0)); then
     skill_agent_list="$(IFS=,; printf '%s' "${skill_agents[*]}")"
-    printf 'ctx skill plan: install bundled skill for agents=%s\n' "${skill_agent_list}"
+    printf '  skill: %s\n' "${skill_agent_list}"
   else
-    printf 'ctx skill plan: install universal skill plus detected agent-specific folders\n'
+    printf '  skill: universal + detected agent folders\n'
   fi
+else
+  printf '  skill: skipped\n'
+fi
+if ((run_setup)); then
+  printf '  history: index discovered sessions\n'
+else
+  printf '  history: skipped\n'
 fi
 
 if ((dry_run)); then
@@ -588,40 +592,39 @@ fi
 
 mkdir -p "${bin_dir}"
 install -m 0755 "${download_path}" "${install_path}"
-printf 'installed ctx to %s\n' "${install_path}"
 
 write_install_marker "${install_path}.install.json" "${metadata_source}" "${source_commit}" "${published_at}"
-printf 'wrote ctx managed install marker to %s\n' "${install_path}.install.json"
 
 if ((install_man)); then
   mkdir -p "${man_dir}"
-  if "${install_path}" docs man --out "${man_dir}"; then
-    printf 'installed ctx man pages to %s\n' "${man_dir}"
+  if "${install_path}" docs man --out "${man_dir}" >/dev/null; then
+    :
   else
     printf 'warning: failed to install ctx man pages to %s\n' "${man_dir}" >&2
   fi
 fi
+printf '\nInstalled ctx binary.\n'
 
 if ((run_skill)); then
   skill_args=(skill install)
   if ((all_skill_agents)); then
     skill_args+=(--all-agents)
-  else
+  elif ((${#skill_agents[@]} > 0)); then
     for agent in "${skill_agents[@]}"; do
       skill_args+=(--agent "${agent}")
     done
   fi
-  printf 'installing ctx agent skill (pass --no-skill or set CTX_INSTALL_NO_SKILL=1 to skip next time)\n'
+  printf '\n'
   if ! "${install_path}" "${skill_args[@]}"; then
     printf 'warning: ctx skill install failed after install; run %s skill install to retry\n' "${install_path}" >&2
   fi
 else
-  printf 'skill setup skipped; run %s skill install to install the bundled agent skill\n' "${install_path}"
+  printf '\nAgent skill skipped. Run %s skill install to install it later.\n' "${install_path}"
 fi
 
 if ((run_setup)); then
   setup_progress="${CTX_SETUP_PROGRESS:-auto}"
-  printf 'running ctx setup to index local history (pass --no-setup or set CTX_INSTALL_NO_SETUP=1 to skip next time)\n'
+  printf '\nIndexing local agent history...\n'
   setup_status=0
   if "${install_path}" setup --progress "${setup_progress}"; then
     :
@@ -631,7 +634,7 @@ if ((run_setup)); then
   fi
 else
   setup_status=0
-  printf 'setup skipped; run %s setup to index local history\n' "${install_path}"
+  printf '\nSetup skipped. Run %s setup to index local history.\n' "${install_path}"
 fi
 
 configure_path_if_needed
