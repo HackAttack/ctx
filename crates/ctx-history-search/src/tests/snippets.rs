@@ -16,7 +16,7 @@ fn local_snippets_preserve_transcript_text() {
 }
 
 #[test]
-fn withheld_events_do_not_render_payload_previews() {
+fn legacy_withheld_events_render_payload_previews_when_payload_exists() {
     let event = Event {
         id: Uuid::parse_str("018f45d0-0000-7000-8000-000000000010").unwrap(),
         seq: 1,
@@ -27,7 +27,7 @@ fn withheld_events_do_not_render_payload_previews() {
         role: Some(EventRole::Assistant),
         occurred_at: fixed_time(),
         capture_source_id: None,
-        payload: serde_json::json!({"text": "secret payload that must not render"}),
+        payload: serde_json::json!({"text": "legacy withheld payload should render locally"}),
         payload_blob_id: None,
         dedupe_key: None,
         redaction_state: RedactionState::Withheld,
@@ -35,6 +35,6 @@ fn withheld_events_do_not_render_payload_previews() {
     };
 
     let preview = event_preview_text(&event);
-    assert_eq!(preview, "raw event payload withheld");
-    assert!(!preview.contains("secret payload"));
+    assert!(preview.contains("legacy withheld payload should render locally"));
+    assert_ne!(preview, "raw event payload withheld");
 }

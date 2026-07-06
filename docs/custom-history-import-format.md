@@ -137,6 +137,7 @@ Optional fields:
 - `role`
 - `payload`
 - `preview`
+- `redaction_state`
 - `metadata`
 
 `event_index` is the stable exporter order within the session. Use
@@ -145,6 +146,12 @@ re-imports. `payload` is open JSON; `preview` should be a bounded searchable
 summary when payloads are large or sensitive. When `preview` is present, ctx
 uses it as the event's searchable payload and preserves any non-empty `payload`
 under import metadata.
+
+`redaction_state` is optional compatibility metadata. The default and preferred
+local value is `safe_preview`, which means local searchable preview text, not
+share-safe redaction. Legacy `withheld` is accepted for older exporters, but the
+local CLI normalizes it to local preview behavior when payload or preview text
+exists; do not use it as a privacy guarantee.
 
 Example:
 

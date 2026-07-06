@@ -10,6 +10,9 @@ text_enum! {
     ///
     /// The serialized value `safe_preview` is legacy contract spelling for a
     /// local searchable preview. It is not a promise that output is share-safe.
+    /// The serialized value `withheld` remains parseable for old local rows and
+    /// archives, but the public local CLI does not treat it as a redaction
+    /// guarantee when an event payload exists.
     pub enum RedactionState {
         Raw => "raw",
         Redacted => "redacted",

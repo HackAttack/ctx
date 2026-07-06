@@ -54,16 +54,22 @@ the searchable text and metadata it needs into SQLite, so deleting or moving the
 raw transcript does not necessarily remove indexed text from ctx. Delete the ctx
 data root or rebuild the index when local retention requirements change.
 
-## Redaction Limits
+## Local Output Limits
 
-ctx applies bounded previews and share-safety markers in search and show output,
-but these are guardrails, not a general-purpose sanitizer. JSON output is
-local/private by default. Review and redact copied output before sharing it
-outside the machine.
+The public local CLI is a local history search/indexing tool, not a privacy
+redaction product. Search, show, SQL, MCP, and JSON output are local/private by
+default and may preserve local paths, token-shaped strings, command output, and
+other transcript text when that text exists in indexed payloads. Review and
+redact copied output before sharing it outside the machine.
+
+Legacy `safe_preview` and `withheld` state names are compatibility markers for
+old local rows and interchange data; they are not a guarantee that local output
+is safe to publish. Any share-safe export, hosted service, or cloud redaction
+boundary is separate from this local CLI contract.
 
 Before adding a new provider importer or expanding stored fields, the change
-needs tests for malformed input, source-path handling, redaction boundaries, and
-the no-network/no-repository-write behavior required by local-only security
+needs tests for malformed input, source-path handling, local payload handling,
+and the no-network/no-repository-write behavior required by local-only security
 mode.
 
 ## Security Documentation

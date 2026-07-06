@@ -1124,7 +1124,7 @@
       },
       "redaction_notes": [
         "Reads hook-generated JSONL files read-only; imported user prompts, planner responses, event types/statuses, local transcript paths, and touched file paths remain in the local ctx index.",
-        "Known sensitive fields such as file contents, command outputs, tool arguments, and results are redacted from the stored event body preview."
+        "Known bulky fields such as file contents, command outputs, tool arguments, and results are omitted from the searchable event body preview."
       ],
       "public_docs": "docs/provider-support.md",
       "limitations": [

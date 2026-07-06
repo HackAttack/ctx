@@ -17,4 +17,6 @@ search/show/SQLite projections preserve representative transcript text so users
 and agents can find exact local history. Share-safe or shared-service redaction
 is outside the current local CLI contract. Rows marked
 `redaction_state: "safe_preview"` use that legacy spelling for a local searchable
-preview and must still be treated as private local history.
+preview and must still be treated as private local history. Older rows marked
+`redaction_state: "withheld"` are compatibility data, not a local privacy
+redaction guarantee, and payload text remains local-searchable when present.

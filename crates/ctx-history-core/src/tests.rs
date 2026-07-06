@@ -107,6 +107,18 @@ fn safe_preview_is_legacy_local_preview_spelling() {
 }
 
 #[test]
+fn withheld_redaction_state_remains_parseable_for_legacy_rows() {
+    assert_eq!(
+        "withheld".parse::<RedactionState>().unwrap(),
+        RedactionState::Withheld
+    );
+    assert_eq!(
+        serde_json::to_string(&RedactionState::Withheld).unwrap(),
+        "\"withheld\""
+    );
+}
+
+#[test]
 fn history_record_json_names_are_public_names() {
     let record_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000000001").unwrap();
     let session: Session = serde_json::from_value(json!({

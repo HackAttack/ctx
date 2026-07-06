@@ -184,10 +184,7 @@ pub(crate) fn is_assistant_message(event: &Event) -> bool {
 }
 
 pub(crate) fn event_content(event: &Event) -> String {
-    if matches!(
-        event.redaction_state,
-        RedactionState::Raw | RedactionState::Withheld
-    ) {
+    if event.redaction_state == RedactionState::Raw {
         return "raw event payload withheld".to_owned();
     }
     if let Some(value) = event.payload.get("body").and_then(event_value_text) {
@@ -756,5 +753,52 @@ impl ShowDto {
             "source_path": source_path,
             "source_exists": source_path_exists(source_path.as_deref()),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use ctx_history_core::{Fidelity, SyncMetadata, SyncState, Visibility};
+
+    fn test_event(redaction_state: RedactionState) -> Event {
+        Event {
+            id: Uuid::parse_str("018f45d0-0000-7000-8000-000000000010").unwrap(),
+            seq: 1,
+            history_record_id: None,
+            session_id: None,
+            run_id: None,
+            event_type: EventType::Message,
+            role: Some(EventRole::User),
+            occurred_at: DateTime::parse_from_rfc3339("2026-06-23T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            capture_source_id: None,
+            payload: json!({"text": "legacy withheld show payload should render locally"}),
+            payload_blob_id: None,
+            dedupe_key: None,
+            redaction_state,
+            sync: SyncMetadata {
+                visibility: Visibility::LocalOnly,
+                fidelity: Fidelity::Imported,
+                sync_state: SyncState::LocalOnly,
+                sync_version: 0,
+                deleted_at: None,
+                metadata: json!({}),
+            },
+        }
+    }
+
+    #[test]
+    fn legacy_withheld_event_content_preserves_payload_text() {
+        let event = test_event(RedactionState::Withheld);
+
+        let content = event_content(&event);
+        let preview = event_preview(&event);
+
+        assert!(content.contains("legacy withheld show payload should render locally"));
+        assert!(preview.contains("legacy withheld show payload"));
+        assert_ne!(content, "raw event payload withheld");
     }
 }

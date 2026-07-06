@@ -346,6 +346,51 @@ fn custom_history_jsonl_preview_overrides_raw_payload_for_searchable_event_paylo
 }
 
 #[test]
+fn custom_history_jsonl_legacy_withheld_imports_as_local_preview() {
+    let temp = tempdir();
+    let fixture = temp.path().join("legacy-withheld-event.jsonl");
+    fs::write(
+        &fixture,
+        [
+            r#"{"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}"#,
+            r#"{"record_type":"source","source_id":"src","provider_key":"withheld-agent","source_format":"demo"}"#,
+            r#"{"record_type":"session","source_id":"src","session_id":"run","started_at":"2026-06-23T14:00:00Z"}"#,
+            r#"{"record_type":"event","source_id":"src","session_id":"run","event_index":0,"event_type":"message","role":"assistant","occurred_at":"2026-06-23T14:00:01Z","redaction_state":"withheld","payload":{"text":"legacywithheldimport local payload text"}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_custom_history_jsonl_v1(
+        &fixture,
+        &mut store,
+        CustomHistoryJsonlV1ImportOptions {
+            source_path: Some(fixture.clone()),
+            imported_at: "2026-06-23T14:10:00Z".parse().unwrap(),
+            ..CustomHistoryJsonlV1ImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    let session_id = provider_session_uuid(
+        CaptureProvider::Custom,
+        &custom_history_internal_session_id("withheld-agent", "src", "run"),
+    );
+    let events = store.events_for_session(session_id).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].redaction_state, RedactionState::LocalPreview);
+    assert!(events[0]
+        .payload
+        .to_string()
+        .contains("legacywithheldimport local payload text"));
+
+    let hits = store.search_event_hits("legacywithheldimport", 10).unwrap();
+    assert!(hits.iter().any(|hit| hit.event_id == events[0].id));
+}
+
+#[test]
 fn custom_history_jsonl_namespaces_provider_keys_to_avoid_collisions() {
     let temp = tempdir();
     let fixture = temp.path().join("same-native-ids.jsonl");

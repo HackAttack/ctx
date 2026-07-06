@@ -205,7 +205,7 @@ fn search_records_empty_or_no_token_query_returns_empty() {
 }
 
 #[test]
-fn event_search_local_preview_preserves_private_text_but_raw_is_withheld() {
+fn event_search_preserves_local_and_legacy_withheld_text_but_raw_is_withheld() {
     let temp = tempdir();
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();
     let local_event = local_preview_event(
@@ -218,9 +218,15 @@ fn event_search_local_preview_preserves_private_text_but_raw_is_withheld() {
         "raw cwd=/home/example/private token=ghp_1234567890abcdef",
         RedactionState::Raw,
     );
+    let withheld_event = local_preview_event(
+        3,
+        "legacywithheldmarker cwd=/home/example/private token=ghp_1234567890abcdef",
+        RedactionState::Withheld,
+    );
 
     store.upsert_event(&local_event).unwrap();
     store.upsert_event(&raw_event).unwrap();
+    store.upsert_event(&withheld_event).unwrap();
 
     let local_preview: String = store
         .conn
@@ -232,6 +238,21 @@ fn event_search_local_preview_preserves_private_text_but_raw_is_withheld() {
         .unwrap();
     assert!(local_preview.contains("/home/example/private"));
     assert!(local_preview.contains("ghp_1234567890abcdef"));
+
+    let withheld_preview: String = store
+        .conn
+        .query_row(
+            "SELECT safe_preview_text FROM event_search WHERE event_id = ?1",
+            [withheld_event.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(withheld_preview.contains("legacywithheldmarker"));
+    assert!(withheld_preview.contains("/home/example/private"));
+    assert!(withheld_preview.contains("ghp_1234567890abcdef"));
+
+    let hits = store.search_event_hits("legacywithheldmarker", 10).unwrap();
+    assert!(hits.iter().any(|hit| hit.event_id == withheld_event.id));
 
     let raw_preview: String = store
         .conn

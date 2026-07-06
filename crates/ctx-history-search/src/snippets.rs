@@ -43,10 +43,7 @@ pub(crate) fn event_text(event: &Event) -> String {
 }
 
 pub fn event_preview_text(event: &Event) -> String {
-    if matches!(
-        event.redaction_state,
-        RedactionState::Raw | RedactionState::Withheld
-    ) {
+    if event.redaction_state == RedactionState::Raw {
         return "raw event payload withheld".to_owned();
     }
     if let Some(preview) = event_payload_preview(&event.payload) {
