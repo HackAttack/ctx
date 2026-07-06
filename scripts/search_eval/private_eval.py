@@ -28,9 +28,7 @@ DEFAULT_BACKENDS = {
     "hybrid": "{ctx} {data_root_args} search {q} --backend hybrid --refresh auto --limit {limit} --json {search_args}",
 }
 
-DEFAULT_PREFLIGHT_SEARCH_COMMAND = (
-    "{ctx} {data_root_args} search {q} --backend auto --refresh auto --limit 1 --json {search_args}"
-)
+DEFAULT_PREFLIGHT_SEARCH_COMMAND = "{ctx} {data_root_args} daemon run --once --json"
 DEFAULT_PREFLIGHT_STATUS_COMMAND = "{ctx} {data_root_args} status --json"
 
 SAFE_DIAGNOSTIC_KEYS = {
@@ -44,6 +42,7 @@ SAFE_DIAGNOSTIC_KEYS = {
     "hydration_ms",
     "stale_events_dropped",
     "semantic_candidates",
+    "vector_backend",
 }
 
 UUID_RE = re.compile(

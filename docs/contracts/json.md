@@ -10,6 +10,7 @@ stderr progress output and does not include `schema_version`.
 
 ```bash
 ctx setup --json
+ctx setup --json --no-daemon
 ```
 
 Writes local storage and returns:
@@ -39,6 +40,12 @@ sources. It includes `sources`, `units`, `source_files`, `source_bytes`,
 `stale_source_import_files`, and Codex compatibility counters. The legacy
 `catalog` and `catalog_sources` blocks are retained for Codex session catalog
 consumers.
+
+Non-JSON `ctx setup` may opportunistically start a short one-pass local daemon
+maintenance profile after foreground setup work when `[daemon].enabled` is true.
+`ctx setup --no-daemon`, `ctx setup --catalog-only`, and any `ctx setup --json`
+run do not autostart daemon maintenance. The daemon, when started, reports
+`start_mode: "auto"` and `trigger_command: "setup"` through status surfaces.
 
 ## Status
 
@@ -123,6 +130,10 @@ nullable may be omitted when unavailable:
 - `pid`, nullable/omitted;
 - `started_at_ms`, `heartbeat_at_ms`, and `finished_at_ms`, nullable/omitted;
 - `last_error`, nullable/omitted;
+- `start_mode`, nullable/omitted, currently `auto` for setup/import autostarts
+  or `manual` for explicit daemon runs;
+- `trigger_command`, nullable/omitted, currently `setup` or `import` for
+  automatic starts;
 - `lock_path`;
 - `status_path`;
 - `jobs`.
@@ -148,6 +159,10 @@ nullable/omitted `last_upload_at_ms`, and `queued_items_estimate: 0`.
 `schema_version`, `daemon_enabled`, `config_path`, and `local_only`.
 `ctx daemon run --json` returns the daemon object directly. The legacy hidden
 `__ctx-daemon` entry point follows the same run output for compatibility.
+
+`ctx doctor --json` returns `schema_version`, `ok`, `progress`, `findings`, and
+the same top-level `daemon` object used by status so callers can inspect daemon
+lifecycle and job state without parsing human findings.
 
 ## Sources
 
@@ -184,6 +199,7 @@ empty, or unknown rows and otherwise null.
 
 ```bash
 ctx import --json
+ctx import --json --no-daemon
 ```
 
 Writes the local SQLite index and returns:
@@ -197,6 +213,13 @@ Writes the local SQLite index and returns:
 `totals` and each source row include file, byte, session, event, edge, skipped,
 and failed counts. `resume_mode` is currently `idempotent_rescan` when
 `--resume` is passed and `normal_scan` otherwise.
+
+Non-JSON native imports that target discovered/default provider sources may
+opportunistically start a short one-pass local daemon maintenance profile after
+foreground import work when `[daemon].enabled` is true. `ctx import --no-daemon`, custom JSONL
+imports, explicit history-source-only imports, and any `ctx import --json` run
+do not autostart daemon maintenance. The daemon, when started, reports
+`start_mode: "auto"` and `trigger_command: "import"` through status surfaces.
 
 ## Progress
 
@@ -401,10 +424,11 @@ part of v1 unless a future CLI JSON shape emits them. Local diagnostic path
 fields such as `vector_path`/`vectorPath` can still appear as additive JSON from
 the local CLI adapter, but they are intentionally not stable SDK fields.
 
-`retrieval.diagnostics` can include `query_embed_ms`, `vector_scan_ms`,
-`chunks_scanned`, `vector_bytes_read`, `events_scored`, `hydration_ms`,
-`stale_events_dropped`, `semantic_candidates`, `auto_candidate_count`,
-`auto_embedded_candidate_count`, and `auto_hybrid_skipped`. These fields are
+`retrieval.diagnostics` can include `query_embed_ms`, `vector_backend`,
+`vector_scan_ms`, `chunks_scanned`, `vector_bytes_read`, `events_scored`,
+`hydration_ms`, `stale_events_dropped`, `semantic_candidates`,
+`auto_candidate_count`, `auto_embedded_candidate_count`, and
+`auto_hybrid_skipped`. These fields are
 local performance and gate diagnostics and can reveal corpus size/timing; treat
 them as private like the rest of search JSON.
 

@@ -10,15 +10,26 @@ product boundary is retrieval, not interpretation.
 
 ## In Scope
 
-- `ctx setup` initializes local storage and indexes discovered supported local
-  transcript formats.
+- `ctx setup` initializes local storage, indexes discovered supported local
+  transcript formats, and can opportunistically start a short one-pass ctx-owned
+  local maintenance profile when `[daemon].enabled` is true.
+  `ctx setup --no-daemon`,
+  `ctx setup --catalog-only`, and `ctx setup --json` do not autostart
+  maintenance.
 - `ctx sources` reports known local provider history paths, including whether a
   native source is currently importable.
 - `ctx import` indexes supported local transcript formats and selected local
-  history-source plugins.
+  history-source plugins, and can opportunistically start the same short
+  one-pass ctx-owned maintenance profile when `[daemon].enabled` is true for
+  native provider imports. `ctx import --no-daemon`, custom JSONL imports, explicit
+  history-source-only imports, and `ctx import --json` do not autostart
+  maintenance.
 - `ctx search` can refresh a bounded batch from discovered native provider
   sources and enabled auto history-source plugins before returning ranked local
   hits from the local index, with event IDs when a hit maps to an indexed event.
+  Semantic and hybrid search read existing local sidecar coverage only; search
+  does not start daemon maintenance, run vector backfill, or download embedding
+  models.
 - `ctx show session` and `ctx show event` render transcripts, hits, and context
   windows using ctx-owned IDs, and `ctx show session --out` writes transcript
   artifacts.
@@ -30,13 +41,16 @@ product boundary is retrieval, not interpretation.
 - `ctx docs` exposes embedded public documentation and generated man pages.
 - `ctx upgrade` checks and applies signed CLI releases for official
   installer-managed binaries.
-- `ctx daemon` is the public local coordinator surface for status,
-  enable/disable config, and foreground local maintenance runs. The current
-  coordinator surface is local-only and limited to bounded native
-  provider-history refresh, semantic indexing/freshness status, and disabled
-  cloud-sync status.
+- `ctx daemon` is the first-class local coordinator surface for status,
+  enable/disable config, opportunistic maintenance started by setup/import when
+  enabled, and foreground local maintenance runs. The coordinator is local-only
+  and limited to bounded native provider-history refresh, local semantic
+  indexing/freshness status, and disabled cloud-sync status. Setup/import
+  autostart reports semantic status read-only; explicit `ctx daemon run` is the
+  path that may perform semantic catch-up.
 - `ctx status` and `ctx doctor` report ctx-owned daemon coordinator state.
-- JSON output supports local agents and scripts.
+- JSON output supports local agents and scripts and does not autostart daemon
+  maintenance.
 
 ## Out Of Scope
 
@@ -48,8 +62,8 @@ product boundary is retrieval, not interpretation.
 - shell startup-file modification;
 - write-capable SQL access;
 - API-key requirements for core setup/import/search;
-- provider-history daemons, hooks, cloud sync, or background collection outside
-  documented ctx-owned local semantic maintenance;
+- provider-owned history daemons, hooks, cloud sync, or background collection
+  outside documented ctx-owned daemon maintenance;
 - self-upgrade for unmanaged source builds, package-manager installs, or copied
   binaries;
 - provider-native import claims that are not listed in the support matrix.

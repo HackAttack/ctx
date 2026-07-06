@@ -23,12 +23,18 @@ to manage `PATH` yourself.
 
 The install script installs `ctx`, runs the bundled agent-history skill
 installer, and runs `ctx setup` so discovered local history is indexed before it
-exits. The skill installer opens an agent picker when interactive; otherwise it
-installs the universal `~/.agents/skills` copy plus detected agent-specific
-folders for tools that need them. Use `sh -s -- --no-setup` on Unix, or set
-`CTX_INSTALL_NO_SETUP=1` on Windows, for install-only CI or packaging flows.
-Install-only mode also skips skill setup unless you explicitly pass a skill
-option.
+exits. When the default daemon config is enabled, that setup run can also start
+an opportunistic short one-pass local maintenance profile for native-history
+freshness and semantic status. The skill installer opens an agent picker when interactive;
+otherwise it installs the universal `~/.agents/skills` copy plus detected
+agent-specific folders for tools that need them. Use `sh -s -- --no-setup` on
+Unix, or set `CTX_INSTALL_NO_SETUP=1` on Windows, for install-only CI or
+packaging flows. Install-only mode also skips skill setup unless you explicitly
+pass a skill option.
+
+To keep installer setup but opt out of setup daemon autostart, use
+`sh -s -- --no-daemon` on Unix, `-NoDaemon` on Windows, or set
+`CTX_INSTALL_NO_DAEMON=1`.
 
 To skip only the skill step, use `--no-skill` on Unix or `-NoSkill` on Windows,
 or set `CTX_INSTALL_NO_SKILL=1`. To target agent-specific skill folders during
@@ -53,7 +59,13 @@ Setup creates the configured ctx data root, initializes SQLite, writes
 `config.toml` when missing, discovers known provider history paths, inventories
 local history sources, imports discovered native provider sources, optimizes
 the local search index, and prints next steps. It does not execute
-history-source plugin commands. The default data root is `~/.ctx`.
+history-source plugin commands. The default data root is `~/.ctx`. The daemon
+is enabled by default;
+when enabled, setup may start a short one-pass ctx-owned maintenance profile
+after its foreground indexing work. Use `ctx setup --no-daemon` for a one-run
+opt-out, or disable it with `ctx daemon disable` when you want only explicit
+foreground maintenance. `ctx setup --catalog-only` and `ctx setup --json` do
+not autostart daemon maintenance.
 
 Use a different root when testing:
 
@@ -62,10 +74,12 @@ ctx --data-root /tmp/ctx-demo setup
 CTX_DATA_ROOT=/tmp/ctx-demo ctx status
 ```
 
-Setup does not write to source repositories, call model APIs, or require API
-keys. Official installer-managed binaries can run a signed background
-auto-upgrade check after later successful non-JSON commands other than
-`ctx status`; that updater does not collect provider history.
+Setup does not write to source repositories, call model APIs, download embedding
+models, or require API keys. Daemon maintenance is local-only; cloud sync
+remains disabled and reports `network_allowed: false`. Official
+installer-managed binaries can run a signed background auto-upgrade check after
+later successful non-JSON commands other than `ctx status`; that updater does
+not collect provider history.
 
 ## 3. See Available Sources
 
@@ -103,6 +117,13 @@ native cursor-resume API. Imports are source-atomic by default; use `--partial`
 only when you want valid rows from a malformed source to commit while row
 failures are reported.
 
+When daemon maintenance is enabled, `ctx import` can start the same
+opportunistic short one-pass local maintenance profile after the foreground import finishes.
+The daemon refreshes native history within local budgets and performs semantic
+catch-up only when the required local model cache already exists; it does not
+download models. Use `ctx import --no-daemon` for a one-run opt-out. JSON import
+output does not autostart daemon maintenance.
+
 After upgrading an older data root to `0.10.x` or newer, the first refresh or import may
 re-read previously indexed provider transcripts once. That rebuilds search
 content with touched-file metadata and local/private transcript text.
@@ -139,6 +160,11 @@ default when it can identify it. Use `--include-current-session` if the current
 session or its subagent work is the history you want to search. Use
 `--refresh off` when you need a strictly read-only query over the existing ctx
 index.
+
+Semantic and hybrid search read existing local sidecar coverage. Search never
+starts the daemon, runs semantic catch-up, or downloads embedding models. If the
+local model cache is missing, hybrid falls back to lexical search and strict
+semantic search reports a local error.
 
 ## 6. Use JSON For Scripts
 

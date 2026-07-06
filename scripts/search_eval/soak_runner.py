@@ -37,7 +37,7 @@ DEFAULT_THRESHOLDS: dict[str, Any] = {
         "require_refresh_auto": True,
         "auto_p95_vs_lexical_max_ratio": 2.0,
         "max_auto_p95_ms": 5000,
-        "require_partial_auto_lexical": False,
+        "require_partial_auto_lexical": True,
         "require_partial_auto_safe": True,
     },
     "private_eval": {
@@ -49,7 +49,7 @@ DEFAULT_THRESHOLDS: dict[str, Any] = {
     },
     "status": {
         "require_semantic_dirty_zero": True,
-        "min_semantic_coverage_ratio": 0.01,
+        "min_semantic_coverage_ratio": 1.0,
         "require_semantic_model_cache": True,
         "require_history_refresh_not_failed": True,
         "require_cloud_sync_disabled": True,

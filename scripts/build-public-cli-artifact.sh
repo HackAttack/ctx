@@ -141,6 +141,7 @@ fi
 rustup target add "${target}" >/dev/null
 out_dir="${CTX_PUBLIC_CLI_ARTIFACT_DIR:-target/public-cli-artifacts}"
 mkdir -p "${out_dir}"
+build_target_dir="${CARGO_TARGET_DIR:-target}"
 
 if [[ "${platform}" == macos-* && "$(uname -s)" != "Darwin" ]]; then
   ensure_darwin_cross_tools
@@ -149,12 +150,16 @@ elif [[ "${platform}" == "freebsd-x64" ]]; then
   if ! command -v cross >/dev/null 2>&1; then
     cargo install cross --locked
   fi
+  if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+    export CARGO_TARGET_DIR="target/public-cli-cross/${platform}"
+    build_target_dir="${CARGO_TARGET_DIR}"
+  fi
   cross build -p ctx --release --target "${target}" --locked
 else
   cargo build -p ctx --release --target "${target}" --locked
 fi
 
-target_binary="target/${target}/release/ctx"
+target_binary="${build_target_dir}/${target}/release/ctx"
 if [[ "${platform}" == "windows-x64" ]]; then
   target_binary="${target_binary}.exe"
 fi

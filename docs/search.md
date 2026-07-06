@@ -13,12 +13,18 @@ the existing index. If more refresh backlog remains, JSON freshness reports
 catching up. If the existing store is readable but not writable by the current
 binary, auto refresh is skipped and JSON freshness reports
 `status: "read_only"` while serving the existing index.
+The first-class daemon path can start as a short setup/import autostart profile
+when `[daemon].enabled` is true, or as the normal bounded maintenance profile
+from an explicit `ctx daemon run`. Use `ctx setup --no-daemon` or
+`ctx import --no-daemon` to keep the foreground command but skip that one
+automatic daemon start. Search does not start that daemon; it only observes
+recent daemon coverage so it can avoid duplicate native scans.
 Semantic search reads existing local sidecar coverage when it is already
 available. Interactive search does not start vector backfill, download models,
 create the semantic sidecar, or start a daemon. The default `auto` backend is
 lexical-first: it reranks lexical candidates only when sidecar coverage is ready
-for those candidates, and it can use bounded semantic rescue from a
-coverage-gated partial sidecar when lexical search finds no candidates.
+for those candidates, and it can use bounded semantic rescue only when the
+sidecar is fully ready and clean.
 
 ## Search
 
@@ -134,6 +140,13 @@ semantic evidence with reciprocal-rank fusion; `--semantic-weight` controls the
 semantic contribution and defaults to `0.35`. Public reports name the model as
 `sentence-transformers/all-MiniLM-L6-v2`; the required local FastEmbed cache is
 the Qdrant ONNX artifact directory `models--Qdrant--all-MiniLM-L6-v2-onnx`.
+The local embedding backend is compiled only for targets where the bundled ONNX
+Runtime backend is supported. Current Linux GNU builds and macOS arm64 builds
+can use semantic embeddings when the cache already exists. Current Windows GNU,
+FreeBSD, and macOS x64 public artifacts are lexical-safe builds: `auto` and
+`hybrid` remain available and fall back to lexical, while strict `semantic`
+reports a local unavailable/cache error instead of downloading or linking a
+model at runtime.
 Semantic and hybrid searches read the coverage that is already present in the
 semantic sidecar; they do not perform foreground vector catch-up. They also
 require the local embedding model cache to already exist. If the cache is
@@ -162,9 +175,9 @@ lexical candidate event has current vector coverage. This avoids the full
 sidecar scan used by explicit semantic search and avoids biasing default results
 with a partially embedded candidate pool.
 When lexical search produces no candidates, `auto` can use bounded semantic
-rescue from the coverage-gated sidecar and reports partial coverage in the
-retrieval metadata so callers can distinguish early backfill from a fully ready
-semantic index.
+rescue only from a fully ready sidecar. Partial semantic coverage is reported in
+retrieval metadata, but default rescue stays lexical until backfill is complete
+and the dirty queue is empty.
 `CTX_SEMANTIC_THREADS` caps ONNX Runtime CPU threads,
 `CTX_SEMANTIC_EMBED_BATCH` tunes embedding batch size, and
 `CTX_SEMANTIC_CACHE_DIR` can point ctx at a pre-populated local model cache. When
@@ -187,11 +200,13 @@ results, leaving remaining backlog for later searches,
 `--refresh strict`, or `ctx import --all`. Search reports existing semantic
 coverage through retrieval JSON and `ctx status`, but `strict` does not wait for
 full semantic coverage. `off` skips the pre-search refresh, never runs plugin
-commands, and does not schedule or run semantic indexing. Explicit-only native
-sources such as NanoClaw, plus search-only sources without native import
-support, are searched from the existing index until they are explicitly imported
-through a supported path. Supported AstrBot `data_v4.db` locations participate in
-bounded native discovery and may also be imported with an explicit `--path`.
+commands, and does not schedule or run semantic indexing. Auto and strict
+refresh are query-path text refresh modes, not daemon lifecycle controls; search
+does not start daemon maintenance. Explicit-only native sources such as
+NanoClaw, plus search-only sources without native import support, are searched
+from the existing index until they are explicitly imported through a supported
+path. Supported AstrBot `data_v4.db` locations participate in bounded native
+discovery and may also be imported with an explicit `--path`.
 
 Use `--refresh off` for a search that does not import providers, execute
 plugins, schedule semantic indexing, or update either the main ctx SQLite store
@@ -202,23 +217,42 @@ not download a model or write semantic catch-up work during search.
 
 ## Semantic Freshness
 
-Semantic freshness is part of the normal search/status surface rather than a
-separate CLI namespace. `ctx search` reads the sidecar coverage that already
-exists and reports semantic coverage and worker state in JSON. `ctx status`
-reports whether a worker is running, whether the model cache is available,
-recent heartbeat/error timestamps, counts for searchable, embedded, and queued
-items, and dirty/stale items. Raw CLI status can include private local
-sidecar/lock/status paths for troubleshooting; treat them as current-machine
-diagnostics, not portable API identifiers. Status also includes a `daemon` block
-for the ctx-owned background coordinator, including whether daemon runs are
-enabled in config. `ctx daemon run` can perform bounded native provider-history
-refresh and local semantic catch-up; managed default startup is still being
-implemented.
+Semantic freshness is part of the normal search/status surface and the
+first-class ctx daemon model. `ctx daemon` coordinates bounded local maintenance:
+native provider-history refresh, local semantic catch-up, and cloud-sync status.
+When `[daemon].enabled` is true, `ctx setup` and `ctx import` may
+opportunistically start daemon maintenance after their foreground indexing work.
+Use `ctx setup --no-daemon` or `ctx import --no-daemon` for one foreground run
+without autostart, `ctx daemon run` for the same work in the foreground,
+`ctx daemon disable` to prevent automatic starts, and `ctx daemon run --force`
+for explicit troubleshooting while disabled. Catalog-only setup and JSON-output
+setup/import do not autostart daemon maintenance. Setup/import autostart uses a
+short one-pass profile; explicit `ctx daemon run` keeps the normal bounded
+daemon defaults for larger semantic catch-up.
+
+`ctx search` reads the sidecar coverage that already exists and reports semantic
+coverage and worker state in JSON. Search never starts the daemon, queues vector
+backfill, waits for full semantic coverage, or downloads an embedding model.
+Explicit semantic or hybrid queries can initialize an already-cached local model
+to embed the query and read `vectors.sqlite`; when the cache is missing, hybrid
+falls back to lexical search and strict semantic search fails with a local
+error.
+
+`ctx status` reports whether a worker is running, whether the model cache is
+available, recent heartbeat/error timestamps, counts for searchable, embedded,
+and queued items, and dirty/stale items. Raw CLI status can include private
+local sidecar/lock/status paths for troubleshooting; treat them as
+current-machine diagnostics, not portable API identifiers. Status also includes
+a `daemon` block for the ctx-owned local coordinator, including whether daemon
+runs are enabled in config.
+
 A long-lived daemon keeps the local embedding model resident after the first
 worker pass, uses a low-memory default embedding batch, and performs recent-work
-freshness checks before it settles into idle loops. Cloud sync currently reports disabled and
-`network_allowed: false`. `ctx doctor` is the place for semantic and daemon
-diagnostics when local status needs troubleshooting.
+freshness checks before it settles into idle loops. Daemon semantic catch-up
+runs only when the required local model cache already exists. Cloud sync reports
+disabled with `enabled: false` and `network_allowed: false`. `ctx doctor` is the
+place for semantic and daemon diagnostics when local status needs
+troubleshooting.
 
 Search never starts the daemon or waits for full semantic coverage. Explicit
 semantic or hybrid queries read the sidecar coverage that already exists.
@@ -244,12 +278,14 @@ worker status, and semantic diagnostics when vector retrieval runs or when auto
 evaluates bounded-hybrid gates. Raw CLI retrieval may include a private local
 vector sidecar path as additive diagnostic metadata; SDK consumers should not
 depend on it as contract state. Diagnostics include query
-embedding time, vector scan time, chunks scanned, vector bytes read, events
-scored, hydration time, stale-vector drops, semantic candidate count, bounded
+embedding time, vector backend, vector scan time, chunks scanned, vector bytes
+read, events scored, hydration time, stale-vector drops, semantic candidate count, bounded
 auto candidate counts, and an auto skip reason when applicable. A citation with
 `source_exists: false` means ctx can return indexed text, but the raw provider
 file was not available at the stored path when the result was built.
 
-Search output is local/private by default.
-Review copied snippets, JSON, or transcripts before sending them outside the
-machine.
+JSON-output commands do not autostart daemon maintenance.
+
+Search output is local/private by default and is not redacted for sharing.
+Review and redact copied snippets, JSON, or transcripts before sending them
+outside the machine.
