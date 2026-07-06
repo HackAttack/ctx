@@ -135,7 +135,8 @@ enum SkillAgentArg {
     Cursor,
     #[value(name = "opencode", alias = "open-code")]
     OpenCode,
-    Amp,
+    #[value(name = "xdg-agents", alias = "config-agents")]
+    XdgAgents,
     #[value(name = "gemini-cli", alias = "gemini")]
     GeminiCli,
     Antigravity,
@@ -154,7 +155,7 @@ impl SkillAgentArg {
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
-        Self::Amp,
+        Self::XdgAgents,
         Self::GeminiCli,
         Self::Antigravity,
         Self::AntigravityCli,
@@ -170,7 +171,7 @@ impl SkillAgentArg {
             Self::ClaudeCode => "claude-code",
             Self::Cursor => "cursor",
             Self::OpenCode => "opencode",
-            Self::Amp => "amp",
+            Self::XdgAgents => "xdg-agents",
             Self::GeminiCli => "gemini-cli",
             Self::Antigravity => "antigravity",
             Self::AntigravityCli => "antigravity-cli",
@@ -187,7 +188,7 @@ impl SkillAgentArg {
             Self::ClaudeCode => "Claude Code",
             Self::Cursor => "Cursor",
             Self::OpenCode => "OpenCode",
-            Self::Amp => "Amp",
+            Self::XdgAgents => "XDG agents",
             Self::GeminiCli => "Gemini CLI",
             Self::Antigravity => "Antigravity",
             Self::AntigravityCli => "Antigravity CLI",
@@ -206,7 +207,7 @@ impl SkillAgentArg {
             | Self::Codex
             | Self::Cursor
             | Self::OpenCode
-            | Self::Amp
+            | Self::XdgAgents
             | Self::GeminiCli
             | Self::Antigravity
             | Self::AntigravityCli
@@ -225,7 +226,7 @@ impl SkillAgentArg {
                 .join("skills"),
             Self::Cursor => context.home.join(".cursor").join("skills"),
             Self::OpenCode => context.xdg_config_home.join("opencode").join("skills"),
-            Self::Amp => context.xdg_config_home.join("agents").join("skills"),
+            Self::XdgAgents => context.xdg_config_home.join("agents").join("skills"),
             Self::GeminiCli => context.home.join(".gemini").join("skills"),
             Self::Antigravity => context
                 .home
@@ -254,7 +255,7 @@ impl SkillAgentArg {
             Self::ClaudeCode => Some(context.env_or_home_child("CLAUDE_CONFIG_DIR", ".claude")),
             Self::Cursor => Some(context.home.join(".cursor")),
             Self::OpenCode => Some(context.xdg_config_home.join("opencode")),
-            Self::Amp => Some(context.xdg_config_home.join("amp")),
+            Self::XdgAgents => Some(context.xdg_config_home.join("agents")),
             Self::GeminiCli => Some(context.home.join(".gemini")),
             Self::Antigravity => Some(context.home.join(".gemini").join("antigravity")),
             Self::AntigravityCli => Some(context.home.join(".gemini").join("antigravity-cli")),
@@ -436,7 +437,7 @@ fn picker_agents() -> &'static [SkillAgentArg] {
         SkillAgentArg::GitHubCopilot,
         SkillAgentArg::Pi,
         SkillAgentArg::Goose,
-        SkillAgentArg::Amp,
+        SkillAgentArg::XdgAgents,
     ]
 }
 
@@ -579,7 +580,7 @@ fn parse_picker_selection(input: &str, options: &[SkillAgentArg]) -> Result<Vec<
     }
     let mut selected = Vec::new();
     for raw in input
-        .split(|ch: char| ch == ',' || ch == ' ' || ch == '\t')
+        .split([',', ' ', '\t'])
         .filter(|part| !part.trim().is_empty())
     {
         let token = raw.trim();
@@ -608,7 +609,7 @@ fn agent_from_name(value: &str) -> Option<SkillAgentArg> {
         "claude" | "claude-code" | "claudecode" => Some(SkillAgentArg::ClaudeCode),
         "cursor" => Some(SkillAgentArg::Cursor),
         "opencode" | "open-code" => Some(SkillAgentArg::OpenCode),
-        "amp" => Some(SkillAgentArg::Amp),
+        "xdg-agents" | "config-agents" => Some(SkillAgentArg::XdgAgents),
         "gemini" | "gemini-cli" => Some(SkillAgentArg::GeminiCli),
         "antigravity" => Some(SkillAgentArg::Antigravity),
         "antigravity-cli" => Some(SkillAgentArg::AntigravityCli),
@@ -1114,7 +1115,7 @@ mod tests {
                 SkillAgentArg::Codex,
                 SkillAgentArg::ClaudeCode,
                 SkillAgentArg::OpenCode,
-                SkillAgentArg::Amp,
+                SkillAgentArg::XdgAgents,
             ],
             false,
             false,
@@ -1138,7 +1139,7 @@ mod tests {
             PathBuf::from("/xdg/opencode/skills/ctx-agent-history-search")
         );
         assert_eq!(
-            paths["amp"],
+            paths["xdg-agents"],
             PathBuf::from("/xdg/agents/skills/ctx-agent-history-search")
         );
     }

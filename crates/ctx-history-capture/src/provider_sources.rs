@@ -1341,10 +1341,7 @@ fn kilo_channel_db_paths(data_dir: &Path) -> Vec<PathBuf> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !entry
-            .file_type()
-            .map_or(false, |file_type| file_type.is_file())
-        {
+        if !entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
             continue;
         }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -2675,7 +2672,7 @@ fn has_task_json_file_under_matching(
             return BoundedProbe::from_bool(
                 root.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| matches_name(name)),
+                    .is_some_and(&matches_name),
             );
         }
         PathProbe::Dir => {}
@@ -2711,7 +2708,7 @@ fn has_task_json_file_under_matching(
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| matches_name(name))
+                    .is_some_and(&matches_name)
             {
                 return BoundedProbe::Found;
             }

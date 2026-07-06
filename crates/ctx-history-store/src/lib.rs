@@ -10034,35 +10034,34 @@ mod catalog_tests {
             )
             .unwrap();
 
-        for (source_path, provider, source_format, source_root) in [(
+        let (source_path, provider, source_format, source_root) = (
             "/tmp/rovodev/sessions/session/session_context.json",
             "rovodev",
             "rovodev_session_json",
             "/tmp/rovodev/sessions",
-        )] {
-            store
-                .conn
-                .execute(
-                    r#"
+        );
+        store
+            .conn
+            .execute(
+                r#"
                     INSERT INTO catalog_sessions
                     (source_path, provider, source_format, source_root, agent_type, file_size_bytes, file_modified_at_ms, cataloged_at_ms)
                     VALUES (?1, ?2, ?3, ?4, 'primary', 1, 0, 0)
                     "#,
-                    params![source_path, provider, source_format, source_root],
-                )
-                .unwrap();
-            store
-                .conn
-                .execute(
-                    r#"
+                params![source_path, provider, source_format, source_root],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
                     INSERT INTO source_import_files
                     (provider, source_format, source_root, source_path, file_size_bytes, file_modified_at_ms, observed_at_ms)
                     VALUES (?1, ?2, ?3, ?4, 1, 0, 0)
                     "#,
-                    params![provider, source_format, source_root, source_path],
-                )
-                .unwrap();
-        }
+                params![provider, source_format, source_root, source_path],
+            )
+            .unwrap();
     }
     #[test]
     fn schema_v27_adds_windsurf_provider_checks() {

@@ -36,4 +36,3 @@ schema is nevertheless anchored to the tagged upstream sources below.
   partial files:
   https://github.com/coder/mux/blob/v0.27.0/src/node/orpc/router.ts#L410-L520
   https://github.com/coder/mux/blob/v0.27.0/src/node/services/analytics/etl.ts#L527-L542
-

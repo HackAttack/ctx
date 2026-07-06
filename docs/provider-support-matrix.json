@@ -1846,7 +1846,6 @@
         "tests/fixtures/provider-history/junie/sessions"
       ],
       "metadata": {
-        "npx_skills_id": "junie",
         "canonical_provider_id": "junie",
         "schema_family": "Junie event-sourced UI stream"
       }
@@ -1916,7 +1915,6 @@
           "firebender-jetbrains",
           "firebender_jetbrains"
         ],
-        "npx_skills_id": "firebender",
         "canonical_provider_id": "firebender"
       }
     },

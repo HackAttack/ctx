@@ -9079,6 +9079,7 @@ fn task_json_history_item_event(value: &Value) -> Option<Value> {
     Some(Value::Object(object))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn task_json_capture(
     spec: TaskJsonProviderSpec,
     task_id: &str,
@@ -10013,6 +10014,7 @@ fn firebender_message_text(message: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn firebender_capture(
     row: &FirebenderChatSessionRow,
     metadata: &Value,
@@ -10050,7 +10052,7 @@ fn firebender_capture(
                 "title": row.name,
                 "metadata": provider_capped_json(metadata, PROVIDER_MAX_PREVIEW_CHARS),
                 "storage": ".idea/firebender/chat_history.db",
-                "timestamp_note": "message rows do not carry durable per-message timestamps; ctx preserves session created_at/updated_at and import order",
+                "timestamp_note": "message rows do not carry durable per-message timestamps; imports preserve session created_at/updated_at and import order",
             }),
         },
         context,
@@ -11391,6 +11393,7 @@ fn codebuddy_generated_title(events: &[CodeBuddyEventInput]) -> Option<String> {
         .filter(|title| !title.trim().is_empty())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn codebuddy_capture(
     provider_session_id: &str,
     native_session_id: &str,
@@ -15403,6 +15406,7 @@ fn normalize_warp_sqlite(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn warp_capture(
     conversation_id: &str,
     parent_conversation_id: Option<String>,
@@ -17326,13 +17330,10 @@ fn opencode_sessions(
     dialect: &OpenCodeSqliteDialect,
 ) -> Result<Vec<OpenCodeSessionRow>> {
     if !sqlite_table_exists(conn, "session")? {
-        return Err(CaptureError::InvalidPayload(
-            format!(
-                "{} SQLite database is missing required session table",
-                dialect.display_name
-            )
-            .into(),
-        ));
+        return Err(CaptureError::InvalidPayload(format!(
+            "{} SQLite database is missing required session table",
+            dialect.display_name
+        )));
     }
     let columns = sqlite_table_columns(conn, "session")?;
     ensure_sqlite_table_columns(
@@ -20823,6 +20824,7 @@ struct KiroAssistantMessage {
     tool_uses: Option<Value>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn kiro_event(
     row: &KiroConversationRow,
     provider_session_id: &str,
@@ -25638,9 +25640,8 @@ fn pi_existing_event_identity_by_entry_id(
     let Some(entry_id) = entry_id.filter(|id| !id.trim().is_empty()) else {
         return Ok(None);
     };
-    if !caches
-        .pi_event_identities_by_entry_id
-        .contains_key(&session_id)
+    if let std::collections::btree_map::Entry::Vacant(entry) =
+        caches.pi_event_identities_by_entry_id.entry(session_id)
     {
         let mut identities = BTreeMap::new();
         for event in store.events_for_session(session_id)? {
@@ -25659,9 +25660,7 @@ fn pi_existing_event_identity_by_entry_id(
                     run_source_id: event.capture_source_id,
                 });
         }
-        caches
-            .pi_event_identities_by_entry_id
-            .insert(session_id, identities);
+        entry.insert(identities);
     }
     Ok(caches
         .pi_event_identities_by_entry_id
@@ -25689,6 +25688,7 @@ fn pi_stored_event_entry_id(event: &Event) -> Option<&str> {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn provider_event_import_identity(
     store: &Store,
     provider: CaptureProvider,
@@ -27061,7 +27061,7 @@ mod tests {
             stable_index,
             legacy_index + 1,
             event_hash,
-            Some(legacy_index as u64),
+            Some(legacy_index),
         )
         .unwrap();
 
