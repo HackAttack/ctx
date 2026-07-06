@@ -39,6 +39,9 @@ install, use `--skill-agent codex`, repeat `--skill-agent`, or use
 When working from source, use `cargo build -p ctx` or
 `cargo install --path crates/ctx-cli`.
 
+For GitHub release binaries, mise, Homebrew, and source builds, see
+[Package Managers And Unmanaged Installs](unmanaged-installs.md).
+
 ## 2. Set Up And Index
 
 ```bash
