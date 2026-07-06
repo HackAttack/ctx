@@ -36,7 +36,9 @@ the local retrieval product.
   strings. They must be treated as private local data.
 - The legacy `safe_preview` state and `safe_preview_text` columns mean local
   searchable preview text, not share-safe redaction.
-- Unsupported providers remain explicit in the provider support matrix.
+- The public provider support matrix contains only supported providers and uses
+  only the `supported` status. Unsupported-provider rationale belongs in
+  private conformance evidence, not public tiers.
 
 ## Static Docs Checks
 

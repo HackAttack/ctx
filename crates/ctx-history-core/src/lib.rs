@@ -126,8 +126,8 @@ pub use provider::{
     provider_capture_envelope_schema_version, provider_support_matrix_schema_version,
     ProviderArtifactDescriptor, ProviderCaptureEnvelope, ProviderCursorCheckpoint,
     ProviderCursorRange, ProviderEventEnvelope, ProviderFidelityClaims, ProviderId,
-    ProviderMatrixPriority, ProviderPathKind, ProviderRawRetention, ProviderRedactionBoundary,
-    ProviderSessionEnvelope, ProviderSourceEnvelope, ProviderSourceTrust, ProviderSupportEntry,
+    ProviderPathKind, ProviderRawRetention, ProviderRedactionBoundary, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, ProviderSupportEntry,
     ProviderSupportMatrixDocument, ProviderSupportPath, ProviderSupportStatus,
     PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION, PROVIDER_SUPPORT_MATRIX_SCHEMA_VERSION,
 };

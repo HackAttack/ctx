@@ -28,4 +28,7 @@ Custom history is separate: `ctx import --format ctx-history-jsonl-v1 --path <fi
 
 ## Import Rules
 
-Provider imports should be bounded, read-only, and backed by public fixtures or source-format proof. Do not document a provider as natively locally importable until the CLI can discover or parse that provider's real local history and the provider support matrix marks the shipped path accordingly.
+Provider imports should be bounded, read-only, and tied to a documented source
+format. Do not document a provider as locally importable until the CLI can
+discover or parse that provider's real local history and the provider support
+matrix marks the shipped path as Supported.
