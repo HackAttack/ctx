@@ -731,6 +731,20 @@ fn parse_search_limit(value: &str) -> std::result::Result<usize, String> {
     Ok(limit)
 }
 
+fn quiet_output(flag: bool) -> bool {
+    flag || env_truthy("CTX_QUIET")
+}
+
+fn env_truthy(key: &str) -> bool {
+    env::var_os(key).is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
 fn parse_event_window_limit(value: &str) -> std::result::Result<usize, String> {
     let limit = value
         .parse::<usize>()

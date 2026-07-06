@@ -26,6 +26,7 @@ pub(crate) fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
     command.env("CTX_DATA_ROOT", temp.path());
     command.env("HOME", temp.path());
     command.env("CTX_ANALYTICS_OFF", "1");
+    command.env_remove("CTX_QUIET");
     // Drop provider override variables inherited from the developer
     // machine so discovery never escapes the temp directory.
     command.env_remove("OPENCLAW_STATE_DIR");

@@ -10,11 +10,7 @@ use crate::output::print_json;
 use crate::store_util::open_existing_store_snapshot_read_only;
 use crate::JsonArgs;
 
-pub(crate) fn run_status(
-    args: JsonArgs,
-    data_root: PathBuf,
-    quiet: bool,
-) -> Result<()> {
+pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Result<()> {
     let db_path = database_path(data_root.clone());
     let initialized = db_path.exists();
     let config_path = data_root.join(CONFIG_FILE);

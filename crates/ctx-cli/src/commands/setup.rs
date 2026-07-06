@@ -18,7 +18,7 @@ use crate::commands::import::{
 };
 use crate::config::CONFIG_FILE;
 use crate::output::print_json;
-use crate::progress::ProgressReporter;
+use crate::progress::{ProgressArg, ProgressReporter};
 use crate::provider_sources::{discovered_sources, sources_json, SourceInfo};
 use crate::{analytics, config, ImportArgs, SetupArgs};
 
@@ -34,7 +34,8 @@ pub(crate) fn run_setup(
     let config_path = data_root.join(CONFIG_FILE);
     config::write_default_config(&data_root)?;
     let sources = discovered_sources();
-    let progress = ProgressReporter::new(args.progress, args.json, "setup", 0);
+    let progress_arg = setup_progress_arg(args.progress, quiet);
+    let progress = ProgressReporter::new(progress_arg, args.json, "setup", 0);
     progress.message("cataloging", "cataloging discovered Codex sessions");
     let (catalog, catalog_sources) = catalog_available_sources(&store, &sources)?;
     progress.done(
@@ -78,14 +79,14 @@ pub(crate) fn run_setup(
             resume: false,
             partial: false,
             json: args.json,
-            progress: args.progress,
+            progress: progress_arg,
         };
         Some(run_import_internal(
             &import_args,
             data_root.clone(),
             analytics_properties,
             ImportRunOptions {
-                progress: args.progress,
+                progress: progress_arg,
                 json: args.json,
                 print_human: false,
                 allow_empty_sources: true,
@@ -128,13 +129,13 @@ pub(crate) fn run_setup(
         }))?;
     } else {
         progress.finish_line();
-        print_setup_status_line(
-            import_report.as_ref(),
-            args.catalog_only,
-            catalog_counts.pending,
-            indexed_items,
-        );
         if !quiet {
+            print_setup_status_line(
+                import_report.as_ref(),
+                args.catalog_only,
+                catalog_counts.pending,
+                indexed_items,
+            );
             if !setup_has_indexed_content(indexed_items) && catalog.cataloged_sessions > 0 {
                 println!("Cataloged {} session(s).", catalog.cataloged_sessions);
             }
@@ -175,6 +176,14 @@ pub(crate) fn run_setup(
         }
     }
     Ok(())
+}
+
+fn setup_progress_arg(progress: ProgressArg, quiet: bool) -> ProgressArg {
+    if quiet && progress == ProgressArg::Auto {
+        ProgressArg::None
+    } else {
+        progress
+    }
 }
 
 pub(crate) fn setup_import_json(report: Option<&ImportReport>) -> Value {
