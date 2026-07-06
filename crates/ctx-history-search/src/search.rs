@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{cmp::Ordering, collections::BTreeMap};
 
 use ctx_history_core::{utc_now, ContextTruncation};
 use ctx_history_store::{FileTouchScope, Store};
@@ -10,7 +10,7 @@ use crate::filters::{
 use crate::model::CandidateSearch;
 use crate::packet::{
     empty_search_packet, pagination, SearchPacket, SearchPacketResult, SearchResultScope,
-    SEARCH_PACKET_SCHEMA_VERSION,
+    SemanticEventHit, SEARCH_PACKET_SCHEMA_VERSION,
 };
 use crate::query::{
     composed_search_terms, normalized_options, PacketOptions, Result, SearchResultMode,
@@ -19,7 +19,7 @@ use crate::query::{
 };
 use crate::ranking::ranked_candidates;
 use crate::results::{
-    compare_search_results, event_search_result, merge_search_result,
+    compare_search_results, event_reason, event_search_result, merge_search_result,
     normalize_search_result_ranks, push_candidate_results, push_unique_why,
     search_result_merge_key, session_importance,
 };
@@ -67,6 +67,135 @@ pub fn search_packet(store: &Store, query: &str, options: &PacketOptions) -> Res
         results,
         pagination: pagination(Some(cursor_offset), has_more),
         truncation,
+    })
+}
+
+pub fn semantic_event_search_packet(
+    store: &Store,
+    query: &str,
+    options: &PacketOptions,
+    semantic_hits: &[SemanticEventHit],
+    semantic_weight: f32,
+    hybrid: bool,
+) -> Result<SearchPacket> {
+    let options = normalized_options(options);
+    if query.trim().is_empty() {
+        return Ok(empty_search_packet(query, &options));
+    }
+    let file_scope = file_filter_scope(store, &options.filters)?;
+    if file_scope.as_ref().is_some_and(FileTouchScope::is_empty) {
+        return Ok(empty_search_packet(query, &options));
+    }
+    let file_scope = file_scope.as_ref();
+    let target_results = options.limit.saturating_add(1);
+    let mut candidates = BTreeMap::<Uuid, HybridCandidate>::new();
+
+    if hybrid {
+        let page_size = FILTERED_SEARCH_PAGE_SIZE.max(target_results.saturating_mul(8).max(50));
+        let mut lexical_rank = 0_usize;
+        for hit in store.search_event_hits_page(query, page_size, 0)? {
+            if !event_hit_matches_filters(&hit, &options.filters, file_scope) {
+                continue;
+            }
+            lexical_rank = lexical_rank.saturating_add(1);
+            let mut result = event_search_result(&hit, query, options.snippet_chars);
+            result.result_scope = SearchResultScope::Event;
+            candidates.insert(
+                hit.event_id,
+                HybridCandidate {
+                    result,
+                    lexical_score: Some(reciprocal_rank(lexical_rank)),
+                    semantic_score: None,
+                    occurred_at: hit.occurred_at,
+                    seq: hit.seq,
+                },
+            );
+        }
+    }
+
+    let mut semantic_rank = 0_usize;
+    for semantic_hit in semantic_hits {
+        let hit = &semantic_hit.hit;
+        if !event_hit_matches_filters(hit, &options.filters, file_scope) {
+            continue;
+        }
+        semantic_rank = semantic_rank.saturating_add(1);
+        let semantic_score = if hybrid {
+            reciprocal_rank(semantic_rank)
+        } else {
+            semantic_hit.similarity.max(0.0)
+        };
+        let entry = candidates.entry(hit.event_id).or_insert_with(|| {
+            let mut result = event_search_result(hit, query, options.snippet_chars);
+            result.result_scope = SearchResultScope::Event;
+            HybridCandidate {
+                result,
+                lexical_score: None,
+                semantic_score: None,
+                occurred_at: hit.occurred_at,
+                seq: hit.seq,
+            }
+        });
+        entry.semantic_score = Some(
+            entry
+                .semantic_score
+                .map_or(semantic_score, |existing| existing.max(semantic_score)),
+        );
+        push_unique_why(
+            &mut entry.result.why_matched,
+            "semantic_similarity".to_owned(),
+        );
+        push_unique_why(
+            &mut entry.result.why_matched,
+            format!("semantic:{}", event_reason(hit.event_type)),
+        );
+    }
+
+    let semantic_weight = semantic_weight.clamp(0.0, 1.0);
+    let mut results = candidates
+        .into_values()
+        .map(|mut candidate| {
+            candidate.result.rank = if hybrid {
+                let lexical = candidate.lexical_score.unwrap_or(0.0);
+                let semantic = candidate.semantic_score.unwrap_or(0.0);
+                ((1.0 - semantic_weight) * lexical) + (semantic_weight * semantic)
+            } else {
+                candidate.semantic_score.unwrap_or(candidate.result.rank)
+            };
+            candidate
+        })
+        .collect::<Vec<_>>();
+    results.sort_by(compare_hybrid_candidates);
+    if options.result_mode == SearchResultMode::Sessions {
+        results = cluster_hybrid_candidates_by_session(results);
+    }
+    let has_more = results.len() > options.limit;
+    if results.len() > options.limit {
+        results.truncate(options.limit);
+    }
+    let mut packet_results = results
+        .into_iter()
+        .map(|candidate| candidate.result)
+        .collect::<Vec<_>>();
+    normalize_search_result_ranks(&mut packet_results);
+    let cursor_offset = packet_results.len();
+
+    Ok(SearchPacket {
+        schema_version: SEARCH_PACKET_SCHEMA_VERSION,
+        query: query.to_owned(),
+        filters: options.filters,
+        generated_at: utc_now(),
+        results: packet_results,
+        pagination: pagination(Some(cursor_offset), has_more),
+        truncation: if has_more {
+            ContextTruncation {
+                truncated: true,
+                reason: Some("limit".to_owned()),
+                omitted_results: 1,
+            }
+        } else {
+            ContextTruncation::default()
+        },
     })
 }
 
@@ -142,6 +271,60 @@ pub fn search_packet_terms(
         pagination: pagination(Some(cursor_offset), has_more),
         truncation,
     })
+}
+
+struct HybridCandidate {
+    result: SearchPacketResult,
+    lexical_score: Option<f32>,
+    semantic_score: Option<f32>,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    seq: u64,
+}
+
+fn reciprocal_rank(rank: usize) -> f32 {
+    1.0 / (60.0 + rank.max(1) as f32)
+}
+
+fn compare_hybrid_candidates(left: &HybridCandidate, right: &HybridCandidate) -> Ordering {
+    right
+        .result
+        .rank
+        .partial_cmp(&left.result.rank)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| right.occurred_at.cmp(&left.occurred_at))
+        .then_with(|| right.seq.cmp(&left.seq))
+        .then_with(|| left.result.record_id.cmp(&right.result.record_id))
+}
+
+fn cluster_hybrid_candidates_by_session(candidates: Vec<HybridCandidate>) -> Vec<HybridCandidate> {
+    let mut clustered = Vec::<HybridCandidate>::new();
+    let mut index_by_cluster = BTreeMap::<Uuid, usize>::new();
+    for mut candidate in candidates {
+        let cluster_id = candidate
+            .result
+            .session_id
+            .or(candidate.result.event_id)
+            .unwrap_or(candidate.result.record_id);
+        if let Some(index) = index_by_cluster.get(&cluster_id).copied() {
+            clustered[index].result.more_matches_in_session = clustered[index]
+                .result
+                .more_matches_in_session
+                .saturating_add(1);
+        } else {
+            candidate.result.result_scope = if candidate.result.session_id.is_some() {
+                SearchResultScope::Session
+            } else {
+                SearchResultScope::Event
+            };
+            candidate.result.session_importance = session_importance(
+                candidate.result.rank,
+                candidate.result.more_matches_in_session,
+            );
+            index_by_cluster.insert(cluster_id, clustered.len());
+            clustered.push(candidate);
+        }
+    }
+    clustered
 }
 
 fn fast_event_search_packet(

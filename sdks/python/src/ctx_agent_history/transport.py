@@ -33,6 +33,7 @@ from .types import (
     JsonObject,
     LocateEventResponse,
     LocateSessionResponse,
+    SearchBackendMode,
     SearchResponse,
     ShowEventResponse,
     ShowSessionResponse,
@@ -89,6 +90,8 @@ class AgentHistoryTransport(Protocol):
         session: Optional[str] = None,
         terms: Optional[Sequence[str]] = None,
         events: bool = False,
+        backend: Optional[SearchBackendMode] = None,
+        semantic_weight: Optional[float] = None,
         primary_only: bool = False,
         include_subagents: bool = False,
         limit: Optional[int] = None,
@@ -230,6 +233,8 @@ class LocalCliAdapter:
         session: Optional[str] = None,
         terms: Optional[Sequence[str]] = None,
         events: bool = False,
+        backend: Optional[SearchBackendMode] = None,
+        semantic_weight: Optional[float] = None,
         primary_only: bool = False,
         include_subagents: bool = False,
         limit: Optional[int] = None,
@@ -250,6 +255,9 @@ class LocalCliAdapter:
             args.extend(["--term", term])
         if events:
             args.append("--events")
+        _extend_option(args, "--backend", backend)
+        if semantic_weight is not None:
+            args.extend(["--semantic-weight", str(semantic_weight)])
         if primary_only:
             args.append("--primary-only")
         if include_subagents:

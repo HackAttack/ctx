@@ -305,7 +305,7 @@ The UX distinction should stay clear:
 
 ## Current Implementation
 
-The branch adds:
+The current implementation includes:
 
 - `crates/ctx-history-core/src/history_jsonl.rs` for typed
   `ctx-history-jsonl-v1` records;

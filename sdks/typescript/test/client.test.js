@@ -90,6 +90,21 @@ test("builds search flags and normalizes nested CLI search output", async () => 
       query: "retry handling",
       generated_at: "2026-07-01T12:00:00Z",
       freshness: { mode: "off", status: "skipped", source_count: 1, totals: {} },
+      retrieval: {
+        requested_mode: "hybrid",
+        effective_mode: "lexical",
+        semantic_weight: 0.0,
+        semantic_status: "fallback",
+        semantic_fallback_code: "semantic_retrieval_failed",
+        semantic_fallback: "semantic_retrieval_failed",
+        coverage: {
+          embedded_items: 4,
+          embedded_chunks: 9,
+          searchable_items: 12,
+          indexed_now: 1,
+        },
+        diagnostics: { query_embed_ms: 2, vector_scan_ms: 3 },
+      },
       results: [
         {
           ctx_event_id: "00000000-0000-0000-0000-000000000101",
@@ -126,6 +141,8 @@ test("builds search flags and normalizes nested CLI search output", async () => 
     file: "crates/foo/src/lib.rs",
     session: "00000000-0000-0000-0000-000000000001",
     events: true,
+    backend: "hybrid",
+    semanticWeight: 0.8,
     refresh: "off",
     includeCurrentSession: true,
   });
@@ -143,6 +160,14 @@ test("builds search flags and normalizes nested CLI search output", async () => 
   assert.equal(result.search.results[0].sourceExists, true);
   assert.equal(result.search.results[0].whyMatched[0], "text");
   assert.equal(result.search.results[0].citations[0].sourcePath, "/tmp/session.jsonl");
+  assert.equal(result.search.retrieval.requestedMode, "hybrid");
+  assert.equal(result.search.retrieval.effectiveMode, "lexical");
+  assert.equal(result.search.retrieval.semanticWeight, 0.0);
+  assert.equal(result.search.retrieval.semanticFallbackCode, "semantic_retrieval_failed");
+  assert.equal(result.search.retrieval.semanticFallback, "semantic_retrieval_failed");
+  assert.equal(result.search.retrieval.coverage.embeddedItems, 4);
+  assert.equal(result.search.retrieval.coverage.indexedNow, 1);
+  assert.equal(result.search.retrieval.diagnostics.queryEmbedMs, 2);
   assert.equal(result.search.pagination.nextCursor, "page-2");
   assert.equal(result.search.pagination.hasMore, true);
 
@@ -171,11 +196,24 @@ test("builds search flags and normalizes nested CLI search output", async () => 
     "--session",
     "00000000-0000-0000-0000-000000000001",
     "--events",
+    "--backend",
+    "hybrid",
+    "--semantic-weight",
+    "0.8",
     "--refresh",
     "off",
     "--include-current-session",
     "--json",
   ]);
+});
+
+test("omits semantic search override flags when unset", async () => {
+  const { client, calls } = mockClient(() => JSON.stringify({ query: "default", results: [] }));
+
+  await client.search("default");
+
+  assert.equal(calls[0].args.includes("--backend"), false);
+  assert.equal(calls[0].args.includes("--semantic-weight"), false);
 });
 
 test("rejects search without query, term, or file before invoking CLI", async () => {

@@ -69,8 +69,85 @@ Reads local storage state and returns:
 - `pending_source_import_files`;
 - `failed_source_import_files`;
 - `stale_source_import_files`;
+- `semantic`;
+- `daemon`;
 - `local_only: true`;
 - `read_only: true`.
+
+`semantic` reports semantic sidecar and background-worker state. Fields listed
+as nullable may be omitted when unavailable:
+
+- `status`;
+- `running`;
+- `pid`, nullable/omitted;
+- `started_at_ms`, `heartbeat_at_ms`, and `finished_at_ms`, nullable/omitted;
+- `indexed_chunks`, nullable/omitted;
+- `model_init_ms`, nullable/omitted;
+- `last_error`, nullable/omitted;
+- `coverage`;
+- `model_cache_available`, true when the local embedding model cache needed by
+  the default background semantic worker is already present.
+
+Raw local CLI output may also include diagnostic paths such as `vector_path`,
+`lock_path`, and `status_path`. These are absolute paths on the current machine
+for troubleshooting the local sidecar/worker. They are not portable identifiers,
+may be omitted by adapters, and should not be persisted or forwarded outside
+local diagnostics.
+
+`semantic.status` is one of:
+
+- `unknown`, no initialized ctx store is available for live coverage;
+- `empty`, the store has no semantic-eligible items;
+- `pending`, semantic-eligible items exist but the sidecar is missing, behind,
+  or has dirty/stale items queued for re-embedding;
+- `ready`, sidecar coverage matches the current searchable item count and the
+  dirty queue is empty;
+- `running`, the background worker lock belongs to a live process;
+- `stale_lock`, a worker lock exists but the recorded process is not live;
+- `failed`, the last worker run failed and recorded `last_error`;
+- `unavailable`, the sidecar cannot be opened/read by this ctx build;
+- `budget_exhausted`, the worker indexed a bounded batch and left queued work.
+
+`semantic.coverage` includes `searchable_items`, `embedded_items`,
+`embedded_chunks`, `dirty_items`, `queued_items_estimate`, and
+`coverage_ratio`. `dirty_items` counts already-known events whose semantic
+vectors may be stale after import or daemon startup freshness checks.
+
+`daemon` reports the ctx-owned background coordinator state. Fields listed as
+nullable may be omitted when unavailable:
+
+- `enabled`;
+- `status`, one of `unknown`, `disabled`, `running`, `completed`, `failed`, or
+  `stale_lock`;
+- `running`;
+- `pid`, nullable/omitted;
+- `started_at_ms`, `heartbeat_at_ms`, and `finished_at_ms`, nullable/omitted;
+- `last_error`, nullable/omitted;
+- `lock_path`;
+- `status_path`;
+- `jobs`.
+
+`daemon.jobs.semantic_index` mirrors live semantic coverage and includes
+`status`, `enabled`, optional current `reason`, optional
+`last_run_at_ms`, optional `last_run_status`, optional `last_run_reason`,
+optional `last_error`, optional `indexed_chunks`, `model_cache_available`,
+`worker_status`, and `coverage` with `searchable_items`, `completed_items`,
+`embedded_items`, `embedded_chunks`, `dirty_items`, and
+`queued_items_estimate`. Current
+`status`/`reason` are derived from live coverage; `last_run_*` fields preserve
+the persisted result from the last daemon iteration. When the daemon is disabled
+for ordinary status reporting, the semantic job reports `enabled: false`,
+`status: "disabled"`, and `reason: "daemon_disabled"`.
+
+`daemon.jobs.cloud_sync` currently reports `status: "disabled"`,
+`enabled: false`, `reason: "not_configured"`, `network_allowed: false`,
+nullable/omitted `last_upload_at_ms`, and `queued_items_estimate: 0`.
+
+`ctx daemon status --json` returns `schema_version`, `daemon`, and
+`local_only`. `ctx daemon enable --json` and `ctx daemon disable --json` return
+`schema_version`, `daemon_enabled`, `config_path`, and `local_only`.
+`ctx daemon run --json` returns the daemon object directly. The legacy hidden
+`__ctx-daemon` entry point follows the same run output for compatibility.
 
 ## Sources
 
@@ -224,6 +301,7 @@ Returns:
 - `query`;
 - `filters`;
 - `freshness`;
+- `retrieval`;
 - `generated_at`;
 - `results[]`;
 - `pagination`;
@@ -264,11 +342,71 @@ Search JSON is local/private by default.
 `freshness` describes the pre-search refresh attempt:
 
 - `mode`, one of `auto`, `off`, or `strict`;
-- `status`, such as `completed`, `skipped`, `no_sources`,
-  `skipped_large_index`, or `failed`;
+- `status`, such as `completed`, `skipped`, `no_sources`, `read_only`,
+  `budget_exhausted`, or `failed`. `read_only` means auto refresh skipped
+  writes because the existing index is readable but not writable by this binary,
+  or because a recent daemon native-history refresh already covered the normal
+  auto path and `reason` is `daemon_recent`;
+  `budget_exhausted` means auto refresh imported a bounded batch and served
+  results while leaving more backlog for a later search or `--refresh strict`;
+- `reason`, present for explanatory read-only or skipped states;
+- `budget_reasons`, present when `status` is `budget_exhausted`; stable
+  machine-readable reasons include `codex_session_limit`,
+  `codex_discovery_file_limit`, `manifest_file_limit`, `single_file_bytes`, and
+  `total_bytes`;
 - `source_count`;
+- `daemon_last_run_at_ms`, present when search relies on a recent daemon refresh;
 - `totals`, using the same import total fields as `ctx import --json`;
 - `error`, present when refresh failed but results were still served.
+
+`retrieval` describes the requested and effective search path:
+
+- `requested_mode`, one of `auto`, `lexical`, `semantic`, or `hybrid`;
+- `effective_mode`, one of `lexical`, `semantic`, or `hybrid`;
+- `semantic_weight`, the effective semantic contribution used for ranking. It
+  is `0.0` when the effective mode is lexical, even if a semantic weight was
+  requested;
+- `semantic_status`;
+- `semantic_fallback_code`, nullable/omitted stable reason code for clients;
+- `semantic_fallback`, nullable/omitted;
+- `embedding_model`, nullable/omitted;
+- `coverage`;
+- `worker`, using the same shape as `status.semantic`, nullable/omitted;
+- `diagnostics`, nullable/omitted and present when semantic vector retrieval
+  runs or when auto records a bounded-hybrid gate decision.
+
+`retrieval.semantic_status` is one of:
+
+- `skipped`, lexical retrieval was used and no semantic lookup ran;
+- `unavailable`, the semantic sidecar is missing, empty, unreadable, or otherwise
+  not usable for the request;
+- `partial`, some but not all searchable items have embeddings;
+- `ready`, sidecar coverage is complete for the current searchable item count.
+
+`retrieval.semantic_fallback_code`, when present, is the stable machine-readable
+reason why the requested semantic/hybrid path degraded to lexical.
+`retrieval.semantic_fallback`, when present, is the human-readable explanation.
+
+`retrieval.coverage` includes `embedded_items`, `embedded_chunks`,
+`searchable_items`, `indexed_now`, and `dirty_items` when known. Coverage counts
+are numbers when present; null count fields are pruned from public SDK fixtures
+and typed SDK shapes.
+
+The SDK `agent-history-v1` contract camel-cases the same retrieval fields
+(`requestedMode`, `effectiveMode`, `semanticWeight`, and so on). SDK contract
+search results expose retrieval at the top level of `search`; TypeScript and
+Python type the core retrieval/coverage fields, while Go, .NET, JVM, and Swift
+preserve retrieval as camel-cased JSON values. Per-hit retrieval details are not
+part of v1 unless a future CLI JSON shape emits them. Local diagnostic path
+fields such as `vector_path`/`vectorPath` can still appear as additive JSON from
+the local CLI adapter, but they are intentionally not stable SDK fields.
+
+`retrieval.diagnostics` can include `query_embed_ms`, `vector_scan_ms`,
+`chunks_scanned`, `vector_bytes_read`, `events_scored`, `hydration_ms`,
+`stale_events_dropped`, `semantic_candidates`, `auto_candidate_count`,
+`auto_embedded_candidate_count`, and `auto_hybrid_skipped`. These fields are
+local performance and gate diagnostics and can reveal corpus size/timing; treat
+them as private like the rest of search JSON.
 
 `suggested_next_commands` can include `ctx show event`, `ctx show session`,
 `ctx search "<query>" --session <ctx-session-id>`, `ctx locate event`, and
@@ -323,9 +461,10 @@ search, SQL, showing sessions, and showing events. Tool results include
 output may include absolute paths, source metadata, snippets, and transcript
 text, and the MCP host may log or forward it.
 
-MCP search does not refresh or import provider history. It also excludes the
-active Codex session tree by default when `CODEX_THREAD_ID` is set; pass
-`include_current_session: true` to opt back in.
+MCP search does not refresh or import provider history and currently uses the
+lexical search path only. It also excludes the active Codex session tree by
+default when `CODEX_THREAD_ID` is set; pass `include_current_session: true` to
+opt back in.
 
 The MCP `sql` tool uses the same `sql_result` JSON contract as `ctx sql
 --json`, always read-only.
@@ -472,7 +611,14 @@ Reads local storage and returns findings:
 
 - `schema_version`;
 - `ok`;
+- `progress`;
 - `findings`.
+
+Doctor checks the main SQLite store plus read-only semantic sidecar health. It
+does not initialize embedding models or write sidecar data. Search may
+initialize an already-cached local embedding model only for explicit
+semantic/hybrid query embedding; it does not download models or write sidecar
+data from the search path.
 
 ## Provider Smoke
 

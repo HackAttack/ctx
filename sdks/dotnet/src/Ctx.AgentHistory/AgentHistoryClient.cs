@@ -85,6 +85,8 @@ public sealed class AgentHistoryClient
         {
             AddOption(args, "--limit", options.Limit.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        AddOption(args, "--backend", options.Backend);
+        AddDoubleOption(args, "--semantic-weight", options.SemanticWeight);
         AddOption(args, "--provider", options.Provider);
         AddOption(args, "--workspace", options.Workspace);
         AddOption(args, "--since", options.Since);
@@ -285,6 +287,15 @@ public sealed class AgentHistoryClient
     private static void AddNumberOption(List<string> args, string flag, int? value)
     {
         if (value is > 0)
+        {
+            args.Add(flag);
+            args.Add(value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
+    private static void AddDoubleOption(List<string> args, string flag, double? value)
+    {
+        if (value is not null)
         {
             args.Add(flag);
             args.Add(value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));

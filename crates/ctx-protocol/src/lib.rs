@@ -225,6 +225,8 @@ pub struct SearchResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness: Option<Freshness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval: Option<SearchRetrieval>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub results: Vec<SearchHit>,
@@ -232,6 +234,52 @@ pub struct SearchResult {
     pub pagination: Option<JsonObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncation: Option<JsonObject>,
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: JsonObject,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRetrieval {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_fallback_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_fallback: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<SearchRetrievalCoverage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<JsonObject>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<JsonObject>,
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: JsonObject,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRetrievalCoverage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded_items: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded_chunks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searchable_items: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_now: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty_items: Option<u64>,
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: JsonObject,
 }

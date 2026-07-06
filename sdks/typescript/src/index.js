@@ -428,6 +428,8 @@ function appendSearchArgs(args, options) {
   appendOptional(args, "--file", options.file);
   appendOptional(args, "--session", options.session);
   appendFlag(args, "--events", options.events);
+  appendOptional(args, "--backend", options.backend);
+  appendOptional(args, "--semantic-weight", options.semanticWeight);
   appendOptional(args, "--refresh", options.refresh);
   appendFlag(args, "--include-current-session", options.includeCurrentSession);
 }

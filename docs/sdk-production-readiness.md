@@ -72,7 +72,7 @@ No-publish guardrail:
 
 - Node.js 20+
 - Python 3.10+
-- Rust stable
+- Rust stable compatible with the workspace `rust-version` in `Cargo.toml`
 - Go 1.22+
 - Java 11+
 - Swift 5.9+

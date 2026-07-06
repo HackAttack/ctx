@@ -2,6 +2,7 @@ use chrono::Utc;
 use ctx_history_core::{
     ContextCitation, ContextLinks, ContextPagination, ContextTruncation, Visibility,
 };
+use ctx_history_store::EventSearchHit;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -78,6 +79,12 @@ pub enum SearchResultScope {
     Session,
     #[default]
     Event,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemanticEventHit {
+    pub hit: EventSearchHit,
+    pub similarity: f32,
 }
 
 fn is_default_result_scope(value: &SearchResultScope) -> bool {

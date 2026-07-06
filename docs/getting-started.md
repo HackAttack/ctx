@@ -128,11 +128,11 @@ eight hex characters. Search also accepts filters such as `--provider`,
 `--refresh auto|off|strict`.
 `--limit` is capped at `200`.
 Search defaults to `--refresh auto`, a best-effort refresh of discovered native
-provider sources before querying. On large discovered sources or
-already-inventoried indexes, `auto` serves current results without a foreground
-catch-up scan; use
-`--refresh strict` or `ctx import --all` when you need a full
-catch-up before querying.
+provider sources and enabled auto history-source plugins before querying. On
+large discovered sources, slow plugins, or already-cataloged indexes, `auto`
+keeps the refresh bounded for interactive search and then serves results,
+leaving remaining backlog for later searches, `--refresh strict`, or
+`ctx import --all`.
 
 When ctx runs inside Codex, search excludes the active Codex session tree by
 default when it can identify it. Use `--include-current-session` if the current

@@ -81,6 +81,10 @@ public struct AgentHistoryClient: Sendable {
         if let limit = options.limit {
             arguments.append(contentsOf: ["--limit", String(limit)])
         }
+        appendOption(&arguments, "--backend", options.backend)
+        if let semanticWeight = options.semanticWeight {
+            arguments.append(contentsOf: ["--semantic-weight", String(semanticWeight)])
+        }
         appendOption(&arguments, "--provider", options.provider)
         appendOption(&arguments, "--workspace", options.workspace)
         appendOption(&arguments, "--since", options.since)
@@ -388,6 +392,12 @@ private func normalizeStatus(_ raw: JSONValue) -> JSONValue {
     if let freshness = object["freshness"] {
         status["freshness"] = freshness.camelizedPublicJSON().droppingNulls()
     }
+    if let semantic = object["semantic"] {
+        status["semantic"] = semantic.camelizedPublicJSON().droppingNulls()
+    }
+    if let daemon = object["daemon"] {
+        status["daemon"] = daemon.camelizedPublicJSON().droppingNulls()
+    }
     return .object(status).droppingNulls()
 }
 
@@ -411,15 +421,19 @@ private func normalizeSearch(_ raw: JSONValue) -> JSONValue {
     guard case let .object(object) = raw else {
         return .object(["query": .null, "results": .array([])]).droppingNulls()
     }
-    return .object([
-        "query": object["query"] ?? .null,
-        "filters": (object["filters"] ?? .object([:])).camelizedPublicJSON(),
-        "freshness": (object["freshness"] ?? .object([:])).camelizedPublicJSON(),
-        "generatedAt": object["generated_at"] ?? object["generatedAt"] ?? .null,
-        "results": .array((object["results"]?.arrayValue ?? []).map { $0.camelizedPublicJSON() }),
-        "pagination": (object["pagination"] ?? .object([:])).camelizedPublicJSON(),
-        "truncation": (object["truncation"] ?? .object([:])).camelizedPublicJSON()
-    ]).droppingNulls()
+    var search = raw.camelizedPublicJSON().objectValue ?? [:]
+    search["query"] = object["query"] ?? search["query"] ?? .null
+    search["filters"] = (object["filters"] ?? .object([:])).camelizedPublicJSON()
+    search["freshness"] = (object["freshness"] ?? .object([:])).camelizedPublicJSON()
+    search["generatedAt"] = object["generated_at"] ?? object["generatedAt"] ?? search["generatedAt"] ?? .null
+    search["results"] = .array((object["results"]?.arrayValue ?? []).map { normalizeSearchHit($0) })
+    search["pagination"] = (object["pagination"] ?? .object([:])).camelizedPublicJSON()
+    search["truncation"] = (object["truncation"] ?? .object([:])).camelizedPublicJSON()
+    return .object(search).droppingNulls()
+}
+
+private func normalizeSearchHit(_ raw: JSONValue) -> JSONValue {
+    raw.camelizedPublicJSON()
 }
 
 private func normalizeEvent(_ raw: JSONValue) -> JSONValue {

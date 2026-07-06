@@ -15,6 +15,7 @@ export type Provider =
 export type RefreshMode = "auto" | "off" | "strict";
 export type ProgressMode = "auto" | "plain" | "json" | "none";
 export type TranscriptMode = "lite" | "full" | "log";
+export type SearchBackendMode = "auto" | "lexical" | "semantic" | "hybrid";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -87,6 +88,8 @@ export interface SearchOptions {
   file?: string;
   session?: string;
   events?: boolean;
+  backend?: SearchBackendMode;
+  semanticWeight?: number;
   refresh?: RefreshMode;
   includeCurrentSession?: boolean;
 }
@@ -151,7 +154,10 @@ export interface Totals {
 export interface Freshness {
   mode?: string | null;
   status?: string | null;
+  reason?: string | null;
+  budgetReasons?: string[] | null;
   sourceCount?: number | null;
+  daemonLastRunAtMs?: number | null;
   totals?: Totals;
   error?: string | null;
 }
@@ -168,6 +174,8 @@ export interface AgentHistoryStatus {
   failedCatalogSessions?: number;
   staleCatalogSessions?: number;
   freshness?: Freshness;
+  semantic?: Record<string, unknown>;
+  daemon?: Record<string, unknown>;
 }
 
 export interface ProviderSource {
@@ -193,6 +201,7 @@ export interface SearchResult {
   query: string | null;
   filters?: JsonObject;
   freshness?: Freshness;
+  retrieval?: SearchRetrieval;
   generatedAt?: string | null;
   results: SearchHit[];
   pagination?: JsonObject;
@@ -218,6 +227,27 @@ export interface SearchHit {
   citations?: Citation[];
   suggestedNextCommands?: string[];
   visibility?: string | null;
+}
+
+export interface RetrievalCoverage extends JsonObject {
+  embeddedItems?: number;
+  embeddedChunks?: number;
+  searchableItems?: number;
+  indexedNow?: number;
+  dirtyItems?: number;
+}
+
+export interface SearchRetrieval extends JsonObject {
+  requestedMode?: SearchBackendMode | string | null;
+  effectiveMode?: SearchBackendMode | string | null;
+  semanticWeight?: number | null;
+  semanticStatus?: string | null;
+  semanticFallbackCode?: string | null;
+  semanticFallback?: string | null;
+  embeddingModel?: string | null;
+  coverage?: RetrievalCoverage;
+  worker?: JsonObject;
+  diagnostics?: JsonObject;
 }
 
 export interface Citation {

@@ -12,6 +12,8 @@ public struct AgentHistoryStatus: Codable, Equatable, Sendable {
     public var failedCatalogSessions: Int?
     public var staleCatalogSessions: Int?
     public var freshness: AgentHistoryFreshness?
+    public var semantic: JSONValue?
+    public var daemon: JSONValue?
 
     public init(
         initialized: Bool,
@@ -24,7 +26,9 @@ public struct AgentHistoryStatus: Codable, Equatable, Sendable {
         pendingCatalogSessions: Int? = nil,
         failedCatalogSessions: Int? = nil,
         staleCatalogSessions: Int? = nil,
-        freshness: AgentHistoryFreshness? = nil
+        freshness: AgentHistoryFreshness? = nil,
+        semantic: JSONValue? = nil,
+        daemon: JSONValue? = nil
     ) {
         self.initialized = initialized
         self.localOnly = localOnly
@@ -37,6 +41,8 @@ public struct AgentHistoryStatus: Codable, Equatable, Sendable {
         self.failedCatalogSessions = failedCatalogSessions
         self.staleCatalogSessions = staleCatalogSessions
         self.freshness = freshness
+        self.semantic = semantic
+        self.daemon = daemon
     }
 }
 
@@ -113,6 +119,7 @@ public struct AgentHistorySearchResult: Codable, Equatable, Sendable {
     public var filters: JSONValue?
     public var freshness: AgentHistoryFreshness?
     public var generatedAt: String?
+    public var retrieval: JSONValue?
     public var results: [AgentHistorySearchHit]
     public var pagination: AgentHistoryPagination?
     public var truncation: AgentHistoryTruncation?
@@ -122,6 +129,7 @@ public struct AgentHistorySearchResult: Codable, Equatable, Sendable {
         filters: JSONValue? = nil,
         freshness: AgentHistoryFreshness? = nil,
         generatedAt: String? = nil,
+        retrieval: JSONValue? = nil,
         results: [AgentHistorySearchHit] = [],
         pagination: AgentHistoryPagination? = nil,
         truncation: AgentHistoryTruncation? = nil
@@ -130,6 +138,7 @@ public struct AgentHistorySearchResult: Codable, Equatable, Sendable {
         self.filters = filters
         self.freshness = freshness
         self.generatedAt = generatedAt
+        self.retrieval = retrieval
         self.results = results
         self.pagination = pagination
         self.truncation = truncation
@@ -140,6 +149,7 @@ public struct AgentHistorySearchResult: Codable, Equatable, Sendable {
         case filters
         case freshness
         case generatedAt
+        case retrieval
         case results
         case pagination
         case truncation
@@ -151,6 +161,7 @@ public struct AgentHistorySearchResult: Codable, Equatable, Sendable {
         filters = try container.decodeIfPresent(JSONValue.self, forKey: .filters)
         freshness = try container.decodeIfPresent(AgentHistoryFreshness.self, forKey: .freshness)
         generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
+        retrieval = try container.decodeIfPresent(JSONValue.self, forKey: .retrieval)
         results = try container.decodeIfPresent([AgentHistorySearchHit].self, forKey: .results) ?? []
         pagination = try container.decodeIfPresent(AgentHistoryPagination.self, forKey: .pagination)
         truncation = try container.decodeIfPresent(AgentHistoryTruncation.self, forKey: .truncation)
@@ -431,14 +442,29 @@ public struct AgentHistoryResumeLocation: Codable, Equatable, Sendable {
 public struct AgentHistoryFreshness: Codable, Equatable, Sendable {
     public var mode: String?
     public var status: String?
+    public var reason: String?
+    public var budgetReasons: [String]?
     public var sourceCount: Int?
+    public var daemonLastRunAtMs: Int?
     public var totals: AgentHistoryTotals?
     public var error: String?
 
-    public init(mode: String? = nil, status: String? = nil, sourceCount: Int? = nil, totals: AgentHistoryTotals? = nil, error: String? = nil) {
+    public init(
+        mode: String? = nil,
+        status: String? = nil,
+        reason: String? = nil,
+        budgetReasons: [String]? = nil,
+        sourceCount: Int? = nil,
+        daemonLastRunAtMs: Int? = nil,
+        totals: AgentHistoryTotals? = nil,
+        error: String? = nil
+    ) {
         self.mode = mode
         self.status = status
+        self.reason = reason
+        self.budgetReasons = budgetReasons
         self.sourceCount = sourceCount
+        self.daemonLastRunAtMs = daemonLastRunAtMs
         self.totals = totals
         self.error = error
     }

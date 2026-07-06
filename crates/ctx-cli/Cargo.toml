@@ -21,13 +21,14 @@ base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
 clap_mangen.workspace = true
+fastembed = { version = "5.17.2", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
 ring.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 sha2.workspace = true
 toml_edit = "0.22"
-rusqlite.workspace = true
 ureq = { version = "2.10", default-features = true }
 uuid.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }

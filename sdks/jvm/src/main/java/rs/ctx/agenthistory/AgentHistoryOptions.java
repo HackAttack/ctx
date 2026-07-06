@@ -118,6 +118,8 @@ public final class AgentHistoryOptions {
         private String query;
         private final List<String> terms = new ArrayList<>();
         private Integer limit;
+        private String backend;
+        private Double semanticWeight;
         private String provider;
         private String workspace;
         private String since;
@@ -140,6 +142,14 @@ public final class AgentHistoryOptions {
 
         public Integer limit() {
             return limit;
+        }
+
+        public String backend() {
+            return backend;
+        }
+
+        public Double semanticWeight() {
+            return semanticWeight;
         }
 
         public String provider() {
@@ -205,6 +215,16 @@ public final class AgentHistoryOptions {
 
         public Search limit(Integer limit) {
             this.limit = limit;
+            return this;
+        }
+
+        public Search backend(String backend) {
+            this.backend = backend;
+            return this;
+        }
+
+        public Search semanticWeight(Double semanticWeight) {
+            this.semanticWeight = semanticWeight;
             return this;
         }
 
@@ -378,4 +398,3 @@ public final class AgentHistoryOptions {
         }
     }
 }
-

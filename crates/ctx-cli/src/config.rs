@@ -14,6 +14,7 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub struct AppConfig {
     pub analytics: AnalyticsConfig,
     pub upgrade: UpgradeConfig,
+    pub daemon: DaemonConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,11 @@ pub struct UpgradeConfig {
     pub functions_base: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    pub enabled: bool,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -43,6 +49,7 @@ impl Default for AppConfig {
                 interval: Duration::from_secs(24 * 60 * 60),
                 functions_base: "https://cli.ctx.rs/functions/v1".to_owned(),
             },
+            daemon: DaemonConfig { enabled: true },
         }
     }
 }
@@ -91,6 +98,9 @@ impl AppConfig {
                 "upgrade.functions_base" => {
                     self.upgrade.functions_base = parse_non_empty_string(key, value)?;
                 }
+                "daemon.enabled" => {
+                    self.daemon.enabled = parse_config_bool(key, value)?;
+                }
                 _ => bail!("unknown config key `{key}` at line {}", value.line),
             }
         }
@@ -134,6 +144,14 @@ impl AppConfig {
                 self.upgrade.interval = Duration::from_secs(seconds);
             }
         }
+        if let Ok(value) = env::var("CTX_DAEMON_ENABLED") {
+            if let Some(enabled) = parse_bool_value(&value) {
+                self.daemon.enabled = enabled;
+            }
+        }
+        if env_flag("CTX_DAEMON_OFF") || env_flag("CTX_DISABLE_DAEMON") {
+            self.daemon.enabled = false;
+        }
     }
 
     pub fn config_path(data_root: &Path) -> PathBuf {
@@ -151,9 +169,85 @@ pub fn write_default_config(data_root: &Path) -> Result<()> {
         b"[upgrade]\n\
 auto = \"apply\"\n\
 channel = \"stable\"\n\
-interval_hours = 24\n",
+interval_hours = 24\n\
+\n\
+[daemon]\n\
+enabled = true\n",
     )?;
     Ok(())
+}
+
+pub fn set_daemon_enabled(data_root: &Path, enabled: bool) -> Result<()> {
+    fs::create_dir_all(data_root)?;
+    write_default_config(data_root)?;
+    let path = AppConfig::config_path(data_root);
+    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let parsed = parse_toml_subset(&text).with_context(|| format!("parse {}", path.display()))?;
+    let mut config = AppConfig::default();
+    config
+        .apply_values(&parsed)
+        .with_context(|| format!("load {}", path.display()))?;
+    let updated = set_toml_bool(&text, "daemon", "enabled", enabled);
+    let parsed =
+        parse_toml_subset(&updated).with_context(|| format!("parse updated {}", path.display()))?;
+    let mut config = AppConfig::default();
+    config
+        .apply_values(&parsed)
+        .with_context(|| format!("load updated {}", path.display()))?;
+    fs::write(&path, updated).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn set_toml_bool(text: &str, section: &str, key: &str, enabled: bool) -> String {
+    let rendered = format!("{key} = {enabled}");
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let mut current_section = String::new();
+    let mut section_start = None;
+    let mut insert_before = lines.len();
+    for (index, raw_line) in lines.iter().enumerate() {
+        let line = strip_comment(raw_line).trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            if section_start.is_some() && current_section == section {
+                insert_before = index;
+                break;
+            }
+            current_section = line[1..line.len() - 1].trim().to_owned();
+            if current_section == section {
+                section_start = Some(index);
+                insert_before = lines.len();
+            }
+            continue;
+        }
+        if current_section == section {
+            if let Some((candidate, _)) = line.split_once('=') {
+                if candidate.trim() == key {
+                    lines[index] = rendered;
+                    return ensure_trailing_newline(lines.join("\n"));
+                }
+            }
+        }
+    }
+    match section_start {
+        Some(start) => {
+            let insert_at = insert_before.max(start + 1);
+            lines.insert(insert_at, rendered);
+        }
+        None => {
+            if !lines.last().is_none_or(|line| line.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(format!("[{section}]"));
+            lines.push(rendered);
+        }
+    }
+    ensure_trailing_newline(lines.join("\n"))
+}
+
+fn ensure_trailing_newline(mut text: String) -> String {
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +413,9 @@ enabled = false
 auto = "off"
 channel = "beta"
 interval_seconds = 60
+
+[daemon]
+enabled = false
 "#,
         )
         .unwrap();
@@ -334,6 +431,7 @@ interval_seconds = 60
         assert_eq!(config.upgrade.auto, "off");
         assert_eq!(config.upgrade.channel, "beta");
         assert_eq!(config.upgrade.interval, Duration::from_secs(60));
+        assert!(!config.daemon.enabled);
     }
 
     #[test]
@@ -346,6 +444,7 @@ interval_seconds = 60
         assert_eq!(config.upgrade.auto, "apply");
         assert_eq!(config.upgrade.channel, "stable");
         assert_eq!(config.upgrade.interval, Duration::from_secs(24 * 60 * 60));
+        assert!(config.daemon.enabled);
     }
 
     #[test]
@@ -363,6 +462,9 @@ auto = "off"
 channel = "beta"
 interval_hours = 2
 functions_base = "https://example.test/functions/v1"
+
+[daemon]
+enabled = false
 "#,
         )
         .unwrap();
@@ -378,6 +480,26 @@ functions_base = "https://example.test/functions/v1"
             config.upgrade.functions_base,
             "https://example.test/functions/v1"
         );
+        assert!(!config.daemon.enabled);
+    }
+
+    #[test]
+    fn set_daemon_enabled_rewrites_or_adds_config_key() {
+        let temp = tempfile::tempdir().unwrap();
+        write_default_config(temp.path()).unwrap();
+
+        set_daemon_enabled(temp.path(), false).unwrap();
+        let disabled = AppConfig::load(temp.path()).unwrap();
+        assert!(!disabled.daemon.enabled);
+        let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("[daemon]"));
+        assert!(text.contains("enabled = false"));
+
+        set_daemon_enabled(temp.path(), true).unwrap();
+        let enabled = AppConfig::load(temp.path()).unwrap();
+        assert!(enabled.daemon.enabled);
+        let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("enabled = true"));
     }
 
     #[test]

@@ -23,7 +23,9 @@ shipped.
 
 ## Import Semantics
 
-- Imports are explicit; ctx does not collect provider history in the background.
+- Imports are explicit unless `ctx daemon run` or a managed ctx service is
+  running; the daemon performs bounded local native-history refresh and semantic
+  catch-up only.
 - Current importers use idempotent rescans.
 - `--resume` is reported in output but is not a universal provider cursor
   contract.

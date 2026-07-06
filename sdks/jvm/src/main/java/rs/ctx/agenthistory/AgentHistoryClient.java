@@ -95,6 +95,11 @@ public class AgentHistoryClient {
             args.add("--limit");
             args.add(String.valueOf(safe.limit()));
         }
+        add(args, "--backend", safe.backend());
+        if (safe.semanticWeight() != null) {
+            args.add("--semantic-weight");
+            args.add(String.valueOf(safe.semanticWeight()));
+        }
         for (String term : safe.terms()) {
             args.add("--term");
             args.add(term);

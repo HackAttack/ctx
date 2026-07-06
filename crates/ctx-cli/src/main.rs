@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 mod analytics;
 mod commands;
@@ -23,6 +23,7 @@ mod provider_args;
 mod provider_sources;
 mod search_filters;
 mod search_render;
+mod semantic;
 mod skill;
 mod store_util;
 mod transcript;
@@ -383,6 +384,21 @@ struct SearchArgs {
     #[arg(
         long,
         value_enum,
+        default_value_t = SearchBackendArg::Auto,
+        help = "Search backend: auto, lexical, semantic, or hybrid",
+        long_help = "Search backend. auto uses lexical search unless semantic reranking is available and safe; lexical uses the SQLite FTS/BM25 path; semantic and hybrid read an existing semantic sidecar and require the local embedding model cache to already exist."
+    )]
+    backend: SearchBackendArg,
+    #[arg(
+        long = "semantic-weight",
+        default_value_t = 0.35,
+        value_parser = parse_semantic_weight,
+        help = "Hybrid ranking weight for semantic evidence, from 0.0 to 1.0"
+    )]
+    semantic_weight: f32,
+    #[arg(
+        long,
+        value_enum,
         default_value_t = RefreshArg::Auto,
         help = "Pre-search refresh behavior: auto, off, or strict",
         long_help = "Pre-search refresh behavior. auto best-effort refreshes discovered native provider sources and enabled auto history-source plugins, then serves the existing index if refresh fails; off searches the existing index only; strict fails if the refresh cannot run or import successfully."
@@ -400,6 +416,25 @@ struct SearchArgs {
         help = "Print expanded text details such as full ids, provider ids, citations, and next commands"
     )]
     verbose: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum SearchBackendArg {
+    Auto,
+    Lexical,
+    Semantic,
+    Hybrid,
+}
+
+impl SearchBackendArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Lexical => "lexical",
+            Self::Semantic => "semantic",
+            Self::Hybrid => "hybrid",
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -764,6 +799,16 @@ fn env_truthy(key: &str) -> bool {
             "" | "0" | "false" | "no" | "off"
         )
     })
+}
+
+fn parse_semantic_weight(value: &str) -> std::result::Result<f32, String> {
+    let weight = value
+        .parse::<f32>()
+        .map_err(|err| format!("invalid semantic weight: {err}"))?;
+    if !(0.0..=1.0).contains(&weight) || !weight.is_finite() {
+        return Err("semantic weight must be between 0.0 and 1.0".to_owned());
+    }
+    Ok(weight)
 }
 
 fn parse_event_window_limit(value: &str) -> std::result::Result<usize, String> {

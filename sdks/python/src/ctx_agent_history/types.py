@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, TypedDict, Union
+from typing import Any, List, Literal, Optional, TypedDict, Union
 
 JsonObject = dict[str, Any]
 Operation = Literal[
@@ -19,6 +19,7 @@ Operation = Literal[
     "error",
 ]
 BackendKind = Literal["local", "hosted"]
+SearchBackendMode = Literal["auto", "lexical", "semantic", "hybrid"]
 
 
 class _BackendRequired(TypedDict):
@@ -45,7 +46,10 @@ class Totals(TypedDict, total=False):
 class Freshness(TypedDict, total=False):
     mode: Optional[str]
     status: Optional[str]
+    reason: Optional[str]
+    budgetReasons: Optional[List[str]]
     sourceCount: Optional[int]
+    daemonLastRunAtMs: Optional[int]
     totals: Totals
     error: Optional[str]
 
@@ -65,6 +69,8 @@ class Status(_StatusRequired, total=False):
     failedCatalogSessions: int
     staleCatalogSessions: int
     freshness: Freshness
+    semantic: JsonObject
+    daemon: JsonObject
 
 
 class _ProviderSourceRequired(TypedDict):
@@ -131,6 +137,27 @@ class SearchHit(_SearchHitRequired, total=False):
     visibility: Optional[str]
 
 
+class RetrievalCoverage(TypedDict, total=False):
+    embeddedItems: int
+    embeddedChunks: int
+    searchableItems: int
+    indexedNow: int
+    dirtyItems: int
+
+
+class SearchRetrieval(TypedDict, total=False):
+    requestedMode: Optional[SearchBackendMode]
+    effectiveMode: Optional[SearchBackendMode]
+    semanticWeight: Optional[float]
+    semanticStatus: Optional[str]
+    semanticFallbackCode: Optional[str]
+    semanticFallback: Optional[str]
+    embeddingModel: Optional[str]
+    coverage: RetrievalCoverage
+    worker: JsonObject
+    diagnostics: JsonObject
+
+
 class _SearchResultRequired(TypedDict):
     query: Optional[str]
     results: list[SearchHit]
@@ -139,6 +166,7 @@ class _SearchResultRequired(TypedDict):
 class SearchResult(_SearchResultRequired, total=False):
     filters: JsonObject
     freshness: Freshness
+    retrieval: SearchRetrieval
     generatedAt: Optional[str]
     pagination: JsonObject
     truncation: JsonObject

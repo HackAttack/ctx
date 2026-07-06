@@ -6,6 +6,7 @@ use ctx_history_store::Store;
 
 use crate::commands::search::SearchRefreshReport;
 use crate::output::compact_json;
+use crate::semantic::SemanticRetrievalReport;
 use crate::transcript::shell_quote_arg;
 
 pub(crate) struct SearchDto;
@@ -14,6 +15,7 @@ impl SearchDto {
         store: &Store,
         packet: &ctx_history_search::SearchPacket,
         refresh: &SearchRefreshReport,
+        retrieval: &SemanticRetrievalReport,
         suggested_next_query: Option<&str>,
     ) -> Value {
         compact_json(json!({
@@ -21,6 +23,7 @@ impl SearchDto {
             "query": packet.query,
             "filters": packet.filters,
             "freshness": refresh.to_json(),
+            "retrieval": retrieval.to_json(),
             "generated_at": packet.generated_at,
             "results": packet
                 .results

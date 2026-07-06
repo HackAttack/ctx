@@ -84,19 +84,46 @@ analytics marker described under network behavior.
 | Command | Reads | Writes |
 | --- | --- | --- |
 | `ctx setup` | provider transcript files and home path metadata for source discovery | data root, `work.sqlite`, `config.toml`, and SQLite index |
-| `ctx status` | data root metadata and existing SQLite store, opened read-only when present | none |
+| `ctx status` | data root metadata, existing SQLite store, semantic sidecar/status metadata, and ctx-owned daemon lock/status/job metadata | none |
 | `ctx sources` | known provider paths under the user's home and local history-source plugin manifests | none |
 | `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--format ctx-history-jsonl-v1 --path`, or stdout from an explicit history-source plugin command | data root, `config.toml` if missing, and SQLite index |
 | `ctx show` | SQLite index | selected `--out` path for `show session` when provided |
 | `ctx locate` | SQLite index and raw source path metadata | none |
-| `ctx search` | native provider transcript files, path metadata, enabled auto history-source plugin stdout, and SQLite index | SQLite index for newly discovered native provider or plugin history |
+| `ctx search` | native provider transcript files, path metadata, enabled auto history-source plugin stdout, SQLite index, and existing semantic sidecar/status metadata | SQLite index for newly discovered native provider or plugin history |
 | `ctx sql` | existing SQLite index only | none |
 | `ctx docs` | embedded documentation in the binary | selected topic `--out` path for `ctx docs show --out` or selected `--out` directory for `ctx docs man --out` |
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, `upgrade-state.json`, `upgrade.lock`, and `logs/upgrade.log` |
-| `ctx doctor` | SQLite index and data root metadata | none |
+| `ctx doctor` | SQLite index, data root metadata, semantic sidecar/status metadata, and ctx-owned daemon lock/status/job metadata | none |
+| `ctx daemon status` | semantic sidecar/status metadata and ctx-owned daemon lock/status/job metadata | none |
+| `ctx daemon enable` / `ctx daemon disable` | `config.toml` | `config.toml` |
+| `ctx daemon run` | native provider transcript files, SQLite index, semantic sidecar/status metadata, model-cache metadata, and ctx-owned daemon lock/status/job metadata | SQLite index for bounded native provider refresh, ctx-owned daemon lock/status/job metadata, and semantic sidecar/status metadata when local semantic indexing or dirty-queue freshness checks run |
 
-Setup, import, and search do not require source repository writes, model APIs,
-API keys, or remote accounts.
+Setup, import, and default search do not require source repository writes, model
+APIs, API keys, remote accounts, or model downloads. `ctx search --refresh off`
+does not refresh providers, run plugins, start semantic workers, schedule
+semantic indexing, or write the main store or semantic sidecar. Default
+`--backend auto --refresh off` stays on the lexical path. Explicit semantic or
+hybrid searches may initialize an already-cached local embedding model to embed
+the query and read the existing sidecar, but they do not download a model or
+write semantic catch-up work during search.
+Explicit imports may best-effort mark recent semantic-eligible items dirty in
+the semantic sidecar when the sidecar already exists or the local model cache is
+present; this does not initialize the model or embed text.
+Explicit semantic search also refuses to initialize or download the embedding
+model when the required local cache is missing; hybrid falls back to lexical in
+that case. Default `--refresh auto` bounds enabled auto history-source plugin
+runs for interactive search. Use `--refresh strict` or `ctx import` for
+exhaustive plugin catch-up.
+
+When `ctx daemon run` or a managed service runs the ctx-owned background
+coordinator, it stores private lock/status files under `daemon/` in the ctx data
+root. The current coordinator status surface is local-only: bounded native
+provider-history refresh updates the local SQLite index, semantic indexing is
+bounded by the local model cache, and cloud sync reports `disabled` with
+`network_allowed: false` unless a future cloud configuration changes the product
+contract. A looping daemon may keep the local embedding model resident between
+passes and uses the sidecar dirty queue to prioritize recent/stale events.
+Search observes existing daemon/semantic state but does not start the daemon.
 
 ## Default Config
 
@@ -111,6 +138,9 @@ The day-1 generated config is:
 auto = "apply"
 channel = "stable"
 interval_hours = 24
+
+[daemon]
+enabled = true
 ```
 
 `upgrade.auto = "apply"` only takes effect for official installer-managed

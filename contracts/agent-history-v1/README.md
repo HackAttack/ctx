@@ -56,6 +56,12 @@ Important reusable records:
 
 - `ProviderSource`: provider, path, availability, importability, raw retention.
 - `Freshness`: pre-search refresh mode/status/totals.
+- `Status.semantic` and `Status.daemon`: extensible local diagnostic objects for
+  semantic coverage and the ctx-owned daemon coordinator.
+- `SearchRetrieval`: requested/effective retrieval mode, applied semantic
+  weight, semantic coverage, optional fallback code/message, and optional
+  diagnostics. The CLI adapter camel-cases raw CLI retrieval fields for this
+  contract.
 - `Citation`: ctx event/session/file/source citation fields.
 - `SourceLocation`: path/cursor/source id/source format/existence.
 - Structured error: `code`, `message`, `retryable`, optional `details`, and
@@ -78,3 +84,9 @@ them into `agent-history-v1` wrappers:
 
 This mapping is an adapter detail. SDK consumers should depend on
 `agent-history-v1`, not on CLI rendering or SQLite storage.
+
+Local CLI output can include absolute diagnostic paths such as `vectorPath`,
+`lockPath`, or `statusPath` inside extensible semantic/daemon/retrieval objects.
+They are troubleshooting metadata for the current machine, not portable IDs; SDK
+consumers should not persist them as contract state or send them to hosted
+services unless deliberately collecting local diagnostics.

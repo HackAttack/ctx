@@ -31,6 +31,12 @@ ctx status
 ctx status --json
 ctx doctor
 ctx doctor --json
+ctx daemon status
+ctx daemon status --json
+ctx daemon run
+ctx daemon run --once --json
+ctx daemon disable
+ctx daemon enable
 ```
 
 - `setup` creates the data root, opens or creates `work.sqlite`, writes
@@ -46,11 +52,25 @@ ctx doctor --json
   prints errors on failure.
 - `status` reports the ctx root, database path, config path, indexed item
   count, indexed source count, inventory counters, legacy Codex catalog
-  counters, initialization state, local-only marker, and read-only marker. It
-  does not initialize, migrate, or repair the store.
+  counters, semantic coverage, daemon enabled/coordinator state,
+  initialization state, local-only marker, and read-only marker. It does not
+  initialize, migrate, or repair the store.
 - `status --quiet` performs the same local checks but prints nothing on
   success. Use `status --json` when scripts need the actual state.
-- `doctor` opens local storage and reports validation findings.
+- `doctor` opens local storage and reports validation findings, including
+  semantic sidecar/worker and daemon lock/status problems when present.
+- `daemon status` reports the same ctx-owned daemon coordinator state without
+  mutating storage.
+- `daemon run` runs bounded local maintenance in the foreground. Today that
+  means bounded native provider-history refresh followed by semantic catch-up
+  when the required local model cache already exists. A looping daemon keeps the
+  embedding model resident after cold start and performs recent-work freshness
+  checks before settling into idle loops; cloud sync remains disabled with
+  `network_allowed: false`.
+- `daemon disable` and `daemon enable` update `[daemon].enabled` in
+  `config.toml`. The default is enabled so a future managed service can run as
+  an opt-out local maintenance path; `daemon run --force` overrides a disabled
+  config for explicit manual troubleshooting.
 
 Setup and health checks do not change shell startup files, install repository
 integrations, write into source repositories, call model APIs, or require API
@@ -322,21 +342,31 @@ ctx search "token budget" --limit 5
 ctx search "token budget" --session <ctx-session-id>
 ctx search "review findings" --include-subagents
 ctx search "this current task" --include-current-session
+ctx search "mail provider throttled bulk mailbox setup" --backend hybrid
+ctx search "pricing for ctx cloud team history" --backend semantic
 ctx search "release notes" --history-source example-agent/default
 ctx search "release notes" --provider-key example-agent --source-id default
 ```
 
 `search` defaults to `--refresh auto`, which quietly refreshes discovered native
 provider sources and enabled auto history-source plugins before querying indexed
-sessions and events. The refresh is best-effort and keeps JSON stdout reserved
-for the search result object. On large discovered sources or already-inventoried
-indexes, `auto` serves current results without a foreground catch-up scan; use
-`--refresh strict` or `ctx import --all` when you need a full catch-up before
-querying. Use `--refresh off` to search the existing index without refreshing, or
-`--refresh strict` to fail when the pre-search refresh cannot run or import
-successfully. Explicit-only native sources such as NanoClaw are searched from the
-existing index until they are explicitly imported through a supported path.
-Search requires a
+sessions and events. This synchronous refresh updates the normal text index; it
+does not wait for semantic vector catch-up. Semantic retrieval reads existing
+local sidecar coverage when it is already available, and freshness is visible
+through `ctx status` and the search JSON `retrieval.worker` report. ctx does not
+initialize or download embedding models during search, does not create the
+semantic sidecar from the query path, and does not start semantic indexing. The
+refresh is best-effort and keeps JSON stdout reserved for the search result
+object. On large discovered sources or already-cataloged indexes, `auto` imports
+a bounded recent batch when it can and then serves results, leaving remaining
+backlog for later searches, `--refresh strict`, or `ctx import --all`. Use
+`--refresh off` to search the existing index without refreshing or scheduling
+semantic work, or `--refresh strict` to fail when the pre-search text refresh
+cannot run or import successfully. Explicit-only native sources such as
+NanoClaw, plus search-only sources without native import support, are searched
+from the existing index until they are explicitly imported through a supported
+path. Supported AstrBot `data_v4.db` locations participate in bounded native
+discovery and may also be imported with an explicit `--path`. Search requires a
 non-empty query, at least one non-empty `--term`, or
 `--file <path>`; provider, workspace, time, session, event, source, and result
 flags only narrow an actual search. Default results are session-diverse: ctx
@@ -363,15 +393,20 @@ When ctx is run from Codex and `CODEX_THREAD_ID` is available, search excludes
 the active Codex session tree by default so the current task and its subagents
 do not dominate historical retrieval. Use `--include-current-session` to opt
 back in. Use `--refresh off` for a strictly read-only query over the existing
-ctx index.
+ctx index. Explicit semantic or hybrid requests may read an existing semantic
+sidecar under `--refresh off`, but the command does not update the sidecar or
+download models. They may initialize an already-cached local model to embed the
+query.
 
 Results are local hits over indexed history. Event hits include `ctx_event_id`;
 hits with known session context include `ctx_session_id`; provider metadata
 including `provider_session_id` is included when known. Results also include
 title, snippet, rank, result scope, match reasons, source-path/cursor data,
-citations, `suggested_next_commands`, a JSON `freshness` object, and
-pagination/truncation fields in JSON. Default text output is compact and
-optimized for agent reading; use `--verbose` for expanded text diagnostics.
+citations, `suggested_next_commands`, a JSON `freshness` object, a JSON
+`retrieval` object with backend, semantic coverage, worker status, and semantic
+timing/scan diagnostics when vector retrieval runs, and pagination/truncation
+fields in JSON. Default text output is compact and optimized for agent reading;
+use `--verbose` for expanded text diagnostics.
 
 Filters:
 
@@ -387,6 +422,21 @@ Filters:
 - `--session <ctx-session-id-or-prefix>`, for dense event results within one session;
 - `--term <query-or-keyword>`, repeatable broadening terms merged with OR-style semantics;
 - `--events`, for dense event-level results instead of the default session-diverse results;
+- `--backend auto|lexical|semantic|hybrid`, where `auto` stays lexical unless
+  the local model cache exists, semantic sidecar coverage passes the hybrid gate,
+  active filters are safe for semantic lookup, and lexical search produces a
+  bounded candidate pool for hybrid reranking with full current vector coverage
+  for those candidates. When lexical search finds no candidates, `auto` can use
+  semantic rescue from the coverage-gated sidecar and reports whether that
+  sidecar is partial or ready.
+  Semantic/hybrid fall back to lexical for explicit filters or
+  `--term` broadening that vector lookup does not yet honor. The default
+  primary-agent scope and active-session exclusion use bounded overfetch, and
+  `hybrid` also falls back while semantic coverage is too low, the semantic
+  sidecar cannot be opened, semantic retrieval fails, or the local embedding
+  model cache is missing. Strict semantic search reports a local error instead
+  of downloading a model during search when the cache is missing;
+- `--semantic-weight <0.0-1.0>`, for hybrid ranking;
 - `--include-subagents`;
 - `--limit <n>`, capped at `200`;
 - `--refresh auto|off|strict`;
@@ -397,9 +447,25 @@ provider IDs in ctx output; multiword IDs may be snake_case, such as
 `copilot_cli`, `factory_ai_droid`, `qwen_code`, `kimi_code_cli`, `kiro_cli`, `mistral_vibe`, and `roo_code`; compact IDs such as `forgecode`, `deepagents`, `mux`, `rovodev`, `openclaw`, `nanoclaw`, `astrbot`, `shelley`, `continue`, and `openhands` stay compact.
 
 `search` reads discovered native provider files and runs enabled auto
-history-source plugin commands for pre-search refresh, then queries SQLite. It
-may write newly discovered provider or plugin history into the local index before
-querying.
+history-source plugin commands for pre-search text refresh, then queries SQLite.
+Default auto refresh bounds native and plugin work for interactive use; run
+`--refresh strict` or `ctx import` for exhaustive plugin catch-up. It may write
+newly discovered provider or plugin history into the local
+`work.sqlite` index before querying. Semantic retrieval reads the
+`vectors.sqlite` sidecar when it already exists; search itself does not start
+semantic indexing, start a daemon, or write semantic worker status. Use
+`ctx daemon run` for explicit foreground local native history refresh and
+semantic catch-up. JSON status
+includes a top-level `semantic` object with worker
+`status`, `running`, `pid`, heartbeat/error timestamps, `indexed_chunks`, and a
+`coverage` object with `searchable_items`, `embedded_items`, `embedded_chunks`,
+`dirty_items`, `queued_items_estimate`, and `coverage_ratio`, plus the private
+local sidecar and worker status paths. JSON status also includes a top-level
+`daemon` object
+with coordinator status and `history_refresh`/`semantic_index`/`cloud_sync` job
+state; cloud sync is disabled with `network_allowed: false` unless a future
+cloud configuration changes the product contract. `ctx doctor` is the
+diagnostic surface for semantic sidecar, worker, and daemon health.
 
 ## SQL
 
@@ -480,9 +546,10 @@ ctx integrations install mcp
 `mcp serve` starts a read-only MCP server over newline-delimited stdio JSON-RPC.
 It exposes tools for `status`, `sources`, `search`, `sql`, `show_session`, and
 `show_event`. The MCP search and SQL tools query the existing index only; they
-do not refresh or import provider history. Tool results include MCP text
-content plus `structuredContent` JSON. Treat all MCP output as private local
-history: it may include absolute paths, source metadata, snippets, transcript
+do not refresh or import provider history, and MCP search currently uses the
+lexical search path only. Tool results include MCP text content plus
+`structuredContent` JSON. Treat all MCP output as private local history: it may
+include absolute paths, source metadata, snippets, transcript
 text, and raw SQL result fields, and the MCP host may log or forward tool
 output.
 

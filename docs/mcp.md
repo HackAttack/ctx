@@ -16,7 +16,8 @@ the support matrix, config paths, and manual snippets.
 
 The server exposes these tools:
 
-- `status`, local ctx index status;
+- `status`, local ctx index status, semantic coverage, and daemon coordinator
+  state;
 - `sources`, discovered local agent history sources;
 - `search`, search the existing index;
 - `sql`, run one read-only SQL statement against the existing index;
@@ -25,7 +26,8 @@ The server exposes these tools:
   event ID.
 
 MCP search and SQL query the existing index only. They do not refresh provider
-history, import files, initialize storage, or write provider data.
+history, import files, initialize storage, or write provider data. MCP search
+currently uses the lexical search path only.
 
 MCP search defaults to primary-agent sessions only, matching `ctx search`.
 Pass `include_subagents: true` when implementation details, code review notes,
@@ -42,3 +44,7 @@ Tool results include MCP text content plus `structuredContent` JSON. Treat all
 MCP output as private local history: it may include absolute paths, source
 metadata, snippets, transcript text, and raw SQL result fields, and the MCP host
 may log or forward tool output.
+
+MCP `status` can include semantic and daemon diagnostic path fields such as
+`vector_path`, `lock_path`, and `status_path` in `structuredContent`. They are
+local troubleshooting hints for this machine, not portable contract IDs.

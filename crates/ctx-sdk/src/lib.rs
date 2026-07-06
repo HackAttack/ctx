@@ -14,8 +14,9 @@ use ctx_protocol::{camel_alias_object, camelize_object_keys, JsonObject};
 pub use ctx_protocol::{
     AgentHistoryEnvelope, AgentHistoryErrorBody, AgentHistoryErrorCode, AgentHistoryEvent,
     AgentHistoryOperation, AgentHistoryStatus, BackendInfo, BackendKind, EventResult, Freshness,
-    ImportResult, LocationResult, ProviderSource, SearchHit, SearchResult, SessionResult,
-    SourceLocation, Totals, CONTRACT_VERSION, SCHEMA_VERSION,
+    ImportResult, LocationResult, ProviderSource, SearchHit, SearchResult, SearchRetrieval,
+    SearchRetrievalCoverage, SessionResult, SourceLocation, Totals, CONTRACT_VERSION,
+    SCHEMA_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -87,6 +88,8 @@ pub struct SearchOptions {
     pub query: Option<String>,
     pub terms: Vec<String>,
     pub limit: usize,
+    pub backend: Option<String>,
+    pub semantic_weight: Option<f64>,
     pub provider: Option<String>,
     pub workspace: Option<String>,
     pub since: Option<String>,
@@ -103,6 +106,8 @@ impl Default for SearchOptions {
             query: None,
             terms: Vec::new(),
             limit: 20,
+            backend: None,
+            semantic_weight: None,
             provider: None,
             workspace: None,
             since: None,
@@ -247,6 +252,10 @@ impl AgentHistoryClient {
             owned.push(term);
         }
         owned.extend(["--limit".to_owned(), options.limit.to_string()]);
+        push_opt(&mut owned, "--backend", options.backend);
+        if let Some(semantic_weight) = options.semantic_weight {
+            owned.extend(["--semantic-weight".to_owned(), semantic_weight.to_string()]);
+        }
         push_opt(&mut owned, "--provider", options.provider);
         push_opt(&mut owned, "--workspace", options.workspace);
         push_opt(&mut owned, "--since", options.since);
@@ -688,6 +697,8 @@ mod tests {
             query: Some("agent history".to_owned()),
             terms: vec!["ctx".to_owned()],
             limit: 3,
+            backend: Some("hybrid".to_owned()),
+            semantic_weight: Some(0.35),
             provider: Some("codex".to_owned()),
             refresh: SearchRefresh::Off,
             events: true,
@@ -695,6 +706,124 @@ mod tests {
         };
         assert_eq!(options.refresh.as_arg(), "off");
         assert_eq!(options.terms, vec!["ctx"]);
+        assert_eq!(options.backend.as_deref(), Some("hybrid"));
+        assert_eq!(options.semantic_weight, Some(0.35));
+        assert!(SearchOptions::default().backend.is_none());
+        assert!(SearchOptions::default().semantic_weight.is_none());
+    }
+
+    #[test]
+    fn search_options_map_retrieval_controls_to_cli_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("ctx-fake");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$@" > "$CTX_DATA_ROOT/argv.txt"
+if [ "$1" = "search" ]; then
+  printf '%s\n' '{"query":"agent history","results":[]}'
+  exit 0
+fi
+echo "unexpected command: $*" >&2
+exit 2
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let client = AgentHistoryClient::local(LocalBackendConfig {
+            ctx_binary: script,
+            data_root: Some(temp.path().to_path_buf()),
+            timeout: Duration::from_secs(5),
+        });
+
+        client
+            .search(SearchOptions {
+                query: Some("agent history".to_owned()),
+                limit: 7,
+                backend: Some("hybrid".to_owned()),
+                semantic_weight: Some(0.625),
+                refresh: SearchRefresh::Off,
+                ..SearchOptions::default()
+            })
+            .unwrap();
+
+        let argv = fs::read_to_string(temp.path().join("argv.txt")).unwrap();
+        let argv = argv.lines().collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            vec![
+                "search",
+                "agent history",
+                "--limit",
+                "7",
+                "--backend",
+                "hybrid",
+                "--semantic-weight",
+                "0.625",
+                "--refresh",
+                "off",
+                "--json",
+            ]
+        );
+    }
+
+    #[test]
+    fn search_normalization_camelizes_retrieval_json() {
+        let envelope = normalize(
+            AgentHistoryOperation::Search,
+            BackendInfo::local(None),
+            json!({
+                "query": "semantic defaults",
+                "generated_at": "2026-07-05T00:00:00Z",
+                "retrieval": {
+                    "requested_mode": "hybrid",
+                    "effective_mode": "lexical",
+                    "semantic_weight": 0.0,
+                    "semantic_fallback_code": "semantic_retrieval_failed",
+                    "semantic_fallback": "semantic_retrieval_failed",
+                    "coverage": {"embedded_items": 4, "indexed_now": 1},
+                    "diagnostics": {"query_embed_ms": 2}
+                },
+                "results": [{
+                    "ctx_event_id": "event-1",
+                    "ctx_session_id": "session-1",
+                    "result_scope": "event",
+                    "snippet": "semantic match",
+                }],
+            }),
+        )
+        .unwrap();
+
+        let search = envelope.search.unwrap();
+        let retrieval = search.retrieval.unwrap();
+        assert_eq!(retrieval.requested_mode.as_deref(), Some("hybrid"));
+        assert_eq!(retrieval.effective_mode.as_deref(), Some("lexical"));
+        assert_eq!(retrieval.semantic_weight, Some(0.0));
+        assert_eq!(
+            retrieval.semantic_fallback_code.as_deref(),
+            Some("semantic_retrieval_failed")
+        );
+        assert_eq!(
+            retrieval.semantic_fallback.as_deref(),
+            Some("semantic_retrieval_failed")
+        );
+        assert_eq!(retrieval.coverage.as_ref().unwrap().embedded_items, Some(4));
+        assert_eq!(
+            retrieval.diagnostics.as_ref().unwrap().get("queryEmbedMs"),
+            Some(&json!(2))
+        );
+        assert!(
+            search.extra.get("retrieval").is_none(),
+            "top-level retrieval should be typed, not left in extra"
+        );
+        assert_eq!(
+            search.results[0].extra.get("retrieval"),
+            None,
+            "per-hit retrieval is not part of the canonical SDK search hit shape"
+        );
     }
 
     #[test]

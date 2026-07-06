@@ -66,6 +66,8 @@ type SearchOptions struct {
 	Query                 string
 	Terms                 []string
 	Limit                 int
+	Backend               string
+	SemanticWeight        *float64
 	Provider              string
 	Workspace             string
 	Since                 string
@@ -175,6 +177,10 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 		if value != "" {
 			args = append(args, name, value)
 		}
+	}
+	appendStringFlag("--backend", opts.Backend)
+	if opts.SemanticWeight != nil {
+		args = append(args, "--semantic-weight", strconv.FormatFloat(*opts.SemanticWeight, 'g', -1, 64))
 	}
 	appendStringFlag("--provider", opts.Provider)
 	appendStringFlag("--workspace", opts.Workspace)

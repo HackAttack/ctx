@@ -135,8 +135,9 @@ pub use provider::api::{
     validate_custom_history_jsonl_v1, validate_custom_history_jsonl_v1_reader,
 };
 pub use provider::codex::{
-    catalog_codex_session_tree, import_codex_history_jsonl, import_codex_session_jsonl,
-    import_codex_session_jsonl_tail, import_codex_session_paths, import_codex_session_tree,
+    catalog_codex_session_files, catalog_codex_session_tree, import_codex_history_jsonl,
+    import_codex_session_jsonl, import_codex_session_jsonl_tail, import_codex_session_paths,
+    import_codex_session_tree,
 };
 pub use provider::custom_history_jsonl::custom_history_jsonl_v1_cursor_stream;
 pub use provider::importer::import_normalized_provider_captures;

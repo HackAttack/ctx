@@ -103,6 +103,7 @@ def normalize_search(raw: Mapping[str, Any]) -> SearchResult:
                 "query": raw.get("query"),
                 "filters": _camelize_public(raw.get("filters", {})),
                 "freshness": _camelize_public(raw.get("freshness", {})),
+                "retrieval": _camelize_public(raw.get("retrieval")),
                 "generatedAt": raw.get("generated_at", raw.get("generatedAt")),
                 "results": [_camelize_public(result) for result in raw.get("results", [])],
                 "pagination": _camelize_public(raw.get("pagination", {})),

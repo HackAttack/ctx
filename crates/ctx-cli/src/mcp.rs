@@ -24,9 +24,12 @@ use super::{
     cli_supported_provider, compact_json, config::CONFIG_FILE, discovered_plugin_sources_json,
     discovered_sources, event_window, event_window_json, raw_sql_result_json, search_filters,
     search_has_intent, session_transcript_json, sources_json, OutputFormat, ProviderArg,
-    RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput, SearchRefreshReport,
-    SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
+    RefreshArg, SearchBackendArg, SearchDto, SearchFilterInput, SearchIntentInput,
+    SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW,
+    MAX_SEARCH_LIMIT,
 };
+use crate::semantic::{daemon_report, semantic_worker_report, SemanticRetrievalReport};
+use crate::store_util::open_existing_store_read_only;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_PROTOCOL_VERSION, "2025-06-18"];
@@ -382,12 +385,16 @@ fn tool_status(data_root: &Path) -> Result<Value> {
         pending_source_import_files,
         failed_source_import_files,
         stale_source_import_files,
+        semantic,
+        daemon,
     ) = if initialized {
-        let store = Store::open_read_only(&db_path)
-            .with_context(|| format!("open read-only ctx store {}", db_path.display()))?;
+        let store = open_existing_store_read_only(&db_path, "ctx mcp status")?;
         let catalog_counts = store.catalog_session_counts()?;
         let source_import_file_counts = store.source_import_file_counts()?;
         let indexed_counts = store.indexed_history_counts()?;
+        let semantic_report = semantic_worker_report(data_root, Some(&store))?;
+        let daemon = daemon_report(data_root, &semantic_report);
+        let semantic = semantic_report.to_json();
         (
             indexed_counts.items(),
             indexed_counts.sessions,
@@ -403,9 +410,30 @@ fn tool_status(data_root: &Path) -> Result<Value> {
             source_import_file_counts.pending,
             source_import_file_counts.failed,
             source_import_file_counts.stale,
+            semantic,
+            daemon,
         )
     } else {
-        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        let semantic_report = semantic_worker_report(data_root, None)?;
+        let daemon = daemon_report(data_root, &semantic_report);
+        (
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            semantic_report.to_json(),
+            daemon,
+        )
     };
     let inventory_units = cataloged_sessions.saturating_add(source_import_files);
     let pending_inventory_units =
@@ -437,6 +465,8 @@ fn tool_status(data_root: &Path) -> Result<Value> {
         "pending_source_import_files": pending_source_import_files,
         "failed_source_import_files": failed_source_import_files,
         "stale_source_import_files": stale_source_import_files,
+        "semantic": semantic,
+        "daemon": daemon,
         "local_only": true,
         "read_only": true,
     }))
@@ -514,7 +544,17 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     };
     let packet = ctx_history_search::search_packet(&store, &query, &options)?;
     let refresh = SearchRefreshReport::skipped(RefreshArg::Off, "skipped");
-    Ok(SearchDto::packet(&store, &packet, &refresh, Some(&query)))
+    let retrieval = SemanticRetrievalReport::lexical(
+        SearchBackendArg::Lexical,
+        store.count_event_embedding_documents()?,
+    );
+    Ok(SearchDto::packet(
+        &store,
+        &packet,
+        &refresh,
+        &retrieval,
+        Some(&query),
+    ))
 }
 
 fn tool_sql(arguments: &Value, data_root: &Path) -> Result<Value> {

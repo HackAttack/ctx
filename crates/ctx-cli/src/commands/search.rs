@@ -36,9 +36,10 @@ use crate::search_filters::{
     SourceIdentityFilterArgs, SourceIdentityFilters,
 };
 use crate::search_render::{print_search_result_compact, print_search_result_verbose, SearchDto};
+use crate::semantic::SemanticRetrievalReport;
 use crate::store_util::open_existing_store_read_only;
 use crate::transcript::shell_quote_arg;
-use crate::{analytics, config, SearchArgs, WAL_TRUNCATE_MIN_BYTES};
+use crate::{analytics, config, SearchArgs, SearchBackendArg, WAL_TRUNCATE_MIN_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RefreshArg {
@@ -270,10 +271,19 @@ pub(crate) fn run_search(
     let render_started = Instant::now();
     if args.json {
         let suggested_next_query = (!uses_composed_terms).then_some(query.as_str());
+        let retrieval = SemanticRetrievalReport::lexical(
+            if matches!(args.backend, SearchBackendArg::Auto) {
+                SearchBackendArg::Auto
+            } else {
+                SearchBackendArg::Lexical
+            },
+            store.count_event_embedding_documents()?,
+        );
         print_json(SearchDto::packet(
             &store,
             &packet,
             &refresh,
+            &retrieval,
             suggested_next_query,
         ))?;
     } else {

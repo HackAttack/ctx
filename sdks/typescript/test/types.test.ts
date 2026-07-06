@@ -1,7 +1,9 @@
 import {
   type ImportEnvelope,
+  type JsonValue,
   type LocationEnvelope,
   type AgentHistoryEnvelope,
+  type SearchBackendMode,
   type SearchEnvelope,
   type ShowEventEnvelope,
   type SourcesEnvelope,
@@ -41,8 +43,19 @@ const search = await client.search("local agent history", { refresh: "off" });
 expectType<SearchEnvelope>(search);
 expectType<string>(search.search.results[0]!.resultScope);
 expectType<string | null | undefined>(search.search.results[0]!.ctxEventId);
+expectType<SearchBackendMode | string | null | undefined>(search.search.retrieval?.requestedMode);
+expectType<number | null | undefined>(search.search.retrieval?.semanticWeight);
+expectType<string | null | undefined>(search.search.retrieval?.semanticFallbackCode);
+expectType<number | undefined>(search.search.retrieval?.coverage?.embeddedItems);
+expectType<JsonValue | undefined>(search.search.retrieval?.diagnostics?.queryEmbedMs);
 // @ts-expect-error search results expose ctxEventId, not ctx_event_id.
 search.search.results[0]!.ctx_event_id;
+
+const semanticSearch = await client.search("semantic memory", {
+  backend: "hybrid",
+  semanticWeight: 0.8,
+});
+expectType<SearchEnvelope>(semanticSearch);
 
 const termSearch = await client.search({ terms: ["local agent history"], refresh: "off" });
 expectType<SearchEnvelope>(termSearch);
@@ -52,6 +65,8 @@ expectType<SearchEnvelope>(fileSearch);
 await client.search();
 // @ts-expect-error search filters alone are not a search intent.
 await client.search({ refresh: "off", limit: 5 });
+// @ts-expect-error backend and semanticWeight alone are not a search intent.
+await client.search({ backend: "hybrid", semanticWeight: 0.8 });
 
 const shown = await client.showEvent("11111111-1111-4111-8111-111111111111");
 expectType<ShowEventEnvelope>(shown);

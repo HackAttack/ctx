@@ -162,6 +162,8 @@ public sealed record AgentHistoryStatus
         FailedCatalogSessions = JsonHelpers.GetInt(json, "failedCatalogSessions");
         StaleCatalogSessions = JsonHelpers.GetInt(json, "staleCatalogSessions");
         Freshness = Freshness.FromJson(json["freshness"] as JsonObject);
+        Semantic = JsonHelpers.CloneObject(json["semantic"] as JsonObject);
+        Daemon = JsonHelpers.CloneObject(json["daemon"] as JsonObject);
     }
 
     public bool Initialized { get; }
@@ -175,6 +177,8 @@ public sealed record AgentHistoryStatus
     public int? FailedCatalogSessions { get; }
     public int? StaleCatalogSessions { get; }
     public Freshness? Freshness { get; }
+    public JsonObject Semantic { get; }
+    public JsonObject Daemon { get; }
 
     public JsonObject ToJsonObject() => JsonHelpers.CloneObject(_json);
 
@@ -312,14 +316,20 @@ public sealed record Freshness
         _json = JsonHelpers.CloneObject(json);
         Mode = JsonHelpers.GetString(json, "mode");
         Status = JsonHelpers.GetString(json, "status");
+        Reason = JsonHelpers.GetString(json, "reason");
+        BudgetReasons = JsonHelpers.GetStringArray(json, "budgetReasons");
         SourceCount = JsonHelpers.GetInt(json, "sourceCount");
+        DaemonLastRunAtMs = JsonHelpers.GetLong(json, "daemonLastRunAtMs");
         Totals = json["totals"] is JsonObject totals ? Ctx.AgentHistory.Totals.FromJson(totals) : null;
         Error = JsonHelpers.GetString(json, "error");
     }
 
     public string? Mode { get; }
     public string? Status { get; }
+    public string? Reason { get; }
+    public IReadOnlyList<string> BudgetReasons { get; }
     public int? SourceCount { get; }
+    public long? DaemonLastRunAtMs { get; }
     public Totals? Totals { get; }
     public string? Error { get; }
 
@@ -339,6 +349,7 @@ public sealed record SearchResult
         Filters = JsonHelpers.CloneObject(json["filters"] as JsonObject);
         Freshness = Ctx.AgentHistory.Freshness.FromJson(json["freshness"] as JsonObject);
         GeneratedAt = JsonHelpers.GetString(json, "generatedAt");
+        Retrieval = JsonHelpers.Clone(json["retrieval"]);
         Results = JsonHelpers.GetObjectArray(json, "results", SearchHit.FromJson);
         Pagination = JsonHelpers.CloneObject(json["pagination"] as JsonObject);
         Truncation = JsonHelpers.CloneObject(json["truncation"] as JsonObject);
@@ -348,6 +359,7 @@ public sealed record SearchResult
     public JsonObject Filters { get; }
     public Freshness? Freshness { get; }
     public string? GeneratedAt { get; }
+    public JsonNode? Retrieval { get; }
     public IReadOnlyList<SearchHit> Results { get; }
     public JsonObject Pagination { get; }
     public JsonObject Truncation { get; }

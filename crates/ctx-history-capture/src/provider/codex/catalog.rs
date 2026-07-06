@@ -144,6 +144,35 @@ pub fn catalog_codex_session_tree(
     }
     Ok(summary)
 }
+
+pub fn catalog_codex_session_files(
+    paths: Vec<PathBuf>,
+    source_root: impl AsRef<Path>,
+    store: &Store,
+    options: CodexSessionCatalogOptions,
+) -> Result<CatalogSummary> {
+    let source_root = options
+        .source_root
+        .as_deref()
+        .unwrap_or(source_root.as_ref())
+        .display()
+        .to_string();
+    let cataloged_at_ms = options.cataloged_at.timestamp_millis();
+    let (scan_summary, sessions) = catalog_codex_session_paths(
+        paths,
+        &source_root,
+        cataloged_at_ms,
+        options.allow_partial_failures,
+        options.parallelism,
+    )?;
+    let mut summary = scan_summary;
+    summary.cataloged_sessions = sessions.len();
+    if !sessions.is_empty() {
+        store.upsert_catalog_sessions(&sessions)?;
+    }
+    Ok(summary)
+}
+
 pub(crate) fn cached_catalog_session_if_unchanged(
     session: Option<&CatalogSession>,
     metadata: &fs::Metadata,

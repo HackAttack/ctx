@@ -16,6 +16,38 @@
     "catalogedSessions": 1,
     "pendingCatalogSessions": 0,
     "failedCatalogSessions": 0,
-    "staleCatalogSessions": 0
+    "staleCatalogSessions": 0,
+    "semantic": {
+      "status": "ready",
+      "running": false,
+      "modelCacheAvailable": true,
+      "coverage": {
+        "searchableItems": 3,
+        "embeddedItems": 3,
+        "embeddedChunks": 4,
+        "dirtyItems": 0,
+        "queuedItemsEstimate": 0
+      }
+    },
+    "daemon": {
+      "enabled": true,
+      "status": "completed",
+      "running": false,
+      "jobs": {
+        "historyRefresh": {
+          "enabled": true,
+          "status": "completed"
+        },
+        "semanticIndex": {
+          "enabled": true,
+          "status": "ready"
+        },
+        "cloudSync": {
+          "enabled": false,
+          "status": "disabled",
+          "networkAllowed": false
+        }
+      }
+    }
   }
 }
