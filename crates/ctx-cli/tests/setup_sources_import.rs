@@ -2,6 +2,25 @@ mod support;
 
 use support::*;
 
+fn write_codex_setup_session(temp: &TempDir) {
+    let sessions = temp
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026/06/24");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join("rollout-2026-06-24T10-00-00-codex-session-setup.jsonl"),
+        concat!(
+            r#"{"timestamp":"2026-06-24T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-session-setup","timestamp":"2026-06-24T10:00:00.000Z","cwd":"/repo/app","originator":"codex-cli","cli_version":"0.200.0","source":"cli","model_provider":"openai"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-24T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"setup should import"}]}}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+}
+
 #[test]
 fn setup_does_not_migrate_legacy_shim_directory() {
     let temp = tempdir();
@@ -274,24 +293,80 @@ fn setup_catalog_only_catalogs_codex_sessions_without_import() {
 }
 
 #[test]
+fn quiet_setup_suppresses_success_output_but_not_json() {
+    let temp = tempdir();
+    ctx(&temp)
+        .args(["--quiet", "setup", "--catalog-only"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    let temp = tempdir();
+    ctx(&temp)
+        .args(["setup", "--quiet", "--catalog-only", "--progress", "none"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    let temp = tempdir();
+    ctx(&temp)
+        .args(["setup", "--catalog-only", "--progress", "none"])
+        .env("CTX_QUIET", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    let temp = tempdir();
+    let setup = json_output(ctx(&temp).args([
+        "--quiet",
+        "setup",
+        "--catalog-only",
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(setup["schema_version"], 1);
+    assert_eq!(setup["mode"], "catalog_only");
+}
+
+#[test]
+fn quiet_status_suppresses_success_output_but_not_json() {
+    let temp = tempdir();
+    ctx(&temp)
+        .args(["--quiet", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    ctx(&temp)
+        .args(["status", "--quiet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    ctx(&temp)
+        .arg("status")
+        .env("CTX_QUIET", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    ctx(&temp)
+        .arg("status")
+        .env("CTX_QUIET", "0")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("initialized: false"));
+
+    let status = json_output(ctx(&temp).args(["--quiet", "status", "--json"]));
+    assert_eq!(status["schema_version"], 1);
+    assert_eq!(status["initialized"], false);
+}
+
+#[test]
 fn setup_imports_discovered_codex_sessions_by_default() {
     let temp = tempdir();
-    let sessions = temp
-        .path()
-        .join(".codex")
-        .join("sessions")
-        .join("2026/06/24");
-    fs::create_dir_all(&sessions).unwrap();
-    fs::write(
-        sessions.join("rollout-2026-06-24T10-00-00-codex-session-setup.jsonl"),
-        concat!(
-            r#"{"timestamp":"2026-06-24T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-session-setup","timestamp":"2026-06-24T10:00:00.000Z","cwd":"/repo/app","originator":"codex-cli","cli_version":"0.200.0","source":"cli","model_provider":"openai"}}"#,
-            "\n",
-            r#"{"timestamp":"2026-06-24T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"setup should import"}]}}"#,
-            "\n"
-        ),
-    )
-    .unwrap();
+    write_codex_setup_session(&temp);
 
     let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
     assert_eq!(setup["catalog"]["cataloged_sessions"], 1);
@@ -312,7 +387,9 @@ fn setup_imports_discovered_codex_sessions_by_default() {
     assert!(status["indexed_items"].as_u64().unwrap() > 0);
     assert_eq!(status["read_only"], true);
 
-    let human_setup = ctx(&temp)
+    let human_temp = tempdir();
+    write_codex_setup_session(&human_temp);
+    let human_setup = ctx(&human_temp)
         .args(["setup", "--progress", "none"])
         .assert()
         .success()

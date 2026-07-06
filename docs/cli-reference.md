@@ -7,11 +7,18 @@ ctx is a local CLI for indexing and searching agent session history.
 ```bash
 ctx --data-root /tmp/ctx status
 CTX_DATA_ROOT=/tmp/ctx ctx status
+ctx --quiet setup
+CTX_QUIET=1 ctx status
 ```
 
 `--data-root` overrides the default ctx root for every command. The environment
 variable `CTX_DATA_ROOT` provides the same value. The root is used directly; ctx
 does not append another product directory.
+
+`--quiet` suppresses successful human status/onboarding output for `setup` and
+top-level `status`. `CTX_QUIET=1` provides the same default for scripts and
+installer wrappers. JSON output, errors, and command results from commands such
+as `search`, `show`, `sources`, and `docs` are not suppressed.
 
 ## Setup And Health
 
@@ -33,10 +40,15 @@ ctx doctor --json
   history-source plugin commands.
 - `setup --catalog-only` stops after discovery/cataloging. It is useful for
   fast inventory or troubleshooting, but it does not make history searchable.
+- `setup --quiet` performs setup without printing success status lines, import
+  summaries, data-root details, or get-started tips. It still exits nonzero and
+  prints errors on failure.
 - `status` reports the ctx root, database path, config path, indexed item
   count, indexed source count, catalog session counters, initialization state,
   local-only marker, and read-only marker. It does not initialize, migrate, or
   repair the store.
+- `status --quiet` performs the same local checks but prints nothing on
+  success. Use `status --json` when scripts need the actual state.
 - `doctor` opens local storage and reports validation findings.
 
 Setup and health checks do not change shell startup files, install repository
