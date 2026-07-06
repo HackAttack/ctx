@@ -988,7 +988,24 @@ fn remove_existing_target(path: &Path) -> Result<()> {
 }
 
 fn print_install_results(results: &[InstallResult]) {
-    println!("ctx skill install: {BUNDLED_SKILL_NAME}");
+    let all_success = !results.is_empty() && results.iter().all(|result| result.success);
+    let all_current = all_success && results.iter().all(|result| result.already_installed);
+    let any_updated = results
+        .iter()
+        .any(|result| result.success && result.updated);
+    let any_installed = results
+        .iter()
+        .any(|result| result.success && !result.already_installed && !result.updated);
+    let heading = if all_current {
+        "Agent skill already installed"
+    } else if all_success && any_updated && !any_installed {
+        "Agent skill updated"
+    } else if all_success {
+        "Agent skill installed"
+    } else {
+        "Agent skill"
+    };
+    println!("{heading}: {BUNDLED_SKILL_NAME}");
     for result in results {
         let verb = if result.already_installed {
             "current"
@@ -1002,15 +1019,9 @@ fn print_install_results(results: &[InstallResult]) {
         let detail = result
             .error
             .as_deref()
-            .map(|error| format!(": {error}"))
+            .map(|error| format!(" - {error}"))
             .unwrap_or_default();
-        println!(
-            "  {verb}: {} ({}) -> {}{}",
-            result.target.agent.display_name(),
-            result.target.scope.as_str(),
-            result.target.skill_dir.display(),
-            detail
-        );
+        println!("  {verb}: {}{}", result.target.agent.display_name(), detail);
     }
 }
 

@@ -94,7 +94,7 @@ function Format-CurrentPathCommand([string]$Directory) {
 }
 
 function Write-CurrentPathCommand([string]$Directory) {
-    Write-Host "for this PowerShell session, run:"
+    Write-Host "For this PowerShell session, run:"
     Write-Host ("  " + (Format-CurrentPathCommand $Directory))
 }
 
@@ -105,7 +105,8 @@ function Add-InstallDirToPathIfNeeded([string]$Directory, [bool]$ModifyPath) {
     }
 
     if (-not $ModifyPath) {
-        Write-Host "$dir is not on PATH; user PATH update skipped"
+        Write-Host ""
+        Write-Host "$dir is not on PATH; user PATH update skipped."
         Write-CurrentPathCommand $dir
         return
     }
@@ -115,20 +116,23 @@ function Add-InstallDirToPathIfNeeded([string]$Directory, [bool]$ModifyPath) {
         if (-not (Test-PathContainsDirectory -PathValue $env:Path -Directory $dir)) {
             $env:Path = "$dir$([System.IO.Path]::PathSeparator)$env:Path"
         }
-        Write-Host "added $dir to GITHUB_PATH for later GitHub Actions steps"
+        Write-Host ""
+        Write-Host "Added $dir to GITHUB_PATH for later GitHub Actions steps."
         return
     }
 
     if ($env:CI -eq "1" -or $env:CI -eq "true") {
         $env:Path = "$dir$([System.IO.Path]::PathSeparator)$env:Path"
-        Write-Host "$dir is not on PATH; CI detected, not editing the user PATH"
+        Write-Host ""
+        Write-Host "$dir is not on PATH; CI detected, not editing the user PATH."
         Write-CurrentPathCommand $dir
         return
     }
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    Write-Host ""
     if (Test-PathContainsDirectory -PathValue $userPath -Directory $dir) {
-        Write-Host "found existing user PATH setup for $dir"
+        Write-Host "Found existing user PATH setup for $dir."
     } else {
         if ([string]::IsNullOrWhiteSpace($userPath)) {
             $newUserPath = $dir
@@ -137,7 +141,7 @@ function Add-InstallDirToPathIfNeeded([string]$Directory, [bool]$ModifyPath) {
         }
         try {
             [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-            Write-Host "added $dir to the user PATH"
+            Write-Host "Added $dir to the user PATH."
         } catch {
             Write-Warning "could not update the user PATH: $($_.Exception.Message)"
         }
@@ -149,11 +153,11 @@ function Add-InstallDirToPathIfNeeded([string]$Directory, [bool]$ModifyPath) {
         $updatedCurrentPath = $true
     }
     if ($updatedCurrentPath) {
-        Write-Host "$dir was not on PATH at startup; this PowerShell session has been updated"
+        Write-Host "$dir was not on PATH at startup; this PowerShell session has been updated."
     }
-    Write-Host "open a new PowerShell window or run:"
+    Write-Host "Open a new PowerShell window or run:"
     Write-Host ("  " + (Format-CurrentPathCommand $dir))
-    Write-Host "then verify with:"
+    Write-Host "Then verify with:"
     Write-Host "  ctx status"
 }
 
@@ -247,22 +251,27 @@ try {
     }
     $modifyPath = -not $NoModifyPath -and $env:CTX_INSTALL_NO_MODIFY_PATH -ne "1"
 
-    Write-Host "ctx install plan: version=$version platform=$Platform artifact=$artifact bin=$installPath"
-    if (-not (Test-PathContainsDirectory -PathValue $env:Path -Directory $BinDir)) {
-        if ($modifyPath) {
-            Write-Host "ctx PATH plan: add $BinDir to the user PATH when installing"
-        } else {
-            Write-Host "ctx PATH plan: do not update the user PATH"
-        }
+    if ($DryRun) {
+        Write-Host "Dry run: would install ctx $version ($Platform)"
+    } else {
+        Write-Host "Installing ctx $version ($Platform)"
     }
+    Write-Host "  binary: $installPath"
     if ($runSkill) {
         if ($allSkillAgentsRequested) {
-            Write-Host "ctx skill plan: install bundled skill for all supported agents"
+            Write-Host "  skill: all supported agents"
         } elseif ($skillAgents.Count -gt 0) {
-            Write-Host ("ctx skill plan: install bundled skill for agents=" + ($skillAgents -join ","))
+            Write-Host ("  skill: " + ($skillAgents -join ","))
         } else {
-            Write-Host "ctx skill plan: install universal skill plus detected agent-specific folders"
+            Write-Host "  skill: universal + detected agent folders"
         }
+    } else {
+        Write-Host "  skill: skipped"
+    }
+    if ($runSetup) {
+        Write-Host "  history: index discovered sessions"
+    } else {
+        Write-Host "  history: skipped"
     }
     if ($DryRun) {
         exit 0
@@ -280,7 +289,6 @@ try {
 
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
     Copy-Item -LiteralPath $downloadPath -Destination $installPath -Force
-    Write-Host "installed ctx to $installPath"
 
     $markerPath = "$installPath.install.json"
     $marker = [ordered]@{
@@ -300,7 +308,8 @@ try {
     $markerJson = $marker | ConvertTo-Json -Depth 4
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($markerPath, $markerJson + [Environment]::NewLine, $utf8NoBom)
-    Write-Host "wrote ctx managed install marker to $markerPath"
+    Write-Host ""
+    Write-Host "Installed ctx binary."
 
     if ($runSkill) {
         $skillArgs = @("skill", "install")
@@ -311,13 +320,14 @@ try {
                 $skillArgs += @("--agent", $agent)
             }
         }
-        Write-Host "installing ctx agent skill (pass -NoSkill or set CTX_INSTALL_NO_SKILL=1 to skip next time)"
+        Write-Host ""
         & $installPath @skillArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "ctx skill install failed after install; run $installPath skill install to retry"
         }
     } else {
-        Write-Host "skill setup skipped; run $installPath skill install to install the bundled agent skill"
+        Write-Host ""
+        Write-Host "Agent skill skipped. Run $installPath skill install to install it later."
     }
 
     $setupStatus = 0
@@ -329,14 +339,16 @@ try {
                 $SetupProgress = $env:CTX_SETUP_PROGRESS
             }
         }
-        Write-Host "running ctx setup to index local history (pass -NoSetup or set CTX_INSTALL_NO_SETUP=1 to skip next time)"
+        Write-Host ""
+        Write-Host "Indexing local agent history..."
         & $installPath setup --progress $SetupProgress
         if ($LASTEXITCODE -ne 0) {
             $setupStatus = $LASTEXITCODE
             Write-Warning "ctx setup failed after install; run $installPath setup --progress $SetupProgress to retry"
         }
     } else {
-        Write-Host "setup skipped; run $installPath setup to index local history"
+        Write-Host ""
+        Write-Host "Setup skipped. Run $installPath setup to index local history."
     }
 
     Add-InstallDirToPathIfNeeded -Directory $BinDir -ModifyPath $modifyPath

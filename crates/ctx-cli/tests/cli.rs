@@ -1040,6 +1040,8 @@ fn setup_catalog_only_catalogs_codex_sessions_without_import() {
         .clone();
     let human_setup = String::from_utf8(human_setup).unwrap();
     assert!(human_setup.contains("ctx catalog is ready; import is still pending"));
+    assert!(human_setup.contains("Cataloged 1 session(s)."));
+    assert!(human_setup.contains("Get started:"));
     assert!(human_setup.contains("  ctx import --all"));
     assert!(!human_setup.contains("ctx search \"what failed before\""));
 }
@@ -1091,8 +1093,11 @@ fn setup_imports_discovered_codex_sessions_by_default() {
         .clone();
     let human_setup = String::from_utf8(human_setup).unwrap();
     assert!(human_setup.contains("ctx local agent history search is ready"));
-    assert!(human_setup.contains("imported_sources: 1"));
-    assert!(human_setup.contains("  ctx search \"what failed before\""));
+    assert!(human_setup.contains("Get started:"));
+    assert!(human_setup.contains("  ctx search \"test failure\""));
+    assert!(human_setup.contains("  ctx show event <event-id> --window 3"));
+    assert!(human_setup.contains("  ctx show session <session-id>"));
+    assert!(!human_setup.contains("ctx search \"what failed before\""));
 }
 
 #[test]
@@ -9975,6 +9980,20 @@ fn local_transcript_oracle_preserves_cli_json_and_sqlite() {
 #[test]
 fn skill_install_defaults_to_global_canonical_agents_dir_and_is_idempotent() {
     let temp = tempdir();
+
+    let human_temp = tempdir();
+    let human = ctx(&human_temp)
+        .env("CODEX_HOME", human_temp.path().join("missing-codex"))
+        .args(["skill", "install"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = String::from_utf8(human).unwrap();
+    assert!(human.contains("Agent skill installed: ctx-agent-history-search"));
+    assert!(human.contains("  installed: Universal .agents"));
+    assert!(!human.contains(" -> "));
 
     let first = json_output(
         ctx(&temp)
