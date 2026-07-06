@@ -54,11 +54,12 @@ that support it.
 
 Search filters narrow both human output and JSON:
 
-- `--provider codex|pi|claude|opencode|openclaw|hermes|nanoclaw|astrbot|shelley|antigravity|gemini|cursor|copilot-cli|factory-ai-droid`;
+- `--provider codex|claude|cursor|pi|opencode|github-copilot|copilot-cli|antigravity|gemini|kilo|kiro-cli|crush|goose|tabnine|windsurf|zed|factory-ai-droid|qwen-code|kimi-code-cli|auggie|junie|firebender|forgecode|deepagents|mistral-vibe|mux|rovodev|openclaw|hermes|nanoclaw|astrbot|shelley|continue|openhands|cline|roo|lingma|qoder|warp|codebuddy|trae`;
 - `--history-source <plugin/source-or-provider_key/source_id>`, for custom
   history imports;
 - `--provider-key <key>`, `--source-id <id>`, and
   `--source-format <format>`, for exact custom history source filters;
+
 - `--workspace <name-or-path>`, substring match over stored workspace, cwd,
   source path, or repository-name text;
 - `--since <rfc3339-or-days>d`;
@@ -78,8 +79,7 @@ Search filters narrow both human output and JSON:
 
 CLI provider filters use the kebab-case names above. JSON output and stable SQL
 views use provider IDs in ctx output; multiword provider IDs may be snake_case,
-such as `copilot_cli` or `factory_ai_droid`, while compact IDs such as
-`openclaw`, `nanoclaw`, `astrbot`, and `shelley` stay compact.
+such as `copilot_cli`, `factory_ai_droid`, `qwen_code`, `kimi_code_cli`, `kiro_cli`, `mistral_vibe`, or `roo_code`.
 
 `--since` accepts RFC 3339 timestamps such as `2026-06-01T00:00:00Z` or a day
 window such as `30d`.
@@ -118,8 +118,8 @@ sources or already-cataloged indexes, `auto` serves current results without a
 foreground catch-up scan; use `--refresh strict` or `ctx import --all` when you
 need a full catch-up before querying. `off` skips the pre-search refresh and
 never runs plugin commands. `strict` fails the search if the refresh cannot run
-or import successfully. Preview native sources such as NanoClaw and AstrBot,
-plus search-only sources without native import support, are searched from the
+or import successfully. Explicit-only native sources such as NanoClaw, plus
+search-only sources without native import support, are searched from the
 existing index until they are explicitly imported through a supported path.
 
 Use `--refresh off` for a strictly read-only search over the existing ctx index.

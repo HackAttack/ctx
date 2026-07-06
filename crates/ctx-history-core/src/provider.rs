@@ -49,6 +49,13 @@ pub enum ProviderId {
     Gemini,
     CopilotCli,
     Copilot,
+    #[serde(
+        rename = "windsurf",
+        alias = "windsurf_cascade",
+        alias = "windsurf-cascade"
+    )]
+    Windsurf,
+    Zed,
     FactoryAiDroid,
     FactoryDroid,
     DroidFactoryAi,
@@ -60,16 +67,56 @@ pub enum ProviderId {
     #[serde(rename = "astrbot", alias = "astr_bot")]
     AstrBot,
     Shelley,
+    Cline,
+    #[serde(rename = "roo_code", alias = "roo", alias = "roo-code")]
+    RooCode,
+    Continue,
+    Crush,
     Goose,
+    #[serde(rename = "lingma", alias = "qoder-cn", alias = "qoder_cn")]
+    Lingma,
+    Qoder,
+    #[serde(rename = "warp")]
+    Warp,
+    #[serde(rename = "codebuddy", alias = "code_buddy", alias = "code-buddy")]
+    CodeBuddy,
+    #[serde(rename = "trae", alias = "trae-cn", alias = "trae_cn")]
+    Trae,
     #[serde(rename = "openhands")]
     OpenHands,
     Cagent,
-    Qwen,
-    Mistral,
-    Kimi,
+    #[serde(rename = "qwen_code", alias = "qwen", alias = "qwen-code")]
+    QwenCode,
+    #[serde(rename = "kiro_cli", alias = "kiro", alias = "kiro-cli")]
+    KiroCli,
+    #[serde(
+        rename = "forgecode",
+        alias = "forge",
+        alias = "forge-code",
+        alias = "forge_code"
+    )]
+    ForgeCode,
+    #[serde(rename = "deepagents", alias = "deep-agents", alias = "dcode")]
+    DeepAgents,
+    #[serde(rename = "mistral_vibe", alias = "mistral-vibe", alias = "mistral")]
+    MistralVibe,
+    #[serde(rename = "tabnine", alias = "tabnine-cli", alias = "tabnine_cli")]
+    Tabnine,
+    Mux,
+    #[serde(
+        rename = "firebender",
+        alias = "firebender-jetbrains",
+        alias = "firebender_jetbrains"
+    )]
+    Firebender,
+    #[serde(rename = "rovodev", alias = "rovo-dev", alias = "rovo_dev")]
+    RovoDev,
+    #[serde(rename = "kimi_code_cli", alias = "kimi", alias = "kimi-code-cli")]
+    KimiCodeCli,
     Aider,
     ClineRoo,
     ContinueCody,
+    #[serde(rename = "auggie", alias = "augment", alias = "augment-code")]
     Auggie,
     Junie,
     Kilo,
@@ -77,7 +124,7 @@ pub enum ProviderId {
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 50] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::ClaudeCliCrp,
@@ -87,8 +134,11 @@ impl ProviderId {
         Self::AntigravityCli,
         Self::GeminiCli,
         Self::Gemini,
+        Self::Tabnine,
         Self::CopilotCli,
         Self::Copilot,
+        Self::Windsurf,
+        Self::Zed,
         Self::FactoryAiDroid,
         Self::FactoryDroid,
         Self::DroidFactoryAi,
@@ -97,12 +147,27 @@ impl ProviderId {
         Self::NanoClaw,
         Self::AstrBot,
         Self::Shelley,
+        Self::Cline,
+        Self::RooCode,
+        Self::Continue,
+        Self::Crush,
         Self::Goose,
+        Self::Lingma,
+        Self::Qoder,
+        Self::Warp,
+        Self::CodeBuddy,
+        Self::Trae,
         Self::OpenHands,
         Self::Cagent,
-        Self::Qwen,
-        Self::Mistral,
-        Self::Kimi,
+        Self::QwenCode,
+        Self::KiroCli,
+        Self::ForgeCode,
+        Self::DeepAgents,
+        Self::MistralVibe,
+        Self::Mux,
+        Self::Firebender,
+        Self::RovoDev,
+        Self::KimiCodeCli,
         Self::Aider,
         Self::ClineRoo,
         Self::ContinueCody,
@@ -407,18 +472,44 @@ mod tests {
         let expected = [
             ProviderId::AntigravityCli,
             ProviderId::AstrBot,
+            ProviderId::Auggie,
             ProviderId::ClaudeCode,
+            ProviderId::Cline,
             ProviderId::Codex,
+            ProviderId::CodeBuddy,
+            ProviderId::Trae,
+            ProviderId::Continue,
+            ProviderId::Crush,
             ProviderId::Cursor,
+            ProviderId::Windsurf,
             ProviderId::CopilotCli,
             ProviderId::FactoryAiDroid,
+            ProviderId::Firebender,
+            ProviderId::ForgeCode,
+            ProviderId::DeepAgents,
+            ProviderId::MistralVibe,
+            ProviderId::Mux,
             ProviderId::GeminiCli,
+            ProviderId::Tabnine,
+            ProviderId::Goose,
             ProviderId::Hermes,
+            ProviderId::Kilo,
+            ProviderId::KiroCli,
+            ProviderId::KimiCodeCli,
+            ProviderId::Lingma,
+            ProviderId::Qoder,
+            ProviderId::Warp,
+            ProviderId::Junie,
             ProviderId::NanoClaw,
+            ProviderId::RovoDev,
             ProviderId::OpenCode,
             ProviderId::OpenClaw,
+            ProviderId::OpenHands,
             ProviderId::Pi,
+            ProviderId::QwenCode,
+            ProviderId::RooCode,
             ProviderId::Shelley,
+            ProviderId::Zed,
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();

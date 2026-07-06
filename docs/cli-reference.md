@@ -88,10 +88,9 @@ machine. Current rows include:
 - Codex session trees at `~/.codex/sessions`;
 - Codex prompt history at `~/.codex/history.jsonl`;
 - Pi session JSONL files under `~/.pi/agent/sessions`;
-- native rows for supported Antigravity, Claude, OpenCode, OpenClaw, Hermes,
-  Gemini, Cursor, Copilot CLI, and Factory AI Droid local history locations;
-- preview rows for NanoClaw project roots and AstrBot SQLite history when those
-  paths are discoverable;
+- native rows for supported Claude Code, Codex, Cursor, Pi, GitHub Copilot CLI, OpenCode, Gemini CLI/Antigravity, Kilo Code, Kiro CLI, Crush, Goose, Tabnine, Windsurf, Zed, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes, NanoClaw, AstrBot, Shelley, Continue, and OpenHands local history locations;
+- AstrBot `data_v4.db` history when those files exist;
+- explicit-import rows for NanoClaw project roots when those paths are discoverable;
 - local history-source plugin manifests under `$CTX_DATA_ROOT/plugins` or
   `CTX_HISTORY_PLUGIN_PATH`.
 
@@ -115,15 +114,31 @@ ctx import --provider pi
 ctx import --provider antigravity
 ctx import --provider claude
 ctx import --provider opencode
+ctx import --provider forgecode
+ctx import --provider deepagents
+ctx import --provider mistral-vibe
+ctx import --provider mux
+ctx import --provider rovodev
+ctx import --provider junie
 ctx import --provider openclaw
 ctx import --provider hermes
 ctx import --provider nanoclaw --path /path/to/nanoclaw-project
 ctx import --provider astrbot --path /path/to/data/data_v4.db
 ctx import --provider shelley --path ~/.config/shelley/shelley.db
+ctx import --provider continue --path ~/.continue/sessions
+ctx import --provider openhands --path ~/.openhands
 ctx import --provider gemini
 ctx import --provider cursor
+ctx import --provider zed
+ctx import --provider kiro-cli
 ctx import --provider copilot-cli
 ctx import --provider factory-ai-droid
+ctx import --provider qwen-code
+ctx import --provider kimi-code-cli
+ctx import --provider windsurf
+ctx import --provider lingma
+ctx import --provider codebuddy
+ctx import --provider trae
 ctx import --provider codex --path ~/.codex/sessions
 ctx import --provider pi --path ~/.pi/agent/sessions
 ctx import --format ctx-history-jsonl-v1 --path ./history.jsonl
@@ -169,10 +184,11 @@ Import selection rules:
 - with `--provider <provider> --path <path>`, import exactly that native
   provider path.
 
-Preview providers such as NanoClaw and AstrBot are not included in `--all` or
-pre-search refresh. Import them explicitly with `--provider` when discovery
-finds the desired source, or add `--path` to target a specific source, then
-search the existing index.
+NanoClaw is explicit-import only and is not included in `--all` or pre-search
+refresh. Import it with `--provider` when discovery finds the desired source, or
+add `--path` to target a specific source, then search the existing index. AstrBot
+`data_v4.db` sources are supported for bounded default locations and remain
+available for explicit `--path` imports.
 
 The current `--resume` flag is an idempotent-rescan mode marker. JSON reports
 `resume: true` and `resume_mode: "idempotent_rescan"`, but provider-native
@@ -242,9 +258,10 @@ indexes, `auto` serves current results without a foreground catch-up scan; use
 `--refresh strict` or `ctx import --all` when you need a full catch-up before
 querying. Use `--refresh off` to search the existing index without refreshing, or
 `--refresh strict` to fail when the pre-search refresh cannot run or import
-successfully. Preview native sources such as NanoClaw and AstrBot are searched
-from the existing index until they are explicitly imported through a supported
-path. Search requires a non-empty query, at least one non-empty `--term`, or
+successfully. Explicit-only native sources such as NanoClaw are searched from the
+existing index until they are explicitly imported through a supported path.
+Search requires a
+non-empty query, at least one non-empty `--term`, or
 `--file <path>`; provider, workspace, time, session, event, source, and result
 flags only narrow an actual search. Default results are session-diverse: ctx
 returns the strongest matching span from each session, plus
@@ -282,7 +299,7 @@ optimized for agent reading; use `--verbose` for expanded text diagnostics.
 
 Filters:
 
-- `--provider codex|pi|claude|opencode|openclaw|hermes|nanoclaw|astrbot|shelley|antigravity|gemini|cursor|copilot-cli|factory-ai-droid|custom`;
+- `--provider codex|pi|claude|opencode|kilo|kiro-cli|crush|goose|antigravity|gemini|tabnine|cursor|windsurf|zed|copilot-cli|factory-ai-droid|qwen-code|kimi-code-cli|auggie|junie|firebender|forgecode|deepagents|mistral-vibe|mux|rovodev|openclaw|hermes|nanoclaw|astrbot|shelley|continue|openhands|cline|roo|lingma|qoder|warp|codebuddy|trae|custom`;
 - `--workspace <name-or-path>`, substring match over stored workspace, cwd,
   source path, or repository-name text;
 - `--since <rfc3339-or-days>d`, for example `2026-06-01T00:00:00Z` or `30d`;
@@ -301,8 +318,7 @@ Filters:
 
 CLI provider filters use kebab-case names. JSON output and stable SQL views use
 provider IDs in ctx output; multiword IDs may be snake_case, such as
-`copilot_cli` or `factory_ai_droid`, while compact IDs such as `openclaw`,
-`nanoclaw`, `astrbot`, and `shelley` stay compact.
+`copilot_cli`, `factory_ai_droid`, `qwen_code`, `kimi_code_cli`, `kiro_cli`, `mistral_vibe`, and `roo_code`; compact IDs such as `forgecode`, `deepagents`, `mux`, `rovodev`, `openclaw`, `nanoclaw`, `astrbot`, `shelley`, `continue`, and `openhands` stay compact.
 
 `search` reads discovered native provider files and runs enabled auto
 history-source plugin commands for pre-search refresh, then queries SQLite. It

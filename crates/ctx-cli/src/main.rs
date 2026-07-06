@@ -33,24 +33,38 @@ use analytics::{AnalyticsEvent, AnalyticsProperties};
 use config::{AppConfig, CONFIG_FILE};
 use ctx_history_capture::{
     catalog_codex_session_tree, discover_provider_sources, discover_provider_sources_for_provider,
-    import_antigravity_cli_history, import_astrbot_sqlite, import_claude_projects_jsonl_tree,
+    import_antigravity_cli_history, import_astrbot_sqlite, import_auggie_history,
+    import_claude_projects_jsonl_tree, import_cline_task_json_history, import_codebuddy_history,
     import_codex_history_jsonl, import_codex_session_jsonl, import_codex_session_jsonl_tail,
-    import_codex_session_paths, import_codex_session_tree, import_copilot_cli_session_events,
-    import_cursor_native_history, import_custom_history_jsonl_v1,
-    import_custom_history_jsonl_v1_reader, import_factory_ai_droid_sessions,
-    import_gemini_cli_history, import_hermes_sqlite, import_nanoclaw_project,
-    import_openclaw_history, import_opencode_sqlite, import_pi_session_jsonl,
-    import_shelley_sqlite, provider_source_for_path, provider_source_spec, stable_capture_uuid,
-    validate_custom_history_jsonl_v1, validate_custom_history_jsonl_v1_reader,
-    AntigravityCliImportOptions, AstrBotSqliteImportOptions, CatalogSummary,
-    ClaudeProjectsImportOptions, CodexEventImportMode, CodexHistoryImportOptions,
-    CodexSessionCatalogOptions, CodexSessionImportOptions, CodexSessionImportProgress,
-    CodexSessionImportProgressCallback, CodexToolOutputMode, CopilotCliImportOptions,
-    CursorNativeImportOptions, CustomHistoryJsonlV1ImportOptions, FactoryAiDroidImportOptions,
-    GeminiCliImportOptions, HermesSqliteImportOptions, NanoClawImportOptions,
-    OpenClawImportOptions, OpenCodeSqliteImportOptions, PiSessionImportOptions,
-    ProviderImportSummary, ProviderImportSupport, ProviderSource, ProviderSourceStatus,
-    ShelleySqliteImportOptions,
+    import_codex_session_paths, import_codex_session_tree, import_continue_cli_sessions,
+    import_copilot_cli_session_events, import_crush_sqlite, import_cursor_native_history,
+    import_custom_history_jsonl_v1, import_custom_history_jsonl_v1_reader,
+    import_deepagents_sqlite, import_factory_ai_droid_sessions, import_firebender_sqlite,
+    import_forgecode_sqlite, import_gemini_cli_history, import_goose_sessions_sqlite,
+    import_hermes_sqlite, import_junie_history, import_kilo_sqlite, import_kimi_code_cli_history,
+    import_kiro_sqlite, import_lingma_sqlite, import_mistral_vibe_history, import_mux_history,
+    import_nanoclaw_project, import_openclaw_history, import_opencode_sqlite,
+    import_openhands_file_events, import_pi_session_jsonl, import_qoder_history,
+    import_qwen_code_history, import_roo_task_json_history, import_rovodev_history,
+    import_shelley_sqlite, import_tabnine_cli_history, import_trae_history, import_warp_sqlite,
+    import_windsurf_cascade_hook_transcripts, import_zed_threads_sqlite, provider_source_for_path,
+    provider_source_spec, stable_capture_uuid, validate_custom_history_jsonl_v1,
+    validate_custom_history_jsonl_v1_reader, AntigravityCliImportOptions,
+    AstrBotSqliteImportOptions, AuggieImportOptions, CatalogSummary, ClaudeProjectsImportOptions,
+    ClineTaskJsonImportOptions, CodeBuddyImportOptions, CodexEventImportMode,
+    CodexHistoryImportOptions, CodexSessionCatalogOptions, CodexSessionImportOptions,
+    CodexSessionImportProgress, CodexSessionImportProgressCallback, CodexToolOutputMode,
+    ContinueCliImportOptions, CopilotCliImportOptions, CrushSqliteImportOptions,
+    CursorNativeImportOptions, CustomHistoryJsonlV1ImportOptions, DeepAgentsSqliteImportOptions,
+    FactoryAiDroidImportOptions, FirebenderSqliteImportOptions, ForgeCodeSqliteImportOptions,
+    GeminiCliImportOptions, GooseSessionsSqliteImportOptions, HermesSqliteImportOptions,
+    JunieImportOptions, KiloSqliteImportOptions, KimiCodeCliImportOptions, KiroSqliteImportOptions,
+    LingmaSqliteImportOptions, MistralVibeImportOptions, MuxImportOptions, NanoClawImportOptions,
+    OpenClawImportOptions, OpenCodeSqliteImportOptions, OpenHandsImportOptions,
+    PiSessionImportOptions, ProviderImportSummary, ProviderImportSupport, ProviderSource,
+    ProviderSourceStatus, QoderImportOptions, QwenCodeImportOptions, RooTaskJsonImportOptions,
+    RovoDevImportOptions, ShelleySqliteImportOptions, TabnineCliImportOptions, TraeImportOptions,
+    WarpSqliteImportOptions, WindsurfCascadeHookImportOptions, ZedThreadsSqliteImportOptions,
 };
 use ctx_history_core::{
     database_path, default_data_root, utc_now, CaptureProvider, ContextCitation,
@@ -75,6 +89,14 @@ const LARGE_IMPORT_SOURCE_BYTES_WARNING: u64 = 1024 * 1024 * 1024;
 const MAX_SEARCH_LIMIT: usize = 200;
 pub(crate) const MAX_EVENT_WINDOW: usize = 50;
 const MAX_HISTORY_SOURCE_PLUGIN_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_VISIBLE_SOURCE_PROVIDERS: &[CaptureProvider] = &[
+    CaptureProvider::Claude,
+    CaptureProvider::Codex,
+    CaptureProvider::Cursor,
+    CaptureProvider::Pi,
+    CaptureProvider::CopilotCli,
+    CaptureProvider::OpenCode,
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "ctx", version, about = "Search local agent history")]
@@ -92,7 +114,7 @@ enum CommandRoot {
     #[command(about = "Show local ctx index status")]
     Status(JsonArgs),
     #[command(about = "List configured and discovered agent history sources")]
-    Sources(JsonArgs),
+    Sources(SourcesArgs),
     #[command(about = "Index provider history into local search")]
     Import(ImportArgs),
     #[command(about = "Show an indexed session transcript or event")]
@@ -132,6 +154,23 @@ struct JsonArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+struct SourcesArgs {
+    #[arg(long)]
+    json: bool,
+    #[arg(
+        long,
+        value_parser = parse_provider_arg,
+        hide_possible_values = true,
+        help = "Show sources for one provider, for example codex, claude, cursor, pi, copilot-cli, or opencode"
+    )]
+    provider: Option<ProviderArg>,
+    #[arg(long, help = "Show every supported provider location")]
+    all: bool,
+    #[arg(long, help = "Show missing locations for every known provider")]
+    show_missing: bool,
+}
+
+#[derive(Debug, Args, Clone)]
 struct DoctorArgs {
     #[arg(long)]
     json: bool,
@@ -141,7 +180,12 @@ struct DoctorArgs {
 
 #[derive(Debug, Args)]
 struct ImportArgs {
-    #[arg(long, value_enum)]
+    #[arg(
+        long,
+        value_parser = parse_native_provider_arg,
+        hide_possible_values = true,
+        help = "Import one provider, for example codex, claude, cursor, pi, copilot-cli, or opencode"
+    )]
     provider: Option<NativeProviderArg>,
     #[arg(
         long,
@@ -192,7 +236,8 @@ enum ShowTarget {
 struct ShowSessionArgs {
     #[arg(help = "ctx session id or unambiguous id prefix")]
     id: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = parse_provider_arg)]
+    #[arg(hide_possible_values = true)]
     provider: Option<ProviderArg>,
     #[arg(long = "provider-session")]
     provider_session: Option<String>,
@@ -240,7 +285,8 @@ enum LocateTarget {
 struct LocateSessionArgs {
     #[arg(help = "ctx session id or unambiguous id prefix")]
     id: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = parse_provider_arg)]
+    #[arg(hide_possible_values = true)]
     provider: Option<ProviderArg>,
     #[arg(long = "provider-session")]
     provider_session: Option<String>,
@@ -276,7 +322,12 @@ struct SearchArgs {
         help = "Maximum results to return, from 1 to 200"
     )]
     limit: usize,
-    #[arg(long, help = "Search only one provider")]
+    #[arg(
+        long,
+        value_parser = parse_provider_arg,
+        hide_possible_values = true,
+        help = "Search only one provider, for example codex, claude, cursor, pi, copilot-cli, or opencode"
+    )]
     provider: Option<ProviderArg>,
     #[arg(
         long = "history-source",
@@ -672,19 +723,67 @@ enum NativeProviderArg {
     Claude,
     #[value(name = "opencode", alias = "open-code")]
     OpenCode,
+    #[value(
+        name = "kilo",
+        alias = "kilo-code",
+        alias = "kilo_code",
+        alias = "kilocode"
+    )]
+    Kilo,
+    #[value(name = "kiro-cli", alias = "kiro", alias = "kiro_cli")]
+    KiroCli,
+    Crush,
+    Goose,
     #[value(alias = "antigravity-cli")]
     Antigravity,
     #[value(alias = "gemini-cli")]
     Gemini,
+    #[value(alias = "tabnine-cli")]
+    Tabnine,
     Cursor,
-    #[value(alias = "copilot", alias = "copilot_cli")]
+    #[value(
+        name = "windsurf",
+        alias = "windsurf-cascade",
+        alias = "windsurf_cascade"
+    )]
+    Windsurf,
+    Zed,
+    #[value(alias = "copilot", alias = "copilot_cli", alias = "github-copilot")]
     CopilotCli,
     #[value(
         alias = "factoryai-droid",
         alias = "factory-droid",
-        alias = "factory_ai_droid"
+        alias = "factory_ai_droid",
+        alias = "droid"
     )]
     FactoryAiDroid,
+    #[value(name = "qwen-code", alias = "qwen", alias = "qwen_code")]
+    QwenCode,
+    #[value(name = "kimi-code-cli", alias = "kimi", alias = "kimi_code_cli")]
+    KimiCodeCli,
+    #[value(name = "auggie", alias = "augment", alias = "augment-code")]
+    Auggie,
+    Junie,
+    #[value(
+        name = "firebender",
+        alias = "firebender-jetbrains",
+        alias = "firebender_jetbrains"
+    )]
+    Firebender,
+    #[value(
+        name = "forgecode",
+        alias = "forge",
+        alias = "forge-code",
+        alias = "forge_code"
+    )]
+    ForgeCode,
+    #[value(name = "deepagents", alias = "deep-agents", alias = "dcode")]
+    DeepAgents,
+    #[value(name = "mistral-vibe", alias = "mistral", alias = "mistral_vibe")]
+    MistralVibe,
+    Mux,
+    #[value(name = "rovodev", alias = "rovo-dev", alias = "rovo_dev")]
+    RovoDev,
     #[value(name = "openclaw", alias = "open-claw", alias = "open_claw")]
     OpenClaw,
     Hermes,
@@ -693,6 +792,21 @@ enum NativeProviderArg {
     #[value(name = "astrbot", alias = "astr-bot", alias = "astr_bot")]
     AstrBot,
     Shelley,
+    #[value(alias = "continue-cli")]
+    Continue,
+    #[value(name = "openhands", alias = "open-hands", alias = "open_hands")]
+    OpenHands,
+    Cline,
+    #[value(name = "roo", alias = "roo-code", alias = "roo_code")]
+    RooCode,
+    #[value(alias = "qoder-cn", alias = "qoder_cn")]
+    Lingma,
+    Qoder,
+    Warp,
+    #[value(name = "codebuddy", alias = "code-buddy", alias = "code_buddy")]
+    CodeBuddy,
+    #[value(alias = "trae-cn", alias = "trae_cn")]
+    Trae,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -703,19 +817,67 @@ enum ProviderArg {
     Claude,
     #[value(name = "opencode", alias = "open-code")]
     OpenCode,
+    #[value(
+        name = "kilo",
+        alias = "kilo-code",
+        alias = "kilo_code",
+        alias = "kilocode"
+    )]
+    Kilo,
+    #[value(name = "kiro-cli", alias = "kiro", alias = "kiro_cli")]
+    KiroCli,
+    Crush,
+    Goose,
     #[value(alias = "antigravity-cli")]
     Antigravity,
     #[value(alias = "gemini-cli")]
     Gemini,
+    #[value(alias = "tabnine-cli")]
+    Tabnine,
     Cursor,
-    #[value(alias = "copilot", alias = "copilot_cli")]
+    #[value(
+        name = "windsurf",
+        alias = "windsurf-cascade",
+        alias = "windsurf_cascade"
+    )]
+    Windsurf,
+    Zed,
+    #[value(alias = "copilot", alias = "copilot_cli", alias = "github-copilot")]
     CopilotCli,
     #[value(
         alias = "factoryai-droid",
         alias = "factory-droid",
-        alias = "factory_ai_droid"
+        alias = "factory_ai_droid",
+        alias = "droid"
     )]
     FactoryAiDroid,
+    #[value(name = "qwen-code", alias = "qwen", alias = "qwen_code")]
+    QwenCode,
+    #[value(name = "kimi-code-cli", alias = "kimi", alias = "kimi_code_cli")]
+    KimiCodeCli,
+    #[value(name = "auggie", alias = "augment", alias = "augment-code")]
+    Auggie,
+    Junie,
+    #[value(
+        name = "firebender",
+        alias = "firebender-jetbrains",
+        alias = "firebender_jetbrains"
+    )]
+    Firebender,
+    #[value(
+        name = "forgecode",
+        alias = "forge",
+        alias = "forge-code",
+        alias = "forge_code"
+    )]
+    ForgeCode,
+    #[value(name = "deepagents", alias = "deep-agents", alias = "dcode")]
+    DeepAgents,
+    #[value(name = "mistral-vibe", alias = "mistral", alias = "mistral_vibe")]
+    MistralVibe,
+    Mux,
+    #[value(name = "rovodev", alias = "rovo-dev", alias = "rovo_dev")]
+    RovoDev,
     #[value(name = "openclaw", alias = "open-claw", alias = "open_claw")]
     OpenClaw,
     Hermes,
@@ -724,6 +886,21 @@ enum ProviderArg {
     #[value(name = "astrbot", alias = "astr-bot", alias = "astr_bot")]
     AstrBot,
     Shelley,
+    #[value(alias = "continue-cli")]
+    Continue,
+    #[value(name = "openhands", alias = "open-hands", alias = "open_hands")]
+    OpenHands,
+    Cline,
+    #[value(name = "roo", alias = "roo-code", alias = "roo_code")]
+    RooCode,
+    #[value(alias = "qoder-cn", alias = "qoder_cn")]
+    Lingma,
+    Qoder,
+    Warp,
+    #[value(name = "codebuddy", alias = "code-buddy", alias = "code_buddy")]
+    CodeBuddy,
+    #[value(alias = "trae-cn", alias = "trae_cn")]
+    Trae,
     Custom,
 }
 
@@ -756,37 +933,112 @@ impl NativeProviderArg {
             Self::Pi => CaptureProvider::Pi,
             Self::Claude => CaptureProvider::Claude,
             Self::OpenCode => CaptureProvider::OpenCode,
+            Self::Kilo => CaptureProvider::Kilo,
+            Self::KiroCli => CaptureProvider::KiroCli,
+            Self::Crush => CaptureProvider::Crush,
+            Self::Goose => CaptureProvider::Goose,
             Self::Antigravity => CaptureProvider::Antigravity,
             Self::Gemini => CaptureProvider::Gemini,
+            Self::Tabnine => CaptureProvider::Tabnine,
             Self::Cursor => CaptureProvider::Cursor,
+            Self::Windsurf => CaptureProvider::Windsurf,
+            Self::Zed => CaptureProvider::Zed,
             Self::CopilotCli => CaptureProvider::CopilotCli,
             Self::FactoryAiDroid => CaptureProvider::FactoryAiDroid,
+            Self::QwenCode => CaptureProvider::QwenCode,
+            Self::KimiCodeCli => CaptureProvider::KimiCodeCli,
+            Self::Auggie => CaptureProvider::Auggie,
+            Self::Junie => CaptureProvider::Junie,
+            Self::Firebender => CaptureProvider::Firebender,
+            Self::ForgeCode => CaptureProvider::ForgeCode,
+            Self::DeepAgents => CaptureProvider::DeepAgents,
+            Self::MistralVibe => CaptureProvider::MistralVibe,
+            Self::Mux => CaptureProvider::Mux,
+            Self::RovoDev => CaptureProvider::RovoDev,
             Self::OpenClaw => CaptureProvider::OpenClaw,
             Self::Hermes => CaptureProvider::Hermes,
             Self::NanoClaw => CaptureProvider::NanoClaw,
             Self::AstrBot => CaptureProvider::AstrBot,
             Self::Shelley => CaptureProvider::Shelley,
+            Self::Continue => CaptureProvider::Continue,
+            Self::OpenHands => CaptureProvider::OpenHands,
+            Self::Cline => CaptureProvider::Cline,
+            Self::RooCode => CaptureProvider::RooCode,
+            Self::Lingma => CaptureProvider::Lingma,
+            Self::Qoder => CaptureProvider::Qoder,
+            Self::Warp => CaptureProvider::Warp,
+            Self::CodeBuddy => CaptureProvider::CodeBuddy,
+            Self::Trae => CaptureProvider::Trae,
         }
     }
 }
 
 impl ProviderArg {
+    pub(crate) fn parse_name(value: &str) -> Option<Self> {
+        Self::from_str(value, false).ok()
+    }
+
+    pub(crate) fn mcp_names() -> Vec<&'static str> {
+        let mut names = Vec::new();
+        for provider in Self::value_variants() {
+            if !cli_supported_provider(provider.capture_provider()) {
+                continue;
+            }
+            let cli_name = provider.cli_name();
+            if !names.contains(&cli_name) {
+                names.push(cli_name);
+            }
+            let storage_name = provider.capture_provider().as_str();
+            if !names.contains(&storage_name) {
+                names.push(storage_name);
+            }
+        }
+        names.sort_unstable();
+        names
+    }
+
     fn capture_provider(self) -> CaptureProvider {
         match self {
             Self::Codex => CaptureProvider::Codex,
             Self::Pi => CaptureProvider::Pi,
             Self::Claude => CaptureProvider::Claude,
             Self::OpenCode => CaptureProvider::OpenCode,
+            Self::Kilo => CaptureProvider::Kilo,
+            Self::KiroCli => CaptureProvider::KiroCli,
+            Self::Crush => CaptureProvider::Crush,
+            Self::Goose => CaptureProvider::Goose,
             Self::Antigravity => CaptureProvider::Antigravity,
             Self::Gemini => CaptureProvider::Gemini,
+            Self::Tabnine => CaptureProvider::Tabnine,
             Self::Cursor => CaptureProvider::Cursor,
+            Self::Windsurf => CaptureProvider::Windsurf,
+            Self::Zed => CaptureProvider::Zed,
             Self::CopilotCli => CaptureProvider::CopilotCli,
             Self::FactoryAiDroid => CaptureProvider::FactoryAiDroid,
+            Self::QwenCode => CaptureProvider::QwenCode,
+            Self::KimiCodeCli => CaptureProvider::KimiCodeCli,
+            Self::Auggie => CaptureProvider::Auggie,
+            Self::Junie => CaptureProvider::Junie,
+            Self::Firebender => CaptureProvider::Firebender,
+            Self::ForgeCode => CaptureProvider::ForgeCode,
+            Self::DeepAgents => CaptureProvider::DeepAgents,
+            Self::MistralVibe => CaptureProvider::MistralVibe,
+            Self::Mux => CaptureProvider::Mux,
+            Self::RovoDev => CaptureProvider::RovoDev,
             Self::OpenClaw => CaptureProvider::OpenClaw,
             Self::Hermes => CaptureProvider::Hermes,
             Self::NanoClaw => CaptureProvider::NanoClaw,
             Self::AstrBot => CaptureProvider::AstrBot,
             Self::Shelley => CaptureProvider::Shelley,
+            Self::Continue => CaptureProvider::Continue,
+            Self::OpenHands => CaptureProvider::OpenHands,
+            Self::Cline => CaptureProvider::Cline,
+            Self::RooCode => CaptureProvider::RooCode,
+            Self::Lingma => CaptureProvider::Lingma,
+            Self::Qoder => CaptureProvider::Qoder,
+            Self::Warp => CaptureProvider::Warp,
+            Self::CodeBuddy => CaptureProvider::CodeBuddy,
+            Self::Trae => CaptureProvider::Trae,
             Self::Custom => CaptureProvider::Custom,
         }
     }
@@ -797,22 +1049,95 @@ impl ProviderArg {
             Self::Pi => "pi",
             Self::Claude => "claude",
             Self::OpenCode => "opencode",
+            Self::Kilo => "kilo",
+            Self::KiroCli => "kiro-cli",
+            Self::Crush => "crush",
+            Self::Goose => "goose",
             Self::Antigravity => "antigravity",
             Self::Gemini => "gemini",
+            Self::Tabnine => "tabnine",
             Self::Cursor => "cursor",
+            Self::Windsurf => "windsurf",
+            Self::Zed => "zed",
             Self::CopilotCli => "copilot-cli",
             Self::FactoryAiDroid => "factory-ai-droid",
+            Self::QwenCode => "qwen-code",
+            Self::KimiCodeCli => "kimi-code-cli",
+            Self::Auggie => "auggie",
+            Self::Junie => "junie",
+            Self::Firebender => "firebender",
+            Self::ForgeCode => "forgecode",
+            Self::DeepAgents => "deepagents",
+            Self::MistralVibe => "mistral-vibe",
+            Self::Mux => "mux",
+            Self::RovoDev => "rovodev",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
             Self::NanoClaw => "nanoclaw",
             Self::AstrBot => "astrbot",
             Self::Shelley => "shelley",
+            Self::Continue => "continue",
+            Self::OpenHands => "openhands",
+            Self::Cline => "cline",
+            Self::RooCode => "roo",
+            Self::Lingma => "lingma",
+            Self::Qoder => "qoder",
+            Self::Warp => "warp",
+            Self::CodeBuddy => "codebuddy",
+            Self::Trae => "trae",
             Self::Custom => "custom",
         }
     }
 }
 
 type SourceInfo = ProviderSource;
+
+fn cli_supported_provider(provider: CaptureProvider) -> bool {
+    matches!(
+        provider,
+        CaptureProvider::Codex
+            | CaptureProvider::Claude
+            | CaptureProvider::Pi
+            | CaptureProvider::OpenCode
+            | CaptureProvider::Kilo
+            | CaptureProvider::KiroCli
+            | CaptureProvider::Crush
+            | CaptureProvider::Goose
+            | CaptureProvider::Antigravity
+            | CaptureProvider::Gemini
+            | CaptureProvider::Tabnine
+            | CaptureProvider::Cursor
+            | CaptureProvider::Windsurf
+            | CaptureProvider::Zed
+            | CaptureProvider::CopilotCli
+            | CaptureProvider::FactoryAiDroid
+            | CaptureProvider::QwenCode
+            | CaptureProvider::KimiCodeCli
+            | CaptureProvider::Auggie
+            | CaptureProvider::Junie
+            | CaptureProvider::Firebender
+            | CaptureProvider::ForgeCode
+            | CaptureProvider::DeepAgents
+            | CaptureProvider::MistralVibe
+            | CaptureProvider::Mux
+            | CaptureProvider::RovoDev
+            | CaptureProvider::OpenClaw
+            | CaptureProvider::Hermes
+            | CaptureProvider::NanoClaw
+            | CaptureProvider::AstrBot
+            | CaptureProvider::Shelley
+            | CaptureProvider::Continue
+            | CaptureProvider::OpenHands
+            | CaptureProvider::Cline
+            | CaptureProvider::RooCode
+            | CaptureProvider::Lingma
+            | CaptureProvider::Qoder
+            | CaptureProvider::Warp
+            | CaptureProvider::CodeBuddy
+            | CaptureProvider::Trae
+            | CaptureProvider::Custom
+    )
+}
 
 #[derive(Debug, Clone, Default)]
 struct ImportTotals {
@@ -823,6 +1148,9 @@ struct ImportTotals {
     imported_sessions: usize,
     imported_events: usize,
     imported_edges: usize,
+    skipped_sessions: usize,
+    skipped_events: usize,
+    skipped_edges: usize,
     skipped: usize,
     failed: usize,
 }
@@ -874,6 +1202,9 @@ impl ImportTotals {
         self.imported_sessions += summary.imported_sessions;
         self.imported_events += summary.imported_events;
         self.imported_edges += summary.imported_edges;
+        self.skipped_sessions += summary.skipped_sessions;
+        self.skipped_events += summary.skipped_events;
+        self.skipped_edges += summary.skipped_edges;
         self.skipped += summary.skipped;
         self.failed += summary.failed;
     }
@@ -1919,14 +2250,23 @@ fn run_status(
 }
 
 fn run_sources(
-    args: JsonArgs,
+    args: SourcesArgs,
     data_root: PathBuf,
     analytics_properties: &mut AnalyticsProperties,
 ) -> Result<()> {
-    let sources = discovered_sources();
+    let provider_filter = args.provider.map(ProviderArg::capture_provider);
+    let sources = match provider_filter {
+        Some(CaptureProvider::Custom) => Vec::new(),
+        Some(provider) => discovered_sources_for_provider(provider),
+        None => discovered_sources(),
+    };
     let plugin_discovery = discover_history_source_plugins_with_diagnostics(&data_root, &[])?;
-    let plugin_sources = plugin_discovery.sources;
-    let plugin_failures = plugin_discovery.failures;
+    let (plugin_sources, plugin_failures) = if matches!(provider_filter, Some(provider) if provider != CaptureProvider::Custom)
+    {
+        (Vec::new(), Vec::new())
+    } else {
+        (plugin_discovery.sources, plugin_discovery.failures)
+    };
     let existing = sources.iter().filter(|source| source.exists).count();
     let importable = sources
         .iter()
@@ -1954,19 +2294,28 @@ fn run_sources(
         "providers_importable_bucket",
         importable as u64,
     );
+    let show_all_sources = args.all || args.show_missing || provider_filter.is_some();
+    let visible_sources = sources
+        .iter()
+        .filter(|source| show_all_sources || source_visible_by_default(source))
+        .cloned()
+        .collect::<Vec<_>>();
+    let hidden_missing_sources = sources.len().saturating_sub(visible_sources.len());
     if args.json {
-        let mut source_values = sources_json(&sources);
+        let mut source_values = sources_json(&visible_sources);
         source_values.extend(plugin_sources_json(&plugin_sources));
         source_values.extend(plugin_manifest_failures_json(&plugin_failures));
         print_json(json!({
             "schema_version": 1,
+            "scope": if show_all_sources { "all" } else { "default" },
+            "hidden_missing_sources": hidden_missing_sources,
             "sources": source_values,
         }))?;
     } else {
-        for source in sources {
+        for source in visible_sources {
             println!(
                 "{} {} {} ({})",
-                source.provider.as_str(),
+                source_provider_cli_name(source.provider),
                 source.path.display(),
                 source.status.as_str(),
                 source.source_format
@@ -1986,8 +2335,26 @@ fn run_sources(
                 source.source_format
             );
         }
+        if hidden_missing_sources > 0 {
+            println!(
+                "{} missing provider locations hidden. Run `ctx sources --all` to show every known provider location.",
+                hidden_missing_sources
+            );
+        }
     }
     Ok(())
+}
+
+fn source_visible_by_default(source: &SourceInfo) -> bool {
+    source.exists
+        || source.status != ProviderSourceStatus::Missing
+        || DEFAULT_VISIBLE_SOURCE_PROVIDERS.contains(&source.provider)
+}
+
+fn source_provider_cli_name(provider: CaptureProvider) -> &'static str {
+    ProviderArg::parse_name(provider.as_str())
+        .map(ProviderArg::cli_name)
+        .unwrap_or_else(|| provider.as_str())
 }
 
 pub(crate) fn discovered_plugin_sources_json(data_root: &Path) -> Result<Vec<Value>> {
@@ -2104,7 +2471,7 @@ fn run_import_internal(
     let mut planned_sources = Vec::new();
     let mut planned_total_bytes = 0u64;
     for source in requests {
-        let stats = source_stats(&source.path)
+        let stats = source_import_stats(&source)
             .with_context(|| format!("scan import source {}", source.path.display()))?;
         planned_total_bytes = planned_total_bytes.saturating_add(stats.bytes);
         planned_sources.push((source, stats));
@@ -2665,6 +3032,9 @@ fn import_totals_json(totals: &ImportTotals) -> Value {
         "imported_sessions": totals.imported_sessions,
         "imported_events": totals.imported_events,
         "imported_edges": totals.imported_edges,
+        "skipped_sessions": totals.skipped_sessions,
+        "skipped_events": totals.skipped_events,
+        "skipped_edges": totals.skipped_edges,
         "skipped": totals.skipped,
         "failed": totals.failed,
     })
@@ -2678,6 +3048,9 @@ fn print_import_report_human(report: &ImportReport) {
     println!("imported_sessions: {}", report.totals.imported_sessions);
     println!("imported_events: {}", report.totals.imported_events);
     println!("imported_edges: {}", report.totals.imported_edges);
+    println!("skipped_sessions: {}", report.totals.skipped_sessions);
+    println!("skipped_events: {}", report.totals.skipped_events);
+    println!("skipped_edges: {}", report.totals.skipped_edges);
     println!("skipped: {}", report.totals.skipped);
     println!("failed: {}", report.totals.failed);
     println!("resume: {}", report.resume);
@@ -2750,11 +3123,18 @@ fn source_import_json(
         "provider": source.provider.as_str(),
         "path": source.path,
         "source_format": source.source_format,
+        "import_support": import_support_json(source.import_support),
+        "native_import": source.import_support.is_auto_importable(),
+        "importable": source.import_support.is_importable()
+            && source.status == ProviderSourceStatus::Available,
         "source_files": stats.files,
         "source_bytes": stats.bytes,
         "imported_sessions": summary.imported_sessions,
         "imported_events": summary.imported_events,
         "imported_edges": summary.imported_edges,
+        "skipped_sessions": summary.skipped_sessions,
+        "skipped_events": summary.skipped_events,
+        "skipped_edges": summary.skipped_edges,
         "skipped": summary.skipped,
         "failed": summary.failed,
         "failures": provider_failures_json(summary),
@@ -2778,6 +3158,9 @@ fn custom_format_import_json(
         "imported_sessions": summary.imported_sessions,
         "imported_events": summary.imported_events,
         "imported_edges": summary.imported_edges,
+        "skipped_sessions": summary.skipped_sessions,
+        "skipped_events": summary.skipped_events,
+        "skipped_edges": summary.skipped_edges,
         "skipped": summary.skipped,
         "failed": summary.failed,
         "failures": provider_failures_json(summary),
@@ -2804,6 +3187,9 @@ fn history_source_plugin_import_json(
         "imported_sessions": summary.imported_sessions,
         "imported_events": summary.imported_events,
         "imported_edges": summary.imported_edges,
+        "skipped_sessions": summary.skipped_sessions,
+        "skipped_events": summary.skipped_events,
+        "skipped_edges": summary.skipped_edges,
         "skipped": summary.skipped,
         "failed": summary.failed,
         "failures": provider_failures_json(summary),
@@ -2830,6 +3216,10 @@ fn source_failure_json(failure: &ImportSourceFailure) -> Value {
         "provider": failure.source.provider.as_str(),
         "path": failure.source.path,
         "source_format": failure.source.source_format,
+        "import_support": import_support_json(failure.source.import_support),
+        "native_import": failure.source.import_support.is_auto_importable(),
+        "importable": failure.source.import_support.is_importable()
+            && failure.source.status == ProviderSourceStatus::Available,
         "source_files": failure.stats.files,
         "source_bytes": failure.stats.bytes,
         "error": source_error_reason(&failure.source, &failure.error),
@@ -4005,6 +4395,32 @@ fn parse_search_limit(value: &str) -> std::result::Result<usize, String> {
         ));
     }
     Ok(limit)
+}
+
+fn parse_native_provider_arg(value: &str) -> std::result::Result<NativeProviderArg, String> {
+    let provider =
+        NativeProviderArg::from_str(value, false).map_err(|_| compact_provider_error(value))?;
+    if cli_supported_provider(provider.capture_provider()) {
+        Ok(provider)
+    } else {
+        Err(compact_provider_error(value))
+    }
+}
+
+fn parse_provider_arg(value: &str) -> std::result::Result<ProviderArg, String> {
+    let provider =
+        ProviderArg::from_str(value, false).map_err(|_| compact_provider_error(value))?;
+    if cli_supported_provider(provider.capture_provider()) {
+        Ok(provider)
+    } else {
+        Err(compact_provider_error(value))
+    }
+}
+
+fn compact_provider_error(value: &str) -> String {
+    format!(
+        "unknown provider {value:?}; examples: codex, claude, cursor, pi, copilot-cli, opencode; run `ctx sources --all` to inspect every supported provider location"
+    )
 }
 
 fn parse_event_window_limit(value: &str) -> std::result::Result<usize, String> {
@@ -5369,7 +5785,7 @@ fn history_source_plugin_import_failure(
 fn validate_source_import_supported(source: &SourceInfo) -> Result<()> {
     match source.import_support {
         ProviderImportSupport::Native => Ok(()),
-        ProviderImportSupport::Preview => Ok(()),
+        ProviderImportSupport::Explicit => Ok(()),
         ProviderImportSupport::Unsupported => {
             let reason = source
                 .unsupported_reason
@@ -5520,6 +5936,50 @@ fn import_one_source_inner(
             },
         )
         .map_err(anyhow::Error::from),
+        CaptureProvider::Cline => import_cline_task_json_history(
+            &source.path,
+            store,
+            ClineTaskJsonImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..ClineTaskJsonImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::RooCode => import_roo_task_json_history(
+            &source.path,
+            store,
+            RooTaskJsonImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..RooTaskJsonImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::CodeBuddy => import_codebuddy_history(
+            &source.path,
+            store,
+            CodeBuddyImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..CodeBuddyImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Trae => import_trae_history(
+            &source.path,
+            store,
+            TraeImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..TraeImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
         CaptureProvider::OpenCode => import_opencode_sqlite(
             &source.path,
             store,
@@ -5528,6 +5988,72 @@ fn import_one_source_inner(
                 history_record_id: Some(record_id),
                 allow_partial_failures: true,
                 ..OpenCodeSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Kilo => import_kilo_sqlite(
+            &source.path,
+            store,
+            KiloSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..KiloSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::KiroCli => import_kiro_sqlite(
+            &source.path,
+            store,
+            KiroSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..KiroSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::ForgeCode => import_forgecode_sqlite(
+            &source.path,
+            store,
+            ForgeCodeSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..ForgeCodeSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::DeepAgents => import_deepagents_sqlite(
+            &source.path,
+            store,
+            DeepAgentsSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..DeepAgentsSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Crush => import_crush_sqlite(
+            &source.path,
+            store,
+            CrushSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..CrushSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Goose => import_goose_sessions_sqlite(
+            &source.path,
+            store,
+            GooseSessionsSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..GooseSessionsSqliteImportOptions::default()
             },
         )
         .map_err(anyhow::Error::from),
@@ -5586,6 +6112,61 @@ fn import_one_source_inner(
             },
         )
         .map_err(anyhow::Error::from),
+        CaptureProvider::Continue => import_continue_cli_sessions(
+            &source.path,
+            store,
+            ContinueCliImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..ContinueCliImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::OpenHands => import_openhands_file_events(
+            &source.path,
+            store,
+            OpenHandsImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..OpenHandsImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Lingma => import_lingma_sqlite(
+            &source.path,
+            store,
+            LingmaSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..LingmaSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Qoder => import_qoder_history(
+            &source.path,
+            store,
+            QoderImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..QoderImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Warp => import_warp_sqlite(
+            &source.path,
+            store,
+            WarpSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..WarpSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
         CaptureProvider::Gemini => import_gemini_cli_history(
             &source.path,
             store,
@@ -5597,6 +6178,17 @@ fn import_one_source_inner(
             },
         )
         .map_err(anyhow::Error::from),
+        CaptureProvider::Tabnine => import_tabnine_cli_history(
+            &source.path,
+            store,
+            TabnineCliImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..TabnineCliImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
         CaptureProvider::Cursor => import_cursor_native_history(
             &source.path,
             store,
@@ -5605,6 +6197,28 @@ fn import_one_source_inner(
                 history_record_id: Some(record_id),
                 allow_partial_failures: true,
                 ..CursorNativeImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Windsurf => import_windsurf_cascade_hook_transcripts(
+            &source.path,
+            store,
+            WindsurfCascadeHookImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..WindsurfCascadeHookImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Zed => import_zed_threads_sqlite(
+            &source.path,
+            store,
+            ZedThreadsSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..ZedThreadsSqliteImportOptions::default()
             },
         )
         .map_err(anyhow::Error::from),
@@ -5627,6 +6241,94 @@ fn import_one_source_inner(
                 history_record_id: Some(record_id),
                 allow_partial_failures: true,
                 ..FactoryAiDroidImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::QwenCode => import_qwen_code_history(
+            &source.path,
+            store,
+            QwenCodeImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..QwenCodeImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::KimiCodeCli => import_kimi_code_cli_history(
+            &source.path,
+            store,
+            KimiCodeCliImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..KimiCodeCliImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Auggie => import_auggie_history(
+            &source.path,
+            store,
+            AuggieImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..AuggieImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Junie => import_junie_history(
+            &source.path,
+            store,
+            JunieImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..JunieImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Firebender => import_firebender_sqlite(
+            &source.path,
+            store,
+            FirebenderSqliteImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..FirebenderSqliteImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::RovoDev => import_rovodev_history(
+            &source.path,
+            store,
+            RovoDevImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..RovoDevImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::MistralVibe => import_mistral_vibe_history(
+            &source.path,
+            store,
+            MistralVibeImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..MistralVibeImportOptions::default()
+            },
+        )
+        .map_err(anyhow::Error::from),
+        CaptureProvider::Mux => import_mux_history(
+            &source.path,
+            store,
+            MuxImportOptions {
+                source_path: Some(source.path.clone()),
+                history_record_id: Some(record_id),
+                allow_partial_failures: true,
+                ..MuxImportOptions::default()
             },
         )
         .map_err(anyhow::Error::from),
@@ -5746,10 +6448,15 @@ fn source_uses_import_file_manifest(source: &SourceInfo) -> bool {
         source.source_format,
         "codex_session_jsonl_tree"
             | "openclaw_session_jsonl_tree"
+            | "openhands_file_events"
             | "hermes_state_sqlite"
             | "nanoclaw_project"
             | "astrbot_data_v4_sqlite"
             | "shelley_sqlite"
+            | "cline_task_directory_json"
+            | "roo_task_directory_json"
+            | "firebender_chat_history_sqlite"
+            | "codebuddy_history_json"
     )
 }
 
@@ -5837,7 +6544,38 @@ fn collect_source_import_paths(source: &SourceInfo) -> Result<Vec<PathBuf>> {
 
 fn source_import_file_matches(source: &SourceInfo, path: &Path) -> bool {
     match source.provider {
-        CaptureProvider::OpenCode => path == source.path,
+        CaptureProvider::Codex | CaptureProvider::Pi | CaptureProvider::FactoryAiDroid => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+        }
+        CaptureProvider::Claude => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && path.starts_with(&source.path)
+        }
+        CaptureProvider::OpenCode
+        | CaptureProvider::Kilo
+        | CaptureProvider::KiroCli
+        | CaptureProvider::ForgeCode
+        | CaptureProvider::DeepAgents
+        | CaptureProvider::Crush
+        | CaptureProvider::Goose
+        | CaptureProvider::Lingma
+        | CaptureProvider::Warp
+        | CaptureProvider::Zed => path == source.path,
+        CaptureProvider::MistralVibe => {
+            path == source.path
+                || (path.file_name().and_then(|name| name.to_str()) == Some("messages.jsonl")
+                    && path.starts_with(&source.path))
+        }
+        CaptureProvider::Mux => {
+            path == source.path
+                || (matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("chat.jsonl" | "partial.json")
+                ) && path.starts_with(&source.path))
+        }
+        CaptureProvider::RovoDev => {
+            path.file_name().and_then(|name| name.to_str()) == Some("session_context.json")
+        }
         CaptureProvider::CopilotCli => {
             path.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")
         }
@@ -5845,7 +6583,7 @@ fn source_import_file_matches(source: &SourceInfo, path: &Path) -> bool {
             path.file_name().and_then(|name| name.to_str()),
             Some("transcript_full.jsonl" | "transcript.jsonl")
         ),
-        CaptureProvider::Gemini => {
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
             path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
                 && path
                     .components()
@@ -5857,7 +6595,70 @@ fn source_import_file_matches(source: &SourceInfo, path: &Path) -> bool {
                     .components()
                     .any(|component| component.as_os_str() == "agent-transcripts")
         }
-        _ => path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
+        CaptureProvider::Windsurf => path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
+        CaptureProvider::Qoder => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "transcript")
+        }
+        CaptureProvider::Continue => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                && path.file_name().and_then(|name| name.to_str()) != Some("sessions.json")
+        }
+        CaptureProvider::QwenCode => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "chats")
+        }
+        CaptureProvider::CodeBuddy => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "history")
+        }
+        CaptureProvider::Trae => {
+            path.file_name().and_then(|name| name.to_str()) == Some("state.vscdb")
+                && (path == source.path || path.starts_with(&source.path))
+        }
+        CaptureProvider::KimiCodeCli => {
+            path.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "agents")
+        }
+        CaptureProvider::Auggie => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                && path.starts_with(&source.path)
+        }
+        CaptureProvider::Junie => {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "events.jsonl")
+                && path.starts_with(&source.path)
+        }
+        CaptureProvider::Firebender => {
+            path.file_name().and_then(|name| name.to_str()) == Some("chat_history.db")
+                && (path == source.path || path.starts_with(&source.path))
+        }
+        CaptureProvider::OpenClaw => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && path.starts_with(&source.path)
+        }
+        CaptureProvider::Hermes
+        | CaptureProvider::NanoClaw
+        | CaptureProvider::AstrBot
+        | CaptureProvider::Shelley
+        | CaptureProvider::OpenHands
+        | CaptureProvider::Cline
+        | CaptureProvider::RooCode
+        | CaptureProvider::Shell
+        | CaptureProvider::Git
+        | CaptureProvider::Jj
+        | CaptureProvider::Gh
+        | CaptureProvider::Custom
+        | CaptureProvider::Unknown => false,
     }
 }
 
@@ -6108,10 +6909,33 @@ fn source_uses_incremental_event_search(source: &SourceInfo) -> bool {
             | CaptureProvider::Pi
             | CaptureProvider::Cursor
             | CaptureProvider::OpenCode
+            | CaptureProvider::Kilo
+            | CaptureProvider::KiroCli
+            | CaptureProvider::Crush
+            | CaptureProvider::Goose
+            | CaptureProvider::Warp
             | CaptureProvider::Antigravity
             | CaptureProvider::Gemini
+            | CaptureProvider::Tabnine
+            | CaptureProvider::Windsurf
+            | CaptureProvider::Qoder
             | CaptureProvider::CopilotCli
             | CaptureProvider::FactoryAiDroid
+            | CaptureProvider::Continue
+            | CaptureProvider::QwenCode
+            | CaptureProvider::KimiCodeCli
+            | CaptureProvider::Auggie
+            | CaptureProvider::Junie
+            | CaptureProvider::Firebender
+            | CaptureProvider::ForgeCode
+            | CaptureProvider::DeepAgents
+            | CaptureProvider::MistralVibe
+            | CaptureProvider::Mux
+            | CaptureProvider::RovoDev
+            | CaptureProvider::Cline
+            | CaptureProvider::RooCode
+            | CaptureProvider::CodeBuddy
+            | CaptureProvider::Trae
     )
 }
 
@@ -6191,6 +7015,17 @@ fn source_stats(path: &Path) -> Result<SourceStats> {
     Ok(stats)
 }
 
+fn source_import_stats(source: &SourceInfo) -> Result<SourceStats> {
+    let mut stats = SourceStats::default();
+    for path in collect_source_import_paths(source)? {
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("stat import source file {}", path.display()))?;
+        stats.files += 1;
+        stats.bytes = stats.bytes.saturating_add(metadata.len());
+    }
+    Ok(stats)
+}
+
 fn import_record_for_source(source: &SourceInfo) -> HistoryRecord {
     let key = format!(
         "agent-history:{}:{}",
@@ -6266,14 +7101,25 @@ fn discovered_sources() -> Vec<SourceInfo> {
     home_dir()
         .as_deref()
         .map(discover_provider_sources)
+        .map(filter_cli_supported_sources)
         .unwrap_or_default()
 }
 
 fn discovered_sources_for_provider(provider: CaptureProvider) -> Vec<SourceInfo> {
+    if !cli_supported_provider(provider) {
+        return Vec::new();
+    }
     home_dir()
         .as_deref()
         .map(|home| discover_provider_sources_for_provider(home, provider))
         .unwrap_or_default()
+}
+
+fn filter_cli_supported_sources(sources: Vec<SourceInfo>) -> Vec<SourceInfo> {
+    sources
+        .into_iter()
+        .filter(|source| cli_supported_provider(source.provider))
+        .collect()
 }
 
 fn explicit_path_source(provider: CaptureProvider, path: PathBuf) -> SourceInfo {
@@ -6376,7 +7222,7 @@ fn history_source_plugin_refresh_json(refresh: HistorySourcePluginRefresh) -> &'
 fn import_support_json(support: ProviderImportSupport) -> &'static str {
     match support {
         ProviderImportSupport::Native => "native",
-        ProviderImportSupport::Preview => "preview",
+        ProviderImportSupport::Explicit => "explicit",
         ProviderImportSupport::Unsupported => "unsupported",
     }
 }

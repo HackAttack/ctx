@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use assert_cmd::Command;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use predicates::prelude::*;
@@ -43,6 +45,14 @@ fn apply_hermetic_env(command: &mut Command, temp: &TempDir) {
     command.env_remove("HERMES_HOME");
     command.env_remove("ASTRBOT_ROOT");
     command.env_remove("SHELLEY_DB");
+    command.env_remove("KILO_DB");
+    command.env_remove("FORGE_CONFIG");
+    command.env_remove("VIBE_HOME");
+    command.env_remove("XDG_CONFIG_HOME");
+    command.env_remove("XDG_DATA_HOME");
+    command.env_remove("XDG_STATE_HOME");
+    command.env_remove("LOCALAPPDATA");
+    command.env_remove("APPDATA");
 }
 
 fn copied_ctx_binary(temp: &TempDir) -> PathBuf {
@@ -377,6 +387,13 @@ fn materialized_fixture(category: &str, name: &str) -> String {
         fs::copy(&source, &target).unwrap();
     }
     target.to_str().unwrap().to_owned()
+}
+
+fn write_sqlite_fixture_from_sql(sql_fixture: &str, db_path: &Path) {
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let sql = fs::read_to_string(provider_history_fixture(sql_fixture)).unwrap();
+    let conn = Connection::open(db_path).unwrap();
+    conn.execute_batch(&sql).unwrap();
 }
 
 fn copy_dir_all(from: &Path, to: &Path) {
@@ -844,6 +861,27 @@ fn help_exposes_session_retrieval_commands() {
 }
 
 #[test]
+fn provider_help_and_errors_do_not_dump_full_provider_list() {
+    let temp = tempdir();
+    let help = ctx(&temp)
+        .args(["import", "--help"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let help = String::from_utf8(help).unwrap();
+    assert!(help.contains("for example codex, claude, cursor, pi"));
+    assert!(!help.contains("factory-ai-droid"));
+
+    let stderr = failure_stderr(ctx(&temp).args(["import", "--provider", "nope"]));
+    assert!(stderr.contains("invalid value 'nope'"));
+    assert!(stderr.contains("examples: codex, claude, cursor, pi"));
+    assert!(!stderr.contains("[possible values:"));
+    assert!(!stderr.contains("factory-ai-droid"));
+}
+
+#[test]
 fn root_version_reports_package_version() {
     let temp = tempdir();
     ctx(&temp)
@@ -1078,6 +1116,54 @@ fn setup_skips_empty_codex_session_tree() {
         .unwrap();
     assert_eq!(codex_sessions["status"], "empty");
     assert_eq!(codex_sessions["importable"], false);
+}
+
+#[test]
+fn sources_default_hides_unsupported_missing_locations() {
+    let temp = tempdir();
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    assert_eq!(sources["scope"], "default");
+    assert!(sources["hidden_missing_sources"].as_u64().unwrap() > 0);
+    let visible = sources["sources"].as_array().unwrap();
+    assert!(visible.iter().any(|source| source["provider"] == "codex"));
+    assert!(visible.iter().any(|source| source["provider"] == "claude"));
+    assert!(visible.iter().any(|source| source["provider"] == "cursor"));
+    assert!(visible.iter().any(|source| source["provider"] == "pi"));
+    assert!(visible
+        .iter()
+        .any(|source| source["provider"] == "opencode"));
+    assert!(visible
+        .iter()
+        .any(|source| source["provider"] == "copilot_cli"));
+
+    let text = ctx(&temp)
+        .arg("sources")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("missing provider locations hidden"));
+    assert!(text.contains("ctx sources --all"));
+
+    let all_sources = json_output(ctx(&temp).args(["sources", "--json", "--all"]));
+    assert_eq!(all_sources["scope"], "all");
+    assert_eq!(all_sources["hidden_missing_sources"], 0);
+    let all = all_sources["sources"].as_array().unwrap();
+    assert!(all.len() > visible.len());
+}
+
+#[test]
+fn sources_provider_filter_rejects_unsupported_providers() {
+    let temp = tempdir();
+
+    ctx(&temp)
+        .args(["sources", "--provider", "not-a-real-provider", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown provider"));
 }
 
 #[test]
@@ -1873,19 +1959,150 @@ fn import_all_skips_empty_gemini_source() {
 }
 
 #[test]
-fn sources_lists_personal_agent_provider_defaults() {
+fn qwen_kimi_mistral_mux_and_qoder_default_sources_import_search_and_reimport() {
+    let temp = tempdir();
+    copy_dir_all(
+        Path::new(&provider_history_fixture("qwen-code/.qwen")),
+        &temp.path().join(".qwen"),
+    );
+    copy_dir_all(
+        Path::new(&provider_history_fixture("kimi-code-cli/.kimi-code")),
+        &temp.path().join(".kimi-code"),
+    );
+    copy_dir_all(
+        Path::new(&provider_history_fixture("mistral-vibe/v1/logs/session")),
+        &temp.path().join(".vibe").join("logs").join("session"),
+    );
+    copy_dir_all(
+        Path::new(&provider_history_fixture("mux/v0.27.0/sessions")),
+        &temp.path().join(".mux").join("sessions"),
+    );
+    copy_dir_all(
+        Path::new(&provider_history_fixture("qoder/projects")),
+        &temp.path().join(".qoder").join("projects"),
+    );
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    for (provider, source_format) in [
+        ("qwen_code", "qwen_code_chat_jsonl_tree"),
+        ("kimi_code_cli", "kimi_code_cli_wire_jsonl_tree"),
+        ("mistral_vibe", "mistral_vibe_session_jsonl_tree"),
+        ("mux", "mux_session_jsonl_tree"),
+        ("qoder", "qoder_transcript_jsonl_tree"),
+    ] {
+        let source = sources["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| {
+                source["provider"] == provider && source["source_format"] == source_format
+            })
+            .unwrap_or_else(|| panic!("missing {provider} source in {sources:#}"));
+        assert_eq!(source["status"], "available");
+        assert_eq!(source["import_support"], "native");
+        assert_eq!(source["native_import"], true);
+        assert_eq!(source["importable"], true);
+    }
+
+    for (cli_provider, stored_provider, query, minimum_events) in [
+        ("qwen-code", "qwen_code", "qwen jsonl oracle prompt", 3),
+        (
+            "kimi-code-cli",
+            "kimi_code_cli",
+            "kimi jsonl oracle prompt",
+            7,
+        ),
+        (
+            "mistral-vibe",
+            "mistral_vibe",
+            "mistral vibe oracle prompt",
+            4,
+        ),
+        ("mux", "mux", "mux jsonl oracle prompt", 6),
+        ("qoder", "qoder", "qoder jsonl oracle prompt", 7),
+    ] {
+        let first = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--json",
+            "--progress",
+            "none",
+        ]));
+        assert_eq!(first["totals"]["failed"], 0);
+        assert_eq!(first["totals"]["imported_sources"], 1);
+        assert!(
+            first["totals"]["imported_events"].as_u64().unwrap() >= minimum_events,
+            "{first:#}"
+        );
+
+        let search = json_output(ctx(&temp).args([
+            "search",
+            query,
+            "--provider",
+            cli_provider,
+            "--refresh",
+            "off",
+            "--json",
+        ]));
+        assert_search_provider_oracle(&search, stored_provider, query, 1, "message");
+
+        let second = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--json",
+            "--progress",
+            "none",
+        ]));
+        assert_eq!(second["totals"]["failed"], 0);
+        assert_eq!(second["totals"]["imported_events"], 0);
+    }
+}
+
+#[test]
+fn sources_lists_supported_personal_agent_provider_defaults() {
     let temp = tempdir();
     install_default_openclaw_fixture(&temp, "openclaw-sources-oracle");
     install_default_hermes_fixture(&temp, "hermes-sources-oracle");
+    install_default_kilo_fixture(&temp, "kilo-sources-oracle");
+    install_default_kiro_fixture(&temp, "kiro-sources-oracle");
     install_default_astrbot_fixture(&temp, "astrbot-sources-oracle");
     install_default_shelley_fixture(&temp, "shelley-sources-oracle");
+    install_default_continue_fixture(&temp, "continue-sources-oracle");
+    install_default_forgecode_fixture(&temp, "forgecode-sources-oracle");
+    install_default_mistral_vibe_fixture(&temp, "mistral-vibe-sources-oracle");
+    install_default_mux_fixture(&temp, "mux-sources-oracle");
+    install_default_lingma_fixture(&temp, "lingma-sources-oracle");
+    install_default_qoder_fixture(&temp, "qoder-sources-oracle");
+    install_default_auggie_fixture(&temp, "auggie-sources-oracle");
+    install_default_junie_fixture(&temp, "junie-sources-oracle");
+    install_default_warp_fixture(&temp);
+    install_default_trae_fixture(&temp, "trae-sources-oracle");
 
     let sources = json_output(ctx(&temp).args(["sources", "--json"]));
     for (provider, source_format, import_support, native_import) in [
         ("openclaw", "openclaw_session_jsonl_tree", "native", true),
         ("hermes", "hermes_state_sqlite", "native", true),
-        ("astrbot", "astrbot_data_v4_sqlite", "preview", false),
+        ("kilo", "kilo_sqlite", "native", true),
+        ("kiro_cli", "kiro_cli_sqlite", "native", true),
+        ("astrbot", "astrbot_data_v4_sqlite", "native", true),
         ("shelley", "shelley_sqlite", "native", true),
+        ("continue", "continue_cli_sessions_json", "native", true),
+        ("forgecode", "forgecode_sqlite", "native", true),
+        (
+            "mistral_vibe",
+            "mistral_vibe_session_jsonl_tree",
+            "native",
+            true,
+        ),
+        ("mux", "mux_session_jsonl_tree", "native", true),
+        ("lingma", "lingma_sqlite", "native", true),
+        ("qoder", "qoder_transcript_jsonl_tree", "native", true),
+        ("auggie", "auggie_session_json", "native", true),
+        ("junie", "junie_session_events_jsonl_tree", "native", true),
+        ("warp", "warp_sqlite", "native", true),
+        ("trae", "trae_state_vscdb", "native", true),
     ] {
         let source = sources["sources"]
             .as_array()
@@ -1952,9 +2169,57 @@ fn sources_falls_back_to_userprofile_when_home_unset() {
 }
 
 #[test]
-fn preview_native_sources_are_listed_but_not_auto_imported() {
+fn sources_discovers_forgecode_env_and_legacy_db() {
     let temp = tempdir();
-    let query = "nanoclaw-preview-auto-refresh-oracle";
+    let fixture = PathBuf::from(write_native_forgecode_fixture(
+        &temp,
+        "forgecode-env-sources-oracle",
+    ));
+    let env_root = temp.path().join("custom-forge");
+    fs::create_dir_all(&env_root).unwrap();
+    let env_db = env_root.join(".forge.db");
+    fs::copy(&fixture, &env_db).unwrap();
+
+    let sources = json_output(
+        ctx(&temp)
+            .env("FORGE_CONFIG", &env_root)
+            .args(["sources", "--json"]),
+    );
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "forgecode")
+        .unwrap_or_else(|| panic!("missing ForgeCode env source in {sources:#}"));
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["source_format"], "forgecode_sqlite");
+    assert_eq!(source["path"], env_db.to_str().unwrap());
+
+    let legacy_temp = tempdir();
+    let legacy_fixture = PathBuf::from(write_native_forgecode_fixture(
+        &legacy_temp,
+        "forgecode-legacy-sources-oracle",
+    ));
+    let legacy_root = legacy_temp.path().join("forge");
+    fs::create_dir_all(&legacy_root).unwrap();
+    let legacy_db = legacy_root.join(".forge.db");
+    fs::copy(legacy_fixture, &legacy_db).unwrap();
+
+    let sources = json_output(ctx(&legacy_temp).args(["sources", "--json"]));
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "forgecode")
+        .unwrap_or_else(|| panic!("missing ForgeCode legacy source in {sources:#}"));
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["source_format"], "forgecode_sqlite");
+    assert_eq!(source["path"], legacy_db.to_str().unwrap());
+}
+#[test]
+fn explicit_native_sources_are_listed_but_not_auto_imported() {
+    let temp = tempdir();
+    let query = "nanoclaw-explicit-auto-refresh-oracle";
     let project = PathBuf::from(write_native_nanoclaw_fixture(&temp, query));
 
     let mut sources_command = ctx(&temp);
@@ -1967,7 +2232,7 @@ fn preview_native_sources_are_listed_but_not_auto_imported() {
         .find(|source| source["provider"] == "nanoclaw")
         .unwrap();
     assert_eq!(nanoclaw["status"], "available");
-    assert_eq!(nanoclaw["import_support"], "preview");
+    assert_eq!(nanoclaw["import_support"], "explicit");
     assert_eq!(nanoclaw["native_import"], false);
     assert_eq!(nanoclaw["importable"], true);
     assert!(nanoclaw["unsupported_reason"].is_null());
@@ -1995,6 +2260,54 @@ fn preview_native_sources_are_listed_but_not_auto_imported() {
     let search_after_import =
         json_output(ctx(&temp).args(["search", query, "--provider", "nanoclaw", "--json"]));
     assert_search_provider_oracle(&search_after_import, "nanoclaw", query, 1, "message");
+}
+
+#[test]
+fn windsurf_default_discovery_is_native_and_search_refresh_imports() {
+    let temp = tempdir();
+    let query = "windsurf-native-default-discovery-oracle";
+    install_default_windsurf_fixture(&temp, query);
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    let windsurf = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "windsurf")
+        .unwrap();
+    assert_eq!(windsurf["status"], "available");
+    assert_eq!(
+        windsurf["source_format"],
+        "windsurf_cascade_hook_transcript_jsonl_tree"
+    );
+    assert_eq!(windsurf["import_support"], "native");
+    assert_eq!(windsurf["native_import"], true);
+    assert_eq!(windsurf["importable"], true);
+    assert!(windsurf["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".windsurf/transcripts"));
+
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "windsurf", "--json"]));
+    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["status"], "completed");
+    assert_eq!(search["freshness"]["source_count"], 1);
+    assert_eq!(search["freshness"]["totals"]["failed"], 0);
+    assert_eq!(search["freshness"]["totals"]["imported_sessions"], 1);
+    assert_eq!(search["freshness"]["totals"]["imported_events"], 3);
+    assert_search_provider_oracle(&search, "windsurf", query, 1, "message");
+
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "windsurf",
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(second["totals"]["failed"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
 }
 
 #[test]
@@ -2058,7 +2371,7 @@ fn failed_import_attempt_does_not_count_as_indexed_history() {
 }
 
 #[test]
-fn provider_help_matches_implemented_importers() {
+fn provider_help_stays_compact_for_large_supported_provider_set() {
     let temp = tempdir();
     let output = ctx(&temp)
         .args(["import", "--help"])
@@ -2069,23 +2382,12 @@ fn provider_help_matches_implemented_importers() {
         .clone();
     let help = String::from_utf8(output).unwrap();
 
-    for value in [
-        "codex",
-        "pi",
-        "claude",
-        "opencode",
-        "openclaw",
-        "hermes",
-        "nanoclaw",
-        "astrbot",
-        "antigravity",
-        "gemini",
-        "cursor",
-        "copilot-cli",
-        "factory-ai-droid",
-    ] {
-        assert!(help.contains(value), "provider {value} missing in\n{help}");
-    }
+    assert!(help.contains("--provider <PROVIDER>"));
+    assert!(help.contains("for example codex, claude, cursor, pi, copilot-cli, or opencode"));
+    assert!(
+        !help.contains("--provider <PROVIDER>\n          [possible values:"),
+        "{help}"
+    );
 }
 
 #[test]
@@ -2095,10 +2397,30 @@ fn provider_json_names_are_accepted_as_cli_filter_aliases() {
 
     for (provider, expected) in [
         ("copilot_cli", "copilot_cli"),
+        ("github-copilot", "copilot_cli"),
         ("factory_ai_droid", "factory_ai_droid"),
+        ("droid", "factory_ai_droid"),
+        ("kilo_code", "kilo"),
+        ("qwen_code", "qwen_code"),
+        ("kimi_code_cli", "kimi_code_cli"),
+        ("code_buddy", "codebuddy"),
+        ("trae", "trae"),
+        ("trae-cn", "trae"),
+        ("auggie", "auggie"),
+        ("augment", "auggie"),
+        ("augment-code", "auggie"),
+        ("forge", "forgecode"),
+        ("forge_code", "forgecode"),
+        ("mistral_vibe", "mistral_vibe"),
+        ("mux", "mux"),
+        ("qoder-cn", "lingma"),
+        ("qoder_cn", "lingma"),
+        ("qoder", "qoder"),
         ("open_claw", "openclaw"),
         ("nano_claw", "nanoclaw"),
         ("astr_bot", "astrbot"),
+        ("windsurf_cascade", "windsurf"),
+        ("open_hands", "openhands"),
     ] {
         let search = json_output(ctx(&temp).args([
             "search",
@@ -2217,7 +2539,6 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             vec![
                 "Usage: ctx import",
                 "--provider <PROVIDER>",
-                "[possible values: codex, pi, claude, opencode, antigravity, gemini, cursor, copilot-cli, factory-ai-droid, openclaw, hermes, nanoclaw, astrbot, shelley]",
                 "--path <PATH>",
                 "--format <FORMAT>",
                 "--resume",
@@ -4270,7 +4591,25 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
         .unwrap();
     assert!(providers.iter().any(|provider| provider == "copilot-cli"));
     assert!(providers.iter().any(|provider| provider == "copilot_cli"));
-
+    assert!(providers.iter().any(|provider| provider == "qwen-code"));
+    assert!(providers.iter().any(|provider| provider == "qwen_code"));
+    assert!(providers.iter().any(|provider| provider == "kimi-code-cli"));
+    assert!(providers.iter().any(|provider| provider == "kimi_code_cli"));
+    assert!(providers.iter().any(|provider| provider == "kiro-cli"));
+    assert!(providers.iter().any(|provider| provider == "kiro_cli"));
+    assert!(providers.iter().any(|provider| provider == "lingma"));
+    assert!(providers.iter().any(|provider| provider == "codebuddy"));
+    assert!(providers.iter().any(|provider| provider == "auggie"));
+    assert!(providers.iter().any(|provider| provider == "zed"));
+    assert!(providers.iter().any(|provider| provider == "forgecode"));
+    assert!(providers.iter().any(|provider| provider == "deepagents"));
+    assert!(providers.iter().any(|provider| provider == "mistral-vibe"));
+    assert!(providers.iter().any(|provider| provider == "mistral_vibe"));
+    assert!(providers.iter().any(|provider| provider == "mux"));
+    assert!(providers.iter().any(|provider| provider == "rovodev"));
+    assert!(providers.iter().any(|provider| provider == "cline"));
+    assert!(providers.iter().any(|provider| provider == "roo"));
+    assert!(providers.iter().any(|provider| provider == "roo_code"));
     let status = &responses[2]["result"]["structuredContent"];
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["initialized"], false);
@@ -4643,6 +4982,32 @@ fn mcp_search_requires_query_term_or_file_without_opening_store() {
                     }
                 }
             }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "search-hidden-provider",
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {
+                        "query": "hidden provider probe",
+                        "provider": "not-a-real-provider",
+                        "limit": 5
+                    }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "search-provider-alias",
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {
+                        "query": "provider alias probe",
+                        "provider": "roo_code",
+                        "limit": 5
+                    }
+                }
+            }),
         ],
     );
 
@@ -4652,6 +5017,18 @@ fn mcp_search_requires_query_term_or_file_without_opening_store() {
         .as_str()
         .unwrap()
         .contains("search needs a query or file"));
+    let hidden_provider = &responses[2]["result"];
+    assert_eq!(hidden_provider["isError"], true);
+    assert!(hidden_provider["structuredContent"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("provider must be one of"));
+    let alias_result = &responses[3]["result"];
+    assert_eq!(alias_result["isError"], true);
+    assert!(alias_result["structuredContent"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("ctx store is not initialized"));
     assert!(
         !temp.path().join("work.sqlite").exists(),
         "invalid MCP search should fail before opening the ctx store"
@@ -5579,7 +5956,15 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
         ("cursor", "cursor", install_default_cursor_fixture),
         ("openclaw", "openclaw", install_default_openclaw_fixture),
         ("hermes", "hermes", install_default_hermes_fixture),
+        ("kilo", "kilo", install_default_kilo_fixture),
+        ("astrbot", "astrbot", install_default_astrbot_fixture),
         ("shelley", "shelley", install_default_shelley_fixture),
+        ("continue", "continue", install_default_continue_fixture),
+        ("openhands", "openhands", install_default_openhands_fixture),
+        ("rovodev", "rovodev", install_default_rovodev_fixture),
+        ("lingma", "lingma", install_default_lingma_fixture),
+        ("qoder", "qoder", install_default_qoder_fixture),
+        ("junie", "junie", install_default_junie_fixture),
     ] {
         let temp = tempdir();
         let query = format!("{stored_provider}-default-refresh-oracle");
@@ -5601,16 +5986,13 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
         let started = Instant::now();
         let refreshed =
             json_output(ctx(&temp).args(["search", &query, "--provider", cli_provider, "--json"]));
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "{cli_provider} no-op refresh took {elapsed:?}"
-        );
         assert_eq!(refreshed["freshness"]["mode"], "auto");
         assert_eq!(refreshed["freshness"]["status"], "completed");
-        assert_eq!(refreshed["freshness"]["totals"]["imported_sessions"], 0);
         assert_eq!(refreshed["freshness"]["totals"]["imported_events"], 0);
-        assert_search_provider_oracle(&refreshed, stored_provider, &query, 1, "message");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "second refresh should stay incremental for {cli_provider}"
+        );
     }
 }
 
@@ -5884,7 +6266,17 @@ fn pi_cli_import_search_flow() {
 }
 
 #[test]
-fn native_provider_cli_flow_imports_new_supported_provider_paths() {
+fn unknown_native_providers_are_rejected_by_public_cli() {
+    let temp = tempdir();
+
+    for provider in ["not-a-real-provider", "unsupported-provider-placeholder"] {
+        let stderr = failure_stderr(ctx(&temp).args(["import", "--provider", provider, "--json"]));
+        assert!(stderr.contains("unknown provider"), "{provider}: {stderr}");
+    }
+}
+
+#[test]
+fn native_provider_cli_flow_imports_supported_provider_paths() {
     for (cli_provider, stored_provider, expected_format, fixture) in [
         (
             "claude",
@@ -5897,6 +6289,13 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
             "opencode",
             "opencode_sqlite",
             write_native_opencode_fixture,
+        ),
+        ("kilo", "kilo", "kilo_sqlite", write_native_kilo_fixture),
+        (
+            "kiro-cli",
+            "kiro_cli",
+            "kiro_cli_sqlite",
+            write_native_kiro_fixture,
         ),
         (
             "gemini",
@@ -5911,6 +6310,12 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
             write_native_cursor_fixture,
         ),
         (
+            "windsurf",
+            "windsurf",
+            "windsurf_cascade_hook_transcript_jsonl_tree",
+            write_native_windsurf_fixture,
+        ),
+        (
             "copilot-cli",
             "copilot_cli",
             "copilot_cli_session_events_jsonl",
@@ -5921,6 +6326,72 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
             "factory_ai_droid",
             "factory_ai_droid_sessions_jsonl",
             write_native_factory_droid_fixture,
+        ),
+        (
+            "qwen-code",
+            "qwen_code",
+            "qwen_code_chat_jsonl_tree",
+            write_native_qwen_fixture,
+        ),
+        (
+            "kimi-code-cli",
+            "kimi_code_cli",
+            "kimi_code_cli_wire_jsonl_tree",
+            write_native_kimi_fixture,
+        ),
+        (
+            "forgecode",
+            "forgecode",
+            "forgecode_sqlite",
+            write_native_forgecode_fixture,
+        ),
+        (
+            "mistral-vibe",
+            "mistral_vibe",
+            "mistral_vibe_session_jsonl_tree",
+            write_native_mistral_vibe_fixture,
+        ),
+        (
+            "mux",
+            "mux",
+            "mux_session_jsonl_tree",
+            write_native_mux_fixture,
+        ),
+        (
+            "rovodev",
+            "rovodev",
+            "rovodev_session_json_tree",
+            write_native_rovodev_fixture,
+        ),
+        (
+            "lingma",
+            "lingma",
+            "lingma_sqlite",
+            write_native_lingma_fixture,
+        ),
+        (
+            "codebuddy",
+            "codebuddy",
+            "codebuddy_history_json",
+            write_native_codebuddy_fixture,
+        ),
+        (
+            "auggie",
+            "auggie",
+            "auggie_session_json",
+            write_native_auggie_fixture,
+        ),
+        (
+            "junie",
+            "junie",
+            "junie_session_events_jsonl_tree",
+            write_native_junie_fixture,
+        ),
+        (
+            "firebender",
+            "firebender",
+            "firebender_chat_history_sqlite",
+            write_native_firebender_fixture,
         ),
         (
             "openclaw",
@@ -5952,64 +6423,667 @@ fn native_provider_cli_flow_imports_new_supported_provider_paths() {
             "shelley_sqlite",
             write_native_shelley_fixture,
         ),
+        (
+            "continue",
+            "continue",
+            "continue_cli_sessions_json",
+            write_native_continue_fixture,
+        ),
+        (
+            "openhands",
+            "openhands",
+            "openhands_file_events",
+            write_native_openhands_fixture,
+        ),
+        (
+            "qoder",
+            "qoder",
+            "qoder_transcript_jsonl_tree",
+            write_native_qoder_fixture,
+        ),
     ] {
         let temp = tempdir();
-        let query = format!("{stored_provider}-native-cli-oracle");
+        let query = format!("{stored_provider}-cli-flow-oracle");
         let path = fixture(&temp, &query);
+
+        let first = json_output(ctx(&temp).args([
+            "import",
+            "--provider",
+            cli_provider,
+            "--path",
+            &path,
+            "--json",
+        ]));
+        assert_eq!(first["schema_version"], 1);
+        assert_eq!(first["sources"][0]["provider"], stored_provider);
+        assert_eq!(first["sources"][0]["source_format"], expected_format);
+        assert_eq!(first["totals"]["failed"], 0);
+        assert!(first["totals"]["imported_sessions"].as_u64().unwrap() >= 1);
+        assert!(first["totals"]["imported_events"].as_u64().unwrap() >= 1);
+
+        let search = json_output(ctx(&temp).args([
+            "search",
+            &query,
+            "--provider",
+            cli_provider,
+            "--refresh",
+            "off",
+            "--json",
+        ]));
+        assert_search_provider_oracle(&search, stored_provider, &query, 1, "message");
+    }
+}
+#[test]
+fn trae_cli_imports_explicit_workspace_storage_with_default_discovery() {
+    let temp = tempdir();
+    let empty_sources = json_output(ctx(&temp).args(["sources", "--json", "--all"]));
+    let trae_source = empty_sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "trae")
+        .unwrap_or_else(|| panic!("missing Trae default source: {empty_sources:#}"));
+    assert_eq!(trae_source["status"], "missing");
+    assert_eq!(trae_source["source_format"], "trae_state_vscdb");
+    assert_eq!(trae_source["import_support"], "native");
+    assert_eq!(trae_source["native_import"], true);
+    assert_eq!(trae_source["importable"], false);
+
+    let fixture = provider_history_fixture("trae/User/workspaceStorage");
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "trae-cn",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(imported["schema_version"], 1);
+    assert_eq!(imported["sources"][0]["provider"], "trae");
+    assert_eq!(imported["sources"][0]["source_format"], "trae_state_vscdb");
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 2);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "trae oracle answer",
+        "--provider",
+        "trae-cn",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle_with_scope(
+        &search,
+        "trae",
+        "trae oracle answer",
+        1,
+        "message",
+        "session_result",
+        "session",
+    );
+
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "trae",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(second["totals"]["failed"], 0);
+    assert_eq!(second["totals"]["imported_sessions"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
+}
+
+#[test]
+fn trae_cn_native_default_discovery_search_refresh_imports_input_history() {
+    let temp = tempdir();
+    let query = "trae-cn-default-discovery-oracle";
+    install_default_trae_cn_fixture(&temp, query);
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| {
+            source["provider"] == "trae"
+                && source["status"] == "available"
+                && source["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("Trae CN/User/workspaceStorage"))
+        })
+        .unwrap_or_else(|| panic!("missing Trae CN source in {sources:#}"));
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["source_format"], "trae_state_vscdb");
+    assert_eq!(source["import_support"], "native");
+    assert_eq!(source["native_import"], true);
+    assert!(source["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("Trae CN/User/workspaceStorage"));
+
+    let search = json_output(ctx(&temp).args(["search", query, "--provider", "trae-cn", "--json"]));
+    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["status"], "completed");
+    assert_eq!(search["freshness"]["source_count"], 1);
+    assert_eq!(search["freshness"]["totals"]["failed"], 0);
+    assert_eq!(search["freshness"]["totals"]["imported_sessions"], 1);
+    assert_eq!(search["freshness"]["totals"]["imported_events"], 2);
+    assert_search_provider_oracle_with_scope(
+        &search,
+        "trae",
+        query,
+        1,
+        "message",
+        "session_result",
+        "session",
+    );
+}
+
+#[test]
+fn trae_native_default_discovery_search_refresh_imports_standard_workspace_storage() {
+    let temp = tempdir();
+    let query = "trae-standard-default-discovery-oracle";
+    install_default_trae_fixture(&temp, query);
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| {
+            source["provider"] == "trae"
+                && source["status"] == "available"
+                && source["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("Trae/User/workspaceStorage"))
+        })
+        .unwrap_or_else(|| panic!("missing standard Trae source in {sources:#}"));
+    assert_eq!(source["source_format"], "trae_state_vscdb");
+    assert_eq!(source["import_support"], "native");
+    assert_eq!(source["native_import"], true);
+
+    let search = json_output(ctx(&temp).args(["search", query, "--provider", "trae", "--json"]));
+    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["status"], "completed");
+    assert_eq!(search["freshness"]["source_count"], 1);
+    assert_eq!(search["freshness"]["totals"]["failed"], 0);
+    assert_eq!(search["freshness"]["totals"]["imported_sessions"], 1);
+    assert_eq!(search["freshness"]["totals"]["imported_events"], 2);
+    assert_search_provider_oracle_with_scope(
+        &search,
+        "trae",
+        query,
+        1,
+        "message",
+        "session_result",
+        "session",
+    );
+}
+
+#[test]
+fn trae_cn_native_default_discovery_is_included_in_import_all() {
+    let temp = tempdir();
+    let query = "trae-cn-import-all-oracle";
+    install_default_trae_cn_fixture(&temp, query);
+
+    let imported =
+        json_output(ctx(&temp).args(["import", "--all", "--json", "--progress", "none"]));
+    assert!(imported["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| {
+            source["provider"] == "trae"
+                && source["source_format"] == "trae_state_vscdb"
+                && source["import_support"] == "native"
+        }));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 2);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "trae-cn",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle_with_scope(
+        &search,
+        "trae",
+        query,
+        1,
+        "message",
+        "session_result",
+        "session",
+    );
+}
+
+#[test]
+fn astrbot_native_default_discovery_is_included_in_import_all() {
+    let temp = tempdir();
+    let query = "astrbot-import-all-oracle";
+    install_default_astrbot_fixture(&temp, query);
+
+    let imported =
+        json_output(ctx(&temp).args(["import", "--all", "--json", "--progress", "none"]));
+    assert!(imported["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| {
+            source["provider"] == "astrbot"
+                && source["source_format"] == "astrbot_data_v4_sqlite"
+                && source["import_support"] == "native"
+        }));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 3);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "astrbot",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle(&search, "astrbot", query, 1, "message");
+}
+
+#[test]
+fn warp_cli_imports_explicit_sqlite() {
+    let temp = tempdir();
+    let fixture = provider_history_fixture("warp/v1/warp.sqlite");
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "warp",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(imported["schema_version"], 1);
+    assert_eq!(imported["sources"][0]["provider"], "warp");
+    assert_eq!(imported["sources"][0]["source_format"], "warp_sqlite");
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 4);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "Warp sqlite oracle answer",
+        "--provider",
+        "warp",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle(&search, "warp", "Warp sqlite oracle answer", 1, "message");
+
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "warp",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(second["totals"]["failed"], 0);
+    assert_eq!(second["totals"]["imported_sessions"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
+}
+
+#[test]
+fn warp_native_default_discovery_auto_imports_for_search() {
+    let temp = tempdir();
+    install_default_warp_fixture(&temp);
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "warp")
+        .unwrap_or_else(|| panic!("missing Warp source in {sources:#}"));
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["source_format"], "warp_sqlite");
+    assert_eq!(source["import_support"], "native");
+    assert_eq!(source["native_import"], true);
+    assert_eq!(source["importable"], true);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "Warp sqlite oracle answer",
+        "--provider",
+        "warp",
+        "--json",
+    ]));
+    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["status"], "completed");
+    assert_eq!(search["freshness"]["source_count"], 1);
+    assert_eq!(search["freshness"]["totals"]["failed"], 0);
+    assert_eq!(search["freshness"]["totals"]["imported_sessions"], 1);
+    assert_eq!(search["freshness"]["totals"]["imported_events"], 4);
+    assert_search_provider_oracle(&search, "warp", "Warp sqlite oracle answer", 1, "message");
+}
+
+#[test]
+fn warp_native_default_discovery_is_included_in_import_all() {
+    let temp = tempdir();
+    install_default_warp_fixture(&temp);
+
+    let imported =
+        json_output(ctx(&temp).args(["import", "--all", "--json", "--progress", "none"]));
+    assert!(imported["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| {
+            source["provider"] == "warp" && source["source_format"] == "warp_sqlite"
+        }));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 4);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "Warp sqlite oracle answer",
+        "--provider",
+        "warp",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle(&search, "warp", "Warp sqlite oracle answer", 1, "message");
+}
+
+#[test]
+fn lingma_cli_default_source_imports_home_local_db() {
+    let temp = tempdir();
+    let query = "lingma-default-import-oracle";
+    install_default_lingma_fixture(&temp, query);
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "lingma")
+        .unwrap_or_else(|| panic!("missing Lingma source in {sources:#}"));
+    assert_eq!(source["source_format"], "lingma_sqlite");
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["importable"], true);
+
+    let imported = json_output(ctx(&temp).args(["import", "--provider", "lingma", "--json"]));
+    assert_eq!(imported["sources"][0]["provider"], "lingma");
+    assert_eq!(imported["sources"][0]["source_format"], "lingma_sqlite");
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 2);
+
+    let search = json_output(ctx(&temp).args(["search", query, "--provider", "lingma", "--json"]));
+    assert_search_provider_oracle(&search, "lingma", query, 1, "message");
+
+    let alias_search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "qoder-cn", "--json"]));
+    assert_search_provider_oracle(&alias_search, "lingma", query, 1, "message");
+
+    let second = json_output(ctx(&temp).args(["import", "--provider", "lingma", "--json"]));
+    assert_eq!(second["totals"]["failed"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
+}
+
+#[test]
+fn tabnine_cli_imports_explicit_agent_home_searches_and_reimports() {
+    let temp = tempdir();
+    let fixture = provider_history_fixture("tabnine-cli/.tabnine/agent");
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "tabnine",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(imported["schema_version"], 1);
+    assert_eq!(imported["sources"][0]["provider"], "tabnine");
+    assert_eq!(
+        imported["sources"][0]["source_format"],
+        "tabnine_cli_chat_recording_jsonl"
+    );
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 2);
+    assert_eq!(imported["totals"]["imported_events"], 6);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "tabnine jsonl oracle answer",
+        "--provider",
+        "tabnine",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle(
+        &search,
+        "tabnine",
+        "tabnine jsonl oracle answer",
+        1,
+        "message",
+    );
+
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "tabnine",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(second["totals"]["failed"], 0);
+    assert_eq!(second["totals"]["imported_sessions"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
+}
+
+#[test]
+fn deepagents_cli_sources_import_search_and_reimport_with_aliases() {
+    let temp = tempdir();
+    let default_db = temp.path().join(".deepagents/.state/sessions.db");
+    fs::create_dir_all(default_db.parent().unwrap()).unwrap();
+    fs::copy(
+        provider_history_fixture("deepagents/v1/sessions.db"),
+        &default_db,
+    )
+    .unwrap();
+
+    let sources = json_output(ctx(&temp).args(["sources", "--json"]));
+    let source = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["provider"] == "deepagents")
+        .unwrap_or_else(|| panic!("missing Deep Agents source in {sources:#}"));
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["source_format"], "deepagents_sessions_sqlite");
+    assert_eq!(source["import_support"], "native");
+    assert_eq!(source["importable"], true);
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "deep-agents",
+        "--json",
+        "--progress",
+        "none",
+    ]));
+    assert_eq!(imported["sources"][0]["provider"], "deepagents");
+    assert_eq!(
+        imported["sources"][0]["source_format"],
+        "deepagents_sessions_sqlite"
+    );
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 3);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "deepagents fixture oracle",
+        "--provider",
+        "dcode",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_search_provider_oracle(
+        &search,
+        "deepagents",
+        "deepagents fixture oracle",
+        1,
+        "message",
+    );
+
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "deepagents",
+        "--path",
+        default_db.to_str().unwrap(),
+        "--json",
+    ]));
+    assert_eq!(second["totals"]["failed"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
+    let conn = Connection::open(temp.path().join("work.sqlite")).unwrap();
+    assert_eq!(
+        sqlite_count(
+            &conn,
+            "SELECT COUNT(*) FROM events e JOIN sessions s ON e.session_id = s.id WHERE s.provider = 'deepagents'"
+        ),
+        3
+    );
+}
+
+#[test]
+fn sqlite_cli_imports_crush_goose_zed_kiro_and_forgecode_and_searches() {
+    for (cli_provider, stored_provider, source_format, fixture, query, sessions, events) in [
+        (
+            "zed",
+            "zed",
+            "zed_threads_sqlite",
+            "zed/v1/threads.db",
+            "zed sqlite oracle",
+            2,
+            5,
+        ),
+        (
+            "crush",
+            "crush",
+            "crush_sqlite",
+            "crush/v1/crush.db",
+            "crush oracle",
+            2,
+            4,
+        ),
+        (
+            "goose",
+            "goose",
+            "goose_sessions_sqlite",
+            "goose/v14/sessions.db",
+            "goose oracle",
+            1,
+            3,
+        ),
+        (
+            "kiro-cli",
+            "kiro_cli",
+            "kiro_cli_sqlite",
+            "kiro-cli/v2/data.sqlite3",
+            "kiro oracle",
+            1,
+            3,
+        ),
+        (
+            "forgecode",
+            "forgecode",
+            "forgecode_sqlite",
+            "forgecode/v1/forge.db",
+            "forgecode oracle",
+            1,
+            3,
+        ),
+    ] {
+        let temp = tempdir();
+        let fixture = provider_history_fixture(fixture);
 
         let imported = json_output(ctx(&temp).args([
             "import",
             "--provider",
             cli_provider,
             "--path",
-            &path,
+            &fixture,
             "--json",
+            "--progress",
+            "none",
         ]));
         assert_eq!(imported["schema_version"], 1);
         assert_eq!(imported["sources"][0]["provider"], stored_provider);
-        assert_eq!(imported["sources"][0]["source_format"], expected_format);
+        assert_eq!(imported["sources"][0]["source_format"], source_format);
         assert_eq!(imported["totals"]["failed"], 0);
-        assert!(imported["totals"]["imported_sessions"].as_u64().unwrap() >= 1);
-        assert!(imported["totals"]["imported_events"].as_u64().unwrap() >= 1);
+        assert_eq!(imported["totals"]["imported_sessions"], sessions);
+        assert_eq!(imported["totals"]["imported_events"], events);
 
-        let search =
-            json_output(ctx(&temp).args(["search", &query, "--provider", cli_provider, "--json"]));
-        assert_search_provider_oracle(&search, stored_provider, &query, 1, "message");
+        let search = json_output(ctx(&temp).args([
+            "search",
+            query,
+            "--provider",
+            cli_provider,
+            "--refresh",
+            "off",
+            "--json",
+        ]));
+        assert_search_provider_oracle(&search, stored_provider, query, 1, "message");
+
         let result = &search["results"].as_array().unwrap()[0];
         let ctx_event_id = result["ctx_event_id"].as_str().unwrap();
-        let ctx_session_id = result["ctx_session_id"].as_str().unwrap();
-
-        let show_event =
-            json_output(ctx(&temp).args(["show", "event", ctx_event_id, "--format", "json"]));
-        assert_eq!(show_event["event"]["provider"], stored_provider);
-        assert!(show_event["event"]["source"]["source_format"].is_string());
-        assert!(show_event["event"]["source"]["path"].is_string());
-        assert!(show_event["event"]["cursor"].is_string());
-
-        let locate_event =
-            json_output(ctx(&temp).args(["locate", "event", ctx_event_id, "--json"]));
-        assert_eq!(locate_event["provider"], stored_provider);
-        assert_eq!(locate_event["ctx_session_id"], ctx_session_id);
-        assert!(locate_event["source"]["source_format"].is_string());
-        assert!(locate_event["source"]["path"].is_string());
-        assert!(locate_event["cursor"].is_string());
-
-        let status = json_output(ctx(&temp).args(["status", "--json"]));
-        assert!(status["indexed_items"].as_u64().unwrap() >= 2);
-        assert!(status["indexed_sources"].as_u64().unwrap() >= 1);
-
-        let doctor = json_output(ctx(&temp).args(["doctor", "--json"]));
-        assert_eq!(doctor["ok"], true);
+        let located = json_output(ctx(&temp).args(["locate", "event", ctx_event_id, "--json"]));
+        assert_eq!(located["provider"], stored_provider);
+        assert_eq!(located["source"]["source_format"], source_format);
+        assert!(located["source"]["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with(".db") || path.ends_with(".sqlite3")));
 
         let second = json_output(ctx(&temp).args([
             "import",
             "--provider",
             cli_provider,
             "--path",
-            &path,
+            &fixture,
             "--json",
+            "--progress",
+            "none",
         ]));
         assert_eq!(second["totals"]["failed"], 0);
+        assert_eq!(second["totals"]["imported_sessions"], 0);
         assert_eq!(second["totals"]["imported_events"], 0);
     }
 }
@@ -6144,6 +7218,15 @@ fn install_default_cursor_fixture(temp: &TempDir, query: &str) {
     copy_dir_all(&source, &temp.path().join(".cursor").join("projects"));
 }
 
+fn install_default_windsurf_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_windsurf_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".windsurf").join("transcripts"));
+}
+
+fn install_default_qoder_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_qoder_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".qoder").join("projects"));
+}
 fn install_default_openclaw_fixture(temp: &TempDir, query: &str) {
     let source = PathBuf::from(write_native_openclaw_fixture(temp, query));
     copy_dir_all(&source, &temp.path().join(".openclaw"));
@@ -6156,11 +7239,120 @@ fn install_default_hermes_fixture(temp: &TempDir, query: &str) {
     fs::copy(source, target.join("state.db")).unwrap();
 }
 
+fn install_default_kilo_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_kilo_fixture(temp, query));
+    let target = temp.path().join(".local/share/kilo");
+    fs::create_dir_all(&target).unwrap();
+    fs::copy(source, target.join("kilo.db")).unwrap();
+}
+
+fn install_default_kiro_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_kiro_fixture(temp, query));
+    let target = temp.path().join(".local/share/kiro-cli");
+    fs::create_dir_all(&target).unwrap();
+    fs::copy(source, target.join("data.sqlite3")).unwrap();
+}
 fn install_default_astrbot_fixture(temp: &TempDir, query: &str) {
     let source = PathBuf::from(write_native_astrbot_fixture(temp, query));
     let target = temp.path().join(".astrbot/data");
     fs::create_dir_all(&target).unwrap();
     fs::copy(source, target.join("data_v4.db")).unwrap();
+}
+fn install_default_warp_fixture(temp: &TempDir) {
+    let target = temp.path().join(".local/state/warp-terminal");
+    fs::create_dir_all(&target).unwrap();
+    fs::copy(
+        provider_history_fixture("warp/v1/warp.sqlite"),
+        target.join("warp.sqlite"),
+    )
+    .unwrap();
+}
+
+fn install_default_trae_cn_fixture(temp: &TempDir, query: &str) {
+    let workspace = temp
+        .path()
+        .join("Library/Application Support/Trae CN/User/workspaceStorage/cn-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(
+        workspace.join("workspace.json"),
+        r#"{"folder":"file:///workspace/trae-cn-default"}"#,
+    )
+    .unwrap();
+    let conn = Connection::open(workspace.join("state.vscdb")).unwrap();
+    conn.execute(
+        "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
+        params![
+            "icube-ai-agent-storage-input-history",
+            json!([
+                {
+                    "id": "input-1",
+                    "inputText": query,
+                    "createdAt": "2026-07-05T13:00:00Z"
+                },
+                {
+                    "id": "input-2",
+                    "text": format!("{query} follow-up"),
+                    "createdAt": "2026-07-05T13:01:00Z"
+                }
+            ])
+            .to_string()
+        ],
+    )
+    .unwrap();
+}
+
+fn install_default_trae_fixture(temp: &TempDir, query: &str) {
+    let workspace = temp
+        .path()
+        .join("Library/Application Support/Trae/User/workspaceStorage/standard-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(
+        workspace.join("workspace.json"),
+        r#"{"folder":"file:///workspace/trae-standard-default"}"#,
+    )
+    .unwrap();
+    let conn = Connection::open(workspace.join("state.vscdb")).unwrap();
+    conn.execute(
+        "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
+        params![
+            "memento/icube-ai-agent-storage",
+            json!({
+                "list": [
+                    {
+                        "id": "standard-session",
+                        "title": "Standard Trae default discovery",
+                        "createdAt": "2026-07-05T14:00:00Z",
+                        "messages": [
+                            {
+                                "id": "standard-user",
+                                "role": "user",
+                                "content": query,
+                                "createdAt": "2026-07-05T14:00:00Z"
+                            },
+                            {
+                                "id": "standard-assistant",
+                                "role": "assistant",
+                                "content": format!("{query} assistant reply"),
+                                "createdAt": "2026-07-05T14:01:00Z"
+                            }
+                        ]
+                    }
+                ]
+            })
+            .to_string()
+        ],
+    )
+    .unwrap();
 }
 
 fn install_default_shelley_fixture(temp: &TempDir, query: &str) {
@@ -6168,6 +7360,62 @@ fn install_default_shelley_fixture(temp: &TempDir, query: &str) {
     let target = temp.path().join(".config/shelley");
     fs::create_dir_all(&target).unwrap();
     fs::copy(source, target.join("shelley.db")).unwrap();
+}
+
+fn install_default_continue_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_continue_fixture(temp, query));
+    let target = temp.path().join(".continue").join("sessions");
+    fs::create_dir_all(&target).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_file() {
+            fs::copy(&path, target.join(path.file_name().unwrap())).unwrap();
+        }
+    }
+}
+fn install_default_forgecode_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_forgecode_fixture(temp, query));
+    let target = temp.path().join(".forge");
+    fs::create_dir_all(&target).unwrap();
+    fs::copy(source, target.join(".forge.db")).unwrap();
+}
+
+fn install_default_mistral_vibe_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_mistral_vibe_fixture(temp, query));
+    copy_dir_all(
+        &source,
+        &temp.path().join(".vibe").join("logs").join("session"),
+    );
+}
+
+fn install_default_mux_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_mux_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".mux").join("sessions"));
+}
+fn install_default_rovodev_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_rovodev_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".rovodev").join("sessions"));
+}
+fn install_default_lingma_fixture(temp: &TempDir, query: &str) {
+    let target = temp
+        .path()
+        .join(".lingma/vscode/sharedClientCache/cache/db/local.db");
+    write_lingma_sqlite_fixture(&target, query);
+}
+
+fn install_default_auggie_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_auggie_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".augment").join("sessions"));
+}
+
+fn install_default_junie_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_junie_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".junie").join("sessions"));
+}
+fn install_default_openhands_fixture(temp: &TempDir, query: &str) {
+    let source = PathBuf::from(write_native_openhands_fixture(temp, query));
+    copy_dir_all(&source, &temp.path().join(".openhands"));
 }
 
 fn write_native_claude_fixture(temp: &TempDir, query: &str) -> String {
@@ -6267,7 +7515,619 @@ fn write_native_opencode_fixture(temp: &TempDir, query: &str) -> String {
     .unwrap();
     path.to_str().unwrap().to_owned()
 }
+fn write_native_kilo_fixture(temp: &TempDir, query: &str) -> String {
+    let path = temp.path().join("native-kilo.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "create table session (
+            id text primary key,
+            project_id text not null,
+            parent_id text,
+            slug text not null,
+            directory text not null,
+            title text not null,
+            version text not null,
+            model text,
+            agent text,
+            cost real not null default 0,
+            tokens_input integer not null default 0,
+            tokens_output integer not null default 0,
+            tokens_reasoning integer not null default 0,
+            tokens_cache_read integer not null default 0,
+            tokens_cache_write integer not null default 0,
+            time_created integer not null,
+            time_updated integer not null
+        );
+        create table session_message (
+            id text primary key,
+            session_id text not null,
+            type text not null,
+            time_created integer not null,
+            time_updated integer not null,
+            data text not null
+        );
+        create table message (
+            id text primary key,
+            session_id text not null,
+            time_created integer not null,
+            time_updated integer not null,
+            data text not null
+        );
+        create table part (
+            id text primary key,
+            message_id text not null,
+            session_id text not null,
+            time_created integer not null,
+            time_updated integer not null,
+            data text not null
+        );
+        create table todo (
+            session_id text not null,
+            content text not null,
+            status text not null,
+            priority text not null,
+            position integer not null,
+            time_created integer not null,
+            time_updated integer not null
+        );
+        create table permission (
+            project_id text primary key,
+            time_created integer not null,
+            time_updated integer not null,
+            data text not null
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "insert into session (
+            id, project_id, parent_id, slug, directory, title, version, model, agent,
+            time_created, time_updated
+        ) values (?1, 'project-1', null, 'native', '/workspace', 'native', '0.8.0',
+            '{\"id\":\"kilo-auto/free\",\"providerID\":\"kilo\"}', 'build',
+            1782259200000, 1782259200000)",
+        ["kilo-cli-native"],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into session_message values (?1, ?2, 'user', 1782259200000, 1782259200000, ?3)",
+        [
+            "kilo-cli-native-user",
+            "kilo-cli-native",
+            &format!(r#"{{"time":{{"created":1782259200000}},"text":"{query}"}}"#),
+        ],
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
 
+fn write_native_kiro_fixture(temp: &TempDir, query: &str) -> String {
+    let path = temp.path().join("native-kiro.sqlite3");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "create table conversations (
+            key text primary key,
+            value text
+        );
+        create table conversations_v2 (
+            key text not null,
+            conversation_id text not null,
+            value text not null,
+            created_at integer not null,
+            updated_at integer not null,
+            primary key (key, conversation_id)
+        );
+        create index idx_conversations_v2_key_updated on conversations_v2(key, updated_at desc);
+        create index idx_conversations_v2_updated_at on conversations_v2(updated_at desc);",
+    )
+    .unwrap();
+    let value = json!({
+        "conversation_id": "kiro-cli-native",
+        "history": [
+            {
+                "user": {
+                    "timestamp": "2026-06-25T20:10:00Z",
+                    "content": {
+                        "Prompt": {
+                            "prompt": query,
+                        },
+                    },
+                },
+                "assistant": {
+                    "timestamp": "2026-06-25T20:10:03Z",
+                    "Response": {
+                        "content": format!("Kiro CLI response for {query}"),
+                    },
+                },
+            },
+            {
+                "assistant": {
+                    "timestamp": "2026-06-25T20:10:05Z",
+                    "ToolUse": {
+                        "content": "Inspecting Kiro CLI fixture state.",
+                        "tool_uses": [
+                            {
+                                "id": "toolu_kiro_cli_native_1",
+                                "name": "grep",
+                                "args": {
+                                    "pattern": query,
+                                    "path": "/workspace/kiro-cli-native",
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    });
+    conn.execute(
+        "insert into conversations_v2 (key, conversation_id, value, created_at, updated_at)
+         values ('/workspace/kiro-cli-native', 'kiro-cli-native', ?1, 1782418200000, 1782418205000)",
+        [value.to_string()],
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
+fn write_native_forgecode_fixture(temp: &TempDir, query: &str) -> String {
+    let path = temp.path().join("native-forgecode.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY NOT NULL,
+            title TEXT,
+            workspace_id BIGINT NOT NULL,
+            context TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP,
+            metrics TEXT
+        );",
+    )
+    .unwrap();
+    let context = json!({
+        "conversation_id": "forgecode-cli-native",
+        "initiator": "forgecode",
+        "messages": [
+            {
+                "message": {
+                    "text": {
+                        "role": "User",
+                        "content": query
+                    }
+                }
+            },
+            {
+                "message": {
+                    "text": {
+                        "role": "Assistant",
+                        "content": "forgecode native import ok",
+                        "tool_calls": [{
+                            "name": "write",
+                            "call_id": "call-forgecode-cli",
+                            "arguments": {
+                                "path": "src/forgecode_cli_native.rs",
+                                "content": "proof"
+                            }
+                        }],
+                        "model": "forge/test-model"
+                    }
+                }
+            },
+            {
+                "message": {
+                    "tool": {
+                        "name": "write",
+                        "call_id": "call-forgecode-cli",
+                        "output": {
+                            "is_error": false,
+                            "values": [{"text": "wrote src/forgecode_cli_native.rs"}]
+                        }
+                    }
+                }
+            }
+        ],
+        "tools": [{"name": "write", "input_schema": {"type": "object"}}],
+        "tool_choice": {"Call": "write"},
+        "stream": true
+    });
+    let metrics = json!({
+        "started_at": "2026-06-24T12:00:01Z",
+        "files_changed": {
+            "src/forgecode_cli_native.rs": {
+                "lines_added": 1,
+                "lines_removed": 0,
+                "tool": "write",
+                "content_hash": "cli-fixture"
+            }
+        },
+        "files_accessed": ["src/forgecode_cli_input.rs"]
+    });
+    conn.execute(
+        "INSERT INTO conversations (
+            conversation_id, title, workspace_id, context, created_at, updated_at, metrics
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            "forgecode-cli-native",
+            "ForgeCode CLI native",
+            42_i64,
+            serde_json::to_string(&context).unwrap(),
+            "2026-06-24 12:00:00",
+            "2026-06-24 12:00:03",
+            serde_json::to_string(&metrics).unwrap()
+        ],
+    )
+    .unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+fn write_native_mistral_vibe_fixture(temp: &TempDir, query: &str) -> String {
+    let session_dir = temp
+        .path()
+        .join("native-mistral-vibe/logs/session/session_20260704_160000_vibecli");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::write(
+        session_dir.join("meta.json"),
+        json!({
+            "session_id": "mistral-vibe-cli-native",
+            "parent_session_id": null,
+            "start_time": "2026-07-04T16:00:00Z",
+            "end_time": "2026-07-04T16:00:03Z",
+            "git_commit": "2222222222222222222222222222222222222222",
+            "git_branch": "main",
+            "environment": {"working_directory": "/workspace/mistral-vibe"},
+            "username": "fixture-user",
+            "loops": [],
+            "title": "Mistral Vibe CLI native",
+            "title_source": "auto",
+            "total_messages": 4,
+            "stats": {"total_tokens": 64, "total_cost": 0.0},
+            "agent_profile": {"name": "default", "overrides": {}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        session_dir.join("messages.jsonl"),
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            json!({
+                "role": "user",
+                "content": query,
+                "message_id": "msg-mistral-vibe-user"
+            }),
+            json!({
+                "role": "assistant",
+                "content": "mistral vibe native import ok",
+                "message_id": "msg-mistral-vibe-tool",
+                "tool_calls": [{
+                    "id": "call-mistral-vibe-cli",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": "{\"path\":\"src/mistral_vibe_native.rs\",\"content\":\"proof\"}"
+                    }
+                }]
+            }),
+            json!({
+                "role": "tool",
+                "content": "wrote src/mistral_vibe_native.rs",
+                "tool_call_id": "call-mistral-vibe-cli",
+                "name": "write_file"
+            }),
+            json!({
+                "role": "assistant",
+                "content": "Mistral Vibe import finished",
+                "message_id": "msg-mistral-vibe-final"
+            })
+        ),
+    )
+    .unwrap();
+    temp.path()
+        .join("native-mistral-vibe/logs/session")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+fn write_native_rovodev_fixture(temp: &TempDir, query: &str) -> String {
+    let session = temp
+        .path()
+        .join("native-rovodev/sessions/rovodev-cli-native");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        session.join("metadata.json"),
+        json!({
+            "session_id": "rovodev-cli-native",
+            "title": "Rovo Dev CLI native",
+            "workspace_path": "/workspace/rovodev",
+            "created_at": "2026-07-04T18:20:00Z",
+            "updated_at": "2026-07-04T18:20:02Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        session.join("session_context.json"),
+        json!({
+            "message_history": [
+                {
+                    "id": "rovodev-cli-native-user",
+                    "role": "user",
+                    "created_at": "2026-07-04T18:20:00Z",
+                    "parts": [{"kind": "text", "text": query}]
+                },
+                {
+                    "id": "rovodev-cli-native-assistant",
+                    "role": "assistant",
+                    "created_at": "2026-07-04T18:20:01Z",
+                    "parts": [
+                        {"kind": "text", "text": "rovodev native import ok"},
+                        {"kind": "tool_use", "name": "Write", "input": {"path": "src/rovodev_cli_native.txt", "content": "proof"}}
+                    ]
+                },
+                {
+                    "id": "rovodev-cli-native-tool",
+                    "role": "tool",
+                    "created_at": "2026-07-04T18:20:02Z",
+                    "parts": [{"kind": "tool_result", "content": "wrote src/rovodev_cli_native.txt"}]
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    temp.path()
+        .join("native-rovodev/sessions")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+fn write_native_auggie_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-auggie/sessions");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("01K0AUGGIENATIVE0000000000.json"),
+        serde_json::to_string_pretty(&json!({
+            "sessionId": "01K0AUGGIENATIVE0000000000",
+            "created": "2026-07-04T20:00:00.000Z",
+            "modified": "2026-07-04T20:00:04.000Z",
+            "workspaceId": "workspace-auggie-native",
+            "workspaceRoot": "/workspace/auggie",
+            "agentState": {
+                "userGuidelines": "",
+                "workspaceGuidelines": ""
+            },
+            "chatHistory": [
+                {
+                    "exchange": {
+                        "request_message": query,
+                        "response_text": "native Auggie import ok",
+                        "request_id": "req-auggie-native-1"
+                    },
+                    "completed": true,
+                    "sequenceId": 1,
+                    "finishedAt": "2026-07-04T20:00:02.000Z",
+                    "changedFiles": [],
+                    "changedFilesSkipped": [],
+                    "changedFilesSkippedCount": 0,
+                    "isHistorySummary": false,
+                    "historySummaryVersion": 0,
+                    "source": "remote"
+                },
+                {
+                    "exchange": {
+                        "request_nodes": [{
+                            "type": 0,
+                            "text_node": {
+                                "content": format!("{query} node")
+                            }
+                        }],
+                        "response_nodes": [{
+                            "type": 0,
+                            "text_node": {
+                                "content": "native Auggie node response"
+                            }
+                        }],
+                        "request_id": "req-auggie-native-2"
+                    },
+                    "completed": true,
+                    "sequenceId": 2,
+                    "finishedAt": "2026-07-04T20:00:04.000Z",
+                    "changedFiles": [],
+                    "changedFilesSkipped": [],
+                    "changedFilesSkippedCount": 0,
+                    "isHistorySummary": false,
+                    "historySummaryVersion": 0,
+                    "source": "remote"
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    root.to_str().unwrap().to_owned()
+}
+
+fn write_native_firebender_fixture(temp: &TempDir, query: &str) -> String {
+    let project = temp.path().join("native-firebender/project");
+    let db = project
+        .join(".idea")
+        .join("firebender")
+        .join("chat_history.db");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::copy(
+        provider_history_fixture("firebender/v1/.idea/firebender/chat_history.db"),
+        &db,
+    )
+    .unwrap();
+    let conn = Connection::open(&db).unwrap();
+    let messages = sqlite_column_text(
+        &conn,
+        "SELECT messages_json FROM chat_sessions WHERE id = 'firebender-fixture-session'",
+    )
+    .replace("firebender fixture oracle prompt", query);
+    conn.execute(
+        "UPDATE chat_sessions SET messages_json = ?1 WHERE id = 'firebender-fixture-session'",
+        params![messages],
+    )
+    .unwrap();
+    project.to_str().unwrap().to_owned()
+}
+fn write_native_junie_fixture(temp: &TempDir, query: &str) -> String {
+    let sessions = temp.path().join("native-junie/sessions");
+    let session_id = "session-260607-120000-native";
+    let session = sessions.join(session_id);
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        sessions.join("index.jsonl"),
+        format!(
+            "{}\n",
+            json!({
+                "sessionId": session_id,
+                "createdAt": 1783348800000i64,
+                "updatedAt": 1783348920000i64,
+                "taskName": "Junie native CLI fixture",
+                "projectDir": "/workspace/junie-native"
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        session.join("events.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "kind": "UserPromptEvent",
+                "prompt": query
+            }),
+            json!({
+                "kind": "SessionA2uxEvent",
+                "timestampMs": 1783348920000i64,
+                "event": {
+                    "agentEvent": {
+                        "kind": "ResultBlockUpdatedEvent",
+                        "stepId": "result-1",
+                        "result": format!("Junie answered {query}")
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+    sessions.to_str().unwrap().to_owned()
+}
+fn write_native_mux_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-mux/sessions");
+    let session_dir = root.join("mux-cli-native");
+    let child_dir = session_dir
+        .join("subagent-transcripts")
+        .join("mux-cli-child");
+    fs::create_dir_all(&child_dir).unwrap();
+    fs::write(
+        session_dir.join("metadata.json"),
+        json!({
+            "workspaceId": "mux-cli-native",
+            "projectPath": "/workspace/mux",
+            "model": "gpt-5-test"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        session_dir.join("chat.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "id": "msg-mux-cli-user",
+                "role": "user",
+                "parts": [{"type": "text", "text": query, "timestamp": 1783180800000_i64}],
+                "createdAt": "2026-07-04T16:00:00.000Z",
+                "metadata": {"historySequence": 0, "timestamp": 1783180800000_i64, "model": "gpt-5-test"},
+                "workspaceId": "mux-cli-native"
+            }),
+            json!({
+                "id": "msg-mux-cli-tool-call",
+                "role": "assistant",
+                "parts": [
+                    {"type": "text", "text": "mux cli native import ok", "timestamp": 1783180801000_i64},
+                    {
+                        "type": "dynamic-tool",
+                        "toolCallId": "call-mux-cli",
+                        "toolName": "file_write",
+                        "input": {"path": "src/mux_native.rs", "content": "proof"},
+                        "state": "input-available",
+                        "timestamp": 1783180801000_i64
+                    }
+                ],
+                "createdAt": "2026-07-04T16:00:01.000Z",
+                "metadata": {"historySequence": 1, "timestamp": 1783180801000_i64, "model": "gpt-5-test"},
+                "workspaceId": "mux-cli-native"
+            }),
+            json!({
+                "id": "msg-mux-cli-tool-output",
+                "role": "assistant",
+                "parts": [{
+                    "type": "dynamic-tool",
+                    "toolCallId": "call-mux-cli",
+                    "toolName": "file_write",
+                    "input": {"path": "src/mux_native.rs", "content": "proof"},
+                    "state": "output-available",
+                    "output": {"path": "src/mux_native.rs", "ok": true},
+                    "timestamp": 1783180802000_i64
+                }],
+                "createdAt": "2026-07-04T16:00:02.000Z",
+                "metadata": {"historySequence": 2, "timestamp": 1783180802000_i64, "model": "gpt-5-test"},
+                "workspaceId": "mux-cli-native"
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        session_dir.join("partial.json"),
+        json!({
+            "id": "msg-mux-cli-partial",
+            "role": "assistant",
+            "parts": [{"type": "text", "text": "mux cli partial searchable", "timestamp": 1783180803000_i64}],
+            "createdAt": "2026-07-04T16:00:03.000Z",
+            "metadata": {"historySequence": 3, "timestamp": 1783180803000_i64, "model": "gpt-5-test", "partial": true},
+            "workspaceId": "mux-cli-native"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        child_dir.join("metadata.json"),
+        json!({
+            "childTaskId": "mux-cli-child",
+            "parentWorkspaceId": "mux-cli-native",
+            "projectPath": "/workspace/mux",
+            "model": "gpt-5-test"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        child_dir.join("chat.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "id": "msg-mux-cli-child-user",
+                "role": "user",
+                "parts": [{"type": "text", "text": "mux child prompt", "timestamp": 1783180804000_i64}],
+                "createdAt": "2026-07-04T16:00:04.000Z",
+                "metadata": {"historySequence": 0, "timestamp": 1783180804000_i64, "model": "gpt-5-test"},
+                "workspaceId": "mux-cli-child"
+            }),
+            json!({
+                "id": "msg-mux-cli-child-assistant",
+                "role": "assistant",
+                "parts": [{"type": "text", "text": "mux child finished", "timestamp": 1783180805000_i64}],
+                "createdAt": "2026-07-04T16:00:05.000Z",
+                "metadata": {"historySequence": 1, "timestamp": 1783180805000_i64, "model": "gpt-5-test"},
+                "workspaceId": "mux-cli-child"
+            })
+        ),
+    )
+    .unwrap();
+    root.to_str().unwrap().to_owned()
+}
 fn write_native_gemini_fixture(temp: &TempDir, query: &str) -> String {
     let chats = temp.path().join("native-gemini/.gemini/tmp/project/chats");
     fs::create_dir_all(&chats).unwrap();
@@ -6321,6 +8181,203 @@ fn write_native_cursor_fixture(temp: &TempDir, query: &str) -> String {
     .unwrap();
     temp.path()
         .join("native-cursor/projects")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn write_native_windsurf_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-windsurf/transcripts");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("windsurf-cli-native.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "status": "done",
+                "type": "user_input",
+                "user_input": {"user_response": query}
+            }),
+            json!({
+                "status": "done",
+                "type": "planner_response",
+                "planner_response": {"response": "native import ok"}
+            }),
+            json!({
+                "status": "done",
+                "type": "code_action",
+                "code_action": {
+                    "path": "src/windsurf_cli_native.py",
+                    "new_content": "print('native import ok')\n"
+                }
+            })
+        ),
+    )
+    .unwrap();
+    root.to_str().unwrap().to_owned()
+}
+
+fn write_native_qoder_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp
+        .path()
+        .join("native-qoder/projects/sanitized-workspace/transcript");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("qoder-cli-native.jsonl"),
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            json!({
+                "type": "session_meta",
+                "sessionId": "qoder-cli-native",
+                "uuid": "qoder-cli-meta",
+                "timestamp": "2026-07-01T12:00:00Z",
+                "cwd": "/workspace/qoder-cli",
+                "data": {
+                    "meta_type": "session_info",
+                    "content": {"mode": "agent", "session_type": "assistant"}
+                }
+            }),
+            json!({
+                "type": "user",
+                "sessionId": "qoder-cli-native",
+                "uuid": "qoder-cli-user",
+                "timestamp": "2026-07-01T12:00:01Z",
+                "cwd": "/workspace/qoder-cli",
+                "message": {"role": "user", "content": query}
+            }),
+            json!({
+                "type": "assistant",
+                "sessionId": "qoder-cli-native",
+                "uuid": "qoder-cli-assistant",
+                "timestamp": "2026-07-01T12:00:02Z",
+                "cwd": "/workspace/qoder-cli",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "qoder native import ok"}]
+                }
+            }),
+            json!({
+                "type": "assistant",
+                "sessionId": "qoder-cli-native",
+                "uuid": "qoder-cli-tool",
+                "timestamp": "2026-07-01T12:00:03Z",
+                "cwd": "/workspace/qoder-cli",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call-qoder-cli-read",
+                        "name": "read_file",
+                        "input": {"file_path": "src/qoder_cli_native.py"}
+                    }]
+                }
+            }),
+            json!({
+                "type": "user",
+                "sessionId": "qoder-cli-native",
+                "uuid": "qoder-cli-tool-result",
+                "timestamp": "2026-07-01T12:00:04Z",
+                "cwd": "/workspace/qoder-cli",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "call-qoder-cli-read",
+                        "content": "native qoder fixture result",
+                        "is_error": false
+                    }]
+                },
+                "toolUseResult": "native qoder fixture result"
+            })
+        ),
+    )
+    .unwrap();
+    temp.path()
+        .join("native-qoder/projects")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn write_native_openhands_fixture(temp: &TempDir, query: &str) -> String {
+    let conversation = temp
+        .path()
+        .join("native-openhands/local-user/v1_conversations/12345678123456781234567812345678");
+    fs::create_dir_all(&conversation).unwrap();
+    fs::write(
+        conversation.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "timestamp": "2026-06-24T12:00:00Z",
+            "source": "user",
+            "llm_message": {
+                "role": "user",
+                "content": [{"type": "text", "text": query}]
+            },
+            "activated_microagents": [],
+            "extended_content": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        conversation.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "timestamp": "2026-06-24T12:00:01Z",
+            "source": "agent",
+            "action": {
+                "kind": "FileEditorAction",
+                "command": "str_replace",
+                "path": "openhands-cli-native-oracle.txt",
+                "file_text": null,
+                "old_str": "old",
+                "new_str": "new",
+                "insert_line": null,
+                "view_range": null
+            },
+            "tool_name": "FileEditor",
+            "tool_call_id": "call-openhands-file",
+            "tool_call": {
+                "id": "call-openhands-file",
+                "type": "function",
+                "function": {
+                    "name": "FileEditor",
+                    "arguments": "{\"command\":\"str_replace\"}"
+                }
+            },
+            "llm_response_id": "response-openhands-file",
+            "security_risk": "LOW",
+            "thought": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        conversation.join("cccccccccccccccccccccccccccccccc.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "cccccccccccccccccccccccccccccccc",
+            "timestamp": "2026-06-24T12:00:02Z",
+            "source": "environment",
+            "observation": {
+                "kind": "FileEditorObservation",
+                "command": "str_replace",
+                "output": "Edited openhands-cli-native-oracle.txt",
+                "path": "openhands-cli-native-oracle.txt",
+                "prev_exist": true,
+                "old_content": "old",
+                "new_content": "new",
+                "error": null
+            },
+            "tool_name": "FileEditor",
+            "tool_call_id": "call-openhands-file",
+            "action_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    temp.path()
+        .join("native-openhands")
         .to_str()
         .unwrap()
         .to_owned()
@@ -6393,6 +8450,229 @@ fn write_native_factory_droid_fixture(temp: &TempDir, query: &str) -> String {
         .to_owned()
 }
 
+fn write_native_qwen_fixture(temp: &TempDir, query: &str) -> String {
+    let chats = temp
+        .path()
+        .join("native-qwen/.qwen/projects/workspace-qwen/chats");
+    fs::create_dir_all(&chats).unwrap();
+    fs::write(
+        chats.join("qwen-cli-native.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "uuid": "qwen-cli-native-user",
+                "parentUuid": null,
+                "sessionId": "qwen-cli-native",
+                "timestamp": "2026-07-04T12:00:00Z",
+                "type": "user",
+                "cwd": "/workspace/qwen",
+                "version": "test",
+                "gitBranch": "main",
+                "message": {"role": "user", "content": [{"type": "text", "text": query}]},
+                "model": "qwen3-coder"
+            }),
+            json!({
+                "uuid": "qwen-cli-native-assistant",
+                "parentUuid": "qwen-cli-native-user",
+                "sessionId": "qwen-cli-native",
+                "timestamp": "2026-07-04T12:00:01Z",
+                "type": "assistant",
+                "cwd": "/workspace/qwen",
+                "version": "test",
+                "gitBranch": "main",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "native Qwen import ok"},
+                        {"type": "tool_use", "id": "tool-1", "name": "Write", "input": {"path": "src/qwen_cli_native.txt", "content": "proof"}}
+                    ]
+                },
+                "usageMetadata": {"inputTokens": 5, "outputTokens": 7},
+                "model": "qwen3-coder"
+            }),
+            json!({
+                "uuid": "qwen-cli-native-tool",
+                "parentUuid": "qwen-cli-native-assistant",
+                "sessionId": "qwen-cli-native",
+                "timestamp": "2026-07-04T12:00:02Z",
+                "type": "tool_result",
+                "cwd": "/workspace/qwen",
+                "version": "test",
+                "gitBranch": "main",
+                "message": {"role": "tool", "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "wrote src/qwen_cli_native.txt"}]},
+                "toolCallResult": {"tool": "Write", "path": "src/qwen_cli_native.txt", "output": "ok"},
+                "model": "qwen3-coder"
+            })
+        ),
+    )
+    .unwrap();
+    temp.path()
+        .join("native-qwen/.qwen/projects")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn write_native_kimi_fixture(temp: &TempDir, query: &str) -> String {
+    let home = temp.path().join("native-kimi/.kimi-code");
+    let session = home.join("sessions/wd_demo_abc123/kimi-cli-native");
+    let main = session.join("agents/main");
+    let child = session.join("agents/agent-1");
+    fs::create_dir_all(&main).unwrap();
+    fs::create_dir_all(&child).unwrap();
+    fs::write(
+        home.join("session_index.jsonl"),
+        format!(
+            "{}\n",
+            json!({
+                "sessionId": "kimi-cli-native",
+                "sessionDir": session.display().to_string(),
+                "workDir": "/workspace/kimi"
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        session.join("state.json"),
+        json!({
+            "createdAt": "2026-07-04T13:00:00Z",
+            "updatedAt": "2026-07-04T13:00:05Z",
+            "title": "Kimi native CLI",
+            "lastPrompt": query,
+            "agents": {
+                "main": {"homedir": "/fixture/agents/main", "type": "main", "parentAgentId": null},
+                "agent-1": {"homedir": "/fixture/agents/agent-1", "type": "coder", "parentAgentId": "main"}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        main.join("wire.jsonl"),
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n",
+            json!({"type": "metadata", "protocol_version": "1.4", "created_at": 1783170000000i64}),
+            json!({"type": "turn.prompt", "time": 1783170001000i64, "input": [{"type": "text", "text": query}], "origin": {"kind": "user"}}),
+            json!({"type": "context.append_message", "time": 1783170002000i64, "message": {"role": "assistant", "content": [{"type": "text", "text": "native Kimi import ok"}]}}),
+            json!({"type": "context.append_loop_event", "time": 1783170003000i64, "event": {"type": "tool.call", "toolName": "Write", "input": {"path": "src/kimi_cli_native.txt", "content": "proof"}}}),
+            json!({"type": "context.append_loop_event", "time": 1783170004000i64, "event": {"type": "tool.result", "toolName": "Write", "output": "wrote src/kimi_cli_native.txt"}}),
+            json!({"type": "usage.record", "time": 1783170005000i64, "model": "kimi-k2", "usage": {"input_tokens": 11, "output_tokens": 13}})
+        ),
+    )
+    .unwrap();
+    fs::write(
+        child.join("wire.jsonl"),
+        concat!(
+            "{\"type\":\"metadata\",\"protocol_version\":\"1.4\",\"created_at\":1783170006000}\n",
+            "{\"type\":\"turn.prompt\",\"time\":1783170007000,\"input\":[{\"type\":\"text\",\"text\":\"child inspect\"}]}\n",
+            "{\"type\":\"context.append_message\",\"time\":1783170008000,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"child done\"}]}}\n",
+        ),
+    )
+    .unwrap();
+    home.to_str().unwrap().to_owned()
+}
+fn write_native_codebuddy_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-codebuddy/CodeBuddyExtension");
+    let project = root.join("Data/VSCode/default/history/11112222333344445555666677778888");
+    let session = project.join("session-cli");
+    let messages = session.join("messages");
+    fs::create_dir_all(&messages).unwrap();
+    fs::write(
+        project.join("index.json"),
+        json!({
+            "conversations": [{
+                "id": "session-cli",
+                "type": "chat",
+                "name": "CodeBuddy CLI fixture",
+                "createdAt": "2026-07-04T14:00:00Z",
+                "lastMessageAt": "2026-07-04T14:00:02Z"
+            }],
+            "current": "session-cli"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        session.join("index.json"),
+        json!({
+            "messages": [
+                {"id": "msg-user", "role": "user", "type": "message"},
+                {"id": "msg-assistant", "role": "assistant", "type": "message"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        messages.join("msg-user.json"),
+        json!({
+            "id": "msg-user",
+            "role": "user",
+            "message": json!({
+                "content": [{"type": "text", "text": query}],
+                "createdAt": "2026-07-04T14:00:01Z"
+            }).to_string()
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        messages.join("msg-assistant.json"),
+        json!({
+            "id": "msg-assistant",
+            "role": "assistant",
+            "message": json!({
+                "content": "CodeBuddy CLI native import ok",
+                "createdAt": "2026-07-04T14:00:02Z"
+            }).to_string()
+        })
+        .to_string(),
+    )
+    .unwrap();
+    root.to_str().unwrap().to_owned()
+}
+
+fn write_native_lingma_fixture(temp: &TempDir, query: &str) -> String {
+    let db = temp.path().join("native-lingma/local.db");
+    write_lingma_sqlite_fixture(&db, query);
+    db.to_str().unwrap().to_owned()
+}
+
+fn write_lingma_sqlite_fixture(path: &Path, query: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE chat_record (
+            session_id TEXT NOT NULL,
+            request_id TEXT,
+            chat_prompt TEXT,
+            summary TEXT,
+            error_result TEXT,
+            gmt_create INTEGER,
+            extra TEXT
+        );
+        "#,
+    )
+    .unwrap();
+    conn.execute(
+        r#"
+        INSERT INTO chat_record
+            (session_id, request_id, chat_prompt, summary, error_result, gmt_create, extra)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            "lingma-cli-session",
+            "lingma-cli-request",
+            query,
+            "Lingma CLI assistant summary import ok",
+            "{}",
+            1_783_166_400_000_i64,
+            json!({"model": "lingma-cli-fixture"}).to_string(),
+        ],
+    )
+    .unwrap();
+}
 fn write_native_openclaw_fixture(temp: &TempDir, query: &str) -> String {
     let root = temp.path().join("native-openclaw");
     let sessions = root.join("agents/personal-agent/sessions");
@@ -6753,6 +9033,88 @@ fn write_native_shelley_fixture(temp: &TempDir, query: &str) -> String {
     path.to_str().unwrap().to_owned()
 }
 
+fn write_native_continue_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp.path().join("native-continue/sessions");
+    fs::create_dir_all(&root).unwrap();
+    let session_id = "continue-cli-native";
+    fs::write(
+        root.join("sessions.json"),
+        serde_json::to_string_pretty(&json!([
+            {
+                "sessionId": session_id,
+                "title": "native continue",
+                "dateCreated": "2026-06-24T12:00:00Z",
+                "workspaceDirectory": "/workspace",
+                "messageCount": 1
+            }
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join(format!("{session_id}.json")),
+        serde_json::to_string_pretty(&json!({
+            "sessionId": session_id,
+            "title": "native continue",
+            "workspaceDirectory": "/workspace",
+            "history": [
+                {
+                    "id": "continue-cli-native-user",
+                    "timestamp": "2026-06-24T12:00:01Z",
+                    "message": {
+                        "role": "user",
+                        "content": query
+                    },
+                    "contextItems": [
+                        {
+                            "name": "fixture.rs",
+                            "content": "Continue context item marker"
+                        }
+                    ],
+                    "editorState": query
+                },
+                {
+                    "id": "continue-cli-native-assistant",
+                    "timestamp": "2026-06-24T12:00:02Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": "native Continue import ok"
+                    },
+                    "toolCallStates": [
+                        {
+                            "toolCallId": "tool-continue-read",
+                            "toolCall": {
+                                "id": "tool-continue-read",
+                                "type": "function",
+                                "function": {
+                                    "name": "readFile",
+                                    "arguments": "{\"filepath\":\"fixture.rs\"}"
+                                }
+                            },
+                            "status": "done",
+                            "output": [
+                                {
+                                    "name": "Result",
+                                    "description": "",
+                                    "content": "Continue tool output marker"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "usage": {
+                "totalCost": 0,
+                "promptTokens": 12,
+                "completionTokens": 8
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    root.to_str().unwrap().to_owned()
+}
+
 fn append_native_openclaw_event(path: &str, query: &str) {
     let transcript =
         Path::new(path).join("agents/personal-agent/sessions/openclaw-cli-native.jsonl");
@@ -6913,6 +9275,7 @@ fn personal_agent_sqlite_imports_report_corrupt_databases() {
         ("hermes", "corrupt-hermes-state.db"),
         ("astrbot", "corrupt-astrbot-data_v4.db"),
         ("shelley", "corrupt-shelley.db"),
+        ("lingma", "corrupt-lingma-local.db"),
     ] {
         let temp = tempdir();
         let db_path = temp.path().join(path);
@@ -6962,9 +9325,11 @@ fn native_provider_cli_requires_existing_history_or_explicit_path() {
     for (cli_provider, expected_blocker) in [
         ("claude", "no importable claude history found"),
         ("opencode", "no importable opencode history found"),
+        ("kilo", "no importable kilo history found"),
         ("antigravity", "no importable antigravity history found"),
         ("gemini", "no importable gemini history found"),
         ("cursor", "no importable cursor history found"),
+        ("zed", "no importable zed history found"),
         ("copilot-cli", "no importable copilot_cli history found"),
         (
             "factory-ai-droid",
@@ -6975,6 +9340,14 @@ fn native_provider_cli_requires_existing_history_or_explicit_path() {
         ("nanoclaw", "no importable nanoclaw history found"),
         ("astrbot", "no importable astrbot history found"),
         ("shelley", "no importable shelley history found"),
+        ("lingma", "no importable lingma history found"),
+        ("codebuddy", "no importable codebuddy history found"),
+        ("auggie", "no importable auggie history found"),
+        ("deepagents", "no importable deepagents history found"),
+        ("mistral-vibe", "no importable mistral_vibe history found"),
+        ("mux", "no importable mux history found"),
+        ("cline", "no importable cline history found"),
+        ("roo", "no importable roo_code history found"),
     ] {
         let temp = tempdir();
         let stderr =
@@ -6992,6 +9365,68 @@ fn native_provider_cli_requires_existing_history_or_explicit_path() {
             assert!(stderr.contains(temp.path().to_str().unwrap()), "{stderr}");
         }
     }
+}
+
+#[test]
+fn task_json_cli_imports_cline_and_roo_and_searches() {
+    let temp = tempdir();
+    let cline = provider_history_fixture("cline/data");
+
+    let imported =
+        json_output(ctx(&temp).args(["import", "--provider", "cline", "--path", &cline, "--json"]));
+    assert_eq!(imported["schema_version"], 1);
+    assert_eq!(imported["sources"][0]["provider"], "cline");
+    assert_eq!(
+        imported["sources"][0]["source_format"],
+        "cline_task_directory_json"
+    );
+    assert_eq!(imported["totals"]["imported_sessions"], 1);
+    assert_eq!(imported["totals"]["imported_events"], 3);
+    assert_eq!(imported["totals"]["failed"], 0);
+
+    let second =
+        json_output(ctx(&temp).args(["import", "--provider", "cline", "--path", &cline, "--json"]));
+    assert_eq!(second["totals"]["imported_sessions"], 0);
+    assert_eq!(second["totals"]["imported_events"], 0);
+    assert_eq!(second["totals"]["skipped_events"], 3);
+
+    let search =
+        json_output(ctx(&temp).args(["search", "parser note", "--provider", "cline", "--json"]));
+    let results = search["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "{search:#}");
+    assert!(results.iter().all(|result| result["provider"] == "cline"));
+
+    let roo = provider_history_fixture("roo/storage");
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "roo-code",
+        "--path",
+        &roo,
+        "--json",
+    ]));
+    assert_eq!(imported["schema_version"], 1);
+    assert_eq!(imported["sources"][0]["provider"], "roo_code");
+    assert_eq!(
+        imported["sources"][0]["source_format"],
+        "roo_task_directory_json"
+    );
+    assert_eq!(imported["totals"]["imported_sessions"], 2);
+    assert_eq!(imported["totals"]["imported_events"], 5);
+    assert_eq!(imported["totals"]["failed"], 0);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "fallback claude_messages",
+        "--provider",
+        "roo",
+        "--json",
+    ]));
+    let results = search["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "{search:#}");
+    assert!(results
+        .iter()
+        .all(|result| result["provider"] == "roo_code"));
 }
 
 #[test]

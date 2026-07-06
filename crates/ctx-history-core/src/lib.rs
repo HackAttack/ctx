@@ -186,16 +186,42 @@ text_enum! {
         Claude => "claude",
         Pi => "pi",
         OpenCode => "opencode",
+        Kilo => "kilo",
+        KiroCli => "kiro_cli",
         Antigravity => "antigravity",
         Gemini => "gemini",
+        Tabnine => "tabnine",
         Cursor => "cursor",
+        Windsurf => "windsurf",
+        Zed => "zed",
         CopilotCli => "copilot_cli",
         FactoryAiDroid => "factory_ai_droid",
+        QwenCode => "qwen_code",
+        KimiCodeCli => "kimi_code_cli",
+        Auggie => "auggie",
+        Junie => "junie",
+        Firebender => "firebender",
+        ForgeCode => "forgecode",
+        DeepAgents => "deepagents",
+        MistralVibe => "mistral_vibe",
+        Mux => "mux",
+        RovoDev => "rovodev",
         OpenClaw => "openclaw",
         Hermes => "hermes",
         NanoClaw => "nanoclaw",
         AstrBot => "astrbot",
         Shelley => "shelley",
+        Continue => "continue",
+        OpenHands => "openhands",
+        Cline => "cline",
+        RooCode => "roo_code",
+        Crush => "crush",
+        Goose => "goose",
+        Lingma => "lingma",
+        Qoder => "qoder",
+        Warp => "warp",
+        CodeBuddy => "codebuddy",
+        Trae => "trae",
         Shell => "shell",
         Git => "git",
         Jj => "jj",
@@ -1503,6 +1529,42 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<CaptureProvider>("\"factory_ai_droid\"").unwrap(),
             CaptureProvider::FactoryAiDroid
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"kilo\"").unwrap(),
+            CaptureProvider::Kilo
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"kiro_cli\"").unwrap(),
+            CaptureProvider::KiroCli
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"qwen_code\"").unwrap(),
+            CaptureProvider::QwenCode
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"kimi_code_cli\"").unwrap(),
+            CaptureProvider::KimiCodeCli
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"forgecode\"").unwrap(),
+            CaptureProvider::ForgeCode
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"mistral_vibe\"").unwrap(),
+            CaptureProvider::MistralVibe
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"mux\"").unwrap(),
+            CaptureProvider::Mux
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"rovodev\"").unwrap(),
+            CaptureProvider::RovoDev
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureProvider>("\"lingma\"").unwrap(),
+            CaptureProvider::Lingma
         );
 
         let sync: SyncMetadata = serde_json::from_value(json!({})).unwrap();

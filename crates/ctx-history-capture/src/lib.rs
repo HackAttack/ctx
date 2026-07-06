@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use ctx_history_core::{
     inbox_dir as core_inbox_dir, new_id, utc_now, AgentType, CaptureEnvelope, CaptureProvider,
     CaptureSource, CaptureSourceDescriptor, CaptureSourceKind, Confidence,
@@ -25,6 +25,7 @@ use ctx_history_core::{
     CTX_HISTORY_JSONL_V1_SCHEMA_VERSION, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use ctx_history_store::{CatalogSession, Store, StoreError};
+use rmpv::{decode::read_value as read_msgpack_value, Value as MsgpackValue};
 use rusqlite::{limits::Limit, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -438,6 +439,132 @@ impl Default for ClaudeProjectsImportOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClineTaskJsonImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for ClineTaskJsonImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RooTaskJsonImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for RooTaskJsonImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeBuddyImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for CodeBuddyImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuggieImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for AuggieImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JunieImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for JunieImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FirebenderSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for FirebenderSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct OpenCodeSqliteImportOptions {
     pub machine_id: String,
     pub source_path: Option<PathBuf>,
@@ -447,6 +574,92 @@ pub struct OpenCodeSqliteImportOptions {
 }
 
 impl Default for OpenCodeSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+pub type KiloSqliteImportOptions = OpenCodeSqliteImportOptions;
+pub type KiroSqliteImportOptions = OpenCodeSqliteImportOptions;
+#[derive(Debug, Clone)]
+pub struct ForgeCodeSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for ForgeCodeSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeepAgentsSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for DeepAgentsSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CrushSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for CrushSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GooseSessionsSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for GooseSessionsSqliteImportOptions {
     fn default() -> Self {
         Self {
             machine_id: default_machine_id(),
@@ -564,6 +777,111 @@ impl Default for ShelleySqliteImportOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct ContinueCliImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for ContinueCliImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenHandsImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for OpenHandsImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WarpSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for WarpSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LingmaSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for LingmaSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TraeImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for TraeImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct AntigravityCliImportOptions {
     pub machine_id: String,
     pub source_path: Option<PathBuf>,
@@ -604,6 +922,8 @@ impl Default for GeminiCliImportOptions {
         }
     }
 }
+
+pub type TabnineCliImportOptions = GeminiCliImportOptions;
 
 #[derive(Debug, Clone)]
 pub struct FactoryAiDroidImportOptions {
@@ -657,6 +977,174 @@ pub struct CursorNativeImportOptions {
 }
 
 impl Default for CursorNativeImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WindsurfCascadeHookImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for WindsurfCascadeHookImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QoderImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for QoderImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ZedThreadsSqliteImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for ZedThreadsSqliteImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QwenCodeImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for QwenCodeImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KimiCodeCliImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for KimiCodeCliImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RovoDevImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for RovoDevImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MistralVibeImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for MistralVibeImportOptions {
+    fn default() -> Self {
+        Self {
+            machine_id: default_machine_id(),
+            source_path: None,
+            imported_at: utc_now(),
+            history_record_id: None,
+            allow_partial_failures: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MuxImportOptions {
+    pub machine_id: String,
+    pub source_path: Option<PathBuf>,
+    pub imported_at: DateTime<Utc>,
+    pub history_record_id: Option<Uuid>,
+    pub allow_partial_failures: bool,
+}
+
+impl Default for MuxImportOptions {
     fn default() -> Self {
         Self {
             machine_id: default_machine_id(),
@@ -870,7 +1358,37 @@ pub struct PiSessionJsonlAdapter;
 pub struct ClaudeProjectsJsonlAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct ClineTaskJsonAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RooTaskJsonAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CodeBuddyHistoryJsonAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AuggieSessionJsonAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JunieSessionEventsAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FirebenderSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct OpenCodeSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KiloSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KiroSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CrushSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GooseSessionsSqliteAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpenClawJsonlAdapter;
@@ -888,19 +1406,61 @@ pub struct AstrBotSqliteAdapter;
 pub struct ShelleySqliteAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct ContinueCliSessionsAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenHandsFileEventsAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LingmaSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityCliJsonlAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GeminiCliJsonlAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct TabnineCliJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CursorAgentTranscriptJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WindsurfCascadeHookTranscriptJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QoderJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ZedThreadsSqliteAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FactoryAiDroidJsonlAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CopilotCliSessionEventsAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QwenCodeJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KimiCodeCliWireJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RovoDevSessionJsonAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ForgeCodeSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeepAgentsSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MistralVibeJsonlAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MuxJsonlAdapter;
 
 impl ProviderCaptureAdapter for ProviderFixtureJsonlAdapter {
     fn provider(&self) -> CaptureProvider {
@@ -1459,7 +2019,7 @@ fn normalize_pi_session_jsonl_file(
             continue;
         }
 
-        let value: Value = match serde_json::from_slice(&line) {
+        let value: Value = match serde_json::from_slice::<Value>(&line) {
             Ok(value) => value,
             Err(err) => {
                 result.summary.failed += 1;
@@ -1550,6 +2110,114 @@ impl ProviderCaptureAdapter for ClaudeProjectsJsonlAdapter {
     }
 }
 
+impl ProviderCaptureAdapter for ClineTaskJsonAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Cline
+    }
+
+    fn source_format(&self) -> &str {
+        CLINE_TASK_JSON_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_task_json_history(path, context, task_json_provider(CaptureProvider::Cline))
+    }
+}
+
+impl ProviderCaptureAdapter for RooTaskJsonAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::RooCode
+    }
+
+    fn source_format(&self) -> &str {
+        ROO_TASK_JSON_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_task_json_history(path, context, task_json_provider(CaptureProvider::RooCode))
+    }
+}
+
+impl ProviderCaptureAdapter for CodeBuddyHistoryJsonAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::CodeBuddy
+    }
+
+    fn source_format(&self) -> &str {
+        CODEBUDDY_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_codebuddy_history(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for AuggieSessionJsonAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Auggie
+    }
+
+    fn source_format(&self) -> &str {
+        AUGGIE_SESSION_JSON_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_auggie_sessions(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for JunieSessionEventsAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Junie
+    }
+
+    fn source_format(&self) -> &str {
+        JUNIE_SESSION_EVENTS_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_junie_session_events(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for FirebenderSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Firebender
+    }
+
+    fn source_format(&self) -> &str {
+        FIREBENDER_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_firebender_sqlite(path, context)
+    }
+}
+
 impl ProviderCaptureAdapter for OpenCodeSqliteAdapter {
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::OpenCode
@@ -1565,7 +2233,80 @@ impl ProviderCaptureAdapter for OpenCodeSqliteAdapter {
         context: &ProviderAdapterContext,
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
-        normalize_opencode_sqlite(path, context)
+        normalize_opencode_sqlite(path, context, &OPENCODE_SQLITE_DIALECT)
+    }
+}
+
+impl ProviderCaptureAdapter for KiloSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Kilo
+    }
+
+    fn source_format(&self) -> &str {
+        KILO_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        ensure_regular_provider_transcript_file(path)?;
+        normalize_opencode_sqlite(path, context, &KILO_SQLITE_DIALECT)
+    }
+}
+
+impl ProviderCaptureAdapter for KiroSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::KiroCli
+    }
+
+    fn source_format(&self) -> &str {
+        KIRO_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_kiro_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for CrushSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Crush
+    }
+
+    fn source_format(&self) -> &str {
+        CRUSH_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_crush_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for GooseSessionsSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Goose
+    }
+
+    fn source_format(&self) -> &str {
+        GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_goose_sessions_sqlite(path, context)
     }
 }
 
@@ -1659,6 +2400,60 @@ impl ProviderCaptureAdapter for ShelleySqliteAdapter {
     }
 }
 
+impl ProviderCaptureAdapter for ContinueCliSessionsAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Continue
+    }
+
+    fn source_format(&self) -> &str {
+        CONTINUE_CLI_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_continue_cli_sessions(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for LingmaSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Lingma
+    }
+
+    fn source_format(&self) -> &str {
+        LINGMA_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_lingma_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for OpenHandsFileEventsAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::OpenHands
+    }
+
+    fn source_format(&self) -> &str {
+        OPENHANDS_FILE_EVENTS_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_openhands_file_events(path, context)
+    }
+}
+
 impl ProviderCaptureAdapter for AntigravityCliJsonlAdapter {
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Antigravity
@@ -1705,6 +2500,29 @@ impl ProviderCaptureAdapter for GeminiCliJsonlAdapter {
     }
 }
 
+impl ProviderCaptureAdapter for TabnineCliJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Tabnine
+    }
+
+    fn source_format(&self) -> &str {
+        TABNINE_CLI_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_jsonl_tree(
+            path,
+            context,
+            CaptureProvider::Tabnine,
+            TABNINE_CLI_SOURCE_FORMAT,
+        )
+    }
+}
+
 impl ProviderCaptureAdapter for CursorAgentTranscriptJsonlAdapter {
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Cursor
@@ -1725,6 +2543,65 @@ impl ProviderCaptureAdapter for CursorAgentTranscriptJsonlAdapter {
             CaptureProvider::Cursor,
             CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT,
         )
+    }
+}
+
+impl ProviderCaptureAdapter for WindsurfCascadeHookTranscriptJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Windsurf
+    }
+
+    fn source_format(&self) -> &str {
+        WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_jsonl_tree(
+            path,
+            context,
+            CaptureProvider::Windsurf,
+            WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT,
+        )
+    }
+}
+
+impl ProviderCaptureAdapter for QoderJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Qoder
+    }
+
+    fn source_format(&self) -> &str {
+        QODER_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_jsonl_tree(path, context, CaptureProvider::Qoder, QODER_SOURCE_FORMAT)
+    }
+}
+
+impl ProviderCaptureAdapter for ZedThreadsSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Zed
+    }
+
+    fn source_format(&self) -> &str {
+        ZED_THREADS_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_zed_threads_sqlite(path, context)
     }
 }
 
@@ -1771,6 +2648,137 @@ impl ProviderCaptureAdapter for CopilotCliSessionEventsAdapter {
             CaptureProvider::CopilotCli,
             COPILOT_CLI_SOURCE_FORMAT,
         )
+    }
+}
+
+impl ProviderCaptureAdapter for QwenCodeJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::QwenCode
+    }
+
+    fn source_format(&self) -> &str {
+        QWEN_CODE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_jsonl_tree(
+            path,
+            context,
+            CaptureProvider::QwenCode,
+            QWEN_CODE_SOURCE_FORMAT,
+        )
+    }
+}
+
+impl ProviderCaptureAdapter for KimiCodeCliWireJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::KimiCodeCli
+    }
+
+    fn source_format(&self) -> &str {
+        KIMI_CODE_CLI_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_kimi_code_cli_history(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for RovoDevSessionJsonAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::RovoDev
+    }
+
+    fn source_format(&self) -> &str {
+        ROVODEV_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_rovodev_sessions(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for ForgeCodeSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::ForgeCode
+    }
+
+    fn source_format(&self) -> &str {
+        FORGECODE_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_forgecode_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for DeepAgentsSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::DeepAgents
+    }
+
+    fn source_format(&self) -> &str {
+        DEEPAGENTS_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_deepagents_sqlite(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for MistralVibeJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::MistralVibe
+    }
+
+    fn source_format(&self) -> &str {
+        MISTRAL_VIBE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_mistral_vibe_sessions(path, context)
+    }
+}
+
+impl ProviderCaptureAdapter for MuxJsonlAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Mux
+    }
+
+    fn source_format(&self) -> &str {
+        MUX_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        normalize_mux_sessions(path, context)
     }
 }
 
@@ -3483,17 +4491,192 @@ pub fn import_claude_projects_jsonl_tree(
     )
 }
 
-pub fn import_opencode_sqlite(
+pub fn import_cline_task_json_history(
     path: impl AsRef<Path>,
     store: &mut Store,
-    options: OpenCodeSqliteImportOptions,
+    options: ClineTaskJsonImportOptions,
 ) -> Result<ProviderImportSummary> {
     let path = path.as_ref();
     let source_path = options
         .source_path
         .clone()
         .unwrap_or_else(|| path.to_path_buf());
-    let normalization = OpenCodeSqliteAdapter.normalize_path(
+    let normalization = ClineTaskJsonAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_roo_task_json_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: RooTaskJsonImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = RooTaskJsonAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_codebuddy_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: CodeBuddyImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = CodeBuddyHistoryJsonAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_trae_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: TraeImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = normalize_trae_history(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_crush_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: CrushSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = CrushSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_goose_sessions_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: GooseSessionsSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = GooseSessionsSqliteAdapter.normalize_path(
         path,
         &ProviderAdapterContext {
             machine_id: options.machine_id,
@@ -3571,6 +4754,250 @@ pub fn import_hermes_sqlite(
     )
 }
 
+pub fn import_auggie_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: AuggieImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = AuggieSessionJsonAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_junie_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: JunieImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = JunieSessionEventsAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_firebender_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: FirebenderSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = FirebenderSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_opencode_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: OpenCodeSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = OpenCodeSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_kilo_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: KiloSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = KiloSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_forgecode_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: ForgeCodeSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = ForgeCodeSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_deepagents_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: DeepAgentsSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = DeepAgentsSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
 pub fn import_nanoclaw_project(
     path: impl AsRef<Path>,
     store: &mut Store,
@@ -3592,6 +5019,41 @@ pub fn import_nanoclaw_project(
             include_notices: true,
         },
     )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_kiro_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: KiroSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = KiroSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+
     import_normalized_provider_captures(
         store,
         normalization,
@@ -3673,6 +5135,74 @@ pub fn import_shelley_sqlite(
     )
 }
 
+pub fn import_continue_cli_sessions(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: ContinueCliImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = ContinueCliSessionsAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_openhands_file_events(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: OpenHandsImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = OpenHandsFileEventsAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
 pub fn import_antigravity_cli_history(
     path: impl AsRef<Path>,
     store: &mut Store,
@@ -3711,6 +5241,25 @@ pub fn import_gemini_cli_history(
     )
 }
 
+pub fn import_tabnine_cli_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: TabnineCliImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        TabnineCliJsonlAdapter,
+    )
+}
+
 pub fn import_cursor_native_history(
     path: impl AsRef<Path>,
     store: &mut Store,
@@ -3727,6 +5276,146 @@ pub fn import_cursor_native_history(
             allow_partial_failures: options.allow_partial_failures,
         },
         CursorAgentTranscriptJsonlAdapter,
+    )
+}
+
+pub fn import_windsurf_cascade_hook_transcripts(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: WindsurfCascadeHookImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        WindsurfCascadeHookTranscriptJsonlAdapter,
+    )
+}
+
+pub fn import_warp_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: WarpSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = normalize_warp_sqlite(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: false,
+        },
+    )
+}
+
+pub fn import_qoder_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: QoderImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        QoderJsonlAdapter,
+    )
+}
+
+pub fn import_zed_threads_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: ZedThreadsSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = ZedThreadsSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_lingma_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: LingmaSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = LingmaSqliteAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
     )
 }
 
@@ -3765,6 +5454,116 @@ pub fn import_copilot_cli_session_events(
             allow_partial_failures: options.allow_partial_failures,
         },
         CopilotCliSessionEventsAdapter,
+    )
+}
+
+pub fn import_qwen_code_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: QwenCodeImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        QwenCodeJsonlAdapter,
+    )
+}
+
+pub fn import_kimi_code_cli_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: KimiCodeCliImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        KimiCodeCliWireJsonlAdapter,
+    )
+}
+
+pub fn import_rovodev_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: RovoDevImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = RovoDevSessionJsonAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            imported_at: options.imported_at,
+            tool_output_mode: CodexToolOutputMode::Full,
+            event_mode: CodexEventImportMode::Rich,
+            include_notices: true,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_mistral_vibe_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: MistralVibeImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        MistralVibeJsonlAdapter,
+    )
+}
+
+pub fn import_mux_history(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: MuxImportOptions,
+) -> Result<ProviderImportSummary> {
+    import_native_jsonl_tree(
+        store,
+        NativeJsonlTreeImport {
+            path: path.as_ref(),
+            machine_id: options.machine_id,
+            source_path: options.source_path,
+            imported_at: options.imported_at,
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+        },
+        MuxJsonlAdapter,
     )
 }
 
@@ -3824,17 +5623,43 @@ pub fn import_normalized_provider_captures(
 
 const CODEX_SESSION_SOURCE_FORMAT: &str = "codex_session_jsonl";
 const CLAUDE_PROJECTS_SOURCE_FORMAT: &str = "claude_projects_jsonl_tree";
+const CLINE_TASK_JSON_SOURCE_FORMAT: &str = "cline_task_directory_json";
+const ROO_TASK_JSON_SOURCE_FORMAT: &str = "roo_task_directory_json";
+const CODEBUDDY_SOURCE_FORMAT: &str = "codebuddy_history_json";
+const AUGGIE_SESSION_JSON_SOURCE_FORMAT: &str = "auggie_session_json";
+const JUNIE_SESSION_EVENTS_SOURCE_FORMAT: &str = "junie_session_events_jsonl_tree";
+const FIREBENDER_SQLITE_SOURCE_FORMAT: &str = "firebender_chat_history_sqlite";
 const OPENCODE_SQLITE_SOURCE_FORMAT: &str = "opencode_sqlite";
+const KILO_SQLITE_SOURCE_FORMAT: &str = "kilo_sqlite";
+const KIRO_SQLITE_SOURCE_FORMAT: &str = "kiro_cli_sqlite";
+const CRUSH_SQLITE_SOURCE_FORMAT: &str = "crush_sqlite";
+const GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT: &str = "goose_sessions_sqlite";
 const OPENCLAW_SOURCE_FORMAT: &str = "openclaw_session_jsonl_tree";
 const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
 const NANOCLAW_SOURCE_FORMAT: &str = "nanoclaw_project";
 const ASTRBOT_SQLITE_SOURCE_FORMAT: &str = "astrbot_data_v4_sqlite";
 const SHELLEY_SQLITE_SOURCE_FORMAT: &str = "shelley_sqlite";
+const CONTINUE_CLI_SOURCE_FORMAT: &str = "continue_cli_sessions_json";
+const OPENHANDS_FILE_EVENTS_SOURCE_FORMAT: &str = "openhands_file_events";
+const WARP_SQLITE_SOURCE_FORMAT: &str = "warp_sqlite";
+const LINGMA_SQLITE_SOURCE_FORMAT: &str = "lingma_sqlite";
 const ANTIGRAVITY_CLI_SOURCE_FORMAT: &str = "antigravity_cli_transcript_jsonl_tree";
 const GEMINI_CLI_SOURCE_FORMAT: &str = "gemini_cli_chat_recording_jsonl";
+const TABNINE_CLI_SOURCE_FORMAT: &str = "tabnine_cli_chat_recording_jsonl";
 const CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT: &str = "cursor_agent_transcript_jsonl";
+const WINDSURF_CASCADE_HOOK_TRANSCRIPT_SOURCE_FORMAT: &str =
+    "windsurf_cascade_hook_transcript_jsonl";
+const QODER_SOURCE_FORMAT: &str = "qoder_transcript_jsonl";
+const ZED_THREADS_SQLITE_SOURCE_FORMAT: &str = "zed_threads_sqlite";
 const FACTORY_DROID_SOURCE_FORMAT: &str = "factory_ai_droid_sessions_jsonl";
 const COPILOT_CLI_SOURCE_FORMAT: &str = "copilot_cli_session_events_jsonl";
+const QWEN_CODE_SOURCE_FORMAT: &str = "qwen_code_chat_jsonl";
+const KIMI_CODE_CLI_SOURCE_FORMAT: &str = "kimi_code_cli_wire_jsonl";
+const ROVODEV_SOURCE_FORMAT: &str = "rovodev_session_json";
+const FORGECODE_SQLITE_SOURCE_FORMAT: &str = "forgecode_sqlite";
+const DEEPAGENTS_SQLITE_SOURCE_FORMAT: &str = "deepagents_sessions_sqlite";
+const MISTRAL_VIBE_SOURCE_FORMAT: &str = "mistral_vibe_session_jsonl";
+const MUX_SOURCE_FORMAT: &str = "mux_session_jsonl";
 const CODEX_MAX_TEXT_CHARS: usize = 16_000;
 const CODEX_MAX_METADATA_TEXT_CHARS: usize = 4_000;
 const CODEX_MAX_OUTPUT_PREVIEW_CHARS: usize = 4_000;
@@ -3842,6 +5667,37 @@ const PROVIDER_MAX_TEXT_CHARS: usize = 16_000;
 const PROVIDER_MAX_PREVIEW_CHARS: usize = 4_000;
 const CODEX_FAST_IMPORT_TRANSACTION_FILES: usize = 512;
 const CODEX_FAST_IMPORT_PASSIVE_CHECKPOINT_MIN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct OpenCodeSqliteDialect {
+    provider: CaptureProvider,
+    display_name: &'static str,
+    source_format: &'static str,
+    session_time_created_field: &'static str,
+    session_message_seq_field: &'static str,
+    session_message_time_created_field: &'static str,
+    event_time_created_field: &'static str,
+}
+
+const OPENCODE_SQLITE_DIALECT: OpenCodeSqliteDialect = OpenCodeSqliteDialect {
+    provider: CaptureProvider::OpenCode,
+    display_name: "OpenCode",
+    source_format: OPENCODE_SQLITE_SOURCE_FORMAT,
+    session_time_created_field: "OpenCode session time_created",
+    session_message_seq_field: "OpenCode session_message seq",
+    session_message_time_created_field: "OpenCode session_message time_created",
+    event_time_created_field: "OpenCode event time.created",
+};
+
+const KILO_SQLITE_DIALECT: OpenCodeSqliteDialect = OpenCodeSqliteDialect {
+    provider: CaptureProvider::Kilo,
+    display_name: "Kilo",
+    source_format: KILO_SQLITE_SOURCE_FORMAT,
+    session_time_created_field: "Kilo session time_created",
+    session_message_seq_field: "Kilo session_message seq",
+    session_message_time_created_field: "Kilo session_message time_created",
+    event_time_created_field: "Kilo event time.created",
+};
 
 #[derive(Debug, Clone, Default)]
 struct CustomHistoryJsonlV1NormalizationResult {
@@ -4965,6 +6821,11 @@ fn provider_jsonl_line_too_large() -> CaptureError {
     ))
 }
 
+fn read_json_file_limited(path: &Path, max_bytes: usize, label: &str) -> Result<Value> {
+    let text = read_text_file_limited(path, max_bytes, label)?;
+    serde_json::from_str(&text).map_err(CaptureError::from)
+}
+
 fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
@@ -5919,7 +7780,7 @@ fn provider_file_touches_from_raw_value(
 
     let mut drafts = Vec::new();
     collect_patch_file_touches(raw_value, &mut drafts);
-    if drafts.is_empty() && event_type_supports_structured_file_touches(event.event_type) {
+    if drafts.is_empty() && (event_type_supports_structured_file_touches(event.event_type)) {
         collect_structured_file_touches(raw_value, &mut drafts);
     }
 
@@ -6622,6 +8483,3658 @@ fn claude_content_has_type(content: Option<&Value>, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TaskJsonProviderSpec {
+    provider: CaptureProvider,
+    source_format: &'static str,
+    display_name: &'static str,
+    api_file: &'static str,
+    ui_file: &'static str,
+    metadata_file: &'static str,
+    history_item_file: Option<&'static str>,
+    index_file: Option<&'static str>,
+    fallback_api_file: Option<&'static str>,
+}
+
+fn task_json_provider(provider: CaptureProvider) -> TaskJsonProviderSpec {
+    match provider {
+        CaptureProvider::RooCode => TaskJsonProviderSpec {
+            provider,
+            source_format: ROO_TASK_JSON_SOURCE_FORMAT,
+            display_name: "Roo Code",
+            api_file: "api_conversation_history.json",
+            ui_file: "ui_messages.json",
+            metadata_file: "task_metadata.json",
+            history_item_file: Some("history_item.json"),
+            index_file: Some("_index.json"),
+            fallback_api_file: Some("claude_messages.json"),
+        },
+        _ => TaskJsonProviderSpec {
+            provider: CaptureProvider::Cline,
+            source_format: CLINE_TASK_JSON_SOURCE_FORMAT,
+            display_name: "Cline",
+            api_file: "api_conversation_history.json",
+            ui_file: "ui_messages.json",
+            metadata_file: "task_metadata.json",
+            history_item_file: None,
+            index_file: None,
+            fallback_api_file: None,
+        },
+    }
+}
+
+fn normalize_task_json_history(
+    path: &Path,
+    context: &ProviderAdapterContext,
+    spec: TaskJsonProviderSpec,
+) -> Result<ProviderNormalizationResult> {
+    let mut task_dirs = collect_task_json_dirs(path, spec)?;
+    task_dirs.sort();
+    task_dirs.dedup();
+    if task_dirs.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: task_json_missing_reason(spec.provider),
+        });
+    }
+
+    let history_items = task_json_root_history_items(path, spec, context);
+    let mut merged = ProviderNormalizationResult::default();
+    for (task_ordinal, task_dir) in task_dirs.iter().enumerate() {
+        let mut result = normalize_task_json_task_dir(
+            task_dir,
+            &history_items,
+            context,
+            spec,
+            task_ordinal.saturating_add(1),
+        )?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+
+    Ok(merged)
+}
+
+fn task_json_missing_reason(provider: CaptureProvider) -> &'static str {
+    match provider {
+        CaptureProvider::RooCode => {
+            "no Roo Code task JSON directories with api_conversation_history.json, ui_messages.json, history_item.json, _index.json, or claude_messages.json were found"
+        }
+        _ => {
+            "no Cline task JSON directories with api_conversation_history.json, ui_messages.json, or task_metadata.json were found"
+        }
+    }
+}
+
+fn collect_task_json_dirs(path: &Path, spec: TaskJsonProviderSpec) -> Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_file() {
+        ensure_regular_provider_transcript_file(path)?;
+        if task_json_file_name_is_marker(path, spec) {
+            return Ok(path.parent().map(Path::to_path_buf).into_iter().collect());
+        }
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: task_json_missing_reason(spec.provider),
+        });
+    }
+
+    if !metadata.file_type().is_dir() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: task_json_missing_reason(spec.provider),
+        });
+    }
+
+    if task_json_dir_has_marker(path, spec) {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    let task_roots = [path.join("tasks"), path.to_path_buf()]
+        .into_iter()
+        .filter(|candidate| candidate.is_dir())
+        .collect::<Vec<_>>();
+    let mut out = Vec::new();
+    for root in task_roots {
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                let candidate = entry.path();
+                if task_json_dir_has_marker(&candidate, spec) {
+                    out.push(candidate);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn task_json_file_name_is_marker(path: &Path, spec: TaskJsonProviderSpec) -> bool {
+    let name = path.file_name().and_then(|name| name.to_str());
+    name == Some(spec.api_file)
+        || name == Some(spec.ui_file)
+        || name == Some(spec.metadata_file)
+        || spec
+            .history_item_file
+            .is_some_and(|file| name == Some(file))
+        || spec.index_file.is_some_and(|file| name == Some(file))
+        || spec
+            .fallback_api_file
+            .is_some_and(|file| name == Some(file))
+}
+
+fn task_json_dir_has_marker(path: &Path, spec: TaskJsonProviderSpec) -> bool {
+    path.join(spec.api_file).is_file()
+        || path.join(spec.ui_file).is_file()
+        || path.join(spec.metadata_file).is_file()
+        || spec
+            .history_item_file
+            .is_some_and(|file| path.join(file).is_file())
+        || spec
+            .index_file
+            .is_some_and(|file| path.join(file).is_file())
+        || spec
+            .fallback_api_file
+            .is_some_and(|file| path.join(file).is_file())
+}
+
+fn task_json_root_history_items(
+    path: &Path,
+    spec: TaskJsonProviderSpec,
+    context: &ProviderAdapterContext,
+) -> BTreeMap<String, Value> {
+    if spec.provider != CaptureProvider::Cline {
+        return BTreeMap::new();
+    }
+    let mut candidates = Vec::new();
+    if path.is_dir() {
+        candidates.push(path.join("state").join("taskHistory.json"));
+        candidates.push(path.join("..").join("state").join("taskHistory.json"));
+    }
+    if let Some(parent) = path.parent() {
+        candidates.push(parent.join("state").join("taskHistory.json"));
+        if let Some(grandparent) = parent.parent() {
+            candidates.push(grandparent.join("state").join("taskHistory.json"));
+        }
+    }
+
+    for candidate in candidates {
+        let Ok(value) = read_task_json_value(&candidate, context) else {
+            continue;
+        };
+        let Some(items) = value.as_array() else {
+            continue;
+        };
+        let mut out = BTreeMap::new();
+        for item in items {
+            if let Some(id) = task_json_string_field(item, &["id", "taskId"]) {
+                out.insert(id, item.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    BTreeMap::new()
+}
+
+fn normalize_task_json_task_dir(
+    task_dir: &Path,
+    root_history_items: &BTreeMap<String, Value>,
+    context: &ProviderAdapterContext,
+    spec: TaskJsonProviderSpec,
+    task_ordinal: usize,
+) -> Result<ProviderNormalizationResult> {
+    let mut result = ProviderNormalizationResult::default();
+    let raw_source_path = task_dir.display().to_string();
+    let source_path = Some(raw_source_path.as_str());
+    let mut file_names = Vec::new();
+
+    let metadata = read_task_json_optional(
+        &mut result.summary,
+        task_dir,
+        spec.metadata_file,
+        context,
+        task_ordinal,
+    );
+    if metadata.is_some() {
+        file_names.push(spec.metadata_file);
+    }
+    let history_item = spec.history_item_file.and_then(|file| {
+        let value =
+            read_task_json_optional(&mut result.summary, task_dir, file, context, task_ordinal);
+        if value.is_some() {
+            file_names.push(file);
+        }
+        value
+    });
+    let index_item = spec.index_file.and_then(|file| {
+        let value =
+            read_task_json_optional(&mut result.summary, task_dir, file, context, task_ordinal);
+        if value.is_some() {
+            file_names.push(file);
+        }
+        value
+    });
+
+    let task_id = task_json_task_id(
+        task_dir,
+        metadata.as_ref(),
+        history_item.as_ref(),
+        index_item.as_ref(),
+    );
+    let root_history_item = root_history_items.get(&task_id);
+    let started_at = task_json_started_at(
+        metadata.as_ref(),
+        history_item.as_ref(),
+        index_item.as_ref(),
+        root_history_item,
+        context.imported_at,
+    );
+    let ended_at = task_json_ended_at(
+        metadata.as_ref(),
+        history_item.as_ref(),
+        index_item.as_ref(),
+    );
+    let cwd = task_json_cwd(
+        metadata.as_ref(),
+        history_item.as_ref(),
+        index_item.as_ref(),
+        root_history_item,
+    );
+
+    let mut event_inputs = Vec::new();
+    if let Some(value) = read_task_json_optional(
+        &mut result.summary,
+        task_dir,
+        spec.api_file,
+        context,
+        task_ordinal,
+    ) {
+        file_names.push(spec.api_file);
+        task_json_push_message_events(&mut event_inputs, &value, "api_conversation_history");
+    }
+    if let Some(value) = read_task_json_optional(
+        &mut result.summary,
+        task_dir,
+        spec.ui_file,
+        context,
+        task_ordinal,
+    ) {
+        file_names.push(spec.ui_file);
+        task_json_push_message_events(&mut event_inputs, &value, "ui_messages");
+    }
+    if let Some(file) = spec.fallback_api_file {
+        if let Some(value) =
+            read_task_json_optional(&mut result.summary, task_dir, file, context, task_ordinal)
+        {
+            file_names.push(file);
+            task_json_push_message_events(&mut event_inputs, &value, "claude_messages");
+        }
+    }
+    if event_inputs.is_empty() {
+        if let Some(value) = history_item
+            .as_ref()
+            .or(root_history_item)
+            .and_then(task_json_history_item_event)
+        {
+            event_inputs.push(TaskJsonEventInput {
+                source: "history_item",
+                native_index: 0,
+                raw: value,
+            });
+        }
+    }
+
+    if event_inputs.is_empty() {
+        result.captures.push((
+            task_ordinal,
+            task_json_capture(
+                spec,
+                &task_id,
+                source_path,
+                context,
+                started_at,
+                ended_at,
+                cwd.clone(),
+                metadata.as_ref(),
+                history_item.as_ref().or(root_history_item),
+                index_item.as_ref(),
+                &file_names,
+                None,
+            ),
+        ));
+        return Ok(result);
+    }
+
+    for (event_ordinal, input) in event_inputs.into_iter().enumerate() {
+        let line_number = task_ordinal
+            .saturating_mul(10_000)
+            .saturating_add(event_ordinal)
+            .saturating_add(1);
+        let occurred_at = task_json_event_time(&input.raw)
+            .unwrap_or_else(|| started_at + chrono::Duration::milliseconds(event_ordinal as i64));
+        let raw_event = input.raw.clone();
+        let event = task_json_event(spec, &task_id, input, event_ordinal, occurred_at);
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                spec.provider,
+                &task_id,
+                spec.source_format,
+                source_path,
+                &raw_event,
+                &event,
+                line_number,
+            ));
+        result.captures.push((
+            line_number,
+            task_json_capture(
+                spec,
+                &task_id,
+                source_path,
+                context,
+                started_at,
+                ended_at,
+                cwd.clone(),
+                metadata.as_ref(),
+                history_item.as_ref().or(root_history_item),
+                index_item.as_ref(),
+                &file_names,
+                Some(event),
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+#[derive(Debug, Clone)]
+struct TaskJsonEventInput {
+    source: &'static str,
+    native_index: usize,
+    raw: Value,
+}
+
+fn read_task_json_optional(
+    summary: &mut ProviderImportSummary,
+    task_dir: &Path,
+    file_name: &str,
+    context: &ProviderAdapterContext,
+    line: usize,
+) -> Option<Value> {
+    let path = task_dir.join(file_name);
+    if !path.exists() {
+        return None;
+    }
+    match read_task_json_value(&path, context) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            summary.failed += 1;
+            summary.failures.push(ProviderImportFailure {
+                line,
+                error: format!("{file_name}: {err}"),
+            });
+            None
+        }
+    }
+}
+
+fn read_task_json_value(path: &Path, _context: &ProviderAdapterContext) -> Result<Value> {
+    ensure_regular_provider_transcript_file(path)?;
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > MAX_PROVIDER_JSONL_LINE_BYTES as u64 {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "provider task JSON file exceeds maximum supported size",
+        });
+    }
+    let bytes = fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(CaptureError::from)
+}
+
+fn task_json_push_message_events(
+    out: &mut Vec<TaskJsonEventInput>,
+    value: &Value,
+    source: &'static str,
+) {
+    match value {
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                out.push(TaskJsonEventInput {
+                    source,
+                    native_index: index,
+                    raw: item.clone(),
+                });
+            }
+        }
+        Value::Object(object) => {
+            if let Some(items) = object
+                .get("messages")
+                .or_else(|| object.get("history"))
+                .and_then(Value::as_array)
+            {
+                for (index, item) in items.iter().enumerate() {
+                    out.push(TaskJsonEventInput {
+                        source,
+                        native_index: index,
+                        raw: item.clone(),
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn task_json_task_id(
+    task_dir: &Path,
+    metadata: Option<&Value>,
+    history_item: Option<&Value>,
+    index_item: Option<&Value>,
+) -> String {
+    metadata
+        .and_then(|value| task_json_string_field(value, &["taskId", "id"]))
+        .or_else(|| history_item.and_then(|value| task_json_string_field(value, &["id", "taskId"])))
+        .or_else(|| index_item.and_then(|value| task_json_string_field(value, &["id", "taskId"])))
+        .or_else(|| {
+            task_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown-task".to_owned())
+}
+
+fn task_json_started_at(
+    metadata: Option<&Value>,
+    history_item: Option<&Value>,
+    index_item: Option<&Value>,
+    root_history_item: Option<&Value>,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    metadata
+        .and_then(|value| {
+            task_json_time_field(value, &["createdAt", "created_at", "ts", "timestamp"])
+        })
+        .or_else(|| {
+            history_item.and_then(|value| {
+                task_json_time_field(value, &["createdAt", "created_at", "ts", "timestamp"])
+            })
+        })
+        .or_else(|| {
+            index_item.and_then(|value| {
+                task_json_time_field(value, &["createdAt", "created_at", "ts", "timestamp"])
+            })
+        })
+        .or_else(|| {
+            root_history_item.and_then(|value| {
+                task_json_time_field(value, &["createdAt", "created_at", "ts", "timestamp"])
+            })
+        })
+        .unwrap_or(fallback)
+}
+
+fn task_json_ended_at(
+    metadata: Option<&Value>,
+    history_item: Option<&Value>,
+    index_item: Option<&Value>,
+) -> Option<DateTime<Utc>> {
+    metadata
+        .and_then(|value| {
+            task_json_time_field(
+                value,
+                &["lastModified", "updatedAt", "completedAt", "last_modified"],
+            )
+        })
+        .or_else(|| {
+            history_item.and_then(|value| {
+                task_json_time_field(
+                    value,
+                    &["lastModified", "updatedAt", "completedAt", "last_modified"],
+                )
+            })
+        })
+        .or_else(|| {
+            index_item.and_then(|value| {
+                task_json_time_field(
+                    value,
+                    &["lastModified", "updatedAt", "completedAt", "last_modified"],
+                )
+            })
+        })
+}
+
+fn task_json_cwd(
+    metadata: Option<&Value>,
+    history_item: Option<&Value>,
+    index_item: Option<&Value>,
+    root_history_item: Option<&Value>,
+) -> Option<String> {
+    metadata
+        .and_then(|value| task_json_string_field(value, &["cwd", "workspace", "workspacePath"]))
+        .or_else(|| {
+            history_item.and_then(|value| {
+                task_json_string_field(
+                    value,
+                    &[
+                        "cwd",
+                        "workspace",
+                        "workspacePath",
+                        "cwdOnTaskInitialization",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            index_item.and_then(|value| {
+                task_json_string_field(
+                    value,
+                    &[
+                        "cwd",
+                        "workspace",
+                        "workspacePath",
+                        "cwdOnTaskInitialization",
+                    ],
+                )
+            })
+        })
+        .or_else(|| {
+            root_history_item.and_then(|value| {
+                task_json_string_field(
+                    value,
+                    &[
+                        "cwd",
+                        "workspace",
+                        "workspacePath",
+                        "cwdOnTaskInitialization",
+                    ],
+                )
+            })
+        })
+}
+
+fn task_json_history_item_event(value: &Value) -> Option<Value> {
+    let text = task_json_string_field(value, &["task", "title", "summary", "name"])?;
+    let mut object = serde_json::Map::new();
+    object.insert("role".to_owned(), Value::String("user".to_owned()));
+    object.insert("content".to_owned(), Value::String(text));
+    object.insert("type".to_owned(), Value::String("history_item".to_owned()));
+    if let Some(ts) = value
+        .get("ts")
+        .or_else(|| value.get("timestamp"))
+        .or_else(|| value.get("createdAt"))
+    {
+        object.insert("timestamp".to_owned(), ts.clone());
+    }
+    Some(Value::Object(object))
+}
+
+fn task_json_capture(
+    spec: TaskJsonProviderSpec,
+    task_id: &str,
+    raw_source_path: Option<&str>,
+    context: &ProviderAdapterContext,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    metadata: Option<&Value>,
+    history_item: Option<&Value>,
+    index_item: Option<&Value>,
+    file_names: &[&str],
+    event: Option<ProviderEventEnvelope>,
+) -> ProviderCaptureEnvelope {
+    let is_done = history_item
+        .and_then(|value| value.get("isCompleted").or_else(|| value.get("completed")))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    ProviderCaptureEnvelope {
+        schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+        provider: spec.provider,
+        source: ProviderSourceEnvelope {
+            source_format: spec.source_format.to_owned(),
+            machine_id: context.machine_id.clone(),
+            observed_at: context.imported_at,
+            raw_source_path: raw_source_path.map(str::to_owned),
+            raw_retention: ProviderRawRetention::PathReference,
+            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+            trust: ProviderSourceTrust::ProviderNative,
+            fidelity: Fidelity::Imported,
+            cursor: event.as_ref().map(|event| ProviderCursorRange {
+                before: None,
+                after: Some(ProviderCursorCheckpoint {
+                    stream: provider_cursor_stream(spec.provider, spec.source_format),
+                    cursor: event.cursor.clone().unwrap_or_else(|| task_id.to_owned()),
+                    observed_at: event.occurred_at,
+                }),
+            }),
+            idempotency_key: Some(format!(
+                "provider-source:{}:{}:{task_id}",
+                spec.provider.as_str(),
+                spec.source_format
+            )),
+            metadata: json!({
+                "adapter": spec.source_format,
+                "native_task_id": task_id,
+                "files": file_names,
+            }),
+        },
+        session: ProviderSessionEnvelope {
+            provider_session_id: task_id.to_owned(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            status: if is_done {
+                SessionStatus::Completed
+            } else {
+                SessionStatus::Imported
+            },
+            started_at,
+            ended_at,
+            cwd,
+            fidelity: Fidelity::Imported,
+            idempotency_key: Some(format!(
+                "provider-session:{}:{task_id}",
+                spec.provider.as_str()
+            )),
+            artifacts: Vec::new(),
+            metadata: json!({
+                "source_format": spec.source_format,
+                "provider": spec.provider.as_str(),
+                "display_name": spec.display_name,
+                "native_task_id": task_id,
+                "task_metadata": metadata.map(|value| provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "history_item": history_item.map(|value| provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "index": index_item.map(|value| provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "files": file_names,
+                "limitations": [
+                    "VS Code extension globalState databases are not parsed; ctx reads file-backed task directories",
+                    "binary attachments and checkpoints are preserved only as native JSON metadata when present",
+                    "message timestamps are inferred from task metadata when individual messages omit timestamps"
+                ],
+            }),
+        },
+        event,
+    }
+}
+
+fn task_json_event(
+    spec: TaskJsonProviderSpec,
+    task_id: &str,
+    input: TaskJsonEventInput,
+    event_ordinal: usize,
+    occurred_at: DateTime<Utc>,
+) -> ProviderEventEnvelope {
+    let event_type = task_json_event_type(&input.raw, input.source);
+    let role = Some(task_json_event_role(&input.raw, input.source));
+    let text = task_json_event_text(&input.raw, input.source, event_type);
+    let (text, truncated) = provider_local_preview(&text, PROVIDER_MAX_TEXT_CHARS);
+    let native_id = task_json_string_field(&input.raw, &["id", "uuid", "messageId"])
+        .unwrap_or_else(|| format!("{}-{}", input.source, input.native_index));
+    let event_id = format!("{task_id}:{}:{native_id}", input.source);
+
+    ProviderEventEnvelope {
+        provider_event_index: event_ordinal as u64,
+        provider_event_hash: Some(event_id.clone()),
+        cursor: Some(event_id.clone()),
+        event_type,
+        role,
+        occurred_at,
+        fidelity: Fidelity::Imported,
+        redaction_state: RedactionState::LocalPreview,
+        idempotency_key: Some(format!(
+            "provider-event:{}:{}:{event_id}",
+            spec.provider.as_str(),
+            spec.source_format
+        )),
+        artifacts: Vec::new(),
+        payload: json!({
+            "entry_type": task_json_entry_type(&input.raw, input.source),
+            "event_id": event_id,
+            "native_index": input.native_index,
+            "text": text,
+            "truncated": truncated,
+            "body": provider_capped_json(&input.raw, PROVIDER_MAX_PREVIEW_CHARS),
+        }),
+        metadata: json!({
+            "source": input.source,
+            "source_format": spec.source_format,
+            "native_index": input.native_index,
+            "role": task_json_string_field(&input.raw, &["role"]),
+            "model": task_json_model(&input.raw),
+            "usage": task_json_usage(&input.raw),
+        }),
+    }
+}
+
+fn task_json_event_type(value: &Value, source: &str) -> EventType {
+    if task_json_content_has(value, "tool_result") {
+        return EventType::ToolOutput;
+    }
+    if task_json_content_has(value, "tool_use") {
+        return EventType::ToolCall;
+    }
+    match source {
+        "ui_messages" => match task_json_string_field(value, &["type", "say", "ask"]).as_deref() {
+            Some("ask" | "say" | "user" | "assistant" | "text") => EventType::Message,
+            Some("command" | "execute_command" | "shell") => EventType::CommandOutput,
+            Some("completion_result" | "summary") => EventType::Summary,
+            _ => EventType::Notice,
+        },
+        _ => match task_json_string_field(value, &["type", "role"]).as_deref() {
+            Some("user" | "assistant" | "system") => EventType::Message,
+            Some("tool_result") => EventType::ToolOutput,
+            Some("tool_use") => EventType::ToolCall,
+            Some("history_item" | "summary") => EventType::Summary,
+            _ => EventType::Message,
+        },
+    }
+}
+
+fn task_json_event_role(value: &Value, source: &str) -> EventRole {
+    if let Some(role) = task_json_string_field(value, &["role"]) {
+        return provider_role(Some(&role));
+    }
+    if source == "ui_messages" {
+        match task_json_string_field(value, &["type"]).as_deref() {
+            Some("ask") => EventRole::User,
+            Some("say") => EventRole::Assistant,
+            _ => EventRole::Unknown,
+        }
+    } else {
+        EventRole::Unknown
+    }
+}
+
+fn task_json_event_text(value: &Value, source: &str, event_type: EventType) -> String {
+    value
+        .get("content")
+        .or_else(|| value.pointer("/message/content"))
+        .and_then(provider_value_text)
+        .or_else(|| value.get("text").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| value.get("message").and_then(provider_value_text))
+        .or_else(|| {
+            value
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| {
+            if event_type == EventType::Notice {
+                format!("Task JSON event: {}", task_json_entry_type(value, source))
+            } else {
+                serde_json::to_string(value).unwrap_or_else(|_| source.to_owned())
+            }
+        })
+}
+
+fn task_json_entry_type(value: &Value, source: &str) -> String {
+    task_json_string_field(value, &["type", "say", "ask", "role"])
+        .unwrap_or_else(|| source.to_owned())
+}
+
+fn task_json_content_has(value: &Value, expected: &str) -> bool {
+    value
+        .get("content")
+        .or_else(|| value.pointer("/message/content"))
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .any(|block| block.get("type").and_then(Value::as_str) == Some(expected))
+        })
+        .unwrap_or(false)
+}
+
+fn task_json_event_time(value: &Value) -> Option<DateTime<Utc>> {
+    task_json_time_field(
+        value,
+        &["timestamp", "ts", "createdAt", "created_at", "time", "date"],
+    )
+}
+
+fn task_json_model(value: &Value) -> Option<Value> {
+    value
+        .get("model")
+        .or_else(|| value.pointer("/modelInfo/id"))
+        .or_else(|| value.pointer("/metadata/model"))
+        .cloned()
+}
+
+fn task_json_usage(value: &Value) -> Option<Value> {
+    value
+        .get("usage")
+        .or_else(|| value.get("tokensUsed"))
+        .or_else(|| value.pointer("/modelInfo/usage"))
+        .cloned()
+}
+
+fn normalize_auggie_sessions(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut session_paths = Vec::new();
+    collect_auggie_session_paths(path, &mut session_paths)?;
+    session_paths.sort();
+    session_paths.dedup();
+    if session_paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Auggie session JSON files were found",
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for (session_ordinal, session_path) in session_paths.iter().enumerate() {
+        match normalize_auggie_session_file(session_path, context, session_ordinal + 1) {
+            Ok(mut result) => {
+                merged.summary.merge(result.summary);
+                merged.captures.append(&mut result.captures);
+                merged.files_touched.append(&mut result.files_touched);
+            }
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut merged.summary,
+                    session_ordinal + 1,
+                    format!("{}: {err}", session_path.display()),
+                );
+            }
+        }
+    }
+
+    if merged.captures.is_empty() && merged.summary.failed == 0 {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Auggie sessions with chatHistory entries were found",
+        });
+    }
+    Ok(merged)
+}
+
+fn collect_auggie_session_paths(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: root.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
+    if file_type.is_file() {
+        ensure_regular_provider_transcript_file(root)?;
+        if root.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            out.push(root.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_auggie_session_paths(&path, out)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            ensure_regular_provider_transcript_file(&path)?;
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn normalize_auggie_session_file(
+    path: &Path,
+    context: &ProviderAdapterContext,
+    session_ordinal: usize,
+) -> Result<ProviderNormalizationResult> {
+    let session = read_provider_json_file(path, "Auggie session JSON")?;
+    let provider_session_id = provider_string_field(&session, &["sessionId", "session_id"])
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload("Auggie session JSON is missing sessionId".to_owned())
+        })?;
+    let chat_history = session
+        .get("chatHistory")
+        .or_else(|| session.get("chat_history"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload(
+                "Auggie session JSON is missing chatHistory array".to_owned(),
+            )
+        })?;
+    let started_at = provider_timestamp_from_fields(
+        &session,
+        &[
+            "created",
+            "createdAt",
+            "created_at",
+            "startedAt",
+            "started_at",
+        ],
+    )
+    .or_else(|| {
+        chat_history
+            .iter()
+            .find_map(|entry| auggie_entry_time(entry, None))
+    })
+    .unwrap_or(context.imported_at);
+    let ended_at = provider_timestamp_from_fields(
+        &session,
+        &[
+            "modified",
+            "modifiedAt",
+            "updatedAt",
+            "updated_at",
+            "endedAt",
+            "ended_at",
+        ],
+    )
+    .or_else(|| {
+        chat_history
+            .iter()
+            .rev()
+            .find_map(|entry| auggie_entry_time(entry, None))
+    });
+    let cwd = provider_string_field(
+        &session,
+        &[
+            "workspaceRoot",
+            "workspace_root",
+            "workspacePath",
+            "workspace_path",
+            "cwd",
+        ],
+    );
+    let raw_source_path = path.display().to_string();
+    let source_metadata = json!({
+        "adapter": AUGGIE_SESSION_JSON_SOURCE_FORMAT,
+        "source_path": raw_source_path,
+        "upstream_schema_anchor": {
+            "package": "@augmentcode/auggie@0.32.0",
+            "docs": "https://docs.augmentcode.com/cli/reference",
+            "package_storage": "SessionStore writes ~/.augment/sessions/<session_id>.json",
+        },
+    });
+    let session_metadata = json!({
+        "source_format": AUGGIE_SESSION_JSON_SOURCE_FORMAT,
+        "provider": CaptureProvider::Auggie.as_str(),
+        "display_name": "Auggie",
+        "session_id": provider_session_id,
+        "workspace_id": provider_string_field(&session, &["workspaceId", "workspace_id"]),
+        "name": provider_string_field(&session, &["name", "title", "sessionName"]),
+        "chat_history_count": chat_history.len(),
+        "agent_state": session
+            .get("agentState")
+            .or_else(|| session.get("agent_state"))
+            .map(|value| provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)),
+        "limitations": [
+            "ctx imports request_message and response_text fields plus recognized request_nodes/response_nodes text",
+            "tool calls and tool outputs in richer Auggie node schemas are retained only as capped native JSON until a public node contract is available"
+        ],
+    });
+    let base_draft = NativeSessionDraft {
+        provider: CaptureProvider::Auggie,
+        source_format: AUGGIE_SESSION_JSON_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.clone(),
+        parent_provider_session_id: provider_string_field(
+            &session,
+            &[
+                "parentConversationId",
+                "parentSessionId",
+                "parent_session_id",
+            ],
+        ),
+        root_provider_session_id: provider_string_field(
+            &session,
+            &["rootConversationId", "rootSessionId", "root_session_id"],
+        ),
+        external_agent_id: provider_string_field(
+            &session,
+            &["poseidonAgentId", "agentId", "agent_id"],
+        ),
+        agent_type: AgentType::Primary,
+        role_hint: Some("primary".to_owned()),
+        is_primary: true,
+        started_at,
+        ended_at,
+        cwd,
+        fidelity: Fidelity::Imported,
+        raw_source_path: raw_source_path.clone(),
+        trust: ProviderSourceTrust::ProviderNative,
+        source_metadata,
+        session_metadata,
+    };
+
+    let mut result = ProviderNormalizationResult::default();
+    let mut provider_event_index = 0u64;
+    for (chat_index, entry) in chat_history.iter().enumerate() {
+        let exchange = entry.get("exchange").unwrap_or(entry);
+        let base_time = auggie_entry_time(entry, Some(exchange))
+            .unwrap_or_else(|| started_at + Duration::milliseconds(chat_index as i64 * 2));
+        if let Some(text) = auggie_request_text(exchange) {
+            let event = auggie_event(AuggieEventInput {
+                provider_session_id: &provider_session_id,
+                provider_event_index,
+                chat_index,
+                role: EventRole::User,
+                label: "request",
+                occurred_at: base_time,
+                text,
+                entry,
+                exchange,
+                raw_source_path: &raw_source_path,
+            });
+            let line = session_ordinal
+                .saturating_mul(10_000)
+                .saturating_add(chat_index.saturating_mul(2))
+                .saturating_add(1);
+            result.captures.push((
+                line,
+                native_provider_capture(base_draft.clone(), context, Some(event)),
+            ));
+            provider_event_index = provider_event_index.saturating_add(1);
+        }
+        if let Some(text) = auggie_response_text(exchange) {
+            let event = auggie_event(AuggieEventInput {
+                provider_session_id: &provider_session_id,
+                provider_event_index,
+                chat_index,
+                role: EventRole::Assistant,
+                label: "response",
+                occurred_at: base_time + Duration::milliseconds(1),
+                text,
+                entry,
+                exchange,
+                raw_source_path: &raw_source_path,
+            });
+            let line = session_ordinal
+                .saturating_mul(10_000)
+                .saturating_add(chat_index.saturating_mul(2))
+                .saturating_add(2);
+            result.captures.push((
+                line,
+                native_provider_capture(base_draft.clone(), context, Some(event)),
+            ));
+            provider_event_index = provider_event_index.saturating_add(1);
+        }
+    }
+
+    if result.captures.is_empty() {
+        result.captures.push((
+            session_ordinal,
+            native_provider_capture(base_draft, context, None),
+        ));
+    }
+
+    Ok(result)
+}
+
+struct AuggieEventInput<'a> {
+    provider_session_id: &'a str,
+    provider_event_index: u64,
+    chat_index: usize,
+    role: EventRole,
+    label: &'static str,
+    occurred_at: DateTime<Utc>,
+    text: String,
+    entry: &'a Value,
+    exchange: &'a Value,
+    raw_source_path: &'a str,
+}
+
+fn auggie_event(input: AuggieEventInput<'_>) -> ProviderEventEnvelope {
+    let request_id = input
+        .exchange
+        .get("request_id")
+        .or_else(|| input.exchange.get("requestId"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty());
+    let event_hash = request_id
+        .map(|id| format!("{id}:{}", input.label))
+        .unwrap_or_else(|| format!("chat-{}:{}", input.chat_index, input.label));
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::Auggie,
+        source_format: AUGGIE_SESSION_JSON_SOURCE_FORMAT,
+        provider_session_id: input.provider_session_id.to_owned(),
+        provider_event_index: input.provider_event_index,
+        provider_event_hash: Some(event_hash.clone()),
+        cursor: format!("{}:{event_hash}", input.raw_source_path),
+        event_type: EventType::Message,
+        role: Some(input.role),
+        occurred_at: input.occurred_at,
+        text: input.text,
+        body: json!({
+            "chat_history_entry": input.entry,
+            "exchange": input.exchange,
+            "message_kind": input.label,
+        }),
+        metadata: json!({
+            "source": "auggie_chat_history",
+            "source_format": AUGGIE_SESSION_JSON_SOURCE_FORMAT,
+            "chat_history_index": input.chat_index,
+            "message_kind": input.label,
+            "request_id": request_id,
+            "sequence_id": input
+                .entry
+                .get("sequenceId")
+                .or_else(|| input.entry.get("sequence_id"))
+                .and_then(Value::as_u64),
+            "completed": input.entry.get("completed").and_then(Value::as_bool),
+            "source_kind": input.entry.get("source").and_then(Value::as_str),
+        }),
+    })
+}
+
+fn auggie_entry_time(entry: &Value, exchange: Option<&Value>) -> Option<DateTime<Utc>> {
+    provider_timestamp_from_fields(
+        entry,
+        &[
+            "finishedAt",
+            "finished_at",
+            "createdAt",
+            "created_at",
+            "timestamp",
+            "time",
+        ],
+    )
+    .or_else(|| {
+        exchange.and_then(|exchange| {
+            provider_timestamp_from_fields(
+                exchange,
+                &[
+                    "createdAt",
+                    "created_at",
+                    "updatedAt",
+                    "updated_at",
+                    "timestamp",
+                    "time",
+                ],
+            )
+        })
+    })
+}
+
+fn auggie_request_text(exchange: &Value) -> Option<String> {
+    provider_string_field(exchange, &["request_message", "requestMessage", "message"]).or_else(
+        || {
+            auggie_nodes_text(
+                exchange
+                    .get("request_nodes")
+                    .or_else(|| exchange.get("requestNodes")),
+            )
+        },
+    )
+}
+
+fn auggie_response_text(exchange: &Value) -> Option<String> {
+    provider_string_field(exchange, &["response_text", "responseText", "response"]).or_else(|| {
+        auggie_nodes_text(
+            exchange
+                .get("response_nodes")
+                .or_else(|| exchange.get("responseNodes")),
+        )
+    })
+}
+
+fn auggie_nodes_text(value: Option<&Value>) -> Option<String> {
+    let nodes = value?.as_array()?;
+    let rendered = nodes
+        .iter()
+        .filter_map(auggie_node_text)
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!rendered.is_empty()).then(|| rendered.join("\n"))
+}
+
+fn auggie_node_text(node: &Value) -> Option<String> {
+    node.pointer("/text_node/content")
+        .or_else(|| node.pointer("/textNode/content"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| provider_block_text(node))
+        .or_else(|| {
+            node.get("tool_name")
+                .or_else(|| node.get("toolName"))
+                .and_then(Value::as_str)
+                .map(|name| format!("tool: {name}"))
+        })
+}
+
+#[derive(Debug, Clone)]
+struct FirebenderChatSessionRow {
+    id: String,
+    name: String,
+    created_at: i64,
+    updated_at: i64,
+    messages_json: String,
+    metadata_json: String,
+    row_number: u64,
+}
+
+fn normalize_firebender_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let db_path = firebender_chat_history_db_path(path)?;
+    let conn = open_provider_sqlite_readonly(&db_path)?;
+    if !sqlite_table_exists(&conn, "chat_sessions")? {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: db_path,
+            reason: "Firebender chat_history.db is missing required chat_sessions table",
+        });
+    }
+    let columns = sqlite_table_columns(&conn, "chat_sessions")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Firebender chat_sessions table",
+        &[
+            "id",
+            "name",
+            "created_at",
+            "updated_at",
+            "messages_json",
+            "metadata_json",
+        ],
+    )?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let rows = firebender_chat_session_rows(&conn, &columns)?;
+    let mut result = ProviderNormalizationResult::default();
+
+    for row in rows {
+        let line = provider_line_from_index(row.row_number);
+        let started_at = provider_timestamp_millis(Some(row.created_at), context.imported_at);
+        let ended_at = Some(provider_timestamp_millis(Some(row.updated_at), started_at));
+        let metadata = provider_json_text(&row.metadata_json);
+        let messages = match serde_json::from_str::<Value>(&row.messages_json) {
+            Ok(Value::Array(messages)) => messages,
+            Ok(_) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line,
+                    format!(
+                        "Firebender session {} messages_json is not an array",
+                        row.id
+                    ),
+                );
+                Vec::new()
+            }
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line,
+                    format!(
+                        "Firebender session {} messages_json is invalid JSON: {err}",
+                        row.id
+                    ),
+                );
+                Vec::new()
+            }
+        };
+
+        if messages.is_empty() {
+            result.captures.push((
+                line,
+                firebender_capture(
+                    &row,
+                    &metadata,
+                    &db_path,
+                    started_at,
+                    ended_at,
+                    &schema_fingerprint,
+                    context,
+                    None,
+                ),
+            ));
+            continue;
+        }
+
+        for (message_index, message) in messages.iter().enumerate() {
+            let provider_event_index = message_index as u64;
+            let occurred_at = firebender_message_time(
+                message,
+                started_at + Duration::milliseconds(message_index as i64),
+            );
+            let event = firebender_event(&row.id, provider_event_index, message, occurred_at);
+            result.captures.push((
+                line,
+                firebender_capture(
+                    &row,
+                    &metadata,
+                    &db_path,
+                    started_at,
+                    ended_at,
+                    &schema_fingerprint,
+                    context,
+                    Some(event),
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn firebender_chat_history_db_path(path: &Path) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    if file_type.is_file() {
+        return Ok(path.to_path_buf());
+    }
+    if file_type.is_dir() {
+        let db_path = path
+            .join(".idea")
+            .join("firebender")
+            .join("chat_history.db");
+        if db_path.exists() {
+            return Ok(db_path);
+        }
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Firebender project root is missing .idea/firebender/chat_history.db",
+        });
+    }
+    Err(CaptureError::InvalidProviderTranscriptPath {
+        path: path.to_path_buf(),
+        reason: "Firebender import path must be chat_history.db or a project root",
+    })
+}
+
+fn firebender_chat_session_rows(
+    conn: &Connection,
+    columns: &BTreeSet<String>,
+) -> Result<Vec<FirebenderChatSessionRow>> {
+    let deleted_filter = if columns.contains("deleted_at") {
+        "where deleted_at is null"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "select id, name, created_at, updated_at, messages_json, metadata_json \
+         from chat_sessions {deleted_filter} order by updated_at, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for (index, row) in rows.enumerate() {
+        let (id, name, created_at, updated_at, messages_json, metadata_json) = row?;
+        out.push(FirebenderChatSessionRow {
+            id,
+            name,
+            created_at,
+            updated_at,
+            messages_json,
+            metadata_json,
+            row_number: u64::try_from(index + 1).unwrap_or(u64::MAX),
+        });
+    }
+    Ok(out)
+}
+
+fn firebender_message_time(message: &Value, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    provider_timestamp_value(
+        message
+            .get("timestamp")
+            .or_else(|| message.get("created_at"))
+            .or_else(|| message.get("updated_at")),
+        fallback,
+    )
+}
+
+fn firebender_event(
+    provider_session_id: &str,
+    provider_event_index: u64,
+    message: &Value,
+    occurred_at: DateTime<Utc>,
+) -> ProviderEventEnvelope {
+    let role = message.get("role").and_then(Value::as_str);
+    let tool_calls = message
+        .get("tool_calls")
+        .or_else(|| message.get("toolCalls"));
+    let event_type = if role == Some("tool") {
+        EventType::ToolOutput
+    } else if tool_calls.is_some_and(|value| {
+        value
+            .as_array()
+            .map(|items| !items.is_empty())
+            .unwrap_or(true)
+    }) {
+        EventType::ToolCall
+    } else {
+        EventType::Message
+    };
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::Firebender,
+        source_format: FIREBENDER_SQLITE_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index,
+        provider_event_hash: message
+            .get("id")
+            .or_else(|| message.get("tool_call_id"))
+            .or_else(|| message.get("toolCallId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        cursor: format!("chat_sessions:{provider_session_id}:message:{provider_event_index}"),
+        event_type,
+        role: Some(provider_role(role)),
+        occurred_at,
+        text: firebender_message_text(message)
+            .unwrap_or_else(|| format!("Firebender {}", role.unwrap_or("message"))),
+        body: message.clone(),
+        metadata: json!({
+            "source": "firebender_chat_sessions",
+            "source_format": FIREBENDER_SQLITE_SOURCE_FORMAT,
+            "role": role,
+            "name": message.get("name").and_then(Value::as_str),
+            "tool_call_id": message
+                .get("tool_call_id")
+                .or_else(|| message.get("toolCallId"))
+                .and_then(Value::as_str),
+            "content_type": message
+                .get("content")
+                .and_then(|content| content.get("type"))
+                .and_then(Value::as_str),
+        }),
+    })
+}
+
+fn firebender_message_text(message: &Value) -> Option<String> {
+    if let Some(content) = message.get("content") {
+        match content {
+            Value::Object(object) => {
+                if let Some(text) = object
+                    .get("text")
+                    .or_else(|| object.get("content"))
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    return Some(text.to_owned());
+                }
+            }
+            _ => {
+                if let Some(text) =
+                    provider_value_text(content).filter(|text| !text.trim().is_empty())
+                {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    if let Some(tool_calls) = message
+        .get("tool_calls")
+        .or_else(|| message.get("toolCalls"))
+        .and_then(Value::as_array)
+    {
+        let names = tool_calls
+            .iter()
+            .filter_map(|call| {
+                call.get("function")
+                    .and_then(|function| function.get("name"))
+                    .or_else(|| call.get("name"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            return Some(format!("tool call: {}", names.join(", ")));
+        }
+    }
+    message
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn firebender_capture(
+    row: &FirebenderChatSessionRow,
+    metadata: &Value,
+    path: &Path,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    schema_fingerprint: &str,
+    context: &ProviderAdapterContext,
+    event: Option<ProviderEventEnvelope>,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Firebender,
+            source_format: FIREBENDER_SQLITE_SOURCE_FORMAT,
+            provider_session_id: row.id.clone(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            started_at,
+            ended_at,
+            cwd: None,
+            fidelity: Fidelity::Imported,
+            raw_source_path: path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": FIREBENDER_SQLITE_SOURCE_FORMAT,
+                "schema_fingerprint": schema_fingerprint,
+                "storage": ".idea/firebender/chat_history.db",
+            }),
+            session_metadata: json!({
+                "source_format": FIREBENDER_SQLITE_SOURCE_FORMAT,
+                "title": row.name,
+                "metadata": provider_capped_json(metadata, PROVIDER_MAX_PREVIEW_CHARS),
+                "storage": ".idea/firebender/chat_history.db",
+                "timestamp_note": "message rows do not carry durable per-message timestamps; ctx preserves session created_at/updated_at and import order",
+            }),
+        },
+        context,
+        event,
+    )
+}
+#[derive(Debug, Clone, Default)]
+struct JunieIndexMeta {
+    session_id: String,
+    created_at: Option<i64>,
+    updated_at: Option<i64>,
+    task_name: Option<String>,
+    project_dir: Option<String>,
+    raw: Value,
+}
+
+#[derive(Debug, Clone)]
+struct JunieSessionPath {
+    events_path: PathBuf,
+    index_meta: JunieIndexMeta,
+}
+
+#[derive(Debug, Clone)]
+struct JunieStepAgg {
+    order: usize,
+    label: Option<String>,
+    command: Option<String>,
+    files: Option<Value>,
+    changes: Vec<Value>,
+    details: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct JunieUsage {
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct JunieAssistantBuffer {
+    open: bool,
+    turn_ts: Option<DateTime<Utc>>,
+    steps: BTreeMap<String, JunieStepAgg>,
+    results: BTreeMap<String, String>,
+    usage: JunieUsage,
+}
+
+fn normalize_junie_session_events(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let session_paths = junie_session_event_paths(path)?;
+    if session_paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Junie index.jsonl entries with session events.jsonl files were found",
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for (session_ordinal, session_path) in session_paths.iter().enumerate() {
+        match normalize_junie_session_events_file(session_path, context, session_ordinal) {
+            Ok(mut result) => {
+                merged.summary.merge(result.summary);
+                merged.captures.append(&mut result.captures);
+                merged.files_touched.append(&mut result.files_touched);
+            }
+            Err(err) => {
+                merged.summary.failed += 1;
+                merged.summary.failures.push(ProviderImportFailure {
+                    line: session_ordinal.saturating_add(1),
+                    error: err.to_string(),
+                });
+            }
+        }
+    }
+    if merged.captures.is_empty() && merged.summary.failed == 0 {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Junie session events were empty or unsupported",
+        });
+    }
+    Ok(merged)
+}
+
+fn junie_session_event_paths(path: &Path) -> Result<Vec<JunieSessionPath>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_file() {
+        ensure_regular_provider_transcript_file(path)?;
+        if path.file_name().and_then(|name| name.to_str()) != Some("events.jsonl") {
+            return Ok(Vec::new());
+        }
+        let session_id = junie_session_id_from_events_path(path)?;
+        let index_meta =
+            junie_index_meta_for_events_path(path, &session_id).unwrap_or_else(|| JunieIndexMeta {
+                session_id,
+                ..JunieIndexMeta::default()
+            });
+        return Ok(vec![JunieSessionPath {
+            events_path: path.to_path_buf(),
+            index_meta,
+        }]);
+    }
+    if !metadata.file_type().is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let direct_events = path.join("events.jsonl");
+    if direct_events.is_file() {
+        let session_id = junie_session_id_from_events_path(&direct_events)?;
+        let index_meta = junie_index_meta_for_events_path(&direct_events, &session_id)
+            .unwrap_or_else(|| JunieIndexMeta {
+                session_id,
+                ..JunieIndexMeta::default()
+            });
+        return Ok(vec![JunieSessionPath {
+            events_path: direct_events,
+            index_meta,
+        }]);
+    }
+
+    let index_path = path.join("index.jsonl");
+    if !index_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let metas = junie_read_index(&index_path)?;
+    let mut out = Vec::new();
+    for meta in metas {
+        if !junie_session_id_is_safe(&meta.session_id) {
+            continue;
+        }
+        let events_path = path.join(&meta.session_id).join("events.jsonl");
+        if events_path.is_file() {
+            out.push(JunieSessionPath {
+                events_path,
+                index_meta: meta,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn junie_index_meta_for_events_path(path: &Path, session_id: &str) -> Option<JunieIndexMeta> {
+    let index_path = path.parent()?.parent()?.join("index.jsonl");
+    junie_read_index(&index_path)
+        .ok()?
+        .into_iter()
+        .find(|meta| meta.session_id == session_id)
+}
+
+fn junie_read_index(path: &Path) -> Result<Vec<JunieIndexMeta>> {
+    ensure_regular_provider_transcript_file(path)?;
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut metas = Vec::new();
+    let mut line = Vec::new();
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        let Some(session_id) = value
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|session_id| junie_session_id_is_safe(session_id))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        metas.push(JunieIndexMeta {
+            session_id,
+            created_at: junie_timestamp_millis_field(&value, "createdAt"),
+            updated_at: junie_timestamp_millis_field(&value, "updatedAt"),
+            task_name: value
+                .get("taskName")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned),
+            project_dir: value
+                .get("projectDir")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned),
+            raw: value,
+        });
+    }
+    Ok(metas)
+}
+
+fn junie_timestamp_millis_field(value: &Value, field: &str) -> Option<i64> {
+    let value = value.get(field)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| value.as_f64().map(|value| value.round() as i64))
+}
+
+fn junie_session_id_from_events_path(path: &Path) -> Result<String> {
+    let Some(session_id) = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+    else {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Junie events.jsonl path is not inside a session directory",
+        });
+    };
+    if !junie_session_id_is_safe(session_id) {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Junie session id is not a safe path segment",
+        });
+    }
+    Ok(session_id.to_owned())
+}
+
+fn junie_session_id_is_safe(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id != "."
+        && session_id != ".."
+        && !session_id.contains('/')
+        && !session_id.contains('\\')
+}
+
+fn normalize_junie_session_events_file(
+    session_path: &JunieSessionPath,
+    context: &ProviderAdapterContext,
+    session_ordinal: usize,
+) -> Result<ProviderNormalizationResult> {
+    ensure_regular_provider_transcript_file(&session_path.events_path)?;
+    let provider_session_id = if session_path.index_meta.session_id.is_empty() {
+        junie_session_id_from_events_path(&session_path.events_path)?
+    } else {
+        session_path.index_meta.session_id.clone()
+    };
+    if !junie_session_id_is_safe(&provider_session_id) {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: session_path.events_path.clone(),
+            reason: "Junie session id is not a safe path segment",
+        });
+    }
+
+    let started_at =
+        provider_timestamp_millis(session_path.index_meta.created_at, context.imported_at);
+    let mut ended_at = session_path
+        .index_meta
+        .updated_at
+        .map(|timestamp| provider_timestamp_millis(Some(timestamp), started_at));
+    let raw_source_path = session_path.events_path.display().to_string();
+    let mut cwd = session_path.index_meta.project_dir.clone();
+    let mut title = session_path.index_meta.task_name.clone();
+    let base_line = session_ordinal.saturating_mul(100_000);
+    let mut result = ProviderNormalizationResult::default();
+    let mut buffer = JunieAssistantBuffer::default();
+    let mut provider_event_index = 0u64;
+    let mut last_ts = started_at;
+    let mut saw_supported_event = false;
+    let base_draft = NativeSessionDraft {
+        provider: CaptureProvider::Junie,
+        source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.clone(),
+        parent_provider_session_id: None,
+        root_provider_session_id: None,
+        external_agent_id: None,
+        agent_type: AgentType::Primary,
+        role_hint: Some("primary".to_owned()),
+        is_primary: true,
+        started_at,
+        ended_at,
+        cwd: cwd.clone(),
+        fidelity: Fidelity::Imported,
+        raw_source_path: raw_source_path.clone(),
+        trust: ProviderSourceTrust::ProviderNative,
+        source_metadata: json!({
+            "adapter": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+            "source_path": raw_source_path.clone(),
+            "storage": "~/.junie/sessions/index.jsonl + session-*/events.jsonl",
+            "upstream_schema_anchor": {
+                "source": "vladar107/claudescope",
+                "connector": "packages/server/src/connectors/junie",
+                "notes": "event-sourced UI render stream with UserPromptEvent and SessionA2uxEvent agentEvent blocks"
+            },
+        }),
+        session_metadata: json!({
+            "source_format": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+            "session_id": provider_session_id.clone(),
+            "title": title.clone(),
+            "project_dir": cwd.clone(),
+            "index": provider_capped_json_value(&session_path.index_meta.raw, PROVIDER_MAX_PREVIEW_CHARS),
+            "limitations": [
+                "ctx imports Junie events.jsonl UI stream blocks, not a provider conversational message log",
+                "custom attachment image files are not read by the native importer",
+                "unknown SessionA2uxEvent agentEvent kinds are skipped"
+            ],
+        }),
+    };
+
+    let file = File::open(&session_path.events_path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        let import_line = base_line.saturating_add(line_number);
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(&line) {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    import_line,
+                    format!("malformed Junie events JSONL: {err}"),
+                );
+                continue;
+            }
+        };
+        let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == "UserPromptEvent" {
+            junie_flush_assistant(
+                &mut buffer,
+                &base_draft,
+                context,
+                &mut result,
+                import_line,
+                &mut provider_event_index,
+            );
+            let prompt = value.get("prompt").and_then(Value::as_str).unwrap_or("");
+            if !prompt.trim().is_empty() {
+                let event = native_event(NativeEventDraft {
+                    provider: CaptureProvider::Junie,
+                    source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+                    provider_session_id: provider_session_id.clone(),
+                    provider_event_index,
+                    provider_event_hash: Some(format!("line:{line_number}:user")),
+                    cursor: format!(
+                        "{}:line:{line_number}:event:{provider_event_index}",
+                        session_path.events_path.display()
+                    ),
+                    event_type: EventType::Message,
+                    role: Some(EventRole::User),
+                    occurred_at: last_ts,
+                    text: prompt.to_owned(),
+                    body: json!({
+                        "kind": kind,
+                        "prompt": prompt,
+                    }),
+                    metadata: json!({
+                        "source": "junie_user_prompt",
+                        "source_format": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+                    }),
+                });
+                provider_event_index = provider_event_index.saturating_add(1);
+                result.captures.push((
+                    import_line,
+                    native_provider_capture(base_draft.clone(), context, Some(event)),
+                ));
+                saw_supported_event = true;
+            }
+            continue;
+        }
+        if kind != "SessionA2uxEvent" {
+            continue;
+        }
+        if let Some(timestamp) = junie_timestamp_millis_field(&value, "timestampMs")
+            .and_then(DateTime::<Utc>::from_timestamp_millis)
+        {
+            last_ts = timestamp;
+            ended_at = Some(timestamp);
+        }
+        let agent_event = value
+            .get("event")
+            .and_then(|event| event.get("agentEvent"))
+            .unwrap_or(&Value::Null);
+        let agent_kind = agent_event
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match agent_kind {
+            "LlmResponseMetadataEvent" => {
+                junie_ensure_assistant(&mut buffer, last_ts);
+                junie_merge_usage(&mut buffer.usage, agent_event);
+                saw_supported_event = true;
+            }
+            "AgentTaskNameUpdatedEvent" => {
+                if let Some(name) = agent_event.get("name").and_then(Value::as_str) {
+                    if !name.trim().is_empty() {
+                        title = Some(name.to_owned());
+                    }
+                }
+            }
+            "CurrentDirectoryUpdatedEvent" => {
+                if cwd.is_none() {
+                    cwd = agent_event
+                        .get("currentDirectory")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .map(str::to_owned);
+                }
+            }
+            "ResultBlockUpdatedEvent" => {
+                junie_ensure_assistant(&mut buffer, last_ts);
+                if let Some(text) = agent_event.get("result").and_then(Value::as_str) {
+                    if !text.trim().is_empty() {
+                        let step_id = agent_event
+                            .get("stepId")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("result-{line_number}"));
+                        buffer.results.insert(step_id, text.to_owned());
+                        saw_supported_event = true;
+                    }
+                }
+            }
+            "ToolBlockUpdatedEvent"
+            | "TerminalBlockUpdatedEvent"
+            | "ViewFilesBlockUpdatedEvent"
+            | "FileChangesBlockUpdatedEvent" => {
+                junie_merge_step(&mut buffer, agent_event, last_ts);
+                saw_supported_event = true;
+            }
+            _ => {}
+        }
+    }
+    junie_flush_assistant(
+        &mut buffer,
+        &base_draft,
+        context,
+        &mut result,
+        base_line.saturating_add(line_number.saturating_add(1)),
+        &mut provider_event_index,
+    );
+
+    if result.captures.is_empty() && !saw_supported_event {
+        push_provider_import_failure(
+            &mut result.summary,
+            base_line,
+            "Junie events.jsonl contained no supported UserPromptEvent or SessionA2uxEvent blocks"
+                .to_owned(),
+        );
+    }
+
+    if let Some(ended_at) = ended_at {
+        for (_, capture) in &mut result.captures {
+            capture.session.ended_at = Some(ended_at);
+            capture.session.cwd = cwd.clone();
+            capture.session.metadata["title"] = json!(title.clone());
+            capture.session.metadata["project_dir"] = json!(cwd.clone());
+        }
+    }
+    Ok(result)
+}
+
+fn junie_ensure_assistant(buffer: &mut JunieAssistantBuffer, occurred_at: DateTime<Utc>) {
+    if !buffer.open {
+        buffer.open = true;
+        buffer.turn_ts = Some(occurred_at);
+    }
+}
+
+fn junie_merge_usage(usage: &mut JunieUsage, agent_event: &Value) {
+    let Some(items) = agent_event.get("modelUsage").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        usage.input_tokens = usage
+            .input_tokens
+            .saturating_add(junie_i64_field(item, "inputTokens"));
+        usage.output_tokens = usage
+            .output_tokens
+            .saturating_add(junie_i64_field(item, "outputTokens"));
+        usage.cache_read_tokens = usage
+            .cache_read_tokens
+            .saturating_add(junie_i64_field(item, "cacheInputTokens"));
+        usage.cache_write_tokens = usage
+            .cache_write_tokens
+            .saturating_add(junie_i64_field(item, "cacheCreateTokens"));
+        if let Some(model) = item.get("model").and_then(Value::as_str) {
+            if !model.trim().is_empty() {
+                usage.model = Some(model.to_owned());
+            }
+        }
+    }
+}
+
+fn junie_i64_field(value: &Value, field: &str) -> i64 {
+    value
+        .get(field)
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        })
+        .unwrap_or(0)
+}
+
+fn junie_merge_step(
+    buffer: &mut JunieAssistantBuffer,
+    agent_event: &Value,
+    occurred_at: DateTime<Utc>,
+) {
+    let Some(step_id) = agent_event
+        .get("stepId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    junie_ensure_assistant(buffer, occurred_at);
+    let next_order = buffer.steps.len();
+    let step = buffer
+        .steps
+        .entry(step_id.to_owned())
+        .or_insert_with(|| JunieStepAgg {
+            order: next_order,
+            label: None,
+            command: None,
+            files: None,
+            changes: Vec::new(),
+            details: None,
+            status: None,
+        });
+    if let Some(text) = agent_event.get("text").and_then(Value::as_str) {
+        if !text.trim().is_empty() {
+            step.label = Some(text.to_owned());
+        }
+    }
+    if let Some(command) = agent_event.get("command").and_then(Value::as_str) {
+        if !command.trim().is_empty() {
+            step.command = Some(command.to_owned());
+        }
+    }
+    if let Some(files) = agent_event.get("files").filter(|value| value.is_array()) {
+        step.files = Some(files.clone());
+    }
+    if let Some(changes) = agent_event.get("changes").and_then(Value::as_array) {
+        step.changes = changes.clone();
+    }
+    if let Some(details) = agent_event.get("details").and_then(Value::as_str) {
+        if !details.trim().is_empty() {
+            step.details = Some(details.to_owned());
+        }
+    }
+    if let Some(status) = agent_event.get("status").and_then(Value::as_str) {
+        if !status.trim().is_empty() {
+            step.status = Some(status.to_owned());
+        }
+    }
+}
+
+fn junie_flush_assistant(
+    buffer: &mut JunieAssistantBuffer,
+    base_draft: &NativeSessionDraft,
+    context: &ProviderAdapterContext,
+    result: &mut ProviderNormalizationResult,
+    line_number: usize,
+    provider_event_index: &mut u64,
+) {
+    if !buffer.open {
+        return;
+    }
+    let occurred_at = buffer.turn_ts.unwrap_or(base_draft.started_at);
+    let mut steps = buffer.steps.values().cloned().collect::<Vec<_>>();
+    steps.sort_by_key(|step| step.order);
+    for step in &steps {
+        if !step.changes.is_empty() {
+            junie_emit_file_changes(
+                base_draft,
+                context,
+                result,
+                line_number,
+                provider_event_index,
+                occurred_at,
+                step,
+            );
+        } else {
+            junie_emit_step_events(
+                base_draft,
+                context,
+                result,
+                line_number,
+                provider_event_index,
+                occurred_at,
+                step,
+            );
+        }
+    }
+    let final_text = buffer
+        .results
+        .values()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !final_text.trim().is_empty() {
+        let index = *provider_event_index;
+        let event = native_event(NativeEventDraft {
+            provider: CaptureProvider::Junie,
+            source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+            provider_session_id: base_draft.provider_session_id.clone(),
+            provider_event_index: index,
+            provider_event_hash: Some(format!("assistant-result:{index}")),
+            cursor: format!(
+                "{}:line:{line_number}:event:{index}",
+                base_draft.raw_source_path
+            ),
+            event_type: EventType::Message,
+            role: Some(EventRole::Assistant),
+            occurred_at,
+            text: final_text,
+            body: json!({
+                "result_blocks": buffer.results.clone(),
+                "model": buffer.usage.model.clone(),
+                "usage": {
+                    "input_tokens": buffer.usage.input_tokens,
+                    "output_tokens": buffer.usage.output_tokens,
+                    "cache_read_tokens": buffer.usage.cache_read_tokens,
+                    "cache_write_tokens": buffer.usage.cache_write_tokens,
+                },
+            }),
+            metadata: json!({
+                "source": "junie_result_blocks",
+                "source_format": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+                "model": buffer.usage.model.clone(),
+                "usage": {
+                    "input_tokens": buffer.usage.input_tokens,
+                    "output_tokens": buffer.usage.output_tokens,
+                    "cache_read_tokens": buffer.usage.cache_read_tokens,
+                    "cache_write_tokens": buffer.usage.cache_write_tokens,
+                },
+            }),
+        });
+        *provider_event_index = (*provider_event_index).saturating_add(1);
+        result.captures.push((
+            line_number,
+            native_provider_capture(base_draft.clone(), context, Some(event)),
+        ));
+    }
+    *buffer = JunieAssistantBuffer::default();
+}
+
+fn junie_emit_step_events(
+    base_draft: &NativeSessionDraft,
+    context: &ProviderAdapterContext,
+    result: &mut ProviderNormalizationResult,
+    line_number: usize,
+    provider_event_index: &mut u64,
+    occurred_at: DateTime<Utc>,
+    step: &JunieStepAgg,
+) {
+    let (tool_name, text, body) = if let Some(command) = &step.command {
+        (
+            "Bash",
+            format!("Bash: {command}"),
+            json!({
+                "tool_name": "Bash",
+                "command": command,
+                "label": step.label,
+                "status": step.status,
+            }),
+        )
+    } else if let Some(files) = &step.files {
+        (
+            "view",
+            step.label
+                .clone()
+                .unwrap_or_else(|| "View files".to_owned()),
+            json!({
+                "tool_name": "view",
+                "label": step.label,
+                "files": files,
+                "status": step.status,
+            }),
+        )
+    } else {
+        (
+            "tool",
+            step.label
+                .clone()
+                .unwrap_or_else(|| "Junie tool step".to_owned()),
+            json!({
+                "tool_name": "tool",
+                "label": step.label,
+                "status": step.status,
+            }),
+        )
+    };
+    let tool_index = *provider_event_index;
+    let tool_event = native_event(NativeEventDraft {
+        provider: CaptureProvider::Junie,
+        source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+        provider_session_id: base_draft.provider_session_id.clone(),
+        provider_event_index: tool_index,
+        provider_event_hash: Some(format!("step:{}:tool", step.order)),
+        cursor: format!(
+            "{}:line:{line_number}:event:{tool_index}",
+            base_draft.raw_source_path
+        ),
+        event_type: EventType::ToolCall,
+        role: Some(EventRole::Assistant),
+        occurred_at,
+        text,
+        body: body.clone(),
+        metadata: json!({
+            "source": "junie_step",
+            "source_format": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+            "tool_name": tool_name,
+        }),
+    });
+    *provider_event_index = (*provider_event_index).saturating_add(1);
+    result.captures.push((
+        line_number,
+        native_provider_capture(base_draft.clone(), context, Some(tool_event)),
+    ));
+
+    if let Some(details) = &step.details {
+        if !details.trim().is_empty() {
+            let output_index = *provider_event_index;
+            let output_event = native_event(NativeEventDraft {
+                provider: CaptureProvider::Junie,
+                source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+                provider_session_id: base_draft.provider_session_id.clone(),
+                provider_event_index: output_index,
+                provider_event_hash: Some(format!("step:{}:output", step.order)),
+                cursor: format!(
+                    "{}:line:{line_number}:event:{output_index}",
+                    base_draft.raw_source_path
+                ),
+                event_type: if step.command.is_some() {
+                    EventType::CommandOutput
+                } else {
+                    EventType::ToolOutput
+                },
+                role: Some(EventRole::Tool),
+                occurred_at,
+                text: details.clone(),
+                body: json!({
+                    "tool_name": tool_name,
+                    "details": details,
+                    "status": step.status,
+                }),
+                metadata: json!({
+                    "source": "junie_step_details",
+                    "source_format": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+                    "tool_name": tool_name,
+                }),
+            });
+            *provider_event_index = (*provider_event_index).saturating_add(1);
+            result.captures.push((
+                line_number,
+                native_provider_capture(base_draft.clone(), context, Some(output_event)),
+            ));
+        }
+    }
+}
+
+fn junie_emit_file_changes(
+    base_draft: &NativeSessionDraft,
+    context: &ProviderAdapterContext,
+    result: &mut ProviderNormalizationResult,
+    line_number: usize,
+    provider_event_index: &mut u64,
+    occurred_at: DateTime<Utc>,
+    step: &JunieStepAgg,
+) {
+    for (change_index, change) in step.changes.iter().enumerate() {
+        let before_path = change.get("beforeRelativePath").and_then(Value::as_str);
+        let after_path = change.get("afterRelativePath").and_then(Value::as_str);
+        let Some(path) = after_path.or(before_path) else {
+            continue;
+        };
+        if path.trim().is_empty() {
+            continue;
+        }
+        let change_kind = match (before_path, after_path) {
+            (None, Some(_)) => FileChangeKind::Created,
+            (Some(_), None) => FileChangeKind::Deleted,
+            (Some(before), Some(after)) if before != after => FileChangeKind::Renamed,
+            _ => FileChangeKind::Modified,
+        };
+        let event_index = *provider_event_index;
+        let event = native_event(NativeEventDraft {
+            provider: CaptureProvider::Junie,
+            source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+            provider_session_id: base_draft.provider_session_id.clone(),
+            provider_event_index: event_index,
+            provider_event_hash: Some(format!("step:{}:change:{change_index}", step.order)),
+            cursor: format!(
+                "{}:line:{line_number}:event:{event_index}",
+                base_draft.raw_source_path
+            ),
+            event_type: EventType::ToolCall,
+            role: Some(EventRole::Assistant),
+            occurred_at,
+            text: format!("Edit: {path}"),
+            body: json!({
+                "tool_name": "Edit",
+                "file_path": path,
+                "old_string": junie_file_content_text(change.get("beforeContent")),
+                "new_string": junie_file_content_text(change.get("afterContent")),
+                "before_relative_path": before_path,
+                "after_relative_path": after_path,
+                "change_kind": change_kind.as_str(),
+                "status": step.status,
+            }),
+            metadata: json!({
+                "source": "junie_file_change",
+                "source_format": JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
+                "tool_name": "Edit",
+                "change_kind": change_kind.as_str(),
+            }),
+        });
+        *provider_event_index = (*provider_event_index).saturating_add(1);
+        result.captures.push((
+            line_number,
+            native_provider_capture(base_draft.clone(), context, Some(event)),
+        ));
+        result.files_touched.push((
+            line_number,
+            ProviderFileTouchedEnvelope {
+                provider: CaptureProvider::Junie,
+                provider_session_id: base_draft.provider_session_id.clone(),
+                provider_touch_index: event_index
+                    .saturating_mul(1_000)
+                    .saturating_add(change_index as u64),
+                provider_event_index: Some(event_index),
+                raw_source_path: Some(base_draft.raw_source_path.clone()),
+                path: path.to_owned(),
+                change_kind: Some(change_kind),
+                old_path: before_path
+                    .filter(|before| after_path.is_some_and(|after| after != *before))
+                    .map(str::to_owned),
+                line_count_delta: None,
+                confidence: Confidence::Explicit,
+                occurred_at,
+                source_format: JUNIE_SESSION_EVENTS_SOURCE_FORMAT.to_owned(),
+                metadata: json!({
+                    "source": "junie_file_change",
+                    "step_order": step.order,
+                    "change_index": change_index,
+                }),
+            },
+        ));
+    }
+}
+
+fn junie_file_content_text(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .or_else(|| value.as_str())
+        .map(str::to_owned)
+}
+
+fn normalize_codebuddy_history(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut session_dirs = collect_codebuddy_session_dirs(path)?;
+    session_dirs.sort();
+    session_dirs.dedup();
+    if session_dirs.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no CodeBuddy history sessions with index.json and messages/*.json were found",
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for (session_ordinal, session_dir) in session_dirs.iter().enumerate() {
+        let mut result =
+            normalize_codebuddy_session_dir(session_dir, context, session_ordinal + 1)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    Ok(merged)
+}
+
+fn collect_codebuddy_session_dirs(path: &Path) -> Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_file() {
+        ensure_regular_provider_transcript_file(path)?;
+        if path.file_name().and_then(|name| name.to_str()) == Some("index.json") {
+            if let Some(parent) = path.parent() {
+                if codebuddy_is_session_dir(parent) {
+                    return Ok(vec![parent.to_path_buf()]);
+                }
+                let mut sessions = Vec::new();
+                codebuddy_collect_project_sessions(parent, &mut sessions);
+                return Ok(sessions);
+            }
+        }
+        return Ok(Vec::new());
+    }
+    if !metadata.file_type().is_dir() {
+        return Ok(Vec::new());
+    }
+
+    if codebuddy_is_session_dir(path) {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    let mut sessions = Vec::new();
+    codebuddy_collect_project_sessions(path, &mut sessions);
+    if path.file_name().and_then(|name| name.to_str()) == Some("history") {
+        codebuddy_collect_history_root_sessions(path, &mut sessions);
+    } else {
+        for history in collect_codebuddy_history_roots(path, 20_000, 8) {
+            codebuddy_collect_history_root_sessions(&history, &mut sessions);
+        }
+    }
+    Ok(sessions)
+}
+
+fn codebuddy_is_session_dir(path: &Path) -> bool {
+    path.join("index.json").is_file() && path.join("messages").is_dir()
+}
+
+fn codebuddy_collect_project_sessions(project_dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(project_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            let candidate = entry.path();
+            if codebuddy_is_session_dir(&candidate) {
+                out.push(candidate);
+            }
+        }
+    }
+}
+
+fn codebuddy_collect_history_root_sessions(history_dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(history_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            codebuddy_collect_project_sessions(&entry.path(), out);
+        }
+    }
+}
+
+fn collect_codebuddy_history_roots(
+    root: &Path,
+    max_entries: usize,
+    max_depth: usize,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut visited = 0usize;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > max_depth {
+            continue;
+        }
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            visited = visited.saturating_add(1);
+            if visited > max_entries {
+                return roots;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            if path.file_name().and_then(|name| name.to_str()) == Some("history") {
+                roots.push(path);
+            } else {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    roots
+}
+
+fn normalize_codebuddy_session_dir(
+    session_dir: &Path,
+    context: &ProviderAdapterContext,
+    session_ordinal: usize,
+) -> Result<ProviderNormalizationResult> {
+    let mut result = ProviderNormalizationResult::default();
+    let session_index_path = session_dir.join("index.json");
+    let session_index = match read_json_file_limited(
+        &session_index_path,
+        MAX_PROVIDER_JSONL_LINE_BYTES,
+        "CodeBuddy session index.json",
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            result.summary.failed += 1;
+            result.summary.failures.push(ProviderImportFailure {
+                line: session_ordinal,
+                error: format!("index.json: {err}"),
+            });
+            return Ok(result);
+        }
+    };
+
+    let project_dir = session_dir.parent().unwrap_or(session_dir);
+    let project_hash = project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("unknown-project");
+    let native_session_id = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("unknown-session");
+    let provider_session_id = format!("{project_hash}/{native_session_id}");
+    let (project_index, conversation) = codebuddy_project_index_and_conversation(
+        project_dir,
+        native_session_id,
+        &mut result,
+        session_ordinal,
+    );
+
+    let messages = session_index
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if messages.is_empty() {
+        return Ok(result);
+    }
+
+    let mut events = Vec::new();
+    for (message_index, message_ref) in messages.iter().enumerate() {
+        let line_number = session_ordinal
+            .saturating_mul(10_000)
+            .saturating_add(message_index)
+            .saturating_add(1);
+        let Some(message_id) = message_ref
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        else {
+            result.summary.failed += 1;
+            result.summary.failures.push(ProviderImportFailure {
+                line: line_number,
+                error: "CodeBuddy message ref has empty id".to_owned(),
+            });
+            continue;
+        };
+        let message_path = session_dir
+            .join("messages")
+            .join(format!("{message_id}.json"));
+        let raw_message = match read_json_file_limited(
+            &message_path,
+            MAX_PROVIDER_JSONL_LINE_BYTES,
+            "CodeBuddy message JSON",
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: format!("messages/{message_id}.json: {err}"),
+                });
+                continue;
+            }
+        };
+        let decoded_message = codebuddy_decoded_message(&raw_message);
+        let text = codebuddy_message_text(&decoded_message, &raw_message);
+        if text.trim().is_empty() {
+            continue;
+        }
+        let occurred_at = codebuddy_message_time(
+            &raw_message,
+            &decoded_message,
+            &message_path,
+            context.imported_at,
+        );
+        events.push(CodeBuddyEventInput {
+            line_number,
+            provider_event_index: message_index as u64,
+            native_message_id: message_id.to_owned(),
+            role: message_ref
+                .get("role")
+                .and_then(Value::as_str)
+                .or_else(|| raw_message.get("role").and_then(Value::as_str))
+                .map(str::to_owned),
+            ref_type: message_ref
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            occurred_at,
+            text,
+            raw_message,
+            decoded_message,
+        });
+    }
+
+    if events.is_empty() {
+        return Ok(result);
+    }
+
+    let first_event_at = events
+        .first()
+        .map(|event| event.occurred_at)
+        .unwrap_or(context.imported_at);
+    let last_event_at = events.last().map(|event| event.occurred_at);
+    let started_at = conversation
+        .as_ref()
+        .and_then(|value| task_json_time_field(value, &["createdAt", "created_at", "timestamp"]))
+        .unwrap_or(first_event_at);
+    let ended_at = conversation
+        .as_ref()
+        .and_then(|value| {
+            task_json_time_field(
+                value,
+                &["lastMessageAt", "updatedAt", "completedAt", "last_modified"],
+            )
+        })
+        .or(last_event_at);
+    let title = conversation
+        .as_ref()
+        .and_then(|value| task_json_string_field(value, &["name", "title"]))
+        .or_else(|| codebuddy_generated_title(&events));
+    let source_path = session_dir.display().to_string();
+    let file_names = vec!["index.json", "messages/*.json"];
+
+    for event in events {
+        let line_number = event.line_number;
+        result.captures.push((
+            line_number,
+            codebuddy_capture(
+                &provider_session_id,
+                native_session_id,
+                project_hash,
+                &source_path,
+                context,
+                started_at,
+                ended_at,
+                title.clone(),
+                project_index.as_ref(),
+                conversation.as_ref(),
+                &session_index,
+                &file_names,
+                event,
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+#[derive(Debug, Clone)]
+struct CodeBuddyEventInput {
+    line_number: usize,
+    provider_event_index: u64,
+    native_message_id: String,
+    role: Option<String>,
+    ref_type: Option<String>,
+    occurred_at: DateTime<Utc>,
+    text: String,
+    raw_message: Value,
+    decoded_message: Value,
+}
+
+fn codebuddy_project_index_and_conversation(
+    project_dir: &Path,
+    native_session_id: &str,
+    result: &mut ProviderNormalizationResult,
+    line: usize,
+) -> (Option<Value>, Option<Value>) {
+    let path = project_dir.join("index.json");
+    if !path.exists() {
+        return (None, None);
+    }
+    let value = match read_json_file_limited(
+        &path,
+        MAX_PROVIDER_JSONL_LINE_BYTES,
+        "CodeBuddy project index.json",
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            result.summary.failed += 1;
+            result.summary.failures.push(ProviderImportFailure {
+                line,
+                error: format!("project index.json: {err}"),
+            });
+            return (None, None);
+        }
+    };
+    let conversation = value
+        .get("conversations")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(native_session_id))
+        })
+        .cloned();
+    (Some(value), conversation)
+}
+
+fn codebuddy_decoded_message(raw_message: &Value) -> Value {
+    match raw_message.get("message") {
+        Some(Value::String(text)) => {
+            serde_json::from_str(text).unwrap_or_else(|_| json!({ "content": text }))
+        }
+        Some(value) => value.clone(),
+        None => raw_message.clone(),
+    }
+}
+
+fn codebuddy_message_text(decoded: &Value, raw_message: &Value) -> String {
+    let text = decoded
+        .get("content")
+        .and_then(codebuddy_content_text)
+        .or_else(|| {
+            decoded
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| decoded.as_str().map(str::to_owned))
+        .or_else(|| raw_message.get("content").and_then(codebuddy_content_text))
+        .or_else(|| {
+            raw_message
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    codebuddy_clean_content(&text)
+}
+
+fn codebuddy_content_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.to_owned());
+    }
+    let blocks = content.as_array()?;
+    let parts = blocks
+        .iter()
+        .filter_map(|block| {
+            let block_type = block.get("type").and_then(Value::as_str);
+            if block_type.is_some_and(|kind| kind != "text") {
+                return None;
+            }
+            block
+                .get("text")
+                .or_else(|| block.get("content"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn codebuddy_clean_content(content: &str) -> String {
+    let mut cleaned = content.to_owned();
+    for tag in [
+        "user_info",
+        "project_context",
+        "project_layout",
+        "system_reminder",
+        "additional_data",
+        "currently_opened_file",
+    ] {
+        cleaned = remove_xml_like_block(&cleaned, tag);
+    }
+    cleaned = cleaned.replace("<user_query>", "");
+    cleaned = cleaned.replace("</user_query>", "");
+    cleaned.trim().to_owned()
+}
+
+fn remove_xml_like_block(input: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut output = input.to_owned();
+    while let Some(start) = output.find(&open) {
+        let Some(relative_end) = output[start + open.len()..].find(&close) else {
+            output.replace_range(start..start + open.len(), "");
+            continue;
+        };
+        let end = start + open.len() + relative_end + close.len();
+        output.replace_range(start..end, "");
+    }
+    output
+}
+
+fn codebuddy_message_time(
+    raw_message: &Value,
+    decoded_message: &Value,
+    message_path: &Path,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    task_json_time_field(
+        raw_message,
+        &["createdAt", "created_at", "timestamp", "time", "date"],
+    )
+    .or_else(|| {
+        task_json_time_field(
+            decoded_message,
+            &["createdAt", "created_at", "timestamp", "time", "date"],
+        )
+    })
+    .or_else(|| {
+        fs::metadata(message_path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .map(DateTime::<Utc>::from)
+    })
+    .unwrap_or(fallback)
+}
+
+fn codebuddy_generated_title(events: &[CodeBuddyEventInput]) -> Option<String> {
+    events
+        .iter()
+        .find(|event| provider_role(event.role.as_deref()) == EventRole::User)
+        .map(|event| event.text.replace('\n', " "))
+        .map(|title| title.chars().take(50).collect::<String>())
+        .filter(|title| !title.trim().is_empty())
+}
+
+fn codebuddy_capture(
+    provider_session_id: &str,
+    native_session_id: &str,
+    project_hash: &str,
+    raw_source_path: &str,
+    context: &ProviderAdapterContext,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    title: Option<String>,
+    project_index: Option<&Value>,
+    conversation: Option<&Value>,
+    session_index: &Value,
+    file_names: &[&str],
+    event: CodeBuddyEventInput,
+) -> ProviderCaptureEnvelope {
+    let event_envelope = codebuddy_event(provider_session_id, project_hash, &event);
+    ProviderCaptureEnvelope {
+        schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+        provider: CaptureProvider::CodeBuddy,
+        source: ProviderSourceEnvelope {
+            source_format: CODEBUDDY_SOURCE_FORMAT.to_owned(),
+            machine_id: context.machine_id.clone(),
+            observed_at: context.imported_at,
+            raw_source_path: Some(raw_source_path.to_owned()),
+            raw_retention: ProviderRawRetention::PathReference,
+            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+            trust: ProviderSourceTrust::ProviderNative,
+            fidelity: Fidelity::Imported,
+            cursor: Some(ProviderCursorRange {
+                before: None,
+                after: Some(ProviderCursorCheckpoint {
+                    stream: provider_cursor_stream(
+                        CaptureProvider::CodeBuddy,
+                        CODEBUDDY_SOURCE_FORMAT,
+                    ),
+                    cursor: event_envelope
+                        .cursor
+                        .clone()
+                        .unwrap_or_else(|| provider_session_id.to_owned()),
+                    observed_at: event_envelope.occurred_at,
+                }),
+            }),
+            idempotency_key: Some(format!(
+                "provider-source:codebuddy:{CODEBUDDY_SOURCE_FORMAT}:{provider_session_id}"
+            )),
+            metadata: json!({
+                "adapter": CODEBUDDY_SOURCE_FORMAT,
+                "native_project_hash": project_hash,
+                "native_session_id": native_session_id,
+                "files": file_names,
+                "schema_proof": "WayLog shayne-snap/WayLog@6939033b7a39326fbdc249e28e6aa12461db1f09 src/services/readers/codebuddy-reader.ts",
+            }),
+        },
+        session: ProviderSessionEnvelope {
+            provider_session_id: provider_session_id.to_owned(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            status: SessionStatus::Imported,
+            started_at,
+            ended_at,
+            cwd: None,
+            fidelity: Fidelity::Imported,
+            idempotency_key: Some(format!("provider-session:codebuddy:{provider_session_id}")),
+            artifacts: Vec::new(),
+            metadata: json!({
+                "source_format": CODEBUDDY_SOURCE_FORMAT,
+                "provider": CaptureProvider::CodeBuddy.as_str(),
+                "display_name": "CodeBuddy",
+                "title": title,
+                "native_project_hash": project_hash,
+                "native_session_id": native_session_id,
+                "project_index": project_index.map(|value| provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "conversation": conversation.map(|value| provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "session_index": provider_capped_json(session_index, PROVIDER_MAX_PREVIEW_CHARS),
+                "files": file_names,
+                "limitations": [
+                    "The original project path is represented by CodeBuddy's MD5 project directory when not available in the current IDE workspace",
+                    "Message file mtimes are used when native message timestamps are absent",
+                    "Non-text content blocks and binary attachments are preserved only in capped native JSON metadata"
+                ],
+            }),
+        },
+        event: Some(event_envelope),
+    }
+}
+
+fn codebuddy_event(
+    provider_session_id: &str,
+    project_hash: &str,
+    event: &CodeBuddyEventInput,
+) -> ProviderEventEnvelope {
+    let (text, truncated) = provider_local_preview(&event.text, PROVIDER_MAX_TEXT_CHARS);
+    let event_id = format!("{provider_session_id}:{}", event.native_message_id);
+    let role = provider_role(event.role.as_deref());
+    ProviderEventEnvelope {
+        provider_event_index: event.provider_event_index,
+        provider_event_hash: Some(event_id.clone()),
+        cursor: Some(event_id.clone()),
+        event_type: EventType::Message,
+        role: Some(role),
+        occurred_at: event.occurred_at,
+        fidelity: Fidelity::Imported,
+        redaction_state: RedactionState::LocalPreview,
+        idempotency_key: Some(format!(
+            "provider-event:codebuddy:{CODEBUDDY_SOURCE_FORMAT}:{event_id}"
+        )),
+        artifacts: Vec::new(),
+        payload: json!({
+            "entry_type": event.ref_type.as_deref().unwrap_or("message"),
+            "event_id": event_id,
+            "native_project_hash": project_hash,
+            "native_message_id": event.native_message_id,
+            "text": text,
+            "truncated": truncated,
+            "body": provider_capped_json(&event.raw_message, PROVIDER_MAX_PREVIEW_CHARS),
+            "decoded_body": provider_capped_json(&event.decoded_message, PROVIDER_MAX_PREVIEW_CHARS),
+        }),
+        metadata: json!({
+            "source": "codebuddy_messages_json",
+            "source_format": CODEBUDDY_SOURCE_FORMAT,
+            "native_message_id": event.native_message_id,
+            "role": event.role,
+            "ref_type": event.ref_type,
+            "model": event.decoded_message.get("model").cloned(),
+        }),
+    }
+}
+
+const TRAE_STATE_VSCDB_SOURCE_FORMAT: &str = "trae_state_vscdb";
+const TRAE_CN_INPUT_HISTORY_KEY: &str = "icube-ai-agent-storage-input-history";
+const TRAE_CHAT_KEYS: &[&str] = &[
+    "memento/icube-ai-agent-storage",
+    TRAE_CN_INPUT_HISTORY_KEY,
+    "chat.ChatSessionStore.index",
+    "ChatStore",
+    "memento/icube-ai-chat-storage-7467774676505887760",
+    "memento/icube-ai-ng-chat-storage-7467774676505887760",
+];
+
+fn normalize_trae_history(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut db_paths = collect_trae_state_vscdb_paths(path)?;
+    db_paths.sort();
+    db_paths.dedup();
+    if db_paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Trae state.vscdb files found",
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for (workspace_ordinal, db_path) in db_paths.iter().enumerate() {
+        let mut result = normalize_trae_state_vscdb(db_path, context, workspace_ordinal + 1)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    if merged.captures.is_empty() && merged.summary.failed == 0 {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Trae chat sessions with messages were found",
+        });
+    }
+    Ok(merged)
+}
+
+fn collect_trae_state_vscdb_paths(path: &Path) -> Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        if path.file_name().and_then(|name| name.to_str()) != Some("state.vscdb") {
+            return Ok(Vec::new());
+        }
+        ensure_regular_provider_transcript_file(path)?;
+        return Ok(vec![path.to_path_buf()]);
+    }
+    if !file_type.is_dir() {
+        return Ok(Vec::new());
+    }
+    ensure_provider_path_parents_are_not_symlinks(path)?;
+
+    let direct = path.join("state.vscdb");
+    if direct.is_file() {
+        ensure_regular_provider_transcript_file(&direct)?;
+        return Ok(vec![direct]);
+    }
+
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let candidate = entry.path().join("state.vscdb");
+        if candidate.is_file() {
+            ensure_regular_provider_transcript_file(&candidate)?;
+            paths.push(candidate);
+        }
+    }
+    Ok(paths)
+}
+
+fn normalize_trae_state_vscdb(
+    path: &Path,
+    context: &ProviderAdapterContext,
+    workspace_ordinal: usize,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    if !sqlite_table_exists(&conn, "ItemTable")? {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Trae state.vscdb is missing ItemTable",
+        });
+    }
+    let columns = sqlite_table_columns(&conn, "ItemTable")?;
+    ensure_sqlite_table_columns(&columns, "Trae ItemTable", &["key", "value"])?;
+
+    let chat_rows = trae_chat_rows(&conn)?;
+    let workspace_id = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("state-vscdb")
+        .to_owned();
+    let workspace_folder = trae_workspace_folder(path);
+    let raw_source_path = path.display().to_string();
+    let mut result = ProviderNormalizationResult::default();
+
+    for (key_index, row) in chat_rows.into_iter().enumerate() {
+        let line_base = workspace_ordinal
+            .saturating_mul(1_000_000)
+            .saturating_add(key_index.saturating_mul(10_000));
+        let chat_data = match serde_json::from_str::<Value>(&row.value) {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line_base.saturating_add(1),
+                    format!(
+                        "Trae ItemTable key `{}` contains invalid JSON: {err}",
+                        row.key
+                    ),
+                );
+                continue;
+            }
+        };
+        let sessions = trae_session_entries(&chat_data, &row.key);
+        for (session_index, session) in sessions.into_iter().enumerate() {
+            let Some(messages) = trae_session_messages(&session) else {
+                continue;
+            };
+            if messages.is_empty() {
+                continue;
+            }
+            let native_session_id = trae_session_id(&session, session_index);
+            let provider_session_id = format!("{workspace_id}/{native_session_id}");
+            let events = trae_events_from_messages(
+                &provider_session_id,
+                &workspace_id,
+                &row.key,
+                &messages,
+                context.imported_at,
+                line_base.saturating_add(session_index.saturating_mul(1_000)),
+            );
+            if events.is_empty() {
+                continue;
+            }
+            let first_event_at = events
+                .first()
+                .map(|event| event.occurred_at)
+                .unwrap_or(context.imported_at);
+            let last_event_at = events.last().map(|event| event.occurred_at);
+            let started_at =
+                task_json_time_field(&session, &["createdAt", "created_at", "timestamp", "time"])
+                    .unwrap_or(first_event_at);
+            let ended_at =
+                task_json_time_field(&session, &["updatedAt", "updated_at", "lastModified"])
+                    .or(last_event_at);
+            let title = task_json_string_field(&session, &["title", "name"])
+                .or_else(|| trae_generated_title(&events));
+
+            for event in events {
+                let line = event.line_number;
+                result.captures.push((
+                    line,
+                    trae_capture(TraeCaptureInput {
+                        provider_session_id: &provider_session_id,
+                        native_session_id: &native_session_id,
+                        workspace_id: &workspace_id,
+                        workspace_folder: workspace_folder.as_deref(),
+                        raw_source_path: &raw_source_path,
+                        chat_key: &row.key,
+                        session: &session,
+                        context,
+                        started_at,
+                        ended_at,
+                        title: title.clone(),
+                        event,
+                    }),
+                ));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[derive(Debug, Clone)]
+struct TraeChatRow {
+    key: String,
+    value: String,
+}
+
+fn trae_chat_rows(conn: &Connection) -> Result<Vec<TraeChatRow>> {
+    let mut rows = Vec::new();
+    for key in TRAE_CHAT_KEYS {
+        let value = conn
+            .query_row(
+                "select value from ItemTable where [key] = ?1",
+                [key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(value) = value {
+            rows.push(TraeChatRow {
+                key: (*key).to_owned(),
+                value,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+fn trae_workspace_folder(path: &Path) -> Option<String> {
+    let workspace_json = path.parent()?.join("workspace.json");
+    let value = read_json_file_limited(
+        &workspace_json,
+        MAX_PROVIDER_JSONL_LINE_BYTES,
+        "Trae workspace.json",
+    )
+    .ok()?;
+    task_json_string_field(&value, &["folder", "workspace", "path"])
+        .map(|folder| trae_workspace_folder_label(&folder))
+}
+
+fn trae_workspace_folder_label(folder: &str) -> String {
+    let Some(path) = folder.strip_prefix("file://") else {
+        return folder.to_owned();
+    };
+    percent_decode_uri_path(path)
+}
+
+fn percent_decode_uri_path(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hi = (bytes[index + 1] as char).to_digit(16);
+            let lo = (bytes[index + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push(((hi << 4) | lo) as u8);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| value.to_owned())
+}
+
+fn trae_session_entries(value: &Value, key: &str) -> Vec<Value> {
+    if key == "memento/icube-ai-agent-storage" {
+        if let Some(items) = value.get("list").and_then(Value::as_array) {
+            return items.clone();
+        }
+    }
+    if key == TRAE_CN_INPUT_HISTORY_KEY {
+        if let Some(items) = value.as_array() {
+            return vec![json!({
+                "id": "trae-cn-input-history",
+                "title": "Trae CN input history",
+                "messages": items,
+            })];
+        }
+    }
+    if key == "ChatStore" {
+        for field in ["sessions", "entries", "conversations", "list"] {
+            if let Some(entries) = trae_entries_from_field(value.get(field)) {
+                return entries;
+            }
+        }
+        if let Some(items) = value.as_array() {
+            return items.clone();
+        }
+    }
+    for field in ["entries", "sessions", "conversations", "list"] {
+        if let Some(entries) = trae_entries_from_field(value.get(field)) {
+            return entries;
+        }
+    }
+    if let Some(items) = value.as_array() {
+        return items.clone();
+    }
+    Vec::new()
+}
+
+fn trae_entries_from_field(value: Option<&Value>) -> Option<Vec<Value>> {
+    match value? {
+        Value::Array(items) => Some(items.clone()),
+        Value::Object(map) => Some(map.values().cloned().collect()),
+        _ => None,
+    }
+}
+
+fn trae_session_messages(session: &Value) -> Option<Vec<Value>> {
+    for field in ["messages", "chatMessages", "bubbles", "items"] {
+        if let Some(messages) = session.get(field).and_then(Value::as_array) {
+            return Some(messages.clone());
+        }
+    }
+    None
+}
+
+fn trae_session_id(session: &Value, index: usize) -> String {
+    task_json_string_field(
+        session,
+        &[
+            "sessionId",
+            "session_id",
+            "id",
+            "conversationId",
+            "conversation_id",
+        ],
+    )
+    .unwrap_or_else(|| format!("session-{}", index.saturating_add(1)))
+}
+
+#[derive(Debug, Clone)]
+struct TraeEventInput {
+    line_number: usize,
+    provider_event_index: u64,
+    native_message_id: String,
+    role: Option<String>,
+    occurred_at: DateTime<Utc>,
+    text: String,
+    raw_message: Value,
+}
+
+fn trae_events_from_messages(
+    provider_session_id: &str,
+    workspace_id: &str,
+    chat_key: &str,
+    messages: &[Value],
+    fallback_time: DateTime<Utc>,
+    line_base: usize,
+) -> Vec<TraeEventInput> {
+    let mut events = Vec::new();
+    for (message_index, message) in messages.iter().enumerate() {
+        let Some(text) = trae_message_text(message) else {
+            continue;
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let native_message_id = task_json_string_field(
+            message,
+            &[
+                "id",
+                "messageId",
+                "message_id",
+                "uuid",
+                "requestId",
+                "responseId",
+            ],
+        )
+        .unwrap_or_else(|| {
+            format!("{workspace_id}:{provider_session_id}:{chat_key}:{message_index}")
+        });
+        let occurred_at = task_json_time_field(
+            message,
+            &["createdAt", "created_at", "timestamp", "time", "date"],
+        )
+        .unwrap_or(fallback_time);
+        let mut role = task_json_string_field(message, &["role", "type", "sender"]);
+        if chat_key == TRAE_CN_INPUT_HISTORY_KEY && role.is_none() {
+            role = Some("user".to_owned());
+        }
+        events.push(TraeEventInput {
+            line_number: line_base.saturating_add(message_index).saturating_add(1),
+            provider_event_index: message_index as u64,
+            native_message_id,
+            role,
+            occurred_at,
+            text,
+            raw_message: message.clone(),
+        });
+    }
+    events
+}
+
+fn trae_message_text(message: &Value) -> Option<String> {
+    for field in [
+        "content",
+        "inputText",
+        "text",
+        "message",
+        "summary",
+        "answer",
+        "query",
+        "parsedQuery",
+    ] {
+        if let Some(text) = message.get(field).and_then(trae_content_text) {
+            return Some(text);
+        }
+    }
+    message
+        .pointer("/data/summary")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn trae_content_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.trim().to_owned()),
+        Value::Array(items) => {
+            let parts = items
+                .iter()
+                .filter_map(trae_content_text)
+                .filter(|text| !text.trim().is_empty())
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        Value::Object(map) => {
+            for field in ["text", "content", "value", "summary"] {
+                if let Some(text) = map.get(field).and_then(trae_content_text) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn trae_generated_title(events: &[TraeEventInput]) -> Option<String> {
+    events
+        .iter()
+        .find(|event| provider_role(event.role.as_deref()) == EventRole::User)
+        .or_else(|| events.first())
+        .map(|event| event.text.replace('\n', " "))
+        .map(|title| title.chars().take(50).collect::<String>())
+        .filter(|title| !title.trim().is_empty())
+}
+
+struct TraeCaptureInput<'a> {
+    provider_session_id: &'a str,
+    native_session_id: &'a str,
+    workspace_id: &'a str,
+    workspace_folder: Option<&'a str>,
+    raw_source_path: &'a str,
+    chat_key: &'a str,
+    session: &'a Value,
+    context: &'a ProviderAdapterContext,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    title: Option<String>,
+    event: TraeEventInput,
+}
+
+fn trae_capture(input: TraeCaptureInput<'_>) -> ProviderCaptureEnvelope {
+    let event_envelope = trae_event(
+        input.provider_session_id,
+        input.workspace_id,
+        input.chat_key,
+        &input.event,
+    );
+    ProviderCaptureEnvelope {
+        schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+        provider: CaptureProvider::Trae,
+        source: ProviderSourceEnvelope {
+            source_format: TRAE_STATE_VSCDB_SOURCE_FORMAT.to_owned(),
+            machine_id: input.context.machine_id.clone(),
+            observed_at: input.context.imported_at,
+            raw_source_path: Some(input.raw_source_path.to_owned()),
+            raw_retention: ProviderRawRetention::PathReference,
+            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+            trust: ProviderSourceTrust::ProviderNative,
+            fidelity: Fidelity::Partial,
+            cursor: Some(ProviderCursorRange {
+                before: None,
+                after: Some(ProviderCursorCheckpoint {
+                    stream: provider_cursor_stream(
+                        CaptureProvider::Trae,
+                        TRAE_STATE_VSCDB_SOURCE_FORMAT,
+                    ),
+                    cursor: event_envelope
+                        .cursor
+                        .clone()
+                        .unwrap_or_else(|| input.provider_session_id.to_owned()),
+                    observed_at: event_envelope.occurred_at,
+                }),
+            }),
+            idempotency_key: Some(format!(
+                "provider-source:trae:{TRAE_STATE_VSCDB_SOURCE_FORMAT}:{}",
+                input.provider_session_id
+            )),
+            metadata: json!({
+                "adapter": TRAE_STATE_VSCDB_SOURCE_FORMAT,
+                "chat_key": input.chat_key,
+                "native_workspace_id": input.workspace_id,
+                "schema_proof": "yuanjing001/trae-chats-exporter src/extension.ts and src/utils.ts read Trae User/workspaceStorage/*/state.vscdb ItemTable keys",
+                "native_auto_scope": "Trae and Trae CN User/workspaceStorage roots with known ItemTable chat keys",
+            }),
+        },
+        session: ProviderSessionEnvelope {
+            provider_session_id: input.provider_session_id.to_owned(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            status: SessionStatus::Imported,
+            started_at: input.started_at,
+            ended_at: input.ended_at,
+            cwd: input.workspace_folder.map(str::to_owned),
+            fidelity: Fidelity::Partial,
+            idempotency_key: Some(format!(
+                "provider-session:trae:{}",
+                input.provider_session_id
+            )),
+            artifacts: Vec::new(),
+            metadata: json!({
+                "source_format": TRAE_STATE_VSCDB_SOURCE_FORMAT,
+                "provider": CaptureProvider::Trae.as_str(),
+                "display_name": "Trae",
+                "title": input.title,
+                "native_workspace_id": input.workspace_id,
+                "native_session_id": input.native_session_id,
+                "workspace_folder": input.workspace_folder,
+                "chat_key": input.chat_key,
+                "session": provider_capped_json(input.session, PROVIDER_MAX_PREVIEW_CHARS),
+                "limitations": [
+                    "Importer is based on public exporter source and synthetic fixture; no real local Trae run fixture is bundled",
+                    "Only known Trae and Trae CN ItemTable chat keys and direct message arrays are imported",
+                    "Trae CN input-history rows are usually user prompts only and may not include assistant replies"
+                ],
+            }),
+        },
+        event: Some(event_envelope),
+    }
+}
+
+fn trae_event(
+    provider_session_id: &str,
+    workspace_id: &str,
+    chat_key: &str,
+    event: &TraeEventInput,
+) -> ProviderEventEnvelope {
+    let (text, truncated) = provider_local_preview(&event.text, PROVIDER_MAX_TEXT_CHARS);
+    let event_id = format!("{provider_session_id}:{}", event.native_message_id);
+    ProviderEventEnvelope {
+        provider_event_index: event.provider_event_index,
+        provider_event_hash: Some(event_id.clone()),
+        cursor: Some(format!("{chat_key}:{event_id}")),
+        event_type: EventType::Message,
+        role: Some(provider_role(event.role.as_deref())),
+        occurred_at: event.occurred_at,
+        fidelity: Fidelity::Partial,
+        redaction_state: RedactionState::LocalPreview,
+        idempotency_key: Some(format!(
+            "provider-event:trae:{TRAE_STATE_VSCDB_SOURCE_FORMAT}:{event_id}"
+        )),
+        artifacts: Vec::new(),
+        payload: json!({
+            "event_id": event_id,
+            "native_workspace_id": workspace_id,
+            "native_message_id": event.native_message_id,
+            "text": text,
+            "truncated": truncated,
+            "body": provider_capped_json(&event.raw_message, PROVIDER_MAX_PREVIEW_CHARS),
+        }),
+        metadata: json!({
+            "source": "trae_state_vscdb_itemtable",
+            "source_format": TRAE_STATE_VSCDB_SOURCE_FORMAT,
+            "chat_key": chat_key,
+            "native_message_id": event.native_message_id,
+            "role": event.role,
+            "model": task_json_string_field(&event.raw_message, &["model", "modelType", "model_id"]),
+        }),
+    }
+}
+
+fn task_json_string_field(value: &Value, fields: &[&str]) -> Option<String> {
+    fields
+        .iter()
+        .find_map(|field| value.get(*field).and_then(Value::as_str))
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn task_json_time_field(value: &Value, fields: &[&str]) -> Option<DateTime<Utc>> {
+    for field in fields {
+        let Some(value) = value.get(*field) else {
+            continue;
+        };
+        if let Some(text) = value.as_str() {
+            if let Some(parsed) = parse_rfc3339_utc(text) {
+                return Some(parsed);
+            }
+            if let Ok(number) = text.parse::<i64>() {
+                if let Some(parsed) = task_json_timestamp_number(number) {
+                    return Some(parsed);
+                }
+            }
+        }
+        if let Some(number) = value.as_i64().and_then(task_json_timestamp_number) {
+            return Some(number);
+        }
+    }
+    None
+}
+
+fn task_json_timestamp_number(value: i64) -> Option<DateTime<Utc>> {
+    if value > 10_000_000_000 {
+        DateTime::<Utc>::from_timestamp_millis(value)
+    } else {
+        DateTime::<Utc>::from_timestamp(value, 0)
+    }
+}
+
 fn provider_capped_json(value: &Value, max_chars: usize) -> Value {
     match value {
         Value::Null => Value::Null,
@@ -6749,6 +12262,18 @@ struct ShelleyMessageRow {
     forked_from_message_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct OpenHandsEventFile {
+    path: PathBuf,
+    line_number: usize,
+    session_id: String,
+    user_id: Option<String>,
+    event_id: String,
+    timestamp: DateTime<Utc>,
+    value: Value,
+}
+
+#[derive(Clone)]
 struct NativeSessionDraft {
     provider: CaptureProvider,
     source_format: &'static str,
@@ -6975,6 +12500,575 @@ fn native_event(draft: NativeEventDraft) -> ProviderEventEnvelope {
         }),
         metadata: draft.metadata,
     }
+}
+
+#[derive(Debug, Clone)]
+struct DeepAgentsThread {
+    thread_id: String,
+    agent_name: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    latest_checkpoint_id: Option<String>,
+    git_branch: Option<String>,
+    cwd: Option<String>,
+    checkpoint_times: BTreeMap<String, DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct DeepAgentsWriteRow {
+    thread_id: String,
+    checkpoint_id: String,
+    task_id: String,
+    idx: i64,
+    value_type: Option<String>,
+    value: Vec<u8>,
+    row_number: u64,
+}
+
+#[derive(Debug, Clone)]
+struct DeepAgentsMessage {
+    role: EventRole,
+    message_type: String,
+    message_class: Option<String>,
+    message_id: Option<String>,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct DeepAgentsEventDraft {
+    thread_id: String,
+    provider_event_index: u64,
+    cursor: String,
+    occurred_at: DateTime<Utc>,
+    message: DeepAgentsMessage,
+    checkpoint_id: String,
+    task_id: String,
+    write_idx: i64,
+    message_offset: usize,
+}
+
+fn normalize_deepagents_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    if !sqlite_table_exists(&conn, "checkpoints")? {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Deep Agents sessions.db is missing required checkpoints table",
+        });
+    }
+    if !sqlite_table_exists(&conn, "writes")? {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Deep Agents sessions.db is missing required writes table",
+        });
+    }
+
+    let checkpoint_columns = sqlite_table_columns(&conn, "checkpoints")?;
+    ensure_sqlite_table_columns(
+        &checkpoint_columns,
+        "Deep Agents checkpoints table",
+        &[
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            "checkpoint",
+            "metadata",
+        ],
+    )?;
+    let write_columns = sqlite_table_columns(&conn, "writes")?;
+    ensure_sqlite_table_columns(
+        &write_columns,
+        "Deep Agents writes table",
+        &[
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            "task_id",
+            "idx",
+            "channel",
+            "type",
+            "value",
+        ],
+    )?;
+
+    let user_version = conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let threads = deepagents_threads(&conn, context)?;
+    let write_rows = deepagents_message_write_rows(&conn)?;
+    let mut result = ProviderNormalizationResult::default();
+    let events_by_thread = deepagents_events_by_thread(write_rows, &threads, &mut result)?;
+    let raw_source_path = context
+        .source_path
+        .as_ref()
+        .map(|path| path.display().to_string());
+
+    for thread in threads.values() {
+        let events = events_by_thread.get(&thread.thread_id);
+        if let Some(events) = events {
+            for event in events {
+                let line = provider_line_from_index(event.provider_event_index);
+                result.captures.push((
+                    line,
+                    deepagents_capture(
+                        thread,
+                        Some(event),
+                        context,
+                        raw_source_path.clone(),
+                        user_version,
+                        &schema_fingerprint,
+                    ),
+                ));
+            }
+        } else {
+            result.captures.push((
+                0,
+                deepagents_capture(
+                    thread,
+                    None,
+                    context,
+                    raw_source_path.clone(),
+                    user_version,
+                    &schema_fingerprint,
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn deepagents_threads(
+    conn: &Connection,
+    context: &ProviderAdapterContext,
+) -> Result<BTreeMap<String, DeepAgentsThread>> {
+    let mut stmt = conn.prepare(
+        "select thread_id, checkpoint_id, metadata \
+         from checkpoints \
+         where checkpoint_ns = '' \
+         order by thread_id, checkpoint_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<Vec<u8>>>(2)?,
+        ))
+    })?;
+    let mut threads = BTreeMap::<String, DeepAgentsThread>::new();
+    for row in rows {
+        let (thread_id, checkpoint_id, metadata_blob) = row?;
+        let metadata = deepagents_metadata_json(metadata_blob.as_deref());
+        let updated_at =
+            deepagents_metadata_time(&metadata, "updated_at").unwrap_or(context.imported_at);
+        let entry = threads
+            .entry(thread_id.clone())
+            .or_insert_with(|| DeepAgentsThread {
+                thread_id: thread_id.clone(),
+                agent_name: deepagents_metadata_string(&metadata, "agent_name"),
+                created_at: updated_at,
+                updated_at,
+                latest_checkpoint_id: Some(checkpoint_id.clone()),
+                git_branch: deepagents_metadata_string(&metadata, "git_branch"),
+                cwd: deepagents_metadata_string(&metadata, "cwd"),
+                checkpoint_times: BTreeMap::new(),
+            });
+        if updated_at < entry.created_at {
+            entry.created_at = updated_at;
+        }
+        if updated_at >= entry.updated_at {
+            entry.updated_at = updated_at;
+            entry.latest_checkpoint_id = Some(checkpoint_id.clone());
+            entry.agent_name = deepagents_metadata_string(&metadata, "agent_name")
+                .or_else(|| entry.agent_name.clone());
+            entry.git_branch = deepagents_metadata_string(&metadata, "git_branch")
+                .or_else(|| entry.git_branch.clone());
+            entry.cwd = deepagents_metadata_string(&metadata, "cwd").or_else(|| entry.cwd.clone());
+        }
+        entry.checkpoint_times.insert(checkpoint_id, updated_at);
+    }
+    Ok(threads)
+}
+
+fn deepagents_message_write_rows(conn: &Connection) -> Result<Vec<DeepAgentsWriteRow>> {
+    let mut stmt = conn.prepare(
+        "select thread_id, checkpoint_id, task_id, idx, type, value \
+         from writes \
+         where checkpoint_ns = '' and channel = 'messages' \
+         order by thread_id, checkpoint_id, task_id, idx",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(DeepAgentsWriteRow {
+            thread_id: row.get(0)?,
+            checkpoint_id: row.get(1)?,
+            task_id: row.get(2)?,
+            idx: row.get(3)?,
+            value_type: row.get(4)?,
+            value: row.get(5)?,
+            row_number: 0,
+        })
+    })?;
+    let mut out = Vec::new();
+    for (index, row) in rows.enumerate() {
+        let mut row = row?;
+        row.row_number = u64::try_from(index + 1).unwrap_or(u64::MAX);
+        out.push(row);
+    }
+    Ok(out)
+}
+
+fn deepagents_events_by_thread(
+    rows: Vec<DeepAgentsWriteRow>,
+    threads: &BTreeMap<String, DeepAgentsThread>,
+    result: &mut ProviderNormalizationResult,
+) -> Result<BTreeMap<String, Vec<DeepAgentsEventDraft>>> {
+    let mut events = BTreeMap::<String, Vec<DeepAgentsEventDraft>>::new();
+    let mut next_index = BTreeMap::<String, u64>::new();
+    let mut seen_message_ids = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for row in rows {
+        let Some(thread) = threads.get(&row.thread_id) else {
+            result.summary.failed += 1;
+            result.summary.failures.push(ProviderImportFailure {
+                line: provider_line_from_index(row.row_number),
+                error: format!(
+                    "Deep Agents writes row references unknown thread_id {}",
+                    row.thread_id
+                ),
+            });
+            continue;
+        };
+        let decoded = match deepagents_messages_from_blob(row.value_type.as_deref(), &row.value) {
+            Ok(messages) => messages,
+            Err(err) => {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: provider_line_from_index(row.row_number),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+        for (message_offset, message) in decoded.into_iter().enumerate() {
+            if let Some(message_id) = &message.message_id {
+                let seen = seen_message_ids.entry(row.thread_id.clone()).or_default();
+                if !seen.insert(message_id.clone()) {
+                    continue;
+                }
+            }
+            let provider_event_index = next_index
+                .entry(row.thread_id.clone())
+                .and_modify(|index| *index += 1)
+                .or_insert(1);
+            let occurred_at = thread
+                .checkpoint_times
+                .get(&row.checkpoint_id)
+                .copied()
+                .unwrap_or(thread.updated_at);
+            let cursor = format!(
+                "thread:{}:checkpoint:{}:task:{}:write:{}:message:{}",
+                row.thread_id, row.checkpoint_id, row.task_id, row.idx, message_offset
+            );
+            events
+                .entry(row.thread_id.clone())
+                .or_default()
+                .push(DeepAgentsEventDraft {
+                    thread_id: row.thread_id.clone(),
+                    provider_event_index: *provider_event_index,
+                    cursor,
+                    occurred_at,
+                    message,
+                    checkpoint_id: row.checkpoint_id.clone(),
+                    task_id: row.task_id.clone(),
+                    write_idx: row.idx,
+                    message_offset,
+                });
+        }
+    }
+
+    Ok(events)
+}
+
+fn deepagents_capture(
+    thread: &DeepAgentsThread,
+    event: Option<&DeepAgentsEventDraft>,
+    context: &ProviderAdapterContext,
+    raw_source_path: Option<String>,
+    sqlite_user_version: i64,
+    schema_fingerprint: &str,
+) -> ProviderCaptureEnvelope {
+    let observed_at = event
+        .map(|event| event.occurred_at)
+        .unwrap_or(thread.updated_at);
+    let cursor = event.map(|event| event.cursor.clone()).or_else(|| {
+        thread
+            .latest_checkpoint_id
+            .as_ref()
+            .map(|checkpoint_id| format!("thread:{}:checkpoint:{checkpoint_id}", thread.thread_id))
+    });
+    ProviderCaptureEnvelope {
+        schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+        provider: CaptureProvider::DeepAgents,
+        source: ProviderSourceEnvelope {
+            source_format: DEEPAGENTS_SQLITE_SOURCE_FORMAT.to_owned(),
+            machine_id: context.machine_id.clone(),
+            observed_at,
+            raw_source_path,
+            raw_retention: ProviderRawRetention::PathReference,
+            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
+            trust: ProviderSourceTrust::ProviderNative,
+            fidelity: Fidelity::Imported,
+            cursor: cursor.clone().map(|cursor| ProviderCursorRange {
+                before: None,
+                after: Some(ProviderCursorCheckpoint {
+                    stream: provider_cursor_stream(
+                        CaptureProvider::DeepAgents,
+                        DEEPAGENTS_SQLITE_SOURCE_FORMAT,
+                    ),
+                    cursor,
+                    observed_at,
+                }),
+            }),
+            idempotency_key: Some(format!(
+                "provider-source:deepagents:{DEEPAGENTS_SQLITE_SOURCE_FORMAT}:{}",
+                thread.thread_id
+            )),
+            metadata: json!({
+                "adapter": DEEPAGENTS_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": sqlite_user_version,
+                "schema_fingerprint": schema_fingerprint,
+                "message_import_policy": "root writes.messages only; checkpoint state blobs are not indexed",
+            }),
+        },
+        session: ProviderSessionEnvelope {
+            provider_session_id: thread.thread_id.clone(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: thread.agent_name.clone(),
+            agent_type: AgentType::Primary,
+            role_hint: thread
+                .agent_name
+                .clone()
+                .or_else(|| Some("agent".to_owned())),
+            is_primary: true,
+            status: SessionStatus::Imported,
+            started_at: thread.created_at,
+            ended_at: Some(thread.updated_at),
+            cwd: thread.cwd.clone(),
+            fidelity: Fidelity::Imported,
+            idempotency_key: Some(format!("provider-session:deepagents:{}", thread.thread_id)),
+            artifacts: Vec::new(),
+            metadata: json!({
+                "source_format": DEEPAGENTS_SQLITE_SOURCE_FORMAT,
+                "agent_name": thread.agent_name,
+                "git_branch": thread.git_branch,
+                "latest_checkpoint_id": thread.latest_checkpoint_id,
+                "storage": "LangGraph AsyncSqliteSaver checkpoints/writes",
+            }),
+        },
+        event: event.map(deepagents_event),
+    }
+}
+
+fn deepagents_event(event: &DeepAgentsEventDraft) -> ProviderEventEnvelope {
+    let event_type = if event.message.role == EventRole::Tool {
+        EventType::ToolOutput
+    } else {
+        EventType::Message
+    };
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::DeepAgents,
+        source_format: DEEPAGENTS_SQLITE_SOURCE_FORMAT,
+        provider_session_id: event.thread_id.clone(),
+        provider_event_index: event.provider_event_index,
+        provider_event_hash: Some(event.cursor.clone()),
+        cursor: event.cursor.clone(),
+        event_type,
+        role: Some(event.message.role),
+        occurred_at: event.occurred_at,
+        text: event.message.text.clone(),
+        body: json!({
+            "message_type": event.message.message_type,
+            "message_class": event.message.message_class,
+            "message_id": event.message.message_id,
+            "checkpoint_id": event.checkpoint_id,
+            "task_id": event.task_id,
+            "write_idx": event.write_idx,
+            "message_offset": event.message_offset,
+        }),
+        metadata: json!({
+            "source": DEEPAGENTS_SQLITE_SOURCE_FORMAT,
+            "source_format": DEEPAGENTS_SQLITE_SOURCE_FORMAT,
+            "checkpoint_id": event.checkpoint_id,
+            "task_id": event.task_id,
+            "write_idx": event.write_idx,
+            "message_offset": event.message_offset,
+            "message_type": event.message.message_type,
+            "message_class": event.message.message_class,
+            "message_id": event.message.message_id,
+            "privacy": "decoded from writes.messages only",
+        }),
+    })
+}
+
+fn deepagents_messages_from_blob(
+    value_type: Option<&str>,
+    value: &[u8],
+) -> Result<Vec<DeepAgentsMessage>> {
+    match value_type {
+        Some("msgpack") => {
+            let decoded = deepagents_decode_msgpack(value)?;
+            Ok(deepagents_messages_from_msgpack_value(&decoded))
+        }
+        Some(other) => Err(CaptureError::InvalidPayload(format!(
+            "unsupported Deep Agents writes.messages value type {other:?}"
+        ))),
+        None => Err(CaptureError::InvalidPayload(
+            "Deep Agents writes.messages row has no value type".to_owned(),
+        )),
+    }
+}
+
+fn deepagents_decode_msgpack(value: &[u8]) -> Result<MsgpackValue> {
+    let mut cursor = std::io::Cursor::new(value);
+    read_msgpack_value(&mut cursor).map_err(|err| {
+        CaptureError::InvalidPayload(format!("invalid Deep Agents msgpack payload: {err}"))
+    })
+}
+
+fn deepagents_messages_from_msgpack_value(value: &MsgpackValue) -> Vec<DeepAgentsMessage> {
+    match value {
+        MsgpackValue::Array(items) => items
+            .iter()
+            .filter_map(deepagents_message_from_msgpack_value)
+            .collect(),
+        _ => deepagents_message_from_msgpack_value(value)
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn deepagents_message_from_msgpack_value(value: &MsgpackValue) -> Option<DeepAgentsMessage> {
+    match value {
+        MsgpackValue::Map(fields) => deepagents_message_from_fields(fields, None),
+        MsgpackValue::Ext(5, payload) => {
+            let decoded = deepagents_decode_msgpack(payload).ok()?;
+            let MsgpackValue::Array(items) = decoded else {
+                return None;
+            };
+            let class_name = items.get(1).and_then(msgpack_string);
+            let fields = match items.get(2)? {
+                MsgpackValue::Map(fields) => fields,
+                _ => return None,
+            };
+            deepagents_message_from_fields(fields, class_name)
+        }
+        _ => None,
+    }
+}
+
+fn deepagents_message_from_fields(
+    fields: &[(MsgpackValue, MsgpackValue)],
+    class_name: Option<String>,
+) -> Option<DeepAgentsMessage> {
+    let message_type = msgpack_map_string(fields, "type")
+        .or_else(|| msgpack_map_string(fields, "role"))
+        .or_else(|| class_name.clone())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let role = deepagents_message_role(&message_type, class_name.as_deref())?;
+    if role == EventRole::System {
+        return None;
+    }
+    let content = msgpack_map_get(fields, "content")?;
+    let text = deepagents_content_text(content)?;
+    if text.trim().is_empty() || text.starts_with("[SYSTEM]") {
+        return None;
+    }
+    Some(DeepAgentsMessage {
+        role,
+        message_type,
+        message_class: class_name,
+        message_id: msgpack_map_string(fields, "id"),
+        text,
+    })
+}
+
+fn deepagents_message_role(message_type: &str, class_name: Option<&str>) -> Option<EventRole> {
+    let lowered = message_type.to_ascii_lowercase();
+    match lowered.as_str() {
+        "human" | "user" => Some(EventRole::User),
+        "ai" | "assistant" => Some(EventRole::Assistant),
+        "tool" => Some(EventRole::Tool),
+        "system" => Some(EventRole::System),
+        _ => match class_name.unwrap_or_default() {
+            "HumanMessage" => Some(EventRole::User),
+            "AIMessage" => Some(EventRole::Assistant),
+            "ToolMessage" => Some(EventRole::Tool),
+            "SystemMessage" => Some(EventRole::System),
+            _ => None,
+        },
+    }
+}
+
+fn deepagents_content_text(value: &MsgpackValue) -> Option<String> {
+    if let Some(text) = msgpack_string(value) {
+        return Some(text);
+    }
+    if let MsgpackValue::Array(items) = value {
+        let parts = items
+            .iter()
+            .filter_map(|item| match item {
+                MsgpackValue::Map(fields) => msgpack_map_string(fields, "text"),
+                _ => msgpack_string(item),
+            })
+            .collect::<Vec<_>>();
+        let joined = parts.join(" ").trim().to_owned();
+        if !joined.is_empty() {
+            return Some(joined);
+        }
+    }
+    None
+}
+
+fn msgpack_map_get<'a>(
+    fields: &'a [(MsgpackValue, MsgpackValue)],
+    key: &str,
+) -> Option<&'a MsgpackValue> {
+    fields.iter().find_map(|(field_key, field_value)| {
+        (msgpack_string(field_key).as_deref() == Some(key)).then_some(field_value)
+    })
+}
+
+fn msgpack_map_string(fields: &[(MsgpackValue, MsgpackValue)], key: &str) -> Option<String> {
+    msgpack_map_get(fields, key).and_then(msgpack_string)
+}
+
+fn msgpack_string(value: &MsgpackValue) -> Option<String> {
+    match value {
+        MsgpackValue::String(text) => text.as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+fn deepagents_metadata_json(blob: Option<&[u8]>) -> Value {
+    blob.and_then(|blob| serde_json::from_slice::<Value>(blob).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+fn deepagents_metadata_string(metadata: &Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn deepagents_metadata_time(metadata: &Value, key: &str) -> Option<DateTime<Utc>> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_utc)
 }
 
 fn openclaw_agent_id(path: &Path) -> Option<String> {
@@ -7944,7 +14038,7 @@ fn normalize_nanoclaw_project(
                             "central_db": central_path.display().to_string(),
                             "sqlite_user_version": user_version,
                             "schema_fingerprint": schema_fingerprint,
-                            "support_level": "preview",
+                            "support_level": "explicit",
                         }),
                         session_metadata: json!({
                             "source_format": NANOCLAW_SOURCE_FORMAT,
@@ -8772,6 +14866,1390 @@ fn shelley_content_type(value: &Value) -> Option<String> {
 }
 
 #[derive(Debug, Clone)]
+struct ZedThreadRow {
+    rowid: i64,
+    id: String,
+    parent_id: Option<String>,
+    folder_paths: Option<String>,
+    folder_paths_order: Option<String>,
+    summary: String,
+    updated_at: String,
+    data_type: String,
+    data: Vec<u8>,
+    created_at: Option<String>,
+}
+
+fn normalize_zed_threads_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let rows = zed_thread_rows(&conn)?;
+    let raw_source_path = path.display().to_string();
+    let mut result = ProviderNormalizationResult::default();
+
+    for row in rows {
+        let row_line = zed_line_number(row.rowid, 0);
+        let row_updated_at = match zed_required_timestamp(&row.updated_at, "Zed thread updated_at")
+        {
+            Ok(timestamp) => timestamp,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, row_line, err.to_string());
+                continue;
+            }
+        };
+        let created_at = match row
+            .created_at
+            .as_deref()
+            .map(|raw| zed_required_timestamp(raw, "Zed thread created_at"))
+            .transpose()
+        {
+            Ok(timestamp) => timestamp.unwrap_or(row_updated_at),
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, row_line, err.to_string());
+                continue;
+            }
+        };
+        let thread = match zed_decode_thread_json(&row) {
+            Ok(thread) => thread,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, row_line, err.to_string());
+                continue;
+            }
+        };
+        let Some(messages) = thread.get("messages").and_then(Value::as_array) else {
+            push_provider_import_failure(
+                &mut result.summary,
+                row_line,
+                format!("Zed thread {} is missing DbThread.messages array", row.id),
+            );
+            continue;
+        };
+        let thread_updated_at = thread
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_utc)
+            .unwrap_or(row_updated_at);
+        let folder_paths = zed_folder_paths(row.folder_paths.as_deref());
+        let cwd = zed_ordered_folder_paths(&folder_paths, row.folder_paths_order.as_deref())
+            .into_iter()
+            .next();
+
+        if messages.is_empty() {
+            result.captures.push((
+                row_line,
+                zed_capture(
+                    ZedCaptureDraft {
+                        row: &row,
+                        thread: &thread,
+                        started_at: created_at,
+                        ended_at: Some(thread_updated_at),
+                        cwd,
+                        folder_paths,
+                        raw_source_path: &raw_source_path,
+                        user_version,
+                        schema_fingerprint: &schema_fingerprint,
+                        event: None,
+                    },
+                    context,
+                ),
+            ));
+            continue;
+        }
+
+        for (message_index, message) in messages.iter().enumerate() {
+            let line = zed_line_number(row.rowid, message_index as u64);
+            let event = match zed_message_event(&row.id, message, message_index, thread_updated_at)
+            {
+                Ok(event) => event,
+                Err(err) => {
+                    push_provider_import_failure(&mut result.summary, line, err.to_string());
+                    continue;
+                }
+            };
+            result
+                .files_touched
+                .extend(provider_file_touches_from_raw_value(
+                    CaptureProvider::Zed,
+                    &row.id,
+                    ZED_THREADS_SQLITE_SOURCE_FORMAT,
+                    Some(raw_source_path.as_str()),
+                    message,
+                    &event,
+                    line,
+                ));
+            result.captures.push((
+                line,
+                zed_capture(
+                    ZedCaptureDraft {
+                        row: &row,
+                        thread: &thread,
+                        started_at: created_at,
+                        ended_at: Some(thread_updated_at),
+                        cwd: cwd.clone(),
+                        folder_paths: folder_paths.clone(),
+                        raw_source_path: &raw_source_path,
+                        user_version,
+                        schema_fingerprint: &schema_fingerprint,
+                        event: Some(event),
+                    },
+                    context,
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+struct ZedCaptureDraft<'a> {
+    row: &'a ZedThreadRow,
+    thread: &'a Value,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    folder_paths: Vec<String>,
+    raw_source_path: &'a str,
+    user_version: i64,
+    schema_fingerprint: &'a str,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn zed_capture(
+    draft: ZedCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    let title = draft
+        .thread
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or(&draft.row.summary);
+    let model = draft.thread.get("model").cloned().unwrap_or(Value::Null);
+    let token_usage = draft
+        .thread
+        .get("cumulative_token_usage")
+        .cloned()
+        .unwrap_or(Value::Null);
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Zed,
+            source_format: ZED_THREADS_SQLITE_SOURCE_FORMAT,
+            provider_session_id: draft.row.id.clone(),
+            parent_provider_session_id: draft.row.parent_id.clone(),
+            root_provider_session_id: draft.row.parent_id.clone(),
+            external_agent_id: Some("zed".to_owned()),
+            agent_type: if draft.row.parent_id.is_some() {
+                AgentType::Subagent
+            } else {
+                AgentType::Primary
+            },
+            role_hint: Some(
+                if draft.row.parent_id.is_some() {
+                    "subagent"
+                } else {
+                    "primary"
+                }
+                .to_owned(),
+            ),
+            is_primary: draft.row.parent_id.is_none(),
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: draft.cwd,
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": ZED_THREADS_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": draft.user_version,
+                "schema_fingerprint": draft.schema_fingerprint,
+                "source_path": draft.raw_source_path,
+                "upstream_schema_anchor": {
+                    "repository": "zed-industries/zed",
+                    "commit": "e3b73c6b30cdc09e820823fe44542b89850d4be1",
+                    "files": [
+                        "crates/agent/src/db.rs",
+                        "crates/agent/src/thread.rs"
+                    ],
+                    "thread_version": draft.thread.get("version").and_then(Value::as_str)
+                },
+            }),
+            session_metadata: json!({
+                "source_format": ZED_THREADS_SQLITE_SOURCE_FORMAT,
+                "title": title,
+                "summary": draft.row.summary,
+                "parent_id": draft.row.parent_id,
+                "folder_paths": draft.folder_paths,
+                "folder_paths_order": draft.row.folder_paths_order,
+                "created_at": draft.row.created_at,
+                "updated_at": draft.row.updated_at,
+                "data_type": draft.row.data_type,
+                "model": model,
+                "profile": draft.thread.get("profile").cloned().unwrap_or(Value::Null),
+                "speed": draft.thread.get("speed").cloned().unwrap_or(Value::Null),
+                "thinking_enabled": draft.thread.get("thinking_enabled").cloned().unwrap_or(Value::Null),
+                "thinking_effort": draft.thread.get("thinking_effort").cloned().unwrap_or(Value::Null),
+                "cumulative_token_usage": token_usage,
+                "message_timestamps": "Zed DbThread messages do not carry per-message timestamps; ctx uses the thread updated_at for events.",
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn zed_thread_rows(conn: &Connection) -> Result<Vec<ZedThreadRow>> {
+    if !sqlite_table_exists(conn, "threads")? {
+        return Err(CaptureError::InvalidPayload(
+            "Zed threads.db is missing required threads table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "threads")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Zed threads table",
+        &["id", "summary", "updated_at", "data_type", "data"],
+    )?;
+    let parent_id = optional_column_expr(&columns, "parent_id", "NULL");
+    let folder_paths = optional_column_expr(&columns, "folder_paths", "NULL");
+    let folder_paths_order = optional_column_expr(&columns, "folder_paths_order", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let sql = format!(
+        "select rowid, id, {parent_id}, {folder_paths}, {folder_paths_order}, summary, \
+         updated_at, data_type, data, {created_at} from threads order by updated_at, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ZedThreadRow {
+            rowid: row.get(0)?,
+            id: row.get(1)?,
+            parent_id: row.get(2)?,
+            folder_paths: row.get(3)?,
+            folder_paths_order: row.get(4)?,
+            summary: row.get(5)?,
+            updated_at: row.get(6)?,
+            data_type: row.get(7)?,
+            data: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn zed_decode_thread_json(row: &ZedThreadRow) -> Result<Value> {
+    let json = match row.data_type.as_str() {
+        "json" => Cow::Borrowed(row.data.as_slice()),
+        "zstd" => Cow::Owned(zed_decode_zstd(&row.data)?),
+        other => {
+            return Err(CaptureError::InvalidPayload(format!(
+                "Zed thread {} has unsupported data_type {other:?}",
+                row.id
+            )));
+        }
+    };
+    serde_json::from_slice(&json).map_err(CaptureError::from)
+}
+
+fn zed_decode_zstd(data: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = zstd::stream::read::Decoder::new(data)?;
+    let mut limited = decoder
+        .by_ref()
+        .take(MAX_PROVIDER_SQLITE_VALUE_BYTES as u64 + 1);
+    let mut out = Vec::new();
+    limited.read_to_end(&mut out)?;
+    if out.len() > MAX_PROVIDER_SQLITE_VALUE_BYTES {
+        return Err(CaptureError::InvalidPayload(format!(
+            "Zed compressed thread JSON exceeds {} decompressed bytes",
+            MAX_PROVIDER_SQLITE_VALUE_BYTES
+        )));
+    }
+    Ok(out)
+}
+
+fn zed_required_timestamp(raw: &str, field: &'static str) -> Result<DateTime<Utc>> {
+    parse_rfc3339_utc(raw)
+        .ok_or_else(|| CaptureError::InvalidPayload(format!("{field} is not RFC3339: {raw:?}")))
+}
+
+fn zed_line_number(rowid: i64, message_index: u64) -> usize {
+    let row = u64::try_from(rowid.max(0)).unwrap_or(0);
+    provider_line_from_index(row.saturating_mul(10_000).saturating_add(message_index))
+}
+
+fn zed_folder_paths(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn zed_ordered_folder_paths(paths: &[String], order: Option<&str>) -> Vec<String> {
+    let Some(order) = order else {
+        return paths.to_vec();
+    };
+    let indices = order
+        .split(',')
+        .filter_map(|item| item.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    if indices.len() != paths.len() {
+        return paths.to_vec();
+    }
+    let mut ordered = paths
+        .iter()
+        .cloned()
+        .zip(indices)
+        .collect::<Vec<(String, usize)>>();
+    ordered.sort_by_key(|(_, index)| *index);
+    ordered.into_iter().map(|(path, _)| path).collect()
+}
+#[derive(Debug, Clone)]
+struct WarpConversationRow {
+    rowid: i64,
+    conversation_id: String,
+    conversation_data: String,
+    last_modified_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct WarpTaskRow {
+    rowid: i64,
+    conversation_id: String,
+    task_id: String,
+    task: Vec<u8>,
+    last_modified_at: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WarpTaskProto {
+    id: String,
+    description: String,
+    parent_task_id: Option<String>,
+    summary: String,
+    messages: Vec<WarpMessageProto>,
+}
+
+#[derive(Debug, Clone)]
+struct WarpMessageProto {
+    id: String,
+    task_id: String,
+    request_id: String,
+    timestamp: Option<DateTime<Utc>>,
+    kind: &'static str,
+    role: Option<EventRole>,
+    event_type: EventType,
+    text: String,
+}
+
+impl Default for WarpMessageProto {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            task_id: String::new(),
+            request_id: String::new(),
+            timestamp: None,
+            kind: "unknown",
+            role: None,
+            event_type: EventType::Notice,
+            text: String::new(),
+        }
+    }
+}
+
+fn normalize_warp_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let conversations = warp_conversation_rows(&conn)?;
+    let tasks = warp_task_rows(&conn)?;
+    let mut tasks_by_conversation = BTreeMap::<String, Vec<WarpTaskRow>>::new();
+    for task in tasks {
+        tasks_by_conversation
+            .entry(task.conversation_id.clone())
+            .or_default()
+            .push(task);
+    }
+
+    let raw_source_path = path.display().to_string();
+    let mut result = ProviderNormalizationResult::default();
+
+    for conversation in conversations {
+        let line_base = warp_line_number(conversation.rowid, 0);
+        let conversation_modified = match warp_sqlite_timestamp(
+            &conversation.last_modified_at,
+            "Warp agent_conversations.last_modified_at",
+        ) {
+            Ok(timestamp) => timestamp,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, line_base, err.to_string());
+                continue;
+            }
+        };
+        let conversation_data = serde_json::from_str::<Value>(&conversation.conversation_data)
+            .unwrap_or_else(|_| json!({ "parse_error": "invalid conversation_data JSON" }));
+        let parent_conversation_id = conversation_data
+            .get("parent_conversation_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let is_subagent = parent_conversation_id.is_some();
+        let tasks = tasks_by_conversation
+            .remove(&conversation.conversation_id)
+            .unwrap_or_default();
+        let mut decoded_tasks = Vec::new();
+        let mut events = Vec::new();
+        for task_row in tasks {
+            let task = match warp_decode_task(&task_row.task) {
+                Ok(task) => task,
+                Err(err) => {
+                    push_provider_import_failure(
+                        &mut result.summary,
+                        warp_line_number(task_row.rowid, 0),
+                        format!(
+                            "failed to decode Warp agent_tasks.task {}: {err}",
+                            task_row.task_id
+                        ),
+                    );
+                    continue;
+                }
+            };
+            let task_modified = warp_sqlite_timestamp(
+                &task_row.last_modified_at,
+                "Warp agent_tasks.last_modified_at",
+            )
+            .unwrap_or(conversation_modified);
+            let task_id = if task.id.is_empty() {
+                task_row.task_id.clone()
+            } else {
+                task.id.clone()
+            };
+            for (message_index, message) in task.messages.iter().enumerate() {
+                if message.text.trim().is_empty() {
+                    continue;
+                }
+                let message_time = message.timestamp.unwrap_or(task_modified);
+                let provider_event_index = events.len() as u64;
+                events.push(warp_message_event(
+                    &conversation.conversation_id,
+                    &task_id,
+                    message,
+                    message_index as u64,
+                    provider_event_index,
+                    message_time,
+                ));
+            }
+            decoded_tasks.push(json!({
+                "task_id": task_id,
+                "stored_task_id": task_row.task_id,
+                "description": provider_local_preview(&task.description, PROVIDER_MAX_PREVIEW_CHARS).0,
+                "summary": provider_local_preview(&task.summary, PROVIDER_MAX_PREVIEW_CHARS).0,
+                "parent_task_id": task.parent_task_id,
+                "message_count": task.messages.len(),
+            }));
+        }
+
+        let started_at = events
+            .iter()
+            .map(|event| event.occurred_at)
+            .min()
+            .unwrap_or(conversation_modified);
+        let session_metadata = warp_session_metadata(&conversation_data, &decoded_tasks);
+        if events.is_empty() {
+            result.captures.push((
+                line_base,
+                warp_capture(
+                    &conversation.conversation_id,
+                    parent_conversation_id.clone(),
+                    is_subagent,
+                    started_at,
+                    conversation_modified,
+                    &raw_source_path,
+                    user_version,
+                    &schema_fingerprint,
+                    session_metadata,
+                    None,
+                    context,
+                ),
+            ));
+            continue;
+        }
+
+        for (event_index, event) in events.into_iter().enumerate() {
+            result.captures.push((
+                warp_line_number(conversation.rowid, event_index as u64 + 1),
+                warp_capture(
+                    &conversation.conversation_id,
+                    parent_conversation_id.clone(),
+                    is_subagent,
+                    started_at,
+                    conversation_modified,
+                    &raw_source_path,
+                    user_version,
+                    &schema_fingerprint,
+                    session_metadata.clone(),
+                    Some(event),
+                    context,
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn warp_capture(
+    conversation_id: &str,
+    parent_conversation_id: Option<String>,
+    is_subagent: bool,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    raw_source_path: &str,
+    user_version: i64,
+    schema_fingerprint: &str,
+    session_metadata: Value,
+    event: Option<ProviderEventEnvelope>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Warp,
+            source_format: WARP_SQLITE_SOURCE_FORMAT,
+            provider_session_id: conversation_id.to_owned(),
+            parent_provider_session_id: parent_conversation_id.clone(),
+            root_provider_session_id: parent_conversation_id,
+            external_agent_id: Some("warp-agent".to_owned()),
+            agent_type: if is_subagent {
+                AgentType::Subagent
+            } else {
+                AgentType::Primary
+            },
+            role_hint: Some(if is_subagent { "subagent" } else { "primary" }.to_owned()),
+            is_primary: !is_subagent,
+            started_at,
+            ended_at: Some(ended_at),
+            cwd: None,
+            fidelity: Fidelity::Imported,
+            raw_source_path: raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": WARP_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": user_version,
+                "schema_fingerprint": schema_fingerprint,
+                "source_path": raw_source_path,
+                "upstream_schema_anchor": {
+                    "repository": "warpdotdev/warp",
+                    "files": [
+                        "crates/persistence/src/schema.rs",
+                        "crates/persistence/src/model.rs",
+                        "app/src/persistence/agent.rs"
+                    ],
+                    "proto_repository": "warpdotdev/warp-proto-apis",
+                    "proto_files": ["apis/multi_agent/v1/task.proto"]
+                },
+            }),
+            session_metadata,
+        },
+        context,
+        event,
+    )
+}
+
+fn warp_session_metadata(conversation_data: &Value, decoded_tasks: &[Value]) -> Value {
+    json!({
+        "source_format": WARP_SQLITE_SOURCE_FORMAT,
+        "title": conversation_data
+            .get("agent_name")
+            .and_then(Value::as_str)
+            .unwrap_or("Warp conversation"),
+        "agent_name": conversation_data.get("agent_name").cloned().unwrap_or(Value::Null),
+        "parent_conversation_id": conversation_data
+            .get("parent_conversation_id")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "run_id": conversation_data.get("run_id").cloned().unwrap_or(Value::Null),
+        "has_server_conversation_token": conversation_data
+            .get("server_conversation_token")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty()),
+        "has_forked_from_server_conversation_token": conversation_data
+            .get("forked_from_server_conversation_token")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty()),
+        "conversation_usage_metadata": conversation_data
+            .get("conversation_usage_metadata")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "task_summaries": decoded_tasks,
+        "privacy": "server conversation tokens are intentionally not copied from Warp conversation_data",
+    })
+}
+
+fn warp_conversation_rows(conn: &Connection) -> Result<Vec<WarpConversationRow>> {
+    if !sqlite_table_exists(conn, "agent_conversations")? {
+        return Err(CaptureError::InvalidPayload(
+            "Warp SQLite database is missing required agent_conversations table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "agent_conversations")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Warp agent_conversations table",
+        &["conversation_id", "conversation_data", "last_modified_at"],
+    )?;
+    let mut stmt = conn.prepare(
+        "select rowid, conversation_id, conversation_data, last_modified_at \
+         from agent_conversations order by last_modified_at, conversation_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(WarpConversationRow {
+            rowid: row.get(0)?,
+            conversation_id: row.get(1)?,
+            conversation_data: row.get(2)?,
+            last_modified_at: row.get(3)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn warp_task_rows(conn: &Connection) -> Result<Vec<WarpTaskRow>> {
+    if !sqlite_table_exists(conn, "agent_tasks")? {
+        return Err(CaptureError::InvalidPayload(
+            "Warp SQLite database is missing required agent_tasks table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "agent_tasks")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Warp agent_tasks table",
+        &["conversation_id", "task_id", "task", "last_modified_at"],
+    )?;
+    let mut stmt = conn.prepare(
+        "select rowid, conversation_id, task_id, task, last_modified_at \
+         from agent_tasks order by conversation_id, task_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(WarpTaskRow {
+            rowid: row.get(0)?,
+            conversation_id: row.get(1)?,
+            task_id: row.get(2)?,
+            task: row.get(3)?,
+            last_modified_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn warp_sqlite_timestamp(raw: &str, field: &'static str) -> Result<DateTime<Utc>> {
+    if let Some(timestamp) = parse_rfc3339_utc(raw) {
+        return Ok(timestamp);
+    }
+    let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f").map_err(|_| {
+        CaptureError::InvalidPayload(format!("{field} is not a supported timestamp: {raw:?}"))
+    })?;
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+}
+
+fn warp_line_number(rowid: i64, index: u64) -> usize {
+    let row = u64::try_from(rowid.max(0)).unwrap_or(0);
+    provider_line_from_index(row.saturating_mul(100_000).saturating_add(index))
+}
+
+fn warp_message_event(
+    conversation_id: &str,
+    task_id: &str,
+    message: &WarpMessageProto,
+    message_index: u64,
+    provider_event_index: u64,
+    occurred_at: DateTime<Utc>,
+) -> ProviderEventEnvelope {
+    let (text, truncated) = provider_local_preview(&message.text, PROVIDER_MAX_TEXT_CHARS);
+    let message_id = if message.id.is_empty() {
+        format!("{task_id}:{message_index}")
+    } else {
+        message.id.clone()
+    };
+    ProviderEventEnvelope {
+        provider_event_index,
+        provider_event_hash: Some(message_id.clone()),
+        cursor: Some(format!("agent_task:{task_id}:message:{message_index}")),
+        event_type: message.event_type,
+        role: message.role,
+        occurred_at,
+        fidelity: Fidelity::Imported,
+        redaction_state: RedactionState::LocalPreview,
+        idempotency_key: Some(format!(
+            "provider-event:warp:{conversation_id}:{message_id}"
+        )),
+        artifacts: Vec::new(),
+        payload: json!({
+            "kind": message.kind,
+            "message_id": message_id,
+            "task_id": task_id,
+            "request_id": if message.request_id.is_empty() { Value::Null } else { json!(message.request_id) },
+            "text": text,
+            "truncated": truncated,
+            "body": {
+                "text": text,
+                "message_index": message_index,
+            },
+        }),
+        metadata: json!({
+            "source": WARP_SQLITE_SOURCE_FORMAT,
+            "source_format": WARP_SQLITE_SOURCE_FORMAT,
+            "message_kind": message.kind,
+            "task_id": task_id,
+            "proto_task_id": if message.task_id.is_empty() { Value::Null } else { json!(message.task_id) },
+            "request_id": if message.request_id.is_empty() { Value::Null } else { json!(message.request_id) },
+        }),
+    }
+}
+
+fn warp_decode_task(data: &[u8]) -> Result<WarpTaskProto> {
+    let mut task = WarpTaskProto::default();
+    let mut pos = 0;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (1, 2) => task.id = proto_string(data, &mut pos)?,
+            (2, 2) => task.description = proto_string(data, &mut pos)?,
+            (3, 2) => task.parent_task_id = warp_decode_dependencies(proto_len(data, &mut pos)?)?,
+            (5, 2) => task
+                .messages
+                .push(warp_decode_message(proto_len(data, &mut pos)?)?),
+            (6, 2) => task.summary = proto_string(data, &mut pos)?,
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(task)
+}
+
+fn warp_decode_dependencies(data: &[u8]) -> Result<Option<String>> {
+    let mut pos = 0;
+    let mut parent = None;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (1, 2) => {
+                let value = proto_string(data, &mut pos)?;
+                if !value.is_empty() {
+                    parent = Some(value);
+                }
+            }
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(parent)
+}
+
+fn warp_decode_message(data: &[u8]) -> Result<WarpMessageProto> {
+    let mut message = WarpMessageProto::default();
+    let mut pos = 0;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (1, 2) => message.id = proto_string(data, &mut pos)?,
+            (11, 2) => message.task_id = proto_string(data, &mut pos)?,
+            (13, 2) => message.request_id = proto_string(data, &mut pos)?,
+            (14, 2) => message.timestamp = warp_decode_timestamp(proto_len(data, &mut pos)?)?,
+            (2, 2) => {
+                message.kind = "user_query";
+                message.role = Some(EventRole::User);
+                message.event_type = EventType::Message;
+                message.text =
+                    proto_nested_string_field(proto_len(data, &mut pos)?, 1)?.unwrap_or_default();
+            }
+            (3, 2) => {
+                message.kind = "agent_output";
+                message.role = Some(EventRole::Assistant);
+                message.event_type = EventType::Message;
+                message.text =
+                    proto_nested_string_field(proto_len(data, &mut pos)?, 1)?.unwrap_or_default();
+            }
+            (4, 2) => {
+                let tool_name =
+                    warp_tool_name(proto_first_len_field(proto_len(data, &mut pos)?)?.unwrap_or(0));
+                message.kind = "tool_call";
+                message.role = Some(EventRole::Assistant);
+                message.event_type = EventType::ToolCall;
+                message.text = format!("tool call: {tool_name}");
+            }
+            (5, 2) => {
+                let tool_name = warp_tool_result_name(
+                    proto_first_len_field(proto_len(data, &mut pos)?)?.unwrap_or(0),
+                );
+                message.kind = "tool_call_result";
+                message.role = Some(EventRole::Tool);
+                message.event_type = EventType::ToolOutput;
+                message.text = format!("tool result: {tool_name}");
+            }
+            (9, 2) => {
+                message.kind = "system_query";
+                message.role = Some(EventRole::System);
+                message.event_type = EventType::Message;
+                message.text = warp_decode_system_query(proto_len(data, &mut pos)?)?;
+            }
+            (15, 2) => {
+                message.kind = "agent_reasoning";
+                message.role = Some(EventRole::Assistant);
+                message.event_type = EventType::Message;
+                message.text =
+                    proto_nested_string_field(proto_len(data, &mut pos)?, 1)?.unwrap_or_default();
+            }
+            (16, 2) => {
+                message.kind = "summarization";
+                message.role = Some(EventRole::Assistant);
+                message.event_type = EventType::Message;
+                message.text = warp_decode_summarization(proto_len(data, &mut pos)?)?;
+            }
+            (21, 2) => {
+                message.kind = "debug_output";
+                message.event_type = EventType::Notice;
+                message.text = "debug output".to_owned();
+                proto_skip(data, &mut pos, wire)?;
+            }
+            (24, 2) => {
+                message.kind = "messages_received_from_agents";
+                message.role = Some(EventRole::Assistant);
+                message.event_type = EventType::Message;
+                message.text = warp_decode_received_messages(proto_len(data, &mut pos)?)?;
+            }
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(message)
+}
+
+fn warp_decode_timestamp(data: &[u8]) -> Result<Option<DateTime<Utc>>> {
+    let mut pos = 0;
+    let mut seconds = None;
+    let mut nanos = 0u32;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (1, 0) => seconds = Some(proto_varint(data, &mut pos)? as i64),
+            (2, 0) => nanos = proto_varint(data, &mut pos)? as u32,
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(seconds.and_then(|secs| DateTime::<Utc>::from_timestamp(secs, nanos)))
+}
+
+fn warp_decode_system_query(data: &[u8]) -> Result<String> {
+    let Some(field) = proto_first_len_field(data)? else {
+        return Ok("system query".to_owned());
+    };
+    Ok(match field {
+        1 => "system query: auto code diff".to_owned(),
+        3 => "system query: resume conversation".to_owned(),
+        4 => "system query: generate passive suggestions".to_owned(),
+        5 => proto_nested_string_field_for_oneof(data, 5, 1)?
+            .map(|query| format!("system query: create new project\n{query}"))
+            .unwrap_or_else(|| "system query: create new project".to_owned()),
+        6 => "system query: clone repository".to_owned(),
+        7 => proto_nested_string_field_for_oneof(data, 7, 1)?
+            .map(|prompt| format!("system query: summarize conversation\n{prompt}"))
+            .unwrap_or_else(|| "system query: summarize conversation".to_owned()),
+        8 => "system query: fetch review comments".to_owned(),
+        9 => "system query: handoff rehydration".to_owned(),
+        _ => format!("system query: field {field}"),
+    })
+}
+
+fn warp_decode_summarization(data: &[u8]) -> Result<String> {
+    proto_nested_string_field_for_oneof(data, 1, 1)?
+        .map(|summary| format!("conversation summary\n{summary}"))
+        .or_else(|| {
+            proto_first_len_field(data)
+                .ok()
+                .flatten()
+                .map(|field| format!("summarization: field {field}"))
+        })
+        .ok_or_else(|| CaptureError::InvalidPayload("Warp summarization has no summary".into()))
+}
+
+fn warp_decode_received_messages(data: &[u8]) -> Result<String> {
+    let mut pos = 0;
+    let mut parts = Vec::new();
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (1, 2) => {
+                let received = proto_len(data, &mut pos)?;
+                let subject = proto_nested_string_field(received, 4)?.unwrap_or_default();
+                let body = proto_nested_string_field(received, 5)?.unwrap_or_default();
+                let text = if subject.is_empty() {
+                    body
+                } else if body.is_empty() {
+                    subject
+                } else {
+                    format!("{subject}\n{body}")
+                };
+                if !text.is_empty() {
+                    parts.push(text);
+                }
+            }
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
+fn proto_nested_string_field_for_oneof(
+    data: &[u8],
+    outer_field: u32,
+    inner_field: u32,
+) -> Result<Option<String>> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (field, 2) if field == outer_field => {
+                return proto_nested_string_field(proto_len(data, &mut pos)?, inner_field);
+            }
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(None)
+}
+
+fn proto_nested_string_field(data: &[u8], desired_field: u32) -> Result<Option<String>> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        match (field, wire) {
+            (field, 2) if field == desired_field => return Ok(Some(proto_string(data, &mut pos)?)),
+            _ => proto_skip(data, &mut pos, wire)?,
+        }
+    }
+    Ok(None)
+}
+
+fn proto_first_len_field(data: &[u8]) -> Result<Option<u32>> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let (field, wire) = proto_key(data, &mut pos)?;
+        if wire == 2 {
+            return Ok(Some(field));
+        }
+        proto_skip(data, &mut pos, wire)?;
+    }
+    Ok(None)
+}
+
+fn proto_key(data: &[u8], pos: &mut usize) -> Result<(u32, u8)> {
+    let key = proto_varint(data, pos)?;
+    Ok(((key >> 3) as u32, (key & 0x07) as u8))
+}
+
+fn proto_string(data: &[u8], pos: &mut usize) -> Result<String> {
+    let bytes = proto_len(data, pos)?;
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|err| {
+            CaptureError::InvalidPayload(format!("invalid UTF-8 in Warp protobuf: {err}"))
+        })
+}
+
+fn proto_len<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
+    let len = proto_varint(data, pos)? as usize;
+    let end = pos.checked_add(len).ok_or_else(|| {
+        CaptureError::InvalidPayload("overflow while decoding Warp protobuf".into())
+    })?;
+    if end > data.len() {
+        return Err(CaptureError::InvalidPayload(
+            "truncated length-delimited field in Warp protobuf".into(),
+        ));
+    }
+    let bytes = &data[*pos..end];
+    *pos = end;
+    Ok(bytes)
+}
+
+fn proto_varint(data: &[u8], pos: &mut usize) -> Result<u64> {
+    let mut value = 0u64;
+    for shift in (0..70).step_by(7) {
+        if *pos >= data.len() {
+            return Err(CaptureError::InvalidPayload(
+                "truncated varint in Warp protobuf".into(),
+            ));
+        }
+        let byte = data[*pos];
+        *pos += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(CaptureError::InvalidPayload(
+        "oversized varint in Warp protobuf".into(),
+    ))
+}
+
+fn proto_skip(data: &[u8], pos: &mut usize, wire: u8) -> Result<()> {
+    match wire {
+        0 => {
+            let _ = proto_varint(data, pos)?;
+        }
+        1 => {
+            *pos = pos.checked_add(8).ok_or_else(|| {
+                CaptureError::InvalidPayload("overflow while skipping fixed64".into())
+            })?;
+        }
+        2 => {
+            let _ = proto_len(data, pos)?;
+        }
+        5 => {
+            *pos = pos.checked_add(4).ok_or_else(|| {
+                CaptureError::InvalidPayload("overflow while skipping fixed32".into())
+            })?;
+        }
+        other => {
+            return Err(CaptureError::InvalidPayload(format!(
+                "unsupported Warp protobuf wire type {other}"
+            )));
+        }
+    }
+    if *pos > data.len() {
+        return Err(CaptureError::InvalidPayload(
+            "truncated field while skipping Warp protobuf".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn warp_tool_name(field: u32) -> &'static str {
+    match field {
+        2 => "run_shell_command",
+        3 => "search_codebase",
+        5 => "read_files",
+        6 => "apply_file_diffs",
+        7 => "suggest_plan",
+        8 => "suggest_create_plan",
+        9 => "grep",
+        11 => "read_mcp_resource",
+        12 => "call_mcp_tool",
+        13 => "write_to_long_running_shell_command",
+        14 => "suggest_new_conversation",
+        15 => "file_glob",
+        17 => "open_code_review",
+        18 => "init_project",
+        19 => "subagent",
+        20 => "read_documents",
+        21 => "edit_documents",
+        22 => "create_documents",
+        23 => "read_shell_command_output",
+        24 => "use_computer",
+        26 => "read_skill",
+        28 => "fetch_conversation",
+        29 => "start_agent",
+        30 => "send_message_to_agent",
+        31 => "transfer_shell_command_control_to_user",
+        _ => "unknown",
+    }
+}
+
+fn warp_tool_result_name(field: u32) -> &'static str {
+    match field {
+        2 => "run_shell_command",
+        3 => "search_codebase",
+        5 => "read_files",
+        6 => "apply_file_diffs",
+        8 => "suggest_create_plan",
+        9 => "grep",
+        15 => "read_mcp_resource",
+        16 => "call_mcp_tool",
+        17 => "write_to_long_running_shell_command",
+        18 => "suggest_new_conversation",
+        19 => "file_glob",
+        21 => "open_code_review",
+        22 => "init_project",
+        23 => "subagent",
+        24 => "read_documents",
+        25 => "edit_documents",
+        26 => "create_documents",
+        27 => "read_shell_command_output",
+        28 => "use_computer",
+        30 => "read_skill",
+        32 => "fetch_conversation",
+        33 => "start_agent",
+        34 => "send_message_to_agent",
+        35 => "transfer_shell_command_control_to_user",
+        _ => "unknown",
+    }
+}
+
+fn zed_message_event(
+    provider_session_id: &str,
+    message: &Value,
+    message_index: usize,
+    occurred_at: DateTime<Utc>,
+) -> Result<ProviderEventEnvelope> {
+    let kind = zed_message_kind(message).unwrap_or("Unknown");
+    let text = zed_message_text(message).unwrap_or_else(|| format!("Zed {kind} message"));
+    let event_type = zed_message_event_type(kind, message);
+    let role = zed_message_role(kind);
+    let provider_event_index = u64::try_from(message_index).map_err(|_| {
+        CaptureError::InvalidPayload(format!("Zed message index is too large: {message_index}"))
+    })?;
+    let message_hash = compute_payload_hash(message)?;
+    Ok(native_event(NativeEventDraft {
+        provider: CaptureProvider::Zed,
+        source_format: ZED_THREADS_SQLITE_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index,
+        provider_event_hash: Some(format!("zed-message:{message_hash}")),
+        cursor: format!("thread:{provider_session_id}:message:{message_index}"),
+        event_type,
+        role,
+        occurred_at,
+        text,
+        body: json!({
+            "message_kind": kind,
+            "message": message,
+        }),
+        metadata: json!({
+            "source": "zed_threads_db",
+            "source_format": ZED_THREADS_SQLITE_SOURCE_FORMAT,
+            "message_index": message_index,
+            "message_kind": kind,
+            "timestamp_source": "thread.updated_at",
+        }),
+    }))
+}
+
+fn zed_message_kind(message: &Value) -> Option<&str> {
+    match message {
+        Value::String(kind) => Some(kind.as_str()),
+        Value::Object(object) if object.len() == 1 => object.keys().next().map(String::as_str),
+        _ => None,
+    }
+}
+
+fn zed_message_inner<'a>(message: &'a Value, kind: &str) -> Option<&'a Value> {
+    match message {
+        Value::Object(object) => object.get(kind),
+        _ => None,
+    }
+}
+
+fn zed_message_role(kind: &str) -> Option<EventRole> {
+    Some(match kind {
+        "User" | "Resume" => EventRole::User,
+        "Agent" => EventRole::Assistant,
+        "Compaction" => EventRole::System,
+        _ => EventRole::Unknown,
+    })
+}
+
+fn zed_message_event_type(kind: &str, message: &Value) -> EventType {
+    match kind {
+        "Agent" if zed_has_tool_use(message) => EventType::ToolCall,
+        "Agent" if zed_has_tool_result(message) => EventType::ToolOutput,
+        "User" | "Agent" | "Resume" => EventType::Message,
+        "Compaction" => EventType::Summary,
+        _ => EventType::Notice,
+    }
+}
+
+fn zed_message_text(message: &Value) -> Option<String> {
+    let kind = zed_message_kind(message)?;
+    let inner = zed_message_inner(message, kind);
+    match kind {
+        "User" => zed_user_message_text(inner?),
+        "Agent" => zed_agent_message_text(inner?),
+        "Resume" => Some("[resume]".to_owned()),
+        "Compaction" => zed_compaction_text(inner.unwrap_or(message)),
+        _ => provider_value_text(message),
+    }
+}
+
+fn zed_user_message_text(value: &Value) -> Option<String> {
+    zed_content_array_text(value.get("content"))
+}
+
+fn zed_agent_message_text(value: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(text) = zed_content_array_text(value.get("content")) {
+        parts.push(text);
+    }
+    if let Some(text) = zed_tool_results_text(value.get("tool_results")) {
+        parts.push(text);
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn zed_compaction_text(value: &Value) -> Option<String> {
+    if let Some(summary) = value.get("Summary").and_then(Value::as_str) {
+        return Some(summary.to_owned());
+    }
+    if let Some(native) = value.get("ProviderNative") {
+        return provider_value_text(native);
+    }
+    provider_value_text(value)
+}
+
+fn zed_content_array_text(value: Option<&Value>) -> Option<String> {
+    let items = value?.as_array()?;
+    let mut parts = Vec::new();
+    for item in items {
+        if let Some(text) = zed_content_item_text(item) {
+            parts.push(text);
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn zed_content_item_text(value: &Value) -> Option<String> {
+    let (kind, body) = zed_external_tag(value)?;
+    match kind {
+        "Text" => body.as_str().map(str::to_owned),
+        "Thinking" => body
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| format!("<think>{text}</think>")),
+        "RedactedThinking" => Some("<redacted_thinking />".to_owned()),
+        "ToolUse" => Some(zed_tool_use_text(body)),
+        "Mention" => zed_mention_text(body),
+        "Image" => Some("<image />".to_owned()),
+        other => provider_value_text(body).map(|text| format!("{other}: {text}")),
+    }
+}
+
+fn zed_tool_use_text(value: &Value) -> String {
+    let name = value.get("name").and_then(Value::as_str).unwrap_or("tool");
+    let mut parts = vec![format!("tool call: {name}")];
+    if let Some(input) = value.get("input") {
+        if !input.is_null() {
+            parts.push(format!(
+                "tool input: {}",
+                provider_capped_json(input, PROVIDER_MAX_PREVIEW_CHARS)
+            ));
+        }
+    } else if let Some(raw_input) = value.get("raw_input").and_then(Value::as_str) {
+        if !raw_input.trim().is_empty() {
+            parts.push(format!("tool input: {raw_input}"));
+        }
+    }
+    parts.join("\n")
+}
+
+fn zed_mention_text(value: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(uri) = value.get("uri") {
+        if let Some(uri_text) = provider_value_text(uri) {
+            parts.push(uri_text);
+        }
+    }
+    if let Some(content) = value.get("content").and_then(Value::as_str) {
+        parts.push(content.to_owned());
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn zed_tool_results_text(value: Option<&Value>) -> Option<String> {
+    let object = value?.as_object()?;
+    let mut parts = Vec::new();
+    for result in object.values() {
+        let name = result
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        parts.push(format!("tool result: {name}"));
+        if result
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            parts.push("tool error".to_owned());
+        }
+        if let Some(content) = zed_tool_result_content_text(result.get("content")) {
+            parts.push(content);
+        }
+        if let Some(output) = result.get("output").and_then(provider_value_text) {
+            parts.push(output);
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn zed_tool_result_content_text(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    if let Some(items) = value.as_array() {
+        let mut parts = Vec::new();
+        for item in items {
+            if let Some((kind, body)) = zed_external_tag(item) {
+                match kind {
+                    "Text" => {
+                        if let Some(text) = body.as_str() {
+                            parts.push(text.to_owned());
+                        }
+                    }
+                    "Image" => parts.push("<image />".to_owned()),
+                    _ => {
+                        if let Some(text) = provider_value_text(body) {
+                            parts.push(text);
+                        }
+                    }
+                }
+            } else if let Some(text) = provider_value_text(item) {
+                parts.push(text);
+            }
+        }
+        return (!parts.is_empty()).then(|| parts.join("\n"));
+    }
+    provider_value_text(value)
+}
+
+fn zed_external_tag(value: &Value) -> Option<(&str, &Value)> {
+    let object = value.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    object
+        .iter()
+        .next()
+        .map(|(key, value)| (key.as_str(), value))
+}
+
+fn zed_has_tool_use(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(zed_has_tool_use),
+        Value::Object(object) => {
+            object.contains_key("ToolUse")
+                || object.get("content").is_some_and(zed_has_tool_use)
+                || object.values().any(zed_has_tool_use)
+        }
+        _ => false,
+    }
+}
+
+fn zed_has_tool_result(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(zed_has_tool_result),
+        Value::Object(object) => {
+            object
+                .get("tool_results")
+                .and_then(Value::as_object)
+                .is_some_and(|results| !results.is_empty())
+                || object.contains_key("ToolResult")
+                || object.values().any(zed_has_tool_result)
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone)]
 struct AstrBotConversationRow {
     row_id: i64,
     inner_conversation_id: Option<String>,
@@ -9030,7 +16508,7 @@ fn normalize_astrbot_sqlite(
                             "adapter": ASTRBOT_SQLITE_SOURCE_FORMAT,
                             "sqlite_user_version": user_version,
                             "schema_fingerprint": schema_fingerprint,
-                            "support_level": "preview",
+                            "support_level": "supported",
                         }),
                         session_metadata: json!({
                             "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
@@ -9106,7 +16584,7 @@ fn astrbot_capture(
                 "adapter": ASTRBOT_SQLITE_SOURCE_FORMAT,
                 "sqlite_user_version": user_version,
                 "schema_fingerprint": schema_fingerprint,
-                "support_level": "preview",
+                "support_level": "supported",
             }),
             session_metadata: json!({
                 "source_format": ASTRBOT_SQLITE_SOURCE_FORMAT,
@@ -9118,7 +16596,7 @@ fn astrbot_capture(
                 "persona_id": conversation.persona_id,
                 "token_usage": conversation.token_usage.as_deref().map(provider_json_text),
                 "selected_conversation": selected_conversation,
-                "fidelity_gap": "AstrBot preview imports local LLM context plus available platform history; it may not be a complete raw IM transcript",
+                "fidelity_gap": "The AstrBot importer reads local LLM context plus available platform history from data_v4.db; platform-native chats may still be partial when upstream stores non-LLM replies on the IM platform",
             }),
         },
         context,
@@ -9270,17 +16748,403 @@ fn astrbot_selected_conversation(conn: &Connection) -> Result<Option<String>> {
     Ok(value)
 }
 
+fn normalize_continue_cli_sessions(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut paths = Vec::new();
+    collect_continue_session_json_paths(path, &mut paths)?;
+    paths.sort();
+    if paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Continue CLI session JSON files found",
+        });
+    }
+
+    let session_index = continue_session_index(&paths);
+    let mut result = ProviderNormalizationResult::default();
+
+    for (path_index, path) in paths.into_iter().enumerate() {
+        let source_line = path_index.saturating_add(1);
+        let raw_source_path = path.display().to_string();
+        let text = match read_text_file_limited(
+            &path,
+            MAX_PROVIDER_JSONL_LINE_BYTES,
+            "Continue CLI session JSON",
+        ) {
+            Ok(text) => text,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, source_line, err.to_string());
+                continue;
+            }
+        };
+        let session: Value = match serde_json::from_str(&text) {
+            Ok(session) => session,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    source_line,
+                    format!("invalid Continue CLI session JSON: {err}"),
+                );
+                continue;
+            }
+        };
+        let Some(provider_session_id) = continue_session_id(&session, &path) else {
+            push_provider_import_failure(
+                &mut result.summary,
+                source_line,
+                "Continue CLI session is missing sessionId and has no JSON file stem".to_owned(),
+            );
+            continue;
+        };
+        let indexed_metadata = session_index.get(&provider_session_id);
+        let started_at =
+            continue_session_started_at(&session, indexed_metadata, context.imported_at);
+        let history = session
+            .get("history")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        if history.is_empty() {
+            result.captures.push((
+                source_line,
+                continue_capture(
+                    &provider_session_id,
+                    &session,
+                    indexed_metadata,
+                    started_at,
+                    &raw_source_path,
+                    context,
+                    None,
+                ),
+            ));
+            continue;
+        }
+
+        for (item_index, item) in history.iter().enumerate() {
+            let provider_event_index = item_index.saturating_add(1) as u64;
+            let line = source_line
+                .saturating_mul(1_000_000)
+                .saturating_add(item_index)
+                .saturating_add(1);
+            let fallback_time = started_at + chrono::Duration::milliseconds(item_index as i64);
+            let occurred_at = continue_history_item_timestamp(item, fallback_time);
+            let event = continue_history_item_event(
+                &provider_session_id,
+                item,
+                provider_event_index,
+                occurred_at,
+            );
+            result
+                .files_touched
+                .extend(provider_file_touches_from_raw_value(
+                    CaptureProvider::Continue,
+                    &provider_session_id,
+                    CONTINUE_CLI_SOURCE_FORMAT,
+                    Some(raw_source_path.as_str()),
+                    item,
+                    &event,
+                    line,
+                ));
+            result.captures.push((
+                line,
+                continue_capture(
+                    &provider_session_id,
+                    &session,
+                    indexed_metadata,
+                    started_at,
+                    &raw_source_path,
+                    context,
+                    Some(event),
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn collect_continue_session_json_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: root.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
+    if file_type.is_file() {
+        if continue_session_json_path(root) {
+            ensure_regular_provider_transcript_file(root)?;
+            paths.push(root.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_continue_session_json_paths(&path, paths)?;
+        } else if file_type.is_file() && continue_session_json_path(&path) {
+            ensure_regular_provider_transcript_file(&path)?;
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn continue_session_json_path(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("json")
+        && path.file_name().and_then(|name| name.to_str()) != Some("sessions.json")
+}
+
+fn continue_session_index(paths: &[PathBuf]) -> BTreeMap<String, Value> {
+    let mut index = BTreeMap::new();
+    let mut checked = BTreeSet::new();
+    for path in paths {
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        if !checked.insert(parent.to_path_buf()) {
+            continue;
+        }
+        let index_path = parent.join("sessions.json");
+        let Ok(text) = read_text_file_limited(
+            &index_path,
+            MAX_PROVIDER_JSONL_LINE_BYTES,
+            "Continue CLI sessions index",
+        ) else {
+            continue;
+        };
+        let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        for entry in entries {
+            if let Some(session_id) = entry
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+            {
+                index.entry(session_id.to_owned()).or_insert(entry);
+            }
+        }
+    }
+    index
+}
+
+fn continue_session_id(session: &Value, path: &Path) -> Option<String> {
+    session
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_owned)
+        })
+}
+
+fn continue_session_started_at(
+    session: &Value,
+    indexed_metadata: Option<&Value>,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    session
+        .get("createdAt")
+        .or_else(|| session.get("startedAt"))
+        .or_else(|| indexed_metadata.and_then(|metadata| metadata.get("dateCreated")))
+        .map(|value| provider_timestamp_value(Some(value), fallback))
+        .unwrap_or(fallback)
+}
+
+fn continue_history_item_timestamp(item: &Value, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    item.get("timestamp")
+        .or_else(|| item.get("createdAt"))
+        .or_else(|| item.pointer("/message/timestamp"))
+        .map(|value| provider_timestamp_value(Some(value), fallback))
+        .unwrap_or(fallback)
+}
+
+fn continue_capture(
+    provider_session_id: &str,
+    session: &Value,
+    indexed_metadata: Option<&Value>,
+    started_at: DateTime<Utc>,
+    raw_source_path: &str,
+    context: &ProviderAdapterContext,
+    event: Option<ProviderEventEnvelope>,
+) -> ProviderCaptureEnvelope {
+    let title = session.get("title").and_then(Value::as_str);
+    let cwd = session
+        .get("workspaceDirectory")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(str::to_owned);
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Continue,
+            source_format: CONTINUE_CLI_SOURCE_FORMAT,
+            provider_session_id: provider_session_id.to_owned(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("continue-cli".to_owned()),
+            is_primary: true,
+            started_at,
+            ended_at: None,
+            cwd,
+            fidelity: Fidelity::Imported,
+            raw_source_path: raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": CONTINUE_CLI_SOURCE_FORMAT,
+                "source_format": CONTINUE_CLI_SOURCE_FORMAT,
+            }),
+            session_metadata: json!({
+                "source_format": CONTINUE_CLI_SOURCE_FORMAT,
+                "title": title,
+                "mode": session.get("mode").cloned(),
+                "chat_model_title": session.get("chatModelTitle").cloned(),
+                "usage": session.get("usage").cloned(),
+                "session_index": indexed_metadata.cloned(),
+            }),
+        },
+        context,
+        event,
+    )
+}
+
+fn continue_history_item_event(
+    provider_session_id: &str,
+    item: &Value,
+    provider_event_index: u64,
+    occurred_at: DateTime<Utc>,
+) -> ProviderEventEnvelope {
+    let role_text = item.pointer("/message/role").and_then(Value::as_str);
+    let role = Some(provider_role(role_text));
+    let has_tool_calls = item
+        .get("toolCallStates")
+        .and_then(Value::as_array)
+        .is_some_and(|states| !states.is_empty());
+    let event_type = if has_tool_calls {
+        EventType::ToolCall
+    } else {
+        EventType::Message
+    };
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::Continue,
+        source_format: CONTINUE_CLI_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index,
+        provider_event_hash: item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned),
+        cursor: format!("history:{provider_session_id}:{provider_event_index}"),
+        event_type,
+        role,
+        occurred_at,
+        text: continue_history_item_text(item)
+            .unwrap_or_else(|| "Continue CLI history item".to_owned()),
+        body: item.clone(),
+        metadata: json!({
+            "source": CONTINUE_CLI_SOURCE_FORMAT,
+            "source_format": CONTINUE_CLI_SOURCE_FORMAT,
+            "message_role": role_text,
+            "has_tool_calls": has_tool_calls,
+        }),
+    })
+}
+
+fn continue_history_item_text(item: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(text) = item
+        .pointer("/message/content")
+        .and_then(provider_value_text)
+        .or_else(|| item.get("editorState").and_then(provider_value_text))
+    {
+        parts.push(text);
+    }
+    if let Some(text) = item
+        .get("contextItems")
+        .and_then(continue_context_items_text)
+    {
+        parts.push(text);
+    }
+    if let Some(text) = item
+        .get("toolCallStates")
+        .and_then(continue_tool_states_text)
+    {
+        parts.push(text);
+    }
+    if let Some(text) = item.get("conversationSummary").and_then(Value::as_str) {
+        parts.push(text.to_owned());
+    }
+    let text = parts
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn continue_context_items_text(value: &Value) -> Option<String> {
+    let items = value.as_array()?;
+    let mut parts = Vec::new();
+    for item in items {
+        if let Some(content) = item.get("content").and_then(provider_value_text) {
+            parts.push(content);
+        } else if let Some(name) = item.get("name").and_then(Value::as_str) {
+            parts.push(name.to_owned());
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn continue_tool_states_text(value: &Value) -> Option<String> {
+    let states = value.as_array()?;
+    let mut parts = Vec::new();
+    for state in states {
+        let name = state
+            .pointer("/toolCall/function/name")
+            .or_else(|| state.pointer("/toolCall/name"))
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        let status = state
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        parts.push(format!("tool call: {name} ({status})"));
+        if let Some(output) = state.get("output").and_then(provider_value_text) {
+            parts.push(output);
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
 fn normalize_opencode_sqlite(
     path: &Path,
     context: &ProviderAdapterContext,
+    dialect: &OpenCodeSqliteDialect,
 ) -> Result<ProviderNormalizationResult> {
     let conn = open_provider_sqlite_readonly(path)?;
     let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
     let legacy_message_rows = opencode_count(&conn, "message").unwrap_or(0);
     let legacy_part_rows = opencode_count(&conn, "part").unwrap_or(0);
-    let sessions = opencode_sessions(&conn)?;
-    let messages = opencode_session_messages(&conn)?;
+    let sessions = opencode_sessions(&conn, dialect)?;
+    let messages = opencode_session_messages(&conn, dialect)?;
     let mut result = ProviderNormalizationResult::default();
     let mut session_started = BTreeMap::new();
     for session in &sessions {
@@ -9288,7 +17152,7 @@ fn normalize_opencode_sqlite(
             session.id.clone(),
             provider_required_timestamp_millis(
                 session.time_created,
-                "OpenCode session time_created",
+                dialect.session_time_created_field,
             )?,
         );
     }
@@ -9300,7 +17164,7 @@ fn normalize_opencode_sqlite(
 
     for row in messages {
         let provider_event_index =
-            match provider_nonnegative_i64_to_u64(row.seq, "OpenCode session_message seq") {
+            match provider_nonnegative_i64_to_u64(row.seq, dialect.session_message_seq_field) {
                 Ok(value) => value,
                 Err(err) => {
                     push_provider_import_failure(&mut result.summary, 0, err.to_string());
@@ -9313,8 +17177,8 @@ fn normalize_opencode_sqlite(
                 &mut result.summary,
                 line,
                 format!(
-                    "OpenCode session_message {} references missing session {}",
-                    row.id, row.session_id
+                    "{} session_message {} references missing session {}",
+                    dialect.display_name, row.id, row.session_id
                 ),
             );
             continue;
@@ -9330,11 +17194,11 @@ fn normalize_opencode_sqlite(
                 continue;
             }
         };
-        let occurred_at = match opencode_event_time(&data) {
+        let occurred_at = match opencode_event_time(&data, dialect) {
             Ok(Some(time)) => time,
             Ok(None) => match provider_required_timestamp_millis(
                 row.time_created,
-                "OpenCode session_message time_created",
+                dialect.session_message_time_created_field,
             ) {
                 Ok(time) => time,
                 Err(err) => {
@@ -9351,13 +17215,13 @@ fn normalize_opencode_sqlite(
             .get(&session.id)
             .copied()
             .unwrap_or(occurred_at);
-        let event = opencode_event(&row, &data, occurred_at, provider_event_index);
+        let event = opencode_event(&row, &data, occurred_at, provider_event_index, dialect);
         result
             .files_touched
             .extend(provider_file_touches_from_raw_value(
-                CaptureProvider::OpenCode,
+                dialect.provider,
                 &session.id,
-                OPENCODE_SQLITE_SOURCE_FORMAT,
+                dialect.source_format,
                 Some(raw_source_path.as_str()),
                 &data,
                 &event,
@@ -9368,9 +17232,9 @@ fn normalize_opencode_sqlite(
             line,
             ProviderCaptureEnvelope {
                 schema_version: PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
-                provider: CaptureProvider::OpenCode,
+                provider: dialect.provider,
                 source: ProviderSourceEnvelope {
-                    source_format: OPENCODE_SQLITE_SOURCE_FORMAT.to_owned(),
+                    source_format: dialect.source_format.to_owned(),
                     machine_id: context.machine_id.clone(),
                     observed_at: context.imported_at,
                     raw_source_path: Some(raw_source_path.clone()),
@@ -9382,19 +17246,21 @@ fn normalize_opencode_sqlite(
                         before: None,
                         after: Some(ProviderCursorCheckpoint {
                             stream: provider_cursor_stream(
-                                CaptureProvider::OpenCode,
-                                OPENCODE_SQLITE_SOURCE_FORMAT,
+                                dialect.provider,
+                                dialect.source_format,
                             ),
                             cursor: format!("session_message:{}:seq:{}", row.session_id, row.seq),
                             observed_at: occurred_at,
                         }),
                     }),
                     idempotency_key: Some(format!(
-                        "provider-source:opencode:{OPENCODE_SQLITE_SOURCE_FORMAT}:{}",
+                        "provider-source:{}:{}:{}",
+                        dialect.provider.as_str(),
+                        dialect.source_format,
                         session.id
                     )),
                     metadata: json!({
-                        "adapter": OPENCODE_SQLITE_SOURCE_FORMAT,
+                        "adapter": dialect.source_format,
                         "sqlite_user_version": user_version,
                         "schema_fingerprint": schema_fingerprint,
                         "legacy_message_rows": legacy_message_rows,
@@ -9421,10 +17287,14 @@ fn normalize_opencode_sqlite(
                     ended_at: None,
                     cwd: Some(session.directory.clone()),
                     fidelity: Fidelity::Imported,
-                    idempotency_key: Some(format!("provider-session:opencode:{}", session.id)),
+                    idempotency_key: Some(format!(
+                        "provider-session:{}:{}",
+                        dialect.provider.as_str(),
+                        session.id
+                    )),
                     artifacts: Vec::new(),
                     metadata: json!({
-                        "source_format": OPENCODE_SQLITE_SOURCE_FORMAT,
+                        "source_format": dialect.source_format,
                         "title": session.title,
                         "model": parse_json_object_string(session.model.as_deref()),
                         "agent": session.agent,
@@ -9451,14 +17321,25 @@ fn normalize_opencode_sqlite(
     Ok(result)
 }
 
-fn opencode_sessions(conn: &Connection) -> Result<Vec<OpenCodeSessionRow>> {
+fn opencode_sessions(
+    conn: &Connection,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<Vec<OpenCodeSessionRow>> {
     if !sqlite_table_exists(conn, "session")? {
         return Err(CaptureError::InvalidPayload(
-            "OpenCode SQLite database is missing required session table".into(),
+            format!(
+                "{} SQLite database is missing required session table",
+                dialect.display_name
+            )
+            .into(),
         ));
     }
     let columns = sqlite_table_columns(conn, "session")?;
-    ensure_sqlite_table_columns(&columns, "OpenCode SQLite session table", &["id"])?;
+    ensure_sqlite_table_columns(
+        &columns,
+        &format!("{} SQLite session table", dialect.display_name),
+        &["id"],
+    )?;
     let parent_id = optional_column_expr(&columns, "parent_id", "NULL");
     let title = optional_column_expr(
         &columns,
@@ -9507,30 +17388,36 @@ fn opencode_sessions(conn: &Connection) -> Result<Vec<OpenCodeSessionRow>> {
         .map_err(CaptureError::from)
 }
 
-fn opencode_session_messages(conn: &Connection) -> Result<Vec<OpenCodeMessageRow>> {
+fn opencode_session_messages(
+    conn: &Connection,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<Vec<OpenCodeMessageRow>> {
     if sqlite_table_exists(conn, "session_message")? {
-        let rows = opencode_session_message_rows(conn)?;
+        let rows = opencode_session_message_rows(conn, dialect)?;
         if !rows.is_empty() {
             return Ok(rows);
         }
     }
     if sqlite_table_exists(conn, "session_entry")? {
-        let rows = opencode_session_entry_rows(conn)?;
+        let rows = opencode_session_entry_rows(conn, dialect)?;
         if !rows.is_empty() {
             return Ok(rows);
         }
     }
     if sqlite_table_exists(conn, "message")? {
-        return opencode_message_rows(conn);
+        return opencode_message_rows(conn, dialect);
     }
     Ok(Vec::new())
 }
 
-fn opencode_session_message_rows(conn: &Connection) -> Result<Vec<OpenCodeMessageRow>> {
+fn opencode_session_message_rows(
+    conn: &Connection,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<Vec<OpenCodeMessageRow>> {
     let columns = sqlite_table_columns(conn, "session_message")?;
     ensure_sqlite_table_columns(
         &columns,
-        "OpenCode SQLite session_message table",
+        &format!("{} SQLite session_message table", dialect.display_name),
         &["id", "session_id", "data"],
     )?;
     let entry_type = optional_column_expr(&columns, "type", "'message'");
@@ -9579,11 +17466,14 @@ fn opencode_session_message_rows(conn: &Connection) -> Result<Vec<OpenCodeMessag
     Ok(messages)
 }
 
-fn opencode_session_entry_rows(conn: &Connection) -> Result<Vec<OpenCodeMessageRow>> {
+fn opencode_session_entry_rows(
+    conn: &Connection,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<Vec<OpenCodeMessageRow>> {
     let columns = sqlite_table_columns(conn, "session_entry")?;
     ensure_sqlite_table_columns(
         &columns,
-        "OpenCode SQLite session_entry table",
+        &format!("{} SQLite session_entry table", dialect.display_name),
         &[
             "id",
             "session_id",
@@ -9625,11 +17515,14 @@ fn opencode_session_entry_rows(conn: &Connection) -> Result<Vec<OpenCodeMessageR
     Ok(messages)
 }
 
-fn opencode_message_rows(conn: &Connection) -> Result<Vec<OpenCodeMessageRow>> {
+fn opencode_message_rows(
+    conn: &Connection,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<Vec<OpenCodeMessageRow>> {
     let columns = sqlite_table_columns(conn, "message")?;
     ensure_sqlite_table_columns(
         &columns,
-        "OpenCode SQLite message table",
+        &format!("{} SQLite message table", dialect.display_name),
         &["id", "session_id", "time_created", "time_updated", "data"],
     )?;
     let mut stmt = conn.prepare(
@@ -9760,10 +17653,11 @@ fn opencode_event(
     data: &Value,
     occurred_at: DateTime<Utc>,
     provider_event_index: u64,
+    dialect: &OpenCodeSqliteDialect,
 ) -> ProviderEventEnvelope {
     let event_type = opencode_event_type(&row.entry_type, data);
     let role = Some(provider_role(Some(&row.entry_type)));
-    let text = opencode_event_text(&row.entry_type, data, event_type);
+    let text = opencode_event_text(&row.entry_type, data, event_type, dialect);
     let (text, truncated) = provider_local_preview(&text, PROVIDER_MAX_TEXT_CHARS);
     ProviderEventEnvelope {
         provider_event_index,
@@ -9778,8 +17672,10 @@ fn opencode_event(
         fidelity: Fidelity::Imported,
         redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
-            "provider-event:opencode:{}:{}",
-            row.session_id, row.id
+            "provider-event:{}:{}:{}",
+            dialect.provider.as_str(),
+            row.session_id,
+            row.id
         )),
         artifacts: Vec::new(),
         payload: json!({
@@ -9791,8 +17687,8 @@ fn opencode_event(
             "body": provider_capped_json(data, PROVIDER_MAX_PREVIEW_CHARS),
         }),
         metadata: json!({
-            "source": "opencode_sqlite",
-            "source_format": OPENCODE_SQLITE_SOURCE_FORMAT,
+            "source": dialect.source_format,
+            "source_format": dialect.source_format,
             "session_message_id": row.id,
             "session_message_seq": row.seq,
             "time_created": row.time_created,
@@ -9815,7 +17711,12 @@ fn opencode_event_type(entry_type: &str, data: &Value) -> EventType {
     }
 }
 
-fn opencode_event_text(entry_type: &str, data: &Value, event_type: EventType) -> String {
+fn opencode_event_text(
+    entry_type: &str,
+    data: &Value,
+    event_type: EventType,
+    dialect: &OpenCodeSqliteDialect,
+) -> String {
     if let Some(text) = data.get("text").and_then(Value::as_str) {
         return text.to_owned();
     }
@@ -9833,7 +17734,7 @@ fn opencode_event_text(entry_type: &str, data: &Value, event_type: EventType) ->
         }
     }
     if event_type == EventType::Notice {
-        format!("OpenCode event: {entry_type}")
+        format!("{} event: {entry_type}", dialect.display_name)
     } else {
         serde_json::to_string(data).unwrap_or_else(|_| entry_type.to_owned())
     }
@@ -9853,22 +17754,421 @@ fn opencode_content_has_tool(data: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn opencode_event_time(data: &Value) -> Result<Option<DateTime<Utc>>> {
+fn opencode_event_time(
+    data: &Value,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<Option<DateTime<Utc>>> {
     let Some(value) = data.pointer("/time/created") else {
         return Ok(None);
     };
     let millis = value.as_i64().ok_or_else(|| {
-        CaptureError::InvalidPayload(
-            "OpenCode event time.created must be integer millis".to_owned(),
-        )
+        CaptureError::InvalidPayload(format!(
+            "{} event time.created must be integer millis",
+            dialect.display_name
+        ))
     })?;
-    provider_required_timestamp_millis(millis, "OpenCode event time.created").map(Some)
+    provider_required_timestamp_millis(millis, dialect.event_time_created_field).map(Some)
 }
 
 fn parse_json_object_string(value: Option<&str>) -> Value {
     value
         .and_then(|value| serde_json::from_str::<Value>(value).ok())
         .unwrap_or(Value::Null)
+}
+
+fn normalize_openhands_file_events(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut event_paths = Vec::new();
+    collect_openhands_event_paths(path, &mut event_paths)?;
+    event_paths.sort();
+    if event_paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no OpenHands event JSON files found under v1_conversations",
+        });
+    }
+
+    let mut result = ProviderNormalizationResult::default();
+    let mut events_by_session = BTreeMap::<String, Vec<OpenHandsEventFile>>::new();
+    for event_path in event_paths {
+        let line_number = openhands_line_number(&event_path);
+        let Some(session_id) = openhands_conversation_id_from_path(&event_path) else {
+            continue;
+        };
+        let value = match read_json_file_limited(
+            &event_path,
+            MAX_PROVIDER_JSONL_LINE_BYTES,
+            "OpenHands event JSON",
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, line_number, err.to_string());
+                continue;
+            }
+        };
+        let event_id = openhands_event_id(&event_path, &value);
+        let timestamp = match openhands_event_timestamp(&value) {
+            Some(timestamp) => timestamp,
+            None => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line_number,
+                    format!("OpenHands event {event_id} missing valid timestamp"),
+                );
+                continue;
+            }
+        };
+        let user_id = openhands_user_id_from_path(&event_path);
+        events_by_session
+            .entry(session_id.clone())
+            .or_default()
+            .push(OpenHandsEventFile {
+                path: event_path,
+                line_number,
+                session_id,
+                user_id,
+                event_id,
+                timestamp,
+                value,
+            });
+    }
+
+    for events in events_by_session.values_mut() {
+        events.sort_by(|left, right| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        let started_at = events
+            .first()
+            .map(|event| event.timestamp)
+            .unwrap_or(context.imported_at);
+        let ended_at = events.last().map(|event| event.timestamp);
+        let session_id = events
+            .first()
+            .map(|event| event.session_id.clone())
+            .unwrap_or_else(|| "unknown-conversation".to_owned());
+        let user_id = events.iter().find_map(|event| event.user_id.clone());
+        let raw_source_path = events
+            .first()
+            .and_then(|event| event.path.parent())
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let cwd = events.iter().find_map(openhands_event_cwd);
+
+        for (index, event_file) in events.iter().enumerate() {
+            let provider_event_index = index as u64;
+            let event = openhands_provider_event(&session_id, event_file, provider_event_index);
+            result
+                .files_touched
+                .extend(provider_file_touches_from_raw_value(
+                    CaptureProvider::OpenHands,
+                    &session_id,
+                    OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+                    Some(raw_source_path.as_str()),
+                    &event_file.value,
+                    &event,
+                    event_file.line_number,
+                ));
+            result.captures.push((
+                event_file.line_number,
+                native_provider_capture(
+                    NativeSessionDraft {
+                        provider: CaptureProvider::OpenHands,
+                        source_format: OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+                        provider_session_id: session_id.clone(),
+                        parent_provider_session_id: None,
+                        root_provider_session_id: None,
+                        external_agent_id: user_id.clone(),
+                        agent_type: AgentType::Primary,
+                        role_hint: Some("primary".to_owned()),
+                        is_primary: true,
+                        started_at,
+                        ended_at,
+                        cwd: cwd.clone(),
+                        fidelity: Fidelity::Imported,
+                        raw_source_path: raw_source_path.clone(),
+                        trust: ProviderSourceTrust::ProviderNative,
+                        source_metadata: json!({
+                            "adapter": OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+                            "storage": "filesystem_event_service",
+                            "conversation_dir": raw_source_path,
+                        }),
+                        session_metadata: json!({
+                            "source_format": OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+                            "provider": "openhands",
+                            "conversation_id": session_id,
+                            "user_id": user_id,
+                            "event_count": events.len(),
+                        }),
+                    },
+                    context,
+                    Some(event),
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn collect_openhands_event_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: root.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
+    if file_type.is_file() {
+        if openhands_json_path_is_event(root) {
+            ensure_regular_provider_transcript_file(root)?;
+            paths.push(root.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_openhands_event_paths(&path, paths)?;
+        } else if openhands_json_path_is_event(&path) {
+            ensure_regular_provider_transcript_file(&path)?;
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn openhands_json_path_is_event(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("json")
+        && provider_path_has_component(path, "v1_conversations")
+}
+
+fn openhands_conversation_id_from_path(path: &Path) -> Option<String> {
+    let mut components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str());
+    while let Some(component) = components.next() {
+        if component == "v1_conversations" {
+            return components
+                .next()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned);
+        }
+    }
+    None
+}
+
+fn openhands_user_id_from_path(path: &Path) -> Option<String> {
+    let components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    components.windows(2).find_map(|window| {
+        (window[1] == "v1_conversations" && !window[0].trim().is_empty())
+            .then(|| window[0].to_owned())
+    })
+}
+
+fn openhands_event_id(path: &Path, value: &Value) -> String {
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|stem| !stem.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn openhands_event_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_utc)
+}
+
+fn openhands_line_number(path: &Path) -> usize {
+    fnv1a64(path.display().to_string().as_bytes()) as usize
+}
+
+fn openhands_event_cwd(event: &OpenHandsEventFile) -> Option<String> {
+    event
+        .value
+        .pointer("/observation/metadata/working_dir")
+        .or_else(|| event.value.pointer("/observation/metadata/cwd"))
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn openhands_provider_event(
+    session_id: &str,
+    event_file: &OpenHandsEventFile,
+    provider_event_index: u64,
+) -> ProviderEventEnvelope {
+    let entry_type = openhands_entry_type(&event_file.value);
+    let event_type = openhands_event_type(&event_file.value, &entry_type);
+    let role = Some(openhands_role(&event_file.value, &entry_type));
+    let text = openhands_event_text(&event_file.value, &entry_type, event_type);
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::OpenHands,
+        source_format: OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+        provider_session_id: session_id.to_owned(),
+        provider_event_index,
+        provider_event_hash: Some(event_file.event_id.clone()),
+        cursor: format!("{}:{}", event_file.path.display(), event_file.event_id),
+        event_type,
+        role,
+        occurred_at: event_file.timestamp,
+        text,
+        body: event_file.value.clone(),
+        metadata: json!({
+            "source": OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+            "source_format": OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+            "event_id": event_file.event_id,
+            "entry_type": entry_type,
+            "event_path": event_file.path.display().to_string(),
+            "conversation_id": session_id,
+            "tool_name": event_file.value.get("tool_name").and_then(Value::as_str),
+            "tool_call_id": event_file.value.get("tool_call_id").and_then(Value::as_str),
+            "action_id": event_file.value.get("action_id").and_then(Value::as_str),
+        }),
+    })
+}
+
+fn openhands_entry_type(value: &Value) -> String {
+    if let Some(entry_type) = value
+        .get("kind")
+        .or_else(|| value.get("type"))
+        .and_then(Value::as_str)
+    {
+        return entry_type.to_owned();
+    }
+    if value.get("llm_message").is_some() {
+        "MessageEvent".to_owned()
+    } else if value.get("action").is_some() {
+        "ActionEvent".to_owned()
+    } else if value.get("observation").is_some() {
+        "ObservationEvent".to_owned()
+    } else {
+        "OpenHandsEvent".to_owned()
+    }
+}
+
+fn openhands_event_type(value: &Value, entry_type: &str) -> EventType {
+    if value.get("llm_message").is_some() || entry_type == "MessageEvent" {
+        return EventType::Message;
+    }
+    if value.get("action").is_some() || entry_type == "ActionEvent" {
+        return match value.pointer("/action/kind").and_then(Value::as_str) {
+            Some("FinishAction") => EventType::Message,
+            Some("ThinkAction") => EventType::Summary,
+            Some("FileEditorAction" | "StrReplaceEditorAction" | "PlanningFileEditorAction") => {
+                EventType::ToolCall
+            }
+            _ => EventType::ToolCall,
+        };
+    }
+    if value.get("observation").is_some() || entry_type == "ObservationEvent" {
+        return match value.pointer("/observation/kind").and_then(Value::as_str) {
+            Some(
+                "FileEditorObservation"
+                | "StrReplaceEditorObservation"
+                | "PlanningFileEditorObservation",
+            ) => EventType::FileTouched,
+            Some("ExecuteBashObservation" | "TerminalObservation") => EventType::CommandOutput,
+            _ => EventType::ToolOutput,
+        };
+    }
+    match entry_type {
+        "StreamingDeltaEvent" => EventType::Message,
+        "CondensationSummaryEvent" | "CondensationEvent" => EventType::Summary,
+        "AgentErrorEvent" | "ConversationErrorEvent" | "ServerErrorEvent" => EventType::ToolOutput,
+        _ => EventType::Notice,
+    }
+}
+
+fn openhands_role(value: &Value, entry_type: &str) -> EventRole {
+    if let Some(role) = value.pointer("/llm_message/role").and_then(Value::as_str) {
+        return provider_role(Some(role));
+    }
+    match value.get("source").and_then(Value::as_str) {
+        Some("user") => EventRole::User,
+        Some("agent") => EventRole::Assistant,
+        Some("environment" | "hook") => EventRole::Tool,
+        Some(source) => provider_role(Some(source)),
+        None if entry_type == "ActionEvent" => EventRole::Assistant,
+        None if entry_type == "ObservationEvent" => EventRole::Tool,
+        _ => EventRole::Unknown,
+    }
+}
+
+fn openhands_event_text(value: &Value, entry_type: &str, event_type: EventType) -> String {
+    if let Some(text) = value
+        .pointer("/llm_message/content")
+        .and_then(provider_value_text)
+    {
+        return text;
+    }
+    if let Some(text) = value.get("content").and_then(provider_value_text) {
+        return text;
+    }
+    if let Some(text) = value.pointer("/action/message").and_then(Value::as_str) {
+        return text.to_owned();
+    }
+    if let Some(text) = value.pointer("/action/thought").and_then(Value::as_str) {
+        return text.to_owned();
+    }
+    if let Some(command) = value.pointer("/action/command").and_then(Value::as_str) {
+        return command.to_owned();
+    }
+    if let Some(path) = value.pointer("/action/path").and_then(Value::as_str) {
+        let command = value
+            .pointer("/action/command")
+            .and_then(Value::as_str)
+            .unwrap_or("file");
+        return format!("{command} {path}");
+    }
+    if let Some(content) = value
+        .pointer("/observation/content")
+        .and_then(provider_value_text)
+    {
+        return content;
+    }
+    if let Some(output) = value.pointer("/observation/output").and_then(Value::as_str) {
+        return output.to_owned();
+    }
+    if let Some(error) = value
+        .pointer("/observation/error")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("error").and_then(Value::as_str))
+    {
+        return error.to_owned();
+    }
+    if let Some(prompt) = value.pointer("/action/prompt").and_then(Value::as_str) {
+        return prompt.to_owned();
+    }
+    if event_type == EventType::Notice {
+        format!("OpenHands event: {entry_type}")
+    } else {
+        serde_json::to_string(value).unwrap_or_else(|_| entry_type.to_owned())
+    }
 }
 
 fn normalize_jsonl_tree(
@@ -9893,11 +18193,14 @@ fn normalize_jsonl_tree(
 
     let mut merged = ProviderNormalizationResult::default();
     for path in paths {
-        let mut result =
-            normalize_native_jsonl_session_file(&path, context, provider, source_format)?;
-        merged.summary.merge(result.summary);
-        merged.captures.append(&mut result.captures);
-        merged.files_touched.append(&mut result.files_touched);
+        match normalize_native_jsonl_session_file(&path, context, provider, source_format) {
+            Ok(mut result) => {
+                merged.summary.merge(result.summary);
+                merged.captures.append(&mut result.captures);
+                merged.files_touched.append(&mut result.files_touched);
+            }
+            Err(err) => return Err(err),
+        }
     }
     Ok(merged)
 }
@@ -9909,11 +18212,24 @@ fn native_jsonl_missing_reason(provider: CaptureProvider) -> &'static str {
             "no Antigravity transcript JSONL files found under brain/*/.system_generated/logs"
         }
         CaptureProvider::Gemini => "no Gemini CLI chat JSONL transcripts found under chats",
+        CaptureProvider::Tabnine => "no Tabnine CLI chat JSONL transcripts found under chats",
         CaptureProvider::Cursor => {
             "no Cursor agent transcript JSONL files found under projects/*/agent-transcripts"
         }
+        CaptureProvider::Windsurf => {
+            "no Windsurf Cascade hook transcript JSONL files found under ~/.windsurf/transcripts"
+        }
+        CaptureProvider::Qoder => {
+            "no Qoder transcript JSONL files found under ~/.qoder/projects/*/transcript"
+        }
         CaptureProvider::CopilotCli => "no Copilot CLI session events.jsonl transcripts found",
         CaptureProvider::FactoryAiDroid => "no Factory AI Droid session JSONL transcripts found",
+        CaptureProvider::QwenCode => "no Qwen Code chat JSONL transcripts found under chats",
+        CaptureProvider::KimiCodeCli => "no Kimi Code CLI wire.jsonl transcripts found",
+        CaptureProvider::MistralVibe => {
+            "no Mistral Vibe meta.json/messages.jsonl session directories found"
+        }
+        CaptureProvider::Mux => "no Mux chat.jsonl or partial.json session files found",
         _ => "no native provider JSONL transcripts found",
     }
 }
@@ -9926,14 +18242,30 @@ fn provider_jsonl_path_is_native(provider: CaptureProvider, path: &Path) -> bool
                 Some("transcript_full.jsonl" | "transcript.jsonl")
             )
         }
-        CaptureProvider::Gemini => path
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => path
             .components()
             .any(|component| component.as_os_str() == "chats"),
         CaptureProvider::Cursor => path
             .components()
             .any(|component| component.as_os_str() == "agent-transcripts"),
+        CaptureProvider::Windsurf => path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"),
+        CaptureProvider::Qoder => {
+            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "transcript")
+        }
         CaptureProvider::CopilotCli => {
             path.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")
+        }
+        CaptureProvider::QwenCode => path
+            .components()
+            .any(|component| component.as_os_str() == "chats"),
+        CaptureProvider::KimiCodeCli => {
+            path.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "agents")
         }
         _ => true,
     }
@@ -9994,7 +18326,10 @@ fn normalize_native_jsonl_session_file(
         rows.push((line_number, value));
     }
 
-    let header_index = if provider == CaptureProvider::Antigravity {
+    let header_index = if matches!(
+        provider,
+        CaptureProvider::Antigravity | CaptureProvider::Windsurf
+    ) {
         if rows.is_empty() {
             return Err(CaptureError::InvalidProviderTranscriptPath {
                 path: path.to_path_buf(),
@@ -10027,11 +18362,15 @@ fn normalize_native_jsonl_session_file(
     };
 
     let header = rows[header_index].1.clone();
-    let native_session_id = if provider == CaptureProvider::Antigravity {
-        antigravity_session_id_from_path(path).unwrap_or_else(|| "unknown-session".to_owned())
-    } else {
-        native_jsonl_header_session_id(provider, &header)
-            .unwrap_or_else(|| "unknown-session".to_owned())
+    let native_session_id = match provider {
+        CaptureProvider::Antigravity => {
+            antigravity_session_id_from_path(path).unwrap_or_else(|| "unknown-session".to_owned())
+        }
+        CaptureProvider::Windsurf => {
+            windsurf_session_id_from_path(path).unwrap_or_else(|| "unknown-session".to_owned())
+        }
+        _ => native_jsonl_header_session_id(provider, &header)
+            .unwrap_or_else(|| "unknown-session".to_owned()),
     };
     let (provider_session_id, parent_provider_session_id, external_agent_id, agent_type) =
         native_jsonl_path_session(provider, path, &header, &native_session_id);
@@ -10118,9 +18457,2673 @@ fn normalize_native_jsonl_session_file(
     Ok(result)
 }
 
+#[derive(Debug, Clone)]
+struct CrushSessionRow {
+    id: String,
+    parent_session_id: Option<String>,
+    title: Option<String>,
+    created_at: Option<i64>,
+    updated_at: Option<i64>,
+    prompt_tokens: Option<i64>,
+    completion_tokens: Option<i64>,
+    cost: Option<f64>,
+    summary_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CrushMessageRow {
+    rowid: i64,
+    id: String,
+    session_id: String,
+    role: String,
+    parts: String,
+    created_at: Option<i64>,
+    updated_at: Option<i64>,
+    provider: Option<String>,
+    model: Option<String>,
+    is_summary_message: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CrushFileRow {
+    rowid: i64,
+    session_id: Option<String>,
+    path: String,
+    version: Option<String>,
+    created_at: Option<i64>,
+    updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct CrushReadFileRow {
+    rowid: i64,
+    session_id: String,
+    path: String,
+    read_at: Option<i64>,
+}
+
+fn normalize_crush_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let sessions = crush_sessions(&conn)?;
+    let messages = crush_messages(&conn)?;
+    let files = crush_files(&conn)?;
+    let read_files = crush_read_files(&conn)?;
+    let sessions_by_id = sessions
+        .iter()
+        .map(|session| (session.id.clone(), session.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen_message_sessions = BTreeSet::new();
+    let mut result = ProviderNormalizationResult::default();
+    let raw_source_path = path.display().to_string();
+
+    for message in messages {
+        let provider_event_index = crush_event_index(&message);
+        let line = provider_line_from_index(provider_event_index);
+        let Some(session) = sessions_by_id.get(&message.session_id) else {
+            push_provider_import_failure(
+                &mut result.summary,
+                line,
+                format!(
+                    "Crush message {} references missing session {}",
+                    message.id, message.session_id
+                ),
+            );
+            continue;
+        };
+        let parts: Value = match serde_json::from_str(&message.parts) {
+            Ok(parts) => parts,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line,
+                    format!("invalid JSON in Crush message {} parts: {err}", message.id),
+                );
+                continue;
+            }
+        };
+        seen_message_sessions.insert(message.session_id.clone());
+        let started_at = provider_timestamp_millis(session.created_at, context.imported_at);
+        let occurred_at = provider_timestamp_millis(message.created_at, started_at);
+        let ended_at = session
+            .updated_at
+            .map(|timestamp| provider_timestamp_millis(Some(timestamp), occurred_at));
+        let event_type = crush_event_type(&message, &parts);
+        let text =
+            crush_parts_text(&parts).unwrap_or_else(|| format!("Crush {} message", message.role));
+        let event = native_event(NativeEventDraft {
+            provider: CaptureProvider::Crush,
+            source_format: CRUSH_SQLITE_SOURCE_FORMAT,
+            provider_session_id: message.session_id.clone(),
+            provider_event_index,
+            provider_event_hash: Some(message.id.clone()),
+            cursor: format!(
+                "session:{}:message:{}:rowid:{}",
+                message.session_id, message.id, message.rowid
+            ),
+            event_type,
+            role: Some(provider_role(Some(&message.role))),
+            occurred_at,
+            text,
+            body: json!({
+                "message_id": message.id,
+                "role": message.role,
+                "parts": parts,
+                "provider": message.provider,
+                "model": message.model,
+                "is_summary_message": message.is_summary_message,
+                "created_at": message.created_at,
+                "updated_at": message.updated_at,
+            }),
+            metadata: json!({
+                "source": "crush_messages",
+                "source_format": CRUSH_SQLITE_SOURCE_FORMAT,
+                "message_id": message.id,
+                "session_id": message.session_id,
+                "rowid": message.rowid,
+                "provider": message.provider,
+                "model": message.model,
+            }),
+        });
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                CaptureProvider::Crush,
+                &session.id,
+                CRUSH_SQLITE_SOURCE_FORMAT,
+                Some(raw_source_path.as_str()),
+                &event.payload,
+                &event,
+                line,
+            ));
+        result.captures.push((
+            line,
+            crush_capture(
+                session,
+                CrushCaptureContext {
+                    started_at,
+                    ended_at,
+                    raw_source_path: &raw_source_path,
+                    user_version,
+                    schema_fingerprint: &schema_fingerprint,
+                    event: Some(event),
+                },
+                context,
+            ),
+        ));
+    }
+
+    for session in &sessions {
+        if seen_message_sessions.contains(&session.id) {
+            continue;
+        }
+        let started_at = provider_timestamp_millis(session.created_at, context.imported_at);
+        let ended_at = session
+            .updated_at
+            .map(|timestamp| provider_timestamp_millis(Some(timestamp), started_at));
+        result.captures.push((
+            0,
+            crush_capture(
+                session,
+                CrushCaptureContext {
+                    started_at,
+                    ended_at,
+                    raw_source_path: &raw_source_path,
+                    user_version,
+                    schema_fingerprint: &schema_fingerprint,
+                    event: None,
+                },
+                context,
+            ),
+        ));
+    }
+
+    result.files_touched.extend(crush_file_touches(
+        files,
+        read_files,
+        &sessions_by_id,
+        &raw_source_path,
+        context.imported_at,
+    ));
+    Ok(result)
+}
+
+struct CrushCaptureContext<'a> {
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    raw_source_path: &'a str,
+    user_version: i64,
+    schema_fingerprint: &'a str,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn crush_capture(
+    session: &CrushSessionRow,
+    draft: CrushCaptureContext<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    let is_subagent = session.parent_session_id.is_some();
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Crush,
+            source_format: CRUSH_SQLITE_SOURCE_FORMAT,
+            provider_session_id: session.id.clone(),
+            parent_provider_session_id: session.parent_session_id.clone(),
+            root_provider_session_id: session.parent_session_id.clone(),
+            external_agent_id: None,
+            agent_type: if is_subagent {
+                AgentType::Subagent
+            } else {
+                AgentType::Primary
+            },
+            role_hint: Some(if is_subagent { "subagent" } else { "primary" }.to_owned()),
+            is_primary: !is_subagent,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: None,
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": CRUSH_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": draft.user_version,
+                "schema_fingerprint": draft.schema_fingerprint,
+                "source_path": draft.raw_source_path,
+                "upstream_tables": ["sessions", "messages", "files", "read_files"],
+            }),
+            session_metadata: json!({
+                "source_format": CRUSH_SQLITE_SOURCE_FORMAT,
+                "session_id": session.id,
+                "title": session.title,
+                "parent_session_id": session.parent_session_id,
+                "summary_message_id": session.summary_message_id,
+                "tokens": {
+                    "prompt": session.prompt_tokens,
+                    "completion": session.completion_tokens,
+                },
+                "cost": session.cost,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn crush_sessions(conn: &Connection) -> Result<Vec<CrushSessionRow>> {
+    if !sqlite_table_exists(conn, "sessions")? {
+        return Err(CaptureError::InvalidPayload(
+            "Crush crush.db is missing required sessions table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "sessions")?;
+    ensure_sqlite_table_columns(&columns, "Crush sessions table", &["id"])?;
+    let parent_session_id = optional_column_expr(&columns, "parent_session_id", "NULL");
+    let title = optional_column_expr(&columns, "title", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let prompt_tokens = optional_column_expr(&columns, "prompt_tokens", "NULL");
+    let completion_tokens = optional_column_expr(&columns, "completion_tokens", "NULL");
+    let cost = optional_column_expr(&columns, "cost", "NULL");
+    let summary_message_id = optional_column_expr(&columns, "summary_message_id", "NULL");
+    let order_by = if columns.contains("created_at") {
+        "created_at, id"
+    } else {
+        "id"
+    };
+    let sql = format!(
+        "select CAST(id AS TEXT), {parent_session_id}, {title}, {created_at}, {updated_at}, \
+         {prompt_tokens}, {completion_tokens}, {cost}, {summary_message_id} \
+         from sessions order by {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CrushSessionRow {
+            id: row.get(0)?,
+            parent_session_id: row.get(1)?,
+            title: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+            prompt_tokens: row.get(5)?,
+            completion_tokens: row.get(6)?,
+            cost: row.get(7)?,
+            summary_message_id: row.get(8)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn crush_messages(conn: &Connection) -> Result<Vec<CrushMessageRow>> {
+    if !sqlite_table_exists(conn, "messages")? {
+        return Err(CaptureError::InvalidPayload(
+            "Crush crush.db is missing required messages table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "messages")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Crush messages table",
+        &["id", "session_id", "role", "parts"],
+    )?;
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let provider = optional_column_expr(&columns, "provider", "NULL");
+    let model = optional_column_expr(&columns, "model", "NULL");
+    let is_summary_message = optional_column_expr(&columns, "is_summary_message", "0");
+    let order_by = if columns.contains("created_at") {
+        "session_id, created_at, rowid"
+    } else {
+        "session_id, rowid"
+    };
+    let sql = format!(
+        "select rowid, CAST(id AS TEXT), CAST(session_id AS TEXT), role, parts, \
+         {created_at}, {updated_at}, {provider}, {model}, {is_summary_message} \
+         from messages order by {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CrushMessageRow {
+            rowid: row.get(0)?,
+            id: row.get(1)?,
+            session_id: row.get(2)?,
+            role: row.get(3)?,
+            parts: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            provider: row.get(7)?,
+            model: row.get(8)?,
+            is_summary_message: sqlite_bool(row.get::<_, Option<i64>>(9)?),
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn crush_files(conn: &Connection) -> Result<Vec<CrushFileRow>> {
+    if !sqlite_table_exists(conn, "files")? {
+        return Ok(Vec::new());
+    }
+    let columns = sqlite_table_columns(conn, "files")?;
+    ensure_sqlite_table_columns(&columns, "Crush files table", &["path"])?;
+    let session_id = optional_column_expr(&columns, "session_id", "NULL");
+    let version = optional_column_expr(&columns, "version", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let sql = format!(
+        "select rowid, {session_id}, path, {version}, {created_at}, {updated_at} \
+         from files order by rowid"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CrushFileRow {
+            rowid: row.get(0)?,
+            session_id: row.get(1)?,
+            path: row.get(2)?,
+            version: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn crush_read_files(conn: &Connection) -> Result<Vec<CrushReadFileRow>> {
+    if !sqlite_table_exists(conn, "read_files")? {
+        return Ok(Vec::new());
+    }
+    let columns = sqlite_table_columns(conn, "read_files")?;
+    ensure_sqlite_table_columns(&columns, "Crush read_files table", &["session_id", "path"])?;
+    let read_at = optional_column_expr(&columns, "read_at", "NULL");
+    let sql = format!(
+        "select rowid, CAST(session_id AS TEXT), path, {read_at} from read_files order by rowid"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CrushReadFileRow {
+            rowid: row.get(0)?,
+            session_id: row.get(1)?,
+            path: row.get(2)?,
+            read_at: row.get(3)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn crush_file_touches(
+    files: Vec<CrushFileRow>,
+    read_files: Vec<CrushReadFileRow>,
+    sessions_by_id: &BTreeMap<String, CrushSessionRow>,
+    raw_source_path: &str,
+    fallback: DateTime<Utc>,
+) -> Vec<(usize, ProviderFileTouchedEnvelope)> {
+    let mut touches = Vec::new();
+    for row in files {
+        let Some(session_id) = row
+            .session_id
+            .as_ref()
+            .filter(|session_id| sessions_by_id.contains_key(*session_id))
+        else {
+            continue;
+        };
+        let occurred_at = provider_timestamp_millis(row.updated_at.or(row.created_at), fallback);
+        let touch_index = 0x0100_0000_0000_u64.saturating_add(row.rowid.max(0) as u64);
+        touches.push((
+            provider_line_from_index(touch_index),
+            ProviderFileTouchedEnvelope {
+                provider: CaptureProvider::Crush,
+                provider_session_id: session_id.clone(),
+                provider_touch_index: touch_index,
+                provider_event_index: None,
+                raw_source_path: Some(raw_source_path.to_owned()),
+                path: row.path,
+                change_kind: Some(FileChangeKind::Modified),
+                old_path: None,
+                line_count_delta: None,
+                confidence: Confidence::Explicit,
+                occurred_at,
+                source_format: CRUSH_SQLITE_SOURCE_FORMAT.to_owned(),
+                metadata: json!({
+                    "source": "crush_files",
+                    "rowid": row.rowid,
+                    "version": row.version,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                }),
+            },
+        ));
+    }
+    for row in read_files {
+        if !sessions_by_id.contains_key(&row.session_id) {
+            continue;
+        }
+        let occurred_at =
+            provider_timestamp_seconds(row.read_at.map(|value| value as f64), fallback);
+        let touch_index = 0x0200_0000_0000_u64.saturating_add(row.rowid.max(0) as u64);
+        touches.push((
+            provider_line_from_index(touch_index),
+            ProviderFileTouchedEnvelope {
+                provider: CaptureProvider::Crush,
+                provider_session_id: row.session_id,
+                provider_touch_index: touch_index,
+                provider_event_index: None,
+                raw_source_path: Some(raw_source_path.to_owned()),
+                path: row.path,
+                change_kind: Some(FileChangeKind::Read),
+                old_path: None,
+                line_count_delta: None,
+                confidence: Confidence::Explicit,
+                occurred_at,
+                source_format: CRUSH_SQLITE_SOURCE_FORMAT.to_owned(),
+                metadata: json!({
+                    "source": "crush_read_files",
+                    "rowid": row.rowid,
+                    "read_at": row.read_at,
+                }),
+            },
+        ));
+    }
+    touches
+}
+
+fn crush_event_index(message: &CrushMessageRow) -> u64 {
+    let base = message
+        .created_at
+        .or(message.updated_at)
+        .unwrap_or(message.rowid)
+        .max(0) as u64;
+    base.saturating_mul(4_096)
+        .saturating_add(text_id_index(&message.id, 0) % 4_096)
+}
+
+fn crush_event_type(message: &CrushMessageRow, parts: &Value) -> EventType {
+    if message.is_summary_message {
+        return EventType::Summary;
+    }
+    if crush_parts_have_type(parts, "shell_command") {
+        EventType::CommandOutput
+    } else if crush_parts_have_type(parts, "tool_result") || message.role == "tool" {
+        EventType::ToolOutput
+    } else if crush_parts_have_type(parts, "tool_call") {
+        EventType::ToolCall
+    } else {
+        EventType::Message
+    }
+}
+
+fn crush_parts_have_type(parts: &Value, expected: &str) -> bool {
+    parts.as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some(expected))
+    })
+}
+
+fn crush_parts_text(parts: &Value) -> Option<String> {
+    let mut text = Vec::new();
+    if let Some(items) = parts.as_array() {
+        for item in items {
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or("part");
+            let data = item.get("data").unwrap_or(item);
+            match kind {
+                "text" => push_json_text(&mut text, data.get("text").unwrap_or(data)),
+                "reasoning" => {
+                    push_json_text(
+                        &mut text,
+                        data.get("thinking")
+                            .or_else(|| data.get("text"))
+                            .unwrap_or(data),
+                    );
+                }
+                "tool_call" => {
+                    let name = data.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    text.push(format!("tool call: {name}"));
+                    if let Some(input) = data.get("input").and_then(provider_value_text) {
+                        text.push(format!("tool input: {input}"));
+                    }
+                }
+                "tool_result" => {
+                    let name = data.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    text.push(format!("tool result: {name}"));
+                    for key in ["content", "data", "output"] {
+                        if let Some(value) = data.get(key).and_then(provider_value_text) {
+                            text.push(value);
+                            break;
+                        }
+                    }
+                }
+                "shell_command" => {
+                    if let Some(command) = data.get("command").and_then(Value::as_str) {
+                        text.push(command.to_owned());
+                    }
+                    if let Some(output) = data.get("output").and_then(Value::as_str) {
+                        text.push(output.to_owned());
+                    }
+                }
+                "finish" => {
+                    if let Some(reason) = data.get("reason").and_then(Value::as_str) {
+                        text.push(format!("finish: {reason}"));
+                    }
+                }
+                _ => push_json_text(&mut text, data),
+            }
+            if text.iter().map(|part| part.chars().count()).sum::<usize>()
+                >= PROVIDER_MAX_TEXT_CHARS
+            {
+                break;
+            }
+        }
+    } else {
+        push_json_text(&mut text, parts);
+    }
+    (!text.is_empty()).then(|| text.join("\n"))
+}
+
+fn push_json_text(parts: &mut Vec<String>, value: &Value) {
+    if let Some(text) = provider_value_text(value).filter(|text| !text.trim().is_empty()) {
+        parts.push(text);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GooseSessionRow {
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    user_set_name: bool,
+    session_type: Option<String>,
+    working_dir: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    extension_data: Option<String>,
+    total_tokens: Option<i64>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    accumulated_total_tokens: Option<i64>,
+    accumulated_input_tokens: Option<i64>,
+    accumulated_output_tokens: Option<i64>,
+    accumulated_cost: Option<f64>,
+    provider_name: Option<String>,
+    model_config_json: Option<String>,
+    goose_mode: Option<String>,
+    archived_at: Option<String>,
+    project_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GooseMessageRow {
+    rowid: i64,
+    id: i64,
+    message_id: Option<String>,
+    session_id: String,
+    role: String,
+    content_json: String,
+    created_timestamp: Option<i64>,
+    timestamp: Option<String>,
+    tokens: Option<String>,
+    metadata_json: Option<String>,
+}
+
+fn normalize_goose_sessions_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let schema_version = goose_schema_version(&conn)?;
+    let sessions = goose_sessions(&conn)?;
+    let messages = goose_messages(&conn)?;
+    let sessions_by_id = sessions
+        .iter()
+        .map(|session| (session.id.clone(), session.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let raw_source_path = path.display().to_string();
+    let mut seen_message_sessions = BTreeSet::new();
+    let mut result = ProviderNormalizationResult::default();
+
+    for message in messages {
+        let provider_event_index = goose_event_index(&message);
+        let line = provider_line_from_index(provider_event_index);
+        let Some(session) = sessions_by_id.get(&message.session_id) else {
+            push_provider_import_failure(
+                &mut result.summary,
+                line,
+                format!(
+                    "Goose message {} references missing session {}",
+                    goose_message_identity(&message),
+                    message.session_id
+                ),
+            );
+            continue;
+        };
+        let content: Value = match serde_json::from_str(&message.content_json) {
+            Ok(content) => content,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line,
+                    format!(
+                        "invalid JSON in Goose message {} content_json: {err}",
+                        goose_message_identity(&message)
+                    ),
+                );
+                continue;
+            }
+        };
+        let metadata = message
+            .metadata_json
+            .as_deref()
+            .map(provider_json_text)
+            .unwrap_or(Value::Null);
+        seen_message_sessions.insert(message.session_id.clone());
+        let started_at = goose_timestamp(session.created_at.as_deref(), context.imported_at);
+        let occurred_at = goose_message_timestamp(&message, started_at);
+        let ended_at = session
+            .updated_at
+            .as_deref()
+            .map(|timestamp| goose_timestamp(Some(timestamp), occurred_at));
+        let event_type = goose_event_type(&message.role, &content);
+        let text = goose_content_text(&content)
+            .unwrap_or_else(|| format!("Goose {} message", message.role));
+        let event = native_event(NativeEventDraft {
+            provider: CaptureProvider::Goose,
+            source_format: GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT,
+            provider_session_id: message.session_id.clone(),
+            provider_event_index,
+            provider_event_hash: Some(goose_message_identity(&message)),
+            cursor: format!(
+                "session:{}:message:{}:rowid:{}",
+                message.session_id,
+                goose_message_identity(&message),
+                message.rowid
+            ),
+            event_type,
+            role: Some(provider_role(Some(&message.role))),
+            occurred_at,
+            text,
+            body: json!({
+                "message_id": message.message_id,
+                "row_id": message.id,
+                "role": message.role,
+                "content": content,
+                "metadata": metadata,
+                "tokens": message.tokens.as_deref().map(provider_json_text),
+                "created_timestamp": message.created_timestamp,
+                "timestamp": message.timestamp,
+            }),
+            metadata: json!({
+                "source": "goose_messages",
+                "source_format": GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT,
+                "message_id": message.message_id,
+                "row_id": message.id,
+                "session_id": message.session_id,
+                "rowid": message.rowid,
+            }),
+        });
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                CaptureProvider::Goose,
+                &session.id,
+                GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT,
+                Some(raw_source_path.as_str()),
+                &event.payload,
+                &event,
+                line,
+            ));
+        result.captures.push((
+            line,
+            goose_capture(
+                session,
+                GooseCaptureContext {
+                    started_at,
+                    ended_at,
+                    raw_source_path: &raw_source_path,
+                    user_version,
+                    schema_version,
+                    schema_fingerprint: &schema_fingerprint,
+                    event: Some(event),
+                },
+                context,
+            ),
+        ));
+    }
+
+    for session in &sessions {
+        if seen_message_sessions.contains(&session.id) {
+            continue;
+        }
+        let started_at = goose_timestamp(session.created_at.as_deref(), context.imported_at);
+        let ended_at = session
+            .updated_at
+            .as_deref()
+            .map(|timestamp| goose_timestamp(Some(timestamp), started_at));
+        result.captures.push((
+            0,
+            goose_capture(
+                session,
+                GooseCaptureContext {
+                    started_at,
+                    ended_at,
+                    raw_source_path: &raw_source_path,
+                    user_version,
+                    schema_version,
+                    schema_fingerprint: &schema_fingerprint,
+                    event: None,
+                },
+                context,
+            ),
+        ));
+    }
+    Ok(result)
+}
+
+struct GooseCaptureContext<'a> {
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    raw_source_path: &'a str,
+    user_version: i64,
+    schema_version: Option<i64>,
+    schema_fingerprint: &'a str,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn goose_capture(
+    session: &GooseSessionRow,
+    draft: GooseCaptureContext<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Goose,
+            source_format: GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT,
+            provider_session_id: session.id.clone(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: session.provider_name.clone(),
+            agent_type: AgentType::Primary,
+            role_hint: session
+                .session_type
+                .clone()
+                .or_else(|| Some("primary".to_owned())),
+            is_primary: true,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: session.working_dir.clone(),
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": draft.user_version,
+                "goose_schema_version": draft.schema_version,
+                "schema_fingerprint": draft.schema_fingerprint,
+                "source_path": draft.raw_source_path,
+            }),
+            session_metadata: json!({
+                "source_format": GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT,
+                "session_id": session.id,
+                "name": session.name,
+                "description": session.description,
+                "user_set_name": session.user_set_name,
+                "session_type": session.session_type,
+                "extension_data": session.extension_data.as_deref().map(provider_json_text),
+                "provider_name": session.provider_name,
+                "model_config": session.model_config_json.as_deref().map(provider_json_text),
+                "goose_mode": session.goose_mode,
+                "archived_at": session.archived_at,
+                "project_id": session.project_id,
+                "tokens": {
+                    "total": session.total_tokens,
+                    "input": session.input_tokens,
+                    "output": session.output_tokens,
+                    "accumulated_total": session.accumulated_total_tokens,
+                    "accumulated_input": session.accumulated_input_tokens,
+                    "accumulated_output": session.accumulated_output_tokens,
+                },
+                "accumulated_cost": session.accumulated_cost,
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn goose_schema_version(conn: &Connection) -> Result<Option<i64>> {
+    if !sqlite_table_exists(conn, "schema_version")? {
+        return Ok(None);
+    }
+    let columns = sqlite_table_columns(conn, "schema_version")?;
+    let version_column = if columns.contains("version") {
+        "version"
+    } else if columns.contains("id") {
+        "id"
+    } else {
+        return Ok(None);
+    };
+    let sql = format!("select max({version_column}) from schema_version");
+    conn.query_row(&sql, [], |row| row.get::<_, Option<i64>>(0))
+        .map_err(CaptureError::from)
+}
+
+fn goose_sessions(conn: &Connection) -> Result<Vec<GooseSessionRow>> {
+    if !sqlite_table_exists(conn, "sessions")? {
+        return Err(CaptureError::InvalidPayload(
+            "Goose sessions.db is missing required sessions table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "sessions")?;
+    ensure_sqlite_table_columns(&columns, "Goose sessions table", &["id"])?;
+    let name = optional_column_expr(&columns, "name", "NULL");
+    let description = optional_column_expr(&columns, "description", "NULL");
+    let user_set_name = optional_column_expr(&columns, "user_set_name", "0");
+    let session_type = optional_column_expr(&columns, "session_type", "NULL");
+    let working_dir = optional_column_expr(&columns, "working_dir", "NULL");
+    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let extension_data = optional_column_expr(&columns, "extension_data", "NULL");
+    let total_tokens = optional_column_expr(&columns, "total_tokens", "NULL");
+    let input_tokens = optional_column_expr(&columns, "input_tokens", "NULL");
+    let output_tokens = optional_column_expr(&columns, "output_tokens", "NULL");
+    let accumulated_total_tokens =
+        optional_column_expr(&columns, "accumulated_total_tokens", "NULL");
+    let accumulated_input_tokens =
+        optional_column_expr(&columns, "accumulated_input_tokens", "NULL");
+    let accumulated_output_tokens =
+        optional_column_expr(&columns, "accumulated_output_tokens", "NULL");
+    let accumulated_cost = optional_column_expr(&columns, "accumulated_cost", "NULL");
+    let provider_name = optional_column_expr(&columns, "provider_name", "NULL");
+    let model_config_json = optional_column_expr(&columns, "model_config_json", "NULL");
+    let goose_mode = optional_column_expr(&columns, "goose_mode", "NULL");
+    let archived_at = optional_column_expr(&columns, "archived_at", "NULL");
+    let project_id = optional_column_expr(&columns, "project_id", "NULL");
+    let order_by = if columns.contains("created_at") {
+        "created_at, id"
+    } else {
+        "id"
+    };
+    let sql = format!(
+        "select CAST(id AS TEXT), {name}, {description}, {user_set_name}, {session_type}, \
+         {working_dir}, {created_at}, {updated_at}, {extension_data}, {total_tokens}, \
+         {input_tokens}, {output_tokens}, {accumulated_total_tokens}, \
+         {accumulated_input_tokens}, {accumulated_output_tokens}, {accumulated_cost}, \
+         {provider_name}, {model_config_json}, {goose_mode}, {archived_at}, {project_id} \
+         from sessions order by {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(GooseSessionRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            user_set_name: sqlite_bool(row.get::<_, Option<i64>>(3)?),
+            session_type: row.get(4)?,
+            working_dir: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+            extension_data: row.get(8)?,
+            total_tokens: row.get(9)?,
+            input_tokens: row.get(10)?,
+            output_tokens: row.get(11)?,
+            accumulated_total_tokens: row.get(12)?,
+            accumulated_input_tokens: row.get(13)?,
+            accumulated_output_tokens: row.get(14)?,
+            accumulated_cost: row.get(15)?,
+            provider_name: row.get(16)?,
+            model_config_json: row.get(17)?,
+            goose_mode: row.get(18)?,
+            archived_at: row.get(19)?,
+            project_id: row.get(20)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn goose_messages(conn: &Connection) -> Result<Vec<GooseMessageRow>> {
+    if !sqlite_table_exists(conn, "messages")? {
+        return Err(CaptureError::InvalidPayload(
+            "Goose sessions.db is missing required messages table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "messages")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Goose messages table",
+        &["session_id", "role", "content_json"],
+    )?;
+    let id = if columns.contains("id") {
+        "id"
+    } else {
+        "rowid"
+    };
+    let message_id = optional_column_expr(&columns, "message_id", "NULL");
+    let created_timestamp = optional_column_expr(&columns, "created_timestamp", "NULL");
+    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let tokens = if columns.contains("tokens") {
+        "CAST(tokens AS TEXT)"
+    } else {
+        "NULL"
+    };
+    let metadata_json = optional_column_expr(&columns, "metadata_json", "NULL");
+    let order_by = if columns.contains("created_timestamp") {
+        "session_id, created_timestamp, rowid"
+    } else {
+        "session_id, rowid"
+    };
+    let sql = format!(
+        "select rowid, {id}, {message_id}, CAST(session_id AS TEXT), role, content_json, \
+         {created_timestamp}, {timestamp}, {tokens}, {metadata_json} \
+         from messages order by {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(GooseMessageRow {
+            rowid: row.get(0)?,
+            id: row.get(1)?,
+            message_id: row.get(2)?,
+            session_id: row.get(3)?,
+            role: row.get(4)?,
+            content_json: row.get(5)?,
+            created_timestamp: row.get(6)?,
+            timestamp: row.get(7)?,
+            tokens: row.get(8)?,
+            metadata_json: row.get(9)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn goose_event_index(message: &GooseMessageRow) -> u64 {
+    let base = message.created_timestamp.unwrap_or(message.rowid).max(0) as u64;
+    base.saturating_mul(4_096)
+        .saturating_add(text_id_index(&goose_message_identity(message), 0) % 4_096)
+}
+
+fn goose_message_identity(message: &GooseMessageRow) -> String {
+    message
+        .message_id
+        .clone()
+        .unwrap_or_else(|| format!("row-{}", message.id))
+}
+
+fn goose_message_timestamp(message: &GooseMessageRow, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    if let Some(timestamp) = message.created_timestamp {
+        return provider_timestamp_seconds(Some(timestamp as f64), fallback);
+    }
+    goose_timestamp(message.timestamp.as_deref(), fallback)
+}
+
+fn goose_timestamp(raw: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return fallback;
+    };
+    parse_rfc3339_utc(raw)
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f")
+                .ok()
+                .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+        })
+        .or_else(|| {
+            raw.parse::<f64>()
+                .ok()
+                .map(|timestamp| provider_timestamp_seconds(Some(timestamp), fallback))
+        })
+        .unwrap_or(fallback)
+}
+
+fn goose_event_type(role: &str, content: &Value) -> EventType {
+    if goose_content_has_type(content, "toolResponse") {
+        EventType::ToolOutput
+    } else if goose_content_has_type(content, "toolRequest")
+        || goose_content_has_type(content, "frontendToolRequest")
+    {
+        EventType::ToolCall
+    } else if matches!(role, "user" | "assistant" | "system") {
+        EventType::Message
+    } else {
+        EventType::Notice
+    }
+}
+
+fn goose_content_has_type(content: &Value, expected: &str) -> bool {
+    match content {
+        Value::Array(items) => items
+            .iter()
+            .any(|item| goose_content_has_type(item, expected)),
+        Value::Object(object) => {
+            object
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == expected)
+                || object
+                    .values()
+                    .any(|value| goose_content_has_type(value, expected))
+        }
+        _ => false,
+    }
+}
+
+fn goose_content_text(content: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    goose_collect_text(content, &mut parts);
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn goose_collect_text(value: &Value, parts: &mut Vec<String>) {
+    match value {
+        Value::String(text) => parts.push(text.clone()),
+        Value::Array(items) => {
+            for item in items {
+                goose_collect_text(item, parts);
+                if parts.iter().map(|part| part.chars().count()).sum::<usize>()
+                    >= PROVIDER_MAX_TEXT_CHARS
+                {
+                    break;
+                }
+            }
+        }
+        Value::Object(object) => {
+            let kind = object.get("type").and_then(Value::as_str);
+            match kind {
+                Some("text") => {
+                    if let Some(text) = object.get("text").and_then(Value::as_str) {
+                        parts.push(text.to_owned());
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(text) = object.get("thinking").and_then(Value::as_str) {
+                        parts.push(text.to_owned());
+                    }
+                }
+                Some("redactedThinking") => {
+                    parts.push("redacted thinking".to_owned());
+                }
+                Some("toolRequest") | Some("frontendToolRequest") => {
+                    let call = object.get("toolCall").unwrap_or(value);
+                    let name = call
+                        .get("name")
+                        .or_else(|| object.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
+                    parts.push(format!("tool call: {name}"));
+                    if let Some(input) = call
+                        .get("arguments")
+                        .or_else(|| call.get("input"))
+                        .and_then(provider_value_text)
+                    {
+                        parts.push(format!("tool input: {input}"));
+                    }
+                }
+                Some("toolResponse") => {
+                    parts.push("tool response".to_owned());
+                    for key in ["toolResult", "content", "result"] {
+                        if let Some(text) = object.get(key).and_then(provider_value_text) {
+                            parts.push(text);
+                            break;
+                        }
+                    }
+                }
+                Some("toolConfirmationRequest") => {
+                    parts.push("tool confirmation request".to_owned());
+                }
+                Some("systemNotification") | Some("actionRequired") => {
+                    for key in ["message", "text", "content"] {
+                        if let Some(text) = object.get(key).and_then(provider_value_text) {
+                            parts.push(text);
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    for key in ["text", "content", "message"] {
+                        if let Some(text) = object.get(key).and_then(provider_value_text) {
+                            parts.push(text);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        Value::Number(_) | Value::Bool(_) => parts.push(value.to_string()),
+        Value::Null => {}
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LingmaChatRecordRow {
+    rowid: i64,
+    session_id: String,
+    request_id: Option<String>,
+    chat_prompt: String,
+    summary: Option<String>,
+    error_result: Option<String>,
+    gmt_create: Option<i64>,
+    extra: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LingmaSessionInfo {
+    id: String,
+    title: String,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    row_count: usize,
+}
+
+fn normalize_lingma_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let rows = lingma_chat_records(&conn)?;
+    let raw_source_path = path.display().to_string();
+    let sessions = lingma_session_infos(&rows, context.imported_at);
+    let mut result = ProviderNormalizationResult::default();
+
+    for row in rows {
+        let Some(session) = sessions.get(&row.session_id) else {
+            continue;
+        };
+        let occurred_at = lingma_timestamp(row.gmt_create, context.imported_at);
+        let base_index = lingma_event_base_index(&row);
+        let user_event = lingma_event(
+            &row,
+            LingmaEventDraft {
+                provider_event_index: base_index,
+                role: EventRole::User,
+                event_type: EventType::Message,
+                occurred_at,
+                text: row.chat_prompt.clone(),
+                body_kind: "chat_prompt",
+                fidelity: Fidelity::Imported,
+            },
+        );
+        result.captures.push((
+            provider_line_from_index(base_index),
+            lingma_capture(
+                session,
+                LingmaCaptureContext {
+                    raw_source_path: &raw_source_path,
+                    user_version,
+                    schema_fingerprint: &schema_fingerprint,
+                    event: Some(user_event),
+                },
+                context,
+            ),
+        ));
+
+        if let Some((assistant_text, body_kind, event_type)) = lingma_assistant_text(&row) {
+            let assistant_index = base_index.saturating_add(1);
+            let assistant_event = lingma_event(
+                &row,
+                LingmaEventDraft {
+                    provider_event_index: assistant_index,
+                    role: EventRole::Assistant,
+                    event_type,
+                    occurred_at: occurred_at
+                        .checked_add_signed(Duration::milliseconds(100))
+                        .unwrap_or(occurred_at),
+                    text: assistant_text,
+                    body_kind,
+                    fidelity: Fidelity::SummaryOnly,
+                },
+            );
+            result.captures.push((
+                provider_line_from_index(assistant_index),
+                lingma_capture(
+                    session,
+                    LingmaCaptureContext {
+                        raw_source_path: &raw_source_path,
+                        user_version,
+                        schema_fingerprint: &schema_fingerprint,
+                        event: Some(assistant_event),
+                    },
+                    context,
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+struct LingmaCaptureContext<'a> {
+    raw_source_path: &'a str,
+    user_version: i64,
+    schema_fingerprint: &'a str,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn lingma_capture(
+    session: &LingmaSessionInfo,
+    draft: LingmaCaptureContext<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Lingma,
+            source_format: LINGMA_SQLITE_SOURCE_FORMAT,
+            provider_session_id: session.id.clone(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            started_at: session.started_at,
+            ended_at: session.ended_at,
+            cwd: None,
+            fidelity: Fidelity::Partial,
+            raw_source_path: draft.raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": LINGMA_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": draft.user_version,
+                "schema_fingerprint": draft.schema_fingerprint,
+                "source_path": draft.raw_source_path,
+                "source_table": "chat_record",
+                "source_fidelity": "user prompts plus assistant summaries/errors",
+                "assistant_content_caveat": "WayLog labels Lingma as summaries-only; original assistant answers may be encrypted, transformed, or unavailable in this DB."
+            }),
+            session_metadata: json!({
+                "source_format": LINGMA_SQLITE_SOURCE_FORMAT,
+                "session_id": session.id,
+                "title": session.title,
+                "row_count": session.row_count,
+                "source_table": "chat_record",
+                "source_fidelity": "partial",
+                "assistant_content_caveat": "assistant events imported from summary/error_result, not guaranteed full assistant message bodies"
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+struct LingmaEventDraft {
+    provider_event_index: u64,
+    role: EventRole,
+    event_type: EventType,
+    occurred_at: DateTime<Utc>,
+    text: String,
+    body_kind: &'static str,
+    fidelity: Fidelity,
+}
+
+fn lingma_event(row: &LingmaChatRecordRow, draft: LingmaEventDraft) -> ProviderEventEnvelope {
+    let (text, truncated) = provider_local_preview(&draft.text, PROVIDER_MAX_TEXT_CHARS);
+    let role_name = match draft.role {
+        EventRole::User => "user",
+        EventRole::Assistant => "assistant",
+        EventRole::System => "system",
+        EventRole::Tool => "tool",
+        EventRole::Unknown => "unknown",
+    };
+    ProviderEventEnvelope {
+        provider_event_index: draft.provider_event_index,
+        provider_event_hash: Some(format!(
+            "{}:{}:{role_name}",
+            row.session_id,
+            lingma_request_identity(row)
+        )),
+        cursor: Some(format!(
+            "chat_record:{}:rowid:{}:{role_name}",
+            row.session_id, row.rowid
+        )),
+        event_type: draft.event_type,
+        role: Some(draft.role),
+        occurred_at: draft.occurred_at,
+        fidelity: draft.fidelity,
+        redaction_state: RedactionState::LocalPreview,
+        idempotency_key: Some(format!(
+            "provider-event:{}:{}:{}",
+            CaptureProvider::Lingma.as_str(),
+            row.session_id,
+            draft.provider_event_index
+        )),
+        artifacts: Vec::new(),
+        payload: json!({
+            "text": text,
+            "truncated": truncated,
+            "source_format": LINGMA_SQLITE_SOURCE_FORMAT,
+            "body": provider_capped_json(
+                &json!({
+                    "rowid": row.rowid,
+                    "session_id": row.session_id,
+                    "request_id": row.request_id,
+                    "role": role_name,
+                    "body_kind": draft.body_kind,
+                    "chat_prompt": row.chat_prompt,
+                    "summary": row.summary,
+                    "error_result": row.error_result,
+                    "gmt_create": row.gmt_create,
+                    "extra": row.extra.as_deref().map(provider_json_text),
+                }),
+                PROVIDER_MAX_PREVIEW_CHARS,
+            ),
+        }),
+        metadata: json!({
+            "source": "lingma_chat_record",
+            "source_format": LINGMA_SQLITE_SOURCE_FORMAT,
+            "rowid": row.rowid,
+            "session_id": row.session_id,
+            "request_id": row.request_id,
+            "body_kind": draft.body_kind,
+            "gmt_create": row.gmt_create,
+            "content_fidelity": if draft.fidelity == Fidelity::SummaryOnly { "summary_only" } else { "imported" },
+            "assistant_content_caveat": if draft.role == EventRole::Assistant {
+                Some("summary/error_result only; original assistant body may be encrypted or unavailable")
+            } else {
+                None
+            },
+        }),
+    }
+}
+
+fn lingma_chat_records(conn: &Connection) -> Result<Vec<LingmaChatRecordRow>> {
+    if !sqlite_table_exists(conn, "chat_record")? {
+        return Err(CaptureError::InvalidPayload(
+            "Lingma local.db is missing required chat_record table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "chat_record")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "Lingma chat_record table",
+        &[
+            "session_id",
+            "request_id",
+            "chat_prompt",
+            "summary",
+            "error_result",
+            "gmt_create",
+            "extra",
+        ],
+    )?;
+    let mut stmt = conn.prepare(
+        "select rowid, CAST(session_id AS TEXT), CAST(request_id AS TEXT), \
+         CAST(chat_prompt AS TEXT), CAST(summary AS TEXT), CAST(error_result AS TEXT), \
+         CAST(gmt_create AS INTEGER), CAST(extra AS TEXT) \
+         from chat_record \
+         where chat_prompt is not null and trim(CAST(chat_prompt AS TEXT)) != '' \
+         order by CAST(gmt_create AS INTEGER), rowid",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LingmaChatRecordRow {
+            rowid: row.get(0)?,
+            session_id: row.get(1)?,
+            request_id: row.get(2)?,
+            chat_prompt: row.get(3)?,
+            summary: row.get(4)?,
+            error_result: row.get(5)?,
+            gmt_create: row.get(6)?,
+            extra: row.get(7)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn lingma_session_infos(
+    rows: &[LingmaChatRecordRow],
+    fallback: DateTime<Utc>,
+) -> BTreeMap<String, LingmaSessionInfo> {
+    let mut sessions = BTreeMap::<String, LingmaSessionInfo>::new();
+    for row in rows {
+        let occurred_at = lingma_timestamp(row.gmt_create, fallback);
+        sessions
+            .entry(row.session_id.clone())
+            .and_modify(|session| {
+                if occurred_at < session.started_at {
+                    session.started_at = occurred_at;
+                }
+                let row_end = occurred_at
+                    .checked_add_signed(Duration::milliseconds(100))
+                    .unwrap_or(occurred_at);
+                session.ended_at = Some(session.ended_at.unwrap_or(row_end).max(row_end));
+                session.row_count = session.row_count.saturating_add(1);
+            })
+            .or_insert_with(|| LingmaSessionInfo {
+                id: row.session_id.clone(),
+                title: lingma_title(&row.chat_prompt),
+                started_at: occurred_at,
+                ended_at: occurred_at.checked_add_signed(Duration::milliseconds(100)),
+                row_count: 1,
+            });
+    }
+    sessions
+}
+
+fn lingma_event_base_index(row: &LingmaChatRecordRow) -> u64 {
+    let rowid = u64::try_from(row.rowid).unwrap_or_else(|_| text_id_index(&row.session_id, 0));
+    rowid.saturating_sub(1).saturating_mul(2)
+}
+
+fn lingma_timestamp(raw: Option<i64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    raw.map(|timestamp| provider_timestamp_seconds(Some(timestamp as f64), fallback))
+        .unwrap_or(fallback)
+}
+
+fn lingma_title(prompt: &str) -> String {
+    let trimmed = prompt.trim();
+    let title = trimmed.chars().take(50).collect::<String>();
+    if title.is_empty() {
+        "Lingma chat".to_owned()
+    } else {
+        title
+    }
+}
+
+fn lingma_assistant_text(row: &LingmaChatRecordRow) -> Option<(String, &'static str, EventType)> {
+    if let Some(summary) = row
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some((summary.to_owned(), "summary", EventType::Message));
+    }
+    row.error_result
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && *text != "{}")
+        .map(|error| {
+            (
+                format!("Lingma error result: {error}"),
+                "error_result",
+                EventType::Notice,
+            )
+        })
+}
+
+fn lingma_request_identity(row: &LingmaChatRecordRow) -> String {
+    row.request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("rowid-{}", row.rowid))
+}
+
+#[derive(Debug, Clone)]
+struct ForgeCodeConversationRow {
+    rowid: i64,
+    conversation_id: String,
+    title: Option<String>,
+    workspace_id: i64,
+    context: Option<String>,
+    created_at: String,
+    updated_at: Option<String>,
+    metrics: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ForgeCodeMessageParts<'a> {
+    variant: &'static str,
+    body: &'a Value,
+    usage: Option<&'a Value>,
+}
+
+struct ForgeCodeCaptureContext<'a> {
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    raw_source_path: &'a str,
+    user_version: i64,
+    schema_fingerprint: &'a str,
+    context_value: Option<&'a Value>,
+    metrics_value: Option<&'a Value>,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn normalize_forgecode_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let conversations = forgecode_conversations(&conn)?;
+    let raw_source_path = path.display().to_string();
+    let mut result = ProviderNormalizationResult::default();
+
+    for row in conversations {
+        let row_line = provider_line_from_index(row.rowid.max(0) as u64);
+        let started_at = forgecode_timestamp(Some(&row.created_at), context.imported_at);
+        let ended_at = row
+            .updated_at
+            .as_deref()
+            .map(|raw| forgecode_timestamp(Some(raw), started_at));
+
+        let context_value = match row.context.as_deref().filter(|raw| !raw.trim().is_empty()) {
+            Some(raw) => match serde_json::from_str::<Value>(raw) {
+                Ok(value) => Some(value),
+                Err(err) => {
+                    push_provider_import_failure(
+                        &mut result.summary,
+                        row_line,
+                        format!(
+                            "invalid JSON in ForgeCode conversations.context {}: {err}",
+                            row.conversation_id
+                        ),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let metrics_value = match row.metrics.as_deref().filter(|raw| !raw.trim().is_empty()) {
+            Some(raw) => match serde_json::from_str::<Value>(raw) {
+                Ok(value) => Some(value),
+                Err(err) => {
+                    push_provider_import_failure(
+                        &mut result.summary,
+                        row_line,
+                        format!(
+                            "invalid JSON in ForgeCode conversations.metrics {}: {err}",
+                            row.conversation_id
+                        ),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        if let Some(metrics) = metrics_value.as_ref() {
+            result.files_touched.extend(forgecode_metric_file_touches(
+                &row,
+                metrics,
+                &raw_source_path,
+                ended_at.unwrap_or(started_at),
+            ));
+        }
+
+        let mut emitted_events = false;
+        if let Some(messages) = context_value
+            .as_ref()
+            .and_then(|value| value.get("messages"))
+            .and_then(Value::as_array)
+        {
+            for (index, entry) in messages.iter().enumerate() {
+                let provider_event_index = (index as u64).saturating_add(1);
+                let occurred_at =
+                    started_at + Duration::milliseconds(i64::try_from(index).unwrap_or(i64::MAX));
+                let event = forgecode_event(&row, entry, provider_event_index, occurred_at);
+                let line = provider_line_from_index(provider_event_index);
+                result
+                    .files_touched
+                    .extend(provider_file_touches_from_raw_value(
+                        CaptureProvider::ForgeCode,
+                        &row.conversation_id,
+                        FORGECODE_SQLITE_SOURCE_FORMAT,
+                        Some(raw_source_path.as_str()),
+                        entry,
+                        &event,
+                        line,
+                    ));
+                result.captures.push((
+                    line,
+                    forgecode_capture(
+                        &row,
+                        ForgeCodeCaptureContext {
+                            started_at,
+                            ended_at,
+                            raw_source_path: &raw_source_path,
+                            user_version,
+                            schema_fingerprint: &schema_fingerprint,
+                            context_value: context_value.as_ref(),
+                            metrics_value: metrics_value.as_ref(),
+                            event: Some(event),
+                        },
+                        context,
+                    ),
+                ));
+                emitted_events = true;
+            }
+        }
+
+        if !emitted_events {
+            result.captures.push((
+                row_line,
+                forgecode_capture(
+                    &row,
+                    ForgeCodeCaptureContext {
+                        started_at,
+                        ended_at,
+                        raw_source_path: &raw_source_path,
+                        user_version,
+                        schema_fingerprint: &schema_fingerprint,
+                        context_value: context_value.as_ref(),
+                        metrics_value: metrics_value.as_ref(),
+                        event: None,
+                    },
+                    context,
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+fn forgecode_conversations(conn: &Connection) -> Result<Vec<ForgeCodeConversationRow>> {
+    if !sqlite_table_exists(conn, "conversations")? {
+        return Err(CaptureError::InvalidPayload(
+            "ForgeCode .forge.db is missing required conversations table".into(),
+        ));
+    }
+    let columns = sqlite_table_columns(conn, "conversations")?;
+    ensure_sqlite_table_columns(
+        &columns,
+        "ForgeCode conversations table",
+        &["conversation_id", "workspace_id", "created_at"],
+    )?;
+    let title = optional_column_expr(&columns, "title", "NULL");
+    let context = optional_column_expr(&columns, "context", "NULL");
+    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let metrics = optional_column_expr(&columns, "metrics", "NULL");
+    let order_by = if columns.contains("updated_at") {
+        "COALESCE(updated_at, created_at), conversation_id"
+    } else {
+        "created_at, conversation_id"
+    };
+    let sql = format!(
+        "select rowid, CAST(conversation_id AS TEXT), {title}, workspace_id, {context}, \
+         CAST(created_at AS TEXT), CAST({updated_at} AS TEXT), {metrics} \
+         from conversations order by {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ForgeCodeConversationRow {
+            rowid: row.get(0)?,
+            conversation_id: row.get(1)?,
+            title: row.get(2)?,
+            workspace_id: row.get(3)?,
+            context: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            metrics: row.get(7)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(CaptureError::from)
+}
+
+fn forgecode_capture(
+    row: &ForgeCodeConversationRow,
+    draft: ForgeCodeCaptureContext<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    let context_message_count = draft
+        .context_value
+        .and_then(|value| value.get("messages"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::ForgeCode,
+            source_format: FORGECODE_SQLITE_SOURCE_FORMAT,
+            provider_session_id: row.conversation_id.clone(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: draft
+                .context_value
+                .and_then(|value| value.get("initiator"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: None,
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": FORGECODE_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": draft.user_version,
+                "schema_fingerprint": draft.schema_fingerprint,
+                "source_path": draft.raw_source_path,
+                "upstream_tables": ["conversations"],
+                "upstream_schema_anchor": "crates/forge_repo/src/database/migrations/2025-09-12-065405_create_conversations_table/up.sql",
+                "upstream_dto_anchor": "crates/forge_repo/src/conversation/conversation_record.rs",
+            }),
+            session_metadata: json!({
+                "source_format": FORGECODE_SQLITE_SOURCE_FORMAT,
+                "conversation_id": row.conversation_id,
+                "title": row.title,
+                "workspace_id": row.workspace_id,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "context_conversation_id": draft.context_value
+                    .and_then(|value| value.get("conversation_id"))
+                    .and_then(Value::as_str),
+                "initiator": draft.context_value
+                    .and_then(|value| value.get("initiator"))
+                    .and_then(Value::as_str),
+                "context_message_count": context_message_count,
+                "tools_count": draft.context_value
+                    .and_then(|value| value.get("tools"))
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                "tool_choice": draft.context_value
+                    .and_then(|value| value.get("tool_choice"))
+                    .map(|value| provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "context": draft.context_value
+                    .map(|value| provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "metrics": draft.metrics_value
+                    .map(|value| provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS)),
+                "limitations": [
+                    "ForgeCode stores conversation messages as a context JSON snapshot; message cursors use array index because the DTO does not expose stable message ids",
+                    "recognized text, tool call, tool result, image, usage, and metrics fields are normalized; unrecognized DTO fields are retained as capped raw JSON metadata",
+                    "workspace_id is retained, but the current Forge schema does not keep a workspace path after the workspace table was dropped"
+                ],
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn forgecode_event(
+    row: &ForgeCodeConversationRow,
+    entry: &Value,
+    provider_event_index: u64,
+    occurred_at: DateTime<Utc>,
+) -> ProviderEventEnvelope {
+    let parts = forgecode_message_parts(entry);
+    let event_type = forgecode_event_type(parts);
+    let role = forgecode_event_role(parts);
+    let text = forgecode_message_text(parts, event_type);
+    let message_hash = compute_payload_hash(entry).ok();
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::ForgeCode,
+        source_format: FORGECODE_SQLITE_SOURCE_FORMAT,
+        provider_session_id: row.conversation_id.clone(),
+        provider_event_index,
+        provider_event_hash: message_hash,
+        cursor: format!(
+            "conversation:{}:message:{}",
+            row.conversation_id, provider_event_index
+        ),
+        event_type,
+        role,
+        occurred_at,
+        text,
+        body: json!({
+            "message_index": provider_event_index,
+            "message_variant": parts.variant,
+            "message": entry,
+            "usage": parts.usage,
+        }),
+        metadata: json!({
+            "source": "forgecode_conversations",
+            "source_format": FORGECODE_SQLITE_SOURCE_FORMAT,
+            "conversation_id": row.conversation_id,
+            "message_index": provider_event_index,
+            "message_variant": parts.variant,
+            "role": forgecode_role_text(parts),
+            "model": forgecode_text_body(parts)
+                .and_then(|body| body.get("model"))
+                .and_then(provider_value_text),
+            "usage": parts.usage
+                .map(|value| provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS)),
+        }),
+    })
+}
+
+fn forgecode_message_parts(entry: &Value) -> ForgeCodeMessageParts<'_> {
+    let message = entry.get("message").unwrap_or(entry);
+    let usage = entry.get("usage");
+    if let Some((variant, body)) = forgecode_message_variant(message) {
+        return ForgeCodeMessageParts {
+            variant,
+            body,
+            usage,
+        };
+    }
+    ForgeCodeMessageParts {
+        variant: "unknown",
+        body: message,
+        usage,
+    }
+}
+
+fn forgecode_message_variant(value: &Value) -> Option<(&'static str, &Value)> {
+    let Value::Object(object) = value else {
+        return None;
+    };
+    object
+        .iter()
+        .find_map(|(key, value)| match normalized_key(key).as_str() {
+            "text" => Some(("text", value)),
+            "tool" => Some(("tool", value)),
+            "image" => Some(("image", value)),
+            _ => None,
+        })
+}
+
+fn forgecode_event_type(parts: ForgeCodeMessageParts<'_>) -> EventType {
+    match parts.variant {
+        "text" if forgecode_text_has_tool_calls(parts.body) => EventType::ToolCall,
+        "text" => EventType::Message,
+        "tool" => EventType::ToolOutput,
+        "image" => EventType::Artifact,
+        _ => EventType::Notice,
+    }
+}
+
+fn forgecode_event_role(parts: ForgeCodeMessageParts<'_>) -> Option<EventRole> {
+    match parts.variant {
+        "text" => forgecode_role_text(parts).map(|role| provider_role(Some(&role))),
+        "tool" => Some(EventRole::Tool),
+        "image" => Some(EventRole::Unknown),
+        _ => None,
+    }
+}
+
+fn forgecode_role_text(parts: ForgeCodeMessageParts<'_>) -> Option<String> {
+    forgecode_text_body(parts)
+        .and_then(|body| body.get("role"))
+        .and_then(Value::as_str)
+        .map(|role| role.to_ascii_lowercase())
+}
+
+fn forgecode_text_body(parts: ForgeCodeMessageParts<'_>) -> Option<&Value> {
+    (parts.variant == "text").then_some(parts.body)
+}
+
+fn forgecode_text_has_tool_calls(body: &Value) -> bool {
+    body.get("tool_calls")
+        .or_else(|| body.get("toolCalls"))
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty())
+}
+
+fn forgecode_message_text(parts: ForgeCodeMessageParts<'_>, event_type: EventType) -> String {
+    match parts.variant {
+        "text" => forgecode_text_message_text(parts.body, event_type),
+        "tool" => forgecode_tool_result_text(parts.body),
+        "image" => forgecode_image_text(parts.body),
+        _ => {
+            provider_value_text(parts.body).unwrap_or_else(|| "ForgeCode conversation event".into())
+        }
+    }
+}
+
+fn forgecode_text_message_text(body: &Value, event_type: EventType) -> String {
+    let mut parts = Vec::new();
+    if let Some(content) = body
+        .get("content")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        parts.push(content.to_owned());
+    }
+    if let Some(tool_text) = body
+        .get("tool_calls")
+        .or_else(|| body.get("toolCalls"))
+        .and_then(forgecode_tool_calls_text)
+    {
+        parts.push(tool_text);
+    }
+    if parts.is_empty() {
+        if let Some(raw_content) = body.get("raw_content").and_then(provider_value_text) {
+            parts.push(raw_content);
+        }
+    }
+    if parts.is_empty() {
+        let role = body
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        parts.push(if event_type == EventType::ToolCall {
+            format!("ForgeCode {role} tool call")
+        } else {
+            format!("ForgeCode {role} message")
+        });
+    }
+    parts.join("\n")
+}
+
+fn forgecode_tool_calls_text(value: &Value) -> Option<String> {
+    let calls = value.as_array()?;
+    let mut parts = Vec::new();
+    for call in calls {
+        let name = call
+            .get("name")
+            .and_then(forgecode_scalar_text)
+            .unwrap_or_else(|| "tool".to_owned());
+        parts.push(format!("tool call: {name}"));
+        if let Some(call_id) = call.get("call_id").and_then(forgecode_scalar_text) {
+            parts.push(format!("tool call id: {call_id}"));
+        }
+        if let Some(arguments) = call
+            .get("arguments")
+            .and_then(provider_value_text)
+            .filter(|text| !text.trim().is_empty())
+        {
+            parts.push(format!("tool input: {arguments}"));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn forgecode_tool_result_text(body: &Value) -> String {
+    let name = body
+        .get("name")
+        .and_then(forgecode_scalar_text)
+        .unwrap_or_else(|| "tool".to_owned());
+    let mut parts = vec![format!("tool result: {name}")];
+    if let Some(call_id) = body.get("call_id").and_then(forgecode_scalar_text) {
+        parts.push(format!("tool call id: {call_id}"));
+    }
+    if body
+        .pointer("/output/is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        parts.push("tool error".to_owned());
+    }
+    if let Some(values) = body.pointer("/output/values").and_then(Value::as_array) {
+        for value in values {
+            if let Some(text) = forgecode_tool_value_text(value) {
+                parts.push(text);
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn forgecode_tool_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(object) => {
+            for (key, child) in object {
+                match normalized_key(key).as_str() {
+                    "text" | "markdown" => return child.as_str().map(str::to_owned),
+                    "ai" => {
+                        return child
+                            .get("value")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .or_else(|| provider_value_text(child));
+                    }
+                    "image" => return Some(forgecode_image_text(child)),
+                    "filediff" => {
+                        let path = child
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        return Some(format!("[File diff: {path}]"));
+                    }
+                    "pair" => {
+                        if let Some(items) = child.as_array() {
+                            return items.first().and_then(forgecode_tool_value_text);
+                        }
+                    }
+                    "empty" => return None,
+                    _ => {}
+                }
+            }
+            provider_value_text(value)
+        }
+        Value::Array(items) => {
+            let parts = items
+                .iter()
+                .filter_map(forgecode_tool_value_text)
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        Value::Number(_) | Value::Bool(_) => Some(value.to_string()),
+        Value::Null => None,
+    }
+}
+
+fn forgecode_image_text(body: &Value) -> String {
+    let mime_type = body
+        .get("mime_type")
+        .or_else(|| body.get("mimeType"))
+        .and_then(Value::as_str)
+        .unwrap_or("image");
+    let url = body
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.trim().is_empty());
+    match url {
+        Some(url) => format!("ForgeCode image: {mime_type} {url}"),
+        None => format!("ForgeCode image: {mime_type}"),
+    }
+}
+
+fn forgecode_scalar_text(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| provider_value_text(value))
+}
+
+fn forgecode_metric_file_touches(
+    row: &ForgeCodeConversationRow,
+    metrics: &Value,
+    raw_source_path: &str,
+    fallback: DateTime<Utc>,
+) -> Vec<(usize, ProviderFileTouchedEnvelope)> {
+    let occurred_at = metrics
+        .get("started_at")
+        .map(|value| provider_timestamp_value(Some(value), fallback))
+        .unwrap_or(fallback);
+    let mut touches = Vec::new();
+    let mut seen = BTreeSet::<(String, &'static str)>::new();
+
+    if let Some(files_changed) = metrics.get("files_changed").and_then(Value::as_object) {
+        let mut entries = files_changed.iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        for (path, operation_value) in entries {
+            let Some(operation) = forgecode_metric_operation(operation_value) else {
+                continue;
+            };
+            let tool = operation
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("write");
+            let change_kind = forgecode_metric_change_kind(tool);
+            if !seen.insert((path.clone(), change_kind.as_str())) {
+                continue;
+            }
+            let lines_added = operation.get("lines_added").and_then(forgecode_json_i64);
+            let lines_removed = operation.get("lines_removed").and_then(forgecode_json_i64);
+            let line_count_delta = match (lines_added, lines_removed) {
+                (Some(added), Some(removed)) => Some(added.saturating_sub(removed)),
+                (Some(added), None) => Some(added),
+                (None, Some(removed)) => Some(removed.saturating_neg()),
+                _ => None,
+            };
+            let touch_index = 0x0400_0000_0000_u64.saturating_add(touches.len() as u64);
+            touches.push((
+                provider_line_from_index(touch_index),
+                ProviderFileTouchedEnvelope {
+                    provider: CaptureProvider::ForgeCode,
+                    provider_session_id: row.conversation_id.clone(),
+                    provider_touch_index: touch_index,
+                    provider_event_index: None,
+                    raw_source_path: Some(raw_source_path.to_owned()),
+                    path: path.clone(),
+                    change_kind: Some(change_kind),
+                    old_path: None,
+                    line_count_delta,
+                    confidence: Confidence::Explicit,
+                    occurred_at,
+                    source_format: FORGECODE_SQLITE_SOURCE_FORMAT.to_owned(),
+                    metadata: json!({
+                        "source": "forgecode_metrics_files_changed",
+                        "tool": tool,
+                        "lines_added": lines_added,
+                        "lines_removed": lines_removed,
+                        "content_hash": operation.get("content_hash").and_then(Value::as_str),
+                    }),
+                },
+            ));
+        }
+    }
+
+    if let Some(files_accessed) = metrics.get("files_accessed").and_then(Value::as_array) {
+        let mut paths = files_accessed
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths.dedup();
+        for path in paths {
+            if !seen.insert((path.to_owned(), FileChangeKind::Read.as_str())) {
+                continue;
+            }
+            let touch_index = 0x0500_0000_0000_u64.saturating_add(touches.len() as u64);
+            touches.push((
+                provider_line_from_index(touch_index),
+                ProviderFileTouchedEnvelope {
+                    provider: CaptureProvider::ForgeCode,
+                    provider_session_id: row.conversation_id.clone(),
+                    provider_touch_index: touch_index,
+                    provider_event_index: None,
+                    raw_source_path: Some(raw_source_path.to_owned()),
+                    path: path.to_owned(),
+                    change_kind: Some(FileChangeKind::Read),
+                    old_path: None,
+                    line_count_delta: None,
+                    confidence: Confidence::Explicit,
+                    occurred_at,
+                    source_format: FORGECODE_SQLITE_SOURCE_FORMAT.to_owned(),
+                    metadata: json!({
+                        "source": "forgecode_metrics_files_accessed",
+                    }),
+                },
+            ));
+        }
+    }
+
+    touches
+}
+
+fn forgecode_metric_operation(value: &Value) -> Option<&Value> {
+    match value {
+        Value::Object(_) => Some(value),
+        Value::Array(items) => items.iter().rev().find(|item| item.is_object()),
+        _ => None,
+    }
+}
+
+fn forgecode_metric_change_kind(tool: &str) -> FileChangeKind {
+    match tool.to_ascii_lowercase().as_str() {
+        "read" => FileChangeKind::Read,
+        "patch" | "edit" | "update" | "write" => FileChangeKind::Modified,
+        "delete" | "remove" => FileChangeKind::Deleted,
+        "create" | "add" => FileChangeKind::Created,
+        _ => FileChangeKind::Unknown,
+    }
+}
+
+fn forgecode_json_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+}
+
+fn forgecode_timestamp(raw: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    goose_timestamp(raw, fallback)
+}
+#[derive(Debug, Clone)]
+struct KiroConversationRow {
+    table: &'static str,
+    rowid: i64,
+    key: String,
+    conversation_id: Option<String>,
+    value: String,
+    created_at: Option<i64>,
+    updated_at: Option<i64>,
+}
+
+fn normalize_kiro_sqlite(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let conn = open_provider_sqlite_readonly(path)?;
+    let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let schema_fingerprint = opencode_schema_fingerprint(&conn)?;
+    let conversations = kiro_conversation_rows(&conn)?;
+    let raw_source_path = path.display().to_string();
+    let mut result = ProviderNormalizationResult::default();
+
+    for row in conversations {
+        let row_index = match provider_nonnegative_i64_to_u64(row.rowid, "Kiro conversation rowid")
+        {
+            Ok(index) => index,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, 0, err.to_string());
+                continue;
+            }
+        };
+        let line = provider_line_from_index(row_index);
+        let value: Value = match serde_json::from_str(&row.value) {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line,
+                    format!(
+                        "invalid JSON in Kiro {} row {} for key {}: {err}",
+                        row.table, row.rowid, row.key
+                    ),
+                );
+                continue;
+            }
+        };
+        let provider_session_id = kiro_provider_session_id(&row, &value);
+        let started_at = kiro_session_started_at(&row, &value, context.imported_at);
+        let ended_at = Some(kiro_session_ended_at(&row, &value, started_at));
+        let history = value.get("history").and_then(Value::as_array);
+        let mut emitted_event = false;
+
+        if let Some(history) = history {
+            for (history_index, entry) in history.iter().enumerate() {
+                let user_at = kiro_entry_timestamp(entry, "user", started_at);
+                if let Some(text) = kiro_user_prompt_text(entry) {
+                    let event = kiro_event(
+                        &row,
+                        &provider_session_id,
+                        history_index,
+                        0,
+                        EventType::Message,
+                        EventRole::User,
+                        user_at,
+                        text,
+                        entry,
+                        None,
+                    );
+                    result
+                        .files_touched
+                        .extend(provider_file_touches_from_raw_value(
+                            CaptureProvider::KiroCli,
+                            &provider_session_id,
+                            KIRO_SQLITE_SOURCE_FORMAT,
+                            Some(raw_source_path.as_str()),
+                            entry,
+                            &event,
+                            line,
+                        ));
+                    result.captures.push((
+                        line,
+                        kiro_capture(
+                            &row,
+                            &provider_session_id,
+                            &value,
+                            started_at,
+                            ended_at,
+                            &raw_source_path,
+                            user_version,
+                            &schema_fingerprint,
+                            Some(event),
+                            context,
+                        ),
+                    ));
+                    emitted_event = true;
+                }
+
+                if let Some(assistant) = kiro_assistant_message(entry) {
+                    let assistant_at = kiro_entry_timestamp(entry, "assistant", user_at);
+                    let event = kiro_event(
+                        &row,
+                        &provider_session_id,
+                        history_index,
+                        1,
+                        assistant.event_type,
+                        EventRole::Assistant,
+                        assistant_at,
+                        assistant.text,
+                        entry,
+                        assistant.tool_uses,
+                    );
+                    result
+                        .files_touched
+                        .extend(provider_file_touches_from_raw_value(
+                            CaptureProvider::KiroCli,
+                            &provider_session_id,
+                            KIRO_SQLITE_SOURCE_FORMAT,
+                            Some(raw_source_path.as_str()),
+                            entry,
+                            &event,
+                            line,
+                        ));
+                    result.captures.push((
+                        line,
+                        kiro_capture(
+                            &row,
+                            &provider_session_id,
+                            &value,
+                            started_at,
+                            ended_at,
+                            &raw_source_path,
+                            user_version,
+                            &schema_fingerprint,
+                            Some(event),
+                            context,
+                        ),
+                    ));
+                    emitted_event = true;
+                }
+            }
+        }
+
+        if !emitted_event {
+            result.captures.push((
+                line,
+                kiro_capture(
+                    &row,
+                    &provider_session_id,
+                    &value,
+                    started_at,
+                    ended_at,
+                    &raw_source_path,
+                    user_version,
+                    &schema_fingerprint,
+                    None,
+                    context,
+                ),
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+struct KiroAssistantMessage {
+    event_type: EventType,
+    text: String,
+    tool_uses: Option<Value>,
+}
+
+fn kiro_event(
+    row: &KiroConversationRow,
+    provider_session_id: &str,
+    history_index: usize,
+    part_index: u64,
+    event_type: EventType,
+    role: EventRole,
+    occurred_at: DateTime<Utc>,
+    text: String,
+    entry: &Value,
+    tool_uses: Option<Value>,
+) -> ProviderEventEnvelope {
+    let provider_event_index = history_index
+        .saturating_mul(2)
+        .saturating_add(part_index as usize) as u64;
+    let role_name = match role {
+        EventRole::User => "user",
+        EventRole::Assistant => "assistant",
+        EventRole::System => "system",
+        EventRole::Tool => "tool",
+        EventRole::Unknown => "unknown",
+    };
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::KiroCli,
+        source_format: KIRO_SQLITE_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index,
+        provider_event_hash: Some(format!(
+            "{}:{}:{}:{role_name}",
+            row.table, provider_session_id, history_index
+        )),
+        cursor: format!(
+            "{}:{}:history:{}:{role_name}",
+            row.table, provider_session_id, history_index
+        ),
+        event_type,
+        role: Some(role),
+        occurred_at,
+        text,
+        body: json!({
+            "table": row.table,
+            "key": row.key,
+            "conversation_id": provider_session_id,
+            "history_index": history_index,
+            "role": role_name,
+            "entry": entry,
+            "tool_uses": tool_uses,
+        }),
+        metadata: json!({
+            "source": row.table,
+            "source_format": KIRO_SQLITE_SOURCE_FORMAT,
+            "key": row.key,
+            "conversation_id": provider_session_id,
+            "history_index": history_index,
+            "rowid": row.rowid,
+        }),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn kiro_capture(
+    row: &KiroConversationRow,
+    provider_session_id: &str,
+    value: &Value,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    raw_source_path: &str,
+    user_version: i64,
+    schema_fingerprint: &str,
+    event: Option<ProviderEventEnvelope>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::KiroCli,
+            source_format: KIRO_SQLITE_SOURCE_FORMAT,
+            provider_session_id: provider_session_id.to_owned(),
+            parent_provider_session_id: None,
+            root_provider_session_id: None,
+            external_agent_id: None,
+            agent_type: AgentType::Primary,
+            role_hint: Some("primary".to_owned()),
+            is_primary: true,
+            started_at,
+            ended_at,
+            cwd: (!row.key.trim().is_empty()).then(|| row.key.clone()),
+            fidelity: Fidelity::Imported,
+            raw_source_path: raw_source_path.to_owned(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": KIRO_SQLITE_SOURCE_FORMAT,
+                "sqlite_user_version": user_version,
+                "schema_fingerprint": schema_fingerprint,
+                "source_path": raw_source_path,
+                "table": row.table,
+            }),
+            session_metadata: json!({
+                "source_format": KIRO_SQLITE_SOURCE_FORMAT,
+                "table": row.table,
+                "key": row.key,
+                "conversation_id": provider_session_id,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "history_len": value
+                    .get("history")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                "conversation": provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS),
+            }),
+        },
+        context,
+        event,
+    )
+}
+
+fn kiro_conversation_rows(conn: &Connection) -> Result<Vec<KiroConversationRow>> {
+    let mut rows = Vec::new();
+    let mut found_table = false;
+
+    if sqlite_table_exists(conn, "conversations_v2")? {
+        found_table = true;
+        let columns = sqlite_table_columns(conn, "conversations_v2")?;
+        ensure_sqlite_table_columns(
+            &columns,
+            "Kiro conversations_v2 table",
+            &[
+                "key",
+                "conversation_id",
+                "value",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        let mut stmt = conn.prepare(
+            "select rowid, key, conversation_id, value, created_at, updated_at \
+             from conversations_v2 order by updated_at, key, conversation_id",
+        )?;
+        let mapped = stmt.query_map([], |row| {
+            Ok(KiroConversationRow {
+                table: "conversations_v2",
+                rowid: row.get(0)?,
+                key: row.get(1)?,
+                conversation_id: Some(row.get(2)?),
+                value: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        rows.extend(
+            mapped
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(CaptureError::from)?,
+        );
+    }
+
+    if sqlite_table_exists(conn, "conversations")? {
+        found_table = true;
+        let columns = sqlite_table_columns(conn, "conversations")?;
+        ensure_sqlite_table_columns(&columns, "Kiro conversations table", &["key", "value"])?;
+        let mut stmt = conn.prepare("select rowid, key, value from conversations order by key")?;
+        let mapped = stmt.query_map([], |row| {
+            Ok(KiroConversationRow {
+                table: "conversations",
+                rowid: row.get(0)?,
+                key: row.get(1)?,
+                conversation_id: None,
+                value: row.get(2)?,
+                created_at: None,
+                updated_at: None,
+            })
+        })?;
+        rows.extend(
+            mapped
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(CaptureError::from)?,
+        );
+    }
+
+    if !found_table {
+        return Err(CaptureError::InvalidPayload(
+            "Kiro SQLite database is missing required conversations_v2 or conversations table"
+                .into(),
+        ));
+    }
+
+    Ok(rows)
+}
+
+fn kiro_provider_session_id(row: &KiroConversationRow, value: &Value) -> String {
+    row.conversation_id
+        .as_deref()
+        .or_else(|| value.get("conversation_id").and_then(Value::as_str))
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}:{}:{}", row.table, row.key, row.rowid))
+}
+
+fn kiro_session_started_at(
+    row: &KiroConversationRow,
+    value: &Value,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    value
+        .get("history")
+        .and_then(Value::as_array)
+        .and_then(|history| {
+            history
+                .iter()
+                .map(|entry| kiro_entry_timestamp(entry, "user", fallback))
+                .min()
+        })
+        .unwrap_or_else(|| provider_timestamp_millis(row.created_at, fallback))
+}
+
+fn kiro_session_ended_at(
+    row: &KiroConversationRow,
+    value: &Value,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    value
+        .get("history")
+        .and_then(Value::as_array)
+        .and_then(|history| {
+            history
+                .iter()
+                .flat_map(|entry| {
+                    [
+                        kiro_entry_timestamp(entry, "user", fallback),
+                        kiro_entry_timestamp(entry, "assistant", fallback),
+                    ]
+                })
+                .max()
+        })
+        .unwrap_or_else(|| provider_timestamp_millis(row.updated_at.or(row.created_at), fallback))
+}
+
+fn kiro_entry_timestamp(entry: &Value, role: &str, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    provider_timestamp_value(
+        entry
+            .get(role)
+            .and_then(|value| value.get("timestamp"))
+            .or_else(|| entry.get("timestamp")),
+        fallback,
+    )
+}
+
+fn kiro_user_prompt_text(entry: &Value) -> Option<String> {
+    entry
+        .pointer("/user/content/Prompt/prompt")
+        .and_then(provider_value_text)
+        .filter(|text| !text.trim().is_empty())
+}
+
+fn kiro_assistant_message(entry: &Value) -> Option<KiroAssistantMessage> {
+    if let Some(content) = entry
+        .pointer("/assistant/Response/content")
+        .and_then(provider_value_text)
+        .filter(|text| !text.trim().is_empty())
+    {
+        return Some(KiroAssistantMessage {
+            event_type: EventType::Message,
+            text: content,
+            tool_uses: None,
+        });
+    }
+
+    let tool_use = entry.pointer("/assistant/ToolUse")?;
+    let tool_uses = tool_use
+        .get("tool_uses")
+        .or_else(|| tool_use.get("toolUses"))
+        .cloned();
+    let text = tool_use
+        .get("content")
+        .and_then(provider_value_text)
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| tool_uses.as_ref().and_then(kiro_tool_uses_text))
+        .unwrap_or_else(|| "Kiro assistant tool use".to_owned());
+    let has_tool_uses = tool_uses
+        .as_ref()
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+    Some(KiroAssistantMessage {
+        event_type: if has_tool_uses {
+            EventType::ToolCall
+        } else {
+            EventType::Message
+        },
+        text,
+        tool_uses,
+    })
+}
+
+fn kiro_tool_uses_text(value: &Value) -> Option<String> {
+    let names = value
+        .as_array()?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .filter(|name| !name.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!names.is_empty()).then(|| format!("tool calls: {}", names.join(", ")))
+}
 fn native_jsonl_header_session_id(provider: CaptureProvider, value: &Value) -> Option<String> {
     match provider {
-        CaptureProvider::Gemini => value.get("sessionId").and_then(Value::as_str),
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
+            value.get("sessionId").and_then(Value::as_str)
+        }
         CaptureProvider::FactoryAiDroid => (value.get("type").and_then(Value::as_str)
             == Some("session_start"))
         .then(|| value.get("sessionId").and_then(Value::as_str))
@@ -10129,6 +21132,8 @@ fn native_jsonl_header_session_id(provider: CaptureProvider, value: &Value) -> O
             == Some("session.start"))
         .then(|| value.pointer("/data/sessionId").and_then(Value::as_str))
         .flatten(),
+        CaptureProvider::QwenCode => value.get("sessionId").and_then(Value::as_str),
+        CaptureProvider::Qoder => value.get("sessionId").and_then(Value::as_str),
         CaptureProvider::Cursor => (value.get("role").is_some()
             || value.get("event").is_some()
             || value.get("message").is_some())
@@ -10145,7 +21150,9 @@ fn native_jsonl_header_start_time(
 ) -> Option<DateTime<Utc>> {
     match provider {
         CaptureProvider::Antigravity => value.get("created_at").and_then(Value::as_str),
-        CaptureProvider::Gemini => value.get("startTime").and_then(Value::as_str),
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
+            value.get("startTime").and_then(Value::as_str)
+        }
         CaptureProvider::CopilotCli => value.pointer("/data/startTime").and_then(Value::as_str),
         _ => None,
     }
@@ -10154,13 +21161,15 @@ fn native_jsonl_header_start_time(
 
 fn native_jsonl_header_cwd(provider: CaptureProvider, value: &Value) -> Option<String> {
     match provider {
-        CaptureProvider::Gemini => value
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => value
             .get("directories")
             .and_then(Value::as_array)
             .and_then(|dirs| dirs.first())
             .and_then(Value::as_str),
         CaptureProvider::FactoryAiDroid => value.get("cwd").and_then(Value::as_str),
         CaptureProvider::CopilotCli => value.pointer("/data/context/cwd").and_then(Value::as_str),
+        CaptureProvider::QwenCode => value.get("cwd").and_then(Value::as_str),
+        CaptureProvider::Qoder => value.get("cwd").and_then(Value::as_str),
         _ => None,
     }
     .filter(|cwd| !cwd.trim().is_empty())
@@ -10174,7 +21183,7 @@ fn native_jsonl_path_session(
     native_session_id: &str,
 ) -> (String, Option<String>, Option<String>, AgentType) {
     match provider {
-        CaptureProvider::Gemini => {
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
             let parent = path
                 .parent()
                 .and_then(Path::file_name)
@@ -10250,6 +21259,13 @@ fn antigravity_session_id_from_path(path: &Path) -> Option<String> {
         })
 }
 
+fn windsurf_session_id_from_path(path: &Path) -> Option<String> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.trim().is_empty())
+        .map(str::to_owned)
+}
+
 fn native_jsonl_timestamp(value: &Value) -> Option<DateTime<Utc>> {
     value
         .get("timestamp")
@@ -10313,6 +21329,11 @@ fn native_jsonl_event(
     } else {
         None
     };
+    let body = if provider == CaptureProvider::Windsurf {
+        windsurf_redacted_body(value)
+    } else {
+        provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)
+    };
 
     Some(ProviderEventEnvelope {
         provider_event_index: (line_number - 1) as u64,
@@ -10335,7 +21356,7 @@ fn native_jsonl_event(
             "text": text,
             "truncated": truncated,
             "tool_calls": tool_calls,
-            "body": provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS),
+            "body": body,
         }),
         metadata: json!({
             "source": source_format,
@@ -10344,7 +21365,7 @@ fn native_jsonl_event(
             "entry_type": entry_type,
             "status": value.get("status").and_then(Value::as_str),
             "model": native_jsonl_model(provider, value),
-            "tokens": value.get("tokens").cloned(),
+            "tokens": native_jsonl_tokens(provider, value),
         }),
     })
 }
@@ -10369,7 +21390,7 @@ fn native_jsonl_entry_type(provider: CaptureProvider, value: &Value) -> String {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("unknown"),
-        CaptureProvider::Gemini => {
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
             if value.get("$set").is_some() {
                 "$set"
             } else if value.get("$rewindTo").is_some() {
@@ -10405,7 +21426,7 @@ fn native_jsonl_event_type(provider: CaptureProvider, value: &Value) -> EventTyp
             Some("SYSTEM_MESSAGE") => EventType::Notice,
             _ => EventType::Notice,
         },
-        CaptureProvider::Gemini => {
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
             if value.get("$set").is_some() || value.get("$rewindTo").is_some() {
                 EventType::Notice
             } else if value.get("toolCalls").is_some() {
@@ -10416,7 +21437,7 @@ fn native_jsonl_event_type(provider: CaptureProvider, value: &Value) -> EventTyp
                 }
             } else {
                 match value.get("type").and_then(Value::as_str) {
-                    Some("user" | "gemini") => EventType::Message,
+                    Some("user" | "gemini" | "tabnine") => EventType::Message,
                     _ => EventType::Notice,
                 }
             }
@@ -10455,6 +21476,31 @@ fn native_jsonl_event_type(provider: CaptureProvider, value: &Value) -> EventTyp
                 }
             }
         }
+        CaptureProvider::Windsurf => match value.get("type").and_then(Value::as_str) {
+            Some("user_input" | "planner_response") => EventType::Message,
+            Some("code_action") => EventType::ToolCall,
+            Some("summary" | "checkpoint") => EventType::Summary,
+            _ => EventType::Notice,
+        },
+        CaptureProvider::Qoder => match value.get("type").and_then(Value::as_str) {
+            Some("assistant") if native_jsonl_content_has(value, "tool_use") => EventType::ToolCall,
+            Some("user") if native_jsonl_content_has(value, "tool_result") => EventType::ToolOutput,
+            Some("user" | "assistant") => EventType::Message,
+            Some("progress") => EventType::Notice,
+            Some("session_meta") => EventType::Notice,
+            _ if value.get("toolUseResult").is_some() => EventType::ToolOutput,
+            _ => EventType::Notice,
+        },
+        CaptureProvider::QwenCode => match value.get("type").and_then(Value::as_str) {
+            Some("user" | "assistant") if native_jsonl_content_has(value, "tool_use") => {
+                EventType::ToolCall
+            }
+            Some("tool_result") => EventType::ToolOutput,
+            Some("user" | "assistant") => EventType::Message,
+            Some("system") => EventType::Notice,
+            _ if value.get("toolCallResult").is_some() => EventType::ToolOutput,
+            _ => EventType::Notice,
+        },
         _ => EventType::Notice,
     }
 }
@@ -10472,11 +21518,13 @@ fn native_jsonl_role(provider: CaptureProvider, value: &Value) -> EventRole {
                 _ => EventRole::Assistant,
             },
         },
-        CaptureProvider::Gemini => match value.get("type").and_then(Value::as_str) {
-            Some("user") => EventRole::User,
-            Some("gemini") => EventRole::Assistant,
-            _ => EventRole::System,
-        },
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => {
+            match value.get("type").and_then(Value::as_str) {
+                Some("user") => EventRole::User,
+                Some("gemini" | "tabnine") => EventRole::Assistant,
+                _ => EventRole::System,
+            }
+        }
         CaptureProvider::FactoryAiDroid => provider_role(value.get("role").and_then(Value::as_str)),
         CaptureProvider::CopilotCli => match value.get("type").and_then(Value::as_str) {
             Some("user.message") => EventRole::User,
@@ -10488,6 +21536,24 @@ fn native_jsonl_role(provider: CaptureProvider, value: &Value) -> EventRole {
             value
                 .get("role")
                 .or_else(|| value.pointer("/message/role"))
+                .and_then(Value::as_str),
+        ),
+        CaptureProvider::Windsurf => match value.get("type").and_then(Value::as_str) {
+            Some("user_input") => EventRole::User,
+            Some("planner_response") => EventRole::Assistant,
+            Some("code_action") => EventRole::Tool,
+            _ => EventRole::Unknown,
+        },
+        CaptureProvider::Qoder => provider_role(
+            value
+                .pointer("/message/role")
+                .or_else(|| value.get("type"))
+                .and_then(Value::as_str),
+        ),
+        CaptureProvider::QwenCode => provider_role(
+            value
+                .pointer("/message/role")
+                .or_else(|| value.get("type"))
                 .and_then(Value::as_str),
         ),
         _ => EventRole::Unknown,
@@ -10514,7 +21580,7 @@ fn native_jsonl_event_text(
             .or_else(|| value.get("thinking").and_then(provider_value_text))
             .or_else(|| value.get("tool_calls").and_then(antigravity_tool_call_text))
             .unwrap_or_else(|| format!("Antigravity event: {entry_type}")),
-        CaptureProvider::Gemini => value
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => value
             .get("content")
             .and_then(provider_value_text)
             .or_else(|| value.get("toolCalls").and_then(provider_value_text))
@@ -10525,7 +21591,14 @@ fn native_jsonl_event_text(
                     .and_then(Value::as_str)
                     .map(|id| format!("rewind to {id}"))
             })
-            .unwrap_or_else(|| format!("Gemini event: {entry_type}")),
+            .unwrap_or_else(|| {
+                let name = if provider == CaptureProvider::Tabnine {
+                    "Tabnine"
+                } else {
+                    "Gemini"
+                };
+                format!("{name} event: {entry_type}")
+            }),
         CaptureProvider::FactoryAiDroid => value
             .get("content")
             .and_then(provider_value_text)
@@ -10566,22 +21639,1999 @@ fn native_jsonl_event_text(
             .and_then(provider_value_text)
             .or_else(|| value.get("text").and_then(Value::as_str).map(str::to_owned))
             .unwrap_or_else(|| format!("Cursor event: {entry_type}")),
-        _ if event_type == EventType::Notice => format!("Provider event: {entry_type}"),
+        CaptureProvider::Windsurf => windsurf_event_text(value, entry_type),
+        CaptureProvider::Qoder => {
+            let primary = if event_type == EventType::ToolOutput {
+                value
+                    .get("toolUseResult")
+                    .or_else(|| value.pointer("/message/content"))
+            } else {
+                value
+                    .pointer("/message/content")
+                    .or_else(|| value.get("toolUseResult"))
+            };
+            primary
+                .or_else(|| value.pointer("/data/content"))
+                .and_then(provider_value_text)
+                .unwrap_or_else(|| format!("Qoder event: {entry_type}"))
+        }
+        CaptureProvider::QwenCode => value
+            .pointer("/message/content")
+            .or_else(|| value.get("message"))
+            .and_then(provider_value_text)
+            .or_else(|| value.get("toolCallResult").and_then(provider_value_text))
+            .or_else(|| value.get("content").and_then(provider_value_text))
+            .unwrap_or_else(|| format!("Qwen Code event: {entry_type}")),
         _ => serde_json::to_string(value).unwrap_or_else(|_| entry_type.to_owned()),
     }
+}
+
+fn windsurf_event_text(value: &Value, entry_type: &str) -> String {
+    match entry_type {
+        "user_input" => value
+            .pointer("/user_input/user_response")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| value.get("user_input").and_then(windsurf_extract_text))
+            .unwrap_or_else(|| "Windsurf user input".to_owned()),
+        "planner_response" => value
+            .pointer("/planner_response/response")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                value
+                    .get("planner_response")
+                    .and_then(windsurf_extract_text)
+            })
+            .unwrap_or_else(|| "Windsurf planner response".to_owned()),
+        "code_action" => value
+            .pointer("/code_action/path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| format!("Windsurf code action: {path}"))
+            .unwrap_or_else(|| "Windsurf code action".to_owned()),
+        _ => windsurf_extract_text(value)
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| format!("Windsurf event: {entry_type}")),
+    }
+}
+
+fn windsurf_extract_text(value: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    windsurf_collect_text(value, None, &mut parts);
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn windsurf_collect_text(value: &Value, key: Option<&str>, out: &mut Vec<String>) {
+    if out.iter().map(|part| part.chars().count()).sum::<usize>() >= PROVIDER_MAX_TEXT_CHARS {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            if !windsurf_sensitive_key(key.unwrap_or_default()) && !text.trim().is_empty() {
+                let label =
+                    key.filter(|key| !matches!(normalized_key(key).as_str(), "text" | "message"));
+                if let Some(label) = label {
+                    out.push(format!("{label}: {text}"));
+                } else {
+                    out.push(text.to_owned());
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                windsurf_collect_text(item, key, out);
+            }
+        }
+        Value::Object(object) => {
+            for wanted in [
+                "user_response",
+                "response",
+                "text",
+                "message",
+                "summary",
+                "path",
+                "tool",
+                "name",
+                "status",
+                "type",
+            ] {
+                if let Some(child) = object.get(wanted) {
+                    windsurf_collect_text(child, Some(wanted), out);
+                }
+            }
+            for (child_key, child) in object {
+                if matches!(
+                    normalized_key(child_key).as_str(),
+                    "userresponse"
+                        | "response"
+                        | "text"
+                        | "message"
+                        | "summary"
+                        | "path"
+                        | "tool"
+                        | "name"
+                        | "status"
+                        | "type"
+                ) {
+                    continue;
+                }
+                windsurf_collect_text(child, Some(child_key), out);
+            }
+        }
+        Value::Number(_) | Value::Bool(_) if !windsurf_sensitive_key(key.unwrap_or_default()) => {
+            if let Some(key) = key {
+                out.push(format!("{key}: {value}"));
+            }
+        }
+        Value::Number(_) | Value::Bool(_) | Value::Null => {}
+    }
+}
+
+fn windsurf_redacted_body(value: &Value) -> Value {
+    provider_capped_json_value(
+        &windsurf_redact_value(value, None),
+        PROVIDER_MAX_PREVIEW_CHARS,
+    )
+}
+
+fn windsurf_redact_value(value: &Value, key: Option<&str>) -> Value {
+    if windsurf_sensitive_key(key.unwrap_or_default()) {
+        return json!({"redacted": "sensitive_transcript_field"});
+    }
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| windsurf_redact_value(item, key))
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(child_key, child)| {
+                    (
+                        child_key.clone(),
+                        windsurf_redact_value(child, Some(child_key)),
+                    )
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn windsurf_sensitive_key(key: &str) -> bool {
+    matches!(
+        normalized_key(key).as_str(),
+        "newcontent"
+            | "oldcontent"
+            | "filecontent"
+            | "filecontents"
+            | "content"
+            | "output"
+            | "stdout"
+            | "stderr"
+            | "commandoutput"
+            | "toolarguments"
+            | "arguments"
+            | "args"
+            | "result"
+            | "results"
+            | "searchresults"
+    )
 }
 
 fn native_jsonl_model(provider: CaptureProvider, value: &Value) -> Option<Value> {
     match provider {
         CaptureProvider::Antigravity => value.get("model").cloned(),
-        CaptureProvider::Gemini => value.get("model").cloned(),
+        CaptureProvider::Gemini | CaptureProvider::Tabnine => value.get("model").cloned(),
         CaptureProvider::FactoryAiDroid => value
             .get("model")
             .cloned()
             .or_else(|| value.pointer("/metadata/model").cloned()),
         CaptureProvider::CopilotCli => value.pointer("/data/selectedModel").cloned(),
+        CaptureProvider::QwenCode => value
+            .get("model")
+            .cloned()
+            .or_else(|| value.pointer("/message/model").cloned()),
+        CaptureProvider::Qoder => value
+            .get("model")
+            .cloned()
+            .or_else(|| value.pointer("/message/model").cloned()),
         _ => None,
     }
+}
+
+fn native_jsonl_tokens(_provider: CaptureProvider, value: &Value) -> Option<Value> {
+    value
+        .get("tokens")
+        .or_else(|| value.get("usageMetadata"))
+        .cloned()
+}
+
+#[derive(Debug, Clone)]
+struct RovoDevSessionSource {
+    session_dir: PathBuf,
+    context_path: PathBuf,
+    metadata_path: Option<PathBuf>,
+    provider_session_id: String,
+}
+
+fn normalize_rovodev_sessions(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut session_sources = Vec::new();
+    collect_rovodev_session_sources(path, &mut session_sources)?;
+    session_sources.sort_by(|left, right| left.context_path.cmp(&right.context_path));
+    session_sources.dedup_by(|left, right| left.context_path == right.context_path);
+    if session_sources.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "no Rovo Dev session_context.json files found",
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for source in session_sources {
+        let mut result = normalize_rovodev_session_source(&source, context)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    Ok(merged)
+}
+
+fn collect_rovodev_session_sources(
+    root: &Path,
+    sessions: &mut Vec<RovoDevSessionSource>,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: root.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
+    if file_type.is_file() {
+        ensure_regular_provider_transcript_file(root)?;
+        if root.file_name().and_then(|name| name.to_str()) == Some("session_context.json") {
+            if let Some(session_dir) = root.parent() {
+                if let Some(source) = rovodev_session_source_from_dir(session_dir)? {
+                    sessions.push(source);
+                }
+            }
+        }
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+
+    if let Some(source) = rovodev_session_source_from_dir(root)? {
+        sessions.push(source);
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            collect_rovodev_session_sources(&entry.path(), sessions)?;
+        }
+    }
+    Ok(())
+}
+
+fn rovodev_session_source_from_dir(dir: &Path) -> Result<Option<RovoDevSessionSource>> {
+    let context_path = dir.join("session_context.json");
+    if !context_path.is_file() {
+        return Ok(None);
+    }
+    ensure_regular_provider_transcript_file(&context_path)?;
+    let metadata_path = provider_optional_regular_file(&dir.join("metadata.json"))?;
+    let provider_session_id = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
+            path: dir.to_path_buf(),
+            reason: "Rovo Dev session directory is missing a session id",
+        })?;
+    Ok(Some(RovoDevSessionSource {
+        session_dir: dir.to_path_buf(),
+        context_path,
+        metadata_path,
+        provider_session_id,
+    }))
+}
+
+fn normalize_rovodev_session_source(
+    source: &RovoDevSessionSource,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut result = ProviderNormalizationResult::default();
+    let context_json =
+        match read_provider_json_file(&source.context_path, "Rovo Dev session_context.json") {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, 1, err.to_string());
+                return Ok(result);
+            }
+        };
+    let metadata = match source.metadata_path.as_deref() {
+        Some(path) => match read_provider_json_file(path, "Rovo Dev metadata.json") {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(&mut result.summary, 1, err.to_string());
+                Value::Null
+            }
+        },
+        None => Value::Null,
+    };
+    let Some(messages) = rovodev_message_history(&context_json) else {
+        push_provider_import_failure(
+            &mut result.summary,
+            1,
+            "Rovo Dev session_context.json is missing message_history array".to_owned(),
+        );
+        return Ok(result);
+    };
+    let provider_session_id = provider_string_field(&metadata, &["session_id", "sessionId"])
+        .or_else(|| provider_string_field(&context_json, &["session_id", "sessionId"]))
+        .unwrap_or_else(|| source.provider_session_id.clone());
+    let parent_provider_session_id = provider_string_field(
+        &metadata,
+        &[
+            "parent_session_id",
+            "parentSessionId",
+            "forked_from_session_id",
+            "forkedFromSessionId",
+            "fork_parent_id",
+        ],
+    );
+    let started_at = provider_timestamp_from_fields(
+        &metadata,
+        &["created_at", "createdAt", "started_at", "startedAt"],
+    )
+    .or_else(|| messages.iter().find_map(rovodev_message_timestamp))
+    .unwrap_or(context.imported_at);
+    let ended_at = provider_timestamp_from_fields(
+        &metadata,
+        &["updated_at", "updatedAt", "last_updated", "lastUpdated"],
+    )
+    .or_else(|| messages.iter().rev().find_map(rovodev_message_timestamp));
+    let cwd = provider_string_field(
+        &metadata,
+        &[
+            "workspace_path",
+            "workspacePath",
+            "working_directory",
+            "workingDirectory",
+            "cwd",
+        ],
+    );
+    let raw_source_path = source.context_path.display().to_string();
+
+    if messages.is_empty() {
+        result.captures.push((
+            0,
+            rovodev_capture(
+                RovoDevCaptureDraft {
+                    provider_session_id,
+                    parent_provider_session_id,
+                    started_at,
+                    ended_at,
+                    cwd,
+                    source,
+                    context_json: &context_json,
+                    metadata: &metadata,
+                    message_count: 0,
+                    event: None,
+                },
+                context,
+            ),
+        ));
+        return Ok(result);
+    }
+
+    let message_count = messages.len();
+    for (index, message) in messages.iter().enumerate() {
+        let line = index + 1;
+        let occurred_at = rovodev_message_timestamp(message).unwrap_or(started_at);
+        let event = rovodev_event(
+            &provider_session_id,
+            index as u64,
+            message,
+            occurred_at,
+            source,
+        );
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                CaptureProvider::RovoDev,
+                &provider_session_id,
+                ROVODEV_SOURCE_FORMAT,
+                Some(raw_source_path.as_str()),
+                message,
+                &event,
+                line,
+            ));
+        result.captures.push((
+            line,
+            rovodev_capture(
+                RovoDevCaptureDraft {
+                    provider_session_id: provider_session_id.clone(),
+                    parent_provider_session_id: parent_provider_session_id.clone(),
+                    started_at,
+                    ended_at,
+                    cwd: cwd.clone(),
+                    source,
+                    context_json: &context_json,
+                    metadata: &metadata,
+                    message_count,
+                    event: Some(event),
+                },
+                context,
+            ),
+        ));
+    }
+    Ok(result)
+}
+
+struct RovoDevCaptureDraft<'a> {
+    provider_session_id: String,
+    parent_provider_session_id: Option<String>,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    source: &'a RovoDevSessionSource,
+    context_json: &'a Value,
+    metadata: &'a Value,
+    message_count: usize,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn rovodev_capture(
+    draft: RovoDevCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    let is_primary = draft.parent_provider_session_id.is_none();
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::RovoDev,
+            source_format: ROVODEV_SOURCE_FORMAT,
+            provider_session_id: draft.provider_session_id.clone(),
+            parent_provider_session_id: draft.parent_provider_session_id.clone(),
+            root_provider_session_id: draft.parent_provider_session_id.clone(),
+            external_agent_id: provider_string_field(
+                draft.metadata,
+                &["agent_id", "agentId", "agent_name", "agentName"],
+            ),
+            agent_type: if is_primary {
+                AgentType::Primary
+            } else {
+                AgentType::Subagent
+            },
+            role_hint: Some(if is_primary { "primary" } else { "subagent" }.to_owned()),
+            is_primary,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: draft.cwd,
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.source.context_path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": ROVODEV_SOURCE_FORMAT,
+                "source_path": draft.source.context_path.display().to_string(),
+                "metadata_path": draft.source.metadata_path.as_ref().map(|path| path.display().to_string()),
+                "session_dir": draft.source.session_dir.display().to_string(),
+                "upstream_schema_anchor": {
+                    "docs": "https://support.atlassian.com/rovo/docs/manage-sessions-in-rovo-dev-cli/"
+                },
+            }),
+            session_metadata: json!({
+                "source_format": ROVODEV_SOURCE_FORMAT,
+                "provider": CaptureProvider::RovoDev.as_str(),
+                "session_id": draft.provider_session_id,
+                "title": provider_string_field(draft.metadata, &["title", "name"]),
+                "workspace_path": provider_string_field(draft.metadata, &["workspace_path", "workspacePath"]),
+                "message_count": draft.message_count,
+                "metadata": provider_capped_json_value(draft.metadata, PROVIDER_MAX_PREVIEW_CHARS),
+                "context": provider_capped_json_value(&provider_json_without_keys(draft.context_json, &["message_history", "messages"]), PROVIDER_MAX_PREVIEW_CHARS),
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn rovodev_event(
+    provider_session_id: &str,
+    event_index: u64,
+    message: &Value,
+    occurred_at: DateTime<Utc>,
+    source: &RovoDevSessionSource,
+) -> ProviderEventEnvelope {
+    let role_text = message
+        .get("role")
+        .or_else(|| message.get("kind"))
+        .or_else(|| message.get("type"))
+        .and_then(Value::as_str);
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::RovoDev,
+        source_format: ROVODEV_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index: event_index,
+        provider_event_hash: Some(provider_message_id(message, event_index)),
+        cursor: format!(
+            "{}:{}",
+            source.context_path.display(),
+            provider_message_id(message, event_index)
+        ),
+        event_type: provider_block_event_type(message, role_text),
+        role: Some(provider_role_from_message(message, role_text)),
+        occurred_at,
+        text: provider_block_text(message).unwrap_or_else(|| "Rovo Dev message".to_owned()),
+        body: message.clone(),
+        metadata: json!({
+            "source": ROVODEV_SOURCE_FORMAT,
+            "source_format": ROVODEV_SOURCE_FORMAT,
+            "message_id": provider_message_id(message, event_index),
+            "role": role_text,
+            "kind": message.get("kind").and_then(Value::as_str),
+            "part_count": provider_message_parts(message).map(|parts| parts.len()),
+        }),
+    })
+}
+
+fn rovodev_message_history(value: &Value) -> Option<&Vec<Value>> {
+    value
+        .get("message_history")
+        .or_else(|| value.pointer("/session_context/message_history"))
+        .or_else(|| value.get("messages"))
+        .or_else(|| value.pointer("/conversation/messages"))
+        .and_then(Value::as_array)
+}
+
+fn rovodev_message_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+    provider_timestamp_from_fields(
+        value,
+        &[
+            "timestamp",
+            "created_at",
+            "createdAt",
+            "updated_at",
+            "updatedAt",
+            "user_sent_time",
+        ],
+    )
+}
+fn provider_optional_regular_file(path: &Path) -> Result<Option<PathBuf>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            ensure_regular_provider_transcript_file(path)?;
+            Ok(Some(path.to_path_buf()))
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(CaptureError::InvalidProviderTranscriptPath {
+                path: path.to_path_buf(),
+                reason: "symlinked provider transcript files are rejected",
+            })
+        }
+        Ok(_) => Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "provider sidecar paths must be regular files",
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn read_provider_json_file(path: &Path, label: &str) -> Result<Value> {
+    let raw = read_text_file_limited(path, MAX_PROVIDER_JSONL_LINE_BYTES, label)?;
+    let value: Value = serde_json::from_str(&raw)?;
+    if !value.is_object() {
+        return Err(CaptureError::InvalidPayload(format!(
+            "{label} must contain a JSON object"
+        )));
+    }
+    Ok(value)
+}
+
+fn provider_string_field(value: &Value, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| {
+        value
+            .get(*field)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn provider_timestamp_from_fields(value: &Value, fields: &[&str]) -> Option<DateTime<Utc>> {
+    fields.iter().find_map(|field| {
+        let raw = value.get(*field)?;
+        match raw {
+            Value::String(text) => parse_rfc3339_utc(text).or_else(|| {
+                text.parse::<f64>()
+                    .ok()
+                    .and_then(provider_timestamp_seconds_to_datetime)
+            }),
+            Value::Number(number) => number
+                .as_f64()
+                .and_then(provider_timestamp_seconds_to_datetime),
+            _ => None,
+        }
+    })
+}
+
+fn provider_message_id(value: &Value, fallback_index: u64) -> String {
+    value
+        .get("id")
+        .or_else(|| value.get("message_id"))
+        .or_else(|| value.get("messageId"))
+        .or_else(|| value.get("request_id"))
+        .or_else(|| value.get("requestId"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("message-{fallback_index}"))
+}
+
+fn provider_role_from_message(value: &Value, role_text: Option<&str>) -> EventRole {
+    let role = role_text.or_else(|| value.get("kind").and_then(Value::as_str));
+    match role {
+        Some("user" | "human" | "user_prompt" | "user-prompt") => EventRole::User,
+        Some("assistant" | "agent" | "ai" | "model") => EventRole::Assistant,
+        Some("system" | "developer" | "system_prompt" | "system-prompt") => EventRole::System,
+        Some("tool" | "tool_result" | "tool-result" | "tool_use_result") => EventRole::Tool,
+        _ => EventRole::Unknown,
+    }
+}
+
+fn provider_block_event_type(value: &Value, role_text: Option<&str>) -> EventType {
+    let role = role_text.unwrap_or_default();
+    if role.contains("tool_result")
+        || role.contains("tool-result")
+        || provider_message_has_part_kind(value, &["tool_result", "tool-result"])
+    {
+        EventType::ToolOutput
+    } else if role.contains("tool_use")
+        || role.contains("tool-use")
+        || provider_message_has_part_kind(
+            value,
+            &["tool_use", "tool-use", "tool-call", "tool_call"],
+        )
+    {
+        EventType::ToolCall
+    } else if matches!(
+        role,
+        "system" | "developer" | "system_prompt" | "system-prompt"
+    ) {
+        EventType::Notice
+    } else {
+        EventType::Message
+    }
+}
+
+fn provider_message_has_part_kind(value: &Value, kinds: &[&str]) -> bool {
+    provider_message_parts(value)
+        .map(|parts| {
+            parts.iter().any(|part| {
+                part.get("type")
+                    .or_else(|| part.get("kind"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kinds.contains(&kind))
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn provider_block_text(value: &Value) -> Option<String> {
+    for key in [
+        "text", "content", "message", "prompt", "response", "output", "summary",
+    ] {
+        if let Some(text) = value.get(key).and_then(provider_value_text) {
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    let parts = provider_message_parts(value)?;
+    let mut rendered = Vec::new();
+    for part in parts {
+        if let Some(text) = provider_part_text(part) {
+            rendered.push(text);
+        }
+    }
+    (!rendered.is_empty()).then(|| rendered.join("\n"))
+}
+
+fn provider_message_parts(value: &Value) -> Option<&Vec<Value>> {
+    value
+        .get("parts")
+        .or_else(|| value.get("content"))
+        .or_else(|| value.get("blocks"))
+        .and_then(Value::as_array)
+}
+
+fn provider_part_text(part: &Value) -> Option<String> {
+    let kind = part
+        .get("type")
+        .or_else(|| part.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if matches!(
+        kind,
+        "tool_use" | "tool-use" | "tool_call" | "tool-call" | "function_call"
+    ) {
+        let name = part
+            .get("name")
+            .or_else(|| part.get("tool"))
+            .or_else(|| part.get("tool_name"))
+            .or_else(|| part.get("toolName"))
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        return Some(format!("tool call: {name}"));
+    }
+    if matches!(
+        kind,
+        "tool_result" | "tool-result" | "tool_use_result" | "function_result"
+    ) {
+        return part
+            .get("content")
+            .or_else(|| part.get("result"))
+            .or_else(|| part.get("output"))
+            .and_then(provider_value_text)
+            .or_else(|| Some("tool result".to_owned()));
+    }
+    part.get("text")
+        .or_else(|| part.get("content"))
+        .or_else(|| part.get("thinking"))
+        .or_else(|| part.get("summary"))
+        .and_then(provider_value_text)
+}
+
+fn provider_json_without_keys(value: &Value, keys: &[&str]) -> Value {
+    let Value::Object(object) = value else {
+        return value.clone();
+    };
+    let mut object = object.clone();
+    for key in keys {
+        object.remove(*key);
+    }
+    Value::Object(object)
+}
+
+#[derive(Debug, Clone)]
+struct MistralVibeSessionSource {
+    session_dir: PathBuf,
+    metadata_path: PathBuf,
+    messages_path: PathBuf,
+}
+
+fn normalize_mistral_vibe_sessions(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut session_sources = Vec::new();
+    collect_mistral_vibe_session_sources(path, &mut session_sources)?;
+    session_sources.sort_by(|left, right| left.messages_path.cmp(&right.messages_path));
+    session_sources.dedup_by(|left, right| left.messages_path == right.messages_path);
+    if session_sources.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: native_jsonl_missing_reason(CaptureProvider::MistralVibe),
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for source in session_sources {
+        let mut result = normalize_mistral_vibe_session_source(&source, context)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    Ok(merged)
+}
+
+fn collect_mistral_vibe_session_sources(
+    root: &Path,
+    sessions: &mut Vec<MistralVibeSessionSource>,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: root.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
+    if file_type.is_file() {
+        ensure_regular_provider_transcript_file(root)?;
+        if root.file_name().and_then(|name| name.to_str()) == Some("messages.jsonl") {
+            if let Some(session_dir) = root.parent() {
+                if let Some(source) = mistral_vibe_session_source_from_dir(session_dir)? {
+                    sessions.push(source);
+                }
+            }
+        }
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+
+    if let Some(source) = mistral_vibe_session_source_from_dir(root)? {
+        sessions.push(source);
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_mistral_vibe_session_sources(&path, sessions)?;
+        }
+    }
+    Ok(())
+}
+
+fn mistral_vibe_session_source_from_dir(dir: &Path) -> Result<Option<MistralVibeSessionSource>> {
+    let metadata_path = dir.join("meta.json");
+    let messages_path = dir.join("messages.jsonl");
+    if !metadata_path.is_file() || !messages_path.is_file() {
+        return Ok(None);
+    }
+    ensure_regular_provider_transcript_file(&metadata_path)?;
+    ensure_regular_provider_transcript_file(&messages_path)?;
+    Ok(Some(MistralVibeSessionSource {
+        session_dir: dir.to_path_buf(),
+        metadata_path,
+        messages_path,
+    }))
+}
+
+fn normalize_mistral_vibe_session_source(
+    source: &MistralVibeSessionSource,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut result = ProviderNormalizationResult::default();
+    let metadata = read_mistral_vibe_metadata(&source.metadata_path, &mut result.summary);
+    let mut rows = Vec::new();
+    let file = File::open(&source.messages_path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
+
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(&line) {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line_number,
+                    format!("malformed JSONL: {err}"),
+                );
+                continue;
+            }
+        };
+        rows.push((line_number, value));
+    }
+
+    let provider_session_id = mistral_vibe_metadata_string(&metadata, "session_id")
+        .or_else(|| {
+            source
+                .session_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
+            path: source.session_dir.clone(),
+            reason: "Mistral Vibe session directory is missing a session id",
+        })?;
+    let started_at = mistral_vibe_metadata_timestamp(&metadata, "start_time")
+        .or_else(|| {
+            rows.iter()
+                .find_map(|(_, value)| native_jsonl_timestamp(value))
+        })
+        .unwrap_or(context.imported_at);
+    let ended_at = mistral_vibe_metadata_timestamp(&metadata, "end_time");
+    let cwd = mistral_vibe_metadata_pointer_string(&metadata, &["/environment/working_directory"]);
+    let parent_provider_session_id = mistral_vibe_metadata_string(&metadata, "parent_session_id");
+    let agent_type = if parent_provider_session_id.is_some() {
+        AgentType::Subagent
+    } else {
+        AgentType::Primary
+    };
+    let role_hint = if parent_provider_session_id.is_some() {
+        "subagent"
+    } else {
+        "primary"
+    };
+    let raw_source_path = source.messages_path.display().to_string();
+
+    if rows.is_empty() {
+        result.captures.push((
+            0,
+            mistral_vibe_capture(
+                MistralVibeCaptureDraft {
+                    provider_session_id,
+                    parent_provider_session_id,
+                    agent_type,
+                    role_hint: role_hint.to_owned(),
+                    is_primary: agent_type == AgentType::Primary,
+                    started_at,
+                    ended_at,
+                    cwd,
+                    metadata: &metadata,
+                    source,
+                    event: None,
+                },
+                context,
+            ),
+        ));
+        return Ok(result);
+    }
+
+    for (line_number, value) in rows {
+        let occurred_at = native_jsonl_timestamp(&value).unwrap_or(started_at);
+        let event = mistral_vibe_event(
+            &provider_session_id,
+            line_number,
+            &value,
+            occurred_at,
+            &source.messages_path,
+            &metadata,
+        );
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                CaptureProvider::MistralVibe,
+                &provider_session_id,
+                MISTRAL_VIBE_SOURCE_FORMAT,
+                Some(raw_source_path.as_str()),
+                &value,
+                &event,
+                line_number,
+            ));
+        result.captures.push((
+            line_number,
+            mistral_vibe_capture(
+                MistralVibeCaptureDraft {
+                    provider_session_id: provider_session_id.clone(),
+                    parent_provider_session_id: parent_provider_session_id.clone(),
+                    agent_type,
+                    role_hint: role_hint.to_owned(),
+                    is_primary: agent_type == AgentType::Primary,
+                    started_at,
+                    ended_at,
+                    cwd: cwd.clone(),
+                    metadata: &metadata,
+                    source,
+                    event: Some(event),
+                },
+                context,
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+struct MistralVibeCaptureDraft<'a> {
+    provider_session_id: String,
+    parent_provider_session_id: Option<String>,
+    agent_type: AgentType,
+    role_hint: String,
+    is_primary: bool,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    metadata: &'a Value,
+    source: &'a MistralVibeSessionSource,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn mistral_vibe_capture(
+    draft: MistralVibeCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::MistralVibe,
+            source_format: MISTRAL_VIBE_SOURCE_FORMAT,
+            provider_session_id: draft.provider_session_id.clone(),
+            parent_provider_session_id: draft.parent_provider_session_id.clone(),
+            root_provider_session_id: draft.parent_provider_session_id.clone(),
+            external_agent_id: mistral_vibe_metadata_pointer_string(
+                draft.metadata,
+                &["/agent_profile/name"],
+            ),
+            agent_type: draft.agent_type,
+            role_hint: Some(draft.role_hint),
+            is_primary: draft.is_primary,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: draft.cwd,
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.source.messages_path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": MISTRAL_VIBE_SOURCE_FORMAT,
+                "source_path": draft.source.messages_path.display().to_string(),
+                "metadata_path": draft.source.metadata_path.display().to_string(),
+                "session_dir": draft.source.session_dir.display().to_string(),
+            }),
+            session_metadata: json!({
+                "source_format": MISTRAL_VIBE_SOURCE_FORMAT,
+                "provider": CaptureProvider::MistralVibe.as_str(),
+                "session_id": draft.provider_session_id,
+                "title": mistral_vibe_metadata_string(draft.metadata, "title"),
+                "title_source": mistral_vibe_metadata_string(draft.metadata, "title_source"),
+                "git_branch": mistral_vibe_metadata_string(draft.metadata, "git_branch"),
+                "git_commit": mistral_vibe_metadata_string(draft.metadata, "git_commit"),
+                "total_messages": draft.metadata.get("total_messages").and_then(Value::as_u64),
+                "agent_profile": draft.metadata.get("agent_profile").cloned(),
+                "stats": draft.metadata.get("stats").cloned(),
+                "loops": draft.metadata.get("loops").cloned(),
+                "experiments": draft.metadata.get("experiments").cloned(),
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn mistral_vibe_event(
+    provider_session_id: &str,
+    line_number: usize,
+    value: &Value,
+    occurred_at: DateTime<Utc>,
+    path: &Path,
+    metadata: &Value,
+) -> ProviderEventEnvelope {
+    let role = value
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let event_type = mistral_vibe_event_type(role, value);
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::MistralVibe,
+        source_format: MISTRAL_VIBE_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index: (line_number - 1) as u64,
+        provider_event_hash: Some(mistral_vibe_event_id(value, line_number, role)),
+        cursor: format!("{}:line:{line_number}", path.display()),
+        event_type,
+        role: Some(provider_role(Some(role))),
+        occurred_at,
+        text: mistral_vibe_event_text(role, value, event_type),
+        body: value.clone(),
+        metadata: json!({
+            "source": MISTRAL_VIBE_SOURCE_FORMAT,
+            "source_format": MISTRAL_VIBE_SOURCE_FORMAT,
+            "line": line_number,
+            "role": role,
+            "message_id": value.get("message_id").and_then(Value::as_str),
+            "reasoning_message_id": value.get("reasoning_message_id").and_then(Value::as_str),
+            "tool_call_id": value.get("tool_call_id").and_then(Value::as_str),
+            "name": value.get("name").and_then(Value::as_str),
+            "tool_calls": value.get("tool_calls").map(|calls| provider_capped_json_value(calls, PROVIDER_MAX_PREVIEW_CHARS)),
+            "images": value.get("images").map(|images| provider_capped_json_value(images, PROVIDER_MAX_PREVIEW_CHARS)),
+            "agent_profile": metadata.pointer("/agent_profile/name").and_then(Value::as_str),
+        }),
+    })
+}
+
+fn mistral_vibe_event_type(role: &str, value: &Value) -> EventType {
+    if role == "tool" || value.get("tool_call_id").is_some() {
+        EventType::ToolOutput
+    } else if value
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty())
+    {
+        EventType::ToolCall
+    } else if role == "system" {
+        EventType::Notice
+    } else {
+        EventType::Message
+    }
+}
+
+fn mistral_vibe_event_text(role: &str, value: &Value, event_type: EventType) -> String {
+    let mut parts = Vec::new();
+    if let Some(content) = value.get("content").and_then(provider_value_text) {
+        parts.push(content);
+    }
+    if let Some(reasoning) = value.get("reasoning_content").and_then(provider_value_text) {
+        parts.push(reasoning);
+    }
+    if let Some(tool_calls) = value
+        .get("tool_calls")
+        .and_then(mistral_vibe_tool_calls_text)
+    {
+        parts.push(tool_calls);
+    }
+    if let Some(images) = value.get("images").and_then(provider_value_text) {
+        parts.push(images);
+    }
+    if !parts.is_empty() {
+        return parts.join("\n");
+    }
+    match event_type {
+        EventType::ToolOutput => format!("Mistral Vibe {role} output"),
+        EventType::ToolCall => format!("Mistral Vibe {role} tool call"),
+        _ => format!("Mistral Vibe {role} message"),
+    }
+}
+
+fn mistral_vibe_tool_calls_text(value: &Value) -> Option<String> {
+    let calls = value.as_array()?;
+    let names = calls
+        .iter()
+        .filter_map(|call| {
+            call.pointer("/function/name")
+                .or_else(|| call.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+        })
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        Some(provider_value_text(value)?)
+    } else {
+        Some(format!("tool calls: {}", names.join(", ")))
+    }
+}
+
+fn mistral_vibe_event_id(value: &Value, line_number: usize, role: &str) -> String {
+    value
+        .get("message_id")
+        .or_else(|| value.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{role}:line-{line_number}"))
+}
+
+fn read_mistral_vibe_metadata(path: &Path, summary: &mut ProviderImportSummary) -> Value {
+    match read_text_file_limited(
+        path,
+        MAX_PROVIDER_JSONL_LINE_BYTES,
+        "Mistral Vibe meta.json",
+    ) {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            Ok(_) => {
+                push_provider_import_failure(
+                    summary,
+                    0,
+                    "Mistral Vibe meta.json must contain a JSON object".to_owned(),
+                );
+                Value::Null
+            }
+            Err(err) => {
+                push_provider_import_failure(
+                    summary,
+                    0,
+                    format!("invalid Mistral Vibe meta.json: {err}"),
+                );
+                Value::Null
+            }
+        },
+        Err(err) => {
+            push_provider_import_failure(
+                summary,
+                0,
+                format!("could not read Mistral Vibe meta.json: {err}"),
+            );
+            Value::Null
+        }
+    }
+}
+
+fn mistral_vibe_metadata_string(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|raw| !raw.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn mistral_vibe_metadata_pointer_string(value: &Value, pointers: &[&str]) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|raw| !raw.trim().is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn mistral_vibe_metadata_timestamp(value: &Value, field: &str) -> Option<DateTime<Utc>> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_utc)
+}
+
+#[derive(Debug, Clone)]
+struct MuxSessionSource {
+    session_dir: PathBuf,
+    chat_path: Option<PathBuf>,
+    partial_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    provider_session_id: String,
+    parent_provider_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MuxMessageRow {
+    line_number: usize,
+    source_path: PathBuf,
+    value: Value,
+    is_partial: bool,
+}
+
+fn normalize_mux_sessions(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut session_sources = Vec::new();
+    collect_mux_session_sources(path, &mut session_sources)?;
+    session_sources.sort_by(|left, right| left.session_dir.cmp(&right.session_dir));
+    session_sources.dedup_by(|left, right| left.session_dir == right.session_dir);
+    if session_sources.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: native_jsonl_missing_reason(CaptureProvider::Mux),
+        });
+    }
+
+    let mut merged = ProviderNormalizationResult::default();
+    for source in session_sources {
+        let mut result = normalize_mux_session_source(&source, context)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    Ok(merged)
+}
+
+fn collect_mux_session_sources(root: &Path, sessions: &mut Vec<MuxSessionSource>) -> Result<()> {
+    let metadata = fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: root.to_path_buf(),
+            reason: "symlinked provider transcript roots are rejected",
+        });
+    }
+    ensure_provider_path_parents_are_not_symlinks(root)?;
+    if file_type.is_file() {
+        ensure_regular_provider_transcript_file(root)?;
+        if matches!(
+            root.file_name().and_then(|name| name.to_str()),
+            Some("chat.jsonl" | "partial.json")
+        ) {
+            if let Some(session_dir) = root.parent() {
+                if let Some(source) = mux_session_source_from_dir(session_dir)? {
+                    sessions.push(source);
+                }
+            }
+        }
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+
+    if let Some(source) = mux_session_source_from_dir(root)? {
+        sessions.push(source);
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            collect_mux_session_sources(&entry.path(), sessions)?;
+        }
+    }
+    Ok(())
+}
+
+fn mux_session_source_from_dir(dir: &Path) -> Result<Option<MuxSessionSource>> {
+    let chat_path = mux_optional_regular_file(&dir.join("chat.jsonl"))?;
+    let partial_path = mux_optional_regular_file(&dir.join("partial.json"))?;
+    if chat_path.is_none() && partial_path.is_none() {
+        return Ok(None);
+    }
+    let metadata_path = mux_optional_regular_file(&dir.join("metadata.json"))?;
+    let provider_session_id = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| CaptureError::InvalidProviderTranscriptPath {
+            path: dir.to_path_buf(),
+            reason: "Mux session directory is missing a workspace id",
+        })?;
+    let parent_provider_session_id = mux_parent_session_id_from_path(dir);
+    Ok(Some(MuxSessionSource {
+        session_dir: dir.to_path_buf(),
+        chat_path,
+        partial_path,
+        metadata_path,
+        provider_session_id,
+        parent_provider_session_id,
+    }))
+}
+
+fn mux_optional_regular_file(path: &Path) -> Result<Option<PathBuf>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            ensure_regular_provider_transcript_file(path)?;
+            Ok(Some(path.to_path_buf()))
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(CaptureError::InvalidProviderTranscriptPath {
+                path: path.to_path_buf(),
+                reason: "symlinked provider transcript files are rejected",
+            })
+        }
+        Ok(_) => Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Mux transcript files must be regular files",
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn mux_parent_session_id_from_path(dir: &Path) -> Option<String> {
+    let parent = dir.parent()?;
+    if parent.file_name().and_then(|name| name.to_str()) != Some("subagent-transcripts") {
+        return None;
+    }
+    parent
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn normalize_mux_session_source(
+    source: &MuxSessionSource,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut result = ProviderNormalizationResult::default();
+    let metadata = read_mux_metadata(source.metadata_path.as_deref(), &mut result.summary);
+    let mut rows = Vec::new();
+
+    if let Some(chat_path) = &source.chat_path {
+        let file = File::open(chat_path)?;
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        let mut line_number = 0usize;
+        while read_provider_jsonl_line(&mut reader, &mut line)? {
+            line_number += 1;
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            match serde_json::from_slice::<Value>(&line) {
+                Ok(value) if value.is_object() => rows.push(MuxMessageRow {
+                    line_number,
+                    source_path: chat_path.clone(),
+                    value,
+                    is_partial: false,
+                }),
+                Ok(_) => push_provider_import_failure(
+                    &mut result.summary,
+                    line_number,
+                    "Mux chat.jsonl line must contain a JSON object".to_owned(),
+                ),
+                Err(err) => push_provider_import_failure(
+                    &mut result.summary,
+                    line_number,
+                    format!("malformed JSONL: {err}"),
+                ),
+            }
+        }
+    }
+
+    if let Some(partial_path) = &source.partial_path {
+        match read_mux_partial_row(partial_path) {
+            Ok(Some(partial)) => mux_merge_partial_row(&mut rows, partial),
+            Ok(None) => {}
+            Err(err) => push_provider_import_failure(
+                &mut result.summary,
+                1,
+                format!("invalid Mux partial.json: {err}"),
+            ),
+        }
+    }
+
+    let provider_session_id =
+        mux_session_id_from_rows(&rows).unwrap_or_else(|| source.provider_session_id.clone());
+    let parent_provider_session_id = source.parent_provider_session_id.clone().or_else(|| {
+        mux_string_pointer(
+            &metadata,
+            &[
+                "/parentWorkspaceId",
+                "/parentTaskId",
+                "/parentSessionId",
+                "/parent_session_id",
+            ],
+        )
+    });
+    let root_provider_session_id = mux_string_pointer(
+        &metadata,
+        &["/rootWorkspaceId", "/rootTaskId", "/rootSessionId"],
+    )
+    .or_else(|| parent_provider_session_id.clone());
+    let agent_type = if parent_provider_session_id.is_some() {
+        AgentType::Subagent
+    } else {
+        AgentType::Primary
+    };
+    let role_hint = if parent_provider_session_id.is_some() {
+        "subagent"
+    } else {
+        "primary"
+    };
+    let started_at = mux_metadata_timestamp(&metadata)
+        .or_else(|| {
+            rows.iter()
+                .filter_map(|row| mux_message_timestamp_opt(&row.value))
+                .min()
+        })
+        .unwrap_or(context.imported_at);
+    let ended_at = rows
+        .iter()
+        .rev()
+        .find_map(|row| mux_message_timestamp_opt(&row.value));
+    let cwd = mux_string_pointer(
+        &metadata,
+        &["/projectPath", "/workspacePath", "/cwd", "/repoPath"],
+    );
+    let model = mux_string_pointer(&metadata, &["/model"])
+        .or_else(|| rows.iter().find_map(|row| mux_message_model(&row.value)));
+
+    if rows.is_empty() {
+        result.captures.push((
+            0,
+            mux_capture(
+                MuxCaptureDraft {
+                    provider_session_id,
+                    parent_provider_session_id,
+                    root_provider_session_id,
+                    agent_type,
+                    role_hint: role_hint.to_owned(),
+                    is_primary: agent_type == AgentType::Primary,
+                    started_at,
+                    ended_at,
+                    cwd,
+                    model,
+                    metadata: &metadata,
+                    message_count: 0,
+                    source,
+                    event: None,
+                },
+                context,
+            ),
+        ));
+        return Ok(result);
+    }
+
+    let message_count = rows.len();
+    for (event_index, row) in rows.iter().enumerate() {
+        let occurred_at = mux_message_timestamp_opt(&row.value).unwrap_or(started_at);
+        let event = mux_event(
+            &provider_session_id,
+            event_index as u64,
+            row,
+            occurred_at,
+            model.as_deref(),
+        );
+        let raw_source_path = row.source_path.display().to_string();
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                CaptureProvider::Mux,
+                &provider_session_id,
+                MUX_SOURCE_FORMAT,
+                Some(raw_source_path.as_str()),
+                &row.value,
+                &event,
+                row.line_number,
+            ));
+        result.captures.push((
+            row.line_number,
+            mux_capture(
+                MuxCaptureDraft {
+                    provider_session_id: provider_session_id.clone(),
+                    parent_provider_session_id: parent_provider_session_id.clone(),
+                    root_provider_session_id: root_provider_session_id.clone(),
+                    agent_type,
+                    role_hint: role_hint.to_owned(),
+                    is_primary: agent_type == AgentType::Primary,
+                    started_at,
+                    ended_at,
+                    cwd: cwd.clone(),
+                    model: model.clone(),
+                    metadata: &metadata,
+                    message_count,
+                    source,
+                    event: Some(event),
+                },
+                context,
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+fn read_mux_partial_row(path: &Path) -> Result<Option<MuxMessageRow>> {
+    let raw = read_text_file_limited(path, MAX_PROVIDER_JSONL_LINE_BYTES, "Mux partial.json")?;
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(&raw)?;
+    if !value.is_object() {
+        return Err(CaptureError::InvalidPayload(
+            "Mux partial.json must contain a JSON object".to_owned(),
+        ));
+    }
+    Ok(Some(MuxMessageRow {
+        line_number: 1,
+        source_path: path.to_path_buf(),
+        value,
+        is_partial: true,
+    }))
+}
+
+fn mux_merge_partial_row(rows: &mut Vec<MuxMessageRow>, partial: MuxMessageRow) {
+    let Some(sequence) = mux_history_sequence(&partial.value) else {
+        rows.push(partial);
+        return;
+    };
+    if let Some(index) = rows
+        .iter()
+        .position(|row| mux_history_sequence(&row.value) == Some(sequence))
+    {
+        if mux_parts_len(&partial.value) > mux_parts_len(&rows[index].value) {
+            rows[index] = partial;
+        }
+        return;
+    }
+    let insert_at = rows
+        .iter()
+        .position(|row| mux_history_sequence(&row.value).is_some_and(|seq| seq > sequence))
+        .unwrap_or(rows.len());
+    rows.insert(insert_at, partial);
+}
+
+struct MuxCaptureDraft<'a> {
+    provider_session_id: String,
+    parent_provider_session_id: Option<String>,
+    root_provider_session_id: Option<String>,
+    agent_type: AgentType,
+    role_hint: String,
+    is_primary: bool,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    model: Option<String>,
+    metadata: &'a Value,
+    message_count: usize,
+    source: &'a MuxSessionSource,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn mux_capture(
+    draft: MuxCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    let primary_path = mux_source_primary_path(draft.source);
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::Mux,
+            source_format: MUX_SOURCE_FORMAT,
+            provider_session_id: draft.provider_session_id.clone(),
+            parent_provider_session_id: draft.parent_provider_session_id.clone(),
+            root_provider_session_id: draft.root_provider_session_id,
+            external_agent_id: mux_string_pointer(draft.metadata, &["/agentId", "/agent_id"]),
+            agent_type: draft.agent_type,
+            role_hint: Some(draft.role_hint),
+            is_primary: draft.is_primary,
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: draft.cwd,
+            fidelity: Fidelity::Imported,
+            raw_source_path: primary_path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": MUX_SOURCE_FORMAT,
+                "source_path": primary_path.display().to_string(),
+                "chat_path": draft.source.chat_path.as_ref().map(|path| path.display().to_string()),
+                "partial_path": draft.source.partial_path.as_ref().map(|path| path.display().to_string()),
+                "metadata_path": draft.source.metadata_path.as_ref().map(|path| path.display().to_string()),
+                "session_dir": draft.source.session_dir.display().to_string(),
+            }),
+            session_metadata: json!({
+                "source_format": MUX_SOURCE_FORMAT,
+                "provider": CaptureProvider::Mux.as_str(),
+                "workspace_id": draft.provider_session_id,
+                "parent_workspace_id": draft.parent_provider_session_id,
+                "model": draft.model,
+                "message_count": draft.message_count,
+                "has_partial": draft.source.partial_path.is_some(),
+                "metadata": provider_capped_json_value(draft.metadata, PROVIDER_MAX_PREVIEW_CHARS),
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn mux_event(
+    provider_session_id: &str,
+    event_index: u64,
+    row: &MuxMessageRow,
+    occurred_at: DateTime<Utc>,
+    model: Option<&str>,
+) -> ProviderEventEnvelope {
+    let role = row
+        .value
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let event_type = mux_event_type(&row.value);
+    let model_value = model
+        .map(str::to_owned)
+        .or_else(|| mux_message_model(&row.value));
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::Mux,
+        source_format: MUX_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index: event_index,
+        provider_event_hash: Some(mux_event_id(
+            &row.value,
+            row.line_number,
+            role,
+            row.is_partial,
+        )),
+        cursor: format!("{}:line:{}", row.source_path.display(), row.line_number),
+        event_type,
+        role: Some(provider_role(Some(role))),
+        occurred_at,
+        text: mux_event_text(&row.value, event_type),
+        body: row.value.clone(),
+        metadata: json!({
+            "source": MUX_SOURCE_FORMAT,
+            "source_format": MUX_SOURCE_FORMAT,
+            "line": row.line_number,
+            "is_partial": row.is_partial,
+            "role": role,
+            "message_id": row.value.get("id").and_then(Value::as_str),
+            "workspace_id": row.value.get("workspaceId").and_then(Value::as_str),
+            "history_sequence": mux_history_sequence(&row.value),
+            "model": model_value,
+            "usage": row.value.pointer("/metadata/usage").map(|usage| provider_capped_json_value(usage, PROVIDER_MAX_PREVIEW_CHARS)),
+            "provider_metadata": row.value.pointer("/metadata/providerMetadata").map(|metadata| provider_capped_json_value(metadata, PROVIDER_MAX_PREVIEW_CHARS)),
+            "mux_metadata": row.value.pointer("/metadata/muxMetadata").map(|metadata| provider_capped_json_value(metadata, PROVIDER_MAX_PREVIEW_CHARS)),
+            "partial": row.value.pointer("/metadata/partial").and_then(Value::as_bool),
+        }),
+    })
+}
+
+fn mux_event_type(value: &Value) -> EventType {
+    if mux_is_summary_message(value) {
+        return EventType::Summary;
+    }
+    if value.get("role").and_then(Value::as_str) == Some("system") {
+        return EventType::Notice;
+    }
+    let mut saw_tool_call = false;
+    if let Some(parts) = value.get("parts").and_then(Value::as_array) {
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) != Some("dynamic-tool") {
+                continue;
+            }
+            let state = part.get("state").and_then(Value::as_str);
+            if matches!(state, Some("output-available" | "output-redacted"))
+                || part.get("output").is_some()
+            {
+                return EventType::ToolOutput;
+            }
+            saw_tool_call = true;
+        }
+    }
+    if saw_tool_call {
+        EventType::ToolCall
+    } else {
+        EventType::Message
+    }
+}
+
+fn mux_is_summary_message(value: &Value) -> bool {
+    value
+        .pointer("/metadata/compacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || value
+            .pointer("/metadata/compactionBoundary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || value.pointer("/metadata/contextBoundaryKind").is_some()
+        || value
+            .pointer("/metadata/muxMetadata/type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.contains("compaction") || kind.contains("summary"))
+}
+
+fn mux_event_text(value: &Value, event_type: EventType) -> String {
+    let mut rendered = Vec::new();
+    if let Some(parts) = value.get("parts").and_then(Value::as_array) {
+        for part in parts {
+            match part.get("type").and_then(Value::as_str) {
+                Some("text" | "reasoning") => {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        rendered.push(text.to_owned());
+                    }
+                }
+                Some("dynamic-tool") => rendered.push(mux_tool_part_text(part)),
+                Some("file") => {
+                    if let Some(text) = mux_file_part_text(part) {
+                        rendered.push(text);
+                    }
+                }
+                _ => {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        rendered.push(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    if !rendered.is_empty() {
+        return rendered.join("\n");
+    }
+    if let Some(text) = value
+        .get("content")
+        .or_else(|| value.get("message"))
+        .and_then(provider_value_text)
+    {
+        return text;
+    }
+    match event_type {
+        EventType::ToolOutput => "Mux tool output".to_owned(),
+        EventType::ToolCall => "Mux tool call".to_owned(),
+        EventType::Summary => "Mux summary".to_owned(),
+        EventType::Notice => "Mux notice".to_owned(),
+        _ => "Mux message".to_owned(),
+    }
+}
+
+fn mux_tool_part_text(part: &Value) -> String {
+    let name = part
+        .get("toolName")
+        .or_else(|| part.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("tool");
+    let state = part.get("state").and_then(Value::as_str);
+    let prefix = if matches!(state, Some("output-available" | "output-redacted"))
+        || part.get("output").is_some()
+    {
+        "tool output"
+    } else {
+        "tool call"
+    };
+    let mut text = format!("{prefix}: {name}");
+    if let Some(input) = part.get("input") {
+        text.push('\n');
+        text.push_str("input: ");
+        text.push_str(&mux_value_preview(input));
+    }
+    if let Some(output) = part.get("output") {
+        text.push('\n');
+        text.push_str("output: ");
+        text.push_str(&mux_value_preview(output));
+    }
+    if let Some(nested) = part.get("nestedCalls").and_then(Value::as_array) {
+        let names = nested
+            .iter()
+            .filter_map(|call| {
+                call.get("toolName")
+                    .or_else(|| call.get("name"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            text.push('\n');
+            text.push_str("nested tools: ");
+            text.push_str(&names.join(", "));
+        }
+    }
+    text
+}
+
+fn mux_file_part_text(part: &Value) -> Option<String> {
+    let label = part
+        .get("filename")
+        .or_else(|| part.get("name"))
+        .or_else(|| part.get("mediaType"))
+        .or_else(|| part.get("mimeType"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            part.get("url")
+                .and_then(Value::as_str)
+                .filter(|url| !url.starts_with("data:") && url.len() < 256)
+                .map(str::to_owned)
+        })?;
+    Some(format!("file: {label}"))
+}
+
+fn mux_value_preview(value: &Value) -> String {
+    let raw = provider_value_text(value)
+        .or_else(|| serde_json::to_string(value).ok())
+        .unwrap_or_else(|| value.to_string());
+    provider_local_preview(&raw, PROVIDER_MAX_PREVIEW_CHARS).0
+}
+
+fn mux_event_id(value: &Value, line_number: usize, role: &str, is_partial: bool) -> String {
+    let prefix = if is_partial { "partial:" } else { "" };
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!("{prefix}{id}"))
+        .or_else(|| {
+            mux_history_sequence(value)
+                .map(|sequence| format!("{prefix}historySequence:{sequence}"))
+        })
+        .unwrap_or_else(|| format!("{prefix}{role}:line-{line_number}"))
+}
+
+fn mux_history_sequence(value: &Value) -> Option<i64> {
+    match value.pointer("/metadata/historySequence") {
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok())),
+        Some(Value::String(raw)) => raw.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn mux_parts_len(value: &Value) -> usize {
+    value
+        .get("parts")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn mux_session_id_from_rows(rows: &[MuxMessageRow]) -> Option<String> {
+    rows.iter().find_map(|row| {
+        row.value
+            .get("workspaceId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn mux_message_model(value: &Value) -> Option<String> {
+    mux_string_pointer(value, &["/metadata/model", "/model"])
+}
+
+fn mux_message_timestamp_opt(value: &Value) -> Option<DateTime<Utc>> {
+    value
+        .get("createdAt")
+        .and_then(mux_value_timestamp)
+        .or_else(|| {
+            value
+                .pointer("/metadata/timestamp")
+                .and_then(mux_value_timestamp)
+        })
+        .or_else(|| {
+            value
+                .get("parts")
+                .and_then(Value::as_array)
+                .and_then(|parts| {
+                    parts
+                        .iter()
+                        .find_map(|part| part.get("timestamp").and_then(mux_value_timestamp))
+                })
+        })
+}
+
+fn mux_metadata_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+    ["/createdAt", "/createdAtMs", "/updatedAt", "/updatedAtMs"]
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(mux_value_timestamp))
+}
+
+fn mux_value_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+    match value {
+        Value::String(raw) => parse_rfc3339_utc(raw).or_else(|| {
+            raw.parse::<f64>()
+                .ok()
+                .and_then(provider_timestamp_seconds_to_datetime)
+        }),
+        Value::Number(number) => number
+            .as_f64()
+            .and_then(provider_timestamp_seconds_to_datetime),
+        _ => None,
+    }
+}
+
+fn read_mux_metadata(path: Option<&Path>, summary: &mut ProviderImportSummary) -> Value {
+    let Some(path) = path else {
+        return Value::Null;
+    };
+    match read_text_file_limited(path, MAX_PROVIDER_JSONL_LINE_BYTES, "Mux metadata.json") {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            Ok(_) => {
+                push_provider_import_failure(
+                    summary,
+                    0,
+                    "Mux metadata.json must contain a JSON object".to_owned(),
+                );
+                Value::Null
+            }
+            Err(err) => {
+                push_provider_import_failure(
+                    summary,
+                    0,
+                    format!("invalid Mux metadata.json: {err}"),
+                );
+                Value::Null
+            }
+        },
+        Err(err) => {
+            push_provider_import_failure(
+                summary,
+                0,
+                format!("could not read Mux metadata.json: {err}"),
+            );
+            Value::Null
+        }
+    }
+}
+
+fn mux_string_pointer(value: &Value, pointers: &[&str]) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|raw| !raw.trim().is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn mux_source_primary_path(source: &MuxSessionSource) -> &Path {
+    source
+        .chat_path
+        .as_deref()
+        .or(source.partial_path.as_deref())
+        .unwrap_or(source.session_dir.as_path())
 }
 
 fn gemini_tool_calls_have_result(value: &Value) -> bool {
@@ -10615,6 +23665,552 @@ fn native_jsonl_content_has(value: &Value, expected: &str) -> bool {
                 .any(|block| block.get("type").and_then(Value::as_str) == Some(expected))
         })
         .unwrap_or(false)
+}
+#[derive(Debug, Clone)]
+struct KimiSessionIndexEntry {
+    session_id: String,
+    session_dir: Option<String>,
+    work_dir: Option<String>,
+}
+
+fn normalize_kimi_code_cli_history(
+    path: &Path,
+    context: &ProviderAdapterContext,
+) -> Result<ProviderNormalizationResult> {
+    let mut paths = Vec::new();
+    collect_jsonl_paths(path, &mut paths)?;
+    paths.retain(|candidate| {
+        candidate.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
+            && provider_path_has_component(candidate, "agents")
+    });
+    paths.sort();
+    if paths.is_empty() {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: native_jsonl_missing_reason(CaptureProvider::KimiCodeCli),
+        });
+    }
+
+    let index = kimi_session_index(path);
+    let mut merged = ProviderNormalizationResult::default();
+    for wire_path in paths {
+        let mut result = normalize_kimi_wire_jsonl_file(&wire_path, context, &index)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    Ok(merged)
+}
+
+fn normalize_kimi_wire_jsonl_file(
+    path: &Path,
+    context: &ProviderAdapterContext,
+    index: &BTreeMap<String, KimiSessionIndexEntry>,
+) -> Result<ProviderNormalizationResult> {
+    ensure_regular_provider_transcript_file(path)?;
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut result = ProviderNormalizationResult::default();
+    let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
+
+    while read_provider_jsonl_line(&mut reader, &mut line)? {
+        line_number += 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(&line) {
+            Ok(value) => value,
+            Err(err) => {
+                push_provider_import_failure(
+                    &mut result.summary,
+                    line_number,
+                    format!("malformed JSONL: {err}"),
+                );
+                continue;
+            }
+        };
+        rows.push((line_number, value));
+    }
+
+    let Some((session_dir, agent_id, session_id)) = kimi_wire_path_parts(path) else {
+        return Err(CaptureError::InvalidProviderTranscriptPath {
+            path: path.to_path_buf(),
+            reason: "Kimi Code CLI wire path must be sessions/<workDirKey>/<sessionId>/agents/<agentId>/wire.jsonl",
+        });
+    };
+    let state = read_kimi_state(&session_dir);
+    let index_entry = index.get(&session_id);
+    let metadata_created_at = rows
+        .iter()
+        .find(|(_, value)| value.get("type").and_then(Value::as_str) == Some("metadata"))
+        .and_then(|(_, value)| value.get("created_at"))
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis);
+    let first_row_time = rows
+        .iter()
+        .find_map(|(_, value)| kimi_record_timestamp(value, context.imported_at));
+    let started_at = kimi_state_timestamp(&state, &["createdAt", "created_at"])
+        .or(metadata_created_at)
+        .or(first_row_time)
+        .unwrap_or(context.imported_at);
+    let ended_at = kimi_state_timestamp(&state, &["updatedAt", "updated_at"]);
+    let raw_source_path = path.display().to_string();
+    let agent_state = state
+        .get("agents")
+        .and_then(|agents| agents.get(&agent_id))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let (provider_session_id, parent_provider_session_id, root_provider_session_id, agent_type) =
+        kimi_provider_session_ids(&session_id, &agent_id, &agent_state);
+    let cwd = index_entry
+        .and_then(|entry| entry.work_dir.clone())
+        .or_else(|| {
+            state
+                .get("workDir")
+                .or_else(|| state.get("cwd"))
+                .and_then(Value::as_str)
+                .filter(|cwd| !cwd.trim().is_empty())
+                .map(str::to_owned)
+        });
+
+    result.captures.push((
+        0,
+        kimi_capture(
+            KimiCaptureDraft {
+                provider_session_id: &provider_session_id,
+                parent_provider_session_id: parent_provider_session_id.clone(),
+                root_provider_session_id: root_provider_session_id.clone(),
+                agent_id: &agent_id,
+                agent_type,
+                started_at,
+                ended_at,
+                cwd: cwd.clone(),
+                path,
+                state: &state,
+                index_entry,
+                agent_state: &agent_state,
+                event: None,
+            },
+            context,
+        ),
+    ));
+
+    for (line_number, value) in rows {
+        if value.get("type").and_then(Value::as_str) == Some("metadata") {
+            continue;
+        }
+        let occurred_at = kimi_record_timestamp(&value, started_at).unwrap_or(started_at);
+        let event = kimi_event(&provider_session_id, line_number, &value, occurred_at, path);
+        result
+            .files_touched
+            .extend(provider_file_touches_from_raw_value(
+                CaptureProvider::KimiCodeCli,
+                &provider_session_id,
+                KIMI_CODE_CLI_SOURCE_FORMAT,
+                Some(raw_source_path.as_str()),
+                &value,
+                &event,
+                line_number,
+            ));
+        result.captures.push((
+            line_number,
+            kimi_capture(
+                KimiCaptureDraft {
+                    provider_session_id: &provider_session_id,
+                    parent_provider_session_id: parent_provider_session_id.clone(),
+                    root_provider_session_id: root_provider_session_id.clone(),
+                    agent_id: &agent_id,
+                    agent_type,
+                    started_at,
+                    ended_at,
+                    cwd: cwd.clone(),
+                    path,
+                    state: &state,
+                    index_entry,
+                    agent_state: &agent_state,
+                    event: Some(event),
+                },
+                context,
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+struct KimiCaptureDraft<'a> {
+    provider_session_id: &'a str,
+    parent_provider_session_id: Option<String>,
+    root_provider_session_id: Option<String>,
+    agent_id: &'a str,
+    agent_type: AgentType,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    path: &'a Path,
+    state: &'a Value,
+    index_entry: Option<&'a KimiSessionIndexEntry>,
+    agent_state: &'a Value,
+    event: Option<ProviderEventEnvelope>,
+}
+
+fn kimi_capture(
+    draft: KimiCaptureDraft<'_>,
+    context: &ProviderAdapterContext,
+) -> ProviderCaptureEnvelope {
+    native_provider_capture(
+        NativeSessionDraft {
+            provider: CaptureProvider::KimiCodeCli,
+            source_format: KIMI_CODE_CLI_SOURCE_FORMAT,
+            provider_session_id: draft.provider_session_id.to_owned(),
+            parent_provider_session_id: draft.parent_provider_session_id,
+            root_provider_session_id: draft.root_provider_session_id,
+            external_agent_id: Some(draft.agent_id.to_owned()),
+            agent_type: draft.agent_type,
+            role_hint: Some(if draft.agent_id == "main" {
+                "main".to_owned()
+            } else {
+                "subagent".to_owned()
+            }),
+            is_primary: draft.agent_id == "main",
+            started_at: draft.started_at,
+            ended_at: draft.ended_at,
+            cwd: draft.cwd,
+            fidelity: Fidelity::Imported,
+            raw_source_path: draft.path.display().to_string(),
+            trust: ProviderSourceTrust::ProviderNative,
+            source_metadata: json!({
+                "adapter": KIMI_CODE_CLI_SOURCE_FORMAT,
+                "source_path": draft.path.display().to_string(),
+                "session_index": draft.index_entry.map(kimi_session_index_metadata),
+            }),
+            session_metadata: json!({
+                "source_format": KIMI_CODE_CLI_SOURCE_FORMAT,
+                "agent_id": draft.agent_id,
+                "state": provider_capped_json(draft.state, PROVIDER_MAX_PREVIEW_CHARS),
+                "agent_state": provider_capped_json(draft.agent_state, PROVIDER_MAX_PREVIEW_CHARS),
+                "title": draft.state.get("title").or_else(|| draft.state.get("customTitle")).and_then(Value::as_str),
+                "last_prompt": draft.state.get("lastPrompt").and_then(Value::as_str),
+                "archived": draft.state.get("archived").and_then(Value::as_bool),
+            }),
+        },
+        context,
+        draft.event,
+    )
+}
+
+fn kimi_event(
+    provider_session_id: &str,
+    line_number: usize,
+    value: &Value,
+    occurred_at: DateTime<Utc>,
+    path: &Path,
+) -> ProviderEventEnvelope {
+    let record_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let event_type = kimi_event_type(record_type, value);
+    let role = kimi_event_role(record_type, value, event_type);
+    let text = kimi_event_text(record_type, value, event_type);
+    native_event(NativeEventDraft {
+        provider: CaptureProvider::KimiCodeCli,
+        source_format: KIMI_CODE_CLI_SOURCE_FORMAT,
+        provider_session_id: provider_session_id.to_owned(),
+        provider_event_index: (line_number - 1) as u64,
+        provider_event_hash: Some(format!(
+            "{}:{}",
+            record_type,
+            value
+                .get("time")
+                .and_then(Value::as_i64)
+                .map(|time| time.to_string())
+                .unwrap_or_else(|| line_number.to_string())
+        )),
+        cursor: format!("{}:line:{line_number}", path.display()),
+        event_type,
+        role: Some(role),
+        occurred_at,
+        text,
+        body: value.clone(),
+        metadata: json!({
+            "source": "kimi_code_cli_wire_jsonl",
+            "source_format": KIMI_CODE_CLI_SOURCE_FORMAT,
+            "line": line_number,
+            "record_type": record_type,
+            "model": value.get("model").cloned(),
+            "usage": value.get("usage").cloned(),
+        }),
+    })
+}
+
+fn kimi_event_type(record_type: &str, value: &Value) -> EventType {
+    match record_type {
+        "turn.prompt" | "turn.steer" | "context.append_message" => EventType::Message,
+        "context.append_loop_event" => {
+            let loop_type = value.pointer("/event/type").and_then(Value::as_str);
+            match loop_type {
+                Some(kind) if kind.contains("tool.call") || kind.contains("tool.start") => {
+                    EventType::ToolCall
+                }
+                Some(kind) if kind.contains("tool.result") || kind.contains("tool.finish") => {
+                    EventType::ToolOutput
+                }
+                Some(kind) if kind.contains("message") => EventType::Message,
+                _ if value.pointer("/event/toolName").is_some()
+                    || value.pointer("/event/tool_name").is_some() =>
+                {
+                    EventType::ToolCall
+                }
+                _ => EventType::Notice,
+            }
+        }
+        "usage.record" | "context.apply_compaction" | "full_compaction.complete" => {
+            EventType::Summary
+        }
+        _ => EventType::Notice,
+    }
+}
+
+fn kimi_event_role(record_type: &str, value: &Value, event_type: EventType) -> EventRole {
+    match record_type {
+        "turn.prompt" | "turn.steer" => EventRole::User,
+        "context.append_message" => provider_role(
+            value
+                .pointer("/message/role")
+                .or_else(|| value.pointer("/message/source"))
+                .and_then(Value::as_str),
+        ),
+        "context.append_loop_event"
+            if matches!(event_type, EventType::ToolCall | EventType::ToolOutput) =>
+        {
+            EventRole::Tool
+        }
+        "context.append_loop_event" => provider_role(
+            value
+                .pointer("/event/role")
+                .or_else(|| value.pointer("/event/source"))
+                .and_then(Value::as_str),
+        ),
+        _ => EventRole::System,
+    }
+}
+
+fn kimi_event_text(record_type: &str, value: &Value, event_type: EventType) -> String {
+    match record_type {
+        "turn.prompt" | "turn.steer" => value
+            .get("input")
+            .and_then(provider_value_text)
+            .unwrap_or_else(|| format!("Kimi Code CLI {record_type}")),
+        "context.append_message" => value
+            .pointer("/message/content")
+            .or_else(|| value.get("message"))
+            .and_then(provider_value_text)
+            .unwrap_or_else(|| "Kimi Code CLI message".to_owned()),
+        "context.append_loop_event" => value
+            .pointer("/event/content")
+            .or_else(|| value.pointer("/event/text"))
+            .or_else(|| value.pointer("/event/output"))
+            .or_else(|| value.pointer("/event/result"))
+            .or_else(|| value.pointer("/event/message"))
+            .and_then(provider_value_text)
+            .or_else(|| {
+                value
+                    .pointer("/event/toolName")
+                    .or_else(|| value.pointer("/event/tool_name"))
+                    .and_then(Value::as_str)
+                    .map(|tool| match event_type {
+                        EventType::ToolOutput => format!("tool result: {tool}"),
+                        EventType::ToolCall => format!("tool call: {tool}"),
+                        _ => format!("tool: {tool}"),
+                    })
+            })
+            .unwrap_or_else(|| format!("Kimi Code CLI {record_type}")),
+        "usage.record" => value
+            .get("model")
+            .and_then(Value::as_str)
+            .map(|model| format!("usage record: {model}"))
+            .unwrap_or_else(|| "usage record".to_owned()),
+        "tools.set_active_tools" => value
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|names| {
+                let names = names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("active tools: {names}")
+            })
+            .unwrap_or_else(|| "active tools updated".to_owned()),
+        "permission.set_mode" => value
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(|mode| format!("permission mode: {mode}"))
+            .unwrap_or_else(|| "permission mode updated".to_owned()),
+        _ => format!("Kimi Code CLI {record_type}"),
+    }
+}
+
+fn kimi_record_timestamp(value: &Value, fallback: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    value
+        .get("time")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .or_else(|| {
+            value
+                .get("timestamp")
+                .and_then(|timestamp| match timestamp {
+                    Value::String(raw) => parse_rfc3339_utc(raw),
+                    Value::Number(number) => number
+                        .as_f64()
+                        .and_then(provider_timestamp_seconds_to_datetime),
+                    _ => None,
+                })
+        })
+        .or_else(|| {
+            value
+                .get("created_at")
+                .and_then(Value::as_i64)
+                .and_then(DateTime::<Utc>::from_timestamp_millis)
+        })
+        .or(Some(fallback))
+}
+
+fn kimi_state_timestamp(value: &Value, fields: &[&str]) -> Option<DateTime<Utc>> {
+    fields.iter().find_map(|field| {
+        value.get(*field).and_then(|timestamp| match timestamp {
+            Value::String(raw) => parse_rfc3339_utc(raw).or_else(|| {
+                raw.parse::<f64>()
+                    .ok()
+                    .and_then(provider_timestamp_seconds_to_datetime)
+            }),
+            Value::Number(number) => number
+                .as_f64()
+                .and_then(provider_timestamp_seconds_to_datetime),
+            _ => None,
+        })
+    })
+}
+
+fn kimi_provider_session_ids(
+    session_id: &str,
+    agent_id: &str,
+    agent_state: &Value,
+) -> (String, Option<String>, Option<String>, AgentType) {
+    if agent_id == "main" {
+        return (session_id.to_owned(), None, None, AgentType::Primary);
+    }
+    let provider_session_id = format!("{session_id}/agents/{agent_id}");
+    let parent = agent_state
+        .get("parentAgentId")
+        .or_else(|| agent_state.get("parent_agent_id"))
+        .and_then(Value::as_str)
+        .filter(|parent| !parent.trim().is_empty())
+        .map(|parent| {
+            if parent == "main" {
+                session_id.to_owned()
+            } else {
+                format!("{session_id}/agents/{parent}")
+            }
+        })
+        .or_else(|| Some(session_id.to_owned()));
+    (
+        provider_session_id,
+        parent,
+        Some(session_id.to_owned()),
+        AgentType::Subagent,
+    )
+}
+
+fn kimi_wire_path_parts(path: &Path) -> Option<(PathBuf, String, String)> {
+    let agent_dir = path.parent()?;
+    let agent_id = agent_dir.file_name()?.to_str()?.to_owned();
+    let agents_dir = agent_dir.parent()?;
+    if agents_dir.file_name().and_then(|name| name.to_str()) != Some("agents") {
+        return None;
+    }
+    let session_dir = agents_dir.parent()?.to_path_buf();
+    let session_id = session_dir.file_name()?.to_str()?.to_owned();
+    Some((session_dir, agent_id, session_id))
+}
+
+fn read_kimi_state(session_dir: &Path) -> Value {
+    read_text_file_limited(
+        &session_dir.join("state.json"),
+        MAX_PROVIDER_JSONL_LINE_BYTES,
+        "Kimi Code CLI state.json",
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    .unwrap_or(Value::Null)
+}
+
+fn kimi_session_index(path: &Path) -> BTreeMap<String, KimiSessionIndexEntry> {
+    let mut current = if path.is_file() {
+        path.parent().map(Path::to_path_buf)
+    } else {
+        Some(path.to_path_buf())
+    };
+    while let Some(dir) = current {
+        let index_path = dir.join("session_index.jsonl");
+        if index_path.is_file() {
+            return read_kimi_session_index(&index_path);
+        }
+        current = dir.parent().map(Path::to_path_buf);
+    }
+    BTreeMap::new()
+}
+
+fn read_kimi_session_index(path: &Path) -> BTreeMap<String, KimiSessionIndexEntry> {
+    let Ok(text) = read_text_file_limited(
+        path,
+        MAX_PROVIDER_JSONL_LINE_BYTES,
+        "Kimi Code CLI session_index.jsonl",
+    ) else {
+        return BTreeMap::new();
+    };
+    let mut entries = BTreeMap::new();
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(session_id) = value
+            .get("sessionId")
+            .or_else(|| value.get("session_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        else {
+            continue;
+        };
+        entries.insert(
+            session_id.to_owned(),
+            KimiSessionIndexEntry {
+                session_id: session_id.to_owned(),
+                session_dir: value
+                    .get("sessionDir")
+                    .or_else(|| value.get("session_dir"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                work_dir: value
+                    .get("workDir")
+                    .or_else(|| value.get("work_dir"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+        );
+    }
+    entries
+}
+
+fn kimi_session_index_metadata(entry: &KimiSessionIndexEntry) -> Value {
+    json!({
+        "session_id": entry.session_id,
+        "session_dir": entry.session_dir,
+        "work_dir": entry.work_dir,
+    })
 }
 
 fn pi_session_header(value: Value) -> Result<PiSessionHeader> {
@@ -12723,9 +26319,8 @@ mod tests {
                 .join(name),
             _ => panic!("unknown fixture category {category}"),
         };
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("target/test-data/materialized-fixtures");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-data/materialized-fixtures");
         fs::create_dir_all(&root).unwrap();
         let unique = format!(
             "{}-{}-{}-{}",
@@ -14732,6 +28327,24 @@ mod tests {
                 }),
                 "src/droid_file.rs",
             ),
+            (
+                CaptureProvider::ForgeCode,
+                FORGECODE_SQLITE_SOURCE_FORMAT,
+                serde_json::json!({
+                    "message": {
+                        "text": {
+                            "tool_calls": [{
+                                "name": "write",
+                                "arguments": {
+                                    "path": "src/forge_file.rs",
+                                    "content": "proof"
+                                }
+                            }]
+                        }
+                    }
+                }),
+                "src/forge_file.rs",
+            ),
         ] {
             let touches = provider_file_touches_from_raw_value(
                 provider,
@@ -14914,6 +28527,189 @@ mod tests {
     }
 
     #[test]
+    fn native_windsurf_fixture_imports_searches_reimports_and_file_touches() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("windsurf/transcripts");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Windsurf, fixture.clone());
+        assert_eq!(
+            source.source_format,
+            "windsurf_cascade_hook_transcript_jsonl_tree"
+        );
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert!(source.import_support.is_auto_importable());
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_windsurf_cascade_hook_transcripts(
+            &fixture,
+            &mut store,
+            WindsurfCascadeHookImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-06-24T14:00:00Z".parse().unwrap(),
+                ..WindsurfCascadeHookImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{first:?}");
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 5);
+        assert!(store
+            .search_event_hits("windsurf cascade hook oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Windsurf)));
+        assert!(store
+            .search_event_hits("windsurf unknown typed payload oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Windsurf)));
+
+        let session_id =
+            provider_session_uuid(CaptureProvider::Windsurf, "windsurf-hook-trajectory-1");
+        let events = store.events_for_session(session_id).unwrap();
+        let code_action = events
+            .iter()
+            .find(|event| event.event_type == EventType::ToolCall)
+            .unwrap();
+        assert_eq!(
+            code_action.payload["body"]["body"]["code_action"]["path"].as_str(),
+            Some("src/windsurf_hook_oracle.py")
+        );
+        assert_eq!(
+            code_action.payload["body"]["body"]["code_action"]["new_content"]["redacted"].as_str(),
+            Some("sensitive_transcript_field")
+        );
+        assert!(!code_action.payload.to_string().contains("print("));
+
+        let archive = store.export_archive().unwrap();
+        assert!(archive.files_touched.iter().any(|file| {
+            file.path == "src/windsurf_hook_oracle.py" && file.confidence == Confidence::High
+        }));
+
+        let second = import_windsurf_cascade_hook_transcripts(
+            &fixture,
+            &mut store,
+            WindsurfCascadeHookImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-06-24T14:05:00Z".parse().unwrap(),
+                ..WindsurfCascadeHookImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{second:?}");
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 5);
+    }
+
+    #[test]
+    fn native_qoder_fixture_imports_documented_transcript_jsonl() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("qoder/projects");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Qoder, fixture.clone());
+        assert_eq!(source.source_format, "qoder_transcript_jsonl_tree");
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_qoder_history(
+            &fixture,
+            &mut store,
+            QoderImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-07-01T12:00:00Z".parse().unwrap(),
+                ..QoderImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{first:?}");
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 7);
+        assert!(store
+            .search_event_hits("qoder jsonl oracle prompt", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Qoder)));
+        assert!(store
+            .search_event_hits("qoder native import ok", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Qoder)));
+
+        let session_id = provider_session_uuid(CaptureProvider::Qoder, "qoder-session-1");
+        let events = store.events_for_session(session_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::Message
+                && event.role == Some(EventRole::User)));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall
+                && event.role == Some(EventRole::Assistant)));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput
+                && event.role == Some(EventRole::User)
+                && event.payload["body"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("qoder import ok"))));
+
+        let second = import_qoder_history(
+            &fixture,
+            &mut store,
+            QoderImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-07-01T12:05:00Z".parse().unwrap(),
+                ..QoderImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{second:?}");
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 7);
+    }
+
+    #[test]
+    fn native_windsurf_reports_malformed_jsonl_partially() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("windsurf/malformed/transcripts");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_windsurf_cascade_hook_transcripts(
+            &fixture,
+            &mut store,
+            WindsurfCascadeHookImportOptions {
+                allow_partial_failures: true,
+                imported_at: "2026-06-24T14:00:00Z".parse().unwrap(),
+                ..WindsurfCascadeHookImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1, "{summary:?}");
+        assert_eq!(summary.failures[0].line, 2);
+        assert!(summary.failures[0].error.contains("malformed JSONL"));
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 2);
+        assert!(store
+            .search_event_hits("windsurf malformed after bad oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Windsurf)));
+    }
+
+    #[test]
     fn native_claude_projects_reports_malformed_jsonl() {
         let temp = tempdir();
         let fixture = temp.path().join("claude-malformed/projects/-workspace");
@@ -14942,6 +28738,686 @@ mod tests {
         assert_eq!(summary.imported_sessions, 1);
         assert_eq!(summary.imported_events, 1);
         assert!(summary.failures[0].error.contains("malformed JSONL"));
+    }
+
+    #[test]
+    fn native_task_json_imports_cline_and_roo_task_directories() {
+        let temp = tempdir();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let cline = provider_history_fixture("cline/data");
+        let cline_first = import_cline_task_json_history(
+            &cline,
+            &mut store,
+            ClineTaskJsonImportOptions {
+                source_path: Some(cline.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-06-30T12:10:00Z".parse().unwrap(),
+                ..ClineTaskJsonImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cline_first.failed, 0, "{:?}", cline_first.failures);
+        assert_eq!(cline_first.imported_sessions, 1);
+        assert_eq!(cline_first.imported_events, 3);
+
+        let cline_session = provider_session_uuid(CaptureProvider::Cline, "cline-task-1");
+        let cline_events = store.events_for_session(cline_session).unwrap();
+        assert_eq!(cline_events.len(), 3);
+        assert!(cline_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(store
+            .export_archive()
+            .unwrap()
+            .files_touched
+            .iter()
+            .any(|file| file.path == "docs/cline-task-json.md"));
+
+        let cline_second = import_cline_task_json_history(
+            &cline,
+            &mut store,
+            ClineTaskJsonImportOptions {
+                source_path: Some(cline.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-06-30T12:10:00Z".parse().unwrap(),
+                ..ClineTaskJsonImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cline_second.imported_sessions, 0);
+        assert_eq!(cline_second.imported_events, 0);
+        assert_eq!(cline_second.skipped_sessions, 1);
+        assert_eq!(cline_second.skipped_events, 3);
+
+        let roo = provider_history_fixture("roo/storage");
+        let roo_first = import_roo_task_json_history(
+            &roo,
+            &mut store,
+            RooTaskJsonImportOptions {
+                source_path: Some(roo.clone()),
+                allow_partial_failures: true,
+                imported_at: "2026-06-30T12:10:00Z".parse().unwrap(),
+                ..RooTaskJsonImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(roo_first.failed, 0, "{:?}", roo_first.failures);
+        assert_eq!(roo_first.imported_sessions, 2);
+        assert_eq!(roo_first.imported_events, 5);
+
+        let roo_session = provider_session_uuid(CaptureProvider::RooCode, "roo-task-1");
+        let roo_events = store.events_for_session(roo_session).unwrap();
+        assert_eq!(roo_events.len(), 3);
+        assert!(roo_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        let fallback = provider_session_uuid(CaptureProvider::RooCode, "roo-fallback-task");
+        assert_eq!(store.events_for_session(fallback).unwrap().len(), 2);
+        assert!(store
+            .export_archive()
+            .unwrap()
+            .files_touched
+            .iter()
+            .any(|file| file.path == "tests/roo-task-json.txt"));
+    }
+    #[test]
+    fn native_task_json_malformed_file_is_atomic_without_partial_failures() {
+        let temp = tempdir();
+        let task = temp.path().join("cline-data/tasks/cline-bad");
+        fs::create_dir_all(&task).unwrap();
+        fs::write(
+            task.join("task_metadata.json"),
+            r#"{"taskId":"cline-bad","createdAt":"2026-06-30T12:00:00Z"}"#,
+        )
+        .unwrap();
+        fs::write(
+            task.join("api_conversation_history.json"),
+            "[{\"role\":\"user\"",
+        )
+        .unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_cline_task_json_history(
+            temp.path().join("cline-data"),
+            &mut store,
+            ClineTaskJsonImportOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.imported_sessions, 0);
+        assert_eq!(summary.imported_events, 0);
+        assert!(summary.failures[0]
+            .error
+            .contains("api_conversation_history.json"));
+        let session_id = provider_session_uuid(CaptureProvider::Cline, "cline-bad");
+        assert!(store.get_session(session_id).is_err());
+    }
+
+    #[test]
+    fn native_codebuddy_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("codebuddy/Data");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_codebuddy_history(
+            &fixture,
+            &mut store,
+            CodeBuddyImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T16:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..CodeBuddyImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 2);
+        assert_eq!(first.imported_events, 3);
+
+        let alpha = provider_session_uuid(
+            CaptureProvider::CodeBuddy,
+            "11112222333344445555666677778888/session-alpha",
+        );
+        let events = store.events_for_session(alpha).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].role, Some(EventRole::User));
+        assert_eq!(events[1].role, Some(EventRole::Assistant));
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("codebuddy oracle prompt update"));
+        assert!(rendered.contains("src/codebuddy_fixture.rs"));
+        assert!(!events[0]
+            .payload
+            .pointer("/body/text")
+            .and_then(Value::as_str)
+            .unwrap()
+            .contains("project_context"));
+        assert!(store
+            .search_event_hits("codebuddy oracle prompt", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::CodeBuddy)));
+        assert!(store
+            .search_event_hits("project_context", 10)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .search_event_hits("plain fallback codebuddy beta oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::CodeBuddy)));
+
+        let source = provider_source_for_path(CaptureProvider::CodeBuddy, fixture.clone());
+        assert_eq!(source.source_format, CODEBUDDY_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let second = import_codebuddy_history(
+            &fixture,
+            &mut store,
+            CodeBuddyImportOptions {
+                allow_partial_failures: true,
+                ..CodeBuddyImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 2);
+        assert_eq!(second.skipped_events, 3);
+    }
+
+    #[test]
+    fn native_trae_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("trae/User/workspaceStorage");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_trae_history(
+            &fixture,
+            &mut store,
+            TraeImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T21:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..TraeImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 2);
+
+        let source = provider_source_for_path(CaptureProvider::Trae, fixture.clone());
+        assert_eq!(source.source_format, TRAE_STATE_VSCDB_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let session_id = provider_session_uuid(
+            CaptureProvider::Trae,
+            "trae-workspace-1/trae-fixture-session",
+        );
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(session.provider, CaptureProvider::Trae);
+        assert_eq!(
+            session.sync.metadata["metadata"]["workspace_folder"].as_str(),
+            Some("/workspace/trae-fixture")
+        );
+
+        let events = store.events_for_session(session_id).unwrap();
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("trae oracle prompt from state vscdb"));
+        assert!(rendered.contains("trae oracle answer from state vscdb"));
+        assert!(store
+            .search_event_hits("trae oracle answer", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Trae)));
+
+        let second = import_trae_history(
+            &fixture,
+            &mut store,
+            TraeImportOptions {
+                allow_partial_failures: true,
+                ..TraeImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 2);
+    }
+
+    #[test]
+    fn native_trae_chatstore_entries_schema_drift_imports() {
+        let temp = tempdir();
+        let workspace = temp.path().join("User/workspaceStorage/schema-drift");
+        fs::create_dir_all(&workspace).unwrap();
+        let db_path = workspace.join("state.vscdb");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        let value = json!({
+            "entries": {
+                "drift-session": {
+                    "id": "drift-session",
+                    "name": "Drift session",
+                    "messages": [
+                        {
+                            "id": "drift-user",
+                            "role": "user",
+                            "content": [{"type": "text", "text": "trae drift prompt"}],
+                            "createdAt": "2026-07-05T12:00:00Z"
+                        },
+                        {
+                            "id": "drift-assistant",
+                            "role": "assistant",
+                            "content": {"summary": "trae drift answer"},
+                            "createdAt": "2026-07-05T12:01:00Z"
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO ItemTable ([key], value) VALUES ('ChatStore', ?1)",
+            [value],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_trae_history(
+            temp.path().join("User/workspaceStorage"),
+            &mut store,
+            TraeImportOptions {
+                allow_partial_failures: true,
+                ..TraeImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 2);
+        assert!(store
+            .search_event_hits("trae drift answer", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Trae)));
+    }
+
+    #[test]
+    fn native_trae_cn_input_history_key_imports_user_messages() {
+        let temp = tempdir();
+        let workspace = temp
+            .path()
+            .join("Trae CN/User/workspaceStorage/cn-workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join("workspace.json"),
+            r#"{"folder":"file:///workspace/trae-cn-fixture"}"#,
+        )
+        .unwrap();
+        let db_path = workspace.join("state.vscdb");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE ItemTable ([key] TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable ([key], value) VALUES (?1, ?2)",
+            rusqlite::params![
+                TRAE_CN_INPUT_HISTORY_KEY,
+                json!([
+                    {
+                        "id": "cn-input-1",
+                        "inputText": "TRAE_CN_INPUT_HISTORY_ORACLE alpha",
+                        "createdAt": "2026-07-05T13:00:00Z"
+                    },
+                    {
+                        "id": "cn-input-2",
+                        "text": "TRAE_CN_INPUT_HISTORY_ORACLE beta",
+                        "createdAt": "2026-07-05T13:01:00Z"
+                    }
+                ])
+                .to_string()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_trae_history(
+            temp.path().join("Trae CN/User/workspaceStorage"),
+            &mut store,
+            TraeImportOptions {
+                allow_partial_failures: true,
+                ..TraeImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 2);
+
+        let session_id =
+            provider_session_uuid(CaptureProvider::Trae, "cn-workspace/trae-cn-input-history");
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(
+            session.sync.metadata["metadata"]["workspace_folder"].as_str(),
+            Some("/workspace/trae-cn-fixture")
+        );
+        let events = store.events_for_session(session_id).unwrap();
+        assert!(events
+            .iter()
+            .all(|event| event.role == Some(EventRole::User)));
+        assert!(store
+            .search_event_hits("TRAE_CN_INPUT_HISTORY_ORACLE", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Trae)));
+    }
+    #[test]
+    fn native_auggie_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("auggie/v0.32.0/sessions");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Auggie, fixture.clone());
+        assert_eq!(source.source_format, AUGGIE_SESSION_JSON_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_auggie_history(
+            &fixture,
+            &mut store,
+            AuggieImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T20:30:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..AuggieImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 4);
+
+        let session_id =
+            provider_session_uuid(CaptureProvider::Auggie, "01K0AUGGIESESSION0000000000");
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].role, Some(EventRole::User));
+        assert_eq!(events[1].role, Some(EventRole::Assistant));
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("auggie session json oracle prompt"));
+        assert!(rendered.contains("Auggie session import finished"));
+        assert!(rendered.contains("auggie node text oracle prompt"));
+        assert!(store
+            .search_event_hits("Auggie node response imported", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Auggie)));
+
+        let source = store
+            .capture_source_by_external_session(
+                CaptureProvider::Auggie,
+                "01K0AUGGIESESSION0000000000",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source.sync.metadata["source_metadata"]["upstream_schema_anchor"]["package"].as_str(),
+            Some("@augmentcode/auggie@0.32.0")
+        );
+
+        let second = import_auggie_history(
+            &fixture,
+            &mut store,
+            AuggieImportOptions {
+                allow_partial_failures: true,
+                ..AuggieImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 4);
+    }
+
+    #[test]
+    fn native_firebender_fixture_imports_project_root_db_and_reimports() {
+        let temp = tempdir();
+        let project_root = provider_history_fixture("firebender/v1");
+        let fixture = project_root
+            .join(".idea")
+            .join("firebender")
+            .join("chat_history.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let root_source =
+            provider_source_for_path(CaptureProvider::Firebender, project_root.clone());
+        assert_eq!(root_source.source_format, FIREBENDER_SQLITE_SOURCE_FORMAT);
+        assert_eq!(root_source.status, ProviderSourceStatus::Available);
+        let db_source = provider_source_for_path(CaptureProvider::Firebender, fixture.clone());
+        assert_eq!(db_source.source_format, FIREBENDER_SQLITE_SOURCE_FORMAT);
+        assert_eq!(db_source.status, ProviderSourceStatus::Available);
+
+        let first = import_firebender_sqlite(
+            &project_root,
+            &mut store,
+            FirebenderSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(project_root.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T20:10:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..FirebenderSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+        let session_id =
+            provider_session_uuid(CaptureProvider::Firebender, "firebender-fixture-session");
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::User)));
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::Assistant)));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("firebender fixture oracle prompt"));
+        assert!(rendered.contains("Firebender fixture oracle response"));
+        assert!(store
+            .search_event_hits("firebender fixture oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Firebender)));
+
+        let source = store
+            .capture_source_by_external_session(
+                CaptureProvider::Firebender,
+                "firebender-fixture-session",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source.sync.metadata["source_metadata"]["storage"].as_str(),
+            Some(".idea/firebender/chat_history.db")
+        );
+
+        let second = import_firebender_sqlite(
+            &fixture,
+            &mut store,
+            FirebenderSqliteImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..FirebenderSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+    }
+    #[test]
+    fn provider_sources_discovers_auggie_default_sessions() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("auggie/v0.32.0/sessions");
+        let sessions = temp.path().join(".augment").join("sessions");
+        copy_dir_all(&fixture, &sessions);
+
+        let sources = discover_provider_sources_for_provider(temp.path(), CaptureProvider::Auggie);
+        let source = sources
+            .iter()
+            .find(|source| source.source_format == AUGGIE_SESSION_JSON_SOURCE_FORMAT)
+            .unwrap_or_else(|| panic!("missing Auggie source in {sources:#?}"));
+        assert_eq!(source.provider, CaptureProvider::Auggie);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert_eq!(source.path, sessions);
+    }
+
+    #[test]
+    fn native_lingma_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("lingma/v1/local.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Lingma, fixture.clone());
+        assert_eq!(source.source_format, LINGMA_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_lingma_sqlite(
+            &fixture,
+            &mut store,
+            LingmaSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T16:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..LingmaSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 2);
+        assert_eq!(first.imported_events, 6);
+
+        let alpha = provider_session_uuid(CaptureProvider::Lingma, "lingma-session-1");
+        let events = store.events_for_session(alpha).unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].role, Some(EventRole::User));
+        assert_eq!(events[1].role, Some(EventRole::Assistant));
+        assert_eq!(events[1].sync.fidelity, Fidelity::SummaryOnly);
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("lingma oracle prompt update"));
+        assert!(rendered.contains("src/lingma_fixture.rs"));
+        assert!(rendered.contains("Lingma summary oracle answer"));
+        assert!(rendered.contains("summary_only"));
+        assert!(rendered.contains("assistant_content_caveat"));
+        assert!(store
+            .search_event_hits("Lingma summary oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Lingma)));
+        assert!(store
+            .search_event_hits("lingma oracle prompt update", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Lingma)));
+
+        let error_session = provider_session_uuid(CaptureProvider::Lingma, "lingma-session-2");
+        let error_events = store.events_for_session(error_session).unwrap();
+        assert_eq!(error_events.len(), 2);
+        assert_eq!(error_events[1].event_type, EventType::Notice);
+        assert!(serde_json::to_string(&error_events)
+            .unwrap()
+            .contains("sanitized Lingma error"));
+
+        let second = import_lingma_sqlite(
+            &fixture,
+            &mut store,
+            LingmaSqliteImportOptions {
+                allow_partial_failures: true,
+                ..LingmaSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 2);
+        assert_eq!(second.skipped_events, 6);
+    }
+
+    #[test]
+    fn native_lingma_import_reports_corrupt_sqlite() {
+        let temp = tempdir();
+        let db = temp.path().join("corrupt-lingma.db");
+        fs::write(&db, b"not sqlite").unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = import_lingma_sqlite(&db, &mut store, LingmaSqliteImportOptions::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not a database") || err.contains("sqlite"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_lingma_normalizer_rejects_symlinked_sqlite() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir();
+        let fixture = provider_history_fixture("lingma/v1/local.db");
+        let link = temp.path().join("linked-lingma.db");
+        symlink(&fixture, &link).unwrap();
+
+        let err = normalize_lingma_sqlite(&link, &ProviderAdapterContext::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            CaptureError::InvalidProviderTranscriptPath { path, reason }
+                if path.ends_with("linked-lingma.db")
+                    && reason == "symlinked provider transcript files are rejected"
+        ));
     }
 
     #[test]
@@ -14984,6 +29460,208 @@ mod tests {
             Some(OPENCODE_SQLITE_SOURCE_FORMAT)
         );
     }
+    #[test]
+    fn native_kilo_imports_opencode_derived_sqlite_fixture_idempotently() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("kilo/kilo.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_kilo_sqlite(
+            &fixture,
+            &mut store,
+            KiloSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..KiloSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 2);
+
+        let session_id = provider_session_uuid(CaptureProvider::Kilo, "kilo-root");
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(session.provider, CaptureProvider::Kilo);
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].sync.metadata["source_format"].as_str(),
+            Some(KILO_SQLITE_SOURCE_FORMAT)
+        );
+        assert_eq!(
+            events[0].payload["body"]["session_message_seq"].as_i64(),
+            Some(1)
+        );
+        assert_eq!(
+            events[1].payload["body"]["session_message_seq"].as_i64(),
+            Some(2)
+        );
+
+        let second = import_kilo_sqlite(
+            &fixture,
+            &mut store,
+            KiloSqliteImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..KiloSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 2);
+    }
+    #[test]
+    fn native_warp_imports_sqlite_fixture_idempotently() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("warp/v1/warp.sqlite");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_warp_sqlite(
+            &fixture,
+            &mut store,
+            WarpSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-05T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..WarpSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 4);
+
+        let session_id = provider_session_uuid(CaptureProvider::Warp, "warp-conversation-1");
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(session.provider, CaptureProvider::Warp);
+        let rendered_session = serde_json::to_string(&session.sync.metadata).unwrap();
+        assert!(rendered_session.contains("Sanitized Warp Agent"));
+        assert!(rendered_session.contains("has_server_conversation_token"));
+        assert!(!rendered_session.contains("redacted-token-not-imported"));
+
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].role, Some(EventRole::User));
+        assert_eq!(events[1].role, Some(EventRole::Assistant));
+        assert_eq!(events[2].event_type, EventType::ToolCall);
+        assert_eq!(events[3].event_type, EventType::ToolOutput);
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("warp sqlite oracle prompt"));
+        assert!(rendered.contains("Warp sqlite oracle answer"));
+        assert!(rendered.contains("warp_sqlite"));
+        assert!(store
+            .search_event_hits("Warp sqlite oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Warp)));
+
+        let second = import_warp_sqlite(
+            &fixture,
+            &mut store,
+            WarpSqliteImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..WarpSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 4);
+    }
+
+    #[test]
+    fn native_warp_import_reads_committed_wal_content() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("warp/v1/warp.sqlite");
+        let live_db = temp.path().join("warp-live.sqlite");
+        fs::copy(&fixture, &live_db).unwrap();
+        let writer = Connection::open(&live_db).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        let conversation_data = json!({
+            "agent_name": "Warp WAL Agent",
+            "server_conversation_token": "redacted-token-not-imported"
+        })
+        .to_string();
+        writer
+            .execute(
+                "update agent_conversations set conversation_data = ?1 where conversation_id = ?2",
+                rusqlite::params![conversation_data, "warp-conversation-1"],
+            )
+            .unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_warp_sqlite(
+            &live_db,
+            &mut store,
+            WarpSqliteImportOptions {
+                source_path: Some(live_db.clone()),
+                allow_partial_failures: true,
+                ..WarpSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 4);
+        let session_id = provider_session_uuid(CaptureProvider::Warp, "warp-conversation-1");
+        let session = store.get_session(session_id).unwrap();
+        let rendered_session = serde_json::to_string(&session.sync.metadata).unwrap();
+        assert!(rendered_session.contains("Warp WAL Agent"));
+        assert!(!rendered_session.contains("redacted-token-not-imported"));
+        drop(writer);
+    }
+
+    #[test]
+    fn native_warp_rejects_changed_schema_before_querying() {
+        let temp = tempdir();
+        let db = temp.path().join("warp-missing-task.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agent_conversations (
+                id INTEGER PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                conversation_data TEXT NOT NULL,
+                last_modified_at TEXT NOT NULL
+            );
+            CREATE TABLE agent_tasks (
+                id INTEGER PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                last_modified_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let err = import_warp_sqlite(
+            &db,
+            &mut Store::open(temp.path().join("work.sqlite")).unwrap(),
+            WarpSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Warp agent_tasks table missing required column(s): task"));
+    }
 
     #[test]
     fn native_hermes_rejects_out_of_range_message_timestamp() {
@@ -15025,7 +29703,12 @@ mod tests {
         let link = temp.path().join("linked-opencode.db");
         symlink(&fixture, &link).unwrap();
 
-        let err = normalize_opencode_sqlite(&link, &ProviderAdapterContext::default()).unwrap_err();
+        let err = normalize_opencode_sqlite(
+            &link,
+            &ProviderAdapterContext::default(),
+            &OPENCODE_SQLITE_DIALECT,
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             CaptureError::InvalidProviderTranscriptPath { path, reason }
@@ -15604,6 +30287,1040 @@ mod tests {
     }
 
     #[test]
+    fn native_crush_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("crush/v1/crush.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_crush_sqlite(
+            &fixture,
+            &mut store,
+            CrushSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-06-24T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..CrushSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 2);
+        assert_eq!(first.imported_events, 4);
+        assert_eq!(first.imported_edges, 1);
+        let parent_id = provider_session_uuid(CaptureProvider::Crush, "crush-root");
+        let child_id = provider_session_uuid(CaptureProvider::Crush, "crush-child");
+        assert_eq!(
+            store.get_session(child_id).unwrap().parent_session_id,
+            Some(parent_id)
+        );
+        let events = store.events_for_session(parent_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::Summary));
+        assert!(store
+            .search_event_hits("crush oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Crush)));
+        let source = provider_source_for_path(CaptureProvider::Crush, fixture.clone());
+        assert_eq!(source.source_format, CRUSH_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let second = import_crush_sqlite(
+            &fixture,
+            &mut store,
+            CrushSqliteImportOptions {
+                allow_partial_failures: true,
+                ..CrushSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.imported_edges, 0);
+        assert_eq!(second.skipped_sessions, 2);
+        assert_eq!(second.skipped_events, 4);
+        assert_eq!(second.skipped_edges, 1);
+    }
+
+    #[test]
+    fn native_goose_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("goose/v14/sessions.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let first = import_goose_sessions_sqlite(
+            &fixture,
+            &mut store,
+            GooseSessionsSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-06-24T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..GooseSessionsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+        let session_id = provider_session_uuid(CaptureProvider::Goose, "goose-root");
+        store.get_session(session_id).unwrap();
+        let source = store
+            .capture_source_by_external_session(CaptureProvider::Goose, "goose-root")
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.descriptor.cwd.as_deref(), Some("/workspace/goose"));
+        assert!(source
+            .sync
+            .metadata
+            .to_string()
+            .contains("\"goose_schema_version\":14"));
+        let events = store.events_for_session(session_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        assert!(store
+            .search_event_hits("goose oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Goose)));
+
+        let second = import_goose_sessions_sqlite(
+            &fixture,
+            &mut store,
+            GooseSessionsSqliteImportOptions {
+                allow_partial_failures: true,
+                ..GooseSessionsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+    }
+
+    #[test]
+    fn native_kiro_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("kiro-cli/v2/data.sqlite3");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::KiroCli, fixture.clone());
+        assert_eq!(source.source_format, KIRO_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_kiro_sqlite(
+            &fixture,
+            &mut store,
+            KiroSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-06-25T20:12:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..KiroSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+        let session_id = provider_session_uuid(
+            CaptureProvider::KiroCli,
+            "00000000-0000-4000-8000-000000000001",
+        );
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(session.provider, CaptureProvider::KiroCli);
+        let source = store
+            .capture_source_by_external_session(
+                CaptureProvider::KiroCli,
+                "00000000-0000-4000-8000-000000000001",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source.descriptor.cwd.as_deref(),
+            Some("/workspace/kiro-fixture")
+        );
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(store
+            .export_archive()
+            .unwrap()
+            .files_touched
+            .iter()
+            .any(|file| file.path == "/workspace/kiro-fixture"));
+        assert!(store
+            .search_event_hits("kiro oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::KiroCli)));
+
+        let second = import_kiro_sqlite(
+            &fixture,
+            &mut store,
+            KiroSqliteImportOptions {
+                allow_partial_failures: true,
+                ..KiroSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+    }
+    #[test]
+    fn native_astrbot_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("astrbot/v1/data/data_v4.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::AstrBot, fixture.clone());
+        assert_eq!(source.source_format, ASTRBOT_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_astrbot_sqlite(
+            &fixture,
+            &mut store,
+            AstrBotSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-06T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..AstrBotSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+
+        let session_id = provider_session_uuid(CaptureProvider::AstrBot, "umo-astrbot-1");
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(session.provider, CaptureProvider::AstrBot);
+        let source = store
+            .capture_source_by_external_session(CaptureProvider::AstrBot, "umo-astrbot-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source.sync.metadata["source_format"].as_str(),
+            Some(ASTRBOT_SQLITE_SOURCE_FORMAT)
+        );
+
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::User)));
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("ASTRBOT_ORACLE_USER_TEXT violet jasper harbor"));
+        assert!(rendered.contains("ASTRBOT_ORACLE_ASSISTANT_TEXT copper lantern atlas"));
+        assert!(rendered.contains("ASTRBOT_PLATFORM_HISTORY_TEXT saffron comet"));
+
+        assert!(store
+            .search_event_hits("ASTRBOT_ORACLE_ASSISTANT_TEXT", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::AstrBot)));
+        assert!(store
+            .search_event_hits("ASTRBOT_PLATFORM_HISTORY_TEXT", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::AstrBot)));
+
+        let second = import_astrbot_sqlite(
+            &fixture,
+            &mut store,
+            AstrBotSqliteImportOptions {
+                allow_partial_failures: true,
+                ..AstrBotSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+    }
+
+    #[test]
+    fn native_junie_fixture_imports_searches_reimports_and_file_touches() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("junie/sessions");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Junie, fixture.clone());
+        assert_eq!(source.source_format, JUNIE_SESSION_EVENTS_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_junie_history(
+            &fixture,
+            &mut store,
+            JunieImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-06T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..JunieImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 5);
+
+        let session_id =
+            provider_session_uuid(CaptureProvider::Junie, "session-260607-100000-acme");
+        let session = store.get_session(session_id).unwrap();
+        assert_eq!(session.provider, CaptureProvider::Junie);
+        let source = store
+            .capture_source_by_external_session(
+                CaptureProvider::Junie,
+                "session-260607-100000-acme",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source.descriptor.cwd.as_deref(),
+            Some("/workspace/junie-fixture")
+        );
+        assert_eq!(
+            source.sync.metadata["source_format"].as_str(),
+            Some(JUNIE_SESSION_EVENTS_SOURCE_FORMAT)
+        );
+
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 5);
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::User)));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::CommandOutput));
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert!(rendered.contains("JUNIE_ORACLE_USER_TEXT violet cedar compass"));
+        assert!(rendered.contains("JUNIE_TERMINAL_OUTPUT saffron harbor"));
+        assert!(rendered.contains("JUNIE_FILE_CHANGE_TEXT cobalt lantern"));
+        assert!(rendered.contains("JUNIE_RESULT_TEXT copper lantern atlas"));
+
+        assert!(store
+            .search_event_hits("JUNIE_RESULT_TEXT", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Junie)));
+        assert!(store
+            .search_event_hits("JUNIE_TERMINAL_OUTPUT", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Junie)));
+
+        let archive = store.export_archive().unwrap();
+        let touched = archive
+            .files_touched
+            .iter()
+            .find(|file| file.path == "src/junie_theme.rs")
+            .expect("missing Junie file touch");
+        assert_eq!(touched.change_kind, Some(FileChangeKind::Modified));
+        assert_eq!(touched.confidence, Confidence::Explicit);
+        assert!(touched.event_id.is_some());
+
+        let second = import_junie_history(
+            &fixture,
+            &mut store,
+            JunieImportOptions {
+                allow_partial_failures: true,
+                ..JunieImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 5);
+    }
+
+    #[test]
+    fn native_junie_index_rejects_traversal_session_ids() {
+        let temp = tempdir();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir_all(sessions.join("session-safe")).unwrap();
+        fs::write(
+            sessions.join("index.jsonl"),
+            "{\"sessionId\":\"../escape\",\"createdAt\":1783339200000}\n\
+             {\"sessionId\":\"session-safe\",\"createdAt\":1783339200000,\"taskName\":\"safe\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("session-safe").join("events.jsonl"),
+            "{\"kind\":\"UserPromptEvent\",\"prompt\":\"JUNIE_SAFE_SESSION_TEXT\"}\n",
+        )
+        .unwrap();
+
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+        let summary = import_junie_history(
+            &sessions,
+            &mut store,
+            JunieImportOptions {
+                allow_partial_failures: true,
+                ..JunieImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+        assert_eq!(summary.imported_sessions, 1);
+        assert!(store
+            .capture_source_by_external_session(CaptureProvider::Junie, "../escape")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .search_event_hits("JUNIE_SAFE_SESSION_TEXT", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Junie)));
+    }
+    #[test]
+    fn native_zed_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("zed/v1/threads.db");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Zed, fixture.clone());
+        assert_eq!(source.source_format, ZED_THREADS_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_zed_threads_sqlite(
+            &fixture,
+            &mut store,
+            ZedThreadsSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T12:10:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..ZedThreadsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 2);
+        assert_eq!(first.imported_events, 5);
+        assert_eq!(first.imported_edges, 1);
+
+        let parent_id = provider_session_uuid(CaptureProvider::Zed, "zed-root");
+        let child_id = provider_session_uuid(CaptureProvider::Zed, "zed-child");
+        assert_eq!(
+            store.get_session(child_id).unwrap().parent_session_id,
+            Some(parent_id)
+        );
+        let parent_events = store.events_for_session(parent_id).unwrap();
+        assert_eq!(parent_events.len(), 3);
+        assert!(parent_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(parent_events
+            .iter()
+            .any(|event| event.event_type == EventType::Summary));
+        let rendered = serde_json::to_string(&parent_events).unwrap();
+        assert!(rendered.contains("zed sqlite oracle prompt"));
+        assert!(rendered.contains("zed sqlite oracle answer"));
+        assert!(rendered.contains("zed compacted summary oracle"));
+        assert!(store
+            .export_archive()
+            .unwrap()
+            .files_touched
+            .iter()
+            .any(|file| file.path == "src/zed_oracle.txt"));
+        assert!(store
+            .search_event_hits("zed sqlite oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Zed)));
+
+        let source = store
+            .capture_source_by_external_session(CaptureProvider::Zed, "zed-root")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source.sync.metadata["source_metadata"]["upstream_schema_anchor"]["commit"].as_str(),
+            Some("e3b73c6b30cdc09e820823fe44542b89850d4be1")
+        );
+
+        let second = import_zed_threads_sqlite(
+            &fixture,
+            &mut store,
+            ZedThreadsSqliteImportOptions {
+                allow_partial_failures: true,
+                ..ZedThreadsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.imported_edges, 0);
+        assert_eq!(second.skipped_sessions, 2);
+        assert_eq!(second.skipped_events, 5);
+        assert_eq!(second.skipped_edges, 1);
+    }
+
+    #[test]
+    fn native_zed_reports_malformed_and_corrupt_db() {
+        let temp = tempdir();
+        let malformed = temp.path().join("zed-malformed.db");
+        {
+            let conn = rusqlite::Connection::open(&malformed).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data_type TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+        let corrupt = temp.path().join("zed-corrupt.db");
+        fs::write(&corrupt, b"not sqlite").unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = import_zed_threads_sqlite(
+            &malformed,
+            &mut store,
+            ZedThreadsSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Zed threads table missing required column(s): data"));
+
+        let err = import_zed_threads_sqlite(
+            &corrupt,
+            &mut store,
+            ZedThreadsSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a database"));
+    }
+
+    #[test]
+    fn provider_sources_discovers_zed_default_db() {
+        let temp = tempdir();
+        let db = temp.path().join(".local/share/zed/threads/threads.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        fs::write(&db, b"not inspected by source probe").unwrap();
+
+        let sources = discover_provider_sources_for_provider(temp.path(), CaptureProvider::Zed);
+        let source = sources
+            .iter()
+            .find(|source| source.source_format == ZED_THREADS_SQLITE_SOURCE_FORMAT)
+            .unwrap_or_else(|| panic!("missing Zed source in {sources:#?}"));
+        assert_eq!(source.provider, CaptureProvider::Zed);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert_eq!(source.path, db);
+    }
+
+    #[test]
+    fn native_forgecode_fixture_imports_searches_reimports_and_file_metrics() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("forgecode/v1/forge.db");
+        let store_path = temp.path().join("work.sqlite");
+        let mut store = Store::open(&store_path).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::ForgeCode, fixture.clone());
+        assert_eq!(source.source_format, FORGECODE_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_forgecode_sqlite(
+            &fixture,
+            &mut store,
+            ForgeCodeSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-06-24T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..ForgeCodeSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+        let session_id = provider_session_uuid(CaptureProvider::ForgeCode, "forge-root");
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        assert!(store
+            .search_event_hits("forgecode oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::ForgeCode)));
+        let file_touch_count: i64 = Connection::open(&store_path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM ctx_files_touched WHERE provider = 'forgecode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(file_touch_count, 4);
+
+        let second = import_forgecode_sqlite(
+            &fixture,
+            &mut store,
+            ForgeCodeSqliteImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..ForgeCodeSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+        let file_touch_count_after: i64 = Connection::open(&store_path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM ctx_files_touched WHERE provider = 'forgecode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(file_touch_count_after, file_touch_count);
+    }
+
+    #[test]
+    fn native_deepagents_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("deepagents/v1/sessions.db");
+        let store_path = temp.path().join("work.sqlite");
+        let mut store = Store::open(&store_path).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::DeepAgents, fixture.clone());
+        assert_eq!(source.source_format, DEEPAGENTS_SQLITE_SOURCE_FORMAT);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_deepagents_sqlite(
+            &fixture,
+            &mut store,
+            DeepAgentsSqliteImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T19:30:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..DeepAgentsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+        let session_id =
+            provider_session_uuid(CaptureProvider::DeepAgents, "deepagents-fixture-thread");
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::User)));
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::Assistant)));
+        assert!(events
+            .iter()
+            .any(|event| event.role == Some(EventRole::Tool)));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        assert!(events.iter().all(|event| {
+            event
+                .sync
+                .metadata
+                .to_string()
+                .contains("decoded from writes.messages only")
+        }));
+        assert!(store
+            .search_event_hits("deepagents fixture oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::DeepAgents)));
+
+        let source_metadata: String = Connection::open(&store_path)
+            .unwrap()
+            .query_row(
+                "SELECT metadata_json FROM capture_sources WHERE provider = 'deepagents'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(source_metadata.contains("checkpoint state blobs are not indexed"));
+
+        let second = import_deepagents_sqlite(
+            &fixture,
+            &mut store,
+            DeepAgentsSqliteImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..DeepAgentsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+    }
+
+    #[test]
+    fn native_deepagents_reports_malformed_writes_and_corrupt_db() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("deepagents/v1/sessions.db");
+        let malformed = temp.path().join("malformed-deepagents.db");
+        fs::copy(&fixture, &malformed).unwrap();
+        Connection::open(&malformed)
+            .unwrap()
+            .execute("UPDATE writes SET value = x'd9'", [])
+            .unwrap();
+        let corrupt = temp.path().join("corrupt-deepagents.db");
+        fs::write(&corrupt, b"not sqlite").unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_deepagents_sqlite(
+            &malformed,
+            &mut store,
+            DeepAgentsSqliteImportOptions {
+                source_path: Some(malformed.clone()),
+                allow_partial_failures: true,
+                ..DeepAgentsSqliteImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+        assert!(summary.failures[0]
+            .error
+            .contains("invalid Deep Agents msgpack payload"));
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 0);
+
+        let err = import_deepagents_sqlite(
+            &corrupt,
+            &mut store,
+            DeepAgentsSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a database"));
+    }
+
+    #[test]
+    fn native_mistral_vibe_fixture_imports_searches_and_reimports() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("mistral-vibe/v1/logs/session");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::MistralVibe, fixture.clone());
+        assert_eq!(source.source_format, "mistral_vibe_session_jsonl_tree");
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_mistral_vibe_history(
+            &fixture,
+            &mut store,
+            MistralVibeImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T19:05:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..MistralVibeImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 4);
+        let session_id = provider_session_uuid(CaptureProvider::MistralVibe, "mistral-vibe-native");
+        let events = store.events_for_session(session_id).unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        assert!(store
+            .search_event_hits("mistral vibe oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::MistralVibe)));
+
+        let second = import_mistral_vibe_history(
+            &fixture,
+            &mut store,
+            MistralVibeImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..MistralVibeImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 4);
+    }
+
+    #[test]
+    fn native_mux_fixture_imports_searches_reimports_and_subagents() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("mux/v0.27.0/sessions");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::Mux, fixture.clone());
+        assert_eq!(source.source_format, "mux_session_jsonl_tree");
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_mux_history(
+            &fixture,
+            &mut store,
+            MuxImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T19:20:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..MuxImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 2);
+        assert_eq!(first.imported_events, 6);
+        assert_eq!(first.imported_edges, 1);
+
+        let parent_id = provider_session_uuid(CaptureProvider::Mux, "mux-parent-session");
+        let parent_events = store.events_for_session(parent_id).unwrap();
+        assert_eq!(parent_events.len(), 4);
+        assert!(parent_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(parent_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        let parent_rendered = serde_json::to_string(&parent_events).unwrap();
+        assert!(parent_rendered.contains("mux jsonl oracle prompt"));
+        assert!(parent_rendered.contains("mux partial response still searchable"));
+        assert!(parent_rendered.contains("src/mux_oracle.txt"));
+
+        let child_id = provider_session_uuid(CaptureProvider::Mux, "mux-child-session");
+        let child = store.get_session(child_id).unwrap();
+        assert_eq!(child.parent_session_id, Some(parent_id));
+        assert_eq!(child.agent_type, AgentType::Subagent);
+        let child_events = store.events_for_session(child_id).unwrap();
+        assert_eq!(child_events.len(), 2);
+        assert!(serde_json::to_string(&child_events)
+            .unwrap()
+            .contains("src/mux_child_oracle.txt"));
+
+        assert!(store
+            .search_event_hits("mux jsonl oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Mux)));
+        assert!(store
+            .export_archive()
+            .unwrap()
+            .files_touched
+            .iter()
+            .any(|file| file.path == "src/mux_oracle.txt"));
+
+        let second = import_mux_history(
+            &fixture,
+            &mut store,
+            MuxImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..MuxImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.imported_edges, 0);
+        assert_eq!(second.skipped_sessions, 2);
+        assert_eq!(second.skipped_events, 6);
+    }
+
+    #[test]
+    fn native_mux_reports_malformed_jsonl_partially() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("mux/malformed/sessions");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let summary = import_mux_history(
+            &fixture,
+            &mut store,
+            MuxImportOptions {
+                allow_partial_failures: true,
+                ..MuxImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+        assert_eq!(summary.imported_sessions, 1);
+        assert_eq!(summary.imported_events, 2);
+        assert!(summary.failures[0].error.contains("malformed JSONL"));
+        assert!(store
+            .search_event_hits("mux after malformed oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::Mux)));
+    }
+    #[test]
+    fn native_rovodev_fixture_imports_searches_reimports_and_file_touches() {
+        let temp = tempdir();
+        let fixture = provider_history_fixture("rovodev/v1/sessions");
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let source = provider_source_for_path(CaptureProvider::RovoDev, fixture.clone());
+        assert_eq!(source.source_format, "rovodev_session_json_tree");
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+
+        let first = import_rovodev_history(
+            &fixture,
+            &mut store,
+            RovoDevImportOptions {
+                machine_id: "test-machine".into(),
+                source_path: Some(fixture.clone()),
+                imported_at: DateTime::parse_from_rfc3339("2026-07-04T15:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                allow_partial_failures: true,
+                ..RovoDevImportOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.failed, 0, "{:?}", first.failures);
+        assert_eq!(first.imported_sessions, 1);
+        assert_eq!(first.imported_events, 3);
+        assert!(store
+            .search_event_hits("rovodev fixture oracle", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.provider == Some(CaptureProvider::RovoDev)));
+        assert!(store
+            .export_archive()
+            .unwrap()
+            .files_touched
+            .iter()
+            .any(|file| file.path == "src/rovodev_oracle.rs"));
+
+        let second = import_rovodev_history(
+            &fixture,
+            &mut store,
+            RovoDevImportOptions {
+                source_path: Some(fixture.clone()),
+                allow_partial_failures: true,
+                ..RovoDevImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.failed, 0, "{:?}", second.failures);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.imported_events, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.skipped_events, 3);
+    }
+    #[test]
+    fn native_forgecode_reports_missing_table_and_corrupt_db() {
+        let temp = tempdir();
+        let missing_table = temp.path().join("missing-forge.db");
+        let conn = Connection::open(&missing_table).unwrap();
+        conn.execute_batch("CREATE TABLE unrelated (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        drop(conn);
+        let corrupt = temp.path().join("corrupt-forge.db");
+        fs::write(&corrupt, b"not sqlite").unwrap();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let err = import_forgecode_sqlite(
+            &missing_table,
+            &mut store,
+            ForgeCodeSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("ForgeCode .forge.db is missing required conversations table"));
+
+        let err = import_forgecode_sqlite(
+            &corrupt,
+            &mut store,
+            ForgeCodeSqliteImportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a database"));
+    }
+
+    #[test]
+
     fn native_jsonl_tree_imports_gemini_droid_and_copilot_smokes() {
         let temp = tempdir();
         let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
@@ -15621,6 +31338,45 @@ mod tests {
         assert_eq!(gemini_summary.failed, 0);
         assert_eq!(gemini_summary.imported_sessions, 2);
         assert_eq!(gemini_summary.imported_edges, 1);
+
+        let tabnine = provider_history_fixture("tabnine-cli/.tabnine/agent");
+        let tabnine_summary = import_tabnine_cli_history(
+            &tabnine,
+            &mut store,
+            TabnineCliImportOptions {
+                allow_partial_failures: true,
+                ..TabnineCliImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(tabnine_summary.failed, 0, "{:?}", tabnine_summary.failures);
+        assert_eq!(tabnine_summary.imported_sessions, 2);
+        assert_eq!(tabnine_summary.imported_events, 6);
+        assert_eq!(tabnine_summary.imported_edges, 1);
+
+        let tabnine_events = store
+            .events_for_session(provider_session_uuid(
+                CaptureProvider::Tabnine,
+                "tabnine-root",
+            ))
+            .unwrap();
+        assert!(tabnine_events
+            .iter()
+            .any(|event| event.role == Some(EventRole::Assistant)));
+        assert!(tabnine_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        let tabnine_rendered = serde_json::to_string(&tabnine_events).unwrap();
+        assert!(tabnine_rendered.contains("tabnine jsonl oracle prompt"));
+        assert!(tabnine_rendered.contains("tabnine jsonl oracle answer"));
+        assert!(tabnine_rendered.contains("src/tabnine_oracle.txt"));
+
+        let tabnine_child = provider_session_uuid(CaptureProvider::Tabnine, "tabnine-child");
+        let tabnine_parent = provider_session_uuid(CaptureProvider::Tabnine, "tabnine-root");
+        assert_eq!(
+            store.get_session(tabnine_child).unwrap().parent_session_id,
+            Some(tabnine_parent)
+        );
 
         let droid = write_droid_smoke_fixture(&temp);
         let droid_summary = import_factory_ai_droid_sessions(
@@ -15651,6 +31407,109 @@ mod tests {
         assert_eq!(copilot_summary.imported_events, 5);
     }
 
+    #[test]
+    fn native_jsonl_tree_imports_qwen_and_kimi_smokes_are_idempotent() {
+        let temp = tempdir();
+        let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+        let qwen = write_qwen_smoke_fixture(&temp);
+        let qwen_summary = import_qwen_code_history(
+            &qwen,
+            &mut store,
+            QwenCodeImportOptions {
+                allow_partial_failures: true,
+                ..QwenCodeImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(qwen_summary.failed, 0, "{:?}", qwen_summary.failures);
+        assert_eq!(qwen_summary.imported_sessions, 1);
+        assert_eq!(qwen_summary.imported_events, 3);
+
+        let qwen_events = store
+            .events_for_session(provider_session_uuid(
+                CaptureProvider::QwenCode,
+                "qwen-smoke",
+            ))
+            .unwrap();
+        assert_eq!(qwen_events.len(), 3);
+        assert!(qwen_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(qwen_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        let qwen_rendered = serde_json::to_string(&qwen_events).unwrap();
+        assert!(qwen_rendered.contains("qwen jsonl oracle prompt"));
+        assert!(qwen_rendered.contains("src/qwen_oracle.txt"));
+
+        let qwen_second = import_qwen_code_history(
+            &qwen,
+            &mut store,
+            QwenCodeImportOptions {
+                allow_partial_failures: true,
+                ..QwenCodeImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(qwen_second.failed, 0, "{:?}", qwen_second.failures);
+        assert_eq!(qwen_second.imported_sessions, 0);
+        assert_eq!(qwen_second.imported_events, 0);
+
+        let kimi = write_kimi_smoke_fixture(&temp);
+        let kimi_summary = import_kimi_code_cli_history(
+            &kimi,
+            &mut store,
+            KimiCodeCliImportOptions {
+                allow_partial_failures: true,
+                ..KimiCodeCliImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(kimi_summary.failed, 0, "{:?}", kimi_summary.failures);
+        assert_eq!(kimi_summary.imported_sessions, 2);
+        assert_eq!(kimi_summary.imported_events, 7);
+        assert_eq!(kimi_summary.imported_edges, 1);
+
+        let kimi_events = store
+            .events_for_session(provider_session_uuid(
+                CaptureProvider::KimiCodeCli,
+                "kimi-smoke",
+            ))
+            .unwrap();
+        assert_eq!(kimi_events.len(), 5);
+        assert!(kimi_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall));
+        assert!(kimi_events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolOutput));
+        let kimi_rendered = serde_json::to_string(&kimi_events).unwrap();
+        assert!(kimi_rendered.contains("kimi jsonl oracle prompt"));
+        assert!(kimi_rendered.contains("src/kimi_oracle.txt"));
+
+        let kimi_child =
+            provider_session_uuid(CaptureProvider::KimiCodeCli, "kimi-smoke/agents/agent-1");
+        let kimi_parent = provider_session_uuid(CaptureProvider::KimiCodeCli, "kimi-smoke");
+        assert_eq!(
+            store.get_session(kimi_child).unwrap().parent_session_id,
+            Some(kimi_parent)
+        );
+
+        let kimi_second = import_kimi_code_cli_history(
+            &kimi,
+            &mut store,
+            KimiCodeCliImportOptions {
+                allow_partial_failures: true,
+                ..KimiCodeCliImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(kimi_second.failed, 0, "{:?}", kimi_second.failures);
+        assert_eq!(kimi_second.imported_sessions, 0);
+        assert_eq!(kimi_second.imported_events, 0);
+        assert_eq!(kimi_second.imported_edges, 0);
+    }
     #[test]
     fn native_jsonl_tree_skips_headerless_native_files() {
         let temp = tempdir();
@@ -16360,6 +32219,79 @@ mod tests {
         )
         .unwrap();
         temp.path().join("copilot/session-state")
+    }
+
+    fn write_qwen_smoke_fixture(temp: &TempDir) -> PathBuf {
+        let chats = temp.path().join("qwen/.qwen/projects/workspace/chats");
+        fs::create_dir_all(&chats).unwrap();
+        fs::write(
+            chats.join("qwen-smoke.jsonl"),
+            concat!(
+                "{\"uuid\":\"qwen-1\",\"parentUuid\":null,\"sessionId\":\"qwen-smoke\",\"timestamp\":\"2026-07-04T12:00:00Z\",\"type\":\"user\",\"cwd\":\"/workspace/qwen\",\"version\":\"test\",\"gitBranch\":\"main\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"qwen jsonl oracle prompt\"}]},\"model\":\"qwen3-coder\"}\n",
+                "{\"uuid\":\"qwen-2\",\"parentUuid\":\"qwen-1\",\"sessionId\":\"qwen-smoke\",\"timestamp\":\"2026-07-04T12:00:01Z\",\"type\":\"assistant\",\"cwd\":\"/workspace/qwen\",\"version\":\"test\",\"gitBranch\":\"main\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"qwen jsonl oracle answer\"},{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"Write\",\"input\":{\"path\":\"src/qwen_oracle.txt\",\"content\":\"proof\"}}]},\"usageMetadata\":{\"inputTokens\":5,\"outputTokens\":7},\"model\":\"qwen3-coder\"}\n",
+                "{\"uuid\":\"qwen-3\",\"parentUuid\":\"qwen-2\",\"sessionId\":\"qwen-smoke\",\"timestamp\":\"2026-07-04T12:00:02Z\",\"type\":\"tool_result\",\"cwd\":\"/workspace/qwen\",\"version\":\"test\",\"gitBranch\":\"main\",\"message\":{\"role\":\"tool\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tool-1\",\"content\":\"wrote src/qwen_oracle.txt\"}]},\"toolCallResult\":{\"tool\":\"Write\",\"path\":\"src/qwen_oracle.txt\",\"output\":\"ok\"},\"model\":\"qwen3-coder\"}\n",
+            ),
+        )
+        .unwrap();
+        temp.path().join("qwen/.qwen/projects")
+    }
+
+    fn write_kimi_smoke_fixture(temp: &TempDir) -> PathBuf {
+        let home = temp.path().join("kimi/.kimi-code");
+        let session = home.join("sessions/wd_demo_abc123/kimi-smoke");
+        let main = session.join("agents/main");
+        let child = session.join("agents/agent-1");
+        fs::create_dir_all(&main).unwrap();
+        fs::create_dir_all(&child).unwrap();
+        fs::write(
+            home.join("session_index.jsonl"),
+            format!(
+                "{}\n",
+                json!({
+                    "sessionId": "kimi-smoke",
+                    "sessionDir": session.display().to_string(),
+                    "workDir": "/workspace/kimi"
+                })
+            ),
+        )
+        .unwrap();
+        fs::write(
+            session.join("state.json"),
+            json!({
+                "createdAt": "2026-07-04T13:00:00Z",
+                "updatedAt": "2026-07-04T13:00:05Z",
+                "title": "Kimi JSONL oracle",
+                "lastPrompt": "kimi jsonl oracle prompt",
+                "agents": {
+                    "main": {"homedir": "/fixture/agents/main", "type": "main", "parentAgentId": null},
+                    "agent-1": {"homedir": "/fixture/agents/agent-1", "type": "coder", "parentAgentId": "main"}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            main.join("wire.jsonl"),
+            concat!(
+                "{\"type\":\"metadata\",\"protocol_version\":\"1.4\",\"created_at\":1783170000000}\n",
+                "{\"type\":\"turn.prompt\",\"time\":1783170001000,\"input\":[{\"type\":\"text\",\"text\":\"kimi jsonl oracle prompt\"}],\"origin\":{\"kind\":\"user\"}}\n",
+                "{\"type\":\"context.append_message\",\"time\":1783170002000,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"kimi jsonl oracle answer\"}]}}\n",
+                "{\"type\":\"context.append_loop_event\",\"time\":1783170003000,\"event\":{\"type\":\"tool.call\",\"toolName\":\"Write\",\"input\":{\"path\":\"src/kimi_oracle.txt\",\"content\":\"proof\"}}}\n",
+                "{\"type\":\"context.append_loop_event\",\"time\":1783170004000,\"event\":{\"type\":\"tool.result\",\"toolName\":\"Write\",\"output\":\"wrote src/kimi_oracle.txt\"}}\n",
+                "{\"type\":\"usage.record\",\"time\":1783170005000,\"model\":\"kimi-k2\",\"usage\":{\"input_tokens\":11,\"output_tokens\":13}}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            child.join("wire.jsonl"),
+            concat!(
+                "{\"type\":\"metadata\",\"protocol_version\":\"1.4\",\"created_at\":1783170006000}\n",
+                "{\"type\":\"turn.prompt\",\"time\":1783170007000,\"input\":[{\"type\":\"text\",\"text\":\"child inspect\"}]}\n",
+                "{\"type\":\"context.append_message\",\"time\":1783170008000,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"child done\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        home
     }
 
     #[test]

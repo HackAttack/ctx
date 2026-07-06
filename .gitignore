@@ -4,6 +4,10 @@
 *.db
 *.sqlite
 *.sqlite3
+!tests/fixtures/provider-history/**/*.db
+!tests/fixtures/provider-history/**/*.sqlite
+!tests/fixtures/provider-history/**/*.sqlite3
+!tests/fixtures/provider-history/**/*.vscdb
 
 # SDK build artifacts
 /sdks/dotnet/**/bin/

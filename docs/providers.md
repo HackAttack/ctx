@@ -1,112 +1,31 @@
 # Providers
 
-ctx imports existing agent history through provider adapters. Each adapter must
-make a narrow, testable claim about the source format it reads and the event
-fields it indexes.
+ctx imports existing agent history through conservative provider adapters. Each adapter makes a narrow, testable claim about the local source format it reads.
 
 ## Supported Local Imports
 
-The current CLI imports local history for:
+The public CLI supports these local-history harnesses:
 
-- Codex session JSONL trees under `~/.codex/sessions`;
-- Codex `~/.codex/history.jsonl`;
-- Pi session JSONL files under `~/.pi/agent/sessions` or `~/.omp/agent/sessions`
-  (Oh My Pi fork);
-- Claude Code project JSONL transcripts under `~/.claude/projects`;
-- OpenCode SQLite history under `~/.local/share/opencode/opencode.db`;
-- OpenClaw session JSONL trees under `OPENCLAW_STATE_DIR`, `~/.openclaw`,
-  legacy `~/.clawdbot`, or legacy `~/.moltbot`;
-- Hermes Agent SQLite history under `HERMES_HOME/state.db` or
-  `~/.hermes/state.db`;
-- NanoClaw project history from a project root with `data/v2.db` and
-  `data/v2-sessions` when imported explicitly;
-- AstrBot local SQLite history from `ASTRBOT_ROOT/data/data_v4.db`,
-  `~/.astrbot/data/data_v4.db`, or a project `data/data_v4.db` when imported
-  explicitly;
-- Shelley SQLite history from `SHELLEY_DB`, `~/.config/shelley/shelley.db`, or
-  an explicit Shelley DB path;
-- Antigravity transcript JSONL mirrors under
-  `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl`
-  or `transcript.jsonl`;
-- Gemini CLI chat JSONL records under `~/.gemini/tmp/**/chats/**/*.jsonl`;
-- Cursor CLI agent transcript JSONL files under
-  `~/.cursor/projects/**/agent-transcripts/**/*.jsonl`;
-- Copilot CLI session event logs named `events.jsonl` under
-  `~/.copilot/session-state`;
-- Factory AI Droid session JSONL files under `~/.factory/sessions`.
-
-These are built-in provider adapters for native local history. The custom
-history format is separate: `ctx import --format ctx-history-jsonl-v1 --path
-<file>` reads an explicit JSONL interchange file from any exporter, and
-history-source plugins can stream the same format from local adapter commands.
-Custom history is stored internally under the bounded provider `custom` while
-preserving the exporter's `provider_key`, `source_id`, and `session_id` as
-metadata and ID namespace components. File imports are not auto-discovered;
-local plugin manifests are listed by `ctx sources`.
+Codex, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes Agent, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code.
 
 Use `ctx sources` for the truth on the current machine:
 
 ```bash
 ctx sources
 ctx sources --json
+ctx sources --all
 ```
 
-CLI provider flags use names such as `openclaw`, `hermes`, `nanoclaw`,
-`astrbot`, `shelley`, `copilot-cli`, and `factory-ai-droid`.
-Structured JSON and stable SQL views use provider IDs in ctx output; multiword IDs may be
-snake_case, such as `copilot_cli` or `factory_ai_droid`, while compact native
-IDs such as `openclaw`, `nanoclaw`, `astrbot`, and `shelley` stay compact.
+Default `ctx sources` output keeps the common missing-location list compact. Use `--all` to inspect every supported provider location. The supported CLI provider names include:
 
-`ctx sources --json` reports each known provider source with `import_support`
-and `importable` fields. A native source is marked available/importable only
-when provider-specific transcript files exist. Sources with `import_support:
-"preview"` are explicit-import preview paths: use `ctx import --provider
-nanoclaw` or `ctx import --provider astrbot` when discovery finds the desired
-source, or add `--path` to target a specific source before searching it. They
-are intentionally excluded from `ctx import --all` and pre-search refresh until
-promoted. Sources with
-`status: "unknown"` hit the bounded transcript probe budget before proving
-history exists, and sources with `import_support: "unsupported"` are detections
-or blockers, not importable native history.
-
-If a provider is selected without a proven native importer, `ctx import`
-returns a provider-specific native-history blocker. Do not document a provider
-as natively locally importable until the CLI can discover or parse that
-provider's real local history and the provider support matrix marks the shipped
-path accordingly.
-
-## Provider Smoke
-
-Public provider smoke coverage uses static local-history fixtures. It verifies
-supported imports, unsupported-provider blockers, provider filtering, citations,
-and deterministic search without executing provider CLIs, reading real user
-history, requiring API keys, or making network calls:
-
-```bash
-bazel test //:provider_fixture_e2e --config=ci
+```text
+codex, claude, cursor, pi, opencode, github-copilot, copilot-cli, antigravity, gemini, kilo, kiro-cli, crush, goose, tabnine, windsurf, zed, factory-ai-droid, qwen-code, kimi-code-cli, auggie, junie, firebender, forgecode, deepagents, mistral-vibe, mux, rovodev, openclaw, hermes, nanoclaw, astrbot, shelley, continue, openhands, cline, roo, lingma, qoder, warp, codebuddy, trae
 ```
+
+Aliases are accepted for common naming differences, for example `claude-code`, `gemini-cli`, `github-copilot`, `droid`, `augment`, `qoder-cn`, `trae-cn`, and `roo-code`.
+
+Custom history is separate: `ctx import --format ctx-history-jsonl-v1 --path <file>` reads an explicit JSONL interchange file from any exporter, and history-source plugins can stream the same format from local adapter commands.
 
 ## Import Rules
 
-Provider imports should be:
-
-- read-only with respect to provider-owned files;
-- explicit through `ctx import`;
-- safe to interrupt and re-run, using idempotent rescans or provider cursors
-  when available;
-- idempotent for unchanged source files;
-- clear about which fields were indexed and which were left raw-only;
-- conservative when a transcript schema is unknown or malformed.
-
-Custom history imports follow the same read-only and idempotent principles, but
-their compatibility contract is the `ctx-history-jsonl-v1` schema rather than a
-provider-owned native transcript format.
-
-## Fidelity
-
-An imported session may include messages, tool calls, command events, output
-previews, file references, parent/child agent relationships, usage metadata, and
-lifecycle events. Not every provider exposes every field.
-
-Search output must identify the provider and cite the source path or cursor
-when available so an agent can verify important details.
+Provider imports should be bounded, read-only, and backed by public fixtures or source-format proof. Do not document a provider as natively locally importable until the CLI can discover or parse that provider's real local history and the provider support matrix marks the shipped path accordingly.
