@@ -6,4 +6,5 @@ include!("semantic/paths_status.rs");
 include!("semantic/daemon.rs");
 include!("semantic/health_search.rs");
 include!("semantic/indexing.rs");
+#[cfg(test)]
 include!("semantic/tests.rs");
