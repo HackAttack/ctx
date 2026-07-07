@@ -779,6 +779,131 @@ pub(super) fn write_opencode_current_schema_db(temp: &TempDir, with_message: boo
     path
 }
 
+pub(super) fn write_opencode_message_part_db(
+    temp: &TempDir,
+    name: &str,
+    session_id: &str,
+    oracle_text: &str,
+) -> PathBuf {
+    let path = temp.path().join(name);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "create table session (
+                id text primary key,
+                project_id text not null,
+                parent_id text,
+                slug text not null,
+                directory text not null,
+                title text not null,
+                version text not null,
+                share_url text,
+                summary_additions integer,
+                summary_deletions integer,
+                summary_files integer,
+                summary_diffs text,
+                revert text,
+                permission text,
+                time_created integer not null,
+                time_updated integer not null,
+                time_compacting integer,
+                time_archived integer,
+                workspace_id text
+            );
+            create table message (
+                id text primary key,
+                session_id text not null,
+                time_created integer not null,
+                time_updated integer not null,
+                data text not null
+            );
+            create table part (
+                id text primary key,
+                message_id text not null,
+                session_id text not null,
+                time_created integer not null,
+                time_updated integer not null,
+                data text not null
+            );",
+    )
+    .unwrap();
+    conn.execute(
+        "insert into session (
+                id, project_id, parent_id, slug, directory, title, version, permission,
+                time_created, time_updated
+            ) values (?1, 'project-1', null, ?1, '/workspace', 'part root', '0.8.0',
+                'default', 1782259200000, 1782259200000)",
+        [session_id],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into message values (?1, ?2, 1782259201000, 1782259201000, ?3)",
+        [
+            "part-message",
+            session_id,
+            &json!({
+                "role": "assistant",
+                "time": { "created": 1782259201000_i64 },
+                "providerID": "anthropic",
+                "modelID": "claude-sonnet-4"
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into part values (?1, 'part-message', ?2, 1782259201001, 1782259201001, ?3)",
+        [
+            "part-text",
+            session_id,
+            &json!({
+                "type": "text",
+                "text": oracle_text
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into part values (?1, 'part-message', ?2, 1782259201002, 1782259201002, ?3)",
+        [
+            "part-tool",
+            session_id,
+            &json!({
+                "type": "tool",
+                "tool": "write_file",
+                "state": {
+                    "status": "completed",
+                    "metadata": {
+                        "exit": 0,
+                        "outputPath": "src/tool_arg_should_not_touch.txt",
+                        "truncated": false
+                    }
+                },
+                "input": { "path": "src/tool_arg_should_not_touch.txt" }
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "insert into part values (?1, 'part-message', ?2, 1782259201003, 1782259201003, ?3)",
+        [
+            "part-patch",
+            session_id,
+            &json!({
+                "type": "patch",
+                "status": "completed",
+                "path": "src/opencode_part.txt",
+                "files": ["src/opencode_part_from_files.txt"],
+                "patch": "*** Begin Patch\n*** Update File: src/opencode_part.txt\n@@\n-raw-opencode-patch-needle\n+new\n*** End Patch"
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+    path
+}
+
 pub(super) fn write_opencode_session_message_metadata_with_legacy_message_db(
     temp: &TempDir,
 ) -> PathBuf {

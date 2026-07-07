@@ -5,19 +5,22 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    AgentType, CaptureProvider, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
-    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    AgentType, CaptureProvider, Confidence, EventType, Fidelity, FileChangeKind,
+    ProviderCaptureEnvelope, ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope,
+    ProviderSessionEnvelope, ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
     PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-use crate::compute_payload_hash;
 use crate::provider::native::{OpenCodeMessageRow, OpenCodeSessionRow};
+use crate::{compute_payload_hash, fnv1a64};
 
 use crate::provider::custom_history_jsonl::push_provider_import_failure;
-use crate::provider::file_touches::provider_file_touches_from_raw_value;
+use crate::provider::file_touches::{
+    normalize_file_path, provider_file_touch_envelopes, provider_file_touches_from_raw_value,
+    FileTouchDraft, ProviderFileTouchEnvelopeContext,
+};
 use crate::provider::importer::provider_cursor_stream;
 use crate::provider::native::{
     open_provider_sqlite_readonly, parse_json_object_string, provider_capped_json,
@@ -187,6 +190,22 @@ pub(crate) fn normalize_opencode_sqlite(
                 &event,
                 line,
             ));
+        if data.get("source_table").and_then(Value::as_str) == Some("message+part") {
+            result.files_touched.extend(provider_file_touch_envelopes(
+                ProviderFileTouchEnvelopeContext {
+                    provider: dialect.provider,
+                    provider_session_id: &session.id,
+                    source_format: dialect.source_format,
+                    raw_source_path: Some(raw_source_path.as_str()),
+                    source_root: Some(raw_source_path.as_str()),
+                    occurred_at,
+                    provider_event_index: Some(provider_event_index),
+                    provider_touch_base_index: provider_event_index << 16,
+                    line_number: line,
+                },
+                opencode_message_part_file_touch_drafts(&data),
+            ));
+        }
         let is_subagent = session.parent_id.is_some();
         result.captures.push((
             line,
@@ -210,7 +229,7 @@ pub(crate) fn normalize_opencode_sqlite(
                                 dialect.provider,
                                 dialect.source_format,
                             ),
-                            cursor: format!("session_message:{}:seq:{}", row.session_id, row.seq),
+                            cursor: opencode_event_cursor(&row, &data),
                             observed_at: occurred_at,
                         }),
                     }),
@@ -418,6 +437,27 @@ pub(crate) fn opencode_session_messages(
             });
         }
         skipped_non_conversational_rows += rows.len();
+        if sqlite_table_exists(conn, "part")? {
+            let (rows, oversized) = opencode_message_part_rows(path, conn, dialect)?;
+            skipped_oversized_values += oversized;
+            if opencode_rows_have_import_blocking_errors(&rows, session_ids, dialect) {
+                return Ok(OpenCodeMessageSelection {
+                    rows,
+                    source_table: Some("message+part"),
+                    skipped_non_conversational_rows,
+                    skipped_oversized_values,
+                });
+            }
+            if opencode_rows_have_real_message_content(&rows) {
+                return Ok(OpenCodeMessageSelection {
+                    rows,
+                    source_table: Some("message+part"),
+                    skipped_non_conversational_rows,
+                    skipped_oversized_values,
+                });
+            }
+            skipped_non_conversational_rows += rows.len();
+        }
     }
     Ok(OpenCodeMessageSelection {
         rows: Vec::new(),
@@ -431,11 +471,7 @@ fn exclude_ids_clause(ids: &BTreeSet<String>) -> String {
     if ids.is_empty() {
         String::new()
     } else {
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("where id not in ({placeholders})")
+        format!("where id not in ({})", placeholders(ids.len()))
     }
 }
 
@@ -631,6 +667,318 @@ pub(crate) fn opencode_message_rows(
     Ok((messages, skipped_oversized))
 }
 
+#[derive(Debug, Clone)]
+struct OpenCodePartRow {
+    message_id: String,
+    session_id: String,
+    role: String,
+    part_id: String,
+    part_type: String,
+    seq: i64,
+    time_created: i64,
+    time_updated: i64,
+    data: Value,
+    invalid_json: bool,
+}
+
+pub(crate) fn opencode_message_part_rows(
+    path: &Path,
+    conn: &Connection,
+    dialect: &OpenCodeSqliteDialect,
+) -> Result<(Vec<OpenCodeMessageRow>, usize)> {
+    let message_columns = sqlite_table_columns(conn, "message")?;
+    ensure_sqlite_table_columns(
+        &message_columns,
+        &format!("{} SQLite message table", dialect.display_name),
+        &["id", "session_id", "time_created", "time_updated", "data"],
+    )?;
+    let part_columns = sqlite_table_columns(conn, "part")?;
+    ensure_sqlite_table_columns(
+        &part_columns,
+        &format!("{} SQLite part table", dialect.display_name),
+        &[
+            "id",
+            "message_id",
+            "session_id",
+            "time_created",
+            "time_updated",
+            "data",
+        ],
+    )?;
+    let oversized_messages = oversized_sqlite_data_row_ids(path, "message")?;
+    let oversized_parts = oversized_sqlite_data_row_ids(path, "part")?;
+    let mut skipped_oversized = oversized_parts.len();
+    let part_type = optional_column_expr(&part_columns, "type", "NULL");
+    let mut filters = Vec::new();
+    if !oversized_messages.is_empty() {
+        filters.push(format!(
+            "m.id not in ({})",
+            placeholders(oversized_messages.len())
+        ));
+    }
+    if !oversized_parts.is_empty() {
+        filters.push(format!(
+            "p.id not in ({})",
+            placeholders(oversized_parts.len())
+        ));
+    }
+    let where_clause = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("where {}", filters.join(" and "))
+    };
+    let sql = format!(
+        "select m.id, m.session_id, m.data, p.id, p.session_id, {part_type}, \
+         p.time_created, p.time_updated, p.data \
+         from message m join part p on p.message_id = m.id \
+         {where_clause} \
+         order by m.session_id, p.time_created, p.id",
+    );
+    let params = oversized_messages.iter().chain(oversized_parts.iter());
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+    let mut parts = Vec::new();
+    while let Some(row) = rows.next()? {
+        let message_id: String = row.get(0)?;
+        let message_session_id: String = row.get(1)?;
+        let part_id: String = row.get(3)?;
+        let part_session_id: String = row.get(4)?;
+        let session_id = if part_session_id.trim().is_empty() {
+            message_session_id
+        } else {
+            part_session_id
+        };
+        let time_created = row.get(6)?;
+        let time_updated = row.get(7)?;
+        let seq = opencode_message_part_identity_index(&message_id, &part_id);
+        let message_data: String = match row.get(2) {
+            Ok(value) => value,
+            Err(err) if sqlite_is_too_big(&err) => {
+                skipped_oversized += 1;
+                continue;
+            }
+            Err(err) => return Err(CaptureError::from(err)),
+        };
+        let part_data: String = match row.get(8) {
+            Ok(value) => value,
+            Err(err) if sqlite_is_too_big(&err) => {
+                skipped_oversized += 1;
+                continue;
+            }
+            Err(err) => return Err(CaptureError::from(err)),
+        };
+        let Ok(message_data) = serde_json::from_str::<Value>(&message_data) else {
+            parts.push(OpenCodePartRow {
+                message_id,
+                session_id,
+                role: "message".to_owned(),
+                part_id,
+                part_type: "part".to_owned(),
+                seq,
+                time_created,
+                time_updated,
+                data: Value::String(message_data),
+                invalid_json: true,
+            });
+            continue;
+        };
+        let Ok(part_data) = serde_json::from_str::<Value>(&part_data) else {
+            parts.push(OpenCodePartRow {
+                message_id,
+                session_id,
+                role: opencode_message_type_from_data(&message_data)
+                    .unwrap_or_else(|| "message".to_owned()),
+                part_id,
+                part_type: "part".to_owned(),
+                seq,
+                time_created,
+                time_updated,
+                data: Value::String(part_data),
+                invalid_json: true,
+            });
+            continue;
+        };
+        let role =
+            opencode_message_type_from_data(&message_data).unwrap_or_else(|| "message".to_owned());
+        let part_type = opencode_part_type(row.get::<_, Option<String>>(5)?.as_deref(), &part_data);
+        parts.push(OpenCodePartRow {
+            message_id,
+            session_id,
+            role,
+            part_id,
+            part_type,
+            seq,
+            time_created,
+            time_updated,
+            data: part_data,
+            invalid_json: false,
+        });
+    }
+
+    let mut file_touches_by_message = BTreeMap::<String, Vec<Value>>::new();
+    for part in &parts {
+        let file_touches = opencode_part_file_touch_metadata(part);
+        if !file_touches.is_empty() {
+            file_touches_by_message
+                .entry(part.message_id.clone())
+                .or_default()
+                .extend(file_touches);
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut file_touches_emitted_by_message = BTreeSet::<String>::new();
+    for part in parts {
+        if part.invalid_json {
+            out.push(OpenCodeMessageRow {
+                id: format!("{}:{}", part.message_id, part.part_id),
+                session_id: part.session_id,
+                entry_type: part.role,
+                seq: part.seq,
+                time_created: part.time_created,
+                time_updated: part.time_updated,
+                data: part.data.as_str().unwrap_or_default().to_owned(),
+            });
+            continue;
+        }
+        let Some(text) = opencode_text_part_text(&part) else {
+            continue;
+        };
+        if !matches!(part.role.as_str(), "assistant" | "user" | "system") {
+            continue;
+        }
+        if !text_has_real_content(Some(&text)) {
+            continue;
+        }
+        let role = part.role.clone();
+        let message_id = part.message_id.clone();
+        let part_id = part.part_id.clone();
+        let part_type = part.part_type.clone();
+        let file_touches = if file_touches_emitted_by_message.insert(message_id.clone()) {
+            file_touches_by_message
+                .remove(&part.message_id)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let data = json!({
+            "role": role,
+            "time": { "created": part.time_created },
+            "text": text,
+            "source_table": "message+part",
+            "message_id": message_id,
+            "part_id": part_id,
+            "part_type": part_type,
+            "file_touches": file_touches,
+        })
+        .to_string();
+        out.push(OpenCodeMessageRow {
+            id: format!("{}:{}", part.message_id, part.part_id),
+            session_id: part.session_id,
+            entry_type: part.role,
+            seq: part.seq,
+            time_created: part.time_created,
+            time_updated: part.time_updated,
+            data,
+        });
+    }
+
+    Ok((out, skipped_oversized))
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn opencode_part_type(column_type: Option<&str>, data: &Value) -> String {
+    column_type
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| data.get("type").and_then(Value::as_str))
+        .unwrap_or("part")
+        .to_owned()
+}
+
+fn opencode_text_part_text(part: &OpenCodePartRow) -> Option<String> {
+    (part.part_type == "text")
+        .then(|| part.data.get("text").and_then(Value::as_str))
+        .flatten()
+        .map(str::to_owned)
+}
+
+fn opencode_message_part_identity_index(message_id: &str, part_id: &str) -> i64 {
+    let key = format!("message+part:{message_id}:{part_id}");
+    let index = fnv1a64(key.as_bytes()) & 0x0000_ffff_ffff;
+    index.max(1) as i64
+}
+
+fn opencode_part_file_touch_metadata(part: &OpenCodePartRow) -> Vec<Value> {
+    if part.invalid_json || part.part_type != "patch" {
+        return Vec::new();
+    }
+    let mut paths = BTreeSet::<String>::new();
+    if let Some(path) = part
+        .data
+        .get("path")
+        .and_then(Value::as_str)
+        .and_then(normalize_file_path)
+    {
+        paths.insert(path);
+    }
+    if let Some(files) = part.data.get("files").and_then(Value::as_array) {
+        for file in files {
+            let path = match file {
+                Value::String(path) => normalize_file_path(path),
+                Value::Object(object) => object
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_file_path),
+                _ => None,
+            };
+            if let Some(path) = path {
+                paths.insert(path);
+            }
+        }
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            json!({
+                "path": path,
+                "part_id": part.part_id,
+                "part_type": part.part_type,
+            })
+        })
+        .collect()
+}
+
+fn opencode_message_part_file_touch_drafts(data: &Value) -> Vec<FileTouchDraft> {
+    data.get("file_touches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|touch| {
+            let path = touch
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(normalize_file_path)?;
+            Some(FileTouchDraft {
+                path,
+                old_path: None,
+                change_kind: Some(FileChangeKind::Modified),
+                confidence: Confidence::Explicit,
+                metadata: json!({
+                    "source": "opencode_message_part_metadata",
+                    "part_id": touch.get("part_id").cloned(),
+                    "part_type": touch.get("part_type").cloned(),
+                }),
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn next_opencode_seq(
     next_seq_by_session: &mut BTreeMap<String, i64>,
     session_id: &str,
@@ -811,37 +1159,54 @@ pub(crate) fn opencode_event(
     provider_event_index: u64,
     dialect: &OpenCodeSqliteDialect,
 ) -> ProviderEventEnvelope {
+    let is_message_part = data.get("source_table").and_then(Value::as_str) == Some("message+part");
     let event_type = opencode_event_type(&row.entry_type, data);
     let role = Some(provider_role(Some(&row.entry_type)));
     let text = opencode_event_text(&row.entry_type, data, event_type, dialect);
     let (text, truncated) = provider_local_preview(&text, PROVIDER_MAX_TEXT_CHARS);
-    ProviderEventEnvelope {
-        provider_event_index,
-        provider_event_hash: Some(row.id.clone()),
-        cursor: Some(format!(
-            "session_message:{}:seq:{}",
-            row.session_id, row.seq
-        )),
-        event_type,
-        role,
-        occurred_at,
-        fidelity: Fidelity::Imported,
-        idempotency_key: Some(format!(
-            "provider-event:{}:{}:{}",
-            dialect.provider.as_str(),
-            row.session_id,
-            row.id
-        )),
-        artifacts: Vec::new(),
-        payload: json!({
+    let payload = if is_message_part {
+        json!({
+            "entry_type": row.entry_type,
+            "message_id": data
+                .get("message_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.id),
+            "part_id": data.get("part_id").cloned(),
+            "part_type": data.get("part_type").cloned(),
+            "session_message_seq": row.seq,
+            "text": text,
+            "truncated": truncated,
+            "body": provider_capped_json(&opencode_message_part_event_body(data), PROVIDER_MAX_PREVIEW_CHARS),
+        })
+    } else {
+        json!({
             "entry_type": row.entry_type,
             "message_id": row.id,
             "session_message_seq": row.seq,
             "text": text,
             "truncated": truncated,
             "body": provider_capped_json(data, PROVIDER_MAX_PREVIEW_CHARS),
-        }),
-        metadata: json!({
+        })
+    };
+    let metadata = if is_message_part {
+        json!({
+            "source": dialect.source_format,
+            "source_format": dialect.source_format,
+            "session_message_id": row.id,
+            "session_message_seq": row.seq,
+            "message_id": data.get("message_id").cloned(),
+            "part_id": data.get("part_id").cloned(),
+            "part_type": data.get("part_type").cloned(),
+            "time_created": row.time_created,
+            "time_updated": row.time_updated,
+            "model": data.get("model").cloned(),
+            "tokens": data.get("tokens").cloned(),
+            "cost": data.get("cost").cloned(),
+            "finish": data.get("finish").cloned(),
+            "error": data.get("error").cloned(),
+        })
+    } else {
+        json!({
             "source": dialect.source_format,
             "source_format": dialect.source_format,
             "session_message_id": row.id,
@@ -853,8 +1218,53 @@ pub(crate) fn opencode_event(
             "cost": data.get("cost").cloned(),
             "finish": data.get("finish").cloned(),
             "error": data.get("error").cloned(),
-        }),
+        })
+    };
+    ProviderEventEnvelope {
+        provider_event_index,
+        provider_event_hash: Some(row.id.clone()),
+        cursor: Some(opencode_event_cursor(row, data)),
+        event_type,
+        role,
+        occurred_at,
+        fidelity: Fidelity::Imported,
+        idempotency_key: Some(format!(
+            "provider-event:{}:{}:{}",
+            dialect.provider.as_str(),
+            row.session_id,
+            row.id
+        )),
+        artifacts: Vec::new(),
+        payload,
+        metadata,
     }
+}
+
+fn opencode_message_part_event_body(data: &Value) -> Value {
+    json!({
+        "role": data.get("role").cloned(),
+        "time": data.get("time").cloned(),
+        "text": data.get("text").cloned(),
+        "source_table": data.get("source_table").cloned(),
+        "message_id": data.get("message_id").cloned(),
+        "part_id": data.get("part_id").cloned(),
+        "part_type": data.get("part_type").cloned(),
+    })
+}
+
+pub(crate) fn opencode_event_cursor(row: &OpenCodeMessageRow, data: &Value) -> String {
+    if data.get("source_table").and_then(Value::as_str) == Some("message+part") {
+        return format!(
+            "message:{}:part:{}",
+            data.get("message_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.id),
+            data.get("part_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.id)
+        );
+    }
+    format!("session_message:{}:seq:{}", row.session_id, row.seq)
 }
 
 pub(crate) fn opencode_event_type(entry_type: &str, data: &Value) -> EventType {
