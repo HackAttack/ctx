@@ -2,6 +2,7 @@ pub(crate) mod ddl;
 pub(crate) mod fts;
 pub(crate) mod indexes;
 pub(crate) mod migrations;
+pub(crate) mod rebuild;
 #[cfg(test)]
 mod tests;
 pub(crate) mod views;

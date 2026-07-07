@@ -7,9 +7,9 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -659,8 +659,6 @@ pub(crate) fn task_json_capture(
             source_root: context
                 .source_root_display()
                 .or_else(|| raw_source_path.map(str::to_owned)),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: ProviderSourceTrust::ProviderNative,
             fidelity: Fidelity::Imported,
             cursor: event.as_ref().map(|event| ProviderCursorRange {
@@ -747,7 +745,6 @@ pub(crate) fn task_json_event(
         role,
         occurred_at,
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
             "provider-event:{}:{}:{event_id}",
             spec.provider.as_str(),

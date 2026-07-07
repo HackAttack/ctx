@@ -205,17 +205,14 @@ fn provider_fixture_replay_supports_pi_and_preserves_metadata() {
     assert_eq!(summary.failed, 0);
     assert_eq!(summary.imported_sessions, 1);
     assert_eq!(summary.imported_events, 2);
-    assert_eq!(summary.redacted, 0);
     let session_id = stored_provider_session_id(&store, CaptureProvider::Pi, "pi-session-1");
     let events = store.events_for_session(session_id).unwrap();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[1].redaction_state, RedactionState::LocalPreview);
     assert!(events[1]
         .sync
         .metadata
         .to_string()
         .contains("fixture-token-value"));
-    assert!(!events[1].sync.metadata.to_string().contains("[REDACTED]"));
 }
 
 #[test]
@@ -237,7 +234,6 @@ fn pi_session_import_replays_documented_session_jsonl_and_is_idempotent() {
     assert_eq!(first.failed, 0, "{:?}", first.failures);
     assert_eq!(first.imported_sessions, 1);
     assert_eq!(first.imported_events, 6);
-    assert_eq!(first.redacted, 0);
 
     let second = import_pi_session_jsonl(
         &fixture,
@@ -271,7 +267,6 @@ fn pi_session_import_replays_documented_session_jsonl_and_is_idempotent() {
     assert_eq!(events[5].event_type, EventType::Summary);
     assert!(events[3].payload.to_string().contains("cargo test"));
     assert!(events[3].payload.to_string().contains("fixture-secret"));
-    assert!(!events[3].payload.to_string().contains("[REDACTED]"));
 }
 
 #[test]
@@ -432,7 +427,6 @@ fn pi_session_identity_resolver_reuses_legacy_line_indexed_events() {
             payload: json!({"text": "legacy line indexed pi event"}),
             payload_blob_id: None,
             dedupe_key: Some(legacy_identity.dedupe_key.clone()),
-            redaction_state: RedactionState::LocalPreview,
             sync: provider_sync_metadata(Fidelity::Imported, json!({})),
         })
         .unwrap();
@@ -547,7 +541,6 @@ fn pi_session_import_reuses_legacy_line_indexed_event_by_entry_id_after_line_shi
             }),
             payload_blob_id: None,
             dedupe_key: Some(legacy_identity.dedupe_key.clone()),
-            redaction_state: RedactionState::LocalPreview,
             sync: provider_sync_metadata(
                 Fidelity::Imported,
                 json!({"metadata": {"entry_id": "stable-entry"}}),

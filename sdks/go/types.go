@@ -148,7 +148,6 @@ type ProviderSource struct {
 	ImportSupport     ImportSupport        `json:"importSupport,omitempty"`
 	NativeImport      bool                 `json:"nativeImport"`
 	Importable        bool                 `json:"importable"`
-	RawRetention      string               `json:"rawRetention,omitempty"`
 	UnsupportedReason *string              `json:"unsupportedReason,omitempty"`
 }
 
@@ -326,7 +325,6 @@ type Event struct {
 	Cursor         string     `json:"cursor,omitempty"`
 	Text           string     `json:"text,omitempty"`
 	Preview        string     `json:"preview,omitempty"`
-	RedactionState string     `json:"redactionState,omitempty"`
 	Citations      []Citation `json:"citations,omitempty"`
 }
 

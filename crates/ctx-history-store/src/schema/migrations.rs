@@ -4,7 +4,9 @@ use crate::schema::ddl::{
     ensure_columns, table_exists, table_has_column, CAPTURE_SOURCE_IDENTITY_COLUMNS,
     CATALOG_SESSION_IMPORT_STATE_COLUMNS, CREATE_TABLES_SQL, HISTORY_RECORD_COLUMNS,
 };
+use crate::schema::fts::create_fts_tables_if_supported;
 use crate::schema::indexes::INDEXES_SQL;
+use crate::schema::rebuild::rebuild_v44_current_schema_tables;
 use crate::schema::views::{
     create_stable_sql_views, drop_stable_sql_views, stable_sql_views_exist,
 };
@@ -65,6 +67,9 @@ pub(crate) fn run_migrations(conn: &Connection, user_version: i64) -> Result<()>
     }
     if user_version < 43 {
         migrate_to_v43(conn)?;
+    }
+    if user_version < 44 {
+        migrate_to_v44(conn)?;
     }
     Ok(())
 }
@@ -613,6 +618,44 @@ fn migrate_to_v43(conn: &Connection) -> Result<()> {
     }
 }
 
+fn migrate_to_v44(conn: &Connection) -> Result<()> {
+    let foreign_keys_enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
+    let migration = (|| -> Result<()> {
+        if stable_sql_views_exist(conn)? {
+            drop_stable_sql_views(conn)?;
+        }
+        rebuild_v44_current_schema_tables(conn)?;
+        drop_fts_table_if_exists(conn, "event_search")?;
+        drop_fts_table_if_exists(conn, "artifact_search")?;
+        create_fts_tables_if_supported(conn)?;
+        conn.execute_batch(INDEXES_SQL)?;
+        create_stable_sql_views(conn)?;
+        rebuild_search_projection(conn)?;
+        conn.execute_batch("PRAGMA user_version = 44;")?;
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            if foreign_keys_enabled != 0 {
+                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if let Err(rollback_err) = conn.execute_batch("ROLLBACK;") {
+                return Err(StoreError::Sql(rollback_err));
+            }
+            if foreign_keys_enabled != 0 {
+                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            }
+            Err(err)
+        }
+    }
+}
+
 fn backfill_capture_source_identity_columns(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "capture_sources")? {
         return Ok(());
@@ -751,6 +794,13 @@ fn drop_fts_table_if_column_exists(conn: &Connection, table: &str, column: &str)
     Ok(())
 }
 
+fn drop_fts_table_if_exists(conn: &Connection, table: &str) -> Result<()> {
+    if table_exists(conn, table)? {
+        conn.execute(&format!("DROP TABLE {table}"), [])?;
+    }
+    Ok(())
+}
+
 pub(crate) fn rebuild_capture_sources_provider_check(conn: &Connection) -> Result<()> {
     if !table_exists(conn, "capture_sources")? {
         conn.execute_batch(CREATE_TABLES_SQL)?;
@@ -782,8 +832,8 @@ pub(crate) fn rebuild_capture_sources_provider_check(conn: &Connection) -> Resul
             started_at_ms INTEGER NOT NULL,
             ended_at_ms INTEGER,
             fidelity TEXT NOT NULL CHECK (fidelity IN ('full', 'partial', 'imported', 'inferred', 'summary_only')),
-            visibility TEXT NOT NULL DEFAULT 'local_only' CHECK (visibility IN ('local_only', 'reportable', 'sync_metadata', 'sync_full', 'withheld')),
-            sync_state TEXT NOT NULL DEFAULT 'local_only' CHECK (sync_state IN ('local_only', 'pending', 'synced', 'failed', 'withheld')),
+            visibility TEXT NOT NULL DEFAULT 'local_only' CHECK (visibility IN ('local_only', 'reportable', 'sync_metadata', 'sync_full')),
+            sync_state TEXT NOT NULL DEFAULT 'local_only' CHECK (sync_state IN ('local_only', 'pending', 'synced', 'failed')),
             sync_version INTEGER NOT NULL DEFAULT 0,
             metadata_json TEXT NOT NULL DEFAULT '{}'
         );

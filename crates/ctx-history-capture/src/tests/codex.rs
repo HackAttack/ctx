@@ -916,8 +916,8 @@ fn codex_session_tree_imports_rich_tool_outputs_and_preserves_previews() {
             && event.payload.to_string().contains("patch_apply_end")));
 
     let rendered = serde_json::to_string(&events).unwrap();
-    assert!(rendered.contains("cargo test -p sample -- --token [REDACTED_SECRET]"));
-    assert!(rendered.contains("unit tests passed in [REDACTED_PATH]"));
+    assert!(rendered.contains("cargo test -p sample -- --token fixture-secret-token"));
+    assert!(rendered.contains("unit tests passed in /workspace/ctx-rich-fixture"));
     assert!(!rendered.contains("opaque-private-reasoning-payload"));
 }
 
@@ -1049,7 +1049,6 @@ fn structured_file_touch_extractor_reads_nested_provider_paths() {
         role: Some(EventRole::Assistant),
         occurred_at: "2026-06-24T01:00:00Z".parse().unwrap(),
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: None,
         artifacts: Vec::new(),
         payload: serde_json::json!({}),
@@ -1120,7 +1119,6 @@ fn structured_file_touch_extractor_covers_provider_tool_shapes() {
         role: Some(EventRole::Assistant),
         occurred_at: "2026-06-24T01:00:00Z".parse().unwrap(),
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: None,
         artifacts: Vec::new(),
         payload: serde_json::json!({}),

@@ -17,7 +17,7 @@ Security review for the current product covers:
 - explicit imports for supported local transcript formats, including Codex,
   Pi, Claude, OpenCode, Gemini, Cursor, Copilot CLI, and Factory AI Droid;
 - setup, status, sources, import, show, locate, search, MCP, and doctor output;
-- JSON output treated as private local data unless reviewed and redacted.
+- JSON output treated as private local data unless reviewed before sharing.
 
 Setup, source discovery, import, and search do not require API keys,
 repository writes, shell startup-file edits, or background processes.
@@ -40,7 +40,7 @@ Useful reports include:
 - operating system;
 - whether `CTX_DATA_ROOT` or `--data-root` was set;
 - provider and source format, if relevant;
-- a minimal redacted reproducer;
+- a minimal sanitized reproducer;
 - expected and observed behavior.
 
 ## Local Data Handling
@@ -54,16 +54,16 @@ the searchable text and metadata it needs into SQLite, so deleting or moving the
 raw transcript does not necessarily remove indexed text from ctx. Delete the ctx
 data root or rebuild the index when local retention requirements change.
 
-## Redaction Limits
+## Local Output Limits
 
-ctx applies bounded previews and share-safety markers in search and show output,
-but these are guardrails, not a general-purpose sanitizer. JSON output is
-local/private by default. Review and redact copied output before sharing it
-outside the machine.
+Search, show, SQL, MCP, and JSON output are local/private by default and may
+preserve local paths, token-shaped strings, command output, and other transcript
+text when that text exists in indexed payloads. Review copied output before
+sharing it outside the machine.
 
 Before adding a new provider importer or expanding stored fields, the change
-needs tests for malformed input, source-path handling, redaction boundaries, and
-the no-network/no-repository-write behavior required by local-only security
+needs tests for malformed input, source-path handling, local payload handling,
+and the no-network/no-repository-write behavior required by local-only security
 mode.
 
 ## Security Documentation
@@ -71,4 +71,3 @@ mode.
 - [Threat model](docs/threat-model.md)
 - [Security checks](docs/security-checks.md)
 - [Storage and privacy](docs/storage.md)
-- [Redaction corpus](docs/redaction-corpus.md)

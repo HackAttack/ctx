@@ -1,6 +1,6 @@
 use ctx_history_core::{
     CaptureProvider, ProviderCaptureEnvelope, ProviderCursorCheckpoint, ProviderCursorRange,
-    ProviderSourceEnvelope, RedactionState, SyncCursor,
+    ProviderSourceEnvelope, SyncCursor,
 };
 use ctx_history_store::Store;
 
@@ -99,19 +99,6 @@ fn provider_source_cursor_stream_for_component(
         provider_cursor_stream(provider, source_format),
         source_id.simple()
     )
-}
-
-pub(crate) fn effective_event_redaction_state(
-    requested: RedactionState,
-    sanitizer_redacted: bool,
-) -> RedactionState {
-    match requested {
-        RedactionState::Withheld => RedactionState::Withheld,
-        RedactionState::Redacted => RedactionState::Redacted,
-        RedactionState::Raw if !sanitizer_redacted => RedactionState::Raw,
-        _ if sanitizer_redacted => RedactionState::Redacted,
-        _ => RedactionState::LocalPreview,
-    }
 }
 
 pub(crate) fn persist_provider_cursor(

@@ -7,7 +7,7 @@ use ctx_history_capture::{
     discover_provider_sources, discover_provider_sources_for_provider, provider_source_for_path,
     ProviderImportSupport, ProviderSource, ProviderSourceStatus,
 };
-use ctx_history_core::{CaptureProvider, ProviderRawRetention};
+use ctx_history_core::CaptureProvider;
 
 use crate::history_source_plugins::{
     discover_history_source_plugins_with_diagnostics, HistorySourcePluginManifestFailure,
@@ -70,7 +70,6 @@ pub(crate) fn sources_json(sources: &[SourceInfo]) -> Vec<Value> {
                 "native_import": source.import_support.is_auto_importable(),
                 "importable": source.status == ProviderSourceStatus::Available
                     && source.import_support.is_importable(),
-                "raw_retention": raw_retention_json(source.raw_retention),
                 "unsupported_reason": source.unsupported_reason,
             })
         })
@@ -100,7 +99,6 @@ pub(crate) fn plugin_sources_json(sources: &[HistorySourcePluginSource]) -> Vec<
                 "import_support": "history_source_plugin",
                 "native_import": false,
                 "importable": true,
-                "raw_retention": "metadata_only",
                 "unsupported_reason": null,
             })
         })
@@ -132,7 +130,6 @@ pub(crate) fn plugin_manifest_failures_json(
                 "import_support": "history_source_plugin",
                 "native_import": false,
                 "importable": false,
-                "raw_retention": "metadata_only",
                 "unsupported_reason": failure.error,
                 "error": failure.error,
             })
@@ -157,15 +154,6 @@ pub(crate) fn import_support_json(support: ProviderImportSupport) -> &'static st
     }
 }
 
-pub(crate) fn raw_retention_json(retention: ProviderRawRetention) -> &'static str {
-    match retention {
-        ProviderRawRetention::None => "none",
-        ProviderRawRetention::PathReference => "path_reference",
-        ProviderRawRetention::MetadataOnly => "metadata_only",
-        ProviderRawRetention::LocalBlob => "local_blob",
-        ProviderRawRetention::Withheld => "withheld",
-    }
-}
 pub(crate) fn home_dir() -> Option<PathBuf> {
     identity::home_dir()
 }

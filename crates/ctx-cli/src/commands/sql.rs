@@ -8,7 +8,7 @@ use ctx_history_store::{
     RawSqlOptions, RawSqlResult, RawSqlValue, RAW_SQL_MAX_SQL_BYTES_CAP, RAW_SQL_MAX_TIMEOUT,
 };
 
-use crate::output::{compact_json, print_share_safe_value, SqlFormat};
+use crate::output::{compact_json, print_json, SqlFormat};
 use crate::store_util::open_existing_store_read_only;
 use crate::SqlArgs;
 
@@ -59,7 +59,7 @@ pub(crate) fn run_sql(args: SqlArgs, data_root: PathBuf) -> Result<()> {
 
     match args.output_format() {
         SqlFormat::Table => print_sql_table(&result),
-        SqlFormat::Json => print_share_safe_value(raw_sql_result_json(&result)),
+        SqlFormat::Json => print_json(raw_sql_result_json(&result)),
         SqlFormat::Csv => print_sql_csv(&result, args.no_header),
         SqlFormat::Raw => print_sql_raw(&result),
     }

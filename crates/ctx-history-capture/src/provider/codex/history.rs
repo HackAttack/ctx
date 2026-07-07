@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, fs::File, io::BufReader, path::Path};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use ctx_history_store::Store;
 use serde::Deserialize;
@@ -118,8 +118,6 @@ impl ProviderCaptureAdapter for CodexHistoryJsonlAdapter {
                                 .as_ref()
                                 .map(|path| path.display().to_string()),
                             source_root: context.source_root_display(),
-                            raw_retention: ProviderRawRetention::PathReference,
-                            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
                             trust: ProviderSourceTrust::ProviderExport,
                             fidelity: Fidelity::SummaryOnly,
                             cursor: Some(ProviderCursorRange {
@@ -183,7 +181,6 @@ impl ProviderCaptureAdapter for CodexHistoryJsonlAdapter {
                             role: Some(EventRole::User),
                             occurred_at,
                             fidelity: Fidelity::SummaryOnly,
-                            redaction_state: RedactionState::LocalPreview,
                             idempotency_key: Some(format!(
                                 "provider-event:{}:{}:{}",
                                 CaptureProvider::Codex.as_str(),

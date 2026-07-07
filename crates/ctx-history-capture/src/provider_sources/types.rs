@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ctx_history_core::{CaptureProvider, ProviderRawRetention, ProviderRedactionBoundary};
+use ctx_history_core::CaptureProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderSourceKind {
@@ -66,8 +66,6 @@ pub struct ProviderSourceSpec {
     pub default_locations: &'static [ProviderDefaultLocation],
     pub import_support: ProviderImportSupport,
     pub catalog_support: ProviderCatalogSupport,
-    pub raw_retention: ProviderRawRetention,
-    pub redaction_boundary: ProviderRedactionBoundary,
     pub unsupported_reason: Option<&'static str>,
 }
 
@@ -81,7 +79,5 @@ pub struct ProviderSource {
     pub import_support: ProviderImportSupport,
     pub catalog_support: ProviderCatalogSupport,
     pub status: ProviderSourceStatus,
-    pub raw_retention: ProviderRawRetention,
-    pub redaction_boundary: ProviderRedactionBoundary,
     pub unsupported_reason: Option<&'static str>,
 }

@@ -2,7 +2,7 @@ use super::{
     fixed_time, search_packet, sync_metadata, test_store, timestamps, AgentType, CaptureProvider,
     CaptureSource, CaptureSourceDescriptor, CaptureSourceKind, Confidence, ContextCitationType,
     Event, EventRole, EventType, FileChangeKind, FileTouched, HistoryRecord, PacketOptions,
-    RedactionState, SearchFilters, Session, SessionStatus, SyncMetadata, Uuid,
+    SearchFilters, Session, SessionStatus, SyncMetadata, Uuid,
 };
 
 #[test]
@@ -91,7 +91,6 @@ fn search_filters_and_citations_expose_source_metadata() {
         }),
         payload_blob_id: None,
         dedupe_key: Some("source-filter-event".into()),
-        redaction_state: RedactionState::SafePreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();
@@ -389,7 +388,6 @@ fn search_filters_custom_history_source_identity() {
         }),
         payload_blob_id: None,
         dedupe_key: Some("custom-history-source-filter-event".into()),
-        redaction_state: RedactionState::SafePreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();

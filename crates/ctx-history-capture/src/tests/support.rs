@@ -71,9 +71,8 @@ pub(super) use chrono::{DateTime, Utc};
 pub(super) use ctx_history_core::{
     new_id, AgentType, CaptureProvider, CaptureSource, CaptureSourceDescriptor, CaptureSourceKind,
     Confidence, Event, EventRole, EventType, Fidelity, FileChangeKind, FileTouched,
-    ProviderCaptureEnvelope, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, Session, SessionStatus,
+    ProviderCaptureEnvelope, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, Session, SessionStatus,
     PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 pub(super) use ctx_history_store::Store;
@@ -138,7 +137,6 @@ pub(super) fn test_provider_event(event_type: EventType) -> ProviderEventEnvelop
         role: Some(EventRole::Tool),
         occurred_at: "2026-07-03T12:00:00Z".parse().unwrap(),
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: None,
         artifacts: Vec::new(),
         payload: json!({}),
@@ -1556,8 +1554,6 @@ pub(super) fn provider_collision_capture(
             observed_at: occurred_at,
             raw_source_path: Some(raw_source_path.to_owned()),
             source_root: Some(raw_source_path.to_owned()),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: ProviderSourceTrust::ProviderExport,
             fidelity: Fidelity::Imported,
             cursor: None,
@@ -1598,7 +1594,6 @@ pub(super) fn provider_collision_capture(
             role: Some(EventRole::User),
             occurred_at,
             fidelity: Fidelity::Imported,
-            redaction_state: RedactionState::LocalPreview,
             idempotency_key: Some(format!(
                 "provider-event:{}:{}:0",
                 provider.as_str(),

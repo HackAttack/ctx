@@ -3,9 +3,9 @@ use std::{borrow::Cow, collections::BTreeMap};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -148,8 +148,6 @@ pub(crate) fn codex_session_capture(
                 .as_ref()
                 .map(|path| path.display().to_string()),
             source_root: context.source_root_display(),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: ProviderSourceTrust::ProviderExport,
             fidelity: Fidelity::Imported,
             cursor,
@@ -637,7 +635,7 @@ pub(crate) fn codex_reasoning_event(
             "summary": summary,
             "text": summary,
             "truncated": truncated,
-            "encrypted_content_withheld": payload.get("encrypted_content").is_some(),
+            "encrypted_content_present": payload.get("encrypted_content").is_some(),
         }),
         json!({
             "source": "codex_session",
@@ -699,7 +697,6 @@ pub(crate) fn codex_provider_event(
         role,
         occurred_at,
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!("provider-event:codex-session:{line_number}")),
         artifacts: Vec::new(),
         payload,

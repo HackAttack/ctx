@@ -297,9 +297,9 @@ fn custom_history_jsonl_rejects_oversized_line() {
 }
 
 #[test]
-fn custom_history_jsonl_preview_overrides_raw_payload_for_searchable_event_payload() {
+fn custom_history_jsonl_preview_preserves_payload_and_metadata() {
     let temp = tempdir();
-    let fixture = temp.path().join("preview-overrides-payload.jsonl");
+    let fixture = temp.path().join("preview-preserves-payload.jsonl");
     fs::write(
             &fixture,
             [
@@ -332,17 +332,57 @@ fn custom_history_jsonl_preview_overrides_raw_payload_for_searchable_event_paylo
     let events = store.events_for_session(session_id).unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(
-        events[0].payload["body"],
-        json!({ "text": "bounded searchable preview text" })
-    );
-    assert!(!events[0]
-        .payload
-        .to_string()
-        .contains("unindexed-raw-payload-token"));
-    assert_eq!(
-        events[0].sync.metadata["metadata"]["ctx_history_jsonl_v1"]["raw_payload"]["raw"].as_str(),
+        events[0].payload["body"]["raw"].as_str(),
         Some("unindexed-raw-payload-token")
     );
+    assert_eq!(
+        events[0].sync.metadata["metadata"]["ctx_history_jsonl_v1"]["preview"].as_str(),
+        Some("bounded searchable preview text")
+    );
+}
+
+#[test]
+fn custom_history_jsonl_imports_payload_text() {
+    let temp = tempdir();
+    let fixture = temp.path().join("payload-event.jsonl");
+    fs::write(
+        &fixture,
+        [
+            r#"{"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}"#,
+            r#"{"record_type":"source","source_id":"src","provider_key":"payload-agent","source_format":"demo"}"#,
+            r#"{"record_type":"session","source_id":"src","session_id":"run","started_at":"2026-06-23T14:00:00Z"}"#,
+            r#"{"record_type":"event","source_id":"src","session_id":"run","event_index":0,"event_type":"message","role":"assistant","occurred_at":"2026-06-23T14:00:01Z","payload":{"text":"custompayloadimport local payload text"}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_custom_history_jsonl_v1(
+        &fixture,
+        &mut store,
+        CustomHistoryJsonlV1ImportOptions {
+            source_path: Some(fixture.clone()),
+            imported_at: "2026-06-23T14:10:00Z".parse().unwrap(),
+            ..CustomHistoryJsonlV1ImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    let session_id = provider_session_uuid(
+        CaptureProvider::Custom,
+        &custom_history_internal_session_id("payload-agent", "src", "run"),
+    );
+    let events = store.events_for_session(session_id).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events[0]
+        .payload
+        .to_string()
+        .contains("custompayloadimport local payload text"));
+
+    let hits = store.search_event_hits("custompayloadimport", 10).unwrap();
+    assert!(hits.iter().any(|hit| hit.event_id == events[0].id));
 }
 
 #[test]

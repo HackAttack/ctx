@@ -49,7 +49,6 @@ public struct ProviderSource: Codable, Equatable, Sendable {
     public var importSupport: String?
     public var nativeImport: Bool?
     public var importable: Bool
-    public var rawRetention: String?
     public var unsupportedReason: String?
 
     public init(
@@ -61,7 +60,6 @@ public struct ProviderSource: Codable, Equatable, Sendable {
         importSupport: String? = nil,
         nativeImport: Bool? = nil,
         importable: Bool,
-        rawRetention: String? = nil,
         unsupportedReason: String? = nil
     ) {
         self.provider = provider
@@ -72,7 +70,6 @@ public struct ProviderSource: Codable, Equatable, Sendable {
         self.importSupport = importSupport
         self.nativeImport = nativeImport
         self.importable = importable
-        self.rawRetention = rawRetention
         self.unsupportedReason = unsupportedReason
     }
 }
@@ -364,7 +361,6 @@ public struct AgentHistoryEventRecord: Codable, Equatable, Sendable {
     public var cursor: String?
     public var text: String?
     public var preview: String?
-    public var redactionState: String?
     public var citations: [AgentHistoryCitation]?
 
     public init(
@@ -378,7 +374,6 @@ public struct AgentHistoryEventRecord: Codable, Equatable, Sendable {
         cursor: String? = nil,
         text: String? = nil,
         preview: String? = nil,
-        redactionState: String? = nil,
         citations: [AgentHistoryCitation]? = nil
     ) {
         self.ctxEventId = ctxEventId
@@ -391,7 +386,6 @@ public struct AgentHistoryEventRecord: Codable, Equatable, Sendable {
         self.cursor = cursor
         self.text = text
         self.preview = preview
-        self.redactionState = redactionState
         self.citations = citations
     }
 }

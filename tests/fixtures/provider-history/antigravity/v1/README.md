@@ -17,4 +17,4 @@ Coverage:
 - `agy-success`: user input, assistant response, and typed tool call args.
 - `agy-resume`: multi-step resumed conversation.
 - `agy-malformed`: partial import with one malformed JSONL line.
-- `agy-future`: unknown future event type and sensitive marker redaction.
+- `agy-future`: unknown future event type and sensitive marker fixture.

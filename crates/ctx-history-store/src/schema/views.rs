@@ -42,7 +42,6 @@ SELECT
     e.role AS role,
     e.occurred_at_ms AS occurred_at_ms,
     e.payload_json AS payload_json,
-    e.redaction_state AS redaction_state,
     e.fidelity AS fidelity,
     cs.cwd AS cwd,
     cs.raw_source_path AS source_path,

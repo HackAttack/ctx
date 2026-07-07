@@ -41,7 +41,7 @@ fn search_refresh_off_serves_existing_index_without_importing() {
 
     let stale = json_output(ctx(&temp).args([
         "search",
-        "redacted sample app",
+        "diagnostic sample app",
         "--provider",
         "codex",
         "--refresh",

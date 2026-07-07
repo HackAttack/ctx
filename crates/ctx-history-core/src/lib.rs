@@ -99,7 +99,6 @@ pub mod dtos;
 pub mod history_jsonl;
 pub mod paths;
 pub mod provider;
-pub mod redaction;
 pub mod source;
 pub mod sync;
 
@@ -126,14 +125,10 @@ pub use provider::{
     provider_capture_envelope_schema_version, provider_support_matrix_schema_version,
     ProviderArtifactDescriptor, ProviderCaptureEnvelope, ProviderCursorCheckpoint,
     ProviderCursorRange, ProviderEventEnvelope, ProviderFidelityClaims, ProviderId,
-    ProviderPathKind, ProviderRawRetention, ProviderRedactionBoundary, ProviderSessionEnvelope,
-    ProviderSourceEnvelope, ProviderSourceTrust, ProviderSupportEntry,
-    ProviderSupportMatrixDocument, ProviderSupportPath, ProviderSupportStatus,
-    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION, PROVIDER_SUPPORT_MATRIX_SCHEMA_VERSION,
-};
-pub use redaction::{
-    redact_preview, redact_secret_markers, redact_share_safe_markers, redact_share_safe_preview,
-    RedactionState,
+    ProviderPathKind, ProviderSessionEnvelope, ProviderSourceEnvelope, ProviderSourceTrust,
+    ProviderSupportEntry, ProviderSupportMatrixDocument, ProviderSupportPath,
+    ProviderSupportStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    PROVIDER_SUPPORT_MATRIX_SCHEMA_VERSION,
 };
 pub use source::{CaptureProvider, CaptureSource, CaptureSourceDescriptor, CaptureSourceKind};
 pub use sync::{

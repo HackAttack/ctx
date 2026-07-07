@@ -3,9 +3,9 @@ use ctx_history_core::{
     AgentType, Artifact, ArtifactKind, CaptureProvider, CaptureSource, CaptureSourceDescriptor,
     CaptureSourceKind, Confidence, ContextCitationType, EntityTimestamps, Event, EventRole,
     EventType, Fidelity, FileChangeKind, FileTouched, HistoryRecord, HistoryRecordLink,
-    HistoryRecordLinkTargetType, HistoryRecordLinkType, RedactionState, Run, RunStatus, RunType,
-    Session, SessionHistoryArchive, SessionStatus, Summary, SummaryKind, SyncMetadata, SyncState,
-    VcsChange, VcsChangeKind, VcsHost, VcsKind, VcsWorkspace, Visibility,
+    HistoryRecordLinkTargetType, HistoryRecordLinkType, Run, RunStatus, RunType, Session,
+    SessionHistoryArchive, SessionStatus, Summary, SummaryKind, SyncMetadata, SyncState, VcsChange,
+    VcsChangeKind, VcsHost, VcsKind, VcsWorkspace, Visibility,
 };
 use serde::Serialize;
 use std::{collections::BTreeSet, path::Path};

@@ -243,14 +243,6 @@ fn provider_fixture_replay_persists_cursor_checkpoint_and_source_contract_metada
         source.sync.metadata["source_trust"].as_str(),
         Some("fixture")
     );
-    assert_eq!(
-        source.sync.metadata["raw_retention"].as_str(),
-        Some("path_reference")
-    );
-    assert_eq!(
-        source.sync.metadata["redaction_boundary"].as_str(),
-        Some("before_export")
-    );
     assert!(source.sync.metadata["source_idempotency_key"]
         .as_str()
         .is_some());
@@ -788,7 +780,6 @@ fn provider_import_reuses_existing_legacy_provider_event_identity() {
                 0,
                 &event_hash,
             )),
-            redaction_state: RedactionState::LocalPreview,
             sync: provider_sync_metadata(Fidelity::Imported, json!({"legacy": true})),
         })
         .unwrap();

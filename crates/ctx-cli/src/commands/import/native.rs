@@ -860,7 +860,6 @@ pub(crate) fn merge_provider_import_summary(
     summary.imported += other.imported;
     summary.skipped += other.skipped;
     summary.failed += other.failed;
-    summary.redacted += other.redacted;
     summary.imported_sessions += other.imported_sessions;
     summary.skipped_sessions += other.skipped_sessions;
     summary.imported_events += other.imported_events;

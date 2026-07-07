@@ -291,8 +291,8 @@ fn upsert_event_tx(tx: &Transaction<'_>, event: &Event) -> Result<Uuid> {
     tx.execute(
         r#"
         INSERT INTO events
-        (id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, redaction_state, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+        (id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         ON CONFLICT(id) DO UPDATE SET
             seq = excluded.seq,
             history_record_id = excluded.history_record_id,
@@ -306,7 +306,6 @@ fn upsert_event_tx(tx: &Transaction<'_>, event: &Event) -> Result<Uuid> {
             payload_blob_id = excluded.payload_blob_id,
             dedupe_key = excluded.dedupe_key,
             visibility = excluded.visibility,
-            redaction_state = excluded.redaction_state,
             fidelity = excluded.fidelity,
             sync_state = excluded.sync_state,
             sync_version = excluded.sync_version,
@@ -327,7 +326,6 @@ fn upsert_event_tx(tx: &Transaction<'_>, event: &Event) -> Result<Uuid> {
             optional_uuid_string(event.payload_blob_id),
             event.dedupe_key.as_deref(),
             event.sync.visibility.as_str(),
-            event.redaction_state.as_str(),
             event.sync.fidelity.as_str(),
             event.sync.sync_state.as_str(),
             event.sync.sync_version as i64,
@@ -342,14 +340,13 @@ fn upsert_artifact_tx(tx: &Transaction<'_>, artifact: &Artifact) -> Result<Uuid>
     tx.execute(
         r#"
         INSERT INTO artifacts
-        (id, kind, blob_hash, blob_path, byte_size, media_type, preview_text, redaction_state, created_at_ms, updated_at_ms, source_id, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        (id, kind, blob_hash, blob_path, byte_size, media_type, preview_text, created_at_ms, updated_at_ms, source_id, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT DO UPDATE SET
             blob_path = excluded.blob_path,
             byte_size = excluded.byte_size,
             media_type = excluded.media_type,
             preview_text = excluded.preview_text,
-            redaction_state = excluded.redaction_state,
             updated_at_ms = excluded.updated_at_ms,
             source_id = excluded.source_id,
             visibility = excluded.visibility,
@@ -367,7 +364,6 @@ fn upsert_artifact_tx(tx: &Transaction<'_>, artifact: &Artifact) -> Result<Uuid>
             artifact.byte_size as i64,
             artifact.media_type.as_deref(),
             artifact.preview_text.as_deref(),
-            artifact.redaction_state.as_str(),
             timestamp_ms(artifact.timestamps.created_at),
             timestamp_ms(artifact.timestamps.updated_at),
             optional_uuid_string(artifact.source_id),

@@ -16,7 +16,6 @@
       "importSupport": "native",
       "nativeImport": true,
       "importable": true,
-      "rawRetention": "metadata",
       "unsupportedReason": null
     }
   ]

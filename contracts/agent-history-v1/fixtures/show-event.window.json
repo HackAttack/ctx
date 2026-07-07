@@ -16,8 +16,7 @@
       "occurredAt": "2026-07-01T12:00:00Z",
       "source": "codex",
       "cursor": "line:2",
-      "text": "local agent history search result",
-      "redactionState": "redacted"
+      "text": "local agent history search result"
     },
     "events": [
       {
@@ -29,8 +28,7 @@
         "occurredAt": "2026-07-01T12:00:00Z",
         "source": "codex",
         "cursor": "line:2",
-        "text": "local agent history search result",
-        "redactionState": "redacted"
+        "text": "local agent history search result"
       }
     ],
     "source": {

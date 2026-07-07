@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use chrono::{DateTime, Duration, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderEventEnvelope, ProviderSourceTrust, RedactionState,
+    ProviderEventEnvelope, ProviderSourceTrust,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -211,7 +211,6 @@ pub(crate) fn lingma_event(
         role: Some(draft.role),
         occurred_at: draft.occurred_at,
         fidelity: draft.fidelity,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
             "provider-event:{}:{}:{}",
             CaptureProvider::Lingma.as_str(),

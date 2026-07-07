@@ -1,4 +1,4 @@
-use ctx_history_core::{Artifact, ArtifactKind, EntityTimestamps, RedactionState};
+use ctx_history_core::{Artifact, ArtifactKind, EntityTimestamps};
 use rusqlite::params;
 use uuid::Uuid;
 
@@ -14,14 +14,13 @@ impl Store {
         self.conn.execute(
                 r#"
                 INSERT INTO artifacts
-                (id, kind, blob_hash, blob_path, byte_size, media_type, preview_text, redaction_state, created_at_ms, updated_at_ms, source_id, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                (id, kind, blob_hash, blob_path, byte_size, media_type, preview_text, created_at_ms, updated_at_ms, source_id, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 ON CONFLICT DO UPDATE SET
                     blob_path = excluded.blob_path,
                     byte_size = excluded.byte_size,
                     media_type = excluded.media_type,
                     preview_text = excluded.preview_text,
-                    redaction_state = excluded.redaction_state,
                     updated_at_ms = excluded.updated_at_ms,
                     source_id = excluded.source_id,
                     visibility = excluded.visibility,
@@ -39,7 +38,6 @@ impl Store {
                     artifact.byte_size as i64,
                     artifact.media_type.as_deref(),
                     artifact.preview_text.as_deref(),
-                    artifact.redaction_state.as_str(),
                     timestamp_ms(artifact.timestamps.created_at),
                     timestamp_ms(artifact.timestamps.updated_at),
                     optional_uuid_string(artifact.source_id),
@@ -111,7 +109,7 @@ impl Store {
 
 pub(crate) fn artifact_select_sql(tail: &str) -> String {
     format!(
-        "SELECT id, kind, blob_hash, blob_path, byte_size, media_type, preview_text, redaction_state, created_at_ms, updated_at_ms, source_id, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json FROM artifacts {tail}"
+        "SELECT id, kind, blob_hash, blob_path, byte_size, media_type, preview_text, created_at_ms, updated_at_ms, source_id, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json FROM artifacts {tail}"
     )
 }
 
@@ -124,12 +122,11 @@ pub(crate) fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Art
         byte_size: nonnegative_i64_to_u64(row.get(4)?)?,
         media_type: row.get(5)?,
         preview_text: row.get(6)?,
-        redaction_state: parse_text_enum::<RedactionState>(row.get::<_, String>(7)?)?,
         timestamps: EntityTimestamps {
-            created_at: ms_to_time(row.get(8)?)?,
-            updated_at: ms_to_time(row.get(9)?)?,
+            created_at: ms_to_time(row.get(7)?)?,
+            updated_at: ms_to_time(row.get(8)?)?,
         },
-        source_id: parse_optional_uuid(row.get(10)?)?,
-        sync: sync_metadata_from_row(row, 11, 12, 13, 14, 15, 16)?,
+        source_id: parse_optional_uuid(row.get(9)?)?,
+        sync: sync_metadata_from_row(row, 10, 11, 12, 13, 14, 15)?,
     })
 }

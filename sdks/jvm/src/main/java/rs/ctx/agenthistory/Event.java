@@ -93,14 +93,6 @@ public final class Event {
         return getPreview();
     }
 
-    public String getRedactionState() {
-        return AgentHistoryValue.string(fields.get("redactionState"));
-    }
-
-    public String redactionState() {
-        return getRedactionState();
-    }
-
     public List<Citation> getCitations() {
         return citations;
     }

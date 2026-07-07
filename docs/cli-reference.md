@@ -109,8 +109,8 @@ machine. Current rows include:
   `CTX_HISTORY_PLUGIN_PATH`.
 
 Native JSON rows include `provider`, `path`, `exists`, `source_format`,
-`status`, `import_support`, `native_import`, `importable`, `raw_retention`, and
-any `unsupported_reason`. Plugin JSON rows use
+`status`, `import_support`, `native_import`, `importable`, and any
+`unsupported_reason`. Plugin JSON rows use
 `kind: "history_source_plugin"` and include `plugin`, `history_source`,
 `provider_key`, `source_id`, `manifest_path`, and `enabled`. Invalid installed
 plugin manifests appear as non-importable plugin rows with `status: "invalid"`
@@ -376,8 +376,7 @@ Formats:
 
 - default `table` output is compact and intended for humans and agents;
 - `--format json` or `--json` returns a structured result with `columns`,
-  array rows, limits, truncation flags, `read_only: true`, and
-  `share_safe: false`;
+  array rows, limits, truncation flags, and `read_only: true`;
 - `--format csv` prints a CSV header unless `--no-header` is set;
 - `--format raw` requires exactly one selected column and prints one value per
   line for piping.
@@ -491,7 +490,7 @@ Progress JSON is a best-effort operation stream. Each object has
 ## JSON Contract
 
 JSON output is intended for local scripts, harnesses, and exact field
-extraction. It is private unless a user explicitly reviews and redacts it.
+extraction. It is private unless a user explicitly reviews it.
 
 Structured output is available for:
 

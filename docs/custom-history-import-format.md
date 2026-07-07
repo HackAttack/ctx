@@ -142,9 +142,8 @@ Optional fields:
 `event_index` is the stable exporter order within the session. Use
 `native_cursor` for provider cursor tokens or byte offsets that should survive
 re-imports. `payload` is open JSON; `preview` should be a bounded searchable
-summary when payloads are large or sensitive. When `preview` is present, ctx
-uses it as the event's searchable payload and preserves any non-empty `payload`
-under import metadata.
+summary when payloads are large. ctx preserves `payload` as the event body and
+keeps `preview` as event metadata.
 
 Example:
 

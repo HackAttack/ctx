@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::provider::file_touches::normalized_key;
 use crate::provider::native::provider_capped_json_value;
@@ -46,7 +46,7 @@ pub(crate) fn windsurf_collect_text(value: &Value, key: Option<&str>, out: &mut 
     }
     match value {
         Value::String(text) => {
-            if !windsurf_sensitive_key(key.unwrap_or_default()) && !text.trim().is_empty() {
+            if !windsurf_large_content_key(key.unwrap_or_default()) && !text.trim().is_empty() {
                 let label =
                     key.filter(|key| !matches!(normalized_key(key).as_str(), "text" | "message"));
                 if let Some(label) = label {
@@ -97,7 +97,9 @@ pub(crate) fn windsurf_collect_text(value: &Value, key: Option<&str>, out: &mut 
                 windsurf_collect_text(child, Some(child_key), out);
             }
         }
-        Value::Number(_) | Value::Bool(_) if !windsurf_sensitive_key(key.unwrap_or_default()) => {
+        Value::Number(_) | Value::Bool(_)
+            if !windsurf_large_content_key(key.unwrap_or_default()) =>
+        {
             if let Some(key) = key {
                 out.push(format!("{key}: {value}"));
             }
@@ -106,40 +108,11 @@ pub(crate) fn windsurf_collect_text(value: &Value, key: Option<&str>, out: &mut 
     }
 }
 
-pub(crate) fn windsurf_redacted_body(value: &Value) -> Value {
-    provider_capped_json_value(
-        &windsurf_redact_value(value, None),
-        PROVIDER_MAX_PREVIEW_CHARS,
-    )
+pub(crate) fn windsurf_event_body(value: &Value) -> Value {
+    provider_capped_json_value(value, PROVIDER_MAX_PREVIEW_CHARS)
 }
 
-pub(crate) fn windsurf_redact_value(value: &Value, key: Option<&str>) -> Value {
-    if windsurf_sensitive_key(key.unwrap_or_default()) {
-        return json!({"redacted": "sensitive_transcript_field"});
-    }
-    match value {
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(|item| windsurf_redact_value(item, key))
-                .collect(),
-        ),
-        Value::Object(object) => Value::Object(
-            object
-                .iter()
-                .map(|(child_key, child)| {
-                    (
-                        child_key.clone(),
-                        windsurf_redact_value(child, Some(child_key)),
-                    )
-                })
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-pub(crate) fn windsurf_sensitive_key(key: &str) -> bool {
+pub(crate) fn windsurf_large_content_key(key: &str) -> bool {
     matches!(
         normalized_key(key).as_str(),
         "newcontent"

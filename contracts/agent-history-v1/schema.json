@@ -76,7 +76,6 @@
         "importSupport": { "type": ["string", "null"] },
         "nativeImport": { "type": "boolean" },
         "importable": { "type": "boolean" },
-        "rawRetention": { "type": ["string", "null"] },
         "unsupportedReason": { "type": ["string", "null"] }
       },
       "additionalProperties": true
@@ -186,7 +185,6 @@
         "cursor": { "type": ["string", "null"] },
         "text": { "type": ["string", "null"] },
         "preview": { "type": ["string", "null"] },
-        "redactionState": { "type": ["string", "null"] },
         "citations": {
           "type": "array",
           "items": { "$ref": "#/$defs/citation" }

@@ -3,12 +3,12 @@ use super::{
     sync_metadata, test_store, timestamps, AgentType, Artifact, ArtifactKind, CaptureProvider,
     Confidence, ContextCitationType, Event, EventRole, EventType, FileChangeKind, FileTouched,
     HistoryRecord, HistoryRecordLink, HistoryRecordLinkTargetType, HistoryRecordLinkType,
-    PacketOptions, RedactionState, Run, RunStatus, RunType, Session, SessionStatus, Summary,
-    SummaryKind, Uuid, VcsChange, VcsChangeKind, VcsHost, VcsKind, VcsWorkspace, Visibility,
+    PacketOptions, Run, RunStatus, RunType, Session, SessionStatus, Summary, SummaryKind, Uuid,
+    VcsChange, VcsChangeKind, VcsHost, VcsKind, VcsWorkspace, Visibility,
 };
 
 #[test]
-fn rich_search_matches_typed_metadata_with_citations_and_redaction() {
+fn rich_search_matches_typed_metadata_with_citations() {
     let (_temp, store) = test_store();
     let record = HistoryRecord::new(
         "Plain work",
@@ -27,7 +27,6 @@ fn rich_search_matches_typed_metadata_with_citations_and_redaction() {
         byte_size: 32,
         media_type: Some("text/markdown".into()),
         preview_text: Some("needle-artifact /home/example/private/repo".into()),
-        redaction_state: RedactionState::SafePreview,
         timestamps: timestamps(),
         source_id: None,
         sync: sync_metadata(),
@@ -90,7 +89,6 @@ fn rich_search_matches_typed_metadata_with_citations_and_redaction() {
         }),
         payload_blob_id: None,
         dedupe_key: Some("needle-dedupe".into()),
-        redaction_state: RedactionState::SafePreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();
@@ -316,7 +314,6 @@ fn nested_provider_body_event_preview_drives_search() {
         }),
         payload_blob_id: None,
         dedupe_key: Some("nested-provider-event".into()),
-        redaction_state: RedactionState::SafePreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();

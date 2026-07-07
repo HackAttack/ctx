@@ -23,42 +23,6 @@ pub(crate) fn assert_omits_keys(value: &Value, forbidden_keys: &[&str]) {
     }
 }
 
-pub(crate) fn assert_contains_markers(label: &str, value: &str, expected_markers: &[&str]) {
-    for expected in expected_markers {
-        assert!(
-            value.contains(expected),
-            "{label} did not preserve local marker {expected} in {value}"
-        );
-    }
-}
-
-pub(crate) fn local_cli_markers() -> &'static [&'static str] {
-    &[
-        "sk-fake00000000000000000000000000000000000000000000",
-        "AKIAFAKE000000000000",
-        "fake.jwt.token",
-        "fake_password",
-        "fake_secret_value",
-        "fake-password-123",
-        "fake_token@git.example.com",
-        "person@example.invalid",
-    ]
-}
-
-pub(crate) fn local_sqlite_markers() -> &'static [&'static str] {
-    &[
-        "sk-fake00000000000000000000000000000000000000000000",
-        "ghp_fake000000000000000000000000000000000000",
-        "AKIAFAKE000000000000",
-        "fake.jwt.token",
-        "fake_password",
-        "fake_secret_value",
-        "fake-password-123",
-        "fake_token@git.example.com",
-        "person@example.invalid",
-    ]
-}
-
 pub(crate) fn sqlite_column_text(conn: &Connection, sql: &str) -> String {
     let mut statement = conn.prepare(sql).unwrap();
     let rows = statement

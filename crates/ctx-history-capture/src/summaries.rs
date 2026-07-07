@@ -30,7 +30,6 @@ pub struct ProviderImportSummary {
     pub imported: usize,
     pub skipped: usize,
     pub failed: usize,
-    pub redacted: usize,
     pub imported_sessions: usize,
     pub skipped_sessions: usize,
     pub imported_events: usize,
@@ -62,7 +61,6 @@ impl ProviderImportSummary {
         self.imported += other.imported;
         self.skipped += other.skipped;
         self.failed += other.failed;
-        self.redacted += other.redacted;
         self.imported_sessions += other.imported_sessions;
         self.skipped_sessions += other.skipped_sessions;
         self.imported_events += other.imported_events;

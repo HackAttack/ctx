@@ -7,9 +7,8 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{
     CaptureProvider, CaptureSource, CaptureSourceDescriptor, CaptureSourceKind, Confidence, Event,
     Fidelity, FileTouched, ProviderCaptureEnvelope, ProviderCursorCheckpoint, ProviderCursorRange,
-    ProviderEventEnvelope, ProviderRawRetention, ProviderRedactionBoundary,
-    ProviderSessionEnvelope, ProviderSourceEnvelope, ProviderSourceTrust, RedactionState, Session,
-    SessionEdge, SessionEdgeType, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderEventEnvelope, ProviderSessionEnvelope, ProviderSourceEnvelope, ProviderSourceTrust,
+    Session, SessionEdge, SessionEdgeType, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use ctx_history_store::{Store, StoreError};
 use serde_json::{json, Value};
@@ -17,7 +16,6 @@ use uuid::Uuid;
 
 use crate::{compute_payload_hash, stable_capture_uuid};
 
-use crate::common::json::sanitize_value;
 use crate::provider::file_touches::provider_file_touches_from_event;
 use crate::{
     CaptureError, CodexEventImportMode, CodexToolOutputMode, NormalizedProviderImportOptions,
@@ -35,8 +33,7 @@ pub(crate) use commands::{provider_command_run_from_event, ProviderCommandRunInp
 #[cfg(test)]
 pub(crate) use cursors::provider_source_cursor_stream;
 pub(crate) use cursors::{
-    effective_event_redaction_state, persist_provider_cursor, provider_cursor_stream,
-    provider_source_cursor_range,
+    persist_provider_cursor, provider_cursor_stream, provider_source_cursor_range,
 };
 pub(crate) use identity::{
     pi_existing_event_identity_by_entry_id, provider_event_exists, provider_event_import_identity,
@@ -480,8 +477,8 @@ pub(crate) fn import_provider_capture_line(
         }
         _ => None,
     };
-    let (source_metadata, redacted_source_metadata) = sanitize_value(source.metadata.clone());
-    let (session_metadata, redacted_session_metadata) = sanitize_value(session.metadata.clone());
+    let source_metadata = source.metadata.clone();
+    let session_metadata = session.metadata.clone();
 
     let source_record = CaptureSource {
         id: source_id,
@@ -505,8 +502,6 @@ pub(crate) fn import_provider_capture_line(
                 "provider_session_id": session.provider_session_id,
                 "source_format": source.source_format,
                 "source_trust": source.trust,
-                "raw_retention": source.raw_retention,
-                "redaction_boundary": source.redaction_boundary,
                 "cursor": source_cursor,
                 "fixture_line": line_number,
                 "imported_at": imported_at,
@@ -521,9 +516,6 @@ pub(crate) fn import_provider_capture_line(
     };
     if caches.processed_sources.insert(source_id) {
         store.upsert_capture_source(&source_record)?;
-        if redacted_source_metadata {
-            summary.redacted += 1;
-        }
     }
 
     let process_session = caches.processed_sessions.insert(session_id);
@@ -568,9 +560,6 @@ pub(crate) fn import_provider_capture_line(
     if process_session {
         store.upsert_session(&normalized_session)?;
         caches.session_exists.insert(session_id, true);
-        if redacted_session_metadata {
-            summary.redacted += 1;
-        }
         if is_new_session && caches.imported_sessions.insert(session_id) {
             summary.imported_sessions += 1;
             summary.imported += 1;
@@ -646,8 +635,8 @@ pub(crate) fn import_provider_capture_line(
     }
 
     if let Some(event) = &capture.event {
-        let (payload, redacted_payload) = sanitize_value(event.payload.clone());
-        let (event_metadata, redacted_metadata) = sanitize_value(event.metadata.clone());
+        let payload = event.payload.clone();
+        let event_metadata = event.metadata.clone();
         let event_hash = event
             .provider_event_hash
             .clone()
@@ -719,10 +708,6 @@ pub(crate) fn import_provider_capture_line(
             }),
             payload_blob_id: None,
             dedupe_key: Some(event_identity.dedupe_key.clone()),
-            redaction_state: effective_event_redaction_state(
-                event.redaction_state,
-                redacted_payload || redacted_metadata,
-            ),
             sync: provider_sync_metadata(
                 event.fidelity,
                 json!({
@@ -755,9 +740,6 @@ pub(crate) fn import_provider_capture_line(
                 Err(StoreError::ProviderEventConflict { .. }) => {
                     summary.skipped_events += 1;
                     summary.skipped += 1;
-                    if redacted_payload || redacted_metadata {
-                        summary.redacted += 1;
-                    }
                     if options.persist_cursors {
                         persist_provider_cursor(store, capture)?;
                     }
@@ -767,9 +749,6 @@ pub(crate) fn import_provider_capture_line(
             }
             was_present
         };
-        if redacted_payload || redacted_metadata {
-            summary.redacted += 1;
-        }
         if was_present {
             summary.skipped_events += 1;
             summary.skipped += 1;
@@ -922,8 +901,6 @@ pub(crate) fn fixture_line_to_capture(
                 .as_ref()
                 .map(|path| path.display().to_string()),
             source_root: context.source_root_display(),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: ProviderSourceTrust::Fixture,
             fidelity,
             cursor,
@@ -966,7 +943,6 @@ pub(crate) fn fixture_line_to_capture(
             role: event.role,
             occurred_at: event.occurred_at,
             fidelity,
-            redaction_state: RedactionState::LocalPreview,
             idempotency_key: Some(format!(
                 "provider-event:{}:{}:{}",
                 fixture.provider.as_str(),

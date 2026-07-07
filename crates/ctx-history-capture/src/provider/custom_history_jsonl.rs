@@ -607,8 +607,6 @@ pub(crate) fn custom_history_session_capture(
                 .source_root_display()
                 .or_else(|| source.raw_source_path.clone())
                 .or_else(|| source.raw_uri.clone()),
-            raw_retention: source.raw_retention,
-            redaction_boundary: source.redaction_boundary,
             trust: match source.trust {
                 ProviderSourceTrust::Unknown => ProviderSourceTrust::ProviderExport,
                 other => other,
@@ -677,16 +675,6 @@ pub(crate) fn custom_history_event_envelope(
     source: &CtxHistoryJsonlSourceRecord,
     event: &CtxHistoryJsonlEventRecord,
 ) -> ProviderEventEnvelope {
-    let payload = if let Some(preview) = &event.preview {
-        json!({ "text": preview })
-    } else {
-        event.payload.clone()
-    };
-    let raw_payload = event
-        .preview
-        .as_ref()
-        .map(|_| event.payload.clone())
-        .filter(|payload| payload != &json!({}));
     ProviderEventEnvelope {
         provider_event_index: event.event_index,
         provider_event_hash: event.event_hash.clone(),
@@ -695,10 +683,9 @@ pub(crate) fn custom_history_event_envelope(
         role: event.role,
         occurred_at: event.occurred_at,
         fidelity: event.fidelity,
-        redaction_state: event.redaction_state,
         idempotency_key: event.idempotency_key.clone(),
         artifacts: event.artifacts.clone(),
-        payload,
+        payload: event.payload.clone(),
         metadata: custom_history_metadata(
             event.metadata.clone(),
             json!({
@@ -708,7 +695,6 @@ pub(crate) fn custom_history_event_envelope(
                 "event_id": event.event_id,
                 "native_cursor": event.native_cursor,
                 "preview": event.preview,
-                "raw_payload": raw_payload,
             }),
         ),
     }

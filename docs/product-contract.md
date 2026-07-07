@@ -73,4 +73,4 @@ should make source availability visible when that information is known.
 ## Privacy Contract
 
 The local index and JSON output are private by default. A user must review and
-redact copied output before sharing it outside the machine.
+review copied output before sharing it outside the machine.

@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, fs};
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     new_id, AgentType, CaptureProvider, CaptureSource, CaptureSourceDescriptor, EntityTimestamps,
-    Event, EventRole, EventType, Fidelity, RedactionState, Session, SessionHistoryArchive,
-    SessionStatus, SyncMetadata, SyncState, Visibility,
+    Event, EventRole, EventType, Fidelity, Session, SessionHistoryArchive, SessionStatus,
+    SyncMetadata, SyncState, Visibility,
 };
 use rusqlite::{params, Connection};
 use uuid::Uuid;
@@ -586,7 +586,6 @@ fn schema_v16_rebuilds_provider_checks_with_referenced_sources_and_indexes() {
             payload: serde_json::json!({"text": "migration source reference"}),
             payload_blob_id: None,
             dedupe_key: None,
-            redaction_state: RedactionState::LocalPreview,
             sync: sync_metadata(),
         };
         event_id = event.id;
@@ -677,6 +676,81 @@ fn schema_v43_adds_capture_source_identity_columns() {
         )
         .unwrap();
     assert_eq!(exists, 1);
+}
+
+#[test]
+fn schema_v44_removes_payload_state_columns_and_rebuilds_preview_fts() {
+    let temp = tempdir();
+    let path = temp.path().join("work.sqlite");
+    let event_id = new_id();
+    let artifact_id = new_id();
+    {
+        let conn = Connection::open(&path).unwrap();
+        let legacy_tables = CREATE_TABLES_SQL
+            .replace(
+                "    preview_text TEXT,\n    created_at_ms INTEGER NOT NULL,",
+                "    preview_text TEXT,\n    redaction_state TEXT NOT NULL DEFAULT 'safe_preview' CHECK (redaction_state IN ('raw', 'redacted', 'safe_preview', 'withheld')),\n    created_at_ms INTEGER NOT NULL,",
+            )
+            .replace(
+                "    dedupe_key TEXT,\n    visibility TEXT NOT NULL DEFAULT 'local_only'",
+                "    dedupe_key TEXT,\n    redaction_state TEXT NOT NULL DEFAULT 'safe_preview' CHECK (redaction_state IN ('raw', 'redacted', 'safe_preview', 'withheld')),\n    visibility TEXT NOT NULL DEFAULT 'local_only'",
+            );
+        conn.execute_batch(&legacy_tables).unwrap();
+        conn.execute_batch(&FTS_TABLES_SQL.replace("preview_text", "safe_preview_text"))
+            .unwrap();
+        conn.execute_batch(INDEXES_SQL).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO artifacts
+            (id, kind, blob_hash, blob_path, byte_size, preview_text, redaction_state, created_at_ms, updated_at_ms, fidelity)
+            VALUES (?1, 'json', 'hash-v44-artifact', 'objects/ha/hash-v44-artifact', 5, 'artifact preview', 'safe_preview', 1, 1, 'imported')
+            "#,
+            params![artifact_id.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO events
+            (id, seq, event_type, role, occurred_at_ms, payload_json, redaction_state, fidelity)
+            VALUES (?1, 1, 'message', 'assistant', 1, '{"text":"v44 migration preview"}', 'safe_preview', 'imported')
+            "#,
+            params![event_id.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO event_search
+            (event_id, role, safe_preview_text, rank_bucket)
+            VALUES (?1, 'assistant', 'old preview text', 'message')
+            "#,
+            params![event_id.to_string()],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 43;").unwrap();
+    }
+
+    let store = Store::open(&path).unwrap();
+    let version: i64 = store
+        .conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    assert!(!table_has_column(&store.conn, "events", "redaction_state").unwrap());
+    assert!(!table_has_column(&store.conn, "artifacts", "redaction_state").unwrap());
+    assert!(!table_has_column(&store.conn, "event_search", "safe_preview_text").unwrap());
+    assert!(table_has_column(&store.conn, "event_search", "preview_text").unwrap());
+    assert!(!table_has_column(&store.conn, "artifact_search", "safe_preview_text").unwrap());
+    assert!(table_has_column(&store.conn, "artifact_search", "preview_text").unwrap());
+    assert!(!table_has_column(&store.conn, "ctx_events", "redaction_state").unwrap());
+    let preview: String = store
+        .conn
+        .query_row(
+            "SELECT preview_text FROM event_search WHERE event_id = ?1",
+            params![event_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preview, "v44 migration preview");
 }
 
 #[test]

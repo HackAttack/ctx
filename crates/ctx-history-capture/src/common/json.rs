@@ -1,9 +1,5 @@
 use serde_json::{json, Value};
 
-pub(crate) fn sanitize_value(value: Value) -> (Value, bool) {
-    (value, false)
-}
-
 pub(crate) fn default_metadata() -> Value {
     json!({})
 }

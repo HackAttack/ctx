@@ -78,6 +78,3 @@ CREATE INDEX IF NOT EXISTS idx_local_workspaces_device_id ON local_workspaces(de
 CREATE INDEX IF NOT EXISTS idx_local_workspaces_vcs_workspace_id ON local_workspaces(vcs_workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_source_id ON audit_log(source_id);
 "#;
-
-// `safe_preview_text` is legacy schema naming. It stores local searchable
-// preview text and must not be interpreted as share-safe redaction.

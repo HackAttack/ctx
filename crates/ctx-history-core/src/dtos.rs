@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use crate::{
     new_id,
-    redaction::RedactionState,
     source::CaptureProvider,
     sync::{default_metadata, EntityTimestamps, SyncMetadata},
     utc_now, CoreError,
@@ -545,8 +544,6 @@ pub struct Event {
     pub payload_blob_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedupe_key: Option<String>,
-    #[serde(default)]
-    pub redaction_state: RedactionState,
     #[serde(flatten)]
     pub sync: SyncMetadata,
 }
@@ -628,8 +625,6 @@ pub struct Artifact {
     pub media_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_text: Option<String>,
-    #[serde(default)]
-    pub redaction_state: RedactionState,
     #[serde(flatten)]
     pub timestamps: EntityTimestamps,
     #[serde(default, skip_serializing_if = "Option::is_none")]

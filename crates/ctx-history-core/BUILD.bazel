@@ -42,12 +42,8 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    compile_data = [
-        "//:redaction_corpus",
-    ],
     data = [
         "//:provider_support_matrix",
-        "//:redaction_corpus",
     ],
     deps = all_crate_deps(
         normal = True,

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderEventEnvelope, ProviderSourceTrust, RedactionState,
+    ProviderEventEnvelope, ProviderSourceTrust,
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -290,20 +290,19 @@ pub(crate) fn warp_session_metadata(conversation_data: &Value, decoded_tasks: &[
             .cloned()
             .unwrap_or(Value::Null),
         "run_id": conversation_data.get("run_id").cloned().unwrap_or(Value::Null),
-        "has_server_conversation_token": conversation_data
+        "server_conversation_token": conversation_data
             .get("server_conversation_token")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty()),
-        "has_forked_from_server_conversation_token": conversation_data
+            .cloned()
+            .unwrap_or(Value::Null),
+        "forked_from_server_conversation_token": conversation_data
             .get("forked_from_server_conversation_token")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty()),
+            .cloned()
+            .unwrap_or(Value::Null),
         "conversation_usage_metadata": conversation_data
             .get("conversation_usage_metadata")
             .cloned()
             .unwrap_or(Value::Null),
         "task_summaries": decoded_tasks,
-        "privacy": "server conversation tokens are intentionally not copied from Warp conversation_data",
     })
 }
 
@@ -401,7 +400,6 @@ pub(crate) fn warp_message_event(
         role: message.role,
         occurred_at,
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
             "provider-event:warp:{conversation_id}:{message_id}"
         )),

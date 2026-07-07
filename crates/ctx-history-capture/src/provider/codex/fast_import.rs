@@ -20,11 +20,9 @@ use crate::provider::importer::{
 };
 
 use crate::common::io::{ensure_regular_provider_transcript_file, read_provider_jsonl_line};
-use crate::common::json::sanitize_value;
 use crate::provider::importer::{
-    effective_event_redaction_state, import_provider_capture_line,
-    import_provider_file_touched_line, provider_scoped_source_uuid, provider_sync_metadata,
-    resolve_pending_provider_edges, ProviderImportCaches,
+    import_provider_capture_line, import_provider_file_touched_line, provider_scoped_source_uuid,
+    provider_sync_metadata, resolve_pending_provider_edges, ProviderImportCaches,
 };
 use crate::{
     CodexSessionImportOptions, CodexSessionImportProgress, NormalizedProviderImportOptions,
@@ -385,8 +383,8 @@ pub(crate) fn import_codex_provider_event_fast(
         source_id,
         source_identity.as_deref(),
     )?;
-    let (payload, redacted_payload) = sanitize_value(event.payload.clone());
-    let (event_metadata, redacted_metadata) = sanitize_value(event.metadata.clone());
+    let payload = event.payload.clone();
+    let event_metadata = event.metadata.clone();
     let event_hash = event
         .provider_event_hash
         .clone()
@@ -434,10 +432,6 @@ pub(crate) fn import_codex_provider_event_fast(
         }),
         payload_blob_id: None,
         dedupe_key: Some(event_identity.dedupe_key),
-        redaction_state: effective_event_redaction_state(
-            event.redaction_state,
-            redacted_payload || redacted_metadata,
-        ),
         sync: provider_sync_metadata(
             event.fidelity,
             json!({
@@ -459,9 +453,6 @@ pub(crate) fn import_codex_provider_event_fast(
         store.insert_run_if_absent(run)?;
     }
     let inserted = store.insert_event_if_absent(&normalized_event)?;
-    if redacted_payload || redacted_metadata {
-        summary.redacted += 1;
-    }
     if inserted {
         summary.imported_events += 1;
         summary.imported += 1;

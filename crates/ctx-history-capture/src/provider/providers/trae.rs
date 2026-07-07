@@ -6,9 +6,9 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -500,8 +500,6 @@ pub(crate) fn trae_capture(input: TraeCaptureInput<'_>) -> ProviderCaptureEnvelo
                 .context
                 .source_root_display()
                 .or_else(|| Some(input.raw_source_path.to_owned())),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: ProviderSourceTrust::ProviderNative,
             fidelity: Fidelity::Partial,
             cursor: Some(ProviderCursorRange {
@@ -585,7 +583,6 @@ pub(crate) fn trae_event(
         role: Some(provider_role(event.role.as_deref())),
         occurred_at: event.occurred_at,
         fidelity: Fidelity::Partial,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
             "provider-event:trae:{TRAE_STATE_VSCDB_SOURCE_FORMAT}:{event_id}"
         )),

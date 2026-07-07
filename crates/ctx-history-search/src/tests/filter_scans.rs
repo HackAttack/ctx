@@ -1,7 +1,7 @@
 use super::{
     fixed_time, search_packet, sync_metadata, test_store, timestamps, AgentType, CaptureProvider,
     Confidence, EntityTimestamps, Event, EventRole, EventType, FileChangeKind, FileTouched,
-    HistoryRecord, PacketOptions, RedactionState, SearchFilters, Session, SessionStatus, Uuid,
+    HistoryRecord, PacketOptions, SearchFilters, Session, SessionStatus, Uuid,
     FILTERED_SEARCH_MAX_PAGES, FILTERED_SEARCH_PAGE_SIZE, MAX_RESULT_LIMIT,
 };
 
@@ -349,7 +349,6 @@ fn search_ignores_agent_history_bookkeeping_terms_without_content_evidence() {
         }),
         payload_blob_id: None,
         dedupe_key: None,
-        redaction_state: RedactionState::SafePreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();

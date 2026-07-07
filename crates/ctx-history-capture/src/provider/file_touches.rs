@@ -413,7 +413,6 @@ pub(crate) fn looks_like_file_path(value: &str) -> bool {
         || value.contains('\n')
         || value.contains('\r')
         || value.contains("://")
-        || value.contains("[REDACTED")
         || value.starts_with('{')
         || value.starts_with('[')
     {
