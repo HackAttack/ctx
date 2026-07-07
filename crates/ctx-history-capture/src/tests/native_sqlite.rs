@@ -403,15 +403,19 @@ fn native_opencode_rejects_out_of_range_message_timestamp() {
     assert_eq!(summary.imported_events, 2);
 }
 
+fn oversized_opencode_text_payload() -> String {
+    format!(
+        "{{\"time\":{{\"created\":1782259200000}},\"text\":\"{}\"}}",
+        "x".repeat(MAX_PROVIDER_SQLITE_VALUE_BYTES + 1)
+    )
+}
+
 #[test]
 fn native_opencode_skips_oversized_sqlite_text_value_and_imports_other_rows() {
     let temp = tempdir();
     let fixture = write_opencode_smoke_db(&temp, false);
     let conn = Connection::open(&fixture).unwrap();
-    let oversized_data = format!(
-        "{{\"time\":{{\"created\":1782259200000}},\"text\":\"{}\"}}",
-        "x".repeat(MAX_PROVIDER_SQLITE_VALUE_BYTES + 1)
-    );
+    let oversized_data = oversized_opencode_text_payload();
     conn.execute(
         "update session_message set data = ?1 where id = 'msg-user'",
         [&oversized_data],
@@ -442,14 +446,43 @@ fn native_opencode_skips_oversized_sqlite_text_value_and_imports_other_rows() {
         "oversized rows must not be counted as failures, got failures: {:?}",
         summary.failures
     );
-    assert!(
-        summary.skipped >= 1,
-        "oversized row should be reflected in summary.skipped, got summary: {summary:?}"
-    );
+    assert_eq!(summary.skipped, 1, "unexpected summary: {summary:?}");
     assert!(
         summary.imported_events >= 1,
         "non-oversized rows should still import, got summary: {summary:?}"
     );
+}
+
+#[test]
+fn native_opencode_skips_all_oversized_sqlite_text_values_without_failure() {
+    let temp = tempdir();
+    let fixture = write_opencode_smoke_db(&temp, false);
+    let conn = Connection::open(&fixture).unwrap();
+    conn.execute("delete from session_message where id != 'msg-user'", [])
+        .unwrap();
+    let oversized_data = oversized_opencode_text_payload();
+    conn.execute(
+        "update session_message set data = ?1 where id = 'msg-user'",
+        [&oversized_data],
+    )
+    .unwrap();
+    drop(conn);
+
+    let summary = import_opencode_sqlite(
+        &fixture,
+        &mut Store::open(temp.path().join("work.sqlite")).unwrap(),
+        OpenCodeSqliteImportOptions::default(),
+    )
+    .expect("oversized rows should be skipped without fabricating import failures");
+
+    assert_eq!(
+        summary.failed, 0,
+        "unexpected failures: {:?}",
+        summary.failures
+    );
+    assert_eq!(summary.skipped, 1, "unexpected summary: {summary:?}");
+    assert_eq!(summary.imported_sessions, 0);
+    assert_eq!(summary.imported_events, 0);
 }
 
 #[test]
