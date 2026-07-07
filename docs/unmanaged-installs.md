@@ -1,0 +1,112 @@
+# Package Managers And Unmanaged Installs
+
+The official installer is the recommended way to install ctx. It installs the
+CLI, installs the bundled agent-history skill, runs initial setup, and writes
+the installer marker used by `ctx upgrade` and background self-upgrade.
+
+Use an unmanaged install when you want to manage the binary yourself. This page
+is for users who prefer a direct release binary, mise, Homebrew, or a source
+build.
+
+After any unmanaged install, run:
+
+```bash
+ctx skill install
+ctx setup
+```
+
+Unmanaged installs do not write the official installer marker. `ctx upgrade`
+and background self-upgrade will not apply; use the same tool or manual process
+that installed ctx to upgrade it.
+
+## Release Assets
+
+Stable releases publish prebuilt binaries on GitHub Releases:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x64 | `ctx-linux-x64` |
+| macOS Apple Silicon | `ctx-macos-arm64` |
+| macOS Intel | `ctx-macos-x64` |
+| Windows x64 | `ctx-windows-x64.exe` |
+| FreeBSD x64 | `ctx-freebsd-x64` |
+
+Each release also publishes `SHA256SUMS` for the binary assets.
+
+For pinned installs, GitHub release asset URLs use this pattern:
+
+```text
+https://github.com/ctxrs/ctx/releases/download/vVERSION/ASSET
+```
+
+For example:
+
+```text
+https://github.com/ctxrs/ctx/releases/download/v0.20.0/ctx-linux-x64
+https://github.com/ctxrs/ctx/releases/download/v0.20.0/SHA256SUMS
+```
+
+## Direct GitHub Download
+
+On Linux x64:
+
+```bash
+curl -fL -O https://github.com/ctxrs/ctx/releases/latest/download/ctx-linux-x64
+curl -fL -O https://github.com/ctxrs/ctx/releases/latest/download/SHA256SUMS
+grep '  ctx-linux-x64$' SHA256SUMS | sha256sum -c -
+mkdir -p ~/.local/bin
+install -m 0755 ctx-linux-x64 ~/.local/bin/ctx
+```
+
+On macOS, choose the asset for your CPU and verify it with `shasum`:
+
+```bash
+curl -fL -O https://github.com/ctxrs/ctx/releases/latest/download/ctx-macos-arm64
+curl -fL -O https://github.com/ctxrs/ctx/releases/latest/download/SHA256SUMS
+grep '  ctx-macos-arm64$' SHA256SUMS | shasum -a 256 -c -
+mkdir -p ~/.local/bin
+install -m 0755 ctx-macos-arm64 ~/.local/bin/ctx
+```
+
+For Windows x64, download `ctx-windows-x64.exe` and `SHA256SUMS`, verify the
+file hash, then place it on `Path` as `ctx.exe`.
+
+## mise
+
+mise can install ctx directly from GitHub Releases:
+
+```bash
+mise use -g 'github:ctxrs/ctx[bin=ctx]@latest'
+```
+
+For a pinned install, replace `latest` with a release version:
+
+```bash
+mise use -g 'github:ctxrs/ctx[bin=ctx]@0.20.0'
+```
+
+mise owns upgrades for this install. Re-run `ctx skill install` after upgrading
+when you want to refresh the bundled agent skill.
+
+## Homebrew
+
+The ctx org maintains a Homebrew tap:
+
+```bash
+brew install ctxrs/tap/ctx
+```
+
+Homebrew owns upgrades for this install. Run `ctx skill install` and
+`ctx setup` after installing.
+
+## Source Builds
+
+For source builds from a checkout:
+
+```bash
+cargo build -p ctx --release
+cargo install --path crates/ctx-cli
+```
+
+Source builds are unmanaged. They do not use the official release metadata or
+installer-managed upgrade path.

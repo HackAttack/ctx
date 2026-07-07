@@ -35,4 +35,6 @@ Useful starting points:
 - `ctx docs show sql` for stable read-only SQL views;
 - `ctx docs show mcp` for read-only MCP tools;
 - `ctx docs show upgrade` for managed upgrade and auto-upgrade behavior;
+- `ctx docs show unmanaged-installs` for GitHub release binaries, mise,
+  Homebrew, and source builds;
 - `ctx docs show json-contracts` for structured output contracts.

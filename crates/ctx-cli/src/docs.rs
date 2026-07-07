@@ -161,6 +161,15 @@ const TOPICS: &[DocTopic] = &[
         body: include_str!("../../../docs/upgrade.md"),
     },
     DocTopic {
+        id: "unmanaged-installs",
+        title: "Package Managers And Unmanaged Installs",
+        audience: "human",
+        summary: "GitHub release binaries, mise, Homebrew, source builds, and unmanaged install behavior.",
+        tags: &["install", "github", "mise", "homebrew", "package-manager"],
+        source_path: "docs/unmanaged-installs.md",
+        body: include_str!("../../../docs/unmanaged-installs.md"),
+    },
+    DocTopic {
         id: "agent-usage",
         title: "Agent Usage",
         audience: "agent",
