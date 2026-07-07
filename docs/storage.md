@@ -107,8 +107,8 @@ maintenance profile when `[daemon].enabled` is true; use
 autostart daemon maintenance.
 `ctx search --refresh off` does not refresh providers, run plugins, start
 semantic workers, schedule semantic indexing, or write the main store or
-semantic sidecar. Default `--backend auto --refresh off` stays on the lexical
-path. Explicit semantic or hybrid searches may initialize an already-cached
+semantic sidecar. Default `--backend hybrid --refresh off` may read existing
+semantic coverage and otherwise falls back to lexical. Explicit semantic or hybrid searches may initialize an already-cached
 local embedding model to embed the query and read the existing sidecar, but
 they do not download a model or write semantic catch-up work during search.
 Explicit imports may best-effort mark recent semantic-eligible items dirty in
@@ -116,9 +116,9 @@ the semantic sidecar when the sidecar already exists; this does not create the
 sidecar, initialize the model, or embed text.
 Explicit semantic search also refuses to initialize or download the embedding
 model when the required local cache is missing; hybrid falls back to lexical in
-that case. Default `--refresh auto` bounds enabled auto history-source plugin
-runs for interactive search. Use `--refresh strict` or `ctx import` for
-exhaustive plugin catch-up.
+that case. Default `--refresh background` lets daemon maintenance own enabled
+auto history-source plugin refresh when possible; use `--refresh wait` or
+`ctx import` for exhaustive foreground plugin catch-up.
 
 When `ctx daemon run` or setup/import autostart runs the ctx-owned background
 coordinator, it stores private lock/status files under `daemon/` in the ctx data

@@ -483,7 +483,7 @@ fn daemon_history_refresh_job_report(
         "mode": status_value
             .as_ref()
             .and_then(|value| json_string(value, "mode"))
-            .unwrap_or_else(|| RefreshArg::Auto.as_str().to_owned()),
+            .unwrap_or_else(|| RefreshArg::Background.as_str().to_owned()),
         "last_run_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "last_run_at_ms")),
         "source_count": status_value.as_ref().and_then(|value| value.get("source_count").cloned()),
         "source_fingerprint": status_value

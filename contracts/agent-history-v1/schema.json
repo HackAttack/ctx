@@ -157,7 +157,7 @@
       "properties": {
         "requestedMode": {
           "type": ["string", "null"],
-          "enum": ["auto", "lexical", "semantic", "hybrid", null]
+          "enum": ["hybrid", "semantic", "lexical", null]
         },
         "effectiveMode": {
           "type": ["string", "null"],

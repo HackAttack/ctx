@@ -366,22 +366,18 @@ ctx search "release notes" --history-source example-agent/default
 ctx search "release notes" --provider-key example-agent --source-id default
 ```
 
-`search` defaults to `--refresh auto`, which quietly refreshes discovered native
-provider sources and enabled auto history-source plugins before querying indexed
-sessions and events. This synchronous refresh updates the normal text index; it
-does not wait for semantic vector catch-up. Semantic retrieval reads existing
-local sidecar coverage when it is already available, and freshness is visible
-through `ctx status` and the search JSON `retrieval.worker` report. ctx does not
-initialize or download embedding models during search, does not create the
-semantic sidecar from the query path, does not start daemon maintenance, and
-does not start semantic indexing. The refresh is best-effort and keeps JSON
-stdout reserved for the search result object. On large discovered sources or
-already-cataloged indexes, `auto` imports a bounded recent batch when it can and
-then serves results, leaving remaining backlog for later searches,
-`--refresh strict`, or `ctx import --all`. Use
-`--refresh off` to search the existing index without refreshing or scheduling
-semantic work, or `--refresh strict` to fail when the pre-search text refresh
-cannot run or import successfully. Explicit-only native sources such as
+`search` defaults to `--refresh background`, which serves the existing index and
+lets the ctx daemon refresh lexical and semantic indexes in the background when
+daemon maintenance is enabled. If daemon maintenance is disabled, `background`
+uses the bounded foreground text-refresh path for discovered native provider
+sources and enabled auto history-source plugins. Semantic retrieval reads
+existing local sidecar coverage when it is already available, and freshness is
+visible through `ctx status`, `ctx index status`, and the search JSON
+`retrieval.worker` report. ctx does not initialize or download embedding models
+during search, does not create the semantic sidecar from the query path, and
+does not start semantic indexing. Use `--refresh off` to search the existing
+index without refreshing or scheduling semantic work, or `--refresh wait` to run
+foreground text refresh and fail when it cannot complete. Explicit-only native sources such as
 NanoClaw, plus search-only sources without native import support, are searched
 from the existing index until they are explicitly imported through a supported
 path. Supported AstrBot `data_v4.db` locations participate in bounded native
@@ -441,24 +437,17 @@ Filters:
 - `--session <ctx-session-id-or-prefix>`, for dense event results within one session;
 - `--term <query-or-keyword>`, repeatable broadening terms merged with OR-style semantics;
 - `--events`, for dense event-level results instead of the default session-diverse results;
-- `--backend auto|lexical|semantic|hybrid`, where `auto` stays lexical unless
-  the local model cache exists, semantic sidecar coverage passes the hybrid gate,
-  active filters are safe for semantic lookup, and lexical search produces a
-  bounded candidate pool for hybrid reranking with full current vector coverage
-  for those candidates. When lexical search finds no candidates, `auto` can use
-  semantic rescue only when the sidecar is fully ready and clean.
-  Semantic/hybrid fall back to lexical for explicit filters or
-  `--term` broadening that vector lookup does not yet honor. The default
-  primary-agent scope and active-session exclusion use bounded overfetch, and
-  `hybrid` also falls back while semantic coverage is too low, the semantic
-  sidecar cannot be opened, semantic retrieval fails, or the local embedding
-  model cache is missing. Strict semantic search reports a local error instead
-  of downloading a model during search when the cache is missing or when the
-  installed build target does not include a compatible local embedding backend;
+- `--backend hybrid|semantic|lexical`, where `hybrid` blends lexical and
+  semantic evidence when existing sidecar coverage is ready enough, and falls
+  back to lexical with a structured fallback reason when semantic prerequisites
+  are missing. Explicit `semantic` reports a local error instead of downloading
+  a model during search when the cache is missing, when filters/terms cannot be
+  honored, or when the installed build target does not include a compatible
+  local embedding backend;
 - `--semantic-weight <0.0-1.0>`, for hybrid ranking;
 - `--include-subagents`;
 - `--limit <n>`, capped at `200`;
-- `--refresh auto|off|strict`;
+- `--refresh background|off|wait`;
 - `--include-current-session`.
 
 CLI provider filters use kebab-case names. JSON output and stable SQL views use
@@ -467,10 +456,11 @@ provider IDs in ctx output; multiword IDs may be snake_case, such as
 
 `search` reads discovered native provider files and runs enabled auto
 history-source plugin commands for pre-search text refresh, then queries SQLite.
-Default auto refresh bounds native and plugin work for interactive use; run
-`--refresh strict` or `ctx import` for exhaustive plugin catch-up. It may write
-newly discovered provider or plugin history into the local
-`work.sqlite` index before querying. Semantic retrieval reads the
+Default daemon maintenance owns native and plugin refresh when enabled. If the
+daemon is disabled, `--refresh background` bounds native and plugin work for
+interactive use; run `--refresh wait` or `ctx import` for exhaustive foreground
+plugin catch-up. Foreground refresh may write newly discovered provider or
+plugin history into the local `work.sqlite` index before querying. Semantic retrieval reads the
 `vectors.sqlite` sidecar when it already exists; search itself does not start
 semantic indexing, start a daemon, download models, or write semantic worker
 status. Setup/import can opportunistically start a short one-pass ctx-owned

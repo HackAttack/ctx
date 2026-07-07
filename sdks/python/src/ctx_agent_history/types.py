@@ -19,7 +19,7 @@ Operation = Literal[
     "error",
 ]
 BackendKind = Literal["local", "hosted"]
-SearchBackendMode = Literal["auto", "lexical", "semantic", "hybrid"]
+SearchBackendMode = Literal["hybrid", "semantic", "lexical"]
 
 
 class _BackendRequired(TypedDict):

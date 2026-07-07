@@ -12,6 +12,7 @@ text_enum! {
         Reportable => "reportable",
         SyncMetadata => "sync_metadata",
         SyncFull => "sync_full",
+        Withheld => "withheld",
     }
     default LocalOnly
 }
@@ -33,8 +34,19 @@ text_enum! {
         Pending => "pending",
         Synced => "synced",
         Failed => "failed",
+        Withheld => "withheld",
     }
     default LocalOnly
+}
+
+text_enum! {
+    pub enum RedactionState {
+        Raw => "raw",
+        Redacted => "redacted",
+        SafePreview => "safe_preview",
+        Withheld => "withheld",
+    }
+    default SafePreview
 }
 
 text_enum! {

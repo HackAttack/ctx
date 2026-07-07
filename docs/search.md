@@ -2,29 +2,16 @@
 
 `ctx search` finds matching indexed history. Default results are session-diverse:
 ctx shows the strongest matching span from each session, then lets you drill
-into dense event-level results when needed. By default it first performs a quiet
-best-effort text refresh of a bounded recent batch from discovered native
-provider sources and enabled auto history-source plugins, then queries the local
-SQLite store. If a recent ctx daemon native-history refresh already covered the
-normal auto path, search skips the duplicate synchronous native scan and reports
-`status: "read_only", reason: "daemon_recent"` in JSON freshness while serving
-the existing index. If more refresh backlog remains, JSON freshness reports
-`status: "budget_exhausted"` and the next search or `--refresh strict` can keep
-catching up. If the existing store is readable but not writable by the current
-binary, auto refresh is skipped and JSON freshness reports
-`status: "read_only"` while serving the existing index.
-The first-class daemon path can start as a short setup/import autostart profile
-when `[daemon].enabled` is true, or as the normal bounded maintenance profile
-from an explicit `ctx daemon run`. Use `ctx setup --no-daemon` or
-`ctx import --no-daemon` to keep the foreground command but skip that one
-automatic daemon start. Search does not start that daemon; it only observes
-recent daemon coverage so it can avoid duplicate native scans.
-Semantic search reads existing local sidecar coverage when it is already
-available. Interactive search does not start vector backfill, download models,
-create the semantic sidecar, or start a daemon. The default `auto` backend is
-lexical-first: it reranks lexical candidates only when sidecar coverage is ready
-for those candidates, and it can use bounded semantic rescue only when the
-sidecar is fully ready and clean.
+into dense event-level results when needed. By default it serves the current
+local indexes while the ctx daemon owns bounded background refresh for native
+provider history, enabled auto-refresh plugins, and semantic sidecar catch-up.
+Search itself does not import provider history when `[daemon].enabled` is true,
+start vector backfill, download models, create the semantic sidecar, or start a
+daemon. Use `ctx setup --no-daemon` or `ctx import --no-daemon` to keep a
+foreground command from starting the daemon after it completes.
+The default `hybrid` backend blends lexical and semantic evidence when existing
+sidecar coverage is ready enough, and falls back to lexical with explicit
+retrieval metadata when semantic prerequisites are missing.
 
 ## Search
 
@@ -98,9 +85,9 @@ Search filters narrow both human output and JSON:
 - `--events`;
 - `--include-subagents`;
 - `--limit <n>`;
-- `--backend auto|lexical|semantic|hybrid`;
+- `--backend hybrid|semantic|lexical`;
 - `--semantic-weight <0.0-1.0>`, for hybrid ranking;
-- `--refresh auto|off|strict`;
+- `--refresh background|off|wait`;
 - `--include-current-session`.
 
 CLI provider filters use the kebab-case names above. JSON output and stable SQL
@@ -143,21 +130,18 @@ the Qdrant ONNX artifact directory `models--Qdrant--all-MiniLM-L6-v2-onnx`.
 The local embedding backend is compiled only for targets where the bundled ONNX
 Runtime backend is supported. Current Linux GNU builds and macOS arm64 builds
 can use semantic embeddings when the cache already exists. Current Windows GNU,
-FreeBSD, and macOS x64 public artifacts are lexical-safe builds: `auto` and
-`hybrid` remain available and fall back to lexical, while strict `semantic`
-reports a local unavailable/cache error instead of downloading or linking a
-model at runtime.
+FreeBSD, and macOS x64 public artifacts are lexical-safe builds: `hybrid` falls
+back to lexical, while explicit `semantic` reports a local unavailable/cache
+error instead of downloading or linking a model at runtime.
 Semantic and hybrid searches read the coverage that is already present in the
 semantic sidecar; they do not perform foreground vector catch-up. They also
 require the local embedding model cache to already exist. If the cache is
-missing, hybrid falls back to lexical and strict semantic search fails with an
+missing, hybrid falls back to lexical and explicit semantic search fails with an
 explicit local error instead of initializing or downloading a model during
-search. Semantic and hybrid fall back to lexical
-when explicit filters require vector prefiltering that is not implemented yet or
-when repeatable `--term` would need lexical OR semantics. The default
-primary-agent scope and active Codex-session exclusion use bounded overfetch
-rather than disabling semantic lookup. Hybrid also falls back when semantic
-coverage is too thin to justify foreground query embedding. Results still return
+search. Explicit `semantic` also fails when filters or repeatable `--term`
+semantics cannot be honored by vector lookup. `hybrid` falls back to lexical in
+those cases and when semantic coverage is too thin to justify foreground query
+embedding. Results still return
 the normal ctx result shape with concrete indexed local evidence, and default
 search remains session-diverse unless
 `--events` or `--session` asks for dense event results. The displayed semantic
@@ -166,18 +150,6 @@ matching chunk offsets. The semantic index lives in a private sidecar
 `vectors.sqlite` next to the main ctx store and stores vectors, chunk hashes,
 and offsets rather than plaintext chunks. It does not change the main
 `work.sqlite` schema.
-
-`--backend auto` uses lexical search unless semantic prerequisites are already
-met. When the local model cache exists, sidecar coverage passes the hybrid gate,
-the active filters are safe for semantic lookup, and lexical search produces a
-bounded candidate pool, `auto` uses bounded hybrid reranking only when every
-lexical candidate event has current vector coverage. This avoids the full
-sidecar scan used by explicit semantic search and avoids biasing default results
-with a partially embedded candidate pool.
-When lexical search produces no candidates, `auto` can use bounded semantic
-rescue only from a fully ready sidecar. Partial semantic coverage is reported in
-retrieval metadata, but default rescue stays lexical until backfill is complete
-and the dirty queue is empty.
 `CTX_SEMANTIC_THREADS` caps ONNX Runtime CPU threads,
 `CTX_SEMANTIC_EMBED_BATCH` tunes embedding batch size, and
 `CTX_SEMANTIC_CACHE_DIR` can point ctx at a pre-populated local model cache. When
@@ -188,21 +160,14 @@ the active Codex session tree by default so the current prompt and its subagent
 work do not dominate history research. Use `--include-current-session` when you
 are intentionally looking for material from the active session tree.
 
-`--refresh` defaults to `auto`. `auto` attempts a best-effort pre-search import
-of discovered native provider sources and enabled auto history-source plugins,
-then serves the existing text index if that refresh fails. When the daemon has
-recently refreshed normal native sources, search can serve the existing index
-without repeating that native scan. Auto plugin refresh is still run from the
-search path and is capped for interactive search; use `--refresh strict` or
-`ctx import` for a long-running plugin catch-up. On large discovered sources or
-already-cataloged indexes, `auto` imports a bounded recent batch and then serves
-results, leaving remaining backlog for later searches,
-`--refresh strict`, or `ctx import --all`. Search reports existing semantic
-coverage through retrieval JSON and `ctx status`, but `strict` does not wait for
-full semantic coverage. `off` skips the pre-search refresh, never runs plugin
-commands, and does not schedule or run semantic indexing. Auto and strict
-refresh are query-path text refresh modes, not daemon lifecycle controls; search
-does not start daemon maintenance. Explicit-only native sources such as
+`--refresh` defaults to `background`. `background` serves the existing index and
+lets daemon maintenance refresh lexical and semantic indexes. If daemon
+maintenance is disabled, `background` uses the bounded foreground text-refresh
+path for discovered native provider sources and enabled auto history-source
+plugins. `wait` runs that foreground text refresh and fails if it cannot
+complete; it does not wait for full semantic coverage. `off` skips foreground
+refresh, never runs plugin commands, and does not schedule or run semantic
+indexing. Explicit-only native sources such as
 NanoClaw, plus search-only sources without native import support, are searched
 from the existing index until they are explicitly imported through a supported
 path. Supported AstrBot `data_v4.db` locations participate in bounded native
@@ -210,8 +175,7 @@ discovery and may also be imported with an explicit `--path`.
 
 Use `--refresh off` for a search that does not import providers, execute
 plugins, schedule semantic indexing, or update either the main ctx SQLite store
-or semantic sidecar. In this mode default `auto` stays lexical. Explicit
-semantic or hybrid requests may still initialize an already-cached local
+or semantic sidecar. Explicit semantic or hybrid requests may still initialize an already-cached local
 embedding model to embed the query and read existing sidecar coverage; they do
 not download a model or write semantic catch-up work during search.
 
@@ -235,7 +199,7 @@ coverage and worker state in JSON. Search never starts the daemon, queues vector
 backfill, waits for full semantic coverage, or downloads an embedding model.
 Explicit semantic or hybrid queries can initialize an already-cached local model
 to embed the query and read `vectors.sqlite`; when the cache is missing, hybrid
-falls back to lexical search and strict semantic search fails with a local
+falls back to lexical search and explicit semantic search fails with a local
 error.
 
 `ctx status` reports whether a worker is running, whether the model cache is
@@ -256,8 +220,8 @@ troubleshooting.
 
 Search never starts the daemon or waits for full semantic coverage. Explicit
 semantic or hybrid queries read the sidecar coverage that already exists.
-Default `auto` either uses bounded hybrid reranking when the prerequisites above
-are met or stays on the lexical path.
+Default `hybrid` uses semantic evidence when prerequisites are met and otherwise
+serves lexical results with a structured fallback reason.
 
 ## History Reports
 
@@ -274,13 +238,11 @@ JSON results include the same result metadata and citations as the human output,
 plus a top-level `freshness` object describing the pre-search text refresh mode
 and outcome and a top-level `retrieval` object describing the requested/effective
 backend, semantic status/fallback, embedding model, sidecar coverage, background
-worker status, and semantic diagnostics when vector retrieval runs or when auto
-evaluates bounded-hybrid gates. Raw CLI retrieval may include a private local
+worker status, and semantic diagnostics when vector retrieval runs. Raw CLI retrieval may include a private local
 vector sidecar path as additive diagnostic metadata; SDK consumers should not
 depend on it as contract state. Diagnostics include query
 embedding time, vector backend, vector scan time, chunks scanned, vector bytes
-read, events scored, hydration time, stale-vector drops, semantic candidate count, bounded
-auto candidate counts, and an auto skip reason when applicable. A citation with
+read, events scored, hydration time, stale-vector drops, and semantic candidate count. A citation with
 `source_exists: false` means ctx can return indexed text, but the raw provider
 file was not available at the stored path when the result was built.
 

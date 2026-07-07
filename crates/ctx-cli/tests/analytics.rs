@@ -371,7 +371,8 @@ fn search_analytics_reports_when_search_creates_empty_store() {
     assert_eq!(events.len(), 1);
     let properties = analytics_event_properties(&events[0]);
     assert_eq!(properties["action"], "search");
-    assert_eq!(properties["search_refresh_status"], "no_sources");
+    assert_eq!(properties["search_refresh_mode"], "background");
+    assert_eq!(properties["search_refresh_status"], "daemon_background");
     assert_eq!(properties["had_existing_store_before_search"], false);
     assert_eq!(properties["indexed_content_before_search_known"], true);
     assert_eq!(properties["had_indexed_content_before_search"], false);

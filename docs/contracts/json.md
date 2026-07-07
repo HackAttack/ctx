@@ -364,14 +364,13 @@ Search JSON is local/private by default.
 
 `freshness` describes the pre-search refresh attempt:
 
-- `mode`, one of `auto`, `off`, or `strict`;
+- `mode`, one of `background`, `off`, or `wait`;
 - `status`, such as `completed`, `skipped`, `no_sources`, `read_only`,
-  `budget_exhausted`, or `failed`. `read_only` means auto refresh skipped
+  `budget_exhausted`, or `failed`. `read_only` means foreground refresh skipped
   writes because the existing index is readable but not writable by this binary,
-  or because a recent daemon native-history refresh already covered the normal
-  auto path and `reason` is `daemon_recent`;
-  `budget_exhausted` means auto refresh imported a bounded batch and served
-  results while leaving more backlog for a later search or `--refresh strict`;
+  or because daemon background refresh owns freshness for this command;
+  `budget_exhausted` means foreground refresh imported a bounded batch and served
+  results while leaving more backlog for a later search or `--refresh wait`;
 - `reason`, present for explanatory read-only or skipped states;
 - `budget_reasons`, present when `status` is `budget_exhausted`; stable
   machine-readable reasons include `codex_session_limit`,
@@ -384,7 +383,7 @@ Search JSON is local/private by default.
 
 `retrieval` describes the requested and effective search path:
 
-- `requested_mode`, one of `auto`, `lexical`, `semantic`, or `hybrid`;
+- `requested_mode`, one of `hybrid`, `semantic`, or `lexical`;
 - `effective_mode`, one of `lexical`, `semantic`, or `hybrid`;
 - `semantic_weight`, the effective semantic contribution used for ranking. It
   is `0.0` when the effective mode is lexical, even if a semantic weight was
@@ -396,7 +395,7 @@ Search JSON is local/private by default.
 - `coverage`;
 - `worker`, using the same shape as `status.semantic`, nullable/omitted;
 - `diagnostics`, nullable/omitted and present when semantic vector retrieval
-  runs or when auto records a bounded-hybrid gate decision.
+  runs.
 
 `retrieval.semantic_status` is one of:
 
@@ -426,11 +425,9 @@ the local CLI adapter, but they are intentionally not stable SDK fields.
 
 `retrieval.diagnostics` can include `query_embed_ms`, `vector_backend`,
 `vector_scan_ms`, `chunks_scanned`, `vector_bytes_read`, `events_scored`,
-`hydration_ms`, `stale_events_dropped`, `semantic_candidates`,
-`auto_candidate_count`, `auto_embedded_candidate_count`, and
-`auto_hybrid_skipped`. These fields are
-local performance and gate diagnostics and can reveal corpus size/timing; treat
-them as private like the rest of search JSON.
+`hydration_ms`, `stale_events_dropped`, and `semantic_candidates`. These fields
+are local performance diagnostics and can reveal corpus size/timing; treat them
+as private like the rest of search JSON.
 
 `suggested_next_commands` can include `ctx show event`, `ctx show session`,
 `ctx search "<query>" --session <ctx-session-id>`, `ctx locate event`, and

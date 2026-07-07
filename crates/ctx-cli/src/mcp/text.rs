@@ -313,14 +313,8 @@ fn push_retrieval_summary(out: &mut String, retrieval: Option<&Value>) {
             "retrieval_diagnostics",
             diagnostics,
             &[
-                ("auto_hybrid_skipped", "auto_hybrid_skipped"),
                 ("vector_backend", "vector_backend"),
                 ("semantic_candidates", "semantic_candidates"),
-                ("auto_candidate_count", "auto_candidate_count"),
-                (
-                    "auto_embedded_candidate_count",
-                    "auto_embedded_candidate_count",
-                ),
                 ("stale_events_dropped", "stale_events_dropped"),
             ],
         );

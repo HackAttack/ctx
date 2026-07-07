@@ -309,7 +309,7 @@ class SemanticWorkerBenchTest(unittest.TestCase):
                 {"snippet": "private one"},
                 {"snippet": "private two"},
             ],
-            "freshness": {"mode": "auto", "status": "completed"},
+            "freshness": {"mode": "background", "status": "completed"},
             "retrieval": {
                 "requested_mode": "hybrid",
                 "effective_mode": "hybrid",
@@ -336,8 +336,7 @@ class SemanticWorkerBenchTest(unittest.TestCase):
                     "lock_path": "/tmp/private.lock",
                 },
                 "diagnostics": {
-                    "auto_candidate_count": 13,
-                    "auto_embedded_candidate_count": 8,
+                    "semantic_candidates": 13,
                     "query_embed_ms": 3,
                     "vector_scan_ms": 7,
                     "chunks_scanned": 11,
@@ -366,7 +365,7 @@ class SemanticWorkerBenchTest(unittest.TestCase):
         self.assertNotIn("lock_path", sanitized["retrieval"]["worker"])
         self.assertEqual(sanitized["retrieval"]["diagnostics"]["vector_scan_ms"], 7)
         self.assertEqual(sanitized["retrieval"]["diagnostics"]["chunks_scanned"], 11)
-        self.assertEqual(sanitized["retrieval"]["diagnostics"]["auto_candidate_count"], 13)
+        self.assertEqual(sanitized["retrieval"]["diagnostics"]["semantic_candidates"], 13)
         self.assertNotIn("private_path", sanitized["retrieval"]["diagnostics"])
 
     def test_redact_argv_hides_search_query(self):

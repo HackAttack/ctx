@@ -58,9 +58,9 @@ const (
 type FreshnessMode string
 
 const (
-	FreshnessModeOff    FreshnessMode = "off"
-	FreshnessModeAuto   FreshnessMode = "auto"
-	FreshnessModeAlways FreshnessMode = "always"
+	FreshnessModeBackground FreshnessMode = "background"
+	FreshnessModeOff        FreshnessMode = "off"
+	FreshnessModeWait       FreshnessMode = "wait"
 )
 
 // FreshnessStatus describes the outcome of a freshness pass.

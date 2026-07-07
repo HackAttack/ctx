@@ -20,7 +20,7 @@
     },
     "generatedAt": "2026-07-01T12:05:00Z",
     "retrieval": {
-      "requestedMode": "auto",
+      "requestedMode": "hybrid",
       "effectiveMode": "lexical",
       "semanticWeight": 0,
       "semanticStatus": "skipped",

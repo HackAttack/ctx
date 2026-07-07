@@ -9,21 +9,6 @@ mod tests {
         embedding
     }
 
-    fn empty_test_packet(
-        query: &str,
-        options: &ctx_history_search::PacketOptions,
-    ) -> ctx_history_search::SearchPacket {
-        ctx_history_search::SearchPacket {
-            schema_version: ctx_history_search::SEARCH_PACKET_SCHEMA_VERSION,
-            query: query.to_owned(),
-            filters: options.filters.clone(),
-            generated_at: utc_now(),
-            results: Vec::new(),
-            pagination: ctx_history_core::ContextPagination::default(),
-            truncation: ctx_history_core::ContextTruncation::default(),
-        }
-    }
-
     fn test_chunk(event_id: Uuid, seq: u64, source_hash: &str) -> SemanticChunkDocument {
         test_chunk_at(event_id, seq, source_hash, 0, 1)
     }
@@ -276,67 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_does_not_use_partial_coverage_as_empty_lexical_veto() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let data_root = temp.path();
-        let store = Store::open(data_root.join("work.sqlite"))?;
-        let vector_path = data_root.join("vectors.sqlite");
-        let _vector_store = SemanticVectorStore::open(&vector_path)?;
-        let cache_dir = data_root.join("semantic-model-cache");
-        let worker_report = SemanticWorkerReport {
-            status: "pending".to_owned(),
-            running: false,
-            pid: None,
-            started_at_ms: None,
-            heartbeat_at_ms: None,
-            finished_at_ms: None,
-            indexed_chunks: None,
-            model_init_ms: None,
-            last_error: None,
-            searchable_items: 10,
-            embedded_items: 1,
-            embedded_chunks: 1,
-            dirty_items: 0,
-            queued_items_estimate: 9,
-            model_cache_available: true,
-            vector_path: vector_path.clone(),
-            lock_path: semantic_worker_lock_path(data_root),
-            status_path: semantic_worker_status_path(data_root),
-        };
-        let options = ctx_history_search::PacketOptions::default();
-        let mut retrieval = SemanticRetrievalReport::lexical(SearchBackendArg::Auto, 10);
-        retrieval.worker = Some(worker_report.clone());
-        retrieval.apply_worker_counts(&worker_report);
-        let lexical_packet = || Ok(empty_test_packet("semantic-only needle", &options));
-
-        let packet = auto_search_packet(
-            &store,
-            &options,
-            &lexical_packet,
-            &mut retrieval,
-            &worker_report,
-            &vector_path,
-            &cache_dir,
-            "semantic-only needle",
-            0.65,
-            RefreshArg::Off,
-        )?;
-
-        assert!(packet.results.is_empty());
-        assert_eq!(retrieval.effective_mode(), SearchBackendArg::Lexical);
-        assert_eq!(retrieval.semantic_weight, 0.0);
-        assert_eq!(
-            retrieval
-                .diagnostics
-                .as_ref()
-                .and_then(|diagnostics| diagnostics.auto_hybrid_skipped),
-            Some("semantic_coverage_not_ready")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn daemon_autostart_skips_semantic_sidecar_work() -> Result<()> {
+    fn daemon_autostart_records_lifecycle_trigger_metadata() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let args = DaemonRunArgs {
             foreground: false,
@@ -351,12 +276,6 @@ mod tests {
             trigger_command: Some(DaemonTriggerCommandArg::Setup),
             json: true,
         };
-
-        assert!(daemon_run_is_autostart(&args));
-        let job = daemon_semantic_autostart_skipped_job(temp.path());
-        assert_eq!(job["status"], "skipped");
-        assert_eq!(job["reason"], "autostart_history_only");
-        assert!(!temp.path().join("vectors.sqlite").exists());
 
         write_daemon_lifecycle_status(temp.path(), &args, "running", 123, None, None)?;
         let status = read_daemon_status(temp.path()).expect("daemon status");

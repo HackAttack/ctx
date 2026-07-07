@@ -114,7 +114,7 @@ impl Default for SearchOptions {
             file: None,
             session: None,
             events: false,
-            refresh: SearchRefresh::Auto,
+            refresh: SearchRefresh::Background,
             include_current_session: false,
         }
     }
@@ -137,17 +137,17 @@ impl SearchOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchRefresh {
-    Auto,
+    Background,
     Off,
-    Strict,
+    Wait,
 }
 
 impl SearchRefresh {
     fn as_arg(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
+            Self::Background => "background",
             Self::Off => "off",
-            Self::Strict => "strict",
+            Self::Wait => "wait",
         }
     }
 }

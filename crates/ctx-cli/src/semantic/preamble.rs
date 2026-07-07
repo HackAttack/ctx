@@ -33,7 +33,10 @@ use ctx_history_store::{EventEmbeddingDocument, Store};
 
 use crate::commands::{
     import::{error_summary, import_totals_json, ImportTotals},
-    search::{refresh_sources_for_search, search_refresh_sources, RefreshArg},
+    search::{
+        refresh_sources_for_search, search_refresh_plugin_sources, search_refresh_sources,
+        RefreshArg,
+    },
 };
 use crate::config::{self, AppConfig, CONFIG_FILE};
 use crate::output::{compact_json, print_json};
@@ -299,9 +302,6 @@ struct SemanticRetrievalDiagnostics {
     hydration_ms: Option<u64>,
     stale_events_dropped: Option<usize>,
     semantic_candidates: Option<usize>,
-    auto_candidate_count: Option<usize>,
-    auto_embedded_candidate_count: Option<usize>,
-    auto_hybrid_skipped: Option<&'static str>,
 }
 
 impl SemanticRetrievalDiagnostics {
@@ -316,9 +316,6 @@ impl SemanticRetrievalDiagnostics {
             "hydration_ms": self.hydration_ms,
             "stale_events_dropped": self.stale_events_dropped,
             "semantic_candidates": self.semantic_candidates,
-            "auto_candidate_count": self.auto_candidate_count,
-            "auto_embedded_candidate_count": self.auto_embedded_candidate_count,
-            "auto_hybrid_skipped": self.auto_hybrid_skipped,
         }))
     }
 }
@@ -332,7 +329,7 @@ pub(crate) fn search_packet_with_backend(
     options: &ctx_history_search::PacketOptions,
     requested_backend: SearchBackendArg,
     semantic_weight: f32,
-    refresh_mode: RefreshArg,
+    _refresh_mode: RefreshArg,
     emit_warnings: bool,
 ) -> Result<(ctx_history_search::SearchPacket, SemanticRetrievalReport)> {
     let uses_composed_terms = terms.iter().any(|term| !term.trim().is_empty());
@@ -350,15 +347,24 @@ pub(crate) fn search_packet_with_backend(
         effective_backend,
         SearchBackendArg::Semantic | SearchBackendArg::Hybrid
     ) && uses_composed_terms;
+    if filters_require_semantic_fallback && requested_backend == SearchBackendArg::Semantic {
+        return Err(anyhow!(
+            "semantic search does not yet support these filters; use --backend hybrid or --backend lexical"
+        ));
+    }
+    if terms_require_semantic_fallback && requested_backend == SearchBackendArg::Semantic {
+        return Err(anyhow!(
+            "semantic search does not yet preserve --term OR semantics; use --backend hybrid or --backend lexical"
+        ));
+    }
     if filters_require_semantic_fallback || terms_require_semantic_fallback {
         effective_backend = SearchBackendArg::Lexical;
     }
 
-    let worker_report = if requested_backend == SearchBackendArg::Auto
-        || matches!(
-            effective_backend,
-            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
-        ) {
+    let worker_report = if matches!(
+        effective_backend,
+        SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+    ) {
         semantic_worker_report(data_root, Some(store))?
     } else {
         semantic_worker_report_best_effort(data_root)
@@ -423,20 +429,7 @@ pub(crate) fn search_packet_with_backend(
         }
     };
 
-    let packet = if requested_backend == SearchBackendArg::Auto {
-        auto_search_packet(
-            store,
-            options,
-            &lexical_search_packet,
-            &mut retrieval,
-            &worker_report,
-            &vector_path,
-            &semantic_cache_dir,
-            &semantic_text,
-            semantic_weight,
-            refresh_mode,
-        )?
-    } else if matches!(
+    let packet = if matches!(
         effective_backend,
         SearchBackendArg::Semantic | SearchBackendArg::Hybrid
     ) {
@@ -458,194 +451,6 @@ pub(crate) fn search_packet_with_backend(
     };
 
     Ok((packet, retrieval))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn auto_search_packet(
-    store: &Store,
-    options: &ctx_history_search::PacketOptions,
-    lexical_search_packet: &dyn Fn() -> Result<ctx_history_search::SearchPacket>,
-    retrieval: &mut SemanticRetrievalReport,
-    worker_report: &SemanticWorkerReport,
-    vector_path: &Path,
-    semantic_cache_dir: &Path,
-    semantic_text: &str,
-    semantic_weight: f32,
-    _refresh_mode: RefreshArg,
-) -> Result<ctx_history_search::SearchPacket> {
-    let lexical_packet = lexical_search_packet()?;
-    let mut auto_diagnostics = SemanticRetrievalDiagnostics::default();
-    let auto_skip_reason = if semantic_text.trim().is_empty() {
-        Some("empty_semantic_query")
-    } else if semantic_filters_require_lexical_fallback(&options.filters) {
-        Some("unsupported_filter_or_terms")
-    } else {
-        None
-    };
-    if let Some(reason) = auto_skip_reason {
-        auto_diagnostics.auto_hybrid_skipped = Some(reason);
-        retrieval.diagnostics = Some(auto_diagnostics);
-        return Ok(lexical_packet);
-    }
-
-    let auto_candidate_ids = semantic_auto_candidate_event_ids_from_packet(&lexical_packet);
-    auto_diagnostics.auto_candidate_count = Some(auto_candidate_ids.len());
-    if auto_candidate_ids.len() == 1 {
-        auto_diagnostics.auto_hybrid_skipped = Some("candidate_count_too_small");
-        retrieval.diagnostics = Some(auto_diagnostics);
-        return Ok(lexical_packet);
-    }
-
-    let vector_store = match SemanticVectorStore::open_read_only(vector_path) {
-        Ok(Some(vector_store)) => vector_store,
-        Ok(None) => {
-            auto_diagnostics.auto_hybrid_skipped = Some("semantic_index_unavailable");
-            retrieval.diagnostics = Some(auto_diagnostics);
-            return Ok(lexical_packet);
-        }
-        Err(_) => {
-            auto_diagnostics.auto_hybrid_skipped = Some("semantic_index_open_error");
-            retrieval.semantic_status = "unavailable";
-            retrieval.diagnostics = Some(auto_diagnostics);
-            return Ok(lexical_packet);
-        }
-    };
-
-    if auto_candidate_ids.is_empty() && !semantic_worker_coverage_ready(worker_report) {
-        auto_diagnostics.auto_hybrid_skipped = Some("semantic_coverage_not_ready");
-        retrieval.diagnostics = Some(auto_diagnostics);
-        return Ok(lexical_packet);
-    }
-
-    if !worker_report.model_cache_available || !semantic_model_cache_available(semantic_cache_dir) {
-        auto_diagnostics.auto_hybrid_skipped = Some("model_cache_missing");
-        retrieval.diagnostics = Some(auto_diagnostics);
-        return Ok(lexical_packet);
-    }
-
-    if auto_candidate_ids.is_empty() {
-        *retrieval = SemanticRetrievalReport {
-            requested_mode: SearchBackendArg::Auto,
-            effective_mode: SearchBackendArg::Semantic,
-            semantic_weight: 1.0,
-            semantic_status: semantic_status_from_worker(worker_report),
-            semantic_fallback_code: None,
-            semantic_fallback: None,
-            embedding_model: Some(SEMANTIC_MODEL_ID.to_owned()),
-            embedded_items: worker_report.embedded_items,
-            embedded_chunks: worker_report.embedded_chunks,
-            searchable_items: worker_report.searchable_items,
-            indexed_now: 0,
-            vector_path: Some(vector_path.to_path_buf()),
-            worker: Some(worker_report.clone()),
-            diagnostics: None,
-        };
-        let semantic_candidate_limit =
-            SEMANTIC_SEARCH_CANDIDATES.max(options.limit.saturating_mul(8));
-        return match semantic_hits_for_text_query(
-            store,
-            &vector_store,
-            semantic_cache_dir,
-            semantic_text,
-            semantic_candidate_limit,
-            None,
-        ) {
-            Ok((semantic_hits, mut diagnostics)) if !semantic_hits.is_empty() => {
-                diagnostics.auto_candidate_count = auto_diagnostics.auto_candidate_count;
-                retrieval.diagnostics = Some(diagnostics);
-                ctx_history_search::semantic_event_search_packet(
-                    store,
-                    semantic_text,
-                    options,
-                    &semantic_hits,
-                    1.0,
-                    false,
-                )
-                .map_err(Into::into)
-            }
-            Ok((_semantic_hits, mut diagnostics)) => {
-                diagnostics.auto_candidate_count = auto_diagnostics.auto_candidate_count;
-                diagnostics.auto_hybrid_skipped = Some("no_semantic_candidates");
-                retrieval.effective_mode = SearchBackendArg::Lexical;
-                retrieval.semantic_weight = 0.0;
-                retrieval.embedding_model = None;
-                retrieval.vector_path = None;
-                retrieval.diagnostics = Some(diagnostics);
-                Ok(lexical_packet)
-            }
-            Err(_) => {
-                auto_diagnostics.auto_hybrid_skipped = Some("semantic_retrieval_failed");
-                retrieval.effective_mode = SearchBackendArg::Lexical;
-                retrieval.semantic_weight = 0.0;
-                retrieval.embedding_model = None;
-                retrieval.semantic_status = "unavailable";
-                retrieval.diagnostics = Some(auto_diagnostics);
-                Ok(lexical_packet)
-            }
-        };
-    }
-
-    let embedded_candidate_count = vector_store.embedded_event_id_count(&auto_candidate_ids)?;
-    auto_diagnostics.auto_embedded_candidate_count = Some(embedded_candidate_count);
-    if !semantic_auto_candidate_coverage_ready(embedded_candidate_count, auto_candidate_ids.len()) {
-        auto_diagnostics.auto_hybrid_skipped = Some("candidate_coverage_not_ready");
-        retrieval.diagnostics = Some(auto_diagnostics);
-        return Ok(lexical_packet);
-    }
-
-    *retrieval = SemanticRetrievalReport {
-        requested_mode: SearchBackendArg::Auto,
-        effective_mode: SearchBackendArg::Hybrid,
-        semantic_weight,
-        semantic_status: semantic_status_from_worker(worker_report),
-        semantic_fallback_code: None,
-        semantic_fallback: None,
-        embedding_model: Some(SEMANTIC_MODEL_ID.to_owned()),
-        embedded_items: worker_report.embedded_items,
-        embedded_chunks: worker_report.embedded_chunks,
-        searchable_items: worker_report.searchable_items,
-        indexed_now: 0,
-        vector_path: Some(vector_path.to_path_buf()),
-        worker: Some(worker_report.clone()),
-        diagnostics: None,
-    };
-    match semantic_hits_for_text_query(
-        store,
-        &vector_store,
-        semantic_cache_dir,
-        semantic_text,
-        auto_candidate_ids.len().max(options.limit),
-        Some(&auto_candidate_ids),
-    ) {
-        Ok((semantic_hits, mut diagnostics)) if !semantic_hits.is_empty() => {
-            diagnostics.auto_candidate_count = auto_diagnostics.auto_candidate_count;
-            diagnostics.auto_embedded_candidate_count =
-                auto_diagnostics.auto_embedded_candidate_count;
-            retrieval.diagnostics = Some(diagnostics);
-            Ok(semantic_auto_rerank_packet(
-                lexical_packet,
-                &semantic_hits,
-                semantic_weight,
-            ))
-        }
-        Ok((_semantic_hits, mut diagnostics)) => {
-            diagnostics.auto_hybrid_skipped = Some("no_semantic_candidates");
-            retrieval.effective_mode = SearchBackendArg::Lexical;
-            retrieval.semantic_weight = 0.0;
-            retrieval.embedding_model = None;
-            retrieval.diagnostics = Some(diagnostics);
-            Ok(lexical_packet)
-        }
-        Err(_) => {
-            auto_diagnostics.auto_hybrid_skipped = Some("semantic_retrieval_failed");
-            retrieval.effective_mode = SearchBackendArg::Lexical;
-            retrieval.semantic_weight = 0.0;
-            retrieval.embedding_model = None;
-            retrieval.semantic_status = "unavailable";
-            retrieval.diagnostics = Some(auto_diagnostics);
-            Ok(lexical_packet)
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -691,7 +496,7 @@ fn semantic_or_hybrid_search_packet(
                         || !semantic_model_cache_available(semantic_cache_dir)
                     {
                         return Err(anyhow!(
-                            "semantic index has no embedded event chunks and semantic model is not available in the local cache; strict semantic search will not initialize or download {SEMANTIC_MODEL_ID} during search"
+                            "semantic index has no embedded event chunks and semantic model is not available in the local cache; semantic-only search will not initialize or download {SEMANTIC_MODEL_ID} during search"
                         ));
                     }
                     return Err(anyhow!(
@@ -740,7 +545,7 @@ fn semantic_or_hybrid_search_packet(
             {
                 if effective_backend == SearchBackendArg::Semantic {
                     return Err(anyhow!(
-                        "semantic model is not available in the local cache; strict semantic search will not initialize or download {SEMANTIC_MODEL_ID} during search"
+                        "semantic model is not available in the local cache; semantic-only search will not initialize or download {SEMANTIC_MODEL_ID} during search"
                     ));
                 }
                 retrieval.effective_mode = SearchBackendArg::Lexical;
@@ -809,7 +614,7 @@ fn semantic_or_hybrid_search_packet(
                     || !semantic_model_cache_available(semantic_cache_dir)
                 {
                     return Err(anyhow!(
-                        "semantic index is not available yet and semantic model is not available in the local cache; strict semantic search will not initialize or download {SEMANTIC_MODEL_ID} during search"
+                        "semantic index is not available yet and semantic model is not available in the local cache; semantic-only search will not initialize or download {SEMANTIC_MODEL_ID} during search"
                     ));
                 }
                 return Err(anyhow!(

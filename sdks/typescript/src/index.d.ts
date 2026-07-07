@@ -12,10 +12,10 @@ export type Provider =
   | "copilot-cli"
   | "factory-ai-droid";
 
-export type RefreshMode = "auto" | "off" | "strict";
+export type RefreshMode = "background" | "off" | "wait";
 export type ProgressMode = "auto" | "plain" | "json" | "none";
 export type TranscriptMode = "lite" | "full" | "log";
-export type SearchBackendMode = "auto" | "lexical" | "semantic" | "hybrid";
+export type SearchBackendMode = "hybrid" | "semantic" | "lexical";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];

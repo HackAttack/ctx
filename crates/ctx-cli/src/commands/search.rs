@@ -43,17 +43,17 @@ use crate::{analytics, config, SearchArgs, WAL_TRUNCATE_MIN_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RefreshArg {
-    Auto,
+    Background,
     Off,
-    Strict,
+    Wait,
 }
 
 impl RefreshArg {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
+            Self::Background => "background",
             Self::Off => "off",
-            Self::Strict => "strict",
+            Self::Wait => "wait",
         }
     }
 }
@@ -112,6 +112,7 @@ pub(crate) fn run_search(
     args: SearchArgs,
     data_root: PathBuf,
     analytics_properties: &mut AnalyticsProperties,
+    config: &config::AppConfig,
 ) -> Result<()> {
     if !search_has_intent(SearchIntentInput {
         query: args.query.as_deref(),
@@ -144,7 +145,7 @@ pub(crate) fn run_search(
         indexed_content_before_search.unwrap_or(false),
     );
     let refresh_started = Instant::now();
-    let refresh = refresh_before_search(&args, &data_root)?;
+    let refresh = refresh_before_search(&args, &data_root, config.daemon.enabled)?;
     analytics::insert_duration(
         analytics_properties,
         "refresh_duration",
@@ -166,9 +167,9 @@ pub(crate) fn run_search(
         refresh.source_count as u64,
     );
     insert_db_size_bucket(analytics_properties, &db_path);
-    if refresh.status == "failed" && args.refresh == RefreshArg::Auto && !had_existing_store {
+    if refresh.status == "failed" && args.refresh == RefreshArg::Background && !had_existing_store {
         return Err(anyhow!(
-            "search refresh failed and no existing ctx index is available; run `ctx import` first or retry with `--refresh strict`: {}",
+            "search refresh failed and no existing ctx index is available; run `ctx import` first or retry with `--refresh wait`: {}",
             refresh.error.as_deref().unwrap_or("unknown refresh error")
         ));
     }
@@ -295,10 +296,10 @@ pub(crate) fn run_search(
             suggested_next_query,
         ))?;
     } else {
-        if refresh.status == "failed" && args.refresh == RefreshArg::Auto {
+        if refresh.status == "failed" && args.refresh == RefreshArg::Background {
             if let Some(error) = &refresh.error {
                 eprintln!(
-                    "warning: search refresh failed; serving existing index; use --refresh strict to fail instead: {error}"
+                    "warning: search refresh failed; serving existing index; use --refresh wait to fail instead: {error}"
                 );
             }
         }
@@ -358,9 +359,16 @@ fn existing_store_indexed_content(db_path: &Path) -> Option<bool> {
 pub(crate) fn refresh_before_search(
     args: &SearchArgs,
     data_root: &Path,
+    daemon_enabled: bool,
 ) -> Result<SearchRefreshReport> {
     if args.refresh == RefreshArg::Off {
         return Ok(SearchRefreshReport::skipped(RefreshArg::Off, "skipped"));
+    }
+    if args.refresh == RefreshArg::Background && daemon_enabled {
+        return Ok(SearchRefreshReport::skipped(
+            RefreshArg::Background,
+            "daemon_background",
+        ));
     }
     let source_identity = normalize_source_identity_filters(SourceIdentityFilterArgs::from(args))?;
     if !source_identity.is_empty()
@@ -380,9 +388,9 @@ pub(crate) fn refresh_before_search(
     let plugin_sources =
         match search_refresh_plugin_sources(data_root, args.provider, &source_identity) {
             Ok(sources) => sources,
-            Err(err) if args.refresh == RefreshArg::Auto => {
+            Err(err) if args.refresh == RefreshArg::Background => {
                 return Ok(SearchRefreshReport::failed(
-                    RefreshArg::Auto,
+                    RefreshArg::Background,
                     sources.len(),
                     error_summary(&err),
                 ));
@@ -390,9 +398,9 @@ pub(crate) fn refresh_before_search(
             Err(err) => return Err(err.context("search refresh failed")),
         };
     if sources.is_empty() && plugin_sources.is_empty() {
-        if args.refresh == RefreshArg::Strict {
+        if args.refresh == RefreshArg::Wait {
             return Err(anyhow!(
-                "strict search refresh found no supported discovered native provider or enabled auto history-source plugin sources; rerun the search with --refresh off to use the existing index"
+                "wait search refresh found no supported discovered native provider or enabled auto history-source plugin sources; rerun the search with --refresh off to use the existing index"
             ));
         }
         return Ok(SearchRefreshReport::skipped(args.refresh, "no_sources"));
@@ -404,8 +412,8 @@ pub(crate) fn refresh_before_search(
             source_count,
             totals,
         )),
-        Err(err) if args.refresh == RefreshArg::Auto => Ok(SearchRefreshReport::failed(
-            RefreshArg::Auto,
+        Err(err) if args.refresh == RefreshArg::Background => Ok(SearchRefreshReport::failed(
+            RefreshArg::Background,
             source_count,
             error_summary(&err),
         )),
@@ -471,9 +479,9 @@ pub(crate) fn refresh_sources_for_search(
     }
 
     let progress_arg = match refresh {
-        RefreshArg::Strict if json_output => ProgressArg::Json,
-        RefreshArg::Strict => ProgressArg::Auto,
-        RefreshArg::Auto | RefreshArg::Off => ProgressArg::None,
+        RefreshArg::Wait if json_output => ProgressArg::Json,
+        RefreshArg::Wait => ProgressArg::Auto,
+        RefreshArg::Background | RefreshArg::Off => ProgressArg::None,
     };
     let progress = ProgressReporter::new(
         progress_arg,
@@ -530,7 +538,7 @@ pub(crate) fn refresh_sources_for_search(
                 .map_err(|_| anyhow!("provider import worker panicked"))?;
             match result {
                 Ok(outcome) => outcomes.push(outcome),
-                Err(err) if refresh == RefreshArg::Auto => {
+                Err(err) if refresh == RefreshArg::Background => {
                     first_refresh_failure.get_or_insert_with(|| error_summary(&err));
                     totals.add_source_failure(&SourceStats::default());
                 }
@@ -569,7 +577,7 @@ pub(crate) fn refresh_sources_for_search(
                         completed_source_bytes,
                     );
                 }
-                Err(err) if refresh == RefreshArg::Auto => {
+                Err(err) if refresh == RefreshArg::Background => {
                     let error = error_summary(&err);
                     first_refresh_failure.get_or_insert_with(|| error.clone());
                     totals.add_source_failure(&plan.stats);
@@ -609,7 +617,7 @@ pub(crate) fn refresh_sources_for_search(
                         0,
                     );
                 }
-                Err(err) if refresh == RefreshArg::Auto => {
+                Err(err) if refresh == RefreshArg::Background => {
                     let error = error_summary(&err);
                     first_refresh_failure.get_or_insert_with(|| error.clone());
                     totals.add_source_failure(&SourceStats::default());
@@ -628,7 +636,10 @@ pub(crate) fn refresh_sources_for_search(
         }
     }
 
-    if refresh == RefreshArg::Auto && totals.imported_sources == 0 && totals.failed_sources > 0 {
+    if refresh == RefreshArg::Background
+        && totals.imported_sources == 0
+        && totals.failed_sources > 0
+    {
         let detail = first_refresh_failure
             .map(|error| format!("; first failure: {error}"))
             .unwrap_or_default();

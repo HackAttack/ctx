@@ -5,7 +5,7 @@ This harness is intentionally local-only: it invokes `ctx search`, sets
 opt-out/offline environment variables for the child process, and writes the
 snippet-bearing report to a private local JSON file. Treat the output as private
 history data. Use `--refresh off` for strictly read-only checks and
-`--refresh auto` for the default product path.
+`--refresh background` for the default daemon-backed product path.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import time
 from typing import Any
 
 
-DEFAULT_MODES = ("auto", "lexical", "semantic", "hybrid")
+DEFAULT_MODES = ("hybrid", "lexical", "semantic")
 OFFLINE_ENV = {
     "CTX_ANALYTICS_OFF": "1",
     "CTX_DISABLE_ANALYTICS": "1",
@@ -54,8 +54,6 @@ SAFE_COVERAGE_KEYS = (
     "coverage_ratio",
 )
 SAFE_DIAGNOSTIC_KEYS = (
-    "auto_candidate_count",
-    "auto_embedded_candidate_count",
     "query_embed_ms",
     "vector_scan_ms",
     "chunks_scanned",
@@ -65,9 +63,7 @@ SAFE_DIAGNOSTIC_KEYS = (
     "stale_events_dropped",
     "semantic_candidates",
 )
-SAFE_DIAGNOSTIC_STRING_KEYS = (
-    "auto_hybrid_skipped",
-)
+SAFE_DIAGNOSTIC_STRING_KEYS = ()
 
 
 @dataclass(frozen=True)
@@ -480,7 +476,7 @@ def summarize(query_reports: list[dict[str, Any]], modes: list[str]) -> dict[str
 
 
 def prioritized_modes(modes: list[str]) -> list[str]:
-    priority = {"auto": 0, "lexical": 1, "semantic": 2, "hybrid": 3}
+    priority = {"hybrid": 0, "lexical": 1, "semantic": 2}
     return [
         mode
         for _, mode in sorted(
@@ -501,8 +497,8 @@ def write_private_json(path: str, payload: dict[str, Any]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a local-only ctx search basics gate across lexical/auto/"
-            "semantic/hybrid and write a private JSON report."
+            "Run a local-only ctx search basics gate across hybrid/lexical/"
+            "semantic and write a private JSON report."
         )
     )
     parser.add_argument(
@@ -528,9 +524,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--refresh",
-        choices=("auto", "off", "strict"),
-        default="auto",
-        help="ctx search refresh mode per query/mode (default: auto)",
+        choices=("background", "off", "wait"),
+        default="background",
+        help="ctx search refresh mode per query/mode (default: background)",
     )
     parser.add_argument(
         "--query-set",

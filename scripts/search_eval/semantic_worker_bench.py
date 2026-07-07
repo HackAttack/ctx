@@ -54,8 +54,6 @@ SAFE_COVERAGE_KEYS = {
 }
 
 SAFE_DIAGNOSTIC_KEYS = {
-    "auto_candidate_count",
-    "auto_embedded_candidate_count",
     "query_embed_ms",
     "vector_scan_ms",
     "chunks_scanned",
@@ -579,8 +577,8 @@ def main() -> int:
     parser.add_argument("--data-root")
     parser.add_argument("--cwd")
     parser.add_argument("--sidecar", help="explicit vectors.sqlite path")
-    parser.add_argument("--backend", choices=["auto", "lexical", "semantic", "hybrid"], default="auto")
-    parser.add_argument("--refresh", choices=["auto", "off", "strict"], default="auto")
+    parser.add_argument("--backend", choices=["hybrid", "lexical", "semantic"], default="hybrid")
+    parser.add_argument("--refresh", choices=["background", "off", "wait"], default="background")
     parser.add_argument("--limit", type=positive_int, default=20)
     parser.add_argument("--polls", type=non_negative_int, default=6)
     parser.add_argument("--poll-interval", type=float, default=2.0)

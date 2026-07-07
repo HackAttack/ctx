@@ -216,13 +216,17 @@ fn fresh_home_search_mvp_flow() {
         .arg("setup")
         .assert()
         .success()
-        .stdout(predicate::str::contains("no local history was indexed"));
+        .stdout(predicate::str::contains(
+            "background indexing has no pending local history",
+        ));
 
     let setup_json = json_output(ctx(&temp).args(["setup", "--json"]));
     assert_eq!(setup_json["schema_version"], 1);
     assert_eq!(setup_json["network_required"], false);
     assert_eq!(setup_json["repo_writes"], false);
-    assert_eq!(setup_json["import"]["ran"], true);
+    assert_eq!(setup_json["mode"], "background");
+    assert_eq!(setup_json["import"]["ran"], false);
+    assert_eq!(setup_json["background_indexing"]["enabled"], false);
 
     let sources = json_output(ctx(&temp).args(["sources", "--json"]));
     assert_eq!(sources["schema_version"], 1);
@@ -573,11 +577,11 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
         "off",
         "--json",
     ]));
-    assert_eq!(default_search["retrieval"]["requested_mode"], "auto");
+    assert_eq!(default_search["retrieval"]["requested_mode"], "hybrid");
     assert_eq!(default_search["retrieval"]["effective_mode"], "lexical");
     assert_eq!(
-        default_search["retrieval"]["diagnostics"]["auto_hybrid_skipped"],
-        "semantic_index_unavailable"
+        default_search["retrieval"]["semantic_fallback_code"],
+        "semantic_index_missing"
     );
 
     let hybrid = json_output(ctx(&temp).args([
@@ -1182,6 +1186,8 @@ fn pi_cli_discovers_env_session_dir_for_sources_and_search_refresh() {
         "pi env refresh oracle",
         "--provider",
         "pi",
+        "--refresh",
+        "wait",
         "--json",
     ]));
     assert_search_provider_oracle(&search, "pi", "pi env refresh oracle", 1, "message");

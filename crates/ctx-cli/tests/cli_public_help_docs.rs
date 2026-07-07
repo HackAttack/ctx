@@ -22,6 +22,7 @@ fn help_exposes_session_retrieval_commands() {
     for expected in [
         "setup",
         "status",
+        "index",
         "sources",
         "import",
         "show",
@@ -207,6 +208,16 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
     for (command, required) in [
         ("setup", vec!["Usage: ctx setup", "--json"]),
         ("status", vec!["Usage: ctx status", "--json"]),
+        (
+            "index",
+            vec![
+                "Usage: ctx index",
+                "status",
+                "watch",
+                "wait",
+                "Show, watch, or wait for local indexing progress",
+            ],
+        ),
         ("sources", vec!["Usage: ctx sources", "--json"]),
         (
             "import",
@@ -299,7 +310,7 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
                 "--limit <LIMIT>",
                 "Maximum results to return, from 1 to 200",
                 "--refresh <REFRESH>",
-                "Pre-search refresh behavior. auto best-effort refreshes",
+                "Index freshness behavior. background serves the existing index",
                 "--include-current-session",
                 "Include the active Codex session tree when CODEX_THREAD_ID is set",
                 "--json",

@@ -146,14 +146,12 @@ transcript. Commands accept full ctx IDs or unambiguous ID prefixes of at least
 eight hex characters. Search also accepts filters such as `--provider`,
 `--workspace`, `--since`, `--event-type`, `--file`, `--include-subagents`,
 `--include-current-session`, `--term`, `--limit`, and
-`--refresh auto|off|strict`.
+`--refresh background|off|wait`.
 `--limit` is capped at `200`.
-Search defaults to `--refresh auto`, a best-effort refresh of discovered native
-provider sources and enabled auto history-source plugins before querying. On
-large discovered sources, slow plugins, or already-cataloged indexes, `auto`
-keeps the refresh bounded for interactive search and then serves results,
-leaving remaining backlog for later searches, `--refresh strict`, or
-`ctx import --all`.
+Search defaults to `--refresh background`, which serves existing indexes while
+daemon maintenance refreshes lexical and semantic indexes when enabled. Use
+`--refresh wait` for foreground text refresh, or `ctx import --all` for an
+explicit import catch-up.
 
 When ctx runs inside Codex, search excludes the active Codex session tree by
 default when it can identify it. Use `--include-current-session` if the current
@@ -163,7 +161,7 @@ index.
 
 Semantic and hybrid search read existing local sidecar coverage. Search never
 starts the daemon, runs semantic catch-up, or downloads embedding models. If the
-local model cache is missing, hybrid falls back to lexical search and strict
+local model cache is missing, hybrid falls back to lexical search and explicit
 semantic search reports a local error.
 
 ## 6. Use JSON For Scripts

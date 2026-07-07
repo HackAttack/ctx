@@ -242,9 +242,7 @@ fn run_daemon_once(
         &history_refresh_job,
     )?;
 
-    let semantic_job = if daemon_run_is_autostart(args) {
-        Ok(daemon_semantic_autostart_skipped_job(data_root))
-    } else if daemon_deadline_has_min_budget(deadline, DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
+    let semantic_job = if daemon_deadline_has_min_budget(deadline, DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
         run_daemon_semantic_job(args, data_root, runtime, deadline)
     } else {
         Ok(daemon_semantic_deadline_skipped_job(data_root))
@@ -273,10 +271,6 @@ fn run_daemon_once(
 
 fn daemon_run_start_mode(args: &DaemonRunArgs) -> DaemonStartModeArg {
     args.start_mode.unwrap_or(DaemonStartModeArg::Manual)
-}
-
-fn daemon_run_is_autostart(args: &DaemonRunArgs) -> bool {
-    matches!(args.start_mode, Some(DaemonStartModeArg::Auto)) || args.trigger_command.is_some()
 }
 
 fn daemon_job_failed(value: &Value) -> bool {
@@ -309,8 +303,12 @@ fn daemon_deadline_has_min_budget(deadline: Option<Instant>, min_secs: u64) -> b
 fn run_daemon_history_refresh_job(data_root: &Path) -> Result<Value> {
     let last_run_at_ms = utc_now().timestamp_millis();
     let sources = search_refresh_sources(None);
-    let plugin_sources = Vec::new();
-    let source_count = sources.len();
+    let plugin_sources = search_refresh_plugin_sources(
+        data_root,
+        None,
+        &crate::search_filters::SourceIdentityFilters::default(),
+    )?;
+    let source_count = sources.len().saturating_add(plugin_sources.len());
     if source_count == 0 {
         return Ok(daemon_history_refresh_job_json(
             "skipped",
@@ -326,7 +324,7 @@ fn run_daemon_history_refresh_job(data_root: &Path) -> Result<Value> {
         data_root,
         sources,
         plugin_sources,
-        RefreshArg::Auto,
+        RefreshArg::Background,
         true,
     ) {
         Ok(totals) => daemon_history_refresh_job_json(
@@ -384,7 +382,7 @@ fn daemon_history_refresh_job_json(
     last_error: Option<String>,
 ) -> Value {
     compact_json(json!({
-        "mode": RefreshArg::Auto.as_str(),
+        "mode": RefreshArg::Background.as_str(),
         "status": status,
         "source_count": source_count,
         "totals": import_totals_json(&totals),
@@ -571,18 +569,6 @@ fn daemon_semantic_deadline_skipped_job(data_root: &Path) -> Value {
     daemon_semantic_job_json(
         "skipped",
         Some("daemon_deadline"),
-        utc_now().timestamp_millis(),
-        &report,
-        None,
-        None,
-    )
-}
-
-fn daemon_semantic_autostart_skipped_job(data_root: &Path) -> Value {
-    let report = semantic_worker_report_for_daemon(data_root);
-    daemon_semantic_job_json(
-        "skipped",
-        Some("autostart_history_only"),
         utc_now().timestamp_millis(),
         &report,
         None,

@@ -147,7 +147,7 @@ fn status_missing_store_is_read_only_and_does_not_initialize_files() {
 #[test]
 fn status_existing_wal_mode_store_does_not_create_sqlite_sidecars() {
     let temp = tempdir();
-    ctx(&temp).arg("setup").assert().success();
+    ctx(&temp).args(["setup", "--no-daemon"]).assert().success();
     let db_path = temp.path().join("work.sqlite");
     let wal_path = sqlite_sidecar_path(&db_path, "-wal");
     let shm_path = sqlite_sidecar_path(&db_path, "-shm");
@@ -393,20 +393,39 @@ fn quiet_status_suppresses_success_output_but_not_json() {
 }
 
 #[test]
-fn setup_imports_discovered_codex_sessions_by_default() {
+fn setup_backgrounds_discovered_codex_sessions_by_default_and_wait_imports() {
     let temp = tempdir();
     write_codex_setup_session(&temp);
 
     let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    assert_eq!(setup["mode"], "background");
     assert_eq!(setup["inventory"]["sources"], 1);
     assert_eq!(setup["inventory"]["units"], 1);
     assert_eq!(setup["inventory"]["codex_catalog_sessions"], 1);
     assert_eq!(setup["catalog"]["cataloged_sessions"], 1);
-    assert_eq!(setup["import"]["ran"], true);
-    assert_eq!(setup["import"]["totals"]["failed_sources"], 0);
-    assert_eq!(setup["import"]["totals"]["imported_sessions"], 1);
+    assert_eq!(setup["import"]["ran"], false);
+    assert_eq!(setup["import"]["reason"], "background");
+    assert_eq!(setup["background_indexing"]["enabled"], true);
+    assert_eq!(setup["background_indexing"]["units"], 1);
+
+    let status = json_output(ctx(&temp).args(["status", "--json"]));
+    assert_eq!(status["inventory_units"], 1);
+    assert_eq!(status["pending_inventory_units"], 1);
+    assert_eq!(status["cataloged_sessions"], 1);
+    assert_eq!(status["indexed_catalog_sessions"], 0);
+    assert_eq!(status["pending_catalog_sessions"], 1);
+
+    let ready = json_output(ctx(&temp).args(["setup", "--wait", "--json", "--progress", "none"]));
+    assert_eq!(ready["mode"], "ready");
+    assert_eq!(ready["inventory"]["sources"], 1);
+    assert_eq!(ready["inventory"]["units"], 1);
+    assert_eq!(ready["inventory"]["codex_catalog_sessions"], 1);
+    assert_eq!(ready["catalog"]["cataloged_sessions"], 1);
+    assert_eq!(ready["import"]["ran"], true);
+    assert_eq!(ready["import"]["totals"]["failed_sources"], 0);
+    assert_eq!(ready["import"]["totals"]["imported_sessions"], 1);
     assert!(
-        setup["import"]["totals"]["imported_events"]
+        ready["import"]["totals"]["imported_events"]
             .as_u64()
             .unwrap()
             >= 1
@@ -424,7 +443,7 @@ fn setup_imports_discovered_codex_sessions_by_default() {
     let human_temp = tempdir();
     write_codex_setup_session(&human_temp);
     let human_setup = ctx(&human_temp)
-        .args(["setup", "--progress", "none"])
+        .args(["setup", "--wait", "--progress", "none"])
         .assert()
         .success()
         .get_output()
@@ -495,7 +514,7 @@ fn setup_inventories_and_imports_claude_sources_by_default() {
     )
     .unwrap();
 
-    let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    let setup = json_output(ctx(&temp).args(["setup", "--wait", "--json", "--progress", "none"]));
     assert_eq!(setup["inventory"]["sources"], 1);
     assert_eq!(setup["inventory"]["units"], 1);
     assert_eq!(setup["inventory"]["source_import_files"], 1);
@@ -520,7 +539,7 @@ fn setup_inventories_whole_source_sqlite_providers() {
     let temp = tempdir();
     install_default_hermes_fixture(&temp, "setup should inventory hermes");
 
-    let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    let setup = json_output(ctx(&temp).args(["setup", "--wait", "--json", "--progress", "none"]));
     assert_eq!(setup["inventory"]["sources"], 1);
     assert_eq!(setup["inventory"]["units"], 1);
     assert_eq!(setup["inventory"]["source_import_files"], 1);
@@ -542,7 +561,7 @@ fn setup_skips_empty_codex_session_tree() {
     let temp = tempdir();
     fs::create_dir_all(temp.path().join(".codex").join("sessions")).unwrap();
 
-    let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
+    let setup = json_output(ctx(&temp).args(["setup", "--wait", "--json", "--progress", "none"]));
     assert_eq!(setup["catalog"]["cataloged_sessions"], 0);
     assert_eq!(setup["catalog"]["source_files"], 0);
     assert_eq!(setup["import"]["totals"]["imported_sources"], 0);
@@ -1083,6 +1102,7 @@ fn sources_discovers_forgecode_env_and_legacy_db() {
 #[test]
 fn explicit_native_sources_are_listed_but_not_auto_imported() {
     let temp = tempdir();
+    ctx(&temp).args(["daemon", "disable"]).assert().success();
     let query = "nanoclaw-explicit-auto-refresh-oracle";
     let project = PathBuf::from(write_native_nanoclaw_fixture(&temp, query));
 
@@ -1103,9 +1123,16 @@ fn explicit_native_sources_are_listed_but_not_auto_imported() {
 
     let mut search_command = ctx(&temp);
     search_command.current_dir(&project);
-    let search =
-        json_output(search_command.args(["search", query, "--provider", "nanoclaw", "--json"]));
-    assert_eq!(search["freshness"]["mode"], "auto");
+    let search = json_output(search_command.args([
+        "search",
+        query,
+        "--provider",
+        "nanoclaw",
+        "--refresh",
+        "background",
+        "--json",
+    ]));
+    assert_eq!(search["freshness"]["mode"], "background");
     assert_eq!(search["freshness"]["status"], "no_sources");
     assert_eq!(search["freshness"]["source_count"], 0);
     assert!(search["results"].as_array().unwrap().is_empty());

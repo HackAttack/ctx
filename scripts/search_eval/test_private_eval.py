@@ -127,8 +127,7 @@ class PrivateEvalRetrievalSummaryTest(unittest.TestCase):
                     "effective_mode": "lexical",
                     "semantic_fallback": True,
                     "diagnostics": {
-                        "auto_candidate_count": 4,
-                        "auto_embedded_candidate_count": 2,
+                        "semantic_candidates": 4,
                         "vector_scan_ms": 20,
                         "chunks_scanned": 100,
                         "private_path": "/home/private/vector",
@@ -154,7 +153,7 @@ class PrivateEvalRetrievalSummaryTest(unittest.TestCase):
         self.assertAlmostEqual(summary["effective_mode_rates"]["lexical"], 2 / 3)
         self.assertAlmostEqual(summary["effective_mode_rates"]["hybrid"], 1 / 3)
         self.assertEqual(summary["diagnostics"]["samples"], 1)
-        self.assertEqual(summary["diagnostics"]["auto_candidate_count_p95"], 4)
+        self.assertEqual(summary["diagnostics"]["semantic_candidates_p95"], 4)
         self.assertEqual(summary["diagnostics"]["vector_scan_ms_p95"], 20)
         self.assertEqual(summary["diagnostics"]["chunks_scanned_max"], 100)
         self.assertNotIn("private_path_p95", summary["diagnostics"])
@@ -166,8 +165,7 @@ class PrivateEvalRetrievalSummaryTest(unittest.TestCase):
                     "requested_mode": "hybrid",
                     "effective_mode": "hybrid",
                     "diagnostics": {
-                        "auto_candidate_count": 5,
-                        "auto_embedded_candidate_count": 3,
+                        "semantic_candidates": 5,
                         "query_embed_ms": 3,
                         "vector_scan_ms": 9,
                         "chunks_scanned": 25,
@@ -179,7 +177,7 @@ class PrivateEvalRetrievalSummaryTest(unittest.TestCase):
         )
 
         self.assertEqual(summary["diagnostics"]["query_embed_ms"], 3)
-        self.assertEqual(summary["diagnostics"]["auto_embedded_candidate_count"], 3)
+        self.assertEqual(summary["diagnostics"]["semantic_candidates"], 5)
         self.assertEqual(summary["diagnostics"]["vector_scan_ms"], 9)
         self.assertEqual(summary["diagnostics"]["vector_bytes_read"], 4096)
         self.assertNotIn("private_path", summary["diagnostics"])

@@ -6,8 +6,8 @@ Do not publish raw outputs without review.
 
 ## Scripts
 
-- `default_experience_gate.py` runs `ctx search` across lexical, auto,
-  semantic, and hybrid modes. Its output is private because it includes query
+- `default_experience_gate.py` runs `ctx search` across hybrid, lexical, and
+  semantic modes. Its output is private because it includes query
   text and top snippets.
 - `private_eval.py` scores a private JSONL manifest with hashed expected IDs.
   Its output is private unless the manifest and output have been separately
@@ -26,13 +26,14 @@ thresholds use conservative defaults.
 {
   "basics": {
     "require_ok": true,
-    "auto_p95_vs_lexical_max_ratio": 2.0,
-    "max_auto_p95_ms": 2000,
-    "require_partial_auto_lexical": true
+    "require_refresh_background": true,
+    "hybrid_p95_vs_lexical_max_ratio": 2.0,
+    "max_hybrid_p95_ms": 2000,
+    "require_hybrid_fallback_lexical": true
   },
   "private_eval": {
-    "baseline": "lexical",
-    "candidate": "auto",
+    "baseline": "fts",
+    "candidate": "hybrid",
     "min_hit5_delta": 0.0,
     "min_mrr_delta": 0.0,
     "max_p95_ratio": 2.0
@@ -50,7 +51,7 @@ thresholds use conservative defaults.
 python3 scripts/search_eval/default_experience_gate.py \
   --ctx-bin "$PWD/target/release/ctx" \
   --data-root "$HOME/.ctx-semantic-soak" \
-  --refresh auto \
+  --refresh background \
   --query-set ./private-default-gate.json \
   --output "$HOME/.ctx-semantic-soak/default-gate.json"
 

@@ -15,42 +15,6 @@ impl SemanticVectorStore {
         self.search_with_event_filter(query_embedding, limit, Some(event_ids))
     }
 
-    fn embedded_event_id_count(&self, event_ids: &[Uuid]) -> Result<usize> {
-        if event_ids.is_empty() || !sqlite_table_exists(&self.conn, "event_embedding_chunks")? {
-            return Ok(0);
-        }
-        let placeholders = (0..event_ids.len())
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            r#"
-            SELECT COUNT(DISTINCT event_id)
-            FROM event_embedding_chunks
-            WHERE model_key = ?
-              AND dimensions = ?
-              AND event_id IN ({placeholders})
-            "#
-        );
-        let mut query_params = vec![
-            SqlValue::from(SEMANTIC_MODEL_KEY.to_owned()),
-            SqlValue::from(SEMANTIC_DIMENSIONS as i64),
-        ];
-        query_params.extend(
-            event_ids
-                .iter()
-                .map(|event_id| SqlValue::from(event_id.to_string())),
-        );
-        let count = self
-            .conn
-            .query_row(&sql, params_from_iter(query_params), |row| {
-                row.get::<_, i64>(0)
-            })
-            .optional()?
-            .unwrap_or(0);
-        Ok(count.max(0) as usize)
-    }
-
     fn search_with_event_filter(
         &self,
         query_embedding: &[f32],

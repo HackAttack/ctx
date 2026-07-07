@@ -92,7 +92,7 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     let backend_values = search_tool["inputSchema"]["properties"]["backend"]["enum"]
         .as_array()
         .unwrap();
-    for expected in ["auto", "lexical", "semantic", "hybrid"] {
+    for expected in ["hybrid", "semantic", "lexical"] {
         assert!(backend_values.iter().any(|value| value == expected));
     }
     assert_eq!(
@@ -847,7 +847,7 @@ fn mcp_rejects_unknown_tool_arguments() {
                     "name": "search",
                     "arguments": {
                         "query": "onboarding",
-                        "refresh": "strict"
+                        "refresh": "wait"
                     }
                 }
             }),

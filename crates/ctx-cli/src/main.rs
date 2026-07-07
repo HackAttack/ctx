@@ -36,8 +36,9 @@ use analytics::{AnalyticsEvent, AnalyticsProperties};
 use commands::search::{RefreshArg, SearchRefreshReport};
 use commands::sql::{parse_sql_timeout, raw_sql_result_json};
 use commands::{
-    doctor::run_doctor, import::run_import, locate::run_locate, search::run_search,
-    setup::run_setup, show::run_show, sources::run_sources, sql::run_sql, status::run_status,
+    doctor::run_doctor, import::run_import, index::run_index, locate::run_locate,
+    search::run_search, setup::run_setup, show::run_show, sources::run_sources, sql::run_sql,
+    status::run_status,
 };
 use config::AppConfig;
 use ctx_history_core::{default_data_root, CaptureProvider};
@@ -95,6 +96,8 @@ enum CommandRoot {
     Setup(SetupArgs),
     #[command(about = "Show local ctx index status")]
     Status(JsonArgs),
+    #[command(about = "Show, watch, or wait for local indexing progress")]
+    Index(commands::index::IndexArgs),
     #[command(about = "List configured and discovered agent history sources")]
     Sources(SourcesArgs),
     #[command(about = "Index provider history into local search")]
@@ -131,6 +134,8 @@ struct SetupArgs {
     catalog_only: bool,
     #[arg(long, help = "Do not start daemon maintenance after setup")]
     no_daemon: bool,
+    #[arg(long, help = "Wait for foreground lexical indexing before returning")]
+    wait: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, value_enum, default_value_t = ProgressArg::Auto)]
@@ -399,9 +404,9 @@ struct SearchArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = SearchBackendArg::Auto,
-        help = "Search backend: auto, lexical, semantic, or hybrid",
-        long_help = "Search backend. auto uses lexical search unless semantic reranking is available and safe; lexical uses the SQLite FTS/BM25 path; semantic and hybrid read an existing semantic sidecar and require the local embedding model cache to already exist."
+        default_value_t = SearchBackendArg::Hybrid,
+        help = "Search backend: hybrid, semantic, or lexical",
+        long_help = "Search backend. hybrid combines SQLite FTS/BM25 and semantic vector evidence; lexical uses only the SQLite FTS/BM25 path; semantic uses only an existing semantic sidecar and requires the local embedding model cache to already exist."
     )]
     backend: SearchBackendArg,
     #[arg(
@@ -414,9 +419,9 @@ struct SearchArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = RefreshArg::Auto,
-        help = "Pre-search refresh behavior: auto, off, or strict",
-        long_help = "Pre-search refresh behavior. auto best-effort refreshes discovered native provider sources and enabled auto history-source plugins, then serves the existing index if refresh fails; off searches the existing index only; strict fails if the refresh cannot run or import successfully."
+        default_value_t = RefreshArg::Background,
+        help = "Index freshness behavior: background, off, or wait",
+        long_help = "Index freshness behavior. background serves the existing index and lets daemon maintenance refresh history/indexes; off searches the existing index only; wait runs or waits for required refresh work before searching."
     )]
     refresh: RefreshArg,
     #[arg(
@@ -435,19 +440,17 @@ struct SearchArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SearchBackendArg {
-    Auto,
+    Hybrid,
     Lexical,
     Semantic,
-    Hybrid,
 }
 
 impl SearchBackendArg {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
+            Self::Hybrid => "hybrid",
             Self::Lexical => "lexical",
             Self::Semantic => "semantic",
-            Self::Hybrid => "hybrid",
         }
     }
 }
@@ -515,6 +518,7 @@ impl DaemonStartModeArg {
 pub(crate) enum DaemonTriggerCommandArg {
     Setup,
     Import,
+    Search,
 }
 
 impl DaemonTriggerCommandArg {
@@ -522,6 +526,7 @@ impl DaemonTriggerCommandArg {
         match self {
             Self::Setup => "setup",
             Self::Import => "import",
+            Self::Search => "search",
         }
     }
 }
@@ -569,6 +574,7 @@ impl CommandRoot {
         match self {
             Self::Setup(_) => "setup",
             Self::Status(_) => "status",
+            Self::Index(_) => "index",
             Self::Sources(_) => "sources",
             Self::Import(_) => "import",
             Self::Show(_) => "show",
@@ -586,7 +592,7 @@ impl CommandRoot {
 
     fn sends_analytics(&self) -> bool {
         match self {
-            Self::Status(_) | Self::Sql(_) | Self::Mcp(_) => false,
+            Self::Status(_) | Self::Index(_) | Self::Sql(_) | Self::Mcp(_) => false,
             Self::Daemon(args) => !matches!(&args.command, DaemonCommand::Status(_)),
             _ => true,
         }
@@ -596,6 +602,7 @@ impl CommandRoot {
         match self {
             Self::Setup(args) => args.json,
             Self::Status(args) => args.json,
+            Self::Index(args) => args.json_output(),
             Self::Sources(args) => args.json,
             Self::Import(args) => args.json,
             Self::Show(args) => args.json_output(),
@@ -620,6 +627,7 @@ impl CommandRoot {
         !matches!(
             self,
             Self::Status(_)
+                | Self::Index(_)
                 | Self::Docs(_)
                 | Self::Mcp(_)
                 | Self::Sql(_)
@@ -635,6 +643,9 @@ impl CommandRoot {
             }
             Self::Import(args) if args.should_autostart_daemon() => {
                 Some(DaemonTriggerCommandArg::Import)
+            }
+            Self::Search(args) if args.refresh == RefreshArg::Background => {
+                Some(DaemonTriggerCommandArg::Search)
             }
             _ => None,
         }
@@ -696,13 +707,16 @@ fn main() -> Result<()> {
             run_setup(args, data_root.clone(), &mut analytics_properties, quiet)
         }
         CommandRoot::Status(args) => run_status(args, data_root.clone(), quiet),
+        CommandRoot::Index(args) => run_index(args, data_root.clone(), quiet),
         CommandRoot::Sources(args) => {
             run_sources(args, data_root.clone(), &mut analytics_properties)
         }
         CommandRoot::Import(args) => run_import(args, data_root.clone(), &mut analytics_properties),
         CommandRoot::Show(args) => run_show(args, data_root.clone(), &mut analytics_properties),
         CommandRoot::Locate(args) => run_locate(args, data_root.clone(), &mut analytics_properties),
-        CommandRoot::Search(args) => run_search(args, data_root.clone(), &mut analytics_properties),
+        CommandRoot::Search(args) => {
+            run_search(args, data_root.clone(), &mut analytics_properties, &config)
+        }
         CommandRoot::Sql(args) => run_sql(args, data_root.clone()),
         CommandRoot::Docs(args) => docs::run(args),
         CommandRoot::Integrations(args) => integrations::run(args, &mut analytics_properties),
@@ -766,6 +780,7 @@ fn command_analytics_properties(command: &CommandRoot) -> AnalyticsProperties {
             );
         }
         CommandRoot::Status(_)
+        | CommandRoot::Index(_)
         | CommandRoot::Sources(_)
         | CommandRoot::Sql(_)
         | CommandRoot::Doctor(_) => {}

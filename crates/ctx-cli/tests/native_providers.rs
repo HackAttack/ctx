@@ -130,9 +130,16 @@ fn windsurf_default_discovery_is_native_and_search_refresh_imports() {
         .unwrap()
         .ends_with(".windsurf/transcripts"));
 
-    let search =
-        json_output(ctx(&temp).args(["search", query, "--provider", "windsurf", "--json"]));
-    assert_eq!(search["freshness"]["mode"], "auto");
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "windsurf",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_eq!(search["freshness"]["totals"]["failed"], 0);
@@ -546,8 +553,16 @@ fn trae_cn_native_default_discovery_search_refresh_imports_input_history() {
         .unwrap()
         .ends_with("Trae CN/User/workspaceStorage"));
 
-    let search = json_output(ctx(&temp).args(["search", query, "--provider", "trae-cn", "--json"]));
-    assert_eq!(search["freshness"]["mode"], "auto");
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "trae-cn",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_eq!(search["freshness"]["totals"]["failed"], 0);
@@ -587,8 +602,16 @@ fn trae_native_default_discovery_search_refresh_imports_standard_workspace_stora
     assert_eq!(source["import_support"], "native");
     assert_eq!(source["native_import"], true);
 
-    let search = json_output(ctx(&temp).args(["search", query, "--provider", "trae", "--json"]));
-    assert_eq!(search["freshness"]["mode"], "auto");
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "trae",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_eq!(search["freshness"]["totals"]["failed"], 0);
@@ -749,9 +772,11 @@ fn warp_native_default_discovery_auto_imports_for_search() {
         "Warp sqlite oracle answer",
         "--provider",
         "warp",
+        "--refresh",
+        "wait",
         "--json",
     ]));
-    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_eq!(search["freshness"]["totals"]["failed"], 0);

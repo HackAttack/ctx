@@ -34,15 +34,15 @@ DEFAULT_THRESHOLDS: dict[str, Any] = {
     },
     "basics": {
         "require_ok": True,
-        "require_refresh_auto": True,
-        "auto_p95_vs_lexical_max_ratio": 2.0,
-        "max_auto_p95_ms": 5000,
-        "require_partial_auto_lexical": True,
-        "require_partial_auto_safe": True,
+        "require_refresh_background": True,
+        "hybrid_p95_vs_lexical_max_ratio": 2.0,
+        "max_hybrid_p95_ms": 5000,
+        "require_hybrid_fallback_lexical": True,
+        "require_hybrid_fallback_safe": True,
     },
     "private_eval": {
         "baseline": "fts",
-        "candidate": "auto",
+        "candidate": "hybrid",
         "min_hit5_delta": 0.0,
         "min_mrr_delta": 0.0,
         "max_p95_ratio": 2.0,
@@ -124,10 +124,10 @@ def basics_summary(report: dict[str, Any], thresholds: dict[str, Any]) -> tuple[
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
     by_mode = summary.get("by_mode", {}) if isinstance(summary, dict) else {}
     lexical = by_mode.get("lexical", {}) if isinstance(by_mode, dict) else {}
-    auto = by_mode.get("auto", {}) if isinstance(by_mode, dict) else {}
+    hybrid = by_mode.get("hybrid", {}) if isinstance(by_mode, dict) else {}
     lexical_p95 = as_number(lexical.get("p95_ms"))
-    auto_p95 = as_number(auto.get("p95_ms"))
-    p95_ratio = ratio(auto_p95, lexical_p95)
+    hybrid_p95 = as_number(hybrid.get("p95_ms"))
+    p95_ratio = ratio(hybrid_p95, lexical_p95)
 
     require_ok = bool(thresholds["basics"].get("require_ok", True))
     if require_ok:
@@ -137,35 +137,35 @@ def basics_summary(report: dict[str, Any], thresholds: dict[str, Any]) -> tuple[
             bool(summary.get("ok")),
             "default experience gate summary ok",
         )
-    if thresholds["basics"].get("require_refresh_auto"):
+    if thresholds["basics"].get("require_refresh_background"):
         add_gate(
             gates,
-            "basics_refresh_auto",
-            report.get("refresh") == "auto",
+            "basics_refresh_background",
+            report.get("refresh") == "background",
             f"basics report refresh {report.get('refresh')}",
         )
 
-    max_ratio = thresholds["basics"].get("auto_p95_vs_lexical_max_ratio")
+    max_ratio = thresholds["basics"].get("hybrid_p95_vs_lexical_max_ratio")
     if max_ratio is not None:
         add_gate(
             gates,
-            "basics_auto_p95_ratio",
+            "basics_hybrid_p95_ratio",
             p95_ratio is not None and p95_ratio <= float(max_ratio),
-            f"auto/lexical p95 ratio {p95_ratio}",
+            f"hybrid/lexical p95 ratio {p95_ratio}",
         )
 
-    max_auto_p95 = thresholds["basics"].get("max_auto_p95_ms")
-    if max_auto_p95 is not None:
+    max_hybrid_p95 = thresholds["basics"].get("max_hybrid_p95_ms")
+    if max_hybrid_p95 is not None:
         add_gate(
             gates,
-            "basics_auto_p95_ms",
-            auto_p95 is not None and auto_p95 <= float(max_auto_p95),
-            f"auto p95 {auto_p95} ms",
+            "basics_hybrid_p95_ms",
+            hybrid_p95 is not None and hybrid_p95 <= float(max_hybrid_p95),
+            f"hybrid p95 {hybrid_p95} ms",
         )
 
     mode_counts: dict[str, dict[str, int]] = {}
     fallback_counts: dict[str, int] = {}
-    auto_partial_runs = []
+    hybrid_fallback_runs = []
     for query in report.get("queries", []) if isinstance(report, dict) else []:
         for run in query.get("runs", []) if isinstance(query, dict) else []:
             retrieval = run.get("retrieval", {}) if isinstance(run, dict) else {}
@@ -179,24 +179,11 @@ def basics_summary(report: dict[str, Any], thresholds: dict[str, Any]) -> tuple[
             fallback = retrieval.get("semantic_fallback_code") or retrieval.get("semantic_fallback")
             if isinstance(fallback, str):
                 fallback_counts[fallback] = fallback_counts.get(fallback, 0) + 1
-            diagnostics = retrieval.get("diagnostics")
-            skipped = diagnostics.get("auto_hybrid_skipped") if isinstance(diagnostics, dict) else None
-            if requested == "auto" and status in {"partial", "unavailable", "skipped"}:
+            if requested == "hybrid" and status in {"partial", "unavailable", "skipped"}:
                 coverage = retrieval.get("coverage")
-                auto_partial_runs.append(
+                hybrid_fallback_runs.append(
                     {
                         "effective": effective,
-                        "skipped": skipped,
-                        "candidate_count": as_number(
-                            diagnostics.get("auto_candidate_count")
-                            if isinstance(diagnostics, dict)
-                            else None
-                        ),
-                        "embedded_candidate_count": as_number(
-                            diagnostics.get("auto_embedded_candidate_count")
-                            if isinstance(diagnostics, dict)
-                            else None
-                        ),
                         "dirty_items": as_number(
                             coverage.get("dirty_items")
                             if isinstance(coverage, dict)
@@ -205,31 +192,24 @@ def basics_summary(report: dict[str, Any], thresholds: dict[str, Any]) -> tuple[
                     }
                 )
 
-    if thresholds["basics"].get("require_partial_auto_lexical"):
+    if thresholds["basics"].get("require_hybrid_fallback_lexical"):
         add_gate(
             gates,
-            "partial_auto_lexical",
-            bool(auto_partial_runs)
-            and all(run["effective"] == "lexical" for run in auto_partial_runs),
-            "partial/unavailable auto runs must stay lexical",
+            "hybrid_fallback_lexical",
+            all(run["effective"] == "lexical" for run in hybrid_fallback_runs),
+            "partial/unavailable hybrid runs must fall back to lexical",
         )
-    if thresholds["basics"].get("require_partial_auto_safe"):
-        def partial_auto_safe(run: dict[str, Any]) -> bool:
+    if thresholds["basics"].get("require_hybrid_fallback_safe"):
+        def hybrid_fallback_safe(run: dict[str, Any]) -> bool:
             if run["effective"] == "lexical":
                 return True
-            return (
-                run["effective"] == "hybrid"
-                and run["candidate_count"] is not None
-                and run["candidate_count"] > 0
-                and run["embedded_candidate_count"] == run["candidate_count"]
-                and run["dirty_items"] == 0
-            )
+            return run["effective"] == "hybrid" and run["dirty_items"] == 0
 
         add_gate(
             gates,
-            "partial_auto_safe",
-            all(partial_auto_safe(run) for run in auto_partial_runs),
-            "partial/unavailable auto must be lexical or fully candidate-covered hybrid with zero dirty items",
+            "hybrid_fallback_safe",
+            all(hybrid_fallback_safe(run) for run in hybrid_fallback_runs),
+            "partial/unavailable hybrid must be lexical or hybrid with zero dirty items",
         )
 
     safe = {
@@ -238,7 +218,7 @@ def basics_summary(report: dict[str, Any], thresholds: dict[str, Any]) -> tuple[
         "command_failure_count": len(summary.get("command_failures", [])),
         "expected_failure_count": len(summary.get("expected_failures", [])),
         "latency_by_mode": by_mode,
-        "auto_p95_vs_lexical_p95": p95_ratio,
+        "hybrid_p95_vs_lexical_p95": p95_ratio,
         "effective_mode_counts": mode_counts,
         "fallback_counts": fallback_counts,
     }
@@ -249,7 +229,7 @@ def private_eval_summary(report: dict[str, Any], thresholds: dict[str, Any]) -> 
     gates: list[dict[str, Any]] = []
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
     baseline_name = thresholds["private_eval"].get("baseline", "lexical")
-    candidate_name = thresholds["private_eval"].get("candidate", "auto")
+    candidate_name = thresholds["private_eval"].get("candidate", "hybrid")
     baseline = summary.get(baseline_name, {}) if isinstance(summary, dict) else {}
     candidate = summary.get(candidate_name, {}) if isinstance(summary, dict) else {}
 

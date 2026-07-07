@@ -503,7 +503,8 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(false);
     let event_type = optional_string(arguments, "event_type")?;
     let file = optional_string(arguments, "file")?.map(PathBuf::from);
-    let backend = optional_search_backend(arguments, "backend")?.unwrap_or(SearchBackendArg::Auto);
+    let backend =
+        optional_search_backend(arguments, "backend")?.unwrap_or(SearchBackendArg::Hybrid);
     let semantic_weight = optional_f32(arguments, "semantic_weight")?.unwrap_or(0.35);
     if !(0.0..=1.0).contains(&semantic_weight) || !semantic_weight.is_finite() {
         return Err(anyhow!("semantic_weight must be between 0.0 and 1.0"));
@@ -723,7 +724,7 @@ fn tool_definitions() -> Vec<Value> {
                 "session": { "type": "string", "description": "ctx session id." },
                 "events": { "type": "boolean", "default": false },
                 "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." },
-                "backend": { "type": "string", "enum": ["auto", "lexical", "semantic", "hybrid"], "default": "auto" },
+                "backend": { "type": "string", "enum": ["hybrid", "semantic", "lexical"], "default": "hybrid" },
                 "semantic_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.35 }
             }), vec![]),
             "annotations": { "readOnlyHint": true },
@@ -873,13 +874,10 @@ fn optional_search_backend(arguments: &Value, key: &str) -> Result<Option<Search
         return Ok(None);
     };
     match value.as_str() {
-        "auto" => Ok(Some(SearchBackendArg::Auto)),
+        "hybrid" => Ok(Some(SearchBackendArg::Hybrid)),
         "lexical" => Ok(Some(SearchBackendArg::Lexical)),
         "semantic" => Ok(Some(SearchBackendArg::Semantic)),
-        "hybrid" => Ok(Some(SearchBackendArg::Hybrid)),
-        _ => Err(anyhow!(
-            "backend must be one of auto, lexical, semantic, hybrid"
-        )),
+        _ => Err(anyhow!("backend must be one of hybrid, semantic, lexical")),
     }
 }
 

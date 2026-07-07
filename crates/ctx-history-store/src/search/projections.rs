@@ -232,7 +232,7 @@ impl Store {
                    wr.title,
                    wr.kind,
                    wr.workspace,
-                   e.redaction_state
+                   'safe_preview'
             FROM events e
             LEFT JOIN runs r ON r.id = e.run_id
             LEFT JOIN sessions s ON s.id = e.session_id
@@ -245,7 +245,7 @@ impl Store {
               AND e.deleted_at_ms IS NULL
               AND e.visibility != 'withheld'
               AND e.sync_state != 'withheld'
-              AND e.redaction_state NOT IN ('raw', 'withheld')
+              AND 'safe_preview' NOT IN ('raw', 'withheld')
             "#
         );
         let params = event_ids
@@ -324,8 +324,8 @@ impl Store {
               AND e.deleted_at_ms IS NULL
               AND e.visibility != 'withheld'
               AND e.sync_state != 'withheld'
-              AND e.redaction_state NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.safe_preview_text)) > 0
+              AND 'safe_preview' NOT IN ('raw', 'withheld')
+              AND length(trim(event_search.preview_text)) > 0
             "#
         );
         let params = event_ids
@@ -383,7 +383,7 @@ impl Store {
                    event_search.role,
                    event_search.rank_bucket,
                    e.payload_json,
-                   e.redaction_state,
+                   'safe_preview',
                    COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
                    COALESCE(s.agent_type, rs.agent_type),
                    COALESCE(s.is_primary, rs.is_primary),
@@ -405,8 +405,8 @@ impl Store {
             WHERE e.deleted_at_ms IS NULL
               AND e.visibility != 'withheld'
               AND e.sync_state != 'withheld'
-              AND e.redaction_state NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.safe_preview_text)) > 0
+              AND 'safe_preview' NOT IN ('raw', 'withheld')
+              AND length(trim(event_search.preview_text)) > 0
               AND (
                     ?1 IS NULL
                     OR e.occurred_at_ms < ?1
@@ -438,8 +438,8 @@ impl Store {
         let clauses = terms
             .iter()
             .map(|_| {
-                "(lower(event_search.safe_preview_text) LIKE ? ESCAPE '\\' OR \
-                 (e.redaction_state != 'raw' AND lower(e.payload_json) LIKE ? ESCAPE '\\'))"
+                "(lower(event_search.preview_text) LIKE ? ESCAPE '\\' OR \
+                 ('safe_preview' != 'raw' AND lower(e.payload_json) LIKE ? ESCAPE '\\'))"
             })
             .collect::<Vec<_>>()
             .join(" OR ");
@@ -454,7 +454,7 @@ impl Store {
                    event_search.role,
                    event_search.rank_bucket,
                    e.payload_json,
-                   e.redaction_state,
+                   'safe_preview',
                    COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
                    COALESCE(s.agent_type, rs.agent_type),
                    COALESCE(s.is_primary, rs.is_primary),
@@ -476,8 +476,8 @@ impl Store {
             WHERE e.deleted_at_ms IS NULL
               AND e.visibility != 'withheld'
               AND e.sync_state != 'withheld'
-              AND e.redaction_state NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.safe_preview_text)) > 0
+              AND 'safe_preview' NOT IN ('raw', 'withheld')
+              AND length(trim(event_search.preview_text)) > 0
               AND ({clauses})
             ORDER BY e.seq DESC
             LIMIT ?
@@ -517,7 +517,7 @@ impl Store {
                    event_search.role,
                    event_search.rank_bucket,
                    e.payload_json,
-                   e.redaction_state,
+                   'safe_preview',
                    COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
                    COALESCE(s.agent_type, rs.agent_type),
                    COALESCE(s.is_primary, rs.is_primary),
@@ -540,8 +540,8 @@ impl Store {
               AND e.deleted_at_ms IS NULL
               AND e.visibility != 'withheld'
               AND e.sync_state != 'withheld'
-              AND e.redaction_state NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.safe_preview_text)) > 0
+              AND 'safe_preview' NOT IN ('raw', 'withheld')
+              AND length(trim(event_search.preview_text)) > 0
             "#
         );
         let params = event_ids
@@ -867,8 +867,8 @@ fn semantic_searchable_item_count_exact(conn: &Connection) -> Result<usize> {
         WHERE e.deleted_at_ms IS NULL
           AND e.visibility != 'withheld'
           AND e.sync_state != 'withheld'
-          AND e.redaction_state NOT IN ('raw', 'withheld')
-          AND length(trim(event_search.safe_preview_text)) > 0
+          AND 'safe_preview' NOT IN ('raw', 'withheld')
+          AND length(trim(event_search.preview_text)) > 0
         "#,
         [],
         |row| row.get::<_, i64>(0),
@@ -969,7 +969,7 @@ fn populate_event_search_projection(conn: &Connection) -> Result<()> {
                e.role,
                e.event_type,
                e.payload_json,
-               e.redaction_state
+               'safe_preview'
         FROM events e
         LEFT JOIN runs r ON r.id = e.run_id
         LEFT JOIN sessions s ON s.id = e.session_id
@@ -1170,7 +1170,7 @@ pub(crate) fn semantic_searchable_event_count_from_stored_event(
         .query_row(
             r#"
             SELECT payload_json,
-                   redaction_state,
+                   'safe_preview' AS redaction_state,
                    event_type,
                    role,
                    visibility,
@@ -1220,7 +1220,7 @@ pub(crate) fn semantic_searchable_event_count_from_stored_event(
 pub(crate) fn semantic_searchable_event_count_for_event(event: &Event) -> usize {
     usize::from(semantic_searchable_event_parts(
         &event.payload,
-        event.redaction_state,
+        RedactionState::SafePreview,
         event.event_type,
         event.role,
         event.sync.visibility,

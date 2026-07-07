@@ -4,8 +4,8 @@
 The manifest and output intentionally avoid snippets, paths, citations, and raw
 provider IDs. Expected IDs are salted hashes so local history can be evaluated
 without producing shareable transcript material. The semantic and hybrid
-defaults use `--refresh auto` so they exercise the product path instead of the
-read-only lexical fallback used under `--refresh off`.
+defaults use `--refresh background` so they exercise the daemon-backed product
+path instead of the read-only lexical baseline used under `--refresh off`.
 """
 
 import argparse
@@ -23,17 +23,14 @@ import time
 
 DEFAULT_BACKENDS = {
     "fts": "{ctx} {data_root_args} search {q} --backend lexical --refresh off --limit {limit} --json {search_args}",
-    "auto": "{ctx} {data_root_args} search {q} --backend auto --refresh auto --limit {limit} --json {search_args}",
-    "semantic": "{ctx} {data_root_args} search {q} --backend semantic --refresh auto --limit {limit} --json {search_args}",
-    "hybrid": "{ctx} {data_root_args} search {q} --backend hybrid --refresh auto --limit {limit} --json {search_args}",
+    "semantic": "{ctx} {data_root_args} search {q} --backend semantic --refresh background --limit {limit} --json {search_args}",
+    "hybrid": "{ctx} {data_root_args} search {q} --backend hybrid --refresh background --limit {limit} --json {search_args}",
 }
 
 DEFAULT_PREFLIGHT_SEARCH_COMMAND = "{ctx} {data_root_args} daemon run --once --json"
 DEFAULT_PREFLIGHT_STATUS_COMMAND = "{ctx} {data_root_args} status --json"
 
 SAFE_DIAGNOSTIC_KEYS = {
-    "auto_candidate_count",
-    "auto_embedded_candidate_count",
     "query_embed_ms",
     "vector_scan_ms",
     "chunks_scanned",

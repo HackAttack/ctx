@@ -194,11 +194,11 @@ and sets `CTX_HISTORY_FULL_RESCAN=1`. A reset plugin run must emit a fresh
 `source.cursor.after` checkpoint; otherwise ctx rejects the run so an old stored
 cursor cannot be reused accidentally.
 
-`ctx search` uses the same pre-search refresh model as native provider sources:
+`ctx search` uses the same freshness model as native provider sources:
 
-- `--refresh auto` best-effort refreshes enabled auto plugins and then searches
-  the current index;
-- `--refresh strict` fails if refresh cannot complete;
+- `--refresh background` serves the current index while daemon maintenance
+  refreshes enabled auto plugins when possible;
+- `--refresh wait` fails if foreground refresh cannot complete;
 - `--refresh off` never executes plugin commands.
 
 Provider-filtered search only runs plugin refresh when the provider filter is
@@ -238,8 +238,8 @@ Plugin runs fail closed for that run:
 For explicit single-source imports, failures are returned to the user. For
 `ctx import --all`, plugin failures can be reported as source failures without
 discarding successful imports from other sources. For `ctx search --refresh
-auto`, failures are recorded as refresh failures and search continues against
-the existing index.
+background` without daemon ownership, failures are recorded as refresh failures
+and search continues against the existing index.
 
 The cursor only advances after a successful source import, so the usual recovery
 path is to fix the plugin and run the same command again.
