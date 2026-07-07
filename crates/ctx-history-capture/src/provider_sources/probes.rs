@@ -585,7 +585,7 @@ fn has_task_json_file_under_matching(
             return BoundedProbe::from_bool(
                 root.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| matches_name(name)),
+                    .is_some_and(&matches_name),
             );
         }
         PathProbe::Dir => {}
@@ -621,7 +621,7 @@ fn has_task_json_file_under_matching(
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| matches_name(name))
+                    .is_some_and(&matches_name)
             {
                 return BoundedProbe::Found;
             }

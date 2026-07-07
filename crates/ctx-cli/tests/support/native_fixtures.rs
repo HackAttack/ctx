@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 mod appends;
 mod installs;
 mod json_tree;

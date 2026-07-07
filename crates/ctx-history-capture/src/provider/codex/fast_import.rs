@@ -350,6 +350,7 @@ pub(crate) fn import_codex_session_path_fast(
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn import_codex_provider_event_fast(
     store: &mut Store,
     header: &CodexSessionHeader,

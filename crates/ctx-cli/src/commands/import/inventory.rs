@@ -167,12 +167,12 @@ fn is_incremental_codex_session_tree(source: &SourceInfo) -> bool {
 }
 
 fn source_stats_from_import_files(files: &[SourceImportFile]) -> SourceStats {
-    let mut stats = SourceStats::default();
-    stats.files = files.len();
-    stats.bytes = files.iter().fold(0_u64, |bytes, file| {
-        bytes.saturating_add(file.file_size_bytes)
-    });
-    stats
+    SourceStats {
+        files: files.len(),
+        bytes: files.iter().fold(0_u64, |bytes, file| {
+            bytes.saturating_add(file.file_size_bytes)
+        }),
+    }
 }
 
 fn source_root_import_file(source: &SourceInfo, stats: SourceStats) -> Result<SourceImportFile> {

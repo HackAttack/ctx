@@ -7,6 +7,7 @@ pub(crate) fn system_time_ms(time: SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn import_incremental_codex_session_tree(
     store: &mut Store,
     source: &SourceInfo,

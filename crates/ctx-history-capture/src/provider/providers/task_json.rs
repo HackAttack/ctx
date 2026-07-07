@@ -629,6 +629,7 @@ pub(crate) fn task_json_history_item_event(value: &Value) -> Option<Value> {
     Some(Value::Object(object))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn task_json_capture(
     spec: TaskJsonProviderSpec,
     task_id: &str,

@@ -500,6 +500,7 @@ pub(crate) fn codebuddy_generated_title(events: &[CodeBuddyEventInput]) -> Optio
         .filter(|title| !title.trim().is_empty())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn codebuddy_capture(
     provider_session_id: &str,
     native_session_id: &str,

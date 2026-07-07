@@ -833,8 +833,20 @@ fn codex_session_tail_rejects_malformed_append_atomically() {
     .unwrap();
 
     assert_eq!(summary.failed, 1, "{:?}", summary.failures);
-    let session_id = provider_session_uuid(CaptureProvider::Codex, "codex-tail-bad-timestamp");
+    let session_id = provider_import_session_id_for_path(
+        CaptureProvider::Codex,
+        "codex_session_jsonl",
+        &path,
+        "codex-tail-bad-timestamp",
+    );
     assert_eq!(store.events_for_session(session_id).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .search_event_hits("initial tail event", 10)
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(store
         .search_event_hits("tail valid should rollback", 10)
         .unwrap()
