@@ -26,6 +26,7 @@ Stable releases publish prebuilt binaries on GitHub Releases:
 | Platform | Asset |
 | --- | --- |
 | Linux x64 | `ctx-linux-x64` |
+| Linux ARM64 | `ctx-linux-aarch64` |
 | macOS Apple Silicon | `ctx-macos-arm64` |
 | macOS Intel | `ctx-macos-x64` |
 | Windows x64 | `ctx-windows-x64.exe` |
@@ -48,7 +49,7 @@ https://github.com/ctxrs/ctx/releases/download/v0.20.0/SHA256SUMS
 
 ## Direct GitHub Download
 
-On Linux x64:
+On Linux, choose the asset for your CPU:
 
 ```bash
 curl -fL -O https://github.com/ctxrs/ctx/releases/latest/download/ctx-linux-x64
@@ -57,6 +58,8 @@ grep '  ctx-linux-x64$' SHA256SUMS | sha256sum -c -
 mkdir -p ~/.local/bin
 install -m 0755 ctx-linux-x64 ~/.local/bin/ctx
 ```
+
+Use `ctx-linux-aarch64` in the commands above on Linux ARM64.
 
 On macOS, choose the asset for your CPU and verify it with `shasum`:
 

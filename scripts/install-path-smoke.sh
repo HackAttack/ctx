@@ -56,6 +56,9 @@ exit 0
 SH
 chmod +x "${artifact}"
 checksum="$(sha256_file "${artifact}")"
+artifact_aarch64="${tmp_dir}/ctx-linux-aarch64"
+cp "${artifact}" "${artifact_aarch64}"
+checksum_aarch64="$(sha256_file "${artifact_aarch64}")"
 
 openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout "${tmp_dir}/key.pem" \
@@ -118,6 +121,8 @@ metadata="${tmp_dir}/metadata.env"
   printf 'CTX_RELEASE_BASE_URL=https://127.0.0.1:%s\n' "${port}"
   printf 'CTX_RELEASE_ARTIFACT_linux_x64=ctx-linux-x64\n'
   printf 'CTX_RELEASE_SHA256_linux_x64=%s\n' "${checksum}"
+  printf 'CTX_RELEASE_ARTIFACT_linux_aarch64=ctx-linux-aarch64\n'
+  printf 'CTX_RELEASE_SHA256_linux_aarch64=%s\n' "${checksum_aarch64}"
 } > "${metadata}"
 
 base_env=(CURL_CA_BUNDLE="${tmp_dir}/cert.pem" CTX_INSTALL_NO_MAN=1)
@@ -129,6 +134,14 @@ env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" HOME="${home_dry_
 grep -F 'Dry run: would install ctx 0.0.0-smoke (linux-x64)' "${tmp_dir}/dry-run.out" >/dev/null
 ! grep -F 'Installing ctx 0.0.0-smoke (linux-x64)' "${tmp_dir}/dry-run.out" >/dev/null
 ! grep -F 'Installed ctx binary.' "${tmp_dir}/dry-run.out" >/dev/null
+
+installer_aarch64=(bash "${repo_root}/scripts/install.sh" --metadata "${metadata}" --platform linux-aarch64)
+home_dry_run_aarch64="${tmp_dir}/home-dry-run-aarch64"
+mkdir -p "${home_dry_run_aarch64}"
+env -u GITHUB_PATH -u CI "${base_env[@]}" PATH="/usr/bin:/bin" HOME="${home_dry_run_aarch64}" SHELL="/bin/bash" "${installer_aarch64[@]}" --dry-run --no-setup > "${tmp_dir}/dry-run-aarch64.out"
+grep -F 'Dry run: would install ctx 0.0.0-smoke (linux-aarch64)' "${tmp_dir}/dry-run-aarch64.out" >/dev/null
+! grep -F 'Installing ctx 0.0.0-smoke (linux-aarch64)' "${tmp_dir}/dry-run-aarch64.out" >/dev/null
+! grep -F 'Installed ctx binary.' "${tmp_dir}/dry-run-aarch64.out" >/dev/null
 
 home_idem="${tmp_dir}/home-idem"
 mkdir -p "${home_idem}"

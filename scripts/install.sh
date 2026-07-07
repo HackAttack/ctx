@@ -16,7 +16,8 @@ metadata signatures before trusting artifact URLs or checksums.
 
 Options:
   --metadata PATH_OR_URL  Required. Local metadata file or HTTPS URL.
-  --platform PLATFORM    linux-x64, macos-arm64, macos-x64, or freebsd-x64.
+  --platform PLATFORM    linux-x64, linux-aarch64, macos-arm64, macos-x64,
+                         or freebsd-x64.
                          Defaults to the current host when it can be detected.
   --bin-dir DIR          Install directory. Defaults to
                          ${CTX_BIN_DIR:-$HOME/.local/bin}.
@@ -53,6 +54,9 @@ detect_platform() {
   case "${os}:${arch}" in
     Linux:x86_64|Linux:amd64)
       printf 'linux-x64'
+      ;;
+    Linux:aarch64|Linux:arm64)
+      printf 'linux-aarch64'
       ;;
     Darwin:arm64|Darwin:aarch64)
       printf 'macos-arm64'
@@ -468,7 +472,7 @@ if [[ -z "${platform}" ]]; then
 fi
 
 case "${platform}" in
-  linux-x64|macos-arm64|macos-x64|freebsd-x64)
+  linux-x64|linux-aarch64|macos-arm64|macos-x64|freebsd-x64)
     ;;
   *)
     fail "unsupported platform: ${platform}"
