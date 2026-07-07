@@ -66,8 +66,6 @@ pub(crate) struct OpenCodeMessageSelection {
     pub(crate) rows: Vec<OpenCodeMessageRow>,
     pub(crate) source_table: Option<&'static str>,
     pub(crate) skipped_non_conversational_rows: usize,
-    /// Message rows whose `data` column exceeded `MAX_PROVIDER_SQLITE_VALUE_BYTES`
-    /// and were filtered out at read time so the rest of the source can still import.
     pub(crate) skipped_oversized_rows: usize,
 }
 
@@ -117,14 +115,6 @@ pub(crate) fn normalize_opencode_sqlite(
     let message_source_table = message_selection.source_table;
     let skipped_non_conversational_rows = message_selection.skipped_non_conversational_rows;
     let skipped_oversized_rows = message_selection.skipped_oversized_rows;
-    // Oversized rows are intentionally dropped at the SQL layer (see
-    // `oversized_message_row_ids`); they are not import failures. Counting
-    // them via `push_provider_import_failure` would set `summary.failed > 0`,
-    // which causes `import_normalized_provider_captures` to early-exit and
-    // `import_one_source_inner` to return `Err`, aborting `ctx search
-    // --refresh strict` and `ctx import` for the whole source even though
-    // every other row imported cleanly. Increment `summary.skipped` instead
-    // so the source stays usable.
     result.summary.skipped += skipped_oversized_rows;
 
     for row in message_selection.rows {
@@ -434,11 +424,6 @@ pub(crate) fn opencode_session_messages(
     })
 }
 
-/// Build a `where id not in (?, ?, ...)` clause for the given id set, or an
-/// empty string when there are no ids to exclude. Used to keep oversized rows
-/// out of the bounded read cursor entirely — `sqlite3_step()` materializes
-/// every column of the current row, so filtering at the SQL layer is the only
-/// way to avoid `SQLITE_TOOBIG` on the bounded connection.
 fn exclude_ids_clause(ids: &std::collections::BTreeSet<String>) -> String {
     if ids.is_empty() {
         String::new()
@@ -451,11 +436,6 @@ fn exclude_ids_clause(ids: &std::collections::BTreeSet<String>) -> String {
     }
 }
 
-/// Whether a rusqlite error reports that a row's value exceeded the connection's
-/// `SQLITE_LIMIT_LENGTH`. Such rows are skipped during message ingestion rather
-/// than aborting the whole source — providers (notably the locally-installed
-/// Z.ai Kilo client) can carry single messages > 100 MB that legitimately exceed
-/// the per-value byte cap.
 fn is_sqlite_too_big(err: &rusqlite::Error) -> bool {
     matches!(
         err,
@@ -464,14 +444,6 @@ fn is_sqlite_too_big(err: &rusqlite::Error) -> bool {
     )
 }
 
-/// Collect row ids from `{table}` whose `data` column exceeds the per-value
-/// import cap, so the caller can exclude them from the bounded read.
-///
-/// This opens a separate read-only connection WITHOUT the per-value
-/// `SQLITE_LIMIT_LENGTH` set, because the limit is enforced when SQLite
-/// materializes the value to compute its byte length — even `length()` triggers
-/// it. The unbounded connection is only used to scan ids (no row data crosses
-/// back into ctx's memory), then dropped before the bounded read path runs.
 fn oversized_message_row_ids(path: &Path, table: &str) -> Result<std::collections::BTreeSet<String>> {
     let conn = Connection::open_with_flags(
         path,
@@ -511,17 +483,8 @@ pub(crate) fn opencode_session_message_rows(
     } else {
         ("NULL", "id")
     };
-    // Pre-scan for oversized rows AFTER schema validation so the bounded
-    // connection's "missing required column" error still surfaces first for
-    // databases with future/incompatible schemas. The pre-scan uses an
-    // unbounded connection (see `oversized_message_row_ids`).
     let oversized_ids = oversized_message_row_ids(path, "session_message")?;
     let skipped_oversized = oversized_ids.len();
-    // Excluding oversized row ids at the SQL layer (rather than skipping them
-    // after `rows.next()`) is required because `sqlite3_step()` materializes
-    // every column of the current row before rusqlite hands it back — so even
-    // reading `id` from an oversized row triggers SQLITE_TOOBIG under the
-    // bounded connection.
     let exclude_clause = exclude_ids_clause(&oversized_ids);
     let sql = format!(
         "select id, session_id, {entry_type}, {seq_expr}, {time_created}, {time_updated}, data \
@@ -535,9 +498,6 @@ pub(crate) fn opencode_session_message_rows(
     let mut next_seq_by_session = BTreeMap::<String, i64>::new();
     while let Some(row) = rows.next()? {
         let id = row.get::<_, String>(0)?;
-        // Per-row safety net: a row whose byte count slipped past the
-        // pre-scan (e.g. an in-flight insert between the two connections)
-        // still gets skipped here rather than aborting the source.
         let data: String = match row.get::<_, String>(6) {
             Ok(value) => value,
             Err(err) if is_sqlite_too_big(&err) => continue,

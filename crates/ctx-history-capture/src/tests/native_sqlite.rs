@@ -408,7 +408,6 @@ fn native_opencode_skips_oversized_sqlite_text_value_and_imports_other_rows() {
     let temp = tempdir();
     let fixture = write_opencode_smoke_db(&temp, false);
     let conn = Connection::open(&fixture).unwrap();
-    // Mark the user message as oversized — exceeds the per-value byte cap.
     let oversized_data = format!(
         "{{\"time\":{{\"created\":1782259200000}},\"text\":\"{}\"}}",
         "x".repeat(MAX_PROVIDER_SQLITE_VALUE_BYTES + 1)
@@ -418,8 +417,6 @@ fn native_opencode_skips_oversized_sqlite_text_value_and_imports_other_rows() {
         [&oversized_data],
     )
     .unwrap();
-    // Sanity check: there is at least one other conversational row that should
-    // still import once the oversized row is skipped.
     let other_conversational: i64 = conn
         .query_row(
             "select count(*) from session_message where id != 'msg-user'",
@@ -440,11 +437,6 @@ fn native_opencode_skips_oversized_sqlite_text_value_and_imports_other_rows() {
     )
     .expect("oversized rows should be skipped, not abort the whole import");
 
-    // Oversized rows must not be recorded as failures: `summary.failed > 0`
-    // would cause `import_normalized_provider_captures` to early-exit and
-    // `import_one_source_inner` to return `Err`, which would abort
-    // `ctx search --refresh strict` and `ctx import` for the whole source
-    // even though every other row imported cleanly.
     assert_eq!(
         summary.failed, 0,
         "oversized rows must not be counted as failures, got failures: {:?}",
