@@ -1,11 +1,12 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde_json::json;
 
+use crate::common::io::ensure_regular_provider_transcript_file;
 use crate::compute_payload_hash;
 
-use crate::{CaptureError, Result};
+use crate::{CaptureError, Result, MAX_PROVIDER_SQLITE_VALUE_BYTES};
 
 pub(crate) fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let exists: i64 = conn.query_row(
@@ -57,6 +58,42 @@ pub(crate) fn ensure_sqlite_table_columns(
 
 pub(crate) fn sqlite_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+pub(crate) fn sqlite_is_too_big(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(ref fail, _)
+            if fail.code == rusqlite::ErrorCode::TooBig
+    )
+}
+
+pub(crate) fn sqlite_row_ids_with_oversized_value(
+    path: &Path,
+    table: &str,
+    id_column: &str,
+    value_column: &str,
+) -> Result<BTreeSet<String>> {
+    ensure_regular_provider_transcript_file(path)?;
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.pragma_update(None, "query_only", true)?;
+    // This prescan intentionally omits SQLITE_LIMIT_LENGTH: bounded connections
+    // can raise SQLITE_TOOBIG before returning ids, and this query returns ids only.
+    let mut stmt = conn.prepare(&format!(
+        "select {} from {} where length(cast({} as blob)) > ?",
+        sqlite_ident(id_column),
+        sqlite_ident(table),
+        sqlite_ident(value_column),
+    ))?;
+    let rows = stmt.query_map([MAX_PROVIDER_SQLITE_VALUE_BYTES as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
+    rows.collect::<std::result::Result<BTreeSet<_>, _>>()
+        .map_err(CaptureError::from)
 }
 
 pub(crate) fn opencode_schema_fingerprint(conn: &Connection) -> Result<String> {
