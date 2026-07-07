@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, path::Path};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::json;
 
-use crate::compute_payload_hash;
 use crate::common::io::ensure_regular_provider_transcript_file;
+use crate::compute_payload_hash;
 
 use crate::{CaptureError, Result, MAX_PROVIDER_SQLITE_VALUE_BYTES};
 

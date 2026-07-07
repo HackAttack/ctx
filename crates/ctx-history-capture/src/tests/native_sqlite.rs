@@ -447,6 +447,7 @@ fn native_opencode_skips_oversized_sqlite_text_value_and_imports_other_rows() {
         summary.failures
     );
     assert_eq!(summary.skipped, 1, "unexpected summary: {summary:?}");
+    assert_eq!(summary.skipped_events, 1, "unexpected summary: {summary:?}");
     assert!(
         summary.imported_events >= 1,
         "non-oversized rows should still import, got summary: {summary:?}"
@@ -481,8 +482,32 @@ fn native_opencode_skips_all_oversized_sqlite_text_values_without_failure() {
         summary.failures
     );
     assert_eq!(summary.skipped, 1, "unexpected summary: {summary:?}");
+    assert_eq!(summary.skipped_events, 1, "unexpected summary: {summary:?}");
     assert_eq!(summary.imported_sessions, 0);
     assert_eq!(summary.imported_events, 0);
+}
+
+#[test]
+fn native_opencode_skips_oversized_legacy_message_value_without_failure() {
+    let temp = tempdir();
+    let fixture = write_opencode_current_schema_db(&temp, true);
+    let conn = Connection::open(&fixture).unwrap();
+    let oversized_data = oversized_opencode_text_payload();
+    conn.execute("update message set data = ?1", [&oversized_data])
+        .unwrap();
+    drop(conn);
+
+    let summary = import_opencode_sqlite(
+        &fixture,
+        &mut Store::open(temp.path().join("work.sqlite")).unwrap(),
+        OpenCodeSqliteImportOptions::default(),
+    )
+    .expect("oversized legacy message rows should be skipped without import failure");
+
+    assert_eq!(summary.failed, 0, "{summary:?}");
+    assert_eq!(summary.skipped, 1, "{summary:?}");
+    assert_eq!(summary.skipped_events, 1, "{summary:?}");
+    assert_eq!(summary.imported_events, 0, "{summary:?}");
 }
 
 #[test]
