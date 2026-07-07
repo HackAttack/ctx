@@ -10,7 +10,7 @@ use ctx_history_core::{
     ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
     ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
 use crate::compute_payload_hash;
@@ -27,8 +27,8 @@ use crate::provider::native::{
 use crate::provider::providers::real_content::text_has_real_content;
 use crate::{
     CaptureError, ProviderAdapterContext, ProviderNormalizationResult, Result,
-    KILO_SQLITE_SOURCE_FORMAT, OPENCODE_SQLITE_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS,
-    PROVIDER_MAX_TEXT_CHARS,
+    KILO_SQLITE_SOURCE_FORMAT, MAX_PROVIDER_SQLITE_VALUE_BYTES, OPENCODE_SQLITE_SOURCE_FORMAT,
+    PROVIDER_MAX_PREVIEW_CHARS, PROVIDER_MAX_TEXT_CHARS,
 };
 
 pub(crate) struct OpenCodeSqliteDialect {
@@ -66,6 +66,9 @@ pub(crate) struct OpenCodeMessageSelection {
     pub(crate) rows: Vec<OpenCodeMessageRow>,
     pub(crate) source_table: Option<&'static str>,
     pub(crate) skipped_non_conversational_rows: usize,
+    /// Message rows whose `data` column exceeded `MAX_PROVIDER_SQLITE_VALUE_BYTES`
+    /// and were filtered out at read time so the rest of the source can still import.
+    pub(crate) skipped_oversized_rows: usize,
 }
 
 pub(crate) fn normalize_opencode_sqlite(
@@ -83,7 +86,7 @@ pub(crate) fn normalize_opencode_sqlite(
         .iter()
         .map(|session| session.id.clone())
         .collect::<BTreeSet<_>>();
-    let message_selection = opencode_session_messages(&conn, dialect, &session_ids)?;
+    let message_selection = opencode_session_messages(path, &conn, dialect, &session_ids)?;
     let mut result = ProviderNormalizationResult::default();
     if message_selection.rows.is_empty() {
         push_provider_import_failure(
@@ -113,6 +116,16 @@ pub(crate) fn normalize_opencode_sqlite(
     let raw_source_path = path.display().to_string();
     let message_source_table = message_selection.source_table;
     let skipped_non_conversational_rows = message_selection.skipped_non_conversational_rows;
+    let skipped_oversized_rows = message_selection.skipped_oversized_rows;
+    // Oversized rows are intentionally dropped at the SQL layer (see
+    // `oversized_message_row_ids`); they are not import failures. Counting
+    // them via `push_provider_import_failure` would set `summary.failed > 0`,
+    // which causes `import_normalized_provider_captures` to early-exit and
+    // `import_one_source_inner` to return `Err`, aborting `ctx search
+    // --refresh strict` and `ctx import` for the whole source even though
+    // every other row imported cleanly. Increment `summary.skipped` instead
+    // so the source stays usable.
+    result.summary.skipped += skipped_oversized_rows;
 
     for row in message_selection.rows {
         let provider_event_index =
@@ -343,18 +356,22 @@ pub(crate) fn opencode_sessions(
 }
 
 pub(crate) fn opencode_session_messages(
+    path: &Path,
     conn: &Connection,
     dialect: &OpenCodeSqliteDialect,
     session_ids: &BTreeSet<String>,
 ) -> Result<OpenCodeMessageSelection> {
     let mut skipped_non_conversational_rows = 0usize;
+    let mut skipped_oversized_rows = 0usize;
     if sqlite_table_exists(conn, "session_message")? {
-        let rows = opencode_session_message_rows(conn, dialect)?;
+        let (rows, oversized) = opencode_session_message_rows(path, conn, dialect)?;
+        skipped_oversized_rows += oversized;
         if opencode_rows_have_import_blocking_errors(&rows, session_ids, dialect) {
             return Ok(OpenCodeMessageSelection {
                 rows,
                 source_table: Some("session_message"),
                 skipped_non_conversational_rows,
+                skipped_oversized_rows,
             });
         }
         if opencode_rows_have_real_message_content(&rows) {
@@ -362,17 +379,20 @@ pub(crate) fn opencode_session_messages(
                 rows,
                 source_table: Some("session_message"),
                 skipped_non_conversational_rows,
+                skipped_oversized_rows,
             });
         }
         skipped_non_conversational_rows += rows.len();
     }
     if sqlite_table_exists(conn, "session_entry")? {
-        let rows = opencode_session_entry_rows(conn, dialect)?;
+        let (rows, oversized) = opencode_session_entry_rows(path, conn, dialect)?;
+        skipped_oversized_rows += oversized;
         if opencode_rows_have_import_blocking_errors(&rows, session_ids, dialect) {
             return Ok(OpenCodeMessageSelection {
                 rows,
                 source_table: Some("session_entry"),
                 skipped_non_conversational_rows,
+                skipped_oversized_rows,
             });
         }
         if opencode_rows_have_real_message_content(&rows) {
@@ -380,17 +400,20 @@ pub(crate) fn opencode_session_messages(
                 rows,
                 source_table: Some("session_entry"),
                 skipped_non_conversational_rows,
+                skipped_oversized_rows,
             });
         }
         skipped_non_conversational_rows += rows.len();
     }
     if sqlite_table_exists(conn, "message")? {
-        let rows = opencode_message_rows(conn, dialect)?;
+        let (rows, oversized) = opencode_message_rows(path, conn, dialect)?;
+        skipped_oversized_rows += oversized;
         if opencode_rows_have_import_blocking_errors(&rows, session_ids, dialect) {
             return Ok(OpenCodeMessageSelection {
                 rows,
                 source_table: Some("message"),
                 skipped_non_conversational_rows,
+                skipped_oversized_rows,
             });
         }
         if opencode_rows_have_real_message_content(&rows) {
@@ -398,6 +421,7 @@ pub(crate) fn opencode_session_messages(
                 rows,
                 source_table: Some("message"),
                 skipped_non_conversational_rows,
+                skipped_oversized_rows,
             });
         }
         skipped_non_conversational_rows += rows.len();
@@ -406,13 +430,71 @@ pub(crate) fn opencode_session_messages(
         rows: Vec::new(),
         source_table: None,
         skipped_non_conversational_rows,
+        skipped_oversized_rows,
     })
 }
 
+/// Build a `where id not in (?, ?, ...)` clause for the given id set, or an
+/// empty string when there are no ids to exclude. Used to keep oversized rows
+/// out of the bounded read cursor entirely — `sqlite3_step()` materializes
+/// every column of the current row, so filtering at the SQL layer is the only
+/// way to avoid `SQLITE_TOOBIG` on the bounded connection.
+fn exclude_ids_clause(ids: &std::collections::BTreeSet<String>) -> String {
+    if ids.is_empty() {
+        String::new()
+    } else {
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("where id not in ({placeholders})")
+    }
+}
+
+/// Whether a rusqlite error reports that a row's value exceeded the connection's
+/// `SQLITE_LIMIT_LENGTH`. Such rows are skipped during message ingestion rather
+/// than aborting the whole source — providers (notably the locally-installed
+/// Z.ai Kilo client) can carry single messages > 100 MB that legitimately exceed
+/// the per-value byte cap.
+fn is_sqlite_too_big(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(ref fail, _)
+            if fail.code == rusqlite::ErrorCode::TooBig
+    )
+}
+
+/// Collect row ids from `{table}` whose `data` column exceeds the per-value
+/// import cap, so the caller can exclude them from the bounded read.
+///
+/// This opens a separate read-only connection WITHOUT the per-value
+/// `SQLITE_LIMIT_LENGTH` set, because the limit is enforced when SQLite
+/// materializes the value to compute its byte length — even `length()` triggers
+/// it. The unbounded connection is only used to scan ids (no row data crosses
+/// back into ctx's memory), then dropped before the bounded read path runs.
+fn oversized_message_row_ids(path: &Path, table: &str) -> Result<std::collections::BTreeSet<String>> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let mut stmt = conn.prepare(&format!(
+        "select id from {table} where length(cast(data as blob)) > ?",
+    ))?;
+    let rows = stmt.query_map([MAX_PROVIDER_SQLITE_VALUE_BYTES as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut ids = std::collections::BTreeSet::new();
+    for id in rows {
+        ids.insert(id?);
+    }
+    Ok(ids)
+}
+
 pub(crate) fn opencode_session_message_rows(
+    path: &Path,
     conn: &Connection,
     dialect: &OpenCodeSqliteDialect,
-) -> Result<Vec<OpenCodeMessageRow>> {
+) -> Result<(Vec<OpenCodeMessageRow>, usize)> {
     let columns = sqlite_table_columns(conn, "session_message")?;
     ensure_sqlite_table_columns(
         &columns,
@@ -429,30 +511,45 @@ pub(crate) fn opencode_session_message_rows(
     } else {
         ("NULL", "id")
     };
+    // Pre-scan for oversized rows AFTER schema validation so the bounded
+    // connection's "missing required column" error still surfaces first for
+    // databases with future/incompatible schemas. The pre-scan uses an
+    // unbounded connection (see `oversized_message_row_ids`).
+    let oversized_ids = oversized_message_row_ids(path, "session_message")?;
+    let skipped_oversized = oversized_ids.len();
+    // Excluding oversized row ids at the SQL layer (rather than skipping them
+    // after `rows.next()`) is required because `sqlite3_step()` materializes
+    // every column of the current row before rusqlite hands it back — so even
+    // reading `id` from an oversized row triggers SQLITE_TOOBIG under the
+    // bounded connection.
+    let exclude_clause = exclude_ids_clause(&oversized_ids);
     let sql = format!(
         "select id, session_id, {entry_type}, {seq_expr}, {time_created}, {time_updated}, data \
-         from session_message order by session_id, {order_expr}"
+         from session_message \
+         {exclude_clause} \
+         order by session_id, {order_expr}",
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, i64>(5)?,
-            row.get::<_, String>(6)?,
-        ))
-    })?;
-    let rows = rows
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(CaptureError::from)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(oversized_ids.iter()))?;
     let mut messages = Vec::new();
     let mut next_seq_by_session = BTreeMap::<String, i64>::new();
-    for (id, session_id, entry_type, seq, time_created, time_updated, data) in rows {
+    while let Some(row) = rows.next()? {
+        let id = row.get::<_, String>(0)?;
+        // Per-row safety net: a row whose byte count slipped past the
+        // pre-scan (e.g. an in-flight insert between the two connections)
+        // still gets skipped here rather than aborting the source.
+        let data: String = match row.get::<_, String>(6) {
+            Ok(value) => value,
+            Err(err) if is_sqlite_too_big(&err) => continue,
+            Err(err) => return Err(CaptureError::from(err)),
+        };
+        let session_id = row.get::<_, String>(1)?;
+        let entry_type_raw = row.get::<_, String>(2)?;
+        let seq = row.get::<_, Option<i64>>(3)?;
+        let time_created = row.get::<_, i64>(4)?;
+        let time_updated = row.get::<_, i64>(5)?;
         let seq = seq.unwrap_or_else(|| next_opencode_seq(&mut next_seq_by_session, &session_id));
-        let entry_type = opencode_entry_type_from_data(&entry_type, &data);
+        let entry_type = opencode_entry_type_from_data(&entry_type_raw, &data);
         messages.push(OpenCodeMessageRow {
             id,
             session_id,
@@ -463,7 +560,7 @@ pub(crate) fn opencode_session_message_rows(
             data,
         });
     }
-    Ok(messages)
+    Ok((messages, skipped_oversized))
 }
 
 pub(crate) fn opencode_entry_type_from_data(fallback: &str, data: &str) -> String {
@@ -477,9 +574,10 @@ pub(crate) fn opencode_entry_type_from_data(fallback: &str, data: &str) -> Strin
 }
 
 pub(crate) fn opencode_session_entry_rows(
+    path: &Path,
     conn: &Connection,
     dialect: &OpenCodeSqliteDialect,
-) -> Result<Vec<OpenCodeMessageRow>> {
+) -> Result<(Vec<OpenCodeMessageRow>, usize)> {
     let columns = sqlite_table_columns(conn, "session_entry")?;
     ensure_sqlite_table_columns(
         &columns,
@@ -493,24 +591,30 @@ pub(crate) fn opencode_session_entry_rows(
             "data",
         ],
     )?;
-    let mut stmt = conn.prepare(
+    let oversized_ids = oversized_message_row_ids(path, "session_entry")?;
+    let skipped_oversized = oversized_ids.len();
+    let exclude_clause = exclude_ids_clause(&oversized_ids);
+    let sql = format!(
         "select id, session_id, type, time_created, time_updated, data \
-         from session_entry order by session_id, time_created, id",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, String>(5)?,
-        ))
-    })?;
+         from session_entry \
+         {exclude_clause} \
+         order by session_id, time_created, id",
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(oversized_ids.iter()))?;
     let mut messages = Vec::new();
     let mut next_seq_by_session = BTreeMap::<String, i64>::new();
-    for row in rows {
-        let (id, session_id, entry_type, time_created, time_updated, data) = row?;
+    while let Some(row) = rows.next()? {
+        let id = row.get::<_, String>(0)?;
+        let data: String = match row.get::<_, String>(5) {
+            Ok(value) => value,
+            Err(err) if is_sqlite_too_big(&err) => continue,
+            Err(err) => return Err(CaptureError::from(err)),
+        };
+        let session_id = row.get::<_, String>(1)?;
+        let entry_type = row.get::<_, String>(2)?;
+        let time_created = row.get::<_, i64>(3)?;
+        let time_updated = row.get::<_, i64>(4)?;
         let seq = next_opencode_seq(&mut next_seq_by_session, &session_id);
         messages.push(OpenCodeMessageRow {
             id,
@@ -522,36 +626,43 @@ pub(crate) fn opencode_session_entry_rows(
             data,
         });
     }
-    Ok(messages)
+    Ok((messages, skipped_oversized))
 }
 
 pub(crate) fn opencode_message_rows(
+    path: &Path,
     conn: &Connection,
     dialect: &OpenCodeSqliteDialect,
-) -> Result<Vec<OpenCodeMessageRow>> {
+) -> Result<(Vec<OpenCodeMessageRow>, usize)> {
     let columns = sqlite_table_columns(conn, "message")?;
     ensure_sqlite_table_columns(
         &columns,
         &format!("{} SQLite message table", dialect.display_name),
         &["id", "session_id", "time_created", "time_updated", "data"],
     )?;
-    let mut stmt = conn.prepare(
+    let oversized_ids = oversized_message_row_ids(path, "message")?;
+    let skipped_oversized = oversized_ids.len();
+    let exclude_clause = exclude_ids_clause(&oversized_ids);
+    let sql = format!(
         "select id, session_id, time_created, time_updated, data \
-         from message order by session_id, time_created, id",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, String>(4)?,
-        ))
-    })?;
+         from message \
+         {exclude_clause} \
+         order by session_id, time_created, id",
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(oversized_ids.iter()))?;
     let mut messages = Vec::new();
     let mut next_seq_by_session = BTreeMap::<String, i64>::new();
-    for row in rows {
-        let (id, session_id, time_created, time_updated, data) = row?;
+    while let Some(row) = rows.next()? {
+        let id = row.get::<_, String>(0)?;
+        let data: String = match row.get::<_, String>(4) {
+            Ok(value) => value,
+            Err(err) if is_sqlite_too_big(&err) => continue,
+            Err(err) => return Err(CaptureError::from(err)),
+        };
+        let session_id = row.get::<_, String>(1)?;
+        let time_created = row.get::<_, i64>(2)?;
+        let time_updated = row.get::<_, i64>(3)?;
         let seq = next_opencode_seq(&mut next_seq_by_session, &session_id);
         let entry_type = serde_json::from_str::<Value>(&data)
             .ok()
@@ -567,7 +678,7 @@ pub(crate) fn opencode_message_rows(
             data,
         });
     }
-    Ok(messages)
+    Ok((messages, skipped_oversized))
 }
 
 pub(crate) fn next_opencode_seq(
