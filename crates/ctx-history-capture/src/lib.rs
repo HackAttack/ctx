@@ -100,6 +100,9 @@ pub(crate) use common::identity::{default_machine_id, fnv1a64, sanitize_filename
 mod fixture;
 pub use fixture::{fixture_envelope, write_fixture};
 
+#[cfg(test)]
+mod test_support_paths;
+
 pub(crate) mod provider;
 pub use provider::adapter::{
     AntigravityCliJsonlAdapter, AstrBotSqliteAdapter, AuggieSessionJsonAdapter,

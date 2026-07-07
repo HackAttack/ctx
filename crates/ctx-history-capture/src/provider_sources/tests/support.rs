@@ -8,6 +8,8 @@ use std::{
 use ctx_history_core::CaptureProvider;
 use rusqlite::Connection;
 
+use crate::test_support_paths::capture_repo_root;
+
 use super::super::{discover_provider_sources, ProviderSourceStatus};
 
 pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -115,8 +117,7 @@ pub(super) fn write_mux_discovery_session(sessions: &Path) {
 }
 
 pub(super) fn shared_provider_history_fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    capture_repo_root()
         .join("tests/fixtures/provider-history")
         .join(name)
 }
