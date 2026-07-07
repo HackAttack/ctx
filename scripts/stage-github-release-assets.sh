@@ -57,6 +57,7 @@ stage_asset() {
 
 mkdir -p "${out_dir}"
 rm -f \
+  "${out_dir%/}/ctx-linux-aarch64" \
   "${out_dir%/}/ctx-linux-x64" \
   "${out_dir%/}/ctx-macos-arm64" \
   "${out_dir%/}/ctx-macos-x64" \
@@ -65,6 +66,7 @@ rm -f \
   "${out_dir%/}/SHA256SUMS"
 
 stage_asset ctx ctx-linux-x64
+stage_asset ctx-linux-aarch64 ctx-linux-aarch64
 stage_asset ctx-macos-arm64 ctx-macos-arm64
 stage_asset ctx-macos-x64 ctx-macos-x64
 stage_asset ctx.exe ctx-windows-x64.exe

@@ -10,7 +10,7 @@ if command -v ruby >/dev/null 2>&1; then
     data = YAML.load_file(ARGV.fetch(0))
     abort "pipeline must have steps" unless data.is_a?(Hash) && data["steps"].is_a?(Array)
     steps = data["steps"]
-    abort "pipeline should include public smoke and gated artifact matrix" unless steps.length == 7
+    abort "pipeline should include public smoke and gated artifact matrix" unless steps.length == 8
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
     abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
@@ -23,6 +23,7 @@ if command -v ruby >/dev/null 2>&1; then
     abort "public-smoke must verify runner tools before Bazel tests" unless command.include?("command -v \"$${tool_binary}\"")
     required_keys = %w[
       public-cli-linux-x64
+      public-cli-linux-aarch64
       public-cli-windows-x64
       public-cli-freebsd-x64
       public-cli-macos-arm64
@@ -42,6 +43,11 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must run on x86_64" unless step.dig("agents", "arch") == "x86_64"
       abort "#{key} must not serialize on the Mac GUI queue" if step.key?("concurrency_group")
     end
+    linux_aarch64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-linux-aarch64" }
+    abort "missing linux-aarch64 artifact step" unless linux_aarch64
+    abort "linux-aarch64 must build on release-linux-managed" unless linux_aarch64.dig("agents", "queue") == "release-linux-managed"
+    abort "linux-aarch64 must run on linux" unless linux_aarch64.dig("agents", "os") == "linux"
+    abort "linux-aarch64 must run on arm64" unless linux_aarch64.dig("agents", "arch") == "arm64"
   ' "${pipeline}"
 else
   top_level_steps="$(
@@ -52,7 +58,7 @@ else
       END { print count + 0 }
     ' "${pipeline}"
   )"
-  if [[ "${top_level_steps}" != "7" ]]; then
+  if [[ "${top_level_steps}" != "8" ]]; then
     printf 'pipeline should include public smoke and gated artifact matrix\n' >&2
     exit 1
   fi
@@ -67,6 +73,7 @@ for required in \
   './scripts/check.sh --mode=ci' \
   'CTX_PUBLIC_CLI_ARTIFACT_MATRIX' \
   'scripts/build-public-cli-artifact.sh linux-x64' \
+  'scripts/build-public-cli-artifact.sh linux-aarch64' \
   'scripts/build-public-cli-artifact.sh windows-x64' \
   'scripts/build-public-cli-artifact.sh freebsd-x64' \
   'scripts/build-public-cli-artifact.sh macos-arm64' \
@@ -80,6 +87,22 @@ for required in \
       exit 1
     fi
     continue
+  fi
+done
+
+for required in \
+  'queue: "release-linux-managed"' \
+  'ctx-runner-class: "release-linux-control"' \
+  'os: "linux"' \
+  'arch: "arm64"'; do
+  if ! awk '
+      index($0, "key: \"public-cli-linux-aarch64\"") { in_step = 1 }
+      in_step && /^  - label:/ && index($0, "public-cli-linux-aarch64") == 0 { in_step = 0 }
+      in_step && index($0, needle) { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' needle="${required}" "${pipeline}"; then
+    printf 'linux-aarch64 artifact step missing required runner snippet: %s\n' "${required}" >&2
+    exit 1
   fi
 done
 

@@ -40,6 +40,7 @@ sha256_check() {
 
 expected_assets=(
   ctx-freebsd-x64
+  ctx-linux-aarch64
   ctx-linux-x64
   ctx-macos-arm64
   ctx-macos-x64
@@ -71,6 +72,7 @@ done
 
 cd "${tmp_dir}"
 for asset in \
+  ctx-linux-aarch64 \
   ctx-linux-x64 \
   ctx-macos-arm64 \
   ctx-macos-x64 \

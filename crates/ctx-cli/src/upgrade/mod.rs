@@ -31,6 +31,7 @@ struct UpgradePlan {
 fn platform_key() -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Ok("linux-x64"),
+        ("linux", "aarch64") => Ok("linux-aarch64"),
         ("macos", "aarch64") => Ok("macos-arm64"),
         ("macos", "x86_64") => Ok("macos-x64"),
         ("windows", "x86_64") => Ok("windows-x64"),

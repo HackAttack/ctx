@@ -123,6 +123,21 @@ if [[ -z "${version}" ]]; then
 fi
 echo "building ctx ${version} for ${platform}"
 
+if [[ "${platform}" == linux-* ]]; then
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "error: ${platform} artifacts must be built on native Linux" >&2
+    exit 1
+  fi
+  case "${platform}:$(uname -m)" in
+    linux-x64:x86_64|linux-x64:amd64|linux-aarch64:aarch64|linux-aarch64:arm64)
+      ;;
+    *)
+      echo "error: ${platform} artifacts must be built on matching native Linux, got $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 rustup target add "${target}" >/dev/null
 out_dir="${CTX_PUBLIC_CLI_ARTIFACT_DIR:-target/public-cli-artifacts}"
 mkdir -p "${out_dir}"
@@ -159,7 +174,7 @@ else
 fi
 
 case "${platform}" in
-  linux-x64)
+  linux-x64|linux-aarch64)
     "${staged}" --version | tee "${staged}.version"
     grep -Fx "ctx ${version}" "${staged}.version" >/dev/null
     ;;

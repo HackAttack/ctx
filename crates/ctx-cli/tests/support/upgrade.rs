@@ -125,6 +125,7 @@ pub(crate) fn make_file_executable(path: &Path) {
 pub(crate) fn test_platform_key() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux_x64",
+        ("linux", "aarch64") => "linux_aarch64",
         ("macos", "aarch64") => "macos_arm64",
         ("macos", "x86_64") => "macos_x64",
         ("windows", "x86_64") => "windows_x64",

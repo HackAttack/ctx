@@ -22,6 +22,9 @@ case "${platform}" in
   linux-x64)
     binary_name="ctx"
     ;;
+  linux-aarch64)
+    binary_name="ctx-linux-aarch64"
+    ;;
   macos-arm64)
     binary_name="ctx-macos-arm64"
     ;;
@@ -90,6 +93,13 @@ case "${platform}" in
     if [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]; then
       case "$(uname -m 2>/dev/null || true)" in
         x86_64|amd64) can_run_on_host=1 ;;
+      esac
+    fi
+    ;;
+  linux-aarch64)
+    if [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]; then
+      case "$(uname -m 2>/dev/null || true)" in
+        aarch64|arm64) can_run_on_host=1 ;;
       esac
     fi
     ;;
