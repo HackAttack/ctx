@@ -35,7 +35,10 @@ required_paths=(
 )
 
 for path in "${required_paths[@]}"; do
-  test -f "${path}"
+  if ! test -f "${path}"; then
+    printf 'missing required path: %s\n' "${path}" >&2
+    exit 1
+  fi
 done
 
 if command -v jq >/dev/null 2>&1; then
