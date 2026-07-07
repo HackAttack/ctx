@@ -59,6 +59,7 @@ run_source_diff_check() {
 
   if grep -R -n -E '^(<<<<<<<|=======|>>>>>>>)' . \
     --exclude-dir=target \
+    --exclude-dir='bazel-*' \
     --exclude='Cargo.lock'; then
     fail 'conflict markers found'
   fi
