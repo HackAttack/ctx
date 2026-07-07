@@ -94,19 +94,19 @@
     "@@rules_rust~//crate_universe:extensions.bzl%crate": {
       "general": {
         "bzlTransitiveDigest": "zPFi2WRv5Xys0lk4S6zv1Fa9xIGk/jp0MEDTssfXxyI=",
-        "usagesDigest": "nNHRkpfGmBYb6g/+3eYthqKiylEeGiZoNHZK1MdlbSU=",
+        "usagesDigest": "/dZF304F0sxx5bsRRhEtFUMZ/dYlw6s+NBTWq1DGuRE=",
         "recordedFileInputs": {
           "@@//crates/ctx-sdk/Cargo.toml": "36d7b44b8415faf5a6b81989f92d421ad145f43a8bf822a08599ebf5c56b2b2c",
-          "@@//crates/ctx-cli/Cargo.toml": "73b588ef54561b5636bd31c720f3496595a6d15b54f0c03f93f96adbeadb19b7",
-          "@@//crates/ctx-history-core/Cargo.toml": "96733c4a01dc61b5674ae1dc09ace12cd8cbdea5e89c7e991b354545d9904116",
+          "@@//crates/ctx-cli/Cargo.toml": "26d7749754752af3805bcf2885b968c960ab7eddc19bbb3e0fa84608040bed86",
+          "@@//crates/ctx-history-core/Cargo.toml": "0d08fe99b11bd4fac2fb7da6a613ee89abdbaf1f5de036640262e252db5cf687",
           "@@//Cargo.toml": "9a8f1f1f31899f424d8e2a17002b6c4c252945e346a7221e3e13233c9fb3c524",
-          "@@//Cargo.lock": "b9275c5bd42c8d44abe1f45cc73c7fa839557a5b256fd6573bbe68f2721f89af",
+          "@@//Cargo.lock": "bb6e62f61e7b607761236b704e855bb1b6e9511831319cb0b41377a7a7f6923a",
           "@@//crates/ctx-protocol/Cargo.toml": "e9e75a7c7ca116f86e58ee0e09d174612607c8c45cce0213e66825e403046bce",
-          "@@//crates/ctx-history-store/Cargo.toml": "c36ff7344af9825d5ba1de64a8931801a325ee1a5d8cdd732e76c8eec990686d",
-          "@@//MODULE.bazel": "c9e8f54cb98ca022f0d4704bec27451e9c7ead0a7dfb8932b0fbeaac3b995cc8",
+          "@@//crates/ctx-history-store/Cargo.toml": "405397ecd36e72c93545658741a1d8619ce811bdadc79304a159696833aa185c",
+          "@@//MODULE.bazel": "569c3a6d23befa07cfbc3038178e55d06bc60495a912f96f43b93dbc928f2f55",
           "@@rules_rust~~rust_host_tools~rust_host_tools//rust_host_tools": "ENOENT",
-          "@@//crates/ctx-history-search/Cargo.toml": "a245d26853e60f60e06aff711cc4daeb1c35007907f138ec75ee5017be55466b",
-          "@@//crates/ctx-history-capture/Cargo.toml": "d6128a799c5636ebdc3c62a80d2e63909f4053f2229488c2d5b1730ba83f57f6"
+          "@@//crates/ctx-history-search/Cargo.toml": "37c65991770767f94c21cf452ebc4dd668e983fd7d6e00e72cfa434ba76dd051",
+          "@@//crates/ctx-history-capture/Cargo.toml": "d3a67781cce6a2210d5f86a7ef83a1aab424261e221773c8eb8aa67e4a3944f8"
         },
         "recordedDirentsInputs": {},
         "envVariables": {
