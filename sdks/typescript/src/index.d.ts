@@ -179,7 +179,6 @@ export interface ProviderSource {
   importSupport?: string | null;
   nativeImport?: boolean;
   importable: boolean;
-  rawRetention?: string | null;
   unsupportedReason?: string | null;
 }
 
@@ -247,7 +246,6 @@ export interface AgentHistoryEvent {
   cursor?: string | null;
   text?: string | null;
   preview?: string | null;
-  redactionState?: string | null;
   citations?: Citation[];
 }
 

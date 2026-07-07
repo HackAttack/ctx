@@ -90,7 +90,7 @@ refresh when they live in bounded default locations, and still support explicit
 
 After upgrading from an older ctx version, the first refresh or import can
 re-read previously indexed provider transcripts once so the local index includes
-current touched-file metadata and unredacted local transcript text.
+current touched-file metadata and local transcript text.
 
 ## 5. Search
 

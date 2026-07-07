@@ -26,7 +26,7 @@ use crate::commands::setup::{
 use crate::history_source_plugins::{
     discover_history_source_plugins, HistorySourcePluginRefresh, HistorySourcePluginSource,
 };
-use crate::output::{compact_json, print_share_safe_value};
+use crate::output::{compact_json, print_json};
 use crate::progress::{ProgressArg, ProgressReporter, SourceProgressSnapshot};
 use crate::provider_args::ProviderArg;
 use crate::provider_sources::{discovered_sources, home_dir, SourceInfo};
@@ -270,7 +270,7 @@ pub(crate) fn run_search(
     let render_started = Instant::now();
     if args.json {
         let suggested_next_query = (!uses_composed_terms).then_some(query.as_str());
-        print_share_safe_value(SearchDto::packet(
+        print_json(SearchDto::packet(
             &store,
             &packet,
             &refresh,

@@ -2,8 +2,8 @@ use std::{fs, path::Path};
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    new_id, Artifact, ArtifactKind, EntityTimestamps, Fidelity, RedactionState,
-    SessionHistoryArchive, SyncMetadata, SyncState, Visibility,
+    new_id, Artifact, ArtifactKind, EntityTimestamps, Fidelity, SessionHistoryArchive,
+    SyncMetadata, SyncState, Visibility,
 };
 use uuid::Uuid;
 
@@ -37,7 +37,6 @@ fn artifact(id: Uuid, blob_hash: String, byte_size: u64) -> Artifact {
         byte_size,
         media_type: Some("text/markdown".into()),
         preview_text: Some("synthetic local preview blob".into()),
-        redaction_state: RedactionState::LocalPreview,
         timestamps: EntityTimestamps {
             created_at: fixed_time(),
             updated_at: fixed_time(),

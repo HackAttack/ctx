@@ -1,7 +1,5 @@
 use chrono::{DateTime, Utc};
-use ctx_history_core::{
-    AgentType, CaptureProvider, Event, EventRole, EventType, HistoryRecord, RedactionState,
-};
+use ctx_history_core::{AgentType, CaptureProvider, Event, EventRole, EventType, HistoryRecord};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -95,7 +93,7 @@ impl Store {
                        e.event_type,
                        e.role,
                        e.occurred_at_ms,
-                       event_search.safe_preview_text,
+                       event_search.preview_text,
                        bm25(event_search),
                        COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
                        COALESCE(s.external_session_id, rs.external_session_id),
@@ -302,8 +300,7 @@ fn populate_event_search_projection(conn: &Connection) -> Result<()> {
                e.session_id,
                e.role,
                e.event_type,
-               e.payload_json,
-               e.redaction_state
+               e.payload_json
         FROM events e
         LEFT JOIN runs r ON r.id = e.run_id
         LEFT JOIN sessions s ON s.id = e.session_id
@@ -319,27 +316,18 @@ fn populate_event_search_projection(conn: &Connection) -> Result<()> {
             row.get::<_, Option<String>>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
-            row.get::<_, String>(6)?,
         ))
     })?;
     let mut insert_event_search = conn.prepare(
         r#"
         INSERT INTO event_search
-        (event_id, history_record_id, session_id, role, safe_preview_text, rank_bucket)
+        (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
     )?;
     for row in rows {
-        let (
-            event_id,
-            history_record_id,
-            session_id,
-            role,
-            event_type,
-            payload_json,
-            redaction_state,
-        ) = row?;
-        let preview = event_search_preview(&payload_json, &redaction_state)?;
+        let (event_id, history_record_id, session_id, role, event_type, payload_json) = row?;
+        let preview = event_search_preview(&payload_json)?;
         if preview.trim().is_empty() {
             continue;
         }
@@ -385,14 +373,14 @@ pub(crate) fn insert_event_search_projection_for_event_id(
     if !table_exists(conn, "event_search")? {
         return Ok(());
     }
-    let preview = event_search_preview_from_payload(&event.payload, event.redaction_state);
+    let preview = event_search_preview_from_payload(&event.payload);
     if preview.trim().is_empty() {
         return Ok(());
     }
     conn.prepare_cached(
         r#"
         INSERT INTO event_search
-        (event_id, history_record_id, session_id, role, safe_preview_text, rank_bucket)
+        (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
     )?
@@ -407,24 +395,12 @@ pub(crate) fn insert_event_search_projection_for_event_id(
     Ok(())
 }
 
-fn event_search_preview(payload_json: &str, redaction_state: &str) -> Result<String> {
-    if redaction_state == RedactionState::Raw.as_str() {
-        return Ok("raw event payload withheld".to_owned());
-    }
+fn event_search_preview(payload_json: &str) -> Result<String> {
     let payload: serde_json::Value = serde_json::from_str(payload_json)?;
-    Ok(event_search_preview_from_payload(
-        &payload,
-        parse_text_enum::<RedactionState>(redaction_state.to_owned())?,
-    ))
+    Ok(event_search_preview_from_payload(&payload))
 }
 
-fn event_search_preview_from_payload(
-    payload: &serde_json::Value,
-    redaction_state: RedactionState,
-) -> String {
-    if redaction_state == RedactionState::Raw {
-        return "raw event payload withheld".to_owned();
-    }
+fn event_search_preview_from_payload(payload: &serde_json::Value) -> String {
     let preview = event_payload_preview(payload)
         .or_else(|| {
             if payload.is_object() || payload.is_array() {

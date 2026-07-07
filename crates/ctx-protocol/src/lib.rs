@@ -197,8 +197,6 @@ pub struct ProviderSource {
     pub native_import: Option<bool>,
     pub importable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_retention: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsupported_reason: Option<String>,
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: JsonObject,
@@ -334,8 +332,6 @@ pub struct AgentHistoryEvent {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redaction_state: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub citations: Vec<Citation>,
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]

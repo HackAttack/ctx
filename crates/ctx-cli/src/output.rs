@@ -69,17 +69,6 @@ pub(crate) fn print_json(value: Value) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn print_share_safe_value(mut value: Value) -> Result<()> {
-    mark_share_safe(&mut value);
-    print_json(value)
-}
-
-pub(crate) fn mark_share_safe(value: &mut Value) {
-    if let Value::Object(map) = value {
-        map.entry("share_safe").or_insert(Value::Bool(false));
-    }
-}
-
 pub(crate) fn effective_format(format: OutputFormat, json: bool) -> OutputFormat {
     if json {
         OutputFormat::Json

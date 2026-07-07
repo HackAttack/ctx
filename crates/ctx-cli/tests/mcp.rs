@@ -240,7 +240,6 @@ fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
     let sql = &responses[1]["result"]["structuredContent"];
     assert_eq!(sql["item_type"], "sql_result");
     assert_eq!(sql["read_only"], true);
-    assert_eq!(sql["share_safe"], false);
     assert_eq!(sql["columns"], json!(["sessions"]));
     assert_eq!(sql["rows"], json!([[0]]));
     assert_useful_mcp_text(
@@ -411,7 +410,6 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
     assert_eq!(search["query"], "onboarding");
     assert_eq!(search["freshness"]["mode"], "off");
     assert_eq!(search["freshness"]["status"], "skipped");
-    assert_eq!(search["share_safe"], false);
     assert_useful_mcp_text(
         &search_responses[1]["result"],
         &[

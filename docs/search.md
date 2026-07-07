@@ -143,6 +143,6 @@ describing the pre-search refresh mode and outcome. A citation with
 `source_exists: false` means ctx can return indexed text, but the raw provider
 file was not available at the stored path when the result was built.
 
-Search output is local/private by default and is not redacted for sharing.
-Review and redact copied snippets, JSON, or transcripts before sending them
-outside the machine.
+Search output is local/private by default.
+Review copied snippets, JSON, or transcripts before sending them outside the
+machine.

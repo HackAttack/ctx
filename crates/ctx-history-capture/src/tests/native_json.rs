@@ -192,7 +192,6 @@ fn antigravity_native_history_imports_transcripts_and_preserves_previews() {
     let rendered = serde_json::to_string(&future).unwrap();
     assert!(rendered.contains("ghp_1234567890abcdef"));
     assert!(rendered.contains("/home/example/private.txt"));
-    assert!(!rendered.contains("[REDACTED"));
 }
 
 #[test]
@@ -251,10 +250,10 @@ fn native_windsurf_fixture_imports_searches_reimports_and_file_touches() {
         Some("src/windsurf_hook_oracle.py")
     );
     assert_eq!(
-        code_action.payload["body"]["body"]["code_action"]["new_content"]["redacted"].as_str(),
-        Some("sensitive_transcript_field")
+        code_action.payload["body"]["body"]["code_action"]["new_content"].as_str(),
+        Some("print('windsurf cascade hook oracle')\n")
     );
-    assert!(!code_action.payload.to_string().contains("print("));
+    assert!(code_action.payload.to_string().contains("print("));
 
     let archive = store.export_archive().unwrap();
     assert!(archive.files_touched.iter().any(|file| {

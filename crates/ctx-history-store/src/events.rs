@@ -1,4 +1,4 @@
-use ctx_history_core::{CaptureProvider, Event, EventRole, EventType, RedactionState};
+use ctx_history_core::{CaptureProvider, Event, EventRole, EventType};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use uuid::Uuid;
 
@@ -58,8 +58,8 @@ impl Store {
         self.conn.execute(
                 r#"
                 INSERT INTO events
-                (id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, redaction_state, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                (id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                 ON CONFLICT(id) DO UPDATE SET
                     seq = excluded.seq,
                     history_record_id = excluded.history_record_id,
@@ -73,7 +73,6 @@ impl Store {
                     payload_blob_id = excluded.payload_blob_id,
                     dedupe_key = excluded.dedupe_key,
                     visibility = excluded.visibility,
-                    redaction_state = excluded.redaction_state,
                     fidelity = excluded.fidelity,
                     sync_state = excluded.sync_state,
                     sync_version = excluded.sync_version,
@@ -94,7 +93,6 @@ impl Store {
                     optional_uuid_string(event.payload_blob_id),
                     event.dedupe_key.as_deref(),
                     event.sync.visibility.as_str(),
-                    event.redaction_state.as_str(),
                     event.sync.fidelity.as_str(),
                     event.sync.sync_state.as_str(),
                     event.sync.sync_version as i64,
@@ -115,8 +113,8 @@ impl Store {
                 .prepare_cached(
                     r#"
                     INSERT OR IGNORE INTO events
-                    (id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, redaction_state, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                    (id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                     "#,
                 )?
                 .execute(params![
@@ -133,7 +131,6 @@ impl Store {
                     optional_uuid_string(event.payload_blob_id),
                     event.dedupe_key.as_deref(),
                     event.sync.visibility.as_str(),
-                    event.redaction_state.as_str(),
                     event.sync.fidelity.as_str(),
                     event.sync.sync_state.as_str(),
                     event.sync.sync_version as i64,
@@ -470,7 +467,7 @@ pub(crate) fn parse_provider_event_dedupe_key(
 
 pub(crate) fn event_select_sql(tail: &str) -> String {
     format!(
-        "SELECT id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, redaction_state, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json FROM events {tail}"
+        "SELECT id, seq, history_record_id, session_id, run_id, event_type, role, occurred_at_ms, capture_source_id, payload_json, payload_blob_id, dedupe_key, visibility, fidelity, sync_state, sync_version, deleted_at_ms, metadata_json FROM events {tail}"
     )
 }
 
@@ -491,7 +488,6 @@ pub(crate) fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event>
         payload: parse_json(row.get::<_, String>(9)?)?,
         payload_blob_id: parse_optional_uuid(row.get(10)?)?,
         dedupe_key: row.get(11)?,
-        redaction_state: parse_text_enum::<RedactionState>(row.get::<_, String>(13)?)?,
-        sync: sync_metadata_from_row(row, 12, 14, 15, 16, 17, 18)?,
+        sync: sync_metadata_from_row(row, 12, 13, 14, 15, 16, 17)?,
     })
 }

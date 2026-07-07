@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentType, ArtifactKind, CaptureProvider, EventRole, EventType, Fidelity, RedactionState,
-    SessionStatus,
+    AgentType, ArtifactKind, CaptureProvider, EventRole, EventType, Fidelity, SessionStatus,
 };
 
 pub const PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION: u32 = 1;
@@ -184,26 +183,6 @@ pub enum ProviderSourceTrust {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderRawRetention {
-    #[default]
-    None,
-    PathReference,
-    MetadataOnly,
-    LocalBlob,
-    Withheld,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderRedactionBoundary {
-    BeforeStore,
-    BeforeExport,
-    #[default]
-    ManualReview,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCursorCheckpoint {
     pub stream: String,
@@ -257,8 +236,6 @@ pub struct ProviderArtifactDescriptor {
     pub preview_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byte_size: Option<u64>,
-    #[serde(default)]
-    pub redaction_state: RedactionState,
     #[serde(default = "super::default_metadata")]
     pub metadata: Value,
 }
@@ -272,10 +249,6 @@ pub struct ProviderSourceEnvelope {
     pub raw_source_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_root: Option<String>,
-    #[serde(default)]
-    pub raw_retention: ProviderRawRetention,
-    #[serde(default)]
-    pub redaction_boundary: ProviderRedactionBoundary,
     #[serde(default)]
     pub trust: ProviderSourceTrust,
     #[serde(default)]
@@ -334,8 +307,6 @@ pub struct ProviderEventEnvelope {
     pub occurred_at: DateTime<Utc>,
     #[serde(default)]
     pub fidelity: Fidelity,
-    #[serde(default)]
-    pub redaction_state: RedactionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -394,8 +365,6 @@ pub struct ProviderSupportEntry {
     pub child_sessions_supported: bool,
     #[serde(default)]
     pub fidelity: ProviderFidelityClaims,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub redaction_notes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limitations: Vec<String>,
     #[serde(default)]
@@ -541,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_capture_envelope_round_trips_cursor_and_redaction_fields() {
+    fn provider_capture_envelope_round_trips_cursor_fields() {
         let sample = r#"{
           "schema_version": 1,
           "provider": "codex",
@@ -549,8 +518,6 @@ mod tests {
             "source_format": "normalized_provider_fixture_jsonl",
             "machine_id": "machine-1",
             "observed_at": "2026-06-23T12:00:00Z",
-            "raw_retention": "metadata_only",
-            "redaction_boundary": "before_export",
             "trust": "fixture",
             "fidelity": "imported",
             "cursor": {
@@ -577,8 +544,7 @@ mod tests {
             "role": "assistant",
             "occurred_at": "2026-06-23T12:00:01Z",
             "fidelity": "imported",
-            "redaction_state": "redacted",
-            "payload": {"text": "redacted preview only"},
+            "payload": {"text": "provider preview"},
             "metadata": {"token_usage": 42}
           }
         }"#;
@@ -599,8 +565,9 @@ mod tests {
             parsed
                 .event
                 .as_ref()
-                .map(|event| event.redaction_state.as_str()),
-            Some("redacted")
+                .and_then(|event| event.payload.get("text"))
+                .and_then(serde_json::Value::as_str),
+            Some("provider preview")
         );
     }
 }

@@ -59,12 +59,6 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-filegroup(
-    name = "redaction_corpus",
-    srcs = ["tests/fixtures/redaction/redaction-corpus.jsonl"],
-    visibility = ["//visibility:public"],
-)
-
 sh_test(
     name = "cargo_fmt_check",
     srcs = ["scripts/bazel-test.sh"],

@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_core::{CaptureProvider, ProviderRawRetention, ProviderRedactionBoundary};
+use ctx_history_core::CaptureProvider;
 use serde_json::Value;
 
 use super::{
@@ -753,8 +753,6 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
         default_locations: &[],
         import_support: ProviderImportSupport::Unsupported,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::None,
-        redaction_boundary: ProviderRedactionBoundary::ManualReview,
         unsupported_reason: Some("provider is not registered for native local-history import"),
     };
     let spec = provider_source_spec(provider).unwrap_or(&unknown_spec);
@@ -849,8 +847,6 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
         } else {
             ProviderSourceStatus::Missing
         },
-        raw_retention: spec.raw_retention,
-        redaction_boundary: spec.redaction_boundary,
         unsupported_reason: spec.unsupported_reason,
     }
 }
@@ -900,8 +896,6 @@ fn provider_source_from_location(
         import_support: spec.import_support,
         catalog_support: spec.catalog_support,
         status,
-        raw_retention: spec.raw_retention,
-        redaction_boundary: spec.redaction_boundary,
         unsupported_reason,
     }
 }

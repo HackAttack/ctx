@@ -131,8 +131,8 @@ fn native_warp_imports_sqlite_fixture_idempotently() {
     assert_eq!(session.provider, CaptureProvider::Warp);
     let rendered_session = serde_json::to_string(&session.sync.metadata).unwrap();
     assert!(rendered_session.contains("Sanitized Warp Agent"));
-    assert!(rendered_session.contains("has_server_conversation_token"));
-    assert!(!rendered_session.contains("redacted-token-not-imported"));
+    assert!(rendered_session.contains("server_conversation_token"));
+    assert!(rendered_session.contains("warp-server-token-fixture"));
 
     let events = store.events_for_session(session_id).unwrap();
     assert_eq!(events.len(), 4);
@@ -178,7 +178,7 @@ fn native_warp_import_reads_committed_wal_content() {
     writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
     let conversation_data = json!({
         "agent_name": "Warp WAL Agent",
-        "server_conversation_token": "redacted-token-not-imported"
+        "server_conversation_token": "warp-server-token-preserved"
     })
     .to_string();
     writer
@@ -208,7 +208,7 @@ fn native_warp_import_reads_committed_wal_content() {
     let session = store.get_session(session_id).unwrap();
     let rendered_session = serde_json::to_string(&session.sync.metadata).unwrap();
     assert!(rendered_session.contains("Warp WAL Agent"));
-    assert!(!rendered_session.contains("redacted-token-not-imported"));
+    assert!(rendered_session.contains("warp-server-token-preserved"));
     drop(writer);
 }
 

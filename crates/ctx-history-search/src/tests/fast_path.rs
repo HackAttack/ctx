@@ -2,8 +2,8 @@ use super::{
     fixed_time, search_packet, sync_metadata, test_store, timestamps, AgentType, BTreeSet,
     CaptureProvider, CaptureSource, CaptureSourceDescriptor, CaptureSourceKind, Confidence,
     ContextCitationType, Event, EventRole, EventType, FileChangeKind, FileTouched, HistoryRecord,
-    PacketOptions, RedactionState, SearchFilters, SearchResultMode, SearchResultScope, Session,
-    SessionStatus, SyncMetadata, Uuid, LARGE_EVENT_CORPUS_THRESHOLD,
+    PacketOptions, SearchFilters, SearchResultMode, SearchResultScope, Session, SessionStatus,
+    SyncMetadata, Uuid, LARGE_EVENT_CORPUS_THRESHOLD,
 };
 
 #[test]
@@ -105,7 +105,6 @@ fn large_agent_history_search_returns_event_hits() {
                 }),
                 payload_blob_id: None,
                 dedupe_key: Some(format!("large-history-{index}")),
-                redaction_state: RedactionState::SafePreview,
                 sync: sync_metadata(),
             })
             .unwrap();
@@ -260,7 +259,6 @@ fn clustered_fast_search_pages_past_dominant_first_session() {
                 }),
                 payload_blob_id: None,
                 dedupe_key: Some(format!("clustered-paging-{index}")),
-                redaction_state: RedactionState::SafePreview,
                 sync: sync_metadata(),
             })
             .unwrap();
@@ -387,7 +385,6 @@ fn fast_event_search_exposes_custom_history_source_identity() {
                 }),
                 payload_blob_id: None,
                 dedupe_key: Some(format!("large-custom-source-identity-{index}")),
-                redaction_state: RedactionState::SafePreview,
                 sync: sync_metadata(),
             })
             .unwrap();
@@ -464,7 +461,6 @@ fn file_filter_matches_event_linked_file_touches_on_fast_path() {
         payload: serde_json::json!({"text": "event-file-scope-needle apply patch"}),
         payload_blob_id: None,
         dedupe_key: None,
-        redaction_state: RedactionState::SafePreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();
@@ -482,7 +478,6 @@ fn file_filter_matches_event_linked_file_touches_on_fast_path() {
             payload: serde_json::json!({"text": format!("decoy event {index}")}),
             payload_blob_id: None,
             dedupe_key: None,
-            redaction_state: RedactionState::SafePreview,
             sync: sync_metadata(),
         };
         store.upsert_event(&decoy).unwrap();

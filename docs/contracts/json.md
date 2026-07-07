@@ -1,8 +1,7 @@
 # JSON Contracts
 
 ctx JSON is for local agents and scripts. It can include prompts, command
-output previews, and local paths. Treat it as private until a user reviews and
-redacts it.
+output previews, and local paths. Treat it as private until a user reviews it.
 
 Command result JSON currently uses `schema_version: 1`. Progress-event JSON is
 stderr progress output and does not include `schema_version`.
@@ -94,7 +93,6 @@ Each source includes:
 - `import_support`;
 - `native_import`;
 - `importable`;
-- `raw_retention`;
 - `unsupported_reason`.
 
 `status` is `available`, `empty`, `unknown`, `missing`, or `unsupported`.
@@ -179,17 +177,7 @@ Writes nothing and returns:
 `session` includes the ctx-owned `item_id`, `provider`, and
 `provider_session_id` when known. `event` and `events[]` rows include
 `ctx_event_id`, `ctx_session_id`, `sequence`, `event_type`, `role`,
-`occurred_at`, `source`, `cursor`, `text` or `preview`, and
-`redaction_state`.
-
-`redaction_state` values describe local payload handling, not whether a row is
-safe to publish. In particular, `safe_preview` is legacy contract spelling for a
-local searchable preview: the text may be truncated or projected from provider
-payloads, but it can still include absolute paths, token-shaped strings, command
-output, and other private transcript content. Treat `safe_preview` output as
-private unless a user separately reviews and redacts it. Legacy `withheld` rows
-may still appear from old local DBs or archives, but local search/show output
-does not treat that state as a redaction guarantee when payload text exists.
+`occurred_at`, `source`, `cursor`, and `text` or `preview`.
 
 ## Locate
 
@@ -271,8 +259,7 @@ search uses `--file <path>` or when file-path metadata contributes to ranking.
 `citations[]` can cite sessions, events, files, or source metadata depending on
 which indexed item produced the match.
 
-Search JSON is local/private by default and is not share-safe or redacted for
-external publication.
+Search JSON is local/private by default.
 
 `freshness` describes the pre-search refresh attempt:
 
@@ -305,7 +292,6 @@ returns:
 - `schema_version`;
 - `item_type: "sql_result"`;
 - `read_only: true`;
-- `share_safe: false`;
 - `columns[]`, ordered selected column names;
 - `rows[]`, ordered arrays matching `columns[]`;
 - `returned_rows`;

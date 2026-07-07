@@ -1,4 +1,4 @@
-use ctx_history_core::{Event, HistoryRecord, RedactionState};
+use ctx_history_core::{Event, HistoryRecord};
 
 use crate::filters::{
     context_has_excluded_provider_session, hit_matches_excluded_provider_session,
@@ -43,9 +43,6 @@ pub(crate) fn event_text(event: &Event) -> String {
 }
 
 pub fn event_preview_text(event: &Event) -> String {
-    if event.redaction_state == RedactionState::Raw {
-        return "raw event payload withheld".to_owned();
-    }
     if let Some(preview) = event_payload_preview(&event.payload) {
         return local_snippet(&preview, 900);
     }

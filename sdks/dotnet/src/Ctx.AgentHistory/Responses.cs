@@ -196,7 +196,6 @@ public sealed record ProviderSource
         ImportSupport = JsonHelpers.GetString(json, "importSupport");
         NativeImport = JsonHelpers.GetBool(json, "nativeImport");
         Importable = JsonHelpers.GetBool(json, "importable");
-        RawRetention = JsonHelpers.GetString(json, "rawRetention");
         UnsupportedReason = JsonHelpers.GetString(json, "unsupportedReason");
     }
 
@@ -208,7 +207,6 @@ public sealed record ProviderSource
     public string? ImportSupport { get; }
     public bool? NativeImport { get; }
     public bool? Importable { get; }
-    public string? RawRetention { get; }
     public string? UnsupportedReason { get; }
 
     public JsonObject ToJsonObject() => JsonHelpers.CloneObject(_json);
@@ -545,7 +543,6 @@ public sealed record AgentHistoryEvent
         Cursor = JsonHelpers.GetString(json, "cursor");
         Text = JsonHelpers.GetString(json, "text");
         Preview = JsonHelpers.GetString(json, "preview");
-        RedactionState = JsonHelpers.GetString(json, "redactionState");
         Citations = JsonHelpers.GetObjectArray(json, "citations", Citation.FromJson);
     }
 
@@ -559,7 +556,6 @@ public sealed record AgentHistoryEvent
     public string? Cursor { get; }
     public string? Text { get; }
     public string? Preview { get; }
-    public string? RedactionState { get; }
     public IReadOnlyList<Citation> Citations { get; }
 
     public JsonObject ToJsonObject() => JsonHelpers.CloneObject(_json);

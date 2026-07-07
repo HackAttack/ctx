@@ -6,9 +6,9 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use rusqlite::{limits::Limit, Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -194,8 +194,6 @@ pub(crate) fn native_provider_capture(
             observed_at: context.imported_at,
             raw_source_path: Some(draft.raw_source_path),
             source_root: context.source_root_display(),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: draft.trust,
             fidelity: draft.fidelity,
             cursor: event.as_ref().and_then(|event| {
@@ -386,7 +384,6 @@ pub(crate) fn native_event(draft: NativeEventDraft) -> ProviderEventEnvelope {
         role: draft.role,
         occurred_at: draft.occurred_at,
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
             "provider-event:{}:{}:{}",
             draft.provider.as_str(),

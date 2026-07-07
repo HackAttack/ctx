@@ -43,7 +43,7 @@ use ctx_history_store::{
     RAW_SQL_DEFAULT_MAX_COLUMNS, RAW_SQL_DEFAULT_MAX_ROWS, RAW_SQL_DEFAULT_MAX_SQL_BYTES,
     RAW_SQL_DEFAULT_MAX_VALUE_BYTES,
 };
-use output::{compact_json, mark_share_safe, LocateFormat, OutputFormat, SqlFormat};
+use output::{compact_json, LocateFormat, OutputFormat, SqlFormat};
 use progress::{progress_mode_name, ProgressArg};
 use provider_args::{
     cli_supported_provider, parse_native_provider_arg, parse_provider_arg, ImportFormatArg,

@@ -25,7 +25,6 @@ required_paths=(
   docs/troubleshooting.md
   docs/threat-model.md
   docs/provider-adapter-api.md
-  docs/redaction-corpus.md
   docs/agent-skill-install.md
   docs/unmanaged-installs.md
   docs/sdks.md

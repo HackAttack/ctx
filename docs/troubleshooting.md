@@ -55,7 +55,7 @@ idempotent rescan.
 
 After upgrading to `0.10.x` or newer, a refresh can take longer once because ctx marks
 older provider import cache rows pending and re-reads source transcripts to
-populate touched-file metadata and unredacted local transcript text.
+populate touched-file metadata and local transcript text.
 
 If the raw provider file moved, indexed text may still be searchable, but source
 citations should report that the raw path is unavailable.

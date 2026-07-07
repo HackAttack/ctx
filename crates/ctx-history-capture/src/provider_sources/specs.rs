@@ -1,6 +1,6 @@
 // Keep the provider matrix as one cohesive table: splitting it alphabetically
 // would obscure cross-provider policy defaults and make updates harder to audit.
-use ctx_history_core::{CaptureProvider, ProviderRawRetention, ProviderRedactionBoundary};
+use ctx_history_core::CaptureProvider;
 
 use super::types::{
     ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport, ProviderSourceKind,
@@ -418,8 +418,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CODEX_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::Native,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -428,8 +426,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: PI_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -438,8 +434,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CLAUDE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -448,8 +442,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: OPENCODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -458,8 +450,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: KILO_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -468,8 +458,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: KIRO_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -478,8 +466,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CRUSH_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -488,8 +474,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: GOOSE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -498,8 +482,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: ANTIGRAVITY_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -508,8 +490,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: GEMINI_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -518,8 +498,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: TABNINE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -528,8 +506,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CURSOR_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -538,8 +514,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: WINDSURF_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -548,8 +522,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: ZED_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -558,8 +530,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: COPILOT_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -568,8 +538,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: FACTORY_DROID_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -578,8 +546,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: QWEN_CODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -588,8 +554,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: KIMI_CODE_CLI_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -598,8 +562,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: AUGGIE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -608,8 +570,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: JUNIE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -618,8 +578,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: FIREBENDER_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -628,8 +586,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: FORGECODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -638,8 +594,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: DEEPAGENTS_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -648,8 +602,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: MISTRAL_VIBE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -658,8 +610,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: MUX_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -668,8 +618,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: ROVODEV_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -678,8 +626,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: OPENCLAW_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -688,8 +634,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: HERMES_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -698,8 +642,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: NANOCLAW_DEFAULTS,
         import_support: ProviderImportSupport::Explicit,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -708,8 +650,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: ASTRBOT_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -718,8 +658,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: SHELLEY_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -728,8 +666,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CONTINUE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -738,8 +674,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: OPENHANDS_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -748,8 +682,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CLINE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -758,8 +690,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: ROO_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -768,8 +698,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: LINGMA_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -778,8 +706,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: TRAE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -788,8 +714,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: QODER_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -798,8 +722,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: WARP_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
     ProviderSourceSpec {
@@ -808,8 +730,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         default_locations: CODEBUDDY_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        raw_retention: ProviderRawRetention::PathReference,
-        redaction_boundary: ProviderRedactionBoundary::BeforeExport,
         unsupported_reason: None,
     },
 ];

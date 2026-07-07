@@ -2,8 +2,8 @@ use std::fs;
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    new_id, Event, EventRole, EventType, Fidelity, HistoryRecord, RedactionState, SyncMetadata,
-    SyncState, Visibility,
+    new_id, Event, EventRole, EventType, Fidelity, HistoryRecord, SyncMetadata, SyncState,
+    Visibility,
 };
 use rusqlite::params;
 use uuid::Uuid;
@@ -38,7 +38,7 @@ fn sync_metadata() -> SyncMetadata {
     }
 }
 
-fn local_preview_event(seq: u64, text: &str, redaction_state: RedactionState) -> Event {
+fn local_preview_event(seq: u64, text: &str) -> Event {
     Event {
         id: new_id(),
         seq,
@@ -52,7 +52,6 @@ fn local_preview_event(seq: u64, text: &str, redaction_state: RedactionState) ->
         payload: serde_json::json!({ "text": text }),
         payload_blob_id: None,
         dedupe_key: None,
-        redaction_state,
         sync: sync_metadata(),
     }
 }
@@ -205,33 +204,23 @@ fn search_records_empty_or_no_token_query_returns_empty() {
 }
 
 #[test]
-fn event_search_preserves_local_and_legacy_withheld_text_but_raw_is_withheld() {
+fn event_search_preserves_local_payload_text() {
     let temp = tempdir();
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();
-    let local_event = local_preview_event(
-        1,
-        "cwd=/home/example/private token=ghp_1234567890abcdef",
-        RedactionState::LocalPreview,
-    );
+    let local_event =
+        local_preview_event(1, "cwd=/home/example/private token=ghp_1234567890abcdef");
     let raw_event = local_preview_event(
         2,
-        "raw cwd=/home/example/private token=ghp_1234567890abcdef",
-        RedactionState::Raw,
-    );
-    let withheld_event = local_preview_event(
-        3,
-        "legacywithheldmarker cwd=/home/example/private token=ghp_1234567890abcdef",
-        RedactionState::Withheld,
+        "rawmarker cwd=/home/example/private token=ghp_1234567890abcdef",
     );
 
     store.upsert_event(&local_event).unwrap();
     store.upsert_event(&raw_event).unwrap();
-    store.upsert_event(&withheld_event).unwrap();
 
     let local_preview: String = store
         .conn
         .query_row(
-            "SELECT safe_preview_text FROM event_search WHERE event_id = ?1",
+            "SELECT preview_text FROM event_search WHERE event_id = ?1",
             [local_event.id.to_string()],
             |row| row.get(0),
         )
@@ -239,30 +228,20 @@ fn event_search_preserves_local_and_legacy_withheld_text_but_raw_is_withheld() {
     assert!(local_preview.contains("/home/example/private"));
     assert!(local_preview.contains("ghp_1234567890abcdef"));
 
-    let withheld_preview: String = store
-        .conn
-        .query_row(
-            "SELECT safe_preview_text FROM event_search WHERE event_id = ?1",
-            [withheld_event.id.to_string()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(withheld_preview.contains("legacywithheldmarker"));
-    assert!(withheld_preview.contains("/home/example/private"));
-    assert!(withheld_preview.contains("ghp_1234567890abcdef"));
-
-    let hits = store.search_event_hits("legacywithheldmarker", 10).unwrap();
-    assert!(hits.iter().any(|hit| hit.event_id == withheld_event.id));
-
     let raw_preview: String = store
         .conn
         .query_row(
-            "SELECT safe_preview_text FROM event_search WHERE event_id = ?1",
+            "SELECT preview_text FROM event_search WHERE event_id = ?1",
             [raw_event.id.to_string()],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(raw_preview, "raw event payload withheld");
+    assert!(raw_preview.contains("rawmarker"));
+    assert!(raw_preview.contains("/home/example/private"));
+    assert!(raw_preview.contains("ghp_1234567890abcdef"));
+
+    let hits = store.search_event_hits("rawmarker", 10).unwrap();
+    assert!(hits.iter().any(|hit| hit.event_id == raw_event.id));
 }
 
 #[test]
@@ -274,7 +253,7 @@ fn upsert_record_updates_record_search_without_rebuilding_event_search() {
         .execute(
             r#"
             INSERT INTO event_search
-            (event_id, history_record_id, session_id, role, safe_preview_text, rank_bucket)
+            (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
             VALUES ('sentinel-event', NULL, NULL, 'user', 'preserve-event-search-row', 'message')
             "#,
             [],

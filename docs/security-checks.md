@@ -30,12 +30,10 @@ the local retrieval product.
   must not collect provider history or pollute command stdout/stderr.
 - Provider files are read as sources and not modified.
 - Provider transcript imports reject symlinked JSONL files by default.
-- JSON output is private by default and must not be described as share-safe.
+- JSON output is private by default.
 - Search/show/locate JSON and SQLite search projections preserve local
   transcript text by default, including absolute paths and secret-shaped
   strings. They must be treated as private local data.
-- The legacy `safe_preview` state and `safe_preview_text` columns mean local
-  searchable preview text, not share-safe redaction.
 - The public provider support matrix contains only supported providers and uses
   only the `supported` status. Unsupported-provider rationale belongs in
   private conformance evidence, not public tiers.
@@ -72,7 +70,7 @@ bazel test //:local_transcript_oracle --config=ci
 
 `//:local_transcript_oracle` imports a synthetic provider history with fake
 secret-shaped values, then checks `search`, `show`, and SQLite search
-projections preserve local transcript text and do not claim to be share-safe.
+projections preserve local transcript text.
 
 ## Mode Placement
 
@@ -92,10 +90,9 @@ repository mutation, or API keys.
 - Provider support docs match `docs/provider-support-matrix.json`.
 - Testing taxonomy keeps the public command surface focused on local search and
   static smoke coverage.
-- JSON docs identify local/private output and compatibility limits.
+- JSON docs identify local/private output.
 - Symlink policy stays explicit: provider transcript symlinks are rejected unless
   a future change adds canonical root-contained symlink support with tests.
-- Security docs do not promise default local sanitization. Share-safe or
-  shared-service redaction requires an explicit future mode.
+- Security docs do not promise default local sanitization.
 - Public docs do not make strict no-network claims except when describing
   local-only security mode.

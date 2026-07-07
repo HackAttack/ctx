@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use crate::{
     AgentType, Confidence, EventRole, EventType, Fidelity, FileChangeKind,
-    ProviderArtifactDescriptor, ProviderCursorRange, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSourceTrust, RedactionState, SessionEdgeType, SessionStatus,
+    ProviderArtifactDescriptor, ProviderCursorRange, ProviderSourceTrust, SessionEdgeType,
+    SessionStatus,
 };
 
 pub const CTX_HISTORY_JSONL_V1_SCHEMA_VERSION: &str = "ctx-history-jsonl-v1";
@@ -49,10 +49,6 @@ pub struct CtxHistoryJsonlSourceRecord {
     pub observed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
-    #[serde(default)]
-    pub raw_retention: ProviderRawRetention,
-    #[serde(default)]
-    pub redaction_boundary: ProviderRedactionBoundary,
     #[serde(default)]
     pub trust: ProviderSourceTrust,
     #[serde(default = "default_imported_fidelity")]
@@ -116,8 +112,6 @@ pub struct CtxHistoryJsonlEventRecord {
     pub occurred_at: DateTime<Utc>,
     #[serde(default = "default_imported_fidelity")]
     pub fidelity: Fidelity,
-    #[serde(default)]
-    pub redaction_state: RedactionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

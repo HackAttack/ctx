@@ -1,10 +1,9 @@
 use super::{
     fixed_time, search_packet, sync_metadata, test_store, timestamps, AgentType, CaptureProvider,
     CaptureSource, CaptureSourceDescriptor, CaptureSourceKind, Confidence, EntityTimestamps, Event,
-    EventRole, EventType, FileChangeKind, FileTouched, HistoryRecord, PacketOptions, Path,
-    RedactionState, Run, RunStatus, RunType, SearchFilters, SearchResultMode, Session,
-    SessionHistoryArchive, SessionStatus, Summary, SummaryKind, SyncMetadata, Uuid, VcsHost,
-    VcsKind, VcsWorkspace,
+    EventRole, EventType, FileChangeKind, FileTouched, HistoryRecord, PacketOptions, Path, Run,
+    RunStatus, RunType, SearchFilters, SearchResultMode, Session, SessionHistoryArchive,
+    SessionStatus, Summary, SummaryKind, SyncMetadata, Uuid, VcsHost, VcsKind, VcsWorkspace,
 };
 
 #[test]
@@ -479,7 +478,6 @@ fn synthetic_perf_archive(event_count: usize, events_per_record: usize) -> Sessi
                 dedupe_key: (local_index == 0).then(|| {
                     format!("provider:codex:s{record_index:05}:{local_index}:h{event_index:06}")
                 }),
-                redaction_state: RedactionState::SafePreview,
                 sync: sync_metadata(),
             });
         }

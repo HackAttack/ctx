@@ -79,7 +79,6 @@ class ProviderSource(_ProviderSourceRequired, total=False):
     sourceFormat: Optional[str]
     importSupport: Optional[str]
     nativeImport: bool
-    rawRetention: Optional[str]
     unsupportedReason: Optional[str]
 
 
@@ -164,7 +163,6 @@ class Event(TypedDict, total=False):
     cursor: Optional[str]
     text: Optional[str]
     preview: Optional[str]
-    redactionState: Optional[str]
     citations: list[Citation]
 
 

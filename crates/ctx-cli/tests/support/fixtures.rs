@@ -13,10 +13,6 @@ pub(crate) fn custom_history_fixture(name: &str) -> String {
     materialized_fixture("custom-history-jsonl", name)
 }
 
-pub(crate) fn redaction_fixture(name: &str) -> String {
-    materialized_fixture("redaction", name)
-}
-
 pub(crate) fn materialized_fixture(category: &str, name: &str) -> String {
     let source = match category {
         "provider-history" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,9 +23,6 @@ pub(crate) fn materialized_fixture(category: &str, name: &str) -> String {
             .join(name),
         "provider" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/provider")
-            .join(name),
-        "redaction" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/redaction")
             .join(name),
         _ => panic!("unknown fixture category {category}"),
     };

@@ -8,9 +8,9 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, RedactionState, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -31,7 +31,7 @@ use crate::{
 
 mod windsurf;
 
-pub(crate) use windsurf::{windsurf_event_text, windsurf_redacted_body};
+pub(crate) use windsurf::{windsurf_event_body, windsurf_event_text};
 
 pub(crate) fn normalize_jsonl_tree(
     path: &Path,
@@ -272,8 +272,6 @@ pub(crate) fn normalize_native_jsonl_session_file(
                     source_root: context
                         .source_root_display()
                         .or_else(|| Some(raw_source_path.clone())),
-                    raw_retention: ProviderRawRetention::PathReference,
-                    redaction_boundary: ProviderRedactionBoundary::BeforeExport,
                     trust: ProviderSourceTrust::ProviderNative,
                     fidelity: Fidelity::Imported,
                     cursor: Some(ProviderCursorRange {
@@ -539,7 +537,7 @@ pub(crate) fn native_jsonl_event(
         None
     };
     let body = if provider == CaptureProvider::Windsurf {
-        windsurf_redacted_body(value)
+        windsurf_event_body(value)
     } else {
         provider_capped_json(value, PROVIDER_MAX_PREVIEW_CHARS)
     };
@@ -552,7 +550,6 @@ pub(crate) fn native_jsonl_event(
         role: Some(role),
         occurred_at,
         fidelity: Fidelity::Imported,
-        redaction_state: RedactionState::LocalPreview,
         idempotency_key: Some(format!(
             "provider-event:{}:{source_format}:{event_id}",
             provider.as_str()

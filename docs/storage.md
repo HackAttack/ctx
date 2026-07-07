@@ -229,14 +229,9 @@ not remove provider-owned history such as `~/.codex/sessions`.
 
 ## Privacy Truth
 
-No local search index can be considered share-safe by default. Indexed prompts,
-code, commands, file paths, and output previews may contain credentials,
-customer data, private repository names, or proprietary design notes.
-The persisted `safe_preview` redaction state and `safe_preview_text` search
-columns are legacy local-index names for searchable previews; they do not mean
-the stored text has been redacted for sharing. Legacy rows marked `withheld`
-remain readable for compatibility and are treated as local/private searchable
-history when payload text exists, not as a local redaction guarantee.
+Indexed prompts, code, commands, file paths, and output previews may contain
+credentials, customer data, private repository names, or proprietary design
+notes.
 
 Recommended handling:
 

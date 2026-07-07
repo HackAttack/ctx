@@ -8,7 +8,7 @@ use clap::ValueEnum;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use ctx_history_core::{CaptureProvider, Event, EventRole, EventType, RedactionState, Session};
+use ctx_history_core::{CaptureProvider, Event, EventRole, EventType, Session};
 use ctx_history_store::Store;
 
 use crate::output::{compact_json, OutputFormat};
@@ -184,9 +184,6 @@ pub(crate) fn is_assistant_message(event: &Event) -> bool {
 }
 
 pub(crate) fn event_content(event: &Event) -> String {
-    if event.redaction_state == RedactionState::Raw {
-        return "raw event payload withheld".to_owned();
-    }
     if let Some(value) = event.payload.get("body").and_then(event_value_text) {
         return ctx_history_search::display_snippet(&value, 16_000);
     }
@@ -517,7 +514,6 @@ pub(crate) fn transcript_event_json(store: &Store, event: &Event) -> Value {
         "cursor": event_cursor(event),
         "preview": event_preview(event),
         "text": event_content(event),
-        "redaction_state": event.redaction_state,
     }))
 }
 
@@ -762,7 +758,7 @@ mod tests {
     use chrono::{DateTime, Utc};
     use ctx_history_core::{Fidelity, SyncMetadata, SyncState, Visibility};
 
-    fn test_event(redaction_state: RedactionState) -> Event {
+    fn test_event() -> Event {
         Event {
             id: Uuid::parse_str("018f45d0-0000-7000-8000-000000000010").unwrap(),
             seq: 1,
@@ -775,10 +771,9 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
             capture_source_id: None,
-            payload: json!({"text": "legacy withheld show payload should render locally"}),
+            payload: json!({"text": "local show payload should render"}),
             payload_blob_id: None,
             dedupe_key: None,
-            redaction_state,
             sync: SyncMetadata {
                 visibility: Visibility::LocalOnly,
                 fidelity: Fidelity::Imported,
@@ -791,14 +786,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_withheld_event_content_preserves_payload_text() {
-        let event = test_event(RedactionState::Withheld);
+    fn event_content_preserves_payload_text() {
+        let event = test_event();
 
         let content = event_content(&event);
         let preview = event_preview(&event);
 
-        assert!(content.contains("legacy withheld show payload should render locally"));
-        assert!(preview.contains("legacy withheld show payload"));
-        assert_ne!(content, "raw event payload withheld");
+        assert!(content.contains("local show payload should render"));
+        assert!(preview.contains("local show payload"));
     }
 }

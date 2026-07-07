@@ -74,14 +74,6 @@ public final class ProviderSource {
         return getImportable();
     }
 
-    public String getRawRetention() {
-        return AgentHistoryValue.string(fields.get("rawRetention"));
-    }
-
-    public String rawRetention() {
-        return getRawRetention();
-    }
-
     public String getUnsupportedReason() {
         return AgentHistoryValue.string(fields.get("unsupportedReason"));
     }

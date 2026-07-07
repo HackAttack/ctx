@@ -6,9 +6,9 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     AgentType, CaptureProvider, EventRole, EventType, Fidelity, ProviderCaptureEnvelope,
-    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderRawRetention,
-    ProviderRedactionBoundary, ProviderSessionEnvelope, ProviderSourceEnvelope,
-    ProviderSourceTrust, SessionStatus, PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
+    ProviderCursorCheckpoint, ProviderCursorRange, ProviderEventEnvelope, ProviderSessionEnvelope,
+    ProviderSourceEnvelope, ProviderSourceTrust, SessionStatus,
+    PROVIDER_CAPTURE_ENVELOPE_SCHEMA_VERSION,
 };
 use rmpv::{decode::read_value as read_msgpack_value, Value as MsgpackValue};
 use rusqlite::Connection;
@@ -341,8 +341,6 @@ pub(crate) fn deepagents_capture(
             observed_at,
             raw_source_path: raw_source_path.clone(),
             source_root: context.source_root_display().or(raw_source_path.clone()),
-            raw_retention: ProviderRawRetention::PathReference,
-            redaction_boundary: ProviderRedactionBoundary::BeforeExport,
             trust: ProviderSourceTrust::ProviderNative,
             fidelity: Fidelity::Imported,
             cursor: cursor.clone().map(|cursor| ProviderCursorRange {

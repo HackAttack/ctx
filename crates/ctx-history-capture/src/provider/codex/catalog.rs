@@ -346,7 +346,6 @@ pub(crate) fn catalog_codex_session_file(
             "source_kind": codex_source_kind(&source),
             "source": source,
             "catalog_scope": "session_meta",
-            "raw_retention": "path_reference",
         }),
     })
 }

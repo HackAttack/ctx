@@ -22,9 +22,9 @@ use text::render_tool_text;
 
 use super::{
     cli_supported_provider, compact_json, config::CONFIG_FILE, discovered_plugin_sources_json,
-    discovered_sources, event_window, event_window_json, mark_share_safe, raw_sql_result_json,
-    search_filters, search_has_intent, session_transcript_json, sources_json, OutputFormat,
-    ProviderArg, RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput, SearchRefreshReport,
+    discovered_sources, event_window, event_window_json, raw_sql_result_json, search_filters,
+    search_has_intent, session_transcript_json, sources_json, OutputFormat, ProviderArg,
+    RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput, SearchRefreshReport,
     SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
 };
 
@@ -501,9 +501,7 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     };
     let packet = ctx_history_search::search_packet(&store, &query, &options)?;
     let refresh = SearchRefreshReport::skipped(RefreshArg::Off, "skipped");
-    let mut value = SearchDto::packet(&store, &packet, &refresh, Some(&query));
-    mark_share_safe(&mut value);
-    Ok(value)
+    Ok(SearchDto::packet(&store, &packet, &refresh, Some(&query)))
 }
 
 fn tool_sql(arguments: &Value, data_root: &Path) -> Result<Value> {
@@ -530,9 +528,7 @@ fn tool_sql(arguments: &Value, data_root: &Path) -> Result<Value> {
             timeout: Duration::from_millis(timeout_ms),
         },
     )?;
-    let mut value = raw_sql_result_json(&result);
-    mark_share_safe(&mut value);
-    Ok(value)
+    Ok(raw_sql_result_json(&result))
 }
 
 fn tool_show_session(arguments: &Value, data_root: &Path) -> Result<Value> {

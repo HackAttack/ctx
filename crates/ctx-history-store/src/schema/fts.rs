@@ -18,14 +18,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS event_search USING fts5(
     history_record_id UNINDEXED,
     session_id UNINDEXED,
     role UNINDEXED,
-    safe_preview_text,
+    preview_text,
     rank_bucket UNINDEXED
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS artifact_search USING fts5(
     artifact_id UNINDEXED,
     history_record_id UNINDEXED,
-    safe_preview_text
+    preview_text
 );
 "#;
 

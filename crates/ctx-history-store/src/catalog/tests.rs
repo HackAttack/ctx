@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{
     new_id, AgentType, Artifact, ArtifactKind, CaptureProvider, CaptureSource,
     CaptureSourceDescriptor, CaptureSourceKind, EntityTimestamps, Event, EventRole, EventType,
-    Fidelity, RedactionState, Session, SessionStatus, SyncMetadata, SyncState, Visibility,
+    Fidelity, Session, SessionStatus, SyncMetadata, SyncState, Visibility,
 };
 use rusqlite::{ffi::ErrorCode, params};
 use uuid::Uuid;
@@ -164,7 +164,6 @@ fn session_event(session_id: Uuid, index: u64) -> Event {
         payload: serde_json::json!({"index": index}),
         payload_blob_id: None,
         dedupe_key: None,
-        redaction_state: RedactionState::LocalPreview,
         sync: sync_metadata(),
     }
 }
@@ -178,7 +177,6 @@ fn artifact_record(id: Uuid, byte_size: u64) -> Artifact {
         byte_size,
         media_type: Some("text/markdown".to_owned()),
         preview_text: Some("artifact preview".to_owned()),
-        redaction_state: RedactionState::LocalPreview,
         timestamps: timestamps(),
         source_id: None,
         sync: sync_metadata(),
@@ -1167,7 +1165,6 @@ fn row_readers_reject_negative_unsigned_columns() {
         payload: serde_json::json!({"text": "negative seq marker"}),
         payload_blob_id: None,
         dedupe_key: None,
-        redaction_state: RedactionState::LocalPreview,
         sync: sync_metadata(),
     };
     store.upsert_event(&event).unwrap();

@@ -228,7 +228,6 @@ func dogfoodEvent() map[string]any {
 		"source":         "codex",
 		"cursor":         "line:1",
 		"text":           "local agent history search result",
-		"redactionState": "redacted",
 	}
 }
 

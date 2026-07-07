@@ -45,9 +45,6 @@
         "token_usage": false,
         "parent_child_session_edges": true
       },
-      "redaction_notes": [
-        "Search output is local/private; review before sharing."
-      ],
       "public_docs": "docs/providers.md"
     },
     {
@@ -87,9 +84,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Real local output remains private by default."
-      ],
       "public_docs": "docs/providers.md"
     },
     {
@@ -200,10 +194,6 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported text, cwd, model, token/cost metadata, local source paths, and searchable previews remain in the local ctx index.",
-        "KILO_CONFIG_DIR controls Kilo config, not the SQLite history database path."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Only OpenCode-derived SQLite session/session_message and legacy message-table projections are imported; todo and permission tables are recognized as schema neighbors but not converted into separate ctx events."
@@ -247,10 +237,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported prompts, assistant text, tool-use arguments, cwd/directory keys, local source paths, and searchable previews remain in the local ctx index.",
-        "KIRO_HOME is documented for Kiro-managed session/settings homes, but this importer does not infer a SQLite DB path from KIRO_HOME."
-      ],
       "public_docs": "docs/provider-support.md",
       "limitations": [
         "Does not import the newer ~/.kiro/sessions/cli JSON/JSONL event-log format observed in recent Kiro CLI reports.",
@@ -298,9 +284,6 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported message text, tool output previews, command output, file paths, model, token/cost metadata, and local source paths remain in the local ctx index."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Crush SQLite schema changes may require adapter updates."
@@ -345,9 +328,6 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported message text, tool output previews, working directories, file paths, model, token/cost metadata, and local source paths remain in the local ctx index."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Goose sessions.db schema changes may require adapter updates."
@@ -390,10 +370,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported prompt text, summaries/errors, extra JSON, and local source paths remain in the local ctx index.",
-        "Assistant content is summary/error_result only and may be incomplete."
-      ],
       "public_docs": "docs/providers.md",
       "metadata": {
         "aliases": [
@@ -441,10 +417,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads provider transcript JSONL files read-only; imported prompt text, assistant text, tool names/inputs, tool result previews, cwd, local source paths, and searchable previews remain in the local ctx index.",
-        "Raw provider event JSON is retained only as capped local preview metadata; review output before sharing."
-      ],
       "public_docs": "docs/provider-support.md",
       "metadata": {
         "canonical_provider_id": "qoder",
@@ -495,10 +467,6 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported prompt/assistant text, tool markers, reasoning/summary text, token usage metadata, task summaries, and local source paths remain in the local ctx index.",
-        "server_conversation_token and forked_from_server_conversation_token values from Warp conversation_data are not copied into ctx metadata; ctx records only boolean token presence."
-      ],
       "public_docs": "docs/provider-support.md",
       "limitations": [
         "Remote sync endpoints, hosted agent conversations, Markdown exports, browser IndexedDB, command history outside agent_tasks, and Warp Drive/team data are not parsed."
@@ -544,10 +512,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads provider JSON files read-only; imported message text, model hints, and local source paths remain in the local ctx index.",
-        "CodeBuddy context wrapper tags such as project_context and user_info are removed from the searchable preview."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Official CodeBuddy docs do not describe this JSON history format; future schema changes may require adapter updates."
@@ -598,10 +562,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads local Trae SQLite state databases read-only; imported message text and local source paths remain in the local ctx index.",
-        "Provider-native JSON metadata is capped and marked local partial."
-      ],
       "public_docs": "docs/provider-support.md",
       "metadata": {
         "default_auto_discovery": true,
@@ -656,9 +616,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Imports are local/private and preserve source paths for citations."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Newer OpenClaw session APIs may change the local transcript contract; ctx currently reads the listed JSONL homes."
@@ -700,9 +657,6 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported text remains in the local ctx index."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": []
     },
@@ -743,9 +697,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Explicit NanoClaw imports may include IM/chat channel identifiers stored in NanoClaw project databases."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Automatic refresh is intentionally disabled until more real-world NanoClaw project layout drift is validated."
@@ -788,9 +739,6 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Automatic imports may include IM platform IDs, user IDs, sender names, and local chat text from data_v4.db."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": []
     },
@@ -831,9 +779,6 @@
         "token_usage": true,
         "parent_child_session_edges": true
       },
-      "redaction_notes": [
-        "Reads the provider SQLite database read-only; imported conversation text, tool output, cwd, model, usage, and local source paths remain in the local ctx index."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "Shelley SQLite schema changes may require adapter updates."
@@ -876,9 +821,6 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads provider JSON files read-only; imported message text, tool output previews, cwd, usage, and local source paths remain in the local ctx index."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "This row covers Continue CLI sessions/*.json history, not editor webview-only state."
@@ -922,9 +864,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads provider JSON files read-only; imported message text, tool output previews, cwd, and local source paths remain in the local ctx index."
-      ],
       "public_docs": "docs/provider-support.md",
       "limitations": []
     },
@@ -1122,10 +1061,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads hook-generated JSONL files read-only; imported user prompts, planner responses, event types/statuses, local transcript paths, and touched file paths remain in the local ctx index.",
-        "Known bulky fields such as file contents, command outputs, tool arguments, and results are omitted from the searchable event body preview."
-      ],
       "public_docs": "docs/provider-support.md",
       "limitations": [
         "Support is limited to official hook transcript JSONL; sessions that Windsurf did not write after hook setup are not backfilled from private caches."
@@ -1359,10 +1294,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads provider JSON files read-only; imported message text, local workspace paths, and source paths remain in the local ctx index.",
-        "Agent state and unrecognized exchange fields are retained only as capped native JSON metadata."
-      ],
       "public_docs": "docs/provider-support.md",
       "limitations": [
         "Future Auggie session JSON schema changes may require adapter updates.",
@@ -1407,10 +1338,6 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads Junie session files read-only; imported prompt/result/tool text, local source paths, and session metadata remain in the local ctx index.",
-        "The native importer does not read custom attachment image files or Junie project memory directories."
-      ],
       "public_docs": "docs/provider-support.md",
       "metadata": {
         "npx_skills_id": "junie",
@@ -1457,10 +1384,6 @@
         "token_usage": false,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads the local project SQLite database read-only; imported message text and source paths remain in the local ctx index.",
-        "Raw Firebender message JSON is retained in event payloads; session metadata_json is retained only as capped provider metadata."
-      ],
       "public_docs": "docs/provider-support.md",
       "metadata": {
         "aliases": [
@@ -1725,10 +1648,6 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads local task JSON files read-only; imported text remains in the local ctx index.",
-        "Raw provider paths are retained only as local source metadata for citations."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "VS Code private extension state databases are not parsed; file-backed task directories are required."
@@ -1771,10 +1690,6 @@
         "token_usage": true,
         "parent_child_session_edges": false
       },
-      "redaction_notes": [
-        "Reads local task JSON files read-only; imported text remains in the local ctx index.",
-        "Raw provider paths are retained only as local source metadata for citations."
-      ],
       "public_docs": "docs/providers.md",
       "limitations": [
         "VS Code private extension state databases are not parsed; file-backed task directories are required."

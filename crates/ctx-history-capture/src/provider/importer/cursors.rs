@@ -1,6 +1,6 @@
 use ctx_history_core::{
     CaptureProvider, ProviderCaptureEnvelope, ProviderCursorCheckpoint, ProviderCursorRange,
-    ProviderSourceEnvelope, RedactionState, SyncCursor,
+    ProviderSourceEnvelope, SyncCursor,
 };
 use ctx_history_store::Store;
 
@@ -101,18 +101,6 @@ fn provider_source_cursor_stream_for_component(
     )
 }
 
-pub(crate) fn effective_event_redaction_state(
-    requested: RedactionState,
-    sanitizer_redacted: bool,
-) -> RedactionState {
-    match requested {
-        _ if sanitizer_redacted => RedactionState::Redacted,
-        RedactionState::Redacted => RedactionState::Redacted,
-        RedactionState::Raw => RedactionState::Raw,
-        _ => RedactionState::LocalPreview,
-    }
-}
-
 pub(crate) fn persist_provider_cursor(
     store: &mut Store,
     capture: &ProviderCaptureEnvelope,
@@ -164,29 +152,4 @@ pub(crate) fn persist_provider_cursor(
         timestamps: timestamps(checkpoint.observed_at),
     })?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn requested_withheld_normalizes_to_local_preview_for_local_imports() {
-        assert_eq!(
-            effective_event_redaction_state(RedactionState::Withheld, false),
-            RedactionState::LocalPreview
-        );
-    }
-
-    #[test]
-    fn sanitizer_redaction_still_marks_event_redacted() {
-        assert_eq!(
-            effective_event_redaction_state(RedactionState::Withheld, true),
-            RedactionState::Redacted
-        );
-        assert_eq!(
-            effective_event_redaction_state(RedactionState::Raw, true),
-            RedactionState::Redacted
-        );
-    }
 }

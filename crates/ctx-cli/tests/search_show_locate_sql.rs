@@ -106,7 +106,6 @@ fn sql_reads_existing_store_and_supports_formats_and_input_sources() {
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["item_type"], "sql_result");
     assert_eq!(json["read_only"], true);
-    assert_eq!(json["share_safe"], false);
     assert_eq!(json["columns"], json!(["one", "two"]));
     assert_eq!(json["rows"], json!([[1, "two"]]));
     assert_eq!(json["returned_rows"], 1);
@@ -249,7 +248,6 @@ fn fresh_home_search_mvp_flow() {
     let search =
         json_output(ctx(&temp).args(["search", "onboarding", "--provider", "codex", "--json"]));
     assert_eq!(search["schema_version"], 1);
-    assert_eq!(search["share_safe"], false);
     assert_omits_keys(
         &search,
         &[
@@ -1278,83 +1276,4 @@ fn codex_cli_marks_deleted_raw_source_citations_unavailable() {
         .iter()
         .flat_map(|result| result["citations"].as_array().unwrap().iter())
         .any(|citation| citation["source_exists"] == false));
-}
-
-#[test]
-fn local_transcript_oracle_preserves_cli_json_and_sqlite() {
-    let temp = tempdir();
-    let fixture = redaction_fixture("codex-sessions");
-
-    let import = json_output(
-        ctx(&temp)
-            .env("CTX_CODEX_TOOL_OUTPUT_MODE", "full")
-            .env("CTX_CODEX_EVENT_MODE", "rich")
-            .env("CTX_CODEX_INCLUDE_NOTICES", "1")
-            .args([
-                "import",
-                "--provider",
-                "codex",
-                "--path",
-                &fixture,
-                "--json",
-            ]),
-    );
-    assert_eq!(import["schema_version"], 1);
-    assert_eq!(import["totals"]["failed"], 0);
-    assert!(import["totals"]["imported_sessions"].as_u64().unwrap() > 0);
-
-    let search = json_output(ctx(&temp).args(["search", "visible marker", "--json"]));
-    assert_eq!(search["schema_version"], 1);
-    assert_eq!(search["share_safe"], false);
-    assert!(!search["results"].as_array().unwrap().is_empty());
-
-    let conn = Connection::open(temp.path().join("work.sqlite")).unwrap();
-    let ctx_session_id: String = conn
-        .query_row(
-            "SELECT id FROM sessions WHERE provider = 'codex' ORDER BY started_at_ms LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-
-    let show = json_output(ctx(&temp).args([
-        "show",
-        "session",
-        &ctx_session_id,
-        "--mode",
-        "log",
-        "--format",
-        "json",
-    ]));
-    assert_eq!(show["schema_version"], 1);
-    assert!(show["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|event| event["preview"]
-            .as_str()
-            .unwrap_or("")
-            .contains("fake.jwt.token")));
-
-    let cli_json = format!("{import}\n{search}\n{show}");
-    assert!(!cli_json.contains("[REDACTED"));
-    assert_contains_markers("cli json", &cli_json, local_cli_markers());
-
-    let event_payloads = sqlite_column_text(&conn, "SELECT COALESCE(payload_json, '') FROM events");
-    let event_index = sqlite_column_text(
-        &conn,
-        "SELECT COALESCE(safe_preview_text, '') FROM event_search",
-    );
-    let record_index = sqlite_column_text(
-        &conn,
-        "SELECT COALESCE(title, '') || ' ' || COALESCE(summary, '') || ' ' || COALESCE(primary_user_text, '') || ' ' || COALESCE(decision_text, '') || ' ' || COALESCE(context_text, '') || ' ' || COALESCE(tag_text, '') FROM ctx_history_search",
-    );
-    let sqlite_text = format!("{event_payloads}\n{event_index}\n{record_index}");
-    assert!(!sqlite_text.contains("[REDACTED"));
-    assert!(event_index.contains("/home/alice/src/acme-secret/project"));
-    assert_contains_markers(
-        "sqlite indexed output",
-        &sqlite_text,
-        local_sqlite_markers(),
-    );
 }
