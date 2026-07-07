@@ -511,6 +511,170 @@ fn native_opencode_skips_oversized_legacy_message_value_without_failure() {
 }
 
 #[test]
+fn native_opencode_imports_message_part_text_and_metadata() {
+    let temp = tempdir();
+    let fixture = write_opencode_message_part_db(
+        &temp,
+        "opencode-message-part.db",
+        "opencode-part-root",
+        "opencode message part oracle",
+    );
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_opencode_sqlite(
+        &fixture,
+        &mut store,
+        OpenCodeSqliteImportOptions {
+            allow_partial_failures: true,
+            ..OpenCodeSqliteImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.imported_sessions, 1);
+    assert_eq!(summary.imported_events, 1);
+    assert_message_part_import(
+        &store,
+        CaptureProvider::OpenCode,
+        OPENCODE_SQLITE_SOURCE_FORMAT,
+        "opencode-part-root",
+        "opencode message part oracle",
+    );
+}
+
+#[test]
+fn native_kilo_imports_message_part_text_and_metadata() {
+    let temp = tempdir();
+    let fixture = write_opencode_message_part_db(
+        &temp,
+        "kilo-message-part.db",
+        "kilo-part-root",
+        "kilo message part oracle",
+    );
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_kilo_sqlite(
+        &fixture,
+        &mut store,
+        KiloSqliteImportOptions {
+            allow_partial_failures: true,
+            ..KiloSqliteImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.imported_sessions, 1);
+    assert_eq!(summary.imported_events, 1);
+    assert_message_part_import(
+        &store,
+        CaptureProvider::Kilo,
+        KILO_SQLITE_SOURCE_FORMAT,
+        "kilo-part-root",
+        "kilo message part oracle",
+    );
+}
+
+#[test]
+fn native_opencode_message_part_invalid_json_reports_failure() {
+    let temp = tempdir();
+    let fixture = write_opencode_message_part_db(
+        &temp,
+        "opencode-message-part-invalid-json.db",
+        "opencode-invalid-part-root",
+        "opencode invalid part oracle",
+    );
+    let conn = Connection::open(&fixture).unwrap();
+    conn.execute(
+        "update part set data = '{invalid json' where id = 'part-text'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary =
+        import_opencode_sqlite(&fixture, &mut store, OpenCodeSqliteImportOptions::default())
+            .unwrap();
+
+    assert_eq!(summary.failed, 1);
+    assert!(summary.failures[0]
+        .error
+        .contains("invalid JSON in session_message"));
+}
+
+fn assert_message_part_import(
+    store: &Store,
+    provider: CaptureProvider,
+    source_format: &str,
+    provider_session_id: &str,
+    oracle_text: &str,
+) {
+    let session_id = stored_provider_session_id(store, provider, provider_session_id);
+    let events = store.events_for_session(session_id).unwrap();
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.event_type, EventType::Message);
+    assert_eq!(event.payload["body"]["text"].as_str(), Some(oracle_text));
+    assert_eq!(
+        event.payload["body"]["message_id"].as_str(),
+        Some("part-message")
+    );
+    assert_eq!(event.payload["body"]["part_id"].as_str(), Some("part-text"));
+    assert_eq!(
+        event.sync.metadata["source_format"].as_str(),
+        Some(source_format)
+    );
+    let rendered = serde_json::to_string(event).unwrap();
+    assert!(rendered.contains("message:part-message:part:part-text"));
+    assert!(!rendered.contains("session_message:"));
+    assert!(!rendered.contains("part-tool"));
+    assert!(!rendered.contains("write_file"));
+    assert!(!rendered.contains("outputPath"));
+    assert!(!rendered.contains("part-patch"));
+    assert!(!rendered.contains("opencode_part_from_files"));
+    assert!(!rendered.contains("*** Begin Patch"));
+    assert!(!rendered.contains("raw-opencode-patch-needle"));
+
+    assert!(store
+        .search_event_hits(oracle_text, 10)
+        .unwrap()
+        .iter()
+        .any(|hit| hit.provider == Some(provider)));
+    assert!(store
+        .search_event_hits("Begin Patch", 10)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .search_event_hits("raw-opencode-patch-needle", 10)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .search_event_hits("tool_arg_should_not_touch", 10)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .search_event_hits("opencode_part_from_files", 10)
+        .unwrap()
+        .is_empty());
+
+    let archive = store.export_archive().unwrap();
+    assert!(archive
+        .files_touched
+        .iter()
+        .any(|file| file.path == "src/opencode_part.txt"));
+    assert!(archive
+        .files_touched
+        .iter()
+        .any(|file| file.path == "src/opencode_part_from_files.txt"));
+    assert!(!archive
+        .files_touched
+        .iter()
+        .any(|file| file.path == "src/tool_arg_should_not_touch.txt"));
+}
+
+#[test]
 fn native_opencode_reports_malformed_and_corrupt_db() {
     let temp = tempdir();
     let malformed = write_opencode_smoke_db(&temp, true);
