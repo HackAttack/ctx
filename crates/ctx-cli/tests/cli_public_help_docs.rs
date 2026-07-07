@@ -31,6 +31,7 @@ fn help_exposes_session_retrieval_commands() {
         "mcp",
         "sql",
         "integrations",
+        "daemon",
         "upgrade",
         "doctor",
     ] {
@@ -253,6 +254,17 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             ],
         ),
         (
+            "daemon",
+            vec![
+                "Usage: ctx daemon",
+                "run",
+                "status",
+                "enable",
+                "disable",
+                "Run or inspect local ctx background maintenance",
+            ],
+        ),
+        (
             "upgrade",
             vec![
                 "Usage: ctx upgrade",
@@ -316,6 +328,66 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             assert!(
                 !help.contains(forbidden),
                 "{command} help leaked {forbidden} in\n{help}"
+            );
+        }
+    }
+}
+
+#[test]
+fn daemon_help_exposes_readable_status_and_run_controls() {
+    let temp = tempdir();
+    for (args, required) in [
+        (
+            vec!["daemon", "status", "--help"],
+            vec![
+                "Usage: ctx daemon status",
+                "--json",
+                "Show ctx daemon status",
+            ],
+        ),
+        (
+            vec!["daemon", "run", "--help"],
+            vec![
+                "Usage: ctx daemon run",
+                "--once",
+                "--max-runtime-seconds <MAX_RUNTIME_SECONDS>",
+                "--idle-exit-seconds <IDLE_EXIT_SECONDS>",
+                "--loop-interval-seconds <LOOP_INTERVAL_SECONDS>",
+                "--max-chunks <MAX_CHUNKS>",
+                "--max-seconds <MAX_SECONDS>",
+                "--force",
+                "--json",
+            ],
+        ),
+        (
+            vec!["daemon", "enable", "--help"],
+            vec![
+                "Usage: ctx daemon enable",
+                "--json",
+                "Enable ctx daemon maintenance",
+            ],
+        ),
+        (
+            vec!["daemon", "disable", "--help"],
+            vec![
+                "Usage: ctx daemon disable",
+                "--json",
+                "Disable ctx daemon maintenance",
+            ],
+        ),
+    ] {
+        let output = ctx(&temp)
+            .args(args.clone())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let help = String::from_utf8(output).unwrap();
+        for needle in required {
+            assert!(
+                help.contains(needle),
+                "{args:?} help missing {needle} in\n{help}"
             );
         }
     }

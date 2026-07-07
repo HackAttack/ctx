@@ -36,10 +36,10 @@ use crate::search_filters::{
     SourceIdentityFilterArgs, SourceIdentityFilters,
 };
 use crate::search_render::{print_search_result_compact, print_search_result_verbose, SearchDto};
-use crate::semantic::SemanticRetrievalReport;
+use crate::semantic::search_packet_with_backend;
 use crate::store_util::open_existing_store_read_only;
 use crate::transcript::shell_quote_arg;
-use crate::{analytics, config, SearchArgs, SearchBackendArg, WAL_TRUNCATE_MIN_BYTES};
+use crate::{analytics, config, SearchArgs, WAL_TRUNCATE_MIN_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RefreshArg {
@@ -241,15 +241,31 @@ pub(crate) fn run_search(
     };
     let uses_composed_terms = args.term.iter().any(|term| !term.trim().is_empty());
     let query_started = Instant::now();
-    let packet = if uses_composed_terms {
-        ctx_history_search::search_packet_terms(&store, &query, &args.term, &options)?
-    } else {
-        ctx_history_search::search_packet(&store, &query, &options)?
-    };
+    let (packet, retrieval) = search_packet_with_backend(
+        &store,
+        &data_root,
+        &query,
+        &args.term,
+        &options,
+        args.backend,
+        args.semantic_weight,
+        args.refresh,
+        !args.json,
+    )?;
     analytics::insert_duration(
         analytics_properties,
         "query_duration",
         query_started.elapsed(),
+    );
+    analytics::insert_str(
+        analytics_properties,
+        "search_backend_requested",
+        args.backend.as_str(),
+    );
+    analytics::insert_str(
+        analytics_properties,
+        "search_backend_effective",
+        retrieval.effective_mode().as_str(),
     );
     let result_count = packet.results.len();
     let citation_count = packet
@@ -271,14 +287,6 @@ pub(crate) fn run_search(
     let render_started = Instant::now();
     if args.json {
         let suggested_next_query = (!uses_composed_terms).then_some(query.as_str());
-        let retrieval = SemanticRetrievalReport::lexical(
-            if matches!(args.backend, SearchBackendArg::Auto) {
-                SearchBackendArg::Auto
-            } else {
-                SearchBackendArg::Lexical
-            },
-            store.count_event_embedding_documents()?,
-        );
         print_json(SearchDto::packet(
             &store,
             &packet,

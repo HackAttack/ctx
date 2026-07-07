@@ -45,10 +45,9 @@ the local retrieval product.
   setup/import autostart, must write only under the configured ctx data root,
   respect `[daemon].enabled` unless explicitly forced, keep cloud sync disabled
   with `enabled: false` and `network_allowed: false`, and may run only bounded
-  native local provider-history refresh. Setup/import autostart must not create
-  or update the semantic sidecar. Explicit `ctx daemon run` may perform semantic
-  catch-up when the required local model cache already exists. It must not run
-  history-source plugins, download models, or use network/cloud sync unless a
+  native local provider-history refresh plus bounded semantic catch-up under the
+  ctx data root when the required local model cache already exists. It must not
+  run history-source plugins, download models, or use network/cloud sync unless a
   future product contract explicitly enables that behavior.
 - Provider files are read as sources and not modified.
 - Provider transcript imports reject symlinked JSONL files by default.

@@ -28,7 +28,7 @@ use super::{
     SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW,
     MAX_SEARCH_LIMIT,
 };
-use crate::semantic::{daemon_report, semantic_worker_report, SemanticRetrievalReport};
+use crate::semantic::{daemon_report, search_packet_with_backend, semantic_worker_report};
 use crate::store_util::open_existing_store_read_only;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -326,6 +326,8 @@ fn handle_tools_call(params: Value, data_root: &Path) -> Result<Value, Value> {
                     "session",
                     "events",
                     "include_current_session",
+                    "backend",
+                    "semantic_weight",
                 ],
             )?;
             tool_search(&arguments, data_root)
@@ -501,6 +503,11 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(false);
     let event_type = optional_string(arguments, "event_type")?;
     let file = optional_string(arguments, "file")?.map(PathBuf::from);
+    let backend = optional_search_backend(arguments, "backend")?.unwrap_or(SearchBackendArg::Auto);
+    let semantic_weight = optional_f32(arguments, "semantic_weight")?.unwrap_or(0.35);
+    if !(0.0..=1.0).contains(&semantic_weight) || !semantic_weight.is_finite() {
+        return Err(anyhow!("semantic_weight must be between 0.0 and 1.0"));
+    }
     if !search_has_intent(SearchIntentInput {
         query: Some(&query),
         terms: &[],
@@ -542,12 +549,18 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
         },
         ..ctx_history_search::PacketOptions::default()
     };
-    let packet = ctx_history_search::search_packet(&store, &query, &options)?;
+    let (packet, retrieval) = search_packet_with_backend(
+        &store,
+        data_root,
+        &query,
+        &[],
+        &options,
+        backend,
+        semantic_weight,
+        RefreshArg::Off,
+        false,
+    )?;
     let refresh = SearchRefreshReport::skipped(RefreshArg::Off, "skipped");
-    let retrieval = SemanticRetrievalReport::lexical(
-        SearchBackendArg::Lexical,
-        store.count_event_embedding_documents()?,
-    );
     Ok(SearchDto::packet(
         &store,
         &packet,
@@ -709,7 +722,9 @@ fn tool_definitions() -> Vec<Value> {
                 "file": { "type": "string", "description": "Indexed touched-file path. Required unless query is provided." },
                 "session": { "type": "string", "description": "ctx session id." },
                 "events": { "type": "boolean", "default": false },
-                "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." }
+                "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." },
+                "backend": { "type": "string", "enum": ["auto", "lexical", "semantic", "hybrid"], "default": "auto" },
+                "semantic_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.35 }
             }), vec![]),
             "annotations": { "readOnlyHint": true },
         }),
@@ -821,6 +836,18 @@ fn optional_usize(arguments: &Value, key: &str) -> Result<Option<usize>> {
     }
 }
 
+fn optional_f32(arguments: &Value, key: &str) -> Result<Option<f32>> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_f64()
+            .map(|value| value as f32)
+            .ok_or_else(|| anyhow!("{key} must be a number"))
+            .map(Some),
+        Some(_) => Err(anyhow!("{key} must be a number")),
+    }
+}
+
 fn required_uuid(arguments: &Value, key: &str) -> Result<Uuid> {
     optional_uuid(arguments, key)?.ok_or_else(|| anyhow!("{key} is required"))
 }
@@ -839,6 +866,21 @@ fn optional_provider(arguments: &Value, key: &str) -> Result<Option<ProviderArg>
         .filter(|provider| cli_supported_provider(provider.capture_provider()))
         .map(Some)
         .ok_or_else(|| anyhow!("provider must be one of {}", provider_names().join(", ")))
+}
+
+fn optional_search_backend(arguments: &Value, key: &str) -> Result<Option<SearchBackendArg>> {
+    let Some(value) = optional_string(arguments, key)? else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "auto" => Ok(Some(SearchBackendArg::Auto)),
+        "lexical" => Ok(Some(SearchBackendArg::Lexical)),
+        "semantic" => Ok(Some(SearchBackendArg::Semantic)),
+        "hybrid" => Ok(Some(SearchBackendArg::Hybrid)),
+        _ => Err(anyhow!(
+            "backend must be one of auto, lexical, semantic, hybrid"
+        )),
+    }
 }
 
 fn validate_argument_keys(arguments: &Value, allowed: &[&str]) -> std::result::Result<(), Value> {

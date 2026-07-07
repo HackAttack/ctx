@@ -89,12 +89,24 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     assert!(providers.iter().any(|provider| provider == "cline"));
     assert!(providers.iter().any(|provider| provider == "roo"));
     assert!(providers.iter().any(|provider| provider == "roo_code"));
+    let backend_values = search_tool["inputSchema"]["properties"]["backend"]["enum"]
+        .as_array()
+        .unwrap();
+    for expected in ["auto", "lexical", "semantic", "hybrid"] {
+        assert!(backend_values.iter().any(|value| value == expected));
+    }
+    assert_eq!(
+        search_tool["inputSchema"]["properties"]["semantic_weight"]["default"],
+        0.35
+    );
     let status = &responses[2]["result"]["structuredContent"];
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["initialized"], false);
     assert_eq!(status["indexed_sessions"], 0);
     assert_eq!(status["indexed_events"], 0);
     assert_eq!(status["read_only"], true);
+    assert_eq!(status["semantic"]["status"], "unknown");
+    assert_eq!(status["daemon"]["enabled"], true);
     assert_useful_mcp_text(
         &responses[2]["result"],
         &[
@@ -106,6 +118,10 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
             "indexed_events: 0",
             "read_only: true",
             "local_only: true",
+            "semantic: status=unknown",
+            "semantic_coverage: searchable_items=0",
+            "daemon: enabled=true",
+            "daemon_jobs:",
         ],
     );
     assert!(
@@ -421,7 +437,9 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
                     "arguments": {
                         "query": "onboarding",
                         "provider": "codex",
-                        "limit": 5
+                        "limit": 5,
+                        "backend": "hybrid",
+                        "semantic_weight": 0.4
                     }
                 }
             }),
@@ -432,12 +450,23 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
     assert_eq!(search["query"], "onboarding");
     assert_eq!(search["freshness"]["mode"], "off");
     assert_eq!(search["freshness"]["status"], "skipped");
+    assert_eq!(search["retrieval"]["requested_mode"], "hybrid");
+    assert_eq!(search["retrieval"]["effective_mode"], "lexical");
+    assert_eq!(search["retrieval"]["semantic_weight"], 0.0);
+    assert_eq!(
+        search["retrieval"]["semantic_fallback_code"],
+        "filtered_vector_lookup_unsupported"
+    );
     assert_useful_mcp_text(
         &search_responses[1]["result"],
         &[
             "ctx search",
             "query: onboarding",
             "freshness: off/skipped",
+            "retrieval: requested=hybrid, effective=lexical",
+            "semantic_weight=0",
+            "semantic_fallback: filtered_vector_lookup_unsupported",
+            "semantic_coverage:",
             "filters: provider=codex",
             "results: 1",
             "ctx_session_id:",

@@ -823,6 +823,9 @@ fn ensure_search_projection_initialized(conn: &Connection) -> Result<()> {
         projection_rows += table_row_count(conn, "artifact_search")?;
     }
     if projection_rows > 0 {
+        if cached_semantic_searchable_item_count(conn)?.is_none() {
+            refresh_semantic_searchable_item_stats(conn)?;
+        }
         return Ok(());
     }
 
@@ -926,8 +929,11 @@ pub(crate) fn adjust_semantic_searchable_item_stats(
     previous_count: usize,
     current_count: usize,
 ) -> Result<()> {
-    if previous_count == current_count || !table_exists(conn, "search_projection_stats")? {
+    if previous_count == current_count {
         return Ok(());
+    }
+    if !table_exists(conn, "search_projection_stats")? {
+        return refresh_semantic_searchable_item_stats(conn);
     }
     if cached_semantic_searchable_item_count(conn)?.is_none() {
         return refresh_semantic_searchable_item_stats(conn);

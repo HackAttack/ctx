@@ -530,6 +530,9 @@ fn fresh_home_search_mvp_flow() {
     let status = json_output(ctx(&temp).args(["status", "--json"]));
     assert_eq!(status["schema_version"], 1);
     assert!(status["indexed_items"].as_u64().unwrap() > 0);
+    assert_eq!(status["semantic"]["status"], "pending");
+    assert_eq!(status["daemon"]["enabled"], true);
+    assert!(status["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
     let doctor = json_output(ctx(&temp).args(["doctor", "--json"]));
     assert_eq!(doctor["schema_version"], 1);
@@ -546,6 +549,73 @@ fn fresh_home_search_mvp_flow() {
     let doctor_progress = String::from_utf8(doctor_progress).unwrap();
     assert!(doctor_progress.contains(r#""operation":"doctor""#));
     assert!(doctor_progress.contains(r#""phase":"checking""#));
+}
+
+#[test]
+fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
+    let temp = tempdir();
+    let fixture = provider_history_fixture("codex-sessions");
+    json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+
+    let default_search = json_output(ctx(&temp).args([
+        "search",
+        "semantic-only-missing-sidecar",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(default_search["retrieval"]["requested_mode"], "auto");
+    assert_eq!(default_search["retrieval"]["effective_mode"], "lexical");
+    assert_eq!(
+        default_search["retrieval"]["diagnostics"]["auto_hybrid_skipped"],
+        "semantic_index_unavailable"
+    );
+
+    let hybrid = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--backend",
+        "hybrid",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(hybrid["retrieval"]["requested_mode"], "hybrid");
+    assert_eq!(hybrid["retrieval"]["effective_mode"], "lexical");
+    assert_eq!(
+        hybrid["retrieval"]["semantic_fallback_code"],
+        "semantic_index_missing"
+    );
+
+    let strict_semantic = ctx(&temp)
+        .args([
+            "search",
+            "onboarding",
+            "--backend",
+            "semantic",
+            "--refresh",
+            "off",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let strict_semantic = String::from_utf8(strict_semantic).unwrap();
+    assert!(
+        strict_semantic.contains("semantic index is not available yet"),
+        "{strict_semantic}"
+    );
 }
 
 #[test]

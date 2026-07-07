@@ -8,6 +8,7 @@ use ctx_history_core::database_path;
 use crate::analytics::AnalyticsProperties;
 use crate::output::print_json;
 use crate::progress::{progress_mode_name, ProgressReporter};
+use crate::semantic::semantic_health_findings;
 use crate::store_util::open_existing_store_read_only;
 use crate::{analytics, DoctorArgs};
 
@@ -36,6 +37,7 @@ pub(crate) fn run_doctor(
         );
         findings.extend(store.validate()?);
     }
+    findings.extend(semantic_health_findings(&data_root));
     analytics::insert_count_bucket(
         analytics_properties,
         "finding_count_bucket",

@@ -19,7 +19,7 @@ fn main() {
         println!("cargo:rustc-cfg=ctx_semantic_fastembed");
     }
 
-    if os == "linux" && target_env == "gnu" {
+    if os == "linux" && matches!(arch.as_str(), "x86_64" | "aarch64") && target_env == "gnu" {
         println!("cargo:rustc-cfg=ctx_sqlite_vec");
     }
 }

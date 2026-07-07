@@ -3,14 +3,21 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process, thread,
+    process::{self, Command, Stdio},
+    thread,
     time::{Duration as StdDuration, Instant},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(ctx_sqlite_vec)]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Once,
+};
 
 use anyhow::{anyhow, Context, Result};
+#[cfg(ctx_semantic_fastembed)]
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use rusqlite::{
     params, params_from_iter, types::Value as SqlValue, Connection, OpenFlags, OptionalExtension,
@@ -19,13 +26,20 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use ctx_history_core::utc_now;
+use ctx_history_core::{database_path, utc_now};
 use ctx_history_store::{EventEmbeddingDocument, Store};
 
-use crate::commands::search::RefreshArg;
-use crate::config::AppConfig;
-use crate::output::compact_json;
-use crate::SearchBackendArg;
+use crate::commands::{
+    import::{error_summary, import_totals_json, ImportTotals},
+    search::{refresh_sources_for_search, search_refresh_sources, RefreshArg},
+};
+use crate::config::{self, AppConfig, CONFIG_FILE};
+use crate::output::{compact_json, print_json};
+use crate::store_util::open_existing_store_read_only;
+use crate::{
+    DaemonArgs, DaemonCommand, DaemonRunArgs, DaemonStartModeArg, DaemonTriggerCommandArg,
+    JsonArgs, SearchBackendArg,
+};
 
 const SEMANTIC_BACKEND: &str = "fastembed";
 const SEMANTIC_MODEL_KEY: &str = "fastembed:all-MiniLM-L6-v2:semantic-payload-chunk-1200-200-v2";
@@ -47,9 +61,16 @@ const SEMANTIC_SOURCE_MAX_CHARS: usize = 64 * 1024;
 const SEMANTIC_VECTOR_OVERFETCH: usize = 4;
 const SEMANTIC_FULL_SCAN_MAX_CHUNKS: usize = 250_000;
 const SEMANTIC_FULL_SCAN_MAX_VECTOR_BYTES: usize = 512 * 1024 * 1024;
+const SEMANTIC_VECTOR_BACKEND_RUST: &str = "rust_blob_scan";
+const SEMANTIC_VECTOR_BACKEND_SQLITE_VEC: &str = "sqlite_vec0";
+const SEMANTIC_SQLITE_VEC0_MAX_K: usize = 4_096;
+#[cfg(ctx_semantic_fastembed)]
 const SEMANTIC_EMBED_THREADS_DEFAULT: usize = 2;
+#[cfg(ctx_semantic_fastembed)]
 const SEMANTIC_EMBED_THREADS_MAX: usize = 8;
+#[cfg(ctx_semantic_fastembed)]
 const SEMANTIC_EMBED_BATCH_DEFAULT: usize = 16;
+#[cfg(ctx_semantic_fastembed)]
 const SEMANTIC_EMBED_BATCH_MAX: usize = 512;
 const SEMANTIC_DIRTY_QUEUE_RECENT_LIMIT: usize = 512;
 const SEMANTIC_WORKER_LOCK_FILE: &str = "semantic-worker.lock";
@@ -60,7 +81,6 @@ const SEMANTIC_WORKER_MAX_SECONDS_DEFAULT: u64 = 60;
 pub(crate) const SEMANTIC_WORKER_MAX_SECONDS_CAP: u64 = 3_600;
 const SEMANTIC_MODEL_INIT_MIN_REMAINING_SECS: u64 = 15;
 const SEMANTIC_VECTOR_BUSY_TIMEOUT_MS: u64 = 30_000;
-const SEMANTIC_WORKER_QUERY_HINT_MAX_CHARS: usize = 4_096;
 const SEMANTIC_PRUNE_EVENT_BATCH: usize = 1_000;
 const SEMANTIC_DEADLINE_CHUNKS_PER_SECOND: usize = 3;
 const SEMANTIC_DEADLINE_MIN_CHUNK_BATCH: usize = 16;
@@ -71,8 +91,18 @@ const DAEMON_STATUS_FILE: &str = "status.json";
 const DAEMON_HISTORY_REFRESH_JOB_FILE: &str = "history-refresh.json";
 const DAEMON_SEMANTIC_JOB_FILE: &str = "semantic-index.json";
 const DAEMON_CLOUD_SYNC_JOB_FILE: &str = "cloud-sync.json";
+const DAEMON_MAX_RUNTIME_SECONDS_DEFAULT: u64 = 300;
+const DAEMON_IDLE_EXIT_SECONDS_DEFAULT: u64 = 30;
+const DAEMON_LOOP_INTERVAL_SECONDS_DEFAULT: u64 = 5;
+pub(crate) const DAEMON_RUNTIME_SECONDS_CAP: u64 = 24 * 60 * 60;
+const DAEMON_AUTOSTART_MAX_RUNTIME_SECONDS_DEFAULT: u64 = 45;
+const DAEMON_AUTOSTART_IDLE_EXIT_SECONDS_DEFAULT: u64 = 5;
+const DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS_DEFAULT: u64 = 5;
+const DAEMON_BACKGROUND_CHILD_ENV: &str = "CTX_DAEMON_BACKGROUND_CHILD";
+const DAEMON_AUTOSTART_OFF_ENV: &str = "CTX_DAEMON_AUTOSTART_OFF";
 const DAEMON_LOCK_STALE_AFTER_MS: i64 = 25 * 60 * 60 * 1_000;
-const SEARCH_REFRESH_DAEMON_RECENT_MAX_AGE_MS: i64 = 120_000;
+const DAEMON_SEMANTIC_RESERVE_GRACE_SECS: u64 = 10;
+const DAEMON_MIN_REMAINING_FOR_JOB_SECS: u64 = 2;
 const SEMANTIC_HYBRID_MIN_EMBEDDED_ITEMS: usize = 1_000;
 const SEMANTIC_HYBRID_MIN_COVERAGE_RATIO: f64 = 0.01;
 
@@ -234,6 +264,10 @@ impl SemanticRetrievalReport {
             "diagnostics": self.diagnostics.as_ref().map(SemanticRetrievalDiagnostics::to_json),
         }))
     }
+
+    pub(crate) fn effective_mode(&self) -> SearchBackendArg {
+        self.effective_mode
+    }
 }
 
 fn semantic_status_from_worker(worker: &SemanticWorkerReport) -> &'static str {
@@ -254,6 +288,7 @@ fn semantic_worker_coverage_ready(worker: &SemanticWorkerReport) -> bool {
 
 #[derive(Debug, Clone, Default)]
 struct SemanticRetrievalDiagnostics {
+    vector_backend: Option<&'static str>,
     query_embed_ms: Option<u64>,
     vector_scan_ms: Option<u64>,
     chunks_scanned: Option<usize>,
@@ -270,6 +305,7 @@ struct SemanticRetrievalDiagnostics {
 impl SemanticRetrievalDiagnostics {
     fn to_json(&self) -> Value {
         compact_json(json!({
+            "vector_backend": self.vector_backend,
             "query_embed_ms": self.query_embed_ms,
             "vector_scan_ms": self.vector_scan_ms,
             "chunks_scanned": self.chunks_scanned,
@@ -285,6 +321,550 @@ impl SemanticRetrievalDiagnostics {
     }
 }
 
+pub(crate) fn search_packet_with_backend(
+    store: &Store,
+    data_root: &Path,
+    query: &str,
+    terms: &[String],
+    options: &ctx_history_search::PacketOptions,
+    requested_backend: SearchBackendArg,
+    semantic_weight: f32,
+    refresh_mode: RefreshArg,
+    emit_warnings: bool,
+) -> Result<(ctx_history_search::SearchPacket, SemanticRetrievalReport)> {
+    let uses_composed_terms = terms.iter().any(|term| !term.trim().is_empty());
+    let semantic_text = semantic_query_text(query, terms);
+    let semantic_cache_dir = semantic_worker_cache_dir(data_root);
+    let vector_path = semantic_vector_path(data_root);
+    let mut effective_backend = requested_backend;
+
+    let filters_require_semantic_fallback =
+        matches!(
+            effective_backend,
+            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+        ) && semantic_filters_require_lexical_fallback(&options.filters);
+    let terms_require_semantic_fallback = matches!(
+        effective_backend,
+        SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+    ) && uses_composed_terms;
+    if filters_require_semantic_fallback || terms_require_semantic_fallback {
+        effective_backend = SearchBackendArg::Lexical;
+    }
+
+    let worker_report = if requested_backend == SearchBackendArg::Auto
+        || matches!(
+            effective_backend,
+            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+        ) {
+        semantic_worker_report(data_root, Some(store))?
+    } else {
+        semantic_worker_report_best_effort(data_root)
+    };
+    let searchable_items = worker_report.searchable_items;
+    let mut retrieval = SemanticRetrievalReport::lexical(requested_backend, searchable_items);
+    retrieval.worker = Some(worker_report.clone());
+    retrieval.apply_worker_counts(&worker_report);
+    if matches!(
+        requested_backend,
+        SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+    ) {
+        retrieval.apply_worker_coverage(&worker_report);
+    }
+
+    if matches!(
+        effective_backend,
+        SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+    ) && semantic_text.trim().is_empty()
+    {
+        return Err(anyhow!(
+            "semantic search needs a text query; add a query or --term"
+        ));
+    }
+
+    if filters_require_semantic_fallback
+        && matches!(
+            requested_backend,
+            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+        )
+    {
+        retrieval.set_semantic_fallback(
+            "filtered_vector_lookup_unsupported",
+            "semantic search does not yet support filtered vector lookup",
+        );
+        warn_if(
+            emit_warnings,
+            "warning: semantic search does not yet support these filters; falling back to lexical search",
+        );
+    } else if terms_require_semantic_fallback
+        && matches!(
+            requested_backend,
+            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+        )
+    {
+        retrieval.set_semantic_fallback(
+            "term_or_semantics_unsupported",
+            "semantic search does not yet preserve --term OR semantics",
+        );
+        warn_if(
+            emit_warnings,
+            "warning: semantic search does not yet preserve --term OR semantics; falling back to lexical search",
+        );
+    }
+
+    let lexical_search_packet = || -> Result<ctx_history_search::SearchPacket> {
+        if uses_composed_terms {
+            ctx_history_search::search_packet_terms(store, query, terms, options)
+                .map_err(Into::into)
+        } else {
+            ctx_history_search::search_packet(store, query, options).map_err(Into::into)
+        }
+    };
+
+    let packet = if requested_backend == SearchBackendArg::Auto {
+        auto_search_packet(
+            store,
+            options,
+            &lexical_search_packet,
+            &mut retrieval,
+            &worker_report,
+            &vector_path,
+            &semantic_cache_dir,
+            &semantic_text,
+            semantic_weight,
+            refresh_mode,
+        )?
+    } else if matches!(
+        effective_backend,
+        SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+    ) {
+        semantic_or_hybrid_search_packet(
+            store,
+            options,
+            &lexical_search_packet,
+            &mut retrieval,
+            &worker_report,
+            &vector_path,
+            &semantic_cache_dir,
+            &semantic_text,
+            effective_backend,
+            semantic_weight,
+            emit_warnings,
+        )?
+    } else {
+        lexical_search_packet()?
+    };
+
+    Ok((packet, retrieval))
+}
+
+fn auto_search_packet(
+    store: &Store,
+    options: &ctx_history_search::PacketOptions,
+    lexical_search_packet: &dyn Fn() -> Result<ctx_history_search::SearchPacket>,
+    retrieval: &mut SemanticRetrievalReport,
+    worker_report: &SemanticWorkerReport,
+    vector_path: &Path,
+    semantic_cache_dir: &Path,
+    semantic_text: &str,
+    semantic_weight: f32,
+    _refresh_mode: RefreshArg,
+) -> Result<ctx_history_search::SearchPacket> {
+    let lexical_packet = lexical_search_packet()?;
+    let mut auto_diagnostics = SemanticRetrievalDiagnostics::default();
+    let auto_skip_reason = if semantic_text.trim().is_empty() {
+        Some("empty_semantic_query")
+    } else if semantic_filters_require_lexical_fallback(&options.filters) {
+        Some("unsupported_filter_or_terms")
+    } else {
+        None
+    };
+    if let Some(reason) = auto_skip_reason {
+        auto_diagnostics.auto_hybrid_skipped = Some(reason);
+        retrieval.diagnostics = Some(auto_diagnostics);
+        return Ok(lexical_packet);
+    }
+
+    let auto_candidate_ids = semantic_auto_candidate_event_ids_from_packet(&lexical_packet);
+    auto_diagnostics.auto_candidate_count = Some(auto_candidate_ids.len());
+    if auto_candidate_ids.len() == 1 {
+        auto_diagnostics.auto_hybrid_skipped = Some("candidate_count_too_small");
+        retrieval.diagnostics = Some(auto_diagnostics);
+        return Ok(lexical_packet);
+    }
+
+    let vector_store = match SemanticVectorStore::open_read_only(vector_path) {
+        Ok(Some(vector_store)) => vector_store,
+        Ok(None) => {
+            auto_diagnostics.auto_hybrid_skipped = Some("semantic_index_unavailable");
+            retrieval.diagnostics = Some(auto_diagnostics);
+            return Ok(lexical_packet);
+        }
+        Err(_) => {
+            auto_diagnostics.auto_hybrid_skipped = Some("semantic_index_open_error");
+            retrieval.semantic_status = "unavailable";
+            retrieval.diagnostics = Some(auto_diagnostics);
+            return Ok(lexical_packet);
+        }
+    };
+
+    if !worker_report.model_cache_available || !semantic_model_cache_available(semantic_cache_dir) {
+        auto_diagnostics.auto_hybrid_skipped = Some("model_cache_missing");
+        retrieval.diagnostics = Some(auto_diagnostics);
+        return Ok(lexical_packet);
+    }
+
+    if auto_candidate_ids.is_empty() {
+        *retrieval = SemanticRetrievalReport {
+            requested_mode: SearchBackendArg::Auto,
+            effective_mode: SearchBackendArg::Semantic,
+            semantic_weight: 1.0,
+            semantic_status: semantic_status_from_worker(worker_report),
+            semantic_fallback_code: None,
+            semantic_fallback: None,
+            embedding_model: Some(SEMANTIC_MODEL_ID.to_owned()),
+            embedded_items: worker_report.embedded_items,
+            embedded_chunks: worker_report.embedded_chunks,
+            searchable_items: worker_report.searchable_items,
+            indexed_now: 0,
+            vector_path: Some(vector_path.to_path_buf()),
+            worker: Some(worker_report.clone()),
+            diagnostics: None,
+        };
+        let semantic_candidate_limit =
+            SEMANTIC_SEARCH_CANDIDATES.max(options.limit.saturating_mul(8));
+        return match semantic_hits_for_text_query(
+            store,
+            &vector_store,
+            semantic_cache_dir,
+            semantic_text,
+            semantic_candidate_limit,
+            None,
+        ) {
+            Ok((semantic_hits, mut diagnostics)) if !semantic_hits.is_empty() => {
+                diagnostics.auto_candidate_count = auto_diagnostics.auto_candidate_count;
+                retrieval.diagnostics = Some(diagnostics);
+                ctx_history_search::semantic_event_search_packet(
+                    store,
+                    semantic_text,
+                    options,
+                    &semantic_hits,
+                    1.0,
+                    false,
+                )
+                .map_err(Into::into)
+            }
+            Ok((_semantic_hits, mut diagnostics)) => {
+                diagnostics.auto_candidate_count = auto_diagnostics.auto_candidate_count;
+                diagnostics.auto_hybrid_skipped = Some("no_semantic_candidates");
+                retrieval.effective_mode = SearchBackendArg::Lexical;
+                retrieval.semantic_weight = 0.0;
+                retrieval.embedding_model = None;
+                retrieval.vector_path = None;
+                retrieval.diagnostics = Some(diagnostics);
+                Ok(lexical_packet)
+            }
+            Err(_) => {
+                auto_diagnostics.auto_hybrid_skipped = Some("semantic_retrieval_failed");
+                retrieval.effective_mode = SearchBackendArg::Lexical;
+                retrieval.semantic_weight = 0.0;
+                retrieval.embedding_model = None;
+                retrieval.semantic_status = "unavailable";
+                retrieval.diagnostics = Some(auto_diagnostics);
+                Ok(lexical_packet)
+            }
+        };
+    }
+
+    let embedded_candidate_count = vector_store.embedded_event_id_count(&auto_candidate_ids)?;
+    auto_diagnostics.auto_embedded_candidate_count = Some(embedded_candidate_count);
+    if !semantic_auto_candidate_coverage_ready(embedded_candidate_count, auto_candidate_ids.len()) {
+        auto_diagnostics.auto_hybrid_skipped = Some("candidate_coverage_not_ready");
+        retrieval.diagnostics = Some(auto_diagnostics);
+        return Ok(lexical_packet);
+    }
+
+    *retrieval = SemanticRetrievalReport {
+        requested_mode: SearchBackendArg::Auto,
+        effective_mode: SearchBackendArg::Hybrid,
+        semantic_weight,
+        semantic_status: semantic_status_from_worker(worker_report),
+        semantic_fallback_code: None,
+        semantic_fallback: None,
+        embedding_model: Some(SEMANTIC_MODEL_ID.to_owned()),
+        embedded_items: worker_report.embedded_items,
+        embedded_chunks: worker_report.embedded_chunks,
+        searchable_items: worker_report.searchable_items,
+        indexed_now: 0,
+        vector_path: Some(vector_path.to_path_buf()),
+        worker: Some(worker_report.clone()),
+        diagnostics: None,
+    };
+    match semantic_hits_for_text_query(
+        store,
+        &vector_store,
+        semantic_cache_dir,
+        semantic_text,
+        auto_candidate_ids.len().max(options.limit),
+        Some(&auto_candidate_ids),
+    ) {
+        Ok((semantic_hits, mut diagnostics)) if !semantic_hits.is_empty() => {
+            diagnostics.auto_candidate_count = auto_diagnostics.auto_candidate_count;
+            diagnostics.auto_embedded_candidate_count =
+                auto_diagnostics.auto_embedded_candidate_count;
+            retrieval.diagnostics = Some(diagnostics);
+            Ok(semantic_auto_rerank_packet(
+                lexical_packet,
+                &semantic_hits,
+                semantic_weight,
+            ))
+        }
+        Ok((_semantic_hits, mut diagnostics)) => {
+            diagnostics.auto_hybrid_skipped = Some("no_semantic_candidates");
+            retrieval.effective_mode = SearchBackendArg::Lexical;
+            retrieval.semantic_weight = 0.0;
+            retrieval.embedding_model = None;
+            retrieval.diagnostics = Some(diagnostics);
+            Ok(lexical_packet)
+        }
+        Err(_) => {
+            auto_diagnostics.auto_hybrid_skipped = Some("semantic_retrieval_failed");
+            retrieval.effective_mode = SearchBackendArg::Lexical;
+            retrieval.semantic_weight = 0.0;
+            retrieval.embedding_model = None;
+            retrieval.semantic_status = "unavailable";
+            retrieval.diagnostics = Some(auto_diagnostics);
+            Ok(lexical_packet)
+        }
+    }
+}
+
+fn semantic_or_hybrid_search_packet(
+    store: &Store,
+    options: &ctx_history_search::PacketOptions,
+    lexical_search_packet: &dyn Fn() -> Result<ctx_history_search::SearchPacket>,
+    retrieval: &mut SemanticRetrievalReport,
+    worker_report: &SemanticWorkerReport,
+    vector_path: &Path,
+    semantic_cache_dir: &Path,
+    semantic_text: &str,
+    effective_backend: SearchBackendArg,
+    semantic_weight: f32,
+    emit_warnings: bool,
+) -> Result<ctx_history_search::SearchPacket> {
+    match SemanticVectorStore::open_read_only(vector_path) {
+        Ok(Some(vector_store)) => {
+            *retrieval = SemanticRetrievalReport {
+                requested_mode: retrieval.requested_mode,
+                effective_mode: effective_backend,
+                semantic_weight: if effective_backend == SearchBackendArg::Hybrid {
+                    semantic_weight
+                } else {
+                    1.0
+                },
+                semantic_status: semantic_status_from_worker(worker_report),
+                semantic_fallback_code: None,
+                semantic_fallback: None,
+                embedding_model: Some(SEMANTIC_MODEL_ID.to_owned()),
+                embedded_items: worker_report.embedded_items,
+                embedded_chunks: worker_report.embedded_chunks,
+                searchable_items: worker_report.searchable_items,
+                indexed_now: 0,
+                vector_path: Some(vector_path.to_path_buf()),
+                worker: Some(worker_report.clone()),
+                diagnostics: None,
+            };
+
+            if worker_report.embedded_items == 0 {
+                if effective_backend == SearchBackendArg::Semantic {
+                    if !worker_report.model_cache_available
+                        || !semantic_model_cache_available(semantic_cache_dir)
+                    {
+                        return Err(anyhow!(
+                            "semantic index has no embedded event chunks and semantic model is not available in the local cache; strict semantic search will not initialize or download {SEMANTIC_MODEL_ID} during search"
+                        ));
+                    }
+                    return Err(anyhow!(
+                        "semantic index has no embedded event chunks yet; ctx search does not start semantic indexing"
+                    ));
+                }
+                retrieval.effective_mode = SearchBackendArg::Lexical;
+                retrieval.semantic_weight = 0.0;
+                retrieval.embedding_model = None;
+                retrieval.set_semantic_fallback(
+                    "semantic_index_empty",
+                    "semantic index has no embedded event chunks",
+                );
+                warn_if(
+                    emit_warnings,
+                    "warning: semantic index is empty; falling back to lexical search",
+                );
+                return lexical_search_packet();
+            }
+
+            if effective_backend == SearchBackendArg::Hybrid
+                && !semantic_hybrid_coverage_ready(
+                    worker_report.embedded_items,
+                    worker_report.searchable_items,
+                )
+            {
+                retrieval.effective_mode = SearchBackendArg::Lexical;
+                retrieval.semantic_weight = 0.0;
+                retrieval.embedding_model = None;
+                retrieval.set_semantic_fallback(
+                    "semantic_coverage_not_ready",
+                    format!(
+                        "semantic coverage is too low for hybrid ranking ({}/{} events embedded)",
+                        worker_report.embedded_items, worker_report.searchable_items
+                    ),
+                );
+                warn_if(
+                    emit_warnings,
+                    "warning: semantic coverage is too low for hybrid ranking; falling back to lexical search",
+                );
+                return lexical_search_packet();
+            }
+
+            if !worker_report.model_cache_available
+                || !semantic_model_cache_available(semantic_cache_dir)
+            {
+                if effective_backend == SearchBackendArg::Semantic {
+                    return Err(anyhow!(
+                        "semantic model is not available in the local cache; strict semantic search will not initialize or download {SEMANTIC_MODEL_ID} during search"
+                    ));
+                }
+                retrieval.effective_mode = SearchBackendArg::Lexical;
+                retrieval.semantic_weight = 0.0;
+                retrieval.embedding_model = None;
+                retrieval.set_semantic_fallback(
+                    "model_cache_missing",
+                    "semantic model is not available in the local cache",
+                );
+                warn_if(
+                    emit_warnings,
+                    "warning: semantic model is not available in the local cache; falling back to lexical search",
+                );
+                return lexical_search_packet();
+            }
+
+            let semantic_candidate_limit = if semantic_filters_need_overfetch(&options.filters) {
+                SEMANTIC_FILTERED_SEARCH_CANDIDATES.max(options.limit.saturating_mul(100))
+            } else {
+                SEMANTIC_SEARCH_CANDIDATES.max(options.limit.saturating_mul(8))
+            };
+            match semantic_hits_for_text_query(
+                store,
+                &vector_store,
+                semantic_cache_dir,
+                semantic_text,
+                semantic_candidate_limit,
+                None,
+            ) {
+                Ok((semantic_hits, diagnostics)) => {
+                    retrieval.diagnostics = Some(diagnostics);
+                    ctx_history_search::semantic_event_search_packet(
+                        store,
+                        semantic_text,
+                        options,
+                        &semantic_hits,
+                        semantic_weight,
+                        effective_backend == SearchBackendArg::Hybrid,
+                    )
+                    .map_err(Into::into)
+                }
+                Err(error) => {
+                    if effective_backend == SearchBackendArg::Semantic {
+                        return Err(anyhow!("semantic search failed: {error:#}"));
+                    }
+                    retrieval.effective_mode = SearchBackendArg::Lexical;
+                    retrieval.semantic_weight = 0.0;
+                    retrieval.embedding_model = None;
+                    retrieval.semantic_status = "unavailable";
+                    retrieval.diagnostics = None;
+                    retrieval.set_semantic_fallback(
+                        "semantic_retrieval_failed",
+                        format!("semantic retrieval failed: {error:#}"),
+                    );
+                    warn_if(
+                        emit_warnings,
+                        "warning: semantic retrieval failed; falling back to lexical search",
+                    );
+                    lexical_search_packet()
+                }
+            }
+        }
+        Ok(None) => {
+            if effective_backend == SearchBackendArg::Semantic {
+                if !worker_report.model_cache_available
+                    || !semantic_model_cache_available(semantic_cache_dir)
+                {
+                    return Err(anyhow!(
+                        "semantic index is not available yet and semantic model is not available in the local cache; strict semantic search will not initialize or download {SEMANTIC_MODEL_ID} during search"
+                    ));
+                }
+                return Err(anyhow!(
+                    "semantic index is not available yet; ctx search does not start semantic indexing"
+                ));
+            }
+            retrieval.effective_mode = SearchBackendArg::Lexical;
+            retrieval.semantic_weight = 0.0;
+            retrieval.embedding_model = None;
+            retrieval.set_semantic_fallback(
+                "semantic_index_missing",
+                "semantic index is not available yet",
+            );
+            warn_if(
+                emit_warnings,
+                "warning: semantic index is not available yet; falling back to lexical search",
+            );
+            lexical_search_packet()
+        }
+        Err(error) => {
+            let message = format!("semantic index could not be opened: {error:#}");
+            if effective_backend == SearchBackendArg::Semantic {
+                return Err(anyhow!(message));
+            }
+            retrieval.effective_mode = SearchBackendArg::Lexical;
+            retrieval.semantic_weight = 0.0;
+            retrieval.embedding_model = None;
+            retrieval.semantic_status = "unavailable";
+            retrieval.set_semantic_fallback("semantic_index_open_error", message);
+            warn_if(
+                emit_warnings,
+                "warning: semantic index could not be opened; falling back to lexical search",
+            );
+            lexical_search_packet()
+        }
+    }
+}
+
+fn warn_if(enabled: bool, message: &str) {
+    if enabled {
+        eprintln!("{message}");
+    }
+}
+
+#[cfg(ctx_sqlite_vec)]
+fn register_sqlite_vec_auto_extension() -> bool {
+    static REGISTER: Once = Once::new();
+    static AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+    REGISTER.call_once(|| {
+        let rc = unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )))
+        };
+        AVAILABLE.store(rc == rusqlite::ffi::SQLITE_OK, Ordering::Relaxed);
+    });
+
+    AVAILABLE.load(Ordering::Relaxed)
+}
+
+#[cfg(not(ctx_sqlite_vec))]
+fn register_sqlite_vec_auto_extension() -> bool {
+    false
+}
+
 struct SemanticVectorHit {
     event_id: Uuid,
     similarity: f32,
@@ -295,6 +875,7 @@ struct SemanticVectorHit {
 
 #[derive(Debug, Clone, Default)]
 struct SemanticVectorSearchStats {
+    backend: Option<&'static str>,
     scan_ms: u64,
     chunks_scanned: usize,
     vector_bytes_read: usize,
@@ -351,6 +932,7 @@ struct SemanticVectorStore {
 
 impl SemanticVectorStore {
     fn open(path: &Path) -> Result<Self> {
+        let _ = register_sqlite_vec_auto_extension();
         if let Some(parent) = path.parent() {
             create_private_dir_all(parent)?;
         }
@@ -364,7 +946,7 @@ impl SemanticVectorStore {
             .with_context(|| format!("open semantic vector store {}", path.display()))?;
         conn.busy_timeout(StdDuration::from_millis(SEMANTIC_VECTOR_BUSY_TIMEOUT_MS))?;
         conn.execute_batch("PRAGMA secure_delete = ON;")?;
-        let store = Self { conn };
+        let mut store = Self { conn };
         store.ensure_schema()?;
         secure_semantic_vector_permissions(path)?;
         Ok(store)
@@ -374,6 +956,7 @@ impl SemanticVectorStore {
         if !path.exists() {
             return Ok(None);
         }
+        let _ = register_sqlite_vec_auto_extension();
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("open semantic vector store read-only {}", path.display()))?;
         conn.busy_timeout(StdDuration::from_millis(SEMANTIC_VECTOR_BUSY_TIMEOUT_MS))?;
@@ -387,7 +970,7 @@ impl SemanticVectorStore {
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap_or(0);
-        if user_version > 3 {
+        if user_version > 5 {
             return Err(anyhow!(
                 "semantic vector store schema version {user_version} is newer than this ctx supports"
             ));
@@ -417,12 +1000,12 @@ impl SemanticVectorStore {
         Ok(())
     }
 
-    fn ensure_schema(&self) -> Result<()> {
+    fn ensure_schema(&mut self) -> Result<()> {
         let user_version = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap_or(0);
-        if user_version > 3 {
+        if user_version > 5 {
             return Err(anyhow!(
                 "semantic vector store schema version {user_version} is newer than this ctx supports"
             ));
@@ -524,7 +1107,7 @@ impl SemanticVectorStore {
             );
             CREATE INDEX IF NOT EXISTS idx_semantic_dirty_events_model_priority
                 ON semantic_dirty_events(model_key, priority_seq, queued_at_ms);
-            PRAGMA user_version = 3;
+            PRAGMA user_version = 5;
             "#,
         )?;
         if !sqlite_column_exists(&self.conn, "event_embeddings", "preview_text")? {
@@ -555,6 +1138,7 @@ impl SemanticVectorStore {
         if compact_after_schema || deleted_legacy_embeddings > 0 || scrubbed_chunk_text > 0 {
             self.compact_after_plaintext_scrub()?;
         }
+        self.ensure_sqlite_vec0_schema()?;
         Ok(())
     }
 
@@ -565,6 +1149,279 @@ impl SemanticVectorStore {
             VACUUM;
             "#,
         )?;
+        Ok(())
+    }
+
+    fn sqlite_vec0_runtime_available(&self) -> bool {
+        if !register_sqlite_vec_auto_extension() {
+            return false;
+        }
+        self.conn
+            .query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0))
+            .is_ok()
+    }
+
+    fn ensure_sqlite_vec0_schema(&mut self) -> Result<()> {
+        if !self.sqlite_vec0_runtime_available() {
+            return Ok(());
+        }
+        if !self.sqlite_vec0_schema_compatible()? {
+            self.drop_sqlite_vec0_schema()?;
+        }
+        self.create_sqlite_vec0_schema()?;
+        self.sync_sqlite_vec0_from_chunks_if_needed()
+    }
+
+    fn sqlite_vec0_schema_compatible(&self) -> Result<bool> {
+        let meta_exists = sqlite_table_exists(&self.conn, "event_embedding_vec0_meta")?;
+        let vec_exists = sqlite_table_exists(&self.conn, "event_embedding_vec0")?;
+        if !meta_exists && !vec_exists {
+            return Ok(true);
+        }
+        if meta_exists != vec_exists {
+            return Ok(false);
+        }
+        if !sqlite_table_has_columns(
+            &self.conn,
+            "event_embedding_vec0_meta",
+            &[
+                "rowid",
+                "event_id",
+                "model_key",
+                "history_record_id",
+                "session_id",
+                "event_seq",
+                "chunk_index",
+                "source_text_sha256",
+                "start_char",
+                "end_char",
+            ],
+        )? {
+            return Ok(false);
+        }
+        let Some(sql) = sqlite_table_sql(&self.conn, "event_embedding_vec0")? else {
+            return Ok(false);
+        };
+        let sql = sql.to_ascii_lowercase();
+        Ok(sql.contains("using vec0")
+            && sql.contains(&format!("embedding float[{SEMANTIC_DIMENSIONS}]")))
+    }
+
+    fn create_sqlite_vec0_schema(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS event_embedding_vec0_meta (
+                rowid INTEGER PRIMARY KEY,
+                event_id TEXT NOT NULL,
+                model_key TEXT NOT NULL,
+                history_record_id TEXT,
+                session_id TEXT,
+                event_seq INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                source_text_sha256 TEXT NOT NULL,
+                start_char INTEGER NOT NULL,
+                end_char INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_embedding_vec0_meta_model_event
+                ON event_embedding_vec0_meta(model_key, event_id);
+            CREATE INDEX IF NOT EXISTS idx_event_embedding_vec0_meta_model_seq
+                ON event_embedding_vec0_meta(model_key, event_seq);
+            "#,
+        )?;
+        self.conn.execute_batch(&format!(
+            r#"
+            CREATE VIRTUAL TABLE IF NOT EXISTS event_embedding_vec0
+            USING vec0(embedding float[{SEMANTIC_DIMENSIONS}] distance_metric=cosine);
+            "#
+        ))?;
+        Ok(())
+    }
+
+    fn sqlite_vec0_mismatch_count(&self) -> Result<usize> {
+        if !self.sqlite_vec0_runtime_available()
+            || !sqlite_table_exists(&self.conn, "event_embedding_vec0")?
+            || !sqlite_table_exists(&self.conn, "event_embedding_vec0_meta")?
+        {
+            return Ok(0);
+        }
+        let missing_or_stale_meta = self
+            .conn
+            .query_row(
+                r#"
+	                SELECT COUNT(*)
+	                FROM event_embedding_chunks AS c
+	                LEFT JOIN event_embedding_vec0_meta AS m
+	                  ON m.rowid = c.rowid
+	                 AND m.model_key = c.model_key
+	                WHERE c.model_key = ?1
+	                  AND c.dimensions = ?2
+	                  AND (
+	                        m.rowid IS NULL
+	                     OR m.event_id != c.event_id
+	                     OR COALESCE(m.history_record_id, '') != COALESCE(c.history_record_id, '')
+	                     OR COALESCE(m.session_id, '') != COALESCE(c.session_id, '')
+	                     OR m.event_seq != c.event_seq
+	                     OR m.chunk_index != c.chunk_index
+	                     OR m.source_text_sha256 != c.source_text_sha256
+	                     OR m.start_char != c.start_char
+	                     OR m.end_char != c.end_char
+	                  )
+	                "#,
+                params![SEMANTIC_MODEL_KEY, SEMANTIC_DIMENSIONS as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as usize;
+        let orphan_meta = self
+            .conn
+            .query_row(
+                r#"
+	                SELECT COUNT(*)
+	                FROM event_embedding_vec0_meta AS m
+	                LEFT JOIN event_embedding_chunks AS c
+	                  ON c.rowid = m.rowid
+	                 AND c.model_key = m.model_key
+	                 AND c.dimensions = ?2
+	                WHERE m.model_key = ?1
+	                  AND c.rowid IS NULL
+	                "#,
+                params![SEMANTIC_MODEL_KEY, SEMANTIC_DIMENSIONS as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as usize;
+        Ok(missing_or_stale_meta.saturating_add(orphan_meta))
+    }
+
+    fn drop_sqlite_vec0_schema(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS event_embedding_vec0;
+            DROP TABLE IF EXISTS event_embedding_vec0_meta;
+            "#,
+        )?;
+        Ok(())
+    }
+
+    fn sqlite_vec0_counts(&self) -> Result<Option<(usize, usize, usize)>> {
+        if !self.sqlite_vec0_runtime_available()
+            || !sqlite_table_exists(&self.conn, "event_embedding_vec0")?
+            || !sqlite_table_exists(&self.conn, "event_embedding_vec0_meta")?
+        {
+            return Ok(None);
+        }
+        let canonical_chunks = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_embedding_chunks WHERE model_key = ?1 AND dimensions = ?2",
+                params![SEMANTIC_MODEL_KEY, SEMANTIC_DIMENSIONS as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as usize;
+        let meta_rows = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_embedding_vec0_meta WHERE model_key = ?1",
+                params![SEMANTIC_MODEL_KEY],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as usize;
+        let vec_rows = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM event_embedding_vec0", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .unwrap_or(0)
+            .max(0) as usize;
+        Ok(Some((canonical_chunks, meta_rows, vec_rows)))
+    }
+
+    fn sqlite_vec0_ready(&self) -> Result<bool> {
+        let Some((canonical_chunks, meta_rows, vec_rows)) = self.sqlite_vec0_counts()? else {
+            return Ok(false);
+        };
+        if canonical_chunks == 0 || meta_rows != canonical_chunks || vec_rows != canonical_chunks {
+            return Ok(false);
+        }
+        Ok(self.sqlite_vec0_mismatch_count()? == 0)
+    }
+
+    fn sync_sqlite_vec0_from_chunks_if_needed(&mut self) -> Result<()> {
+        let Some((canonical_chunks, meta_rows, vec_rows)) = self.sqlite_vec0_counts()? else {
+            return Ok(());
+        };
+        if meta_rows == canonical_chunks
+            && vec_rows == canonical_chunks
+            && self.sqlite_vec0_mismatch_count()? == 0
+        {
+            return Ok(());
+        }
+        self.rebuild_sqlite_vec0_from_chunks()
+    }
+
+    fn rebuild_sqlite_vec0_from_chunks(&mut self) -> Result<()> {
+        if !self.sqlite_vec0_runtime_available() {
+            return Ok(());
+        }
+        self.drop_sqlite_vec0_schema()?;
+        self.create_sqlite_vec0_schema()?;
+        let tx = self.conn.transaction()?;
+        {
+            let mut rows = tx.prepare(
+                r#"
+	                SELECT rowid, event_id, history_record_id, session_id, event_seq, chunk_index,
+	                       source_text_sha256, start_char, end_char, embedding_f32
+                FROM event_embedding_chunks
+                WHERE model_key = ?1
+                  AND dimensions = ?2
+                ORDER BY event_seq DESC, chunk_index ASC
+                "#,
+            )?;
+            let mut meta_stmt = tx.prepare(
+                r#"
+                INSERT INTO event_embedding_vec0_meta
+	                    (rowid, event_id, model_key, history_record_id, session_id, event_seq,
+	                     chunk_index, source_text_sha256, start_char, end_char)
+	                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "#,
+            )?;
+            let mut vec_stmt =
+                tx.prepare("INSERT INTO event_embedding_vec0(rowid, embedding) VALUES (?1, ?2)")?;
+            let mut rows = rows.query(params![SEMANTIC_MODEL_KEY, SEMANTIC_DIMENSIONS as i64])?;
+            while let Some(row) = rows.next()? {
+                let rowid: i64 = row.get(0)?;
+                let event_id: String = row.get(1)?;
+                let history_record_id: Option<String> = row.get(2)?;
+                let session_id: Option<String> = row.get(3)?;
+                let event_seq: i64 = row.get(4)?;
+                let chunk_index: i64 = row.get(5)?;
+                let source_text_sha256: String = row.get(6)?;
+                let start_char: i64 = row.get(7)?;
+                let end_char: i64 = row.get(8)?;
+                let embedding: Vec<u8> = row.get(9)?;
+                meta_stmt.execute(params![
+                    rowid,
+                    event_id,
+                    SEMANTIC_MODEL_KEY,
+                    history_record_id,
+                    session_id,
+                    event_seq,
+                    chunk_index,
+                    source_text_sha256,
+                    start_char,
+                    end_char,
+                ])?;
+                vec_stmt.execute(params![rowid, embedding])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -819,8 +1676,34 @@ impl SemanticVectorStore {
         if items.is_empty() {
             return Ok(());
         }
+        let maintain_sqlite_vec0 = self.sqlite_vec0_runtime_available()
+            && sqlite_table_exists(&self.conn, "event_embedding_vec0")?
+            && sqlite_table_exists(&self.conn, "event_embedding_vec0_meta")?;
         let tx = self.conn.transaction()?;
         {
+            if maintain_sqlite_vec0 {
+                let mut delete_vec_stmt = tx.prepare(
+                    r#"
+                    DELETE FROM event_embedding_vec0
+                    WHERE rowid IN (
+                        SELECT rowid
+                        FROM event_embedding_vec0_meta
+                        WHERE model_key = ?1 AND event_id = ?2
+                    )
+                    "#,
+                )?;
+                let mut delete_meta_stmt = tx.prepare(
+                    "DELETE FROM event_embedding_vec0_meta WHERE model_key = ?1 AND event_id = ?2",
+                )?;
+                let mut deleted_events = std::collections::HashSet::new();
+                for (doc, _) in items {
+                    if deleted_events.insert(doc.event_id) {
+                        let event_id = doc.event_id.to_string();
+                        delete_vec_stmt.execute(params![SEMANTIC_MODEL_KEY, &event_id])?;
+                        delete_meta_stmt.execute(params![SEMANTIC_MODEL_KEY, &event_id])?;
+                    }
+                }
+            }
             let mut delete_stmt = tx.prepare(
                 "DELETE FROM event_embedding_chunks WHERE event_id = ?1 AND model_key = ?2",
             )?;
@@ -841,14 +1724,36 @@ impl SemanticVectorStore {
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                 "#,
             )?;
+            let mut vec0_meta_stmt = if maintain_sqlite_vec0 {
+                Some(tx.prepare(
+                    r#"
+	                    INSERT INTO event_embedding_vec0_meta
+	                        (rowid, event_id, model_key, history_record_id, session_id, event_seq,
+	                         chunk_index, source_text_sha256, start_char, end_char)
+	                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+	                    "#,
+                )?)
+            } else {
+                None
+            };
+            let mut vec0_stmt = if maintain_sqlite_vec0 {
+                Some(tx.prepare(
+                    "INSERT INTO event_embedding_vec0(rowid, embedding) VALUES (?1, ?2)",
+                )?)
+            } else {
+                None
+            };
             let embedded_at_ms = utc_now().timestamp_millis();
             for (doc, embedding) in items {
+                let event_id = doc.event_id.to_string();
+                let history_record_id = doc.history_record_id.map(|id| id.to_string());
+                let session_id = doc.session_id.map(|id| id.to_string());
                 let blob = serialize_f32_blob(embedding);
                 stmt.execute(params![
-                    doc.event_id.to_string(),
+                    &event_id,
                     SEMANTIC_MODEL_KEY,
-                    doc.history_record_id.map(|id| id.to_string()),
-                    doc.session_id.map(|id| id.to_string()),
+                    &history_record_id,
+                    &session_id,
                     doc.seq as i64,
                     doc.chunk_index as i64,
                     doc.chunk_count as i64,
@@ -858,9 +1763,27 @@ impl SemanticVectorStore {
                     doc.start_char as i64,
                     doc.end_char as i64,
                     SEMANTIC_DIMENSIONS as i64,
-                    blob,
+                    &blob,
                     embedded_at_ms
                 ])?;
+                let rowid = tx.last_insert_rowid();
+                if let (Some(meta_stmt), Some(vec_stmt)) =
+                    (vec0_meta_stmt.as_mut(), vec0_stmt.as_mut())
+                {
+                    meta_stmt.execute(params![
+                        rowid,
+                        &event_id,
+                        SEMANTIC_MODEL_KEY,
+                        &history_record_id,
+                        &session_id,
+                        doc.seq as i64,
+                        doc.chunk_index as i64,
+                        &doc.source_text_hash,
+                        doc.start_char as i64,
+                        doc.end_char as i64,
+                    ])?;
+                    vec_stmt.execute(params![rowid, &blob])?;
+                }
             }
         }
         tx.commit()?;
@@ -949,9 +1872,32 @@ impl SemanticVectorStore {
         if event_ids.is_empty() || !sqlite_table_exists(&self.conn, "event_embedding_chunks")? {
             return Ok(0);
         }
+        let maintain_sqlite_vec0 = self.sqlite_vec0_runtime_available()
+            && sqlite_table_exists(&self.conn, "event_embedding_vec0")?
+            && sqlite_table_exists(&self.conn, "event_embedding_vec0_meta")?;
         let tx = self.conn.transaction()?;
         let mut deleted = 0_usize;
         {
+            if maintain_sqlite_vec0 {
+                let mut delete_vec_stmt = tx.prepare(
+                    r#"
+                    DELETE FROM event_embedding_vec0
+                    WHERE rowid IN (
+                        SELECT rowid
+                        FROM event_embedding_vec0_meta
+                        WHERE model_key = ?1 AND event_id = ?2
+                    )
+                    "#,
+                )?;
+                let mut delete_meta_stmt = tx.prepare(
+                    "DELETE FROM event_embedding_vec0_meta WHERE model_key = ?1 AND event_id = ?2",
+                )?;
+                for event_id in event_ids {
+                    let event_id = event_id.to_string();
+                    delete_vec_stmt.execute(params![SEMANTIC_MODEL_KEY, &event_id])?;
+                    delete_meta_stmt.execute(params![SEMANTIC_MODEL_KEY, &event_id])?;
+                }
+            }
             let mut stmt = tx.prepare(
                 "DELETE FROM event_embedding_chunks WHERE model_key = ?1 AND event_id = ?2",
             )?;
@@ -1023,11 +1969,18 @@ impl SemanticVectorStore {
         limit: usize,
         event_ids: Option<&[Uuid]>,
     ) -> Result<SemanticVectorSearch> {
+        if event_ids.is_none() && self.sqlite_vec0_ready()? {
+            if let Ok(search) = self.search_sqlite_vec0(query_embedding, limit) {
+                return Ok(search);
+            }
+        }
+
         let scan_started = Instant::now();
         if !sqlite_table_exists(&self.conn, "event_embedding_chunks")? {
             return Ok(SemanticVectorSearch {
                 hits: Vec::new(),
                 stats: SemanticVectorSearchStats {
+                    backend: Some(SEMANTIC_VECTOR_BACKEND_RUST),
                     scan_ms: scan_started.elapsed().as_millis() as u64,
                     ..SemanticVectorSearchStats::default()
                 },
@@ -1117,10 +2070,112 @@ impl SemanticVectorStore {
         Ok(SemanticVectorSearch {
             hits: top,
             stats: SemanticVectorSearchStats {
+                backend: Some(SEMANTIC_VECTOR_BACKEND_RUST),
                 scan_ms: scan_started.elapsed().as_millis() as u64,
                 chunks_scanned,
                 vector_bytes_read,
                 events_scored,
+            },
+        })
+    }
+
+    fn search_sqlite_vec0(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<SemanticVectorSearch> {
+        let scan_started = Instant::now();
+        let query_blob = serialize_f32_blob(query_embedding);
+        let stats = self.cached_or_exact_stats()?;
+        let limit = limit.max(1).min(SEMANTIC_SQLITE_VEC0_MAX_K);
+        let max_k = stats
+            .embedded_chunks
+            .max(limit)
+            .min(SEMANTIC_SQLITE_VEC0_MAX_K)
+            .max(1);
+        let mut k = limit.min(max_k);
+        let mut best_by_event = HashMap::<Uuid, SemanticVectorHit>::new();
+        let mut rows_returned: usize;
+        loop {
+            best_by_event.clear();
+            rows_returned = 0;
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT m.event_id, m.source_text_sha256, m.start_char, m.end_char, v.distance
+                FROM event_embedding_vec0 AS v
+                JOIN event_embedding_vec0_meta AS m ON m.rowid = v.rowid
+	                WHERE v.embedding MATCH ?1
+	                  AND v.k = ?2
+	                  AND m.model_key = ?3
+	                ORDER BY v.distance
+	                "#,
+            )?;
+            let mut rows = stmt.query(params![&query_blob, k as i64, SEMANTIC_MODEL_KEY])?;
+            while let Some(row) = rows.next()? {
+                rows_returned = rows_returned.saturating_add(1);
+                let event_id = Uuid::parse_str(&row.get::<_, String>(0)?)
+                    .context("invalid event id in semantic vec0 store")?;
+                let source_text_hash = row.get::<_, String>(1)?;
+                let start_char = row.get::<_, i64>(2)?.max(0) as usize;
+                let end_char = row.get::<_, i64>(3)?.max(0) as usize;
+                let distance = row.get::<_, f64>(4)? as f32;
+                let similarity = (1.0 - distance).clamp(-1.0, 1.0);
+                match best_by_event.get_mut(&event_id) {
+                    Some(existing) if similarity > existing.similarity => {
+                        *existing = SemanticVectorHit {
+                            event_id,
+                            similarity,
+                            source_text_hash,
+                            start_char,
+                            end_char,
+                        };
+                    }
+                    None => {
+                        best_by_event.insert(
+                            event_id,
+                            SemanticVectorHit {
+                                event_id,
+                                similarity,
+                                source_text_hash,
+                                start_char,
+                                end_char,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if best_by_event.len() >= limit || rows_returned < k || k >= max_k {
+                break;
+            }
+            k = k.saturating_mul(2).min(max_k);
+        }
+        if best_by_event.len() < limit
+            && rows_returned >= k
+            && k >= max_k
+            && max_k < stats.embedded_chunks
+        {
+            return Err(anyhow!(
+                "sqlite vec0 top-k cap reached before enough unique semantic events"
+            ));
+        }
+        let mut hits = best_by_event.into_values().collect::<Vec<_>>();
+        if hits.len() > limit {
+            hits.select_nth_unstable_by(limit - 1, compare_semantic_hits_desc);
+            hits.truncate(limit);
+        }
+        hits.sort_by(compare_semantic_hits_desc);
+        Ok(SemanticVectorSearch {
+            hits,
+            stats: SemanticVectorSearchStats {
+                backend: Some(SEMANTIC_VECTOR_BACKEND_SQLITE_VEC),
+                scan_ms: scan_started.elapsed().as_millis() as u64,
+                chunks_scanned: stats.embedded_chunks,
+                vector_bytes_read: stats
+                    .embedded_chunks
+                    .saturating_mul(SEMANTIC_DIMENSIONS)
+                    .saturating_mul(std::mem::size_of::<f32>()),
+                events_scored: stats.embedded_items,
             },
         })
     }
@@ -1563,6 +2618,12 @@ fn daemon_report_with_disabled_status(
         "started_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "started_at_ms")),
         "heartbeat_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "heartbeat_at_ms")),
         "finished_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "finished_at_ms")),
+        "start_mode": status_value
+            .as_ref()
+            .and_then(|value| json_string(value, "start_mode")),
+        "trigger_command": status_value
+            .as_ref()
+            .and_then(|value| json_string(value, "trigger_command")),
         "last_error": status_value.as_ref().and_then(|value| json_string(value, "last_error")),
         "lock_path": lock_path,
         "status_path": status_path,
@@ -1718,6 +2779,997 @@ fn daemon_cloud_sync_job_report(data_root: &Path) -> Value {
     }))
 }
 
+#[derive(Debug)]
+struct DaemonIteration {
+    did_work: bool,
+    failed: bool,
+}
+
+#[derive(Default)]
+struct DaemonRuntime {
+    semantic_embedder: Option<SemanticEmbedder>,
+    recent_semantic_work_enqueued: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticWorkerArgs {
+    max_chunks: Option<usize>,
+    max_seconds: Option<u64>,
+}
+
+pub(crate) fn run_daemon_command(
+    args: DaemonArgs,
+    data_root: PathBuf,
+    config: &AppConfig,
+) -> Result<()> {
+    match args.command {
+        DaemonCommand::Run(args) => run_daemon(args, data_root, config),
+        DaemonCommand::Status(args) => run_daemon_status(args, data_root),
+        DaemonCommand::Enable(args) => run_daemon_enabled_update(args, data_root, true),
+        DaemonCommand::Disable(args) => run_daemon_enabled_update(args, data_root, false),
+    }
+}
+
+fn run_daemon_status(args: JsonArgs, data_root: PathBuf) -> Result<()> {
+    let semantic_report = semantic_worker_report_for_daemon(&data_root);
+    let daemon = daemon_report(&data_root, &semantic_report);
+    if args.json {
+        print_json(json!({
+            "schema_version": 1,
+            "daemon": daemon,
+            "local_only": true,
+        }))?;
+    } else {
+        print_daemon_status_human(&daemon);
+    }
+    Ok(())
+}
+
+fn run_daemon_enabled_update(args: JsonArgs, data_root: PathBuf, enabled: bool) -> Result<()> {
+    config::set_daemon_enabled(&data_root, enabled)?;
+    if args.json {
+        print_json(json!({
+            "schema_version": 1,
+            "daemon_enabled": enabled,
+            "config_path": data_root.join(CONFIG_FILE),
+            "local_only": true,
+        }))?;
+    } else {
+        println!("daemon_enabled: {enabled}");
+        println!("config_path: {}", data_root.join(CONFIG_FILE).display());
+    }
+    Ok(())
+}
+
+fn print_daemon_status_human(daemon: &Value) {
+    println!(
+        "daemon_enabled: {}",
+        daemon
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    );
+    println!(
+        "daemon_status: {}",
+        daemon
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    );
+    println!(
+        "daemon_running: {}",
+        daemon
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    );
+    println!(
+        "history_refresh_status: {}",
+        daemon
+            .get("jobs")
+            .and_then(|jobs| jobs.get("history_refresh"))
+            .and_then(|job| job.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    );
+    println!(
+        "semantic_index_status: {}",
+        daemon
+            .get("jobs")
+            .and_then(|jobs| jobs.get("semantic_index"))
+            .and_then(|job| job.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    );
+    println!(
+        "cloud_sync_status: {}",
+        daemon
+            .get("jobs")
+            .and_then(|jobs| jobs.get("cloud_sync"))
+            .and_then(|cloud| cloud.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("disabled")
+    );
+}
+
+fn run_daemon(args: DaemonRunArgs, data_root: PathBuf, config: &AppConfig) -> Result<()> {
+    lower_semantic_worker_priority();
+    let report = match run_daemon_inner(args.clone(), &data_root, config.daemon.enabled) {
+        Ok(report) => report,
+        Err(error) => {
+            let message = format!("{error:#}");
+            let now = utc_now().timestamp_millis();
+            let _ = write_daemon_status(
+                &data_root,
+                &json!({
+                    "schema_version": 1,
+                    "status": "failed",
+                    "pid": process::id(),
+                    "heartbeat_at_ms": now,
+                    "finished_at_ms": now,
+                    "start_mode": daemon_run_start_mode(&args).as_str(),
+                    "trigger_command": args.trigger_command.map(DaemonTriggerCommandArg::as_str),
+                    "last_error": message,
+                }),
+            );
+            return Err(error);
+        }
+    };
+    if args.json {
+        print_json(report)?;
+    } else {
+        print_daemon_status_human(&report);
+    }
+    Ok(())
+}
+
+fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool) -> Result<Value> {
+    if !daemon_enabled && !args.force {
+        let semantic_report = semantic_worker_report_for_daemon(data_root);
+        return Ok(daemon_report(data_root, &semantic_report));
+    }
+    let Some(_lock) = DaemonLock::acquire(data_root)? else {
+        let semantic_report = semantic_worker_report_for_daemon(data_root);
+        return Ok(daemon_report(data_root, &semantic_report));
+    };
+
+    let run_once = args.once;
+    let max_runtime = StdDuration::from_secs(
+        args.max_runtime_seconds
+            .unwrap_or(DAEMON_MAX_RUNTIME_SECONDS_DEFAULT),
+    );
+    let idle_exit = StdDuration::from_secs(
+        args.idle_exit_seconds
+            .unwrap_or(DAEMON_IDLE_EXIT_SECONDS_DEFAULT),
+    );
+    let loop_interval = StdDuration::from_secs(
+        args.loop_interval_seconds
+            .unwrap_or(DAEMON_LOOP_INTERVAL_SECONDS_DEFAULT),
+    );
+    let started = Instant::now();
+    let deadline = started + max_runtime;
+    let started_at_ms = utc_now().timestamp_millis();
+    let mut failed = false;
+    write_daemon_lifecycle_status(data_root, &args, "running", started_at_ms, None, None)?;
+
+    let mut runtime = DaemonRuntime::default();
+    let mut idle_since: Option<Instant> = None;
+    loop {
+        if !daemon_deadline_has_min_budget(Some(deadline), DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
+            break;
+        }
+        let iteration = run_daemon_once(&args, data_root, &mut runtime, Some(deadline))?;
+        write_daemon_lifecycle_status(data_root, &args, "running", started_at_ms, None, None)?;
+        if iteration.failed {
+            failed = true;
+            break;
+        }
+        if run_once {
+            break;
+        }
+        if iteration.did_work {
+            idle_since = None;
+        } else if idle_since.is_none() {
+            idle_since = Some(Instant::now());
+        }
+        if idle_since.is_some_and(|idle| idle.elapsed() >= idle_exit) {
+            break;
+        }
+        let sleep_for = daemon_deadline_remaining(Some(deadline))
+            .map(|remaining| loop_interval.min(remaining))
+            .unwrap_or(loop_interval);
+        if sleep_for.is_zero() {
+            break;
+        }
+        std::thread::sleep(sleep_for);
+    }
+
+    write_daemon_lifecycle_status(
+        data_root,
+        &args,
+        if failed { "failed" } else { "completed" },
+        started_at_ms,
+        Some(utc_now().timestamp_millis()),
+        failed.then_some("one or more daemon jobs failed".to_owned()),
+    )?;
+    drop(_lock);
+    let semantic_report = semantic_worker_report_for_daemon(data_root);
+    Ok(daemon_report_with_disabled_status(
+        data_root,
+        &semantic_report,
+        !args.force,
+    ))
+}
+
+fn run_daemon_once(
+    args: &DaemonRunArgs,
+    data_root: &Path,
+    runtime: &mut DaemonRuntime,
+    deadline: Option<Instant>,
+) -> Result<DaemonIteration> {
+    let history_refresh_job =
+        if daemon_deadline_has_min_budget(deadline, DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
+            run_daemon_history_refresh_job(data_root)
+        } else {
+            Ok(daemon_history_refresh_skipped_job("daemon_deadline"))
+        };
+    let history_refresh_job = match history_refresh_job {
+        Ok(value) => value,
+        Err(error) => daemon_history_refresh_failed_job(format!("{error:#}")),
+    };
+    let history_refresh_did_work = daemon_history_refresh_job_did_work(&history_refresh_job);
+    write_daemon_job_status_unless_deadline_skip(
+        &daemon_history_refresh_job_path(data_root),
+        &history_refresh_job,
+    )?;
+
+    let semantic_job = if daemon_run_is_autostart(args) {
+        Ok(daemon_semantic_autostart_skipped_job(data_root))
+    } else if daemon_deadline_has_min_budget(deadline, DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
+        run_daemon_semantic_job(args, data_root, runtime, deadline)
+    } else {
+        Ok(daemon_semantic_deadline_skipped_job(data_root))
+    };
+    let semantic_job = match semantic_job {
+        Ok(value) => value,
+        Err(error) => daemon_semantic_failed_job(data_root, format!("{error:#}")),
+    };
+    let semantic_did_work = semantic_job
+        .get("indexed_chunks")
+        .and_then(Value::as_u64)
+        .is_some_and(|chunks| chunks > 0);
+    write_daemon_job_status_unless_deadline_skip(
+        &daemon_semantic_job_path(data_root),
+        &semantic_job,
+    )?;
+
+    let cloud_sync_job = daemon_cloud_sync_disabled_job(Some(utc_now().timestamp_millis()));
+    write_daemon_job_status(&daemon_cloud_sync_job_path(data_root), &cloud_sync_job)?;
+
+    Ok(DaemonIteration {
+        did_work: history_refresh_did_work || semantic_did_work,
+        failed: daemon_job_failed(&history_refresh_job) || daemon_job_failed(&semantic_job),
+    })
+}
+
+fn daemon_run_start_mode(args: &DaemonRunArgs) -> DaemonStartModeArg {
+    args.start_mode.unwrap_or(DaemonStartModeArg::Manual)
+}
+
+fn daemon_run_is_autostart(args: &DaemonRunArgs) -> bool {
+    matches!(args.start_mode, Some(DaemonStartModeArg::Auto)) || args.trigger_command.is_some()
+}
+
+fn daemon_job_failed(value: &Value) -> bool {
+    value.get("status").and_then(Value::as_str) == Some("failed")
+}
+
+fn write_daemon_job_status_unless_deadline_skip(path: &Path, value: &Value) -> Result<()> {
+    if daemon_job_skipped_for_deadline(value) && path.exists() {
+        return Ok(());
+    }
+    write_daemon_job_status(path, value)
+}
+
+fn daemon_job_skipped_for_deadline(value: &Value) -> bool {
+    value.get("status").and_then(Value::as_str) == Some("skipped")
+        && value.get("reason").and_then(Value::as_str) == Some("daemon_deadline")
+}
+
+fn daemon_deadline_remaining(deadline: Option<Instant>) -> Option<StdDuration> {
+    deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+}
+
+fn daemon_deadline_has_min_budget(deadline: Option<Instant>, min_secs: u64) -> bool {
+    let Some(remaining) = daemon_deadline_remaining(deadline) else {
+        return deadline.is_none();
+    };
+    remaining >= StdDuration::from_secs(min_secs)
+}
+
+fn run_daemon_history_refresh_job(data_root: &Path) -> Result<Value> {
+    let last_run_at_ms = utc_now().timestamp_millis();
+    let sources = search_refresh_sources(None);
+    let plugin_sources = Vec::new();
+    let source_count = sources.len();
+    if source_count == 0 {
+        return Ok(daemon_history_refresh_job_json(
+            "skipped",
+            0,
+            ImportTotals::default(),
+            last_run_at_ms,
+            Some("no_sources"),
+            None,
+        ));
+    }
+    let source_fingerprint = search_refresh_source_fingerprint(&sources);
+    let mut job = match refresh_sources_for_search(
+        data_root,
+        sources,
+        plugin_sources,
+        RefreshArg::Auto,
+        true,
+    ) {
+        Ok(totals) => daemon_history_refresh_job_json(
+            "completed",
+            source_count,
+            totals,
+            last_run_at_ms,
+            None,
+            None,
+        ),
+        Err(error) => daemon_history_refresh_job_json(
+            "failed",
+            source_count,
+            ImportTotals::default(),
+            last_run_at_ms,
+            None,
+            Some(error_summary(&error)),
+        ),
+    };
+    if let Some(map) = job.as_object_mut() {
+        map.insert("source_fingerprint".to_owned(), json!(source_fingerprint));
+        map.insert("passes".to_owned(), json!(1));
+    }
+    Ok(job)
+}
+
+fn daemon_history_refresh_skipped_job(reason: &str) -> Value {
+    daemon_history_refresh_job_json(
+        "skipped",
+        0,
+        ImportTotals::default(),
+        utc_now().timestamp_millis(),
+        Some(reason),
+        None,
+    )
+}
+
+fn daemon_history_refresh_failed_job(message: String) -> Value {
+    daemon_history_refresh_job_json(
+        "failed",
+        0,
+        ImportTotals::default(),
+        utc_now().timestamp_millis(),
+        None,
+        Some(message),
+    )
+}
+
+fn daemon_history_refresh_job_json(
+    status: &str,
+    source_count: usize,
+    totals: ImportTotals,
+    last_run_at_ms: i64,
+    reason: Option<&str>,
+    last_error: Option<String>,
+) -> Value {
+    compact_json(json!({
+        "mode": RefreshArg::Auto.as_str(),
+        "status": status,
+        "source_count": source_count,
+        "totals": import_totals_json(&totals),
+        "reason": reason,
+        "last_run_at_ms": last_run_at_ms,
+        "last_error": last_error,
+    }))
+}
+
+fn daemon_history_refresh_job_did_work(value: &Value) -> bool {
+    let Some(totals) = value.get("totals") else {
+        return false;
+    };
+    ["imported_sessions", "imported_events", "imported_edges"]
+        .into_iter()
+        .any(|key| totals.get(key).and_then(Value::as_u64).unwrap_or(0) > 0)
+}
+
+fn search_refresh_source_fingerprint(sources: &[crate::provider_sources::SourceInfo]) -> String {
+    let mut items = sources
+        .iter()
+        .map(|source| {
+            format!(
+                "{}|{}|{}",
+                source.provider.as_str(),
+                source.source_format,
+                source.path.display()
+            )
+        })
+        .collect::<Vec<_>>();
+    items.sort();
+    semantic_text_hash(&items.join("\n"))
+}
+
+fn run_daemon_semantic_job(
+    args: &DaemonRunArgs,
+    data_root: &Path,
+    runtime: &mut DaemonRuntime,
+    deadline: Option<Instant>,
+) -> Result<Value> {
+    let last_run_at_ms = utc_now().timestamp_millis();
+    let db_path = database_path(data_root.to_path_buf());
+    if !db_path.exists() {
+        let report = semantic_worker_report_best_effort(data_root);
+        return Ok(daemon_semantic_job_json(
+            "skipped",
+            Some("store_missing"),
+            last_run_at_ms,
+            &report,
+            None,
+            None,
+        ));
+    }
+
+    let store = open_existing_store_read_only(&db_path, "ctx daemon semantic job")?;
+    if !runtime.recent_semantic_work_enqueued {
+        let _ = queue_recent_semantic_work(data_root, &store, "daemon_recent");
+        runtime.recent_semantic_work_enqueued = true;
+    }
+    let before = semantic_worker_report(data_root, Some(&store))?;
+    if before.searchable_items == 0 {
+        return Ok(daemon_semantic_job_json(
+            "empty",
+            Some("no_searchable_items"),
+            last_run_at_ms,
+            &before,
+            None,
+            None,
+        ));
+    }
+    if before.queued_items_estimate == 0 {
+        return Ok(daemon_semantic_job_json(
+            "ready",
+            None,
+            last_run_at_ms,
+            &before,
+            None,
+            None,
+        ));
+    }
+    if !before.model_cache_available && runtime.semantic_embedder.is_none() {
+        return Ok(daemon_semantic_job_json(
+            "skipped",
+            Some("model_cache_missing"),
+            last_run_at_ms,
+            &before,
+            None,
+            None,
+        ));
+    }
+    let min_remaining_secs = if runtime.semantic_embedder.is_some() {
+        DAEMON_MIN_REMAINING_FOR_JOB_SECS
+    } else {
+        SEMANTIC_MODEL_INIT_MIN_REMAINING_SECS
+    }
+    .saturating_add(DAEMON_SEMANTIC_RESERVE_GRACE_SECS);
+    if !daemon_deadline_has_min_budget(deadline, min_remaining_secs) {
+        return Ok(daemon_semantic_job_json(
+            "skipped",
+            Some("daemon_deadline"),
+            last_run_at_ms,
+            &before,
+            None,
+            None,
+        ));
+    }
+    drop(store);
+
+    let worker_max_seconds = daemon_semantic_worker_seconds_budget(args, deadline);
+    if worker_max_seconds == 0 {
+        let report = semantic_worker_report_for_daemon(data_root);
+        return Ok(daemon_semantic_job_json(
+            "skipped",
+            Some("daemon_deadline"),
+            last_run_at_ms,
+            &report,
+            None,
+            None,
+        ));
+    }
+    let worker_args = SemanticWorkerArgs {
+        max_chunks: args.max_chunks,
+        max_seconds: Some(worker_max_seconds),
+    };
+    if let Err(error) = run_semantic_worker_inner_with_embedder(
+        worker_args,
+        data_root,
+        None,
+        &mut runtime.semantic_embedder,
+    ) {
+        let message = format!("{error:#}");
+        let _ = write_semantic_worker_failure_status(data_root, message.clone());
+        let report = semantic_worker_report_for_daemon(data_root);
+        return Ok(daemon_semantic_job_json(
+            "failed",
+            None,
+            last_run_at_ms,
+            &report,
+            None,
+            Some(message),
+        ));
+    }
+    let report = semantic_worker_report_for_daemon(data_root);
+    let indexed_chunks = report.indexed_chunks;
+    let status = if report.running {
+        "running"
+    } else if report.queued_items_estimate == 0 {
+        "ready"
+    } else if indexed_chunks.unwrap_or(0) > 0 {
+        "budget_exhausted"
+    } else {
+        report.status.as_str()
+    };
+    Ok(daemon_semantic_job_json(
+        status,
+        None,
+        last_run_at_ms,
+        &report,
+        indexed_chunks,
+        None,
+    ))
+}
+
+fn daemon_semantic_requested_seconds(args: &DaemonRunArgs) -> u64 {
+    semantic_worker_seconds_budget(&SemanticWorkerArgs {
+        max_chunks: args.max_chunks,
+        max_seconds: args.max_seconds,
+    })
+}
+
+fn daemon_semantic_worker_seconds_budget(args: &DaemonRunArgs, deadline: Option<Instant>) -> u64 {
+    let requested = daemon_semantic_requested_seconds(args);
+    let Some(remaining) = daemon_deadline_remaining(deadline) else {
+        return if deadline.is_none() { requested } else { 0 };
+    };
+    let remaining_secs = remaining
+        .as_secs()
+        .saturating_sub(DAEMON_SEMANTIC_RESERVE_GRACE_SECS);
+    requested.min(remaining_secs)
+}
+
+fn daemon_semantic_deadline_skipped_job(data_root: &Path) -> Value {
+    let report = semantic_worker_report_for_daemon(data_root);
+    daemon_semantic_job_json(
+        "skipped",
+        Some("daemon_deadline"),
+        utc_now().timestamp_millis(),
+        &report,
+        None,
+        None,
+    )
+}
+
+fn daemon_semantic_autostart_skipped_job(data_root: &Path) -> Value {
+    let report = semantic_worker_report_for_daemon(data_root);
+    daemon_semantic_job_json(
+        "skipped",
+        Some("autostart_history_only"),
+        utc_now().timestamp_millis(),
+        &report,
+        None,
+        None,
+    )
+}
+
+fn daemon_semantic_failed_job(data_root: &Path, message: String) -> Value {
+    let report = semantic_worker_report_for_daemon(data_root);
+    daemon_semantic_job_json(
+        "failed",
+        None,
+        utc_now().timestamp_millis(),
+        &report,
+        None,
+        Some(message),
+    )
+}
+
+fn daemon_semantic_job_json(
+    status: &str,
+    reason: Option<&str>,
+    last_run_at_ms: i64,
+    report: &SemanticWorkerReport,
+    indexed_chunks: Option<usize>,
+    last_error: Option<String>,
+) -> Value {
+    compact_json(json!({
+        "schema_version": 1,
+        "status": status,
+        "enabled": true,
+        "reason": reason,
+        "last_run_at_ms": last_run_at_ms,
+        "last_error": last_error,
+        "indexed_chunks": indexed_chunks,
+        "model_cache_available": report.model_cache_available,
+        "worker_status": report.status,
+        "coverage": {
+            "searchable_items": report.searchable_items,
+            "completed_items": report.embedded_items,
+            "embedded_items": report.embedded_items,
+            "embedded_chunks": report.embedded_chunks,
+            "dirty_items": report.dirty_items,
+            "queued_items_estimate": report.queued_items_estimate,
+        },
+    }))
+}
+
+fn daemon_cloud_sync_disabled_job(last_run_at_ms: Option<i64>) -> Value {
+    compact_json(json!({
+        "schema_version": 1,
+        "status": "disabled",
+        "enabled": false,
+        "reason": "not_configured",
+        "network_allowed": false,
+        "last_run_at_ms": last_run_at_ms,
+        "last_upload_at_ms": Value::Null,
+        "queued_items_estimate": 0,
+        "last_error": Value::Null,
+    }))
+}
+
+fn write_daemon_lifecycle_status(
+    data_root: &Path,
+    args: &DaemonRunArgs,
+    status: &str,
+    started_at_ms: i64,
+    finished_at_ms: Option<i64>,
+    last_error: Option<String>,
+) -> Result<()> {
+    write_daemon_status(
+        data_root,
+        &compact_json(json!({
+            "schema_version": 1,
+            "status": status,
+            "pid": process::id(),
+            "started_at_ms": started_at_ms,
+            "heartbeat_at_ms": utc_now().timestamp_millis(),
+            "finished_at_ms": finished_at_ms,
+            "start_mode": daemon_run_start_mode(args).as_str(),
+            "trigger_command": args.trigger_command.map(DaemonTriggerCommandArg::as_str),
+            "last_error": last_error,
+        })),
+    )
+}
+
+fn semantic_worker_report_for_daemon(data_root: &Path) -> SemanticWorkerReport {
+    let db_path = database_path(data_root.to_path_buf());
+    if db_path.exists() {
+        match open_existing_store_read_only(&db_path, "ctx daemon status") {
+            Ok(store) => {
+                return semantic_worker_report(data_root, Some(&store)).unwrap_or_else(|error| {
+                    SemanticWorkerReport::unavailable(data_root, format!("{error:#}"))
+                });
+            }
+            Err(error) => {
+                return SemanticWorkerReport::unavailable(data_root, format!("{error:#}"));
+            }
+        }
+    }
+    semantic_worker_report_best_effort(data_root)
+}
+
+fn write_semantic_worker_failure_status(data_root: &Path, message: String) -> Result<()> {
+    let now = utc_now().timestamp_millis();
+    write_semantic_worker_status(
+        data_root,
+        &json!({
+            "schema_version": 1,
+            "status": "failed",
+            "pid": process::id(),
+            "heartbeat_at_ms": now,
+            "finished_at_ms": now,
+            "last_error": message,
+        }),
+    )
+}
+
+fn run_semantic_worker_inner_with_embedder(
+    args: SemanticWorkerArgs,
+    data_root: &Path,
+    query_hint: Option<String>,
+    embedder: &mut Option<SemanticEmbedder>,
+) -> Result<()> {
+    let Some(_lock) = SemanticWorkerLock::acquire(data_root)? else {
+        return Ok(());
+    };
+
+    let db_path = database_path(data_root.to_path_buf());
+    if !db_path.exists() {
+        return Err(anyhow!(
+            "ctx index does not exist yet; run `ctx import --all` or `ctx setup` first"
+        ));
+    }
+    let cache_dir = semantic_worker_cache_dir(data_root);
+    if embedder.is_none() && !semantic_model_cache_available(&cache_dir) {
+        return Err(anyhow!(
+            "semantic model is not available in the local cache; background indexing will not initialize or download {SEMANTIC_MODEL_ID}"
+        ));
+    }
+    let store = open_existing_store_read_only(&db_path, "ctx semantic worker")?;
+    let vector_path = semantic_vector_path(data_root);
+    let mut vector_store = SemanticVectorStore::open(&vector_path)?;
+    let prune_outcome = vector_store.prune_ineligible_events(&store)?;
+    let started_at_ms = utc_now().timestamp_millis();
+    let initial_stats = vector_store
+        .cached_stats()?
+        .unwrap_or_else(SemanticSidecarStats::default);
+    let initial_dirty_items = vector_store.dirty_event_count()?;
+    let searchable_items = store.event_embedding_document_count_cached_or_exact()?;
+    write_semantic_worker_status(
+        data_root,
+        &json!({
+            "schema_version": 1,
+            "status": "running",
+            "pid": process::id(),
+            "started_at_ms": started_at_ms,
+            "heartbeat_at_ms": started_at_ms,
+            "indexed_chunks": 0,
+            "pruned_chunks": prune_outcome.deleted_chunks,
+            "stale_events_queued": prune_outcome.queued_stale_events,
+            "searchable_items": searchable_items,
+            "embedded_items": initial_stats.embedded_items,
+            "embedded_chunks": initial_stats.embedded_chunks,
+            "dirty_items": initial_dirty_items,
+            "last_error": null,
+        }),
+    )?;
+    let max_chunks = semantic_worker_chunk_budget(&args);
+    let max_seconds = semantic_worker_seconds_budget(&args);
+    let started = Instant::now();
+    let deadline = started + StdDuration::from_secs(max_seconds);
+    let mut model_init_ms = None;
+    let indexed_chunks = if Instant::now() >= deadline {
+        0
+    } else {
+        backfill_semantic_embeddings(
+            &store,
+            &mut vector_store,
+            embedder,
+            &mut model_init_ms,
+            &cache_dir,
+            query_hint.as_deref(),
+            max_chunks,
+            true,
+            true,
+            Some(deadline),
+        )?
+    };
+    let elapsed = started.elapsed();
+    let elapsed_ms = elapsed.as_millis() as u64;
+    let final_stats = vector_store
+        .cached_stats()?
+        .unwrap_or_else(SemanticSidecarStats::default);
+    let final_dirty_items = vector_store.dirty_event_count()?;
+    let searchable_items = store.event_embedding_document_count_cached_or_exact()?;
+    let status = if searchable_items > 0
+        && final_stats.embedded_items >= searchable_items
+        && final_dirty_items == 0
+    {
+        "ready"
+    } else if elapsed >= StdDuration::from_secs(max_seconds) {
+        "budget_exhausted"
+    } else {
+        "completed"
+    };
+    let finished_at_ms = utc_now().timestamp_millis();
+    write_semantic_worker_status(
+        data_root,
+        &json!({
+            "schema_version": 1,
+            "status": status,
+            "pid": process::id(),
+            "started_at_ms": started_at_ms,
+            "heartbeat_at_ms": finished_at_ms,
+            "finished_at_ms": finished_at_ms,
+            "indexed_chunks": indexed_chunks,
+            "pruned_chunks": prune_outcome.deleted_chunks,
+            "stale_events_queued": prune_outcome.queued_stale_events,
+            "elapsed_ms": elapsed_ms,
+            "model_init_ms": model_init_ms,
+            "searchable_items": searchable_items,
+            "embedded_items": final_stats.embedded_items,
+            "embedded_chunks": final_stats.embedded_chunks,
+            "dirty_items": final_dirty_items,
+            "last_error": null,
+        }),
+    )?;
+    drop(_lock);
+    Ok(())
+}
+
+fn semantic_worker_chunk_budget(args: &SemanticWorkerArgs) -> usize {
+    args.max_chunks
+        .or_else(|| env_usize("CTX_SEMANTIC_WORKER_MAX_CHUNKS"))
+        .map(|value| value.min(SEMANTIC_WORKER_BATCH_MAX))
+        .unwrap_or(SEMANTIC_WORKER_BATCH_DEFAULT)
+}
+
+fn semantic_worker_seconds_budget(args: &SemanticWorkerArgs) -> u64 {
+    args.max_seconds
+        .or_else(|| {
+            env::var("CTX_SEMANTIC_WORKER_MAX_SECONDS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+        })
+        .map(|value| value.min(SEMANTIC_WORKER_MAX_SECONDS_CAP))
+        .unwrap_or(SEMANTIC_WORKER_MAX_SECONDS_DEFAULT)
+}
+
+fn queue_recent_semantic_work(data_root: &Path, store: &Store, reason: &str) -> Result<usize> {
+    let vector_path = semantic_vector_path(data_root);
+    if !vector_path.exists()
+        && !semantic_model_cache_available(&semantic_worker_cache_dir(data_root))
+    {
+        return Ok(0);
+    }
+    let docs = store.recent_event_embedding_documents(None, SEMANTIC_DIRTY_QUEUE_RECENT_LIMIT)?;
+    if docs.is_empty() {
+        return Ok(0);
+    }
+    let mut vector_store = SemanticVectorStore::open(&vector_path)?;
+    let existing_hashes = vector_store
+        .existing_hashes_for_event_ids(&docs.iter().map(|doc| doc.event_id).collect::<Vec<_>>())?;
+    let docs = docs
+        .into_iter()
+        .filter(|doc| {
+            let source_text = semantic_source_text(&doc.text);
+            let hash = semantic_document_hash(doc, &source_text);
+            existing_hashes
+                .get(&doc.event_id)
+                .map(|existing| existing != &hash)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    vector_store.enqueue_dirty_documents(&docs, reason)
+}
+
+pub(crate) fn maybe_autostart_daemon(
+    data_root: &Path,
+    config: &AppConfig,
+    trigger: DaemonTriggerCommandArg,
+    json_output: bool,
+) {
+    if json_output
+        || !config.daemon.enabled
+        || semantic_env_flag(DAEMON_BACKGROUND_CHILD_ENV)
+        || semantic_env_flag(DAEMON_AUTOSTART_OFF_ENV)
+        || semantic_env_flag("CI")
+        || !database_path(data_root.to_path_buf()).exists()
+    {
+        return;
+    }
+    let lock_path = daemon_lock_path(data_root);
+    if lock_path.exists() && !daemon_lock_is_stale(&lock_path) {
+        return;
+    }
+    let Ok(exe) = env::current_exe() else {
+        return;
+    };
+    let max_runtime = daemon_autostart_u64_env(
+        "CTX_DAEMON_AUTOSTART_MAX_RUNTIME_SECONDS",
+        DAEMON_AUTOSTART_MAX_RUNTIME_SECONDS_DEFAULT,
+        DAEMON_RUNTIME_SECONDS_CAP,
+    );
+    let idle_exit = daemon_autostart_u64_env(
+        "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
+        DAEMON_AUTOSTART_IDLE_EXIT_SECONDS_DEFAULT,
+        DAEMON_RUNTIME_SECONDS_CAP,
+    );
+    let loop_interval = daemon_autostart_u64_env(
+        "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS",
+        DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS_DEFAULT,
+        3_600,
+    );
+    let _ = Command::new(exe)
+        .arg("--data-root")
+        .arg(data_root)
+        .arg("daemon")
+        .arg("run")
+        .arg("--once")
+        .arg("--max-runtime-seconds")
+        .arg(max_runtime.to_string())
+        .arg("--idle-exit-seconds")
+        .arg(idle_exit.to_string())
+        .arg("--loop-interval-seconds")
+        .arg(loop_interval.to_string())
+        .arg("--start-mode")
+        .arg(DaemonStartModeArg::Auto.as_str())
+        .arg("--trigger-command")
+        .arg(trigger.as_str())
+        .arg("--json")
+        .env(DAEMON_BACKGROUND_CHILD_ENV, "1")
+        .env("CTX_ANALYTICS_OFF", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+fn daemon_autostart_u64_env(name: &str, default: u64, max: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(max))
+        .unwrap_or(default)
+}
+
+fn semantic_env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn semantic_health_findings(data_root: &Path) -> Vec<String> {
+    let mut findings = Vec::new();
+    let semantic_lock = semantic_worker_lock_path(data_root);
+    if semantic_lock.exists() && semantic_worker_lock_is_stale(&semantic_lock) {
+        findings.push(format!(
+            "semantic worker lock is stale: {}",
+            semantic_lock.display()
+        ));
+    }
+    let daemon_lock = daemon_lock_path(data_root);
+    if daemon_lock.exists() && daemon_lock_is_stale(&daemon_lock) {
+        findings.push(format!("daemon lock is stale: {}", daemon_lock.display()));
+    }
+    if let Some(status) = read_semantic_worker_status(data_root) {
+        if status.get("status").and_then(Value::as_str) == Some("failed") {
+            let error = json_string(&status, "last_error").unwrap_or_else(|| "unknown".to_owned());
+            findings.push(format!("semantic worker last failed: {error}"));
+        }
+    }
+    if let Some(status) = read_daemon_status(data_root) {
+        if status.get("status").and_then(Value::as_str) == Some("failed") {
+            let error = json_string(&status, "last_error").unwrap_or_else(|| "unknown".to_owned());
+            findings.push(format!("daemon last failed: {error}"));
+        }
+    }
+    let vector_path = semantic_vector_path(data_root);
+    if vector_path.exists() {
+        match SemanticVectorStore::open_read_only(&vector_path) {
+            Ok(Some(vector_store)) => match vector_store.plaintext_value_count() {
+                Ok(0) => {}
+                Ok(count) => findings.push(format!(
+                    "semantic vector sidecar contains {count} plaintext value(s); run daemon maintenance to scrub it"
+                )),
+                Err(error) => findings.push(format!(
+                    "semantic vector sidecar plaintext check failed: {error:#}"
+                )),
+            },
+            Ok(None) => {}
+            Err(error) => findings.push(format!(
+                "semantic vector sidecar is unreadable at {}: {error:#}",
+                vector_path.display()
+            )),
+        }
+    }
+    findings
+}
+
 fn json_string(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -1834,6 +3886,18 @@ fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool> {
         .optional()?
         .is_some();
     Ok(exists)
+}
+
+fn sqlite_table_sql(conn: &Connection, table: &str) -> Result<Option<String>> {
+    let sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(sql)
 }
 
 fn semantic_query_text(query: &str, terms: &[String]) -> String {
@@ -2037,11 +4101,16 @@ fn semantic_hits_for_text_query(
     Ok((semantic_hit_search.hits, diagnostics))
 }
 
+#[cfg(ctx_semantic_fastembed)]
 struct SemanticEmbedder {
     model: TextEmbedding,
     batch_size: usize,
 }
 
+#[cfg(not(ctx_semantic_fastembed))]
+struct SemanticEmbedder;
+
+#[cfg(ctx_semantic_fastembed)]
 fn new_semantic_embedder(cache_dir: &Path) -> Result<SemanticEmbedder> {
     let options = TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
         .with_show_download_progress(false)
@@ -2063,17 +4132,26 @@ fn new_semantic_embedder(cache_dir: &Path) -> Result<SemanticEmbedder> {
     })
 }
 
+#[cfg(not(ctx_semantic_fastembed))]
+fn new_semantic_embedder(_cache_dir: &Path) -> Result<SemanticEmbedder> {
+    Err(anyhow!(
+        "semantic embedding model {SEMANTIC_MODEL_ID} is not supported on this platform"
+    ))
+}
+
+#[cfg(ctx_semantic_fastembed)]
 fn semantic_embedder_threads() -> usize {
     env_usize("CTX_SEMANTIC_THREADS")
         .map(|value| value.min(SEMANTIC_EMBED_THREADS_MAX))
         .or_else(|| {
-            thread::available_parallelism()
+            std::thread::available_parallelism()
                 .ok()
                 .map(|threads| threads.get().min(SEMANTIC_EMBED_THREADS_DEFAULT).max(1))
         })
         .unwrap_or(SEMANTIC_EMBED_THREADS_DEFAULT)
 }
 
+#[cfg(ctx_semantic_fastembed)]
 fn semantic_embed_batch_size() -> usize {
     env_usize("CTX_SEMANTIC_EMBED_BATCH")
         .map(|value| value.min(SEMANTIC_EMBED_BATCH_MAX))
@@ -2106,6 +4184,9 @@ fn semantic_worker_cache_dir(data_root: &Path) -> PathBuf {
 }
 
 fn semantic_model_cache_available(cache_dir: &Path) -> bool {
+    if !semantic_embedding_supported() {
+        return false;
+    }
     if cache_dir.as_os_str().is_empty() {
         return false;
     }
@@ -2133,6 +4214,16 @@ fn semantic_model_cache_available(cache_dir: &Path) -> bool {
     })
 }
 
+#[cfg(ctx_semantic_fastembed)]
+fn semantic_embedding_supported() -> bool {
+    true
+}
+
+#[cfg(not(ctx_semantic_fastembed))]
+fn semantic_embedding_supported() -> bool {
+    false
+}
+
 fn env_usize(name: &str) -> Option<usize> {
     env::var(name)
         .ok()
@@ -2140,6 +4231,7 @@ fn env_usize(name: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
+#[cfg(ctx_semantic_fastembed)]
 fn embed_texts(embedder: &mut SemanticEmbedder, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
     let mut embeddings = embedder
         .model
@@ -2156,6 +4248,13 @@ fn embed_texts(embedder: &mut SemanticEmbedder, texts: Vec<String>) -> Result<Ve
         normalize_embedding(embedding);
     }
     Ok(embeddings)
+}
+
+#[cfg(not(ctx_semantic_fastembed))]
+fn embed_texts(_embedder: &mut SemanticEmbedder, _texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    Err(anyhow!(
+        "semantic embedding model {SEMANTIC_MODEL_ID} is not supported on this platform"
+    ))
 }
 
 fn backfill_semantic_embeddings(
@@ -2559,6 +4658,7 @@ fn semantic_text_hash(text: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[cfg(ctx_semantic_fastembed)]
 fn normalize_embedding(values: &mut [f32]) {
     let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
     if norm > 0.0 {
@@ -2701,13 +4801,20 @@ fn semantic_hits_for_query(
     limit: usize,
     event_filter: Option<&[Uuid]>,
 ) -> Result<SemanticHitSearch> {
-    let vector_limit = limit.saturating_mul(SEMANTIC_VECTOR_OVERFETCH).max(limit);
+    let sqlite_vec0_full_scan_ready =
+        event_filter.is_none() && vector_store.sqlite_vec0_ready().unwrap_or(false);
+    let vector_limit = if sqlite_vec0_full_scan_ready {
+        limit.max(1)
+    } else {
+        limit.saturating_mul(SEMANTIC_VECTOR_OVERFETCH).max(limit)
+    };
     let vector_search = if let Some(event_filter) = event_filter {
         vector_store.search_event_ids(query_embedding, event_filter, vector_limit)?
     } else {
         vector_store.search(query_embedding, vector_limit)?
     };
     let mut diagnostics = SemanticRetrievalDiagnostics {
+        vector_backend: vector_search.stats.backend,
         vector_scan_ms: Some(vector_search.stats.scan_ms),
         chunks_scanned: Some(vector_search.stats.chunks_scanned),
         vector_bytes_read: Some(vector_search.stats.vector_bytes_read),
@@ -2733,10 +4840,10 @@ fn semantic_hits_for_query(
             .get(&hit.event_id)
             .is_some_and(|hash| hash == &hit.source_text_hash)
     });
+    diagnostics.stale_events_dropped = Some(before_stale_filter.saturating_sub(vector_hits.len()));
     if vector_hits.len() > limit {
         vector_hits.truncate(limit);
     }
-    diagnostics.stale_events_dropped = Some(before_stale_filter.saturating_sub(vector_hits.len()));
     let chunk_ranges = vector_hits
         .iter()
         .map(|hit| (hit.event_id, (hit.start_char, hit.end_char)))
@@ -2777,4 +4884,333 @@ fn current_semantic_source_hashes(
             (doc.event_id, semantic_document_hash(&doc, &source_text))
         })
         .collect())
+}
+
+#[cfg(all(test, ctx_sqlite_vec))]
+mod tests {
+    use super::*;
+
+    fn test_embedding(first: f32, second: f32) -> Vec<f32> {
+        let mut embedding = vec![0.0; SEMANTIC_DIMENSIONS];
+        embedding[0] = first;
+        embedding[1] = second;
+        embedding
+    }
+
+    fn empty_test_packet(
+        query: &str,
+        options: &ctx_history_search::PacketOptions,
+    ) -> ctx_history_search::SearchPacket {
+        ctx_history_search::SearchPacket {
+            schema_version: ctx_history_search::SEARCH_PACKET_SCHEMA_VERSION,
+            query: query.to_owned(),
+            filters: options.filters.clone(),
+            generated_at: utc_now(),
+            results: Vec::new(),
+            pagination: ctx_history_core::ContextPagination::default(),
+            truncation: ctx_history_core::ContextTruncation::default(),
+        }
+    }
+
+    fn test_chunk(event_id: Uuid, seq: u64, source_hash: &str) -> SemanticChunkDocument {
+        test_chunk_at(event_id, seq, source_hash, 0, 1)
+    }
+
+    fn test_chunk_at(
+        event_id: Uuid,
+        seq: u64,
+        source_hash: &str,
+        chunk_index: usize,
+        chunk_count: usize,
+    ) -> SemanticChunkDocument {
+        SemanticChunkDocument {
+            event_id,
+            history_record_id: None,
+            session_id: None,
+            seq,
+            chunk_index,
+            chunk_count,
+            source_text_hash: source_hash.to_owned(),
+            chunk_text_hash: format!("{source_hash}-chunk-{chunk_index}"),
+            text: String::new(),
+            start_char: chunk_index.saturating_mul(10),
+            end_char: chunk_index.saturating_mul(10).saturating_add(12),
+        }
+    }
+
+    #[test]
+    fn sqlite_vec0_full_scan_matches_rust_scan() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut store = SemanticVectorStore::open(&temp.path().join("vectors.sqlite"))?;
+        let close_event = Uuid::new_v4();
+        let far_event = Uuid::new_v4();
+        store.upsert_chunk_embeddings(&[
+            (
+                test_chunk(close_event, 2, "close"),
+                test_embedding(1.0, 0.0),
+            ),
+            (test_chunk(far_event, 1, "far"), test_embedding(0.0, 1.0)),
+        ])?;
+
+        assert!(store.sqlite_vec0_ready()?);
+
+        let query = test_embedding(1.0, 0.0);
+        let sqlite_hits = store.search(&query, 2)?;
+        let rust_hits = store.search_event_ids(&query, &[close_event, far_event], 2)?;
+
+        assert_eq!(
+            sqlite_hits.stats.backend,
+            Some(SEMANTIC_VECTOR_BACKEND_SQLITE_VEC)
+        );
+        assert_eq!(rust_hits.stats.backend, Some(SEMANTIC_VECTOR_BACKEND_RUST));
+        assert_eq!(sqlite_hits.hits.len(), 2);
+        assert_eq!(rust_hits.hits.len(), 2);
+        assert_eq!(sqlite_hits.hits[0].event_id, close_event);
+        assert_eq!(rust_hits.hits[0].event_id, close_event);
+        assert_eq!(sqlite_hits.hits[1].event_id, far_event);
+        assert_eq!(rust_hits.hits[1].event_id, far_event);
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_vec0_caps_large_k_without_falling_back() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut store = SemanticVectorStore::open(&temp.path().join("vectors.sqlite"))?;
+        let close_event = Uuid::new_v4();
+        let far_event = Uuid::new_v4();
+        store.upsert_chunk_embeddings(&[
+            (
+                test_chunk(close_event, 2, "close"),
+                test_embedding(1.0, 0.0),
+            ),
+            (test_chunk(far_event, 1, "far"), test_embedding(0.0, 1.0)),
+        ])?;
+
+        let search = store.search(&test_embedding(1.0, 0.0), SEMANTIC_SQLITE_VEC0_MAX_K + 1)?;
+
+        assert_eq!(
+            search.stats.backend,
+            Some(SEMANTIC_VECTOR_BACKEND_SQLITE_VEC)
+        );
+        assert_eq!(search.hits.len(), 2);
+        assert_eq!(search.hits[0].event_id, close_event);
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_vec0_overfetches_until_unique_events_match_rust_scan() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut store = SemanticVectorStore::open(&temp.path().join("vectors.sqlite"))?;
+        let multi_chunk_event = Uuid::new_v4();
+        let next_event = Uuid::new_v4();
+        store.upsert_chunk_embeddings(&[
+            (
+                test_chunk_at(multi_chunk_event, 2, "multi", 0, 3),
+                test_embedding(1.0, 0.0),
+            ),
+            (
+                test_chunk_at(multi_chunk_event, 2, "multi", 1, 3),
+                test_embedding(0.999, 0.044),
+            ),
+            (
+                test_chunk_at(multi_chunk_event, 2, "multi", 2, 3),
+                test_embedding(0.995, 0.099),
+            ),
+            (
+                test_chunk_at(next_event, 1, "next", 0, 1),
+                test_embedding(0.98, 0.199),
+            ),
+        ])?;
+
+        let query = test_embedding(1.0, 0.0);
+        let sqlite_hits = store.search(&query, 2)?;
+        let rust_hits = store.search_event_ids(&query, &[multi_chunk_event, next_event], 2)?;
+
+        assert_eq!(
+            sqlite_hits.stats.backend,
+            Some(SEMANTIC_VECTOR_BACKEND_SQLITE_VEC)
+        );
+        assert_eq!(sqlite_hits.hits.len(), 2);
+        assert_eq!(sqlite_hits.hits[0].event_id, multi_chunk_event);
+        assert_eq!(sqlite_hits.hits[1].event_id, next_event);
+        assert_eq!(
+            sqlite_hits
+                .hits
+                .iter()
+                .map(|hit| hit.event_id)
+                .collect::<Vec<_>>(),
+            rust_hits
+                .hits
+                .iter()
+                .map(|hit| hit.event_id)
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_vec0_rebuilds_incompatible_derived_schema() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let vector_path = temp.path().join("vectors.sqlite");
+        {
+            let conn = Connection::open(&vector_path)?;
+            conn.execute_batch(
+                r#"
+                CREATE TABLE event_embedding_vec0_meta (
+                    rowid INTEGER PRIMARY KEY,
+                    event_id TEXT NOT NULL
+                );
+                CREATE TABLE event_embedding_vec0 (
+                    rowid INTEGER PRIMARY KEY,
+                    embedding BLOB
+                );
+                "#,
+            )?;
+        }
+
+        let mut store = SemanticVectorStore::open(&vector_path)?;
+        let close_event = Uuid::new_v4();
+        store.upsert_chunk_embeddings(&[(
+            test_chunk(close_event, 1, "close"),
+            test_embedding(1.0, 0.0),
+        )])?;
+
+        assert!(store.sqlite_vec0_ready()?);
+        let vec0_sql = sqlite_table_sql(&store.conn, "event_embedding_vec0")?.unwrap_or_default();
+        assert!(vec0_sql.to_ascii_lowercase().contains("using vec0"));
+        assert!(sqlite_table_has_columns(
+            &store.conn,
+            "event_embedding_vec0_meta",
+            &["model_key", "source_text_sha256", "start_char", "end_char"]
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_vec0_rebuilds_when_same_count_meta_rowids_drift() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut store = SemanticVectorStore::open(&temp.path().join("vectors.sqlite"))?;
+        let close_event = Uuid::new_v4();
+        let far_event = Uuid::new_v4();
+        store.upsert_chunk_embeddings(&[
+            (
+                test_chunk(close_event, 2, "close"),
+                test_embedding(1.0, 0.0),
+            ),
+            (test_chunk(far_event, 1, "far"), test_embedding(0.0, 1.0)),
+        ])?;
+        assert!(store.sqlite_vec0_ready()?);
+
+        let canonical_rowid = store.conn.query_row(
+            "SELECT rowid FROM event_embedding_chunks WHERE event_id = ?1 AND model_key = ?2",
+            params![close_event.to_string(), SEMANTIC_MODEL_KEY],
+            |row| row.get::<_, i64>(0),
+        )?;
+        store.conn.execute(
+	            "UPDATE event_embedding_vec0_meta SET rowid = rowid + 1000 WHERE event_id = ?1 AND model_key = ?2",
+	            params![close_event.to_string(), SEMANTIC_MODEL_KEY],
+	        )?;
+
+        assert!(!store.sqlite_vec0_ready()?);
+        store.sync_sqlite_vec0_from_chunks_if_needed()?;
+        assert!(store.sqlite_vec0_ready()?);
+
+        let repaired_rowid = store.conn.query_row(
+            "SELECT rowid FROM event_embedding_vec0_meta WHERE event_id = ?1 AND model_key = ?2",
+            params![close_event.to_string(), SEMANTIC_MODEL_KEY],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(repaired_rowid, canonical_rowid);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_does_not_use_partial_coverage_as_empty_lexical_veto() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let data_root = temp.path();
+        let store = Store::open(data_root.join("work.sqlite"))?;
+        let vector_path = data_root.join("vectors.sqlite");
+        let _vector_store = SemanticVectorStore::open(&vector_path)?;
+        let cache_dir = data_root.join("semantic-model-cache");
+        let worker_report = SemanticWorkerReport {
+            status: "pending".to_owned(),
+            running: false,
+            pid: None,
+            started_at_ms: None,
+            heartbeat_at_ms: None,
+            finished_at_ms: None,
+            indexed_chunks: None,
+            model_init_ms: None,
+            last_error: None,
+            searchable_items: 10,
+            embedded_items: 1,
+            embedded_chunks: 1,
+            dirty_items: 0,
+            queued_items_estimate: 9,
+            model_cache_available: false,
+            vector_path: vector_path.clone(),
+            lock_path: semantic_worker_lock_path(data_root),
+            status_path: semantic_worker_status_path(data_root),
+        };
+        let options = ctx_history_search::PacketOptions::default();
+        let mut retrieval = SemanticRetrievalReport::lexical(SearchBackendArg::Auto, 10);
+        retrieval.worker = Some(worker_report.clone());
+        retrieval.apply_worker_counts(&worker_report);
+        let lexical_packet = || Ok(empty_test_packet("semantic-only needle", &options));
+
+        let packet = auto_search_packet(
+            &store,
+            &options,
+            &lexical_packet,
+            &mut retrieval,
+            &worker_report,
+            &vector_path,
+            &cache_dir,
+            "semantic-only needle",
+            0.65,
+            RefreshArg::Off,
+        )?;
+
+        assert!(packet.results.is_empty());
+        assert_eq!(retrieval.effective_mode(), SearchBackendArg::Lexical);
+        assert_eq!(retrieval.semantic_weight, 0.0);
+        assert_eq!(
+            retrieval
+                .diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.auto_hybrid_skipped),
+            Some("model_cache_missing")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn daemon_autostart_skips_semantic_sidecar_work() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let args = DaemonRunArgs {
+            foreground: false,
+            once: true,
+            max_runtime_seconds: None,
+            idle_exit_seconds: None,
+            loop_interval_seconds: None,
+            max_chunks: None,
+            max_seconds: None,
+            force: false,
+            start_mode: Some(DaemonStartModeArg::Auto),
+            trigger_command: Some(DaemonTriggerCommandArg::Setup),
+            json: true,
+        };
+
+        assert!(daemon_run_is_autostart(&args));
+        let job = daemon_semantic_autostart_skipped_job(temp.path());
+        assert_eq!(job["status"], "skipped");
+        assert_eq!(job["reason"], "autostart_history_only");
+        assert!(!temp.path().join("vectors.sqlite").exists());
+
+        write_daemon_lifecycle_status(temp.path(), &args, "running", 123, None, None)?;
+        let status = read_daemon_status(temp.path()).expect("daemon status");
+        assert_eq!(status["start_mode"], "auto");
+        assert_eq!(status["trigger_command"], "setup");
+        Ok(())
+    }
 }
