@@ -23,6 +23,7 @@ pub(super) use crate::provider::providers::{
     shelley::{shelley_event_index, shelley_value_text},
     trae::{TRAE_CN_INPUT_HISTORY_KEY, TRAE_STATE_VSCDB_SOURCE_FORMAT},
 };
+pub(super) use crate::test_support_paths::{capture_manifest_dir, capture_repo_root};
 pub(super) use crate::{
     catalog_codex_session_tree, compute_payload_hash, discover_provider_sources_for_provider,
     fixture_envelope, import_antigravity_cli_history, import_astrbot_sqlite, import_auggie_history,
@@ -146,24 +147,22 @@ pub(super) fn test_provider_event(event_type: EventType) -> ProviderEventEnvelop
 }
 
 pub(super) fn materialized_fixture(category: &str, name: &str) -> PathBuf {
+    let manifest_dir = capture_manifest_dir();
     let source = match category {
-        "provider" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        "provider" => manifest_dir
             .join("../../tests/fixtures/provider")
             .join(name),
-        "provider-history" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        "provider-history" => manifest_dir
             .join("../../tests/fixtures/provider-history")
             .join(name),
-        "custom-history-jsonl" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        "custom-history-jsonl" => manifest_dir
             .join("../../tests/fixtures/custom-history-jsonl")
             .join(name),
         _ => panic!("unknown fixture category {category}"),
     };
     let root = std::env::var_os("TEST_TMPDIR")
         .map(|path| PathBuf::from(path).join("test-data/materialized-fixtures"))
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/test-data/materialized-fixtures")
-        });
+        .unwrap_or_else(|| manifest_dir.join("../../target/test-data/materialized-fixtures"));
     fs::create_dir_all(&root).unwrap();
     let unique = format!(
         "{}-{}-{}-{}",

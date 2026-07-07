@@ -19,7 +19,51 @@ CTX_GATE_DATA = glob([
     "sdks/**",
     "skills/**",
     "tests/**",
-])
+]) + [
+    "//crates/ctx-cli:cargo_package_data",
+    "//crates/ctx-history-capture:cargo_package_data",
+    "//crates/ctx-history-core:cargo_package_data",
+    "//crates/ctx-history-search:cargo_package_data",
+    "//crates/ctx-history-store:cargo_package_data",
+    "//crates/ctx-protocol:cargo_package_data",
+    "//crates/ctx-sdk:cargo_package_data",
+]
+
+filegroup(
+    name = "agent_history_contract_fixtures",
+    srcs = glob(["contracts/agent-history-v1/fixtures/*.json"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "ctx_embedded_docs",
+    srcs = glob(["docs/**/*.md"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "ctx_bundled_skills",
+    srcs = glob(["skills/**/*.md"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "provider_support_matrix",
+    srcs = ["docs/provider-support-matrix.json"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "public_test_fixtures",
+    srcs = glob(["tests/fixtures/**"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "redaction_corpus",
+    srcs = ["tests/fixtures/redaction/redaction-corpus.jsonl"],
+    visibility = ["//visibility:public"],
+)
 
 sh_test(
     name = "cargo_fmt_check",
@@ -147,6 +191,44 @@ sh_test(
     data = CTX_GATE_DATA,
 )
 
+sh_test(
+    name = "native_ctx_binary_smoke",
+    srcs = ["scripts/bazel-native-ctx-smoke.sh"],
+    args = [
+        "$(rootpath //crates/ctx-cli:ctx)",
+        "$(rootpath //crates/ctx-cli:Cargo.toml)",
+    ],
+    data = [
+        "//crates/ctx-cli:Cargo.toml",
+        "//crates/ctx-cli:ctx",
+    ],
+)
+
+test_suite(
+    name = "native_rust_smoke",
+    tests = [
+        ":native_ctx_binary_smoke",
+        "//crates/ctx-history-core:unit_tests",
+        "//crates/ctx-protocol:unit_tests",
+        "//crates/ctx-sdk:unit_tests",
+    ],
+)
+
+test_suite(
+    name = "native_rust",
+    tests = [
+        ":native_ctx_binary_smoke",
+        "//crates/ctx-cli:unit_tests",
+        "//crates/ctx-history-capture:cursor_native_tests",
+        "//crates/ctx-history-capture:unit_tests",
+        "//crates/ctx-history-core:unit_tests",
+        "//crates/ctx-history-search:unit_tests",
+        "//crates/ctx-history-store:unit_tests",
+        "//crates/ctx-protocol:unit_tests",
+        "//crates/ctx-sdk:unit_tests",
+    ],
+)
+
 test_suite(
     name = "fast",
     tests = [
@@ -157,6 +239,7 @@ test_suite(
         ":installer_path_smoke",
         ":buildkite_pipeline_check",
         ":loc_check",
+        ":native_rust_smoke",
         ":source_diff_check",
         ":package_audit_fast",
         ":sdk_contract_checks",
@@ -169,6 +252,7 @@ test_suite(
         ":fast",
         ":cargo_clippy",
         ":cargo_test_default",
+        ":native_rust",
         ":fresh_home_e2e",
         ":provider_fixture_e2e",
         ":local_transcript_oracle",

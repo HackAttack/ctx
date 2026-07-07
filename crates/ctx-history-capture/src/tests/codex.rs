@@ -239,11 +239,7 @@ fn synthetic_codex_incremental_import_perf_records_thresholded_evidence() {
     let out_dir = std::env::var_os("CTX_ARTIFACT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(2)
-                .unwrap()
-                .join("target/ctx-artifacts/synthetic_codex_incremental_import_perf")
+            capture_repo_root().join("target/ctx-artifacts/synthetic_codex_incremental_import_perf")
         });
     fs::create_dir_all(&out_dir).unwrap();
     let artifact_path = out_dir.join("synthetic-codex-incremental-import-perf.json");
