@@ -17,15 +17,6 @@ ctx indexes those logs into SQLite on your machine, then gives current and futur
 curl -fsSL https://ctx.rs/install | sh
 ```
 
-Optional but recommended for agent sessions:
-
-```bash
-ctx skill install
-```
-
-For marketplace/plugin installs in Codex, Claude Code, Cursor, and raw Agent
-Skills, see [Agent Skill Install](docs/agent-skill-install.md).
-
 ## 50x more token-efficient than raw transcript search
 
 By structuring agent history into sessions, events, metadata, and indexed fields, then returning ranked cited matches, agents can access meaningful history with far fewer tokens than raw search. Results vary by query and corpus, but raw search is often so token-heavy that it can be effectively the same as not having usable history.
