@@ -17,7 +17,8 @@ use crate::provider::providers::native_jsonl::native_jsonl_missing_reason;
 use crate::provider::providers::real_content::event_has_real_conversation_content;
 
 use crate::common::io::{
-    collect_jsonl_paths, ensure_regular_provider_transcript_file, read_provider_jsonl_line,
+    collect_jsonl_paths, ensure_regular_provider_transcript_file,
+    read_provider_jsonl_record_or_skip_oversized,
 };
 use crate::common::time::parse_optional_rfc3339_field;
 use crate::provider::adapter::PiSessionJsonlAdapter;
@@ -101,8 +102,12 @@ pub(crate) fn normalize_pi_session_jsonl_file(
     let mut line = Vec::new();
     let mut line_number = 0usize;
 
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }

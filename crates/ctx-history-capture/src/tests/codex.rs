@@ -155,14 +155,14 @@ fn codex_session_catalog_large_noop_uses_metadata_cache() {
 }
 
 #[test]
-fn codex_session_catalog_rejects_oversized_metadata_line() {
+fn codex_session_catalog_skips_oversized_metadata_probe_line() {
     let temp = tempdir();
     let root = temp.path().join("sessions/2026/07/03");
     fs::create_dir_all(&root).unwrap();
     write_oversized_jsonl_line(&root.join("oversized.jsonl"));
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();
 
-    let err = catalog_codex_session_tree(
+    let summary = catalog_codex_session_tree(
         temp.path().join("sessions"),
         &store,
         CodexSessionCatalogOptions {
@@ -172,12 +172,12 @@ fn codex_session_catalog_rejects_oversized_metadata_line() {
             ..CodexSessionCatalogOptions::default()
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(
-        err.to_string().contains("provider JSONL line exceeds"),
-        "{err}"
-    );
+    assert_eq!(summary.source_files, 1);
+    assert_eq!(summary.cataloged_sessions, 1);
+    assert_eq!(summary.parsed_sessions, 1);
+    assert_eq!(summary.failed_sessions, 0);
 }
 
 #[test]

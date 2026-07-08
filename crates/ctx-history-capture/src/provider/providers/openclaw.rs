@@ -13,8 +13,8 @@ use ctx_history_core::{
 use serde_json::{json, Value};
 
 use crate::common::io::{
-    collect_jsonl_paths, ensure_regular_provider_transcript_file, read_provider_jsonl_line,
-    read_text_file_limited,
+    collect_jsonl_paths, ensure_regular_provider_transcript_file,
+    read_provider_jsonl_record_or_skip_oversized, read_text_file_limited,
 };
 use crate::provider::native::{
     native_event, native_provider_capture, provider_capped_json, provider_role,
@@ -215,8 +215,12 @@ pub(crate) fn normalize_openclaw_jsonl_file(
     let mut header_seen = false;
     let mut line_number = 0usize;
     let mut line = Vec::new();
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }

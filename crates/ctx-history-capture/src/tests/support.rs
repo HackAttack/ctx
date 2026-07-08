@@ -126,6 +126,12 @@ pub(super) fn write_oversized_jsonl_line(path: &Path) {
     fs::write(path, vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1]).unwrap();
 }
 
+pub(super) fn oversized_jsonl_line() -> Vec<u8> {
+    let mut line = vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1];
+    line.push(b'\n');
+    line
+}
+
 pub(super) fn jsonl_line(value: Value) -> String {
     serde_json::to_string(&value).unwrap() + "\n"
 }

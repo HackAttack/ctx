@@ -6,7 +6,7 @@ use std::{
 
 use serde_json::Value;
 
-use crate::{CaptureError, Result, MAX_PROVIDER_JSONL_LINE_BYTES};
+use crate::{CaptureError, ProviderImportSummary, Result, MAX_PROVIDER_JSONL_LINE_BYTES};
 
 pub(crate) fn collect_jsonl_paths(root: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
     let metadata = fs::symlink_metadata(root)?;
@@ -112,6 +112,28 @@ pub(crate) enum ProviderJsonlLineRead {
     Eof,
     Line { bytes: usize },
     Oversized { bytes: usize },
+}
+
+pub(crate) fn read_provider_jsonl_record_or_skip_oversized(
+    reader: &mut impl BufRead,
+    buffer: &mut Vec<u8>,
+    line_number: &mut usize,
+    summary: &mut ProviderImportSummary,
+) -> Result<bool> {
+    loop {
+        match read_provider_jsonl_line_or_skip_oversized(reader, buffer)? {
+            ProviderJsonlLineRead::Eof => return Ok(false),
+            ProviderJsonlLineRead::Line { .. } => {
+                *line_number = line_number.saturating_add(1);
+                return Ok(true);
+            }
+            ProviderJsonlLineRead::Oversized { .. } => {
+                *line_number = line_number.saturating_add(1);
+                summary.skipped += 1;
+                summary.skipped_events += 1;
+            }
+        }
+    }
 }
 
 pub(crate) fn read_provider_jsonl_line_or_skip_oversized(

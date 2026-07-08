@@ -928,6 +928,48 @@ fn native_mux_fixture_imports_searches_reimports_and_subagents() {
 }
 
 #[test]
+fn native_mux_skips_oversized_chat_record() {
+    let temp = tempdir();
+    let fixture = provider_history_fixture("mux/v0.27.0/sessions");
+    let chat_path = fixture.join("mux-parent-session/chat.jsonl");
+    let original = fs::read(&chat_path).unwrap();
+    let first_line_end = original
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+        .unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&original[..first_line_end]);
+    bytes.extend_from_slice(&oversized_jsonl_line());
+    bytes.extend_from_slice(&original[first_line_end..]);
+    fs::write(&chat_path, bytes).unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_mux_history(
+        &fixture,
+        &mut store,
+        MuxImportOptions {
+            source_path: Some(fixture.clone()),
+            allow_partial_failures: true,
+            imported_at: "2026-07-04T19:30:00Z".parse().unwrap(),
+            ..MuxImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped_events, 1);
+    assert_eq!(summary.imported_sessions, 2);
+    assert_eq!(summary.imported_events, 6);
+    assert!(store
+        .search_event_hits("mux jsonl oracle prompt", 10)
+        .unwrap()
+        .iter()
+        .any(|hit| hit.provider == Some(CaptureProvider::Mux)));
+}
+
+#[test]
 fn native_mux_reports_malformed_jsonl_partially() {
     let temp = tempdir();
     let fixture = provider_history_fixture("mux/malformed/sessions");
@@ -1132,6 +1174,56 @@ fn native_jsonl_tree_imports_gemini_droid_and_copilot_smokes() {
 }
 
 #[test]
+fn native_jsonl_tree_skips_oversized_record_and_continues_session() {
+    let temp = tempdir();
+    let chats = temp.path().join("gemini/.gemini/tmp/project/chats");
+    fs::create_dir_all(&chats).unwrap();
+    let path = chats.join("oversized-gemini.jsonl");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "sessionId": "gemini-oversized",
+            "startTime": "2026-07-04T15:00:00Z",
+            "directories": ["/workspace"]
+        }))
+        .as_bytes(),
+    );
+    bytes.extend_from_slice(&oversized_jsonl_line());
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "id": "gemini-after-oversized",
+            "timestamp": "2026-07-04T15:00:01Z",
+            "type": "user",
+            "content": "after oversized gemini"
+        }))
+        .as_bytes(),
+    );
+    fs::write(&path, bytes).unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_gemini_cli_history(
+        temp.path().join("gemini/.gemini"),
+        &mut store,
+        GeminiCliImportOptions {
+            source_path: Some(temp.path().join("gemini/.gemini")),
+            imported_at: "2026-07-04T15:30:00Z".parse().unwrap(),
+            ..GeminiCliImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped_events, 1);
+    assert_eq!(summary.imported_sessions, 1);
+    assert_eq!(summary.imported_events, 2);
+    let session_id =
+        stored_provider_session_id(&store, CaptureProvider::Gemini, "gemini-oversized");
+    let rendered = serde_json::to_string(&store.events_for_session(session_id).unwrap()).unwrap();
+    assert!(rendered.contains("after oversized gemini"));
+}
+
+#[test]
 fn native_jsonl_tree_imports_qwen_and_kimi_smokes_are_idempotent() {
     let temp = tempdir();
     let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
@@ -1245,6 +1337,60 @@ fn native_jsonl_tree_imports_qwen_and_kimi_smokes_are_idempotent() {
     assert_eq!(kimi_second.imported_events, 0);
     assert_eq!(kimi_second.imported_edges, 0);
 }
+
+#[test]
+fn native_kimi_skips_oversized_index_and_wire_records() {
+    let temp = tempdir();
+    let kimi = write_kimi_smoke_fixture(&temp);
+    let index_path = kimi.join("session_index.jsonl");
+    let original_index = fs::read(&index_path).unwrap();
+    let mut index_bytes = oversized_jsonl_line();
+    index_bytes.extend_from_slice(&original_index);
+    fs::write(&index_path, index_bytes).unwrap();
+
+    let wire_path = kimi.join("sessions/wd_demo_abc123/kimi-smoke/agents/main/wire.jsonl");
+    let original_wire = fs::read(&wire_path).unwrap();
+    let first_line_end = original_wire
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+        .unwrap();
+    let mut wire_bytes = Vec::new();
+    wire_bytes.extend_from_slice(&original_wire[..first_line_end]);
+    wire_bytes.extend_from_slice(&oversized_jsonl_line());
+    wire_bytes.extend_from_slice(&original_wire[first_line_end..]);
+    fs::write(&wire_path, wire_bytes).unwrap();
+
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let summary = import_kimi_code_cli_history(
+        &kimi,
+        &mut store,
+        KimiCodeCliImportOptions {
+            allow_partial_failures: true,
+            imported_at: "2026-07-04T15:30:00Z".parse().unwrap(),
+            ..KimiCodeCliImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped_events, 1);
+    assert_eq!(summary.imported_sessions, 2);
+    assert_eq!(summary.imported_events, 7);
+    let session_id = stored_provider_session_id(&store, CaptureProvider::KimiCodeCli, "kimi-smoke");
+    let source = store
+        .capture_source_by_external_session(CaptureProvider::KimiCodeCli, "kimi-smoke")
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.descriptor.cwd.as_deref(), Some("/workspace/kimi"));
+    assert_eq!(
+        store.events_for_session(session_id).unwrap().len(),
+        5,
+        "main wire events should resume after the oversized record"
+    );
+}
+
 #[test]
 fn native_jsonl_tree_skips_headerless_native_files() {
     let temp = tempdir();

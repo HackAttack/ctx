@@ -190,6 +190,64 @@ fn native_claude_empty_project_jsonl_rejects_no_real_message() {
 }
 
 #[test]
+fn native_claude_projects_skips_oversized_jsonl_record() {
+    let temp = tempdir();
+    let root = temp.path().join("claude/projects/-workspace");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("oversized-claude.jsonl");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "sessionId": "claude-oversized",
+            "timestamp": "2026-07-04T14:00:00Z",
+            "cwd": "/workspace",
+            "version": "test",
+            "type": "user",
+            "message": {"role": "user", "content": "before oversized claude"},
+            "uuid": "claude-oversized-before"
+        }))
+        .as_bytes(),
+    );
+    bytes.extend_from_slice(&oversized_jsonl_line());
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "sessionId": "claude-oversized",
+            "timestamp": "2026-07-04T14:00:01Z",
+            "cwd": "/workspace",
+            "version": "test",
+            "type": "assistant",
+            "message": {"role": "assistant", "content": "after oversized claude"},
+            "uuid": "claude-oversized-after"
+        }))
+        .as_bytes(),
+    );
+    fs::write(&path, bytes).unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_claude_projects_jsonl_tree(
+        temp.path().join("claude/projects"),
+        &mut store,
+        ClaudeProjectsImportOptions {
+            source_path: Some(temp.path().join("claude/projects")),
+            imported_at: "2026-07-04T14:30:00Z".parse().unwrap(),
+            ..ClaudeProjectsImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped_events, 1);
+    assert_eq!(summary.imported_sessions, 1);
+    assert_eq!(summary.imported_events, 2);
+    let session_id =
+        stored_provider_session_id(&store, CaptureProvider::Claude, "claude-oversized");
+    let rendered = serde_json::to_string(&store.events_for_session(session_id).unwrap()).unwrap();
+    assert!(rendered.contains("before oversized claude"));
+    assert!(rendered.contains("after oversized claude"));
+}
+
+#[test]
 fn antigravity_native_history_imports_transcripts_and_preserves_previews() {
     let temp = tempdir();
     let fixture = provider_history_fixture("antigravity/v1/brain");

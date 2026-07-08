@@ -15,7 +15,8 @@ use ctx_history_core::{
 use serde_json::{json, Value};
 
 use crate::common::io::{
-    collect_jsonl_paths, ensure_regular_provider_transcript_file, read_provider_jsonl_line,
+    collect_jsonl_paths, ensure_regular_provider_transcript_file,
+    read_provider_jsonl_record_or_skip_oversized,
 };
 use crate::common::time::parse_rfc3339_utc;
 use crate::provider::file_touches::provider_file_touches_from_raw_value;
@@ -169,8 +170,12 @@ pub(crate) fn normalize_native_jsonl_session_file(
     let mut line = Vec::new();
     let mut line_number = 0usize;
 
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }

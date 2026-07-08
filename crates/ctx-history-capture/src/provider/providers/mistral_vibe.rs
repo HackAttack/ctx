@@ -17,7 +17,7 @@ use crate::provider::providers::native_jsonl::{
 
 use crate::common::io::{
     ensure_provider_path_parents_are_not_symlinks, ensure_regular_provider_transcript_file,
-    read_provider_jsonl_line, read_text_file_limited,
+    read_provider_jsonl_record_or_skip_oversized, read_text_file_limited,
 };
 use crate::common::time::parse_rfc3339_utc;
 use crate::provider::custom_history_jsonl::push_provider_import_failure;
@@ -134,8 +134,12 @@ pub(crate) fn normalize_mistral_vibe_session_source(
     let mut line = Vec::new();
     let mut line_number = 0usize;
 
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
