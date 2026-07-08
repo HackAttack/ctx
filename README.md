@@ -19,13 +19,13 @@ curl -fsSL https://ctx.rs/install | sh
 ```
 
 Windows PowerShell:
-```
+```powershell
 irm https://ctx.rs/install.ps1 | iex
 ```
 
 or prompt your agent:
 ```
-Please install and setup ctx CLI (see github.com/ctxrs/ctx)
+Please install and set up ctx CLI (see github.com/ctxrs/ctx)
 ```
 
 ## 50x more token-efficient than raw transcript search
