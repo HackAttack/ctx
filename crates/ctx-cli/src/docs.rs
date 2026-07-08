@@ -152,6 +152,15 @@ const TOPICS: &[DocTopic] = &[
         body: include_str!("../../../docs/mcp.md"),
     },
     DocTopic {
+        id: "mcp-integrations",
+        title: "MCP Integrations",
+        audience: "human-agent",
+        summary: "Install ctx MCP server config for supported coding-agent clients.",
+        tags: &["mcp", "integrations", "agents", "install"],
+        source_path: "docs/mcp-integrations.md",
+        body: include_str!("../../../docs/mcp-integrations.md"),
+    },
+    DocTopic {
         id: "upgrade",
         title: "Upgrade",
         audience: "human-agent",
@@ -186,6 +195,15 @@ const TOPICS: &[DocTopic] = &[
         tags: &["skills", "agents", "install"],
         source_path: "docs/agent-skill-install.md",
         body: include_str!("../../../docs/agent-skill-install.md"),
+    },
+    DocTopic {
+        id: "slash-command-integrations",
+        title: "Slash Command Integrations",
+        audience: "human-agent",
+        summary: "Provider matrix and installer behavior for ctx slash-command entry points.",
+        tags: &["integrations", "slash-commands", "skills", "agents"],
+        source_path: "docs/slash-command-integrations.md",
+        body: include_str!("../../../docs/slash-command-integrations.md"),
     },
     DocTopic {
         id: "sdks",

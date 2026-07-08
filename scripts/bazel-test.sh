@@ -26,6 +26,7 @@ init_env() {
   ctx_init_bazel_test_env
   ctx_init_resource_env
   export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
+  export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}"
   export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
 }
 
@@ -38,6 +39,16 @@ run() {
 
 run_cargo_test() {
   run cargo test --locked "$@"
+}
+
+run_real_harness() {
+  local script="$1"
+  local ctx_bin="${2:-}"
+  if [[ -n "${ctx_bin}" ]]; then
+    run env CTX_REAL_HARNESS_CTX_BIN="${ctx_bin}" bash "${script}"
+  else
+    run bash "${script}"
+  fi
 }
 
 run_source_diff_check() {
@@ -88,8 +99,38 @@ case "${mode}" in
     run_cargo_test -p ctx --test upgrade upgrade_status_check_and_apply_support_managed_installs
     run_cargo_test -p ctx --test upgrade json_commands_do_not_spawn_background_upgrade
     ;;
+  slash_command_e2e)
+    run_cargo_test -p ctx --test slash_command_e2e
+    ;;
+  real_harness_codex_skill_e2e)
+    run_real_harness scripts/real-harness-codex-skill-e2e.sh "${2:-}"
+    ;;
+  real_harness_gemini_slash_e2e)
+    run_real_harness scripts/real-harness-gemini-slash-e2e.sh "${2:-}"
+    ;;
+  real_harness_qwen_slash_e2e)
+    run_real_harness scripts/real-harness-qwen-slash-e2e.sh "${2:-}"
+    ;;
   docs_check)
     run bash scripts/check-docs.sh
+    ;;
+  mcp_integration_e2e)
+    run_cargo_test -p ctx --test mcp_integration_e2e
+    ;;
+  real_harness_codex_mcp_e2e)
+    run_real_harness scripts/real-harness-codex-mcp-e2e.sh "${2:-}"
+    ;;
+  real_harness_qwen_mcp_e2e)
+    run_real_harness scripts/real-harness-qwen-mcp-e2e.sh "${2:-}"
+    ;;
+  real_harness_claude_mcp_e2e)
+    run_real_harness scripts/real-harness-claude-mcp-e2e.sh "${2:-}"
+    ;;
+  real_harness_gemini_mcp_e2e)
+    run_real_harness scripts/real-harness-gemini-mcp-e2e.sh "${2:-}"
+    ;;
+  real_harness_opencode_mcp_e2e)
+    run_real_harness scripts/real-harness-opencode-mcp-e2e.sh "${2:-}"
     ;;
   installer_path_smoke)
     run bash scripts/install-path-smoke.sh

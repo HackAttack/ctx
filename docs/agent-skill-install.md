@@ -19,7 +19,7 @@ manager, when you skipped installer setup, or when you want to refresh the skill
 after upgrading:
 
 ```bash
-ctx skill install
+ctx integrations install skills
 ```
 
 By default this opens a small picker when run in an interactive terminal, with
@@ -34,23 +34,23 @@ Install into specific agent skill folders when an agent does not read the
 universal `.agents/skills` location:
 
 ```bash
-ctx skill install --agent codex
-ctx skill install --agent claude-code --agent cursor
-ctx skill install --all-agents
+ctx integrations install skills --agent codex
+ctx integrations install skills --agent claude-code --agent cursor
+ctx integrations install skills --all-agents
 ```
 
 Use project scope when you want a repository-local skill folder:
 
 ```bash
-ctx skill install --project
-ctx skill install --project --agent claude-code
+ctx integrations install skills --project
+ctx integrations install skills --project --agent claude-code
 ```
 
 Check installed state with:
 
 ```bash
-ctx skill status
-ctx skill status --agent codex --json
+ctx integrations status skills
+ctx integrations status skills --agent codex --json
 ```
 
 `status` reports `current`, `stale`, `modified`, or `missing` for the bundled
@@ -58,8 +58,9 @@ ctx skill status --agent codex --json
 `.ctx-skill.json` metadata file beside `SKILL.md` so ctx can tell stale bundled
 copies from local edits.
 
-`ctx skill install` refreshes stale bundled copies automatically, but it does
-not overwrite locally modified skill files unless you pass `--force`.
+`ctx integrations install skills` refreshes stale bundled copies automatically,
+but it does not overwrite locally modified skill files unless you pass
+`--force`.
 
 Installer flags mirror the direct CLI controls:
 
@@ -140,3 +141,22 @@ scripts/sync-plugin-skills.sh --write
 The plugin also includes a `/ctx-history` command. The command is a thin entry
 point that delegates to the `ctx-agent-history-search` skill instead of
 duplicating the full workflow instructions.
+
+## Slash Command Entry Points
+
+Many agent harnesses now expose skills directly through slash-style commands.
+For those providers, installing the ctx skill is the right integration. Codex
+uses `/skills` or skill references, and Claude Code and Cursor expose skills as
+slash commands.
+
+Use the separate slash-command installer only for providers that still have a
+documented command-file location:
+
+```bash
+ctx integrations install slash-commands --agent opencode
+ctx integrations install slash-commands --agent gemini-cli
+ctx integrations install slash-commands --agent qwen-code
+ctx integrations install slash-commands --agent windsurf
+```
+
+See `ctx docs show slash-command-integrations` for the full provider matrix.

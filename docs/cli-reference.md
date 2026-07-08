@@ -62,16 +62,16 @@ separate from provider history indexing.
 ## Agent Skill
 
 ```bash
-ctx skill install
-ctx skill install --agent codex --agent claude-code
-ctx skill install --all-agents
-ctx skill install --project
-ctx skill install --force
-ctx skill status
-ctx skill status --agent codex --json
+ctx integrations install skills
+ctx integrations install skills --agent codex --agent claude-code
+ctx integrations install skills --all-agents
+ctx integrations install skills --project
+ctx integrations install skills --force
+ctx integrations status skills
+ctx integrations status skills --agent codex --json
 ```
 
-`skill install` installs or refreshes ctx's bundled
+`integrations install skills` installs or refreshes ctx's bundled
 `ctx-agent-history-search` skill. With no target flags in an interactive
 terminal, it opens a small agent picker with the universal `~/.agents/skills`
 location selected plus detected agent-specific folders for tools that need
@@ -83,11 +83,67 @@ Gemini CLI, Antigravity, GitHub Copilot, Pi, and Goose. `--all-agents` writes
 all supported target folders. `--project` switches from global paths to the
 current project's skill folders.
 
-`skill status` reports whether the bundled skill is `current`, `stale`,
-`modified`, or `missing`. `skill install` refreshes stale bundled copies
-automatically, but it refuses to overwrite locally modified skill files unless
-you pass `--force`. The command only manages the bundled ctx skill and does not
-fetch arbitrary remote skills.
+`integrations status skills` reports whether the bundled skill is `current`,
+`stale`, `modified`, or `missing`. `integrations install skills` refreshes
+stale bundled copies automatically, but it refuses to overwrite locally
+modified skill files unless you pass `--force`. The command only manages the
+bundled ctx skill and does not fetch arbitrary remote skills.
+
+## Integrations
+
+```bash
+ctx integrations install mcp
+ctx integrations install mcp --agent codex
+ctx integrations install mcp --provider cursor --project
+ctx integrations install mcp --all-agents --json
+ctx integrations install mcp --agent cursor --force
+ctx integrations status mcp
+ctx integrations status mcp --agent codex --json
+ctx integrations install slash-commands
+ctx integrations install slash-commands --agent opencode
+ctx integrations install slash-commands --agent gemini-cli --project
+ctx integrations install slash-commands --agent qwen-code
+ctx integrations install slash-commands --agent windsurf
+ctx integrations install slash-commands --all-agents
+ctx integrations install slash-commands --force
+ctx integrations install slash-commands --json
+```
+
+`integrations install mcp` adds a local MCP server named `ctx` to supported
+coding-agent client configs. The server command is `ctx mcp serve`. With no
+target flags, it installs for supported agents detected on the machine.
+`--agent` targets one or more coding-agent clients, and `--provider` is accepted
+as an alias for compatibility with provider-oriented workflows. `--project`
+writes a project-scoped MCP config when that agent has a documented project
+config location; without explicit agent flags, project mode only targets
+project MCP config locations that already exist.
+
+The MCP installer parses structured config files, preserves unrelated settings,
+and is idempotent. If a config already contains a `ctx` MCP server with a
+different command or args, install reports a conflict and leaves the file
+untouched unless `--force` is passed. Invalid JSON, TOML, or YAML configs are
+reported and left untouched. `integrations status mcp` reports `current`,
+`missing`, `conflict`, `invalid_config`, or `unsupported`.
+
+`integrations install slash-commands` installs a `/ctx-history` entry point only
+for providers where ctx has a documented, file-based command surface it can
+manage safely: OpenCode, Gemini CLI, Qwen Code, and Windsurf. With no explicit
+agent flag, it writes detected file-based targets only. `--project` installs
+into the current repository's command folder instead of the user/global folder.
+
+The installer writes `.ctx-slash-commands.json` metadata beside generated
+command files. Re-running the command is idempotent, stale ctx-owned files are
+refreshed automatically, and locally modified command files are preserved unless
+you pass `--force`.
+
+For Codex, Claude Code, Cursor, GitHub Copilot CLI, Pi, and other skill-first
+agents, use `ctx integrations install skills`; those providers expose the
+bundled skill through their own skill invocation surface rather than a separate
+`/ctx-history` command file. See `ctx docs show slash-command-integrations` for
+the provider matrix and rationale.
+
+Run `ctx docs show mcp-integrations` for the MCP support matrix, config paths,
+and manual snippets.
 
 ## Sources
 
@@ -418,6 +474,7 @@ that is easier for agents to quote and inspect.
 
 ```bash
 ctx mcp serve
+ctx integrations install mcp
 ```
 
 `mcp serve` starts a read-only MCP server over newline-delimited stdio JSON-RPC.
@@ -435,6 +492,8 @@ tool when the active session tree itself is the target.
 
 The MCP server is optional. The CLI remains the primary interface, and MCP is
 intended for agents or hosts that prefer tool discovery over shell commands.
+Use `ctx integrations install mcp` to add the server to supported coding-agent
+MCP configs.
 
 ## Upgrade
 
@@ -508,6 +567,8 @@ ctx sql "SELECT COUNT(*) FROM ctx_sessions" --json
 ctx docs list --json
 ctx docs search <query> --json
 ctx docs show <topic> --format json
+ctx integrations install mcp --json
+ctx integrations status mcp --json
 ctx upgrade --json
 ctx upgrade check --json
 ctx upgrade status --json
