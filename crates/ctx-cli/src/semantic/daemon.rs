@@ -6,8 +6,157 @@ struct DaemonIteration {
 
 #[derive(Default)]
 struct DaemonRuntime {
-    semantic_embedder: Option<SemanticEmbedder>,
+    semantic_embedder: Arc<Mutex<Option<SemanticEmbedder>>>,
     semantic_bootstrap_passes_since_refresh: usize,
+}
+
+fn daemon_runtime_embedder_loaded(runtime: &DaemonRuntime) -> bool {
+    runtime
+        .semantic_embedder
+        .lock()
+        .map(|embedder| embedder.is_some())
+        .unwrap_or(false)
+}
+
+fn lock_daemon_runtime_embedder(
+    runtime: &DaemonRuntime,
+) -> Result<std::sync::MutexGuard<'_, Option<SemanticEmbedder>>> {
+    runtime
+        .semantic_embedder
+        .lock()
+        .map_err(|_| anyhow!("semantic embedder lock is poisoned"))
+}
+
+#[cfg(unix)]
+struct DaemonQueryService {
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for DaemonQueryService {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(unix)]
+fn start_daemon_query_service(
+    data_root: &Path,
+    embedder: Arc<Mutex<Option<SemanticEmbedder>>>,
+) -> Result<DaemonQueryService> {
+    let root = daemon_root_path(data_root);
+    create_private_dir_all(&root)?;
+    let path = daemon_query_socket_path(data_root);
+    let _ = fs::remove_file(&path);
+    let listener =
+        UnixListener::bind(&path).with_context(|| format!("bind daemon query socket {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("set daemon query socket permissions {}", path.display()))?;
+    let thread_data_root = data_root.to_path_buf();
+    std::thread::Builder::new()
+        .name("ctx-daemon-query".to_owned())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => handle_daemon_query_stream(&thread_data_root, &embedder, stream),
+                    Err(_) => break,
+                }
+            }
+        })
+        .context("start daemon query service thread")?;
+    Ok(DaemonQueryService { path })
+}
+
+#[cfg(unix)]
+fn handle_daemon_query_stream(
+    data_root: &Path,
+    embedder: &Arc<Mutex<Option<SemanticEmbedder>>>,
+    stream: UnixStream,
+) {
+    let mut stream = stream;
+    let result = handle_daemon_query_stream_inner(data_root, embedder, &mut stream);
+    if let Err(error) = result {
+        let _ = writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&compact_json(json!({
+                "ok": false,
+                "error": format!("{error:#}"),
+            })))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"query failed\"}".to_owned())
+        );
+    }
+}
+
+#[cfg(unix)]
+fn handle_daemon_query_stream_inner(
+    data_root: &Path,
+    embedder: &Arc<Mutex<Option<SemanticEmbedder>>>,
+    stream: &mut UnixStream,
+) -> Result<()> {
+    let mut body = String::new();
+    stream
+        .take(256 * 1024)
+        .read_to_string(&mut body)
+        .context("read daemon query request")?;
+    let request: Value = serde_json::from_str(&body).context("parse daemon query request")?;
+    let op = request.get("op").and_then(Value::as_str).unwrap_or("");
+    if op == "ping" {
+        writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&compact_json(json!({
+                "ok": true,
+                "schema_version": 1,
+            })))?
+        )?;
+        return Ok(());
+    }
+    if op != "embed_query" {
+        return Err(anyhow!("unknown daemon query operation `{op}`"));
+    }
+    let model_key = request.get("model_key").and_then(Value::as_str).unwrap_or("");
+    if model_key != SEMANTIC_MODEL_KEY {
+        return Err(anyhow!("daemon query model key mismatch"));
+    }
+    let text = request
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if text.is_empty() {
+        return Err(anyhow!("daemon query text is empty"));
+    }
+    let started = Instant::now();
+    let mut guard = embedder
+        .lock()
+        .map_err(|_| anyhow!("semantic embedder lock is poisoned"))?;
+    if guard.is_none() {
+        let cache_dir = semantic_worker_cache_dir(data_root);
+        if !semantic_model_cache_available(&cache_dir) {
+            return Err(anyhow!("semantic model cache is not available to daemon query service"));
+        }
+        *guard = Some(new_semantic_embedder(&cache_dir)?);
+    }
+    let embedder = guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("semantic embedder was not initialized"))?;
+    let mut embeddings = embed_texts(embedder, vec![text.to_owned()])?;
+    let embedding = embeddings
+        .pop()
+        .ok_or_else(|| anyhow!("semantic query embedding was empty"))?;
+    let query_embed_ms = started.elapsed().as_millis() as u64;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&compact_json(json!({
+            "ok": true,
+            "model_key": SEMANTIC_MODEL_KEY,
+            "query_embed_ms": query_embed_ms,
+            "embedding": embedding,
+        })))?
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -178,8 +327,18 @@ fn run_daemon(args: DaemonRunArgs, data_root: PathBuf, config: &AppConfig) -> Re
             "daemon autostart metadata flags are internal; run `ctx daemon run` without --start-mode or --trigger-command"
         ));
     }
+    if config.semantic_search_enabled() && !semantic_query_service_supported() {
+        return Err(anyhow!(
+            "local semantic search is not supported on this platform yet. Set [search] semantic = false"
+        ));
+    }
     lower_semantic_worker_priority();
-    let report = match run_daemon_inner(args.clone(), &data_root, config.daemon.enabled) {
+    let report = match run_daemon_inner(
+        args.clone(),
+        &data_root,
+        config.daemon.enabled,
+        config.semantic_search_enabled(),
+    ) {
         Ok(report) => report,
         Err(error) => {
             let message = format!("{error:#}");
@@ -208,7 +367,12 @@ fn run_daemon(args: DaemonRunArgs, data_root: PathBuf, config: &AppConfig) -> Re
     Ok(())
 }
 
-fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool) -> Result<Value> {
+fn run_daemon_inner(
+    args: DaemonRunArgs,
+    data_root: &Path,
+    daemon_enabled: bool,
+    semantic_enabled: bool,
+) -> Result<Value> {
     if !daemon_enabled && !args.force {
         let semantic_report = semantic_worker_report_for_daemon(data_root);
         return Ok(daemon_report(data_root, &semantic_report));
@@ -232,9 +396,18 @@ fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool)
     write_daemon_lifecycle_status(data_root, &args, "running", started_at_ms, None, None)?;
 
     let mut runtime = DaemonRuntime::default();
+    #[cfg(unix)]
+    let _query_service = if semantic_enabled {
+        Some(start_daemon_query_service(data_root, runtime.semantic_embedder.clone())?)
+    } else {
+        None
+    };
     let mut idle_since: Option<Instant> = None;
     loop {
-        let iteration = run_daemon_once(&args, data_root, &mut runtime, None)?;
+        if idle_since.is_some_and(|idle| idle.elapsed() >= idle_exit) {
+            break;
+        }
+        let iteration = run_daemon_once(&args, data_root, &mut runtime, None, semantic_enabled)?;
         write_daemon_lifecycle_status(data_root, &args, "running", started_at_ms, None, None)?;
         if iteration.failed {
             failed = true;
@@ -247,9 +420,6 @@ fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool)
             idle_since = None;
         } else if idle_since.is_none() {
             idle_since = Some(Instant::now());
-        }
-        if idle_since.is_some_and(|idle| idle.elapsed() >= idle_exit) {
-            break;
         }
         std::thread::sleep(loop_interval);
     }
@@ -276,12 +446,13 @@ fn run_daemon_once(
     data_root: &Path,
     runtime: &mut DaemonRuntime,
     deadline: Option<Instant>,
+    semantic_enabled: bool,
 ) -> Result<DaemonIteration> {
-    if semantic_bootstrap_should_run_first(data_root, runtime)? {
+    if semantic_enabled && semantic_bootstrap_should_run_first(data_root, runtime)? {
         let history_refresh_job =
             daemon_history_refresh_skipped_job("semantic_bootstrap_in_progress");
         write_daemon_job_status(&daemon_history_refresh_job_path(data_root), &history_refresh_job)?;
-        let semantic_job = run_daemon_semantic_job(args, data_root, runtime, deadline)
+        let semantic_job = run_daemon_semantic_job(args, data_root, runtime, deadline, semantic_enabled)
             .unwrap_or_else(|error| daemon_semantic_failed_job(data_root, format!("{error:#}")));
         let semantic_did_work = daemon_semantic_job_did_work(&semantic_job);
         runtime.semantic_bootstrap_passes_since_refresh =
@@ -316,7 +487,7 @@ fn run_daemon_once(
     )?;
 
     let semantic_job = if daemon_deadline_has_min_budget(deadline, DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
-        run_daemon_semantic_job(args, data_root, runtime, deadline)
+        run_daemon_semantic_job(args, data_root, runtime, deadline, semantic_enabled)
     } else {
         Ok(daemon_semantic_deadline_skipped_job(data_root))
     };
@@ -536,13 +707,26 @@ fn run_daemon_semantic_job(
     data_root: &Path,
     runtime: &mut DaemonRuntime,
     deadline: Option<Instant>,
+    semantic_enabled: bool,
 ) -> Result<Value> {
+    let last_run_at_ms = utc_now().timestamp_millis();
+    if !semantic_enabled {
+        let report = semantic_worker_report_best_effort(data_root);
+        return Ok(daemon_semantic_job_json(
+            "disabled",
+            Some("semantic_disabled"),
+            last_run_at_ms,
+            &report,
+            None,
+            None,
+        ));
+    }
+
     #[cfg(test)]
     if let Some(value) = daemon_test_job("semantic_index") {
         return Ok(value);
     }
 
-    let last_run_at_ms = utc_now().timestamp_millis();
     let db_path = database_path(data_root.to_path_buf());
     if !db_path.exists() {
         let report = semantic_worker_report_best_effort(data_root);
@@ -584,17 +768,7 @@ fn run_daemon_semantic_job(
             None,
         ));
     }
-    if !before.model_cache_available && runtime.semantic_embedder.is_none() {
-        return Ok(daemon_semantic_job_json(
-            "skipped",
-            Some("model_cache_missing"),
-            last_run_at_ms,
-            &before,
-            None,
-            None,
-        ));
-    }
-    let min_remaining_secs = if runtime.semantic_embedder.is_some() {
+    let min_remaining_secs = if daemon_runtime_embedder_loaded(runtime) {
         DAEMON_MIN_REMAINING_FOR_JOB_SECS
     } else {
         SEMANTIC_MODEL_INIT_MIN_REMAINING_SECS
@@ -609,6 +783,31 @@ fn run_daemon_semantic_job(
             None,
             None,
         ));
+    }
+    if !before.model_cache_available && !daemon_runtime_embedder_loaded(runtime) {
+        let cache_dir = semantic_worker_cache_dir(data_root);
+        let _ = write_semantic_model_acquisition_status(data_root, "acquiring_model", None);
+        match acquire_semantic_embedder(&cache_dir) {
+            Ok(embedder) => {
+                *lock_daemon_runtime_embedder(runtime)? = Some(embedder);
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                let _ = write_semantic_model_acquisition_status(
+                    data_root,
+                    "model_acquisition_failed",
+                    Some(message.clone()),
+                );
+                return Ok(daemon_semantic_job_json(
+                    "skipped",
+                    Some("model_acquisition_failed"),
+                    last_run_at_ms,
+                    &before,
+                    None,
+                    Some(message),
+                ));
+            }
+        }
     }
     drop(store);
 
@@ -628,12 +827,11 @@ fn run_daemon_semantic_job(
         max_chunks: args.max_chunks,
         max_seconds: Some(worker_max_seconds),
     };
-    if let Err(error) = run_semantic_worker_inner_with_embedder(
-        worker_args,
-        data_root,
-        None,
-        &mut runtime.semantic_embedder,
-    ) {
+    let worker_result = {
+        let mut embedder = lock_daemon_runtime_embedder(runtime)?;
+        run_semantic_worker_inner_with_embedder(worker_args, data_root, None, &mut *embedder)
+    };
+    if let Err(error) = worker_result {
         let message = format!("{error:#}");
         let _ = write_semantic_worker_failure_status(data_root, message.clone());
         let report = semantic_worker_report_for_daemon(data_root);
@@ -647,12 +845,15 @@ fn run_daemon_semantic_job(
         ));
     }
     let report = semantic_worker_report_for_daemon(data_root);
-    let indexed_chunks = report.indexed_chunks;
+    let indexed_chunks_now = report
+        .embedded_chunks
+        .saturating_sub(before.embedded_chunks);
+    let indexed_chunks = (indexed_chunks_now > 0).then_some(indexed_chunks_now);
     let status = if report.running {
         "running"
     } else if report.queued_items_estimate == 0 {
         "ready"
-    } else if indexed_chunks.unwrap_or(0) > 0 {
+    } else if indexed_chunks_now > 0 {
         "budget_exhausted"
     } else {
         report.status.as_str()
@@ -806,6 +1007,27 @@ fn write_semantic_worker_failure_status(data_root: &Path, message: String) -> Re
             "pid": process::id(),
             "heartbeat_at_ms": now,
             "finished_at_ms": now,
+            "last_error": message,
+            "embed_policy": semantic_embed_policy_status_json(),
+        }),
+    )
+}
+
+fn write_semantic_model_acquisition_status(
+    data_root: &Path,
+    status: &str,
+    message: Option<String>,
+) -> Result<()> {
+    let now = utc_now().timestamp_millis();
+    write_semantic_worker_status(
+        data_root,
+        &json!({
+            "schema_version": 1,
+            "status": status,
+            "model_key": SEMANTIC_MODEL_KEY,
+            "pid": process::id(),
+            "heartbeat_at_ms": now,
+            "finished_at_ms": (status == "model_acquisition_failed").then_some(now),
             "last_error": message,
             "embed_policy": semantic_embed_policy_status_json(),
         }),
@@ -1015,6 +1237,26 @@ pub(crate) fn maybe_autostart_daemon(
     trigger: DaemonTriggerCommandArg,
     json_output: bool,
 ) {
+    maybe_autostart_daemon_inner(data_root, config, trigger, json_output, false);
+}
+
+pub(crate) fn maybe_autostart_daemon_for_search(data_root: &Path, config: &AppConfig) {
+    maybe_autostart_daemon_inner(
+        data_root,
+        config,
+        DaemonTriggerCommandArg::Search,
+        false,
+        true,
+    );
+}
+
+fn maybe_autostart_daemon_inner(
+    data_root: &Path,
+    config: &AppConfig,
+    trigger: DaemonTriggerCommandArg,
+    json_output: bool,
+    allow_json_output: bool,
+) {
     if semantic_env_flag(DAEMON_BACKGROUND_CHILD_ENV) {
         return;
     }
@@ -1027,7 +1269,7 @@ pub(crate) fn maybe_autostart_daemon(
     if semantic_env_flag(DAEMON_AUTOSTART_OFF_ENV) {
         return;
     }
-    if json_output {
+    if json_output && !allow_json_output {
         return;
     }
     if semantic_env_flag("CI") {
@@ -1093,6 +1335,70 @@ pub(crate) fn maybe_autostart_daemon(
                 None,
             );
         }
+    }
+}
+
+pub(crate) fn semantic_query_service_supported() -> bool {
+    cfg!(unix)
+}
+
+#[cfg(unix)]
+pub(crate) fn daemon_query_service_available(data_root: &Path) -> bool {
+    let path = daemon_query_socket_path(data_root);
+    if !path.exists() {
+        return false;
+    }
+    let Ok(mut stream) = UnixStream::connect(path) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(StdDuration::from_secs(1)));
+    let _ = stream.set_write_timeout(Some(StdDuration::from_secs(1)));
+    if writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&compact_json(json!({
+            "schema_version": 1,
+            "op": "ping",
+        })))
+        .unwrap_or_else(|_| "{\"schema_version\":1,\"op\":\"ping\"}".to_owned())
+    )
+    .is_err()
+    {
+        return false;
+    }
+    let _ = stream.shutdown(Shutdown::Write);
+    let mut body = String::new();
+    if stream
+        .take(1024)
+        .read_to_string(&mut body)
+        .is_err()
+    {
+        return false;
+    }
+    serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(Value::as_bool))
+        == Some(true)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn daemon_query_service_available(_data_root: &Path) -> bool {
+    false
+}
+
+pub(crate) fn wait_for_daemon_query_service(data_root: &Path, timeout: StdDuration) -> bool {
+    if !semantic_query_service_supported() {
+        return false;
+    }
+    let started = Instant::now();
+    loop {
+        if daemon_query_service_available(data_root) {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(StdDuration::from_millis(100));
     }
 }
 

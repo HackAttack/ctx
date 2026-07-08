@@ -1,8 +1,93 @@
 # Local Semantic Search Ship Plan
 
-This plan captures the dogfood findings from the July 7, 2026 local run on a
-power-user ctx corpus and the implementation path to make local semantic search
-safe to ship by default.
+This plan captures the dogfood findings from the July 7-8, 2026 local runs on
+a power-user ctx corpus and the implementation path for local semantic search.
+The local Apache CLI, lexical search, setup, import/export, daemon refresh,
+status, local query service, and local semantic search remain free local
+functionality. Semantic search is implemented as first-class daemon
+functionality, but ships during prerelease as an explicit opt-in until dogfood
+and private relevance evals justify flipping the default.
+
+## Product And API Decision
+
+- No paid gate in the local Apache CLI for lexical search, daemon indexing,
+  setup, import/export, status, local query service, or local semantic search.
+- Future paid product surface should live in hosted or team/enterprise memory:
+  cross-device continuity, shared/team memory, admin controls, policy,
+  compliance, hosted acceleration, and LLM summaries. The free local CLI should
+  stay useful enough to create trust.
+- Semantic search is disabled by default for the prerelease. Advanced users opt
+  in with:
+
+  ```toml
+  [search]
+  semantic = true
+  ```
+
+- `CTX_SEARCH_SEMANTIC=1` is available as an operator/test override.
+  `CTX_DISABLE_SEMANTIC_SEARCH=1` forces semantic off.
+- Semantic requires the daemon. The supported prerelease opt-in shape is:
+
+  ```toml
+  [daemon]
+  enabled = true
+
+  [search]
+  semantic = true
+  ```
+
+- Daemon without semantic is valid and useful: it owns lexical incremental
+  refresh and can later own additional local query-service work. The semantic
+  query-embedding socket is created only when semantic is enabled. Semantic
+  without daemon is invalid.
+- There is no `auto` search mode. Omitted backend means lexical when semantic is
+  disabled and hybrid when semantic is enabled. Explicit `--backend lexical`
+  remains available.
+- There is no product `max-runtime-seconds` option. Tests and dogfood can wrap
+  foreground daemon commands in process-level timeouts; the product daemon runs
+  until `--once`, failure, idle exit, or normal service shutdown.
+- `ctx setup` should be repeatable. If an existing user later enables
+  `[search] semantic = true` and reruns setup, setup should leave existing data
+  intact, start daemon-owned indexing when possible, and let the daemon acquire
+  the local embedding model and build missing semantic sidecars.
+- This branch supports the semantic query service on Unix. Non-Unix semantic
+  opt-in is blocked for v1 until there is an equivalent query-service transport.
+
+## Current Branch Addendum
+
+- Config now has `[search] semantic = true|false`, default unset/off, and env
+  overrides for prerelease dogfood.
+- Default search backend resolution is config-aware: lexical by default while
+  semantic is off, hybrid by default while semantic is on, and explicit semantic
+  fails fast when disabled.
+- Status, doctor, MCP status, and index status report `semantic.status =
+  disabled` with `reason = semantic_disabled` when semantic is not enabled.
+- Setup refuses the invalid semantic-without-daemon configuration, reports
+  semantic background estimates only when semantic is enabled, and states that
+  the daemon will download the local embedding model if needed.
+- The daemon does not create or mutate semantic sidecars when semantic is
+  disabled.
+- When semantic is enabled and the local embedding model is missing, the daemon
+  enters `acquiring_model`, downloads/initializes the model through fastembed,
+  verifies the cache, and records `model_acquisition_failed` if acquisition
+  fails.
+- On Unix, the daemon now exposes a private `0600` Unix socket query service for
+  query embeddings. CLI search no longer initializes or downloads the embedding
+  model in the foreground; semantic/hybrid search asks the daemon query service
+  for the query vector, then performs local vector scan/hydration/ranking.
+- The query service is intentionally narrow for v1: it embeds query text only.
+  Full vector search can move into the daemon later if command startup,
+  sqlite-vec scan, or hydration becomes the dominant latency.
+- Search with semantic enabled and default background refresh attempts to
+  autostart the daemon before hybrid/semantic retrieval. Explicit
+  `--refresh off` does not autostart daemon work; strict semantic fails with an
+  actionable daemon-query-service error when the daemon is not running.
+- Daemon query socket startup is required when semantic is enabled. If the
+  socket cannot bind, daemon startup fails visibly instead of running without a
+  query service.
+- Daemon model acquisition shields fastembed's `HF_HOME` override while filling
+  the ctx-selected cache root, preserving ctx cache precedence during download
+  as well as during normal model loading.
 
 ## Dogfood Baseline
 
@@ -213,21 +298,58 @@ safe to ship by default.
   lexical found the same marker in 0.47s because the query shared exact marker
   tokens.
 
+## Prerelease Opt-In Dogfood Notes
+
+- With semantic disabled by default, the completed dogfood sidecar reports
+  `semantic.status = disabled` and `reason = semantic_disabled`, while retaining
+  coverage counts for diagnostics.
+- After adding `[search] semantic = true` to the isolated dogfood root, status
+  reported ready with 60,726-60,740 searchable semantic documents and about
+  158,663-158,688 embedded chunks. The count moved during dogfood because live
+  local work continued to be imported.
+- A manual daemon query-service smoke exposed a private
+  `0600` `daemon/query.sock`. Strict semantic search for
+  `opal maple lantern semantic count drift` found the expected incremental
+  marker at Hit@1 with foreground RSS under 90 MiB.
+- First query through a daemon whose embedder was not warm took about 25s wall
+  because the daemon query service had to initialize the embedding model. Warm
+  query embedding through the daemon dropped to 3ms, but total CLI wall stayed
+  around 8s on the dogfood root because vector scan plus hydration still run in
+  the foreground process over about 158k chunks.
+- Default search with semantic enabled and no manual daemon autostarted the
+  daemon, returned effective `hybrid`, used semantic evidence, and found the
+  same marker at Hit@1 in 8.56s wall with 87 MiB foreground RSS. Diagnostics:
+  query embedding 221ms, sqlite-vec scan 1.087s, hydration 2.656s, 158,688
+  chunks scanned.
+- Strict semantic with `--refresh off` and no running daemon now fails fast with
+  `daemon semantic query service is not available`, as intended.
+- A clean foreground daemon `--once` pass over the isolated dogfood root still
+  spent 2m44s / 469 MiB RSS on no-op history refresh over about 14.2 GiB /
+  32,451 source files. This is acceptable as background daemon work for
+  prerelease, but it remains a candidate for future refresh fingerprinting or
+  source-level no-op avoidance. The idle loop now checks the idle deadline
+  before starting another pass, so a no-op idle daemon does not launch an extra
+  expensive refresh just to discover it should exit.
+
 ## Ship Goals
 
-- `ctx setup` starts daemon-owned indexing by default and reports a truthful,
-  actionable status.
+- `ctx setup` starts daemon-owned lexical indexing by default and reports a
+  truthful, actionable status. When semantic is explicitly enabled, setup also
+  queues daemon-owned semantic indexing and model acquisition.
 - Existing local model caches are discovered without env-var handholding; if no
-  cache exists, semantic status explains exactly what is missing.
+  cache exists, the daemon should acquire the model or semantic status should
+  explain exactly what failed.
 - Semantic corpus is deterministic and small enough for local backfill:
   user-turn anchored lite-turn documents, not raw event/tool-output chunks.
 - New local work is prioritized before historical backfill.
 - Search output always exposes requested/effective backend and semantic fallback
   reason; common unsupported filters should fail clearly or fall back explicitly.
-- Default and explicit `hybrid` use semantic evidence only when semantic
-  sidecar coverage is complete and dirty work is drained; partial coverage is
-  available through explicit `semantic` for diagnostics and dogfood, not default
-  ranking.
+- While semantic is disabled, default search is lexical and explicit hybrid
+  falls back with `semantic_disabled`.
+- While semantic is enabled, default and explicit `hybrid` use semantic evidence
+  only when semantic sidecar coverage is complete and dirty work is drained;
+  partial coverage is available through explicit `semantic` for diagnostics and
+  dogfood, not default ranking.
 - Local dogfood on this corpus meets:
   - lexical initial refresh: under 5 minutes;
   - semantic initial backfill: about 2 hours on this 64 GB power-user
@@ -235,27 +357,82 @@ safe to ship by default.
     priority than fresh incremental work;
   - lexical incremental p95: under 10 seconds;
   - semantic incremental p95: under 60 seconds after model cache is available;
-  - warm hybrid search p95: target under 2.5 seconds with the conservative
-    soft-filter overfetch window; subsecond search needs a future query-service
-    or refill/overfetch optimization rather than more hot-path audits;
+  - warm hybrid search p95: target under 2.5 seconds with daemon-owned query
+    embeddings and the conservative soft-filter overfetch window;
   - semantic worker RSS follows the adaptive memory budget and must remain
     below that selected budget during default daemon indexing.
 
-## Implementation Plan
+## Readiness Gates
+
+### Merge-Ready Gate For This Branch
+
+- Code compiles with Cargo and Bazel.
+- Focused semantic, search, setup/status, and MCP tests pass.
+- Full `cargo test -p ctx --tests` passes.
+- Dogfood root with semantic disabled reports disabled, not misleading pending
+  work.
+- Dogfood root with semantic enabled reports ready at full coverage.
+- Default semantic-enabled search can autostart the daemon query service and
+  return effective hybrid results.
+- Explicit semantic with `--refresh off` and no daemon fails clearly instead of
+  silently falling back.
+- No public `auto` mode or `max-runtime-seconds` product option remains.
+- The implementation does not check in the private judged relevance eval.
+
+### Prerelease Opt-In Ship Gate
+
+- At least one dogfood machine completes daemon-owned initial lexical refresh
+  and semantic backfill from an existing local corpus without manual env-var
+  cache setup.
+- Setup/status/index watch messaging is understandable for disabled, acquiring
+  model, indexing, ready, and failure states.
+- Incremental semantic freshness for a single new user turn is under 60s p95
+  after the model cache is available.
+- Foreground search RSS remains under 150 MiB on the dogfood corpus when the
+  daemon query service is available.
+- Warm hybrid/semantic p95 stays under 10s on the power-user dogfood corpus,
+  with a tracked path to return below 2.5s through vector/hydration
+  optimization.
+- No-op background refresh cost is documented and acceptable for prerelease, or
+  reduced with source-level no-op avoidance.
+
+### Default-On Flip Gate
+
+- Private judged eval lives outside this public repo, preferably in
+  `ctx-private` or an untracked local eval package.
+- Eval has at least 30-50 task-shaped queries from real local work, covering
+  recent and older sessions, exact terms, fuzzy/natural-language searches,
+  filtered searches, and negative/no-result cases.
+- Hybrid beats lexical on judged quality: positive Hit@5 and MRR lift, no
+  material Hit@1 regression on exact-term queries, and manually inspected
+  failures have acceptable explanations.
+- Hybrid fallback rate for normal unfiltered queries is low enough that default
+  hybrid is not mostly lexical in practice.
+- Warm hybrid p95 is at or below the product target on the dogfood corpus; if
+  the target is subsecond, vector scan/hydration should move into a daemon
+  query service or equivalent optimized path before the flip.
+- Non-Unix support is either implemented or semantic remains gated by platform.
+
+## Implementation Plan And Current Status
 
 ### 1. Setup, Daemon, And Status
 
-- Make `ctx setup` foreground output distinguish:
-  - inventory complete;
-  - daemon autostart requested;
-  - daemon definitely running;
-  - daemon skipped or failed to spawn.
-- Move daemon autostart bookkeeping close enough to setup/import/search that the
-  parent can write a status file when spawning fails or is skipped.
-- Ensure status/watch/wait treat stale locks as recoverable state. Prefer
-  removing stale locks during status calculation or surfacing a `recoverable`
-  field plus the next command.
-- Do not claim background indexing is underway solely from pending inventory.
+- Done on this branch: setup, status, doctor, index status, and MCP status are
+  config-aware, and setup refuses semantic-without-daemon.
+- Done on earlier commits in this branch: daemon autostart/status, stale lock
+  recovery, semantic-first bootstrap scheduling, bounded incremental refresh,
+  and cached read-only status.
+- Done in prerelease opt-in dogfood: semantic-enabled default search autostarts
+  the daemon query socket, foreground search no longer loads the model, and
+  strict `--refresh off` fails clearly when no daemon is available.
+- Original implementation checklist:
+  - `ctx setup` foreground output distinguishes inventory complete, daemon
+    autostart requested, daemon definitely running, and daemon skipped or
+    failed to spawn.
+  - Daemon autostart bookkeeping is close enough to setup/import/search that
+    the parent can write a status file when spawning fails or is skipped.
+  - Status/watch/wait treat stale locks as recoverable state.
+  - Background indexing is not claimed solely from pending inventory.
 - Tests:
   - setup JSON/human output does not promise running daemon when autostart is
     disabled or skipped;
@@ -264,6 +441,10 @@ safe to ship by default.
 
 ### 2. Semantic Model Cache Discovery
 
+- Done on this branch: cache discovery was broadened, and daemon-owned model
+  acquisition now handles a missing cache during semantic opt-in.
+- Remaining after merge: dogfood the missing-model path on a throwaway root or
+  mockable cache root, without deleting the real cache.
 - Keep env-var precedence, but broaden default discovery:
   - `$HF_HOME`;
   - `$CTX_SEMANTIC_CACHE_DIR`;
@@ -280,6 +461,9 @@ safe to ship by default.
 
 ### 3. Lite-Turn Semantic Documents
 
+- Done on this branch: raw event documents were replaced by deterministic v2
+  lite-turn documents with control-message filtering, lookup-table assembly,
+  persistent backfill cursor, and exact cached count maintenance.
 - Replace raw event documents with deterministic lite-turn documents.
 - Anchor each semantic document on a user message event id.
 - Text format:
@@ -307,6 +491,9 @@ safe to ship by default.
 
 ### 4. Worker Throughput And Freshness
 
+- Done on this branch: dirty/recent work is prioritized, bootstrap can skip
+  history refresh, daemon loops keep a warm embedder, adaptive memory controls
+  throughput, and clean incremental refresh was dogfooded.
 - Prioritize dirty/recent lite-turn documents before historical backfill.
 - Order lite-turn backfill by document activity, where a late assistant reply
   makes the user-anchor document recent again.
@@ -347,16 +534,71 @@ safe to ship by default.
 
 ### 5. Evaluation Harness
 
-- Add a small JSONL manifest runner for local dogfood/evals that records:
-  - query;
-  - backend requested and effective;
-  - fallback code;
-  - elapsed ms;
-  - semantic diagnostics;
-  - top result ids/snippets.
-- Keep the harness read-only with `--refresh off` by default.
-- Include dogfood manifests outside source-controlled private data; commit only
-  generic examples and runner documentation.
+- Decision: keep the judged relevance eval and real dogfood manifests out of
+  this public repo to avoid reverse-engineering surface area. Use `ctx-private`
+  or local-only artifacts for judged query sets.
+- Remaining outside this repo:
+  - add a small JSONL manifest runner for private local dogfood/evals that
+    records query, backend requested/effective, fallback code, elapsed ms,
+    semantic diagnostics, and top result ids/snippets;
+  - keep the harness read-only with `--refresh off` by default;
+  - store real judged manifests in `ctx-private` or an untracked local path;
+  - make the default-on decision depend on the private eval gate above.
+
+### 6. Prerelease Feature Flag Rollout
+
+- Done on this branch:
+  - `[search] semantic = true|false`;
+  - `CTX_SEARCH_SEMANTIC`;
+  - `CTX_DISABLE_SEMANTIC_SEARCH`;
+  - default search backend is lexical until semantic is enabled;
+  - no public `auto` mode.
+- Remaining product work:
+  - decide whether cloud-randomized feature flags should live outside this CLI
+    config path. The local CLI should continue to honor explicit TOML/env
+    values as the final authority.
+  - if remote rollout is added, it should only populate/override an internal
+    default for users who have not explicitly set `[search] semantic`.
+  - before flipping the default, ship at least one prerelease build with
+    opt-in telemetry/relevance dogfood and clear `ctx index status` guidance.
+
+### 7. Daemon Query Service
+
+- Done on this branch:
+  - daemon starts a private Unix socket when semantic is enabled;
+  - CLI semantic/hybrid search asks the daemon for query embeddings;
+  - the query service reuses the daemon's warm embedder or initializes from an
+    existing cache, but does not download independently;
+  - explicit semantic search fails when the daemon query service is unavailable.
+- Remaining after v1:
+  - consider moving vector scan/hydration/ranking into the daemon if process
+    startup or per-command sqlite opening becomes the bottleneck;
+  - add a refill loop for post-vector filters so candidate count can drop below
+    the conservative 1,000 soft-filter window without under-filling results.
+
+## Parallel Implementation And Review Plan
+
+- Main agent owns branch hygiene, test orchestration, final integration, and
+  commits.
+- Worker A can own daemon/query-service changes only:
+  `crates/ctx-cli/src/semantic/daemon.rs`,
+  `health_search.rs`, `paths_status.rs`, `preamble.rs`.
+- Worker B can own config/setup/API changes only:
+  `config.rs`, `main.rs`, `commands/search.rs`, `commands/setup.rs`,
+  `commands/status.rs`, `commands/index.rs`, `mcp.rs`.
+- Worker C can own tests only:
+  `crates/ctx-cli/src/semantic/tests.rs` and `crates/ctx-cli/tests/*`.
+- Explorer/adversarial reviewers should be read-only and check:
+  - semantic cannot run without daemon;
+  - semantic disabled never creates sidecars or downloads models;
+  - default search remains lexical until opt-in;
+  - explicit semantic errors are actionable;
+  - setup is repeatable for existing users who opt in later;
+  - foreground query does not initialize/download the model;
+  - daemon query socket is private and stale sockets are cleaned up;
+  - status/watch stay read-only and fast;
+  - no new broad compatibility fallbacks, hidden modes, or duplicate config
+    concepts are introduced.
 
 ## Fast-Fail Criteria
 
@@ -380,9 +622,22 @@ safe to ship by default.
 - Add an idle/low-priority stale-sweep cadence for older externally changed or
   deleted documents that are not caught by recent dirty detection, while keeping
   normal ready-status daemon passes cheap.
-- Consider a long-lived query service if subsecond semantic/hybrid search is a
-  hard product requirement; the CLI process currently pays model/query setup and
-  scans the sqlite-vec sidecar per command.
+- Consider moving full vector search into the daemon if subsecond
+  semantic/hybrid search becomes a hard product requirement. The current branch
+  removes foreground query-model setup, but each CLI command still opens the
+  store/sidecar and scans sqlite-vec locally.
+- Add a focused daemon query-service integration test that exercises a real
+  socket with a fake or cached embedder shape, if it can be done without making
+  CI download a model.
+- Dogfood the model-acquisition path on a throwaway cache root, measuring the
+  user-visible `acquiring_model` and `model_acquisition_failed` states without
+  disturbing the real shared cache.
+- Reduce no-op history refresh cost for very large local histories, likely with
+  source-level fingerprints or cheaper skip checks before scanning tens of
+  thousands of source files.
+- Keep semantic enabled behind explicit prerelease opt-in until private judged
+  evals show that hybrid beats lexical on normal task-shaped queries at full
+  coverage, not just synthetic marker queries.
 - Keep improving relevance evaluation with a private judged query manifest. The
   rough dogfood gate is useful for latency and smoke testing, but synthetic
   incremental markers in the isolated corpus can contaminate top results.

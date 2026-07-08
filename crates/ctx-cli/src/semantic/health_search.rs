@@ -248,9 +248,9 @@ fn semantic_status_needs_exact_sidecar_stats(
 }
 
 fn semantic_hits_for_text_query(
+    data_root: &Path,
     store: &Store,
     vector_store: &SemanticVectorStore,
-    cache_dir: &Path,
     semantic_text: &str,
     limit: usize,
     event_filter: Option<&[Uuid]>,
@@ -258,18 +258,89 @@ fn semantic_hits_for_text_query(
     Vec<ctx_history_search::SemanticEventHit>,
     SemanticRetrievalDiagnostics,
 )> {
-    let query_embed_started = Instant::now();
-    let mut embedder = new_semantic_embedder(cache_dir)?;
-    let mut embeddings = embed_texts(&mut embedder, vec![semantic_text.to_owned()])?;
-    let query_embed_ms = query_embed_started.elapsed().as_millis() as u64;
-    let query_embedding = embeddings
-        .pop()
-        .ok_or_else(|| anyhow!("semantic query embedding was empty"))?;
+    let (query_embedding, query_embed_ms) = daemon_query_embedding(data_root, semantic_text)?
+        .ok_or_else(|| anyhow!("daemon semantic query service is not available"))?;
     let semantic_hit_search =
         semantic_hits_for_query(store, vector_store, &query_embedding, limit, event_filter)?;
     let mut diagnostics = semantic_hit_search.diagnostics;
     diagnostics.query_embed_ms = Some(query_embed_ms);
     Ok((semantic_hit_search.hits, diagnostics))
+}
+
+#[cfg(unix)]
+fn daemon_query_embedding(data_root: &Path, semantic_text: &str) -> Result<Option<(Vec<f32>, u64)>> {
+    let path = daemon_query_socket_path(data_root);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut stream =
+        UnixStream::connect(&path).with_context(|| format!("connect daemon query socket {}", path.display()))?;
+    stream
+        .set_read_timeout(Some(StdDuration::from_secs(30)))
+        .context("set daemon query read timeout")?;
+    stream
+        .set_write_timeout(Some(StdDuration::from_secs(30)))
+        .context("set daemon query write timeout")?;
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&compact_json(json!({
+            "schema_version": 1,
+            "op": "embed_query",
+            "model_key": SEMANTIC_MODEL_KEY,
+            "text": semantic_text,
+        })))?
+    )?;
+    let _ = stream.shutdown(Shutdown::Write);
+    let mut body = String::new();
+    stream
+        .take(1024 * 1024)
+        .read_to_string(&mut body)
+        .context("read daemon query response")?;
+    let response: Value = serde_json::from_str(&body).context("parse daemon query response")?;
+    if response.get("ok").and_then(Value::as_bool) != Some(true) {
+        let message = response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("daemon query failed");
+        return Err(anyhow!("{message}"));
+    }
+    let model_key = response.get("model_key").and_then(Value::as_str).unwrap_or("");
+    if model_key != SEMANTIC_MODEL_KEY {
+        return Err(anyhow!("daemon query response model key mismatch"));
+    }
+    let query_embed_ms = response
+        .get("query_embed_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let embedding = response
+        .get("embedding")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("daemon query response missing embedding"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .map(|value| value as f32)
+                .ok_or_else(|| anyhow!("daemon query embedding contains a non-number"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if embedding.len() != SEMANTIC_DIMENSIONS {
+        return Err(anyhow!(
+            "daemon query embedding returned {} dimensions, expected {}",
+            embedding.len(),
+            SEMANTIC_DIMENSIONS
+        ));
+    }
+    Ok(Some((embedding, query_embed_ms)))
+}
+
+#[cfg(not(unix))]
+fn daemon_query_embedding(
+    _data_root: &Path,
+    _semantic_text: &str,
+) -> Result<Option<(Vec<f32>, u64)>> {
+    Ok(None)
 }
 
 #[cfg(ctx_semantic_fastembed)]
@@ -278,6 +349,9 @@ struct SemanticEmbedder {
     batch_size: usize,
     policy: SemanticEmbedPolicy,
 }
+
+#[cfg(ctx_semantic_fastembed)]
+static FASTEMBED_ACQUIRE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(not(ctx_semantic_fastembed))]
 struct SemanticEmbedder;
@@ -374,8 +448,67 @@ fn new_semantic_embedder(cache_dir: &Path) -> Result<SemanticEmbedder> {
     })
 }
 
+#[cfg(ctx_semantic_fastembed)]
+fn acquire_semantic_embedder(cache_dir: &Path) -> Result<SemanticEmbedder> {
+    let _cache_env = FastembedCacheEnvGuard::new(cache_dir);
+    let policy = semantic_embed_policy();
+    let options = InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+        .with_cache_dir(cache_dir.to_path_buf())
+        .with_show_download_progress(false)
+        .with_intra_threads(policy.threads);
+    let model = TextEmbedding::try_new(options)
+        .with_context(|| format!("download and initialize semantic model {SEMANTIC_MODEL_ID}"))?;
+    if !semantic_model_cache_available(cache_dir) {
+        return Err(anyhow!(
+            "semantic model download completed but cache verification failed at {}",
+            cache_dir.display()
+        ));
+    }
+    Ok(SemanticEmbedder {
+        model,
+        batch_size: policy.batch_size,
+        policy,
+    })
+}
+
+#[cfg(ctx_semantic_fastembed)]
+struct FastembedCacheEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    hf_home: Option<std::ffi::OsString>,
+}
+
+#[cfg(ctx_semantic_fastembed)]
+impl FastembedCacheEnvGuard {
+    fn new(cache_dir: &Path) -> Self {
+        let lock = FASTEMBED_ACQUIRE_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let hf_home = env::var_os("HF_HOME");
+        env::set_var("HF_HOME", cache_dir);
+        Self {
+            _lock: lock,
+            hf_home,
+        }
+    }
+}
+
+#[cfg(ctx_semantic_fastembed)]
+impl Drop for FastembedCacheEnvGuard {
+    fn drop(&mut self) {
+        match &self.hf_home {
+            Some(value) => env::set_var("HF_HOME", value),
+            None => env::remove_var("HF_HOME"),
+        }
+    }
+}
+
 #[cfg(not(ctx_semantic_fastembed))]
 fn new_semantic_embedder(_cache_dir: &Path) -> Result<SemanticEmbedder> {
+    Err(anyhow!(
+        "semantic embedding model {SEMANTIC_MODEL_ID} is not supported on this platform"
+    ))
+}
+
+#[cfg(not(ctx_semantic_fastembed))]
+fn acquire_semantic_embedder(_cache_dir: &Path) -> Result<SemanticEmbedder> {
     Err(anyhow!(
         "semantic embedding model {SEMANTIC_MODEL_ID} is not supported on this platform"
     ))

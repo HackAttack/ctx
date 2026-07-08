@@ -5,9 +5,11 @@ use serde_json::json;
 
 use ctx_history_core::database_path;
 
-use crate::config::CONFIG_FILE;
+use crate::config::{self, CONFIG_FILE};
 use crate::output::print_json;
-use crate::semantic::{daemon_report, semantic_worker_report_cached};
+use crate::semantic::{
+    daemon_report, semantic_worker_report_cached, semantic_worker_report_configured_json,
+};
 use crate::store_util::open_existing_store_snapshot_read_only;
 use crate::JsonArgs;
 
@@ -15,6 +17,7 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
     let db_path = database_path(data_root.clone());
     let initialized = db_path.exists();
     let config_path = data_root.join(CONFIG_FILE);
+    let config = config::AppConfig::load(&data_root)?;
     let (
         records,
         sessions,
@@ -36,7 +39,7 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
             store.capture_source_count()?,
             store.catalog_session_counts()?,
             store.source_import_file_counts()?,
-            semantic_report.to_json(),
+            semantic_worker_report_configured_json(&config, &semantic_report),
             daemon,
         )
     } else {
@@ -49,7 +52,7 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
             0,
             Default::default(),
             Default::default(),
-            semantic_report.to_json(),
+            semantic_worker_report_configured_json(&config, &semantic_report),
             daemon,
         )
     };

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::Instant,
+    time::{Duration as StdDuration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -39,7 +39,7 @@ use crate::search_render::{print_search_result_compact, print_search_result_verb
 use crate::semantic::search_packet_with_backend;
 use crate::store_util::open_existing_store_read_only;
 use crate::transcript::shell_quote_arg;
-use crate::{analytics, config, SearchArgs, WAL_TRUNCATE_MIN_BYTES};
+use crate::{analytics, config, semantic, SearchArgs, SearchBackendArg, WAL_TRUNCATE_MIN_BYTES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RefreshArg {
@@ -166,6 +166,19 @@ pub(crate) fn run_search(
         "search_refresh_source_count_bucket",
         refresh.source_count as u64,
     );
+    let backend_override = args.backend;
+    let requested_backend = resolve_search_backend(backend_override, config)?;
+    let semantic_enabled = config.semantic_search_enabled();
+    if args.refresh == RefreshArg::Background
+        && semantic_enabled
+        && matches!(
+            requested_backend,
+            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+        )
+    {
+        semantic::maybe_autostart_daemon_for_search(&data_root, config);
+        semantic::wait_for_daemon_query_service(&data_root, StdDuration::from_secs(3));
+    }
     insert_db_size_bucket(analytics_properties, &db_path);
     if refresh.status == "failed" && args.refresh == RefreshArg::Background && !had_existing_store {
         return Err(anyhow!(
@@ -248,7 +261,8 @@ pub(crate) fn run_search(
         &query,
         &args.term,
         &options,
-        args.backend,
+        requested_backend,
+        semantic_enabled,
         args.semantic_weight,
         args.refresh,
         !args.json,
@@ -261,7 +275,7 @@ pub(crate) fn run_search(
     analytics::insert_str(
         analytics_properties,
         "search_backend_requested",
-        args.backend.as_str(),
+        requested_backend.as_str(),
     );
     analytics::insert_str(
         analytics_properties,
@@ -347,6 +361,37 @@ pub(crate) fn run_search(
         render_started.elapsed(),
     );
     Ok(())
+}
+
+pub(crate) fn resolve_search_backend(
+    backend: Option<SearchBackendArg>,
+    config: &config::AppConfig,
+) -> Result<SearchBackendArg> {
+    let semantic_enabled = config.semantic_search_enabled();
+    if semantic_enabled
+        && !semantic::semantic_query_service_supported()
+        && !matches!(backend, Some(SearchBackendArg::Lexical))
+    {
+        return Err(anyhow!(
+            "local semantic search is not supported on this platform yet. Set [search] semantic = false or use --backend lexical"
+        ));
+    }
+    if semantic_enabled
+        && !config.daemon.enabled
+        && !matches!(backend, Some(SearchBackendArg::Lexical))
+    {
+        return Err(anyhow!(
+            "local semantic search requires the ctx daemon. Set [daemon] enabled = true, set [search] semantic = false, or use --backend lexical"
+        ));
+    }
+    match backend {
+        Some(SearchBackendArg::Semantic) if !semantic_enabled => Err(anyhow!(
+            "semantic search is disabled. Set [search] semantic = true in ctx config to enable the local semantic preview"
+        )),
+        Some(value) => Ok(value),
+        None if semantic_enabled => Ok(SearchBackendArg::Hybrid),
+        None => Ok(SearchBackendArg::Lexical),
+    }
 }
 
 fn existing_store_indexed_content(db_path: &Path) -> Option<bool> {

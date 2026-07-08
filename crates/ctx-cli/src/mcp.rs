@@ -21,14 +21,18 @@ mod text;
 use text::render_tool_text;
 
 use super::{
-    cli_supported_provider, compact_json, config::CONFIG_FILE, discovered_plugin_sources_json,
-    discovered_sources, event_window, event_window_json, raw_sql_result_json, search_filters,
-    search_has_intent, session_transcript_json, sources_json, OutputFormat, ProviderArg,
-    RefreshArg, SearchBackendArg, SearchDto, SearchFilterInput, SearchIntentInput,
-    SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW,
-    MAX_SEARCH_LIMIT,
+    cli_supported_provider, compact_json, config, config::CONFIG_FILE,
+    discovered_plugin_sources_json, discovered_sources, event_window, event_window_json,
+    raw_sql_result_json, search_filters, search_has_intent, session_transcript_json, sources_json,
+    OutputFormat, ProviderArg, RefreshArg, SearchBackendArg, SearchDto, SearchFilterInput,
+    SearchIntentInput, SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode,
+    MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
 };
-use crate::semantic::{daemon_report, search_packet_with_backend, semantic_worker_report_cached};
+use crate::commands::search::resolve_search_backend;
+use crate::semantic::{
+    daemon_report, search_packet_with_backend, semantic_worker_report_cached,
+    semantic_worker_report_configured_json,
+};
 use crate::store_util::open_existing_store_read_only;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -372,6 +376,7 @@ fn handle_tools_call(params: Value, data_root: &Path) -> Result<Value, Value> {
 fn tool_status(data_root: &Path) -> Result<Value> {
     let db_path = database_path(data_root.to_path_buf());
     let initialized = db_path.exists();
+    let config = config::AppConfig::load(data_root)?;
     let (
         indexed_items,
         indexed_sessions,
@@ -396,7 +401,7 @@ fn tool_status(data_root: &Path) -> Result<Value> {
         let indexed_counts = store.indexed_history_counts()?;
         let semantic_report = semantic_worker_report_cached(data_root, Some(&store))?;
         let daemon = daemon_report(data_root, &semantic_report);
-        let semantic = semantic_report.to_json();
+        let semantic = semantic_worker_report_configured_json(&config, &semantic_report);
         (
             indexed_counts.items(),
             indexed_counts.sessions,
@@ -433,7 +438,7 @@ fn tool_status(data_root: &Path) -> Result<Value> {
             0,
             0,
             0,
-            semantic_report.to_json(),
+            semantic_worker_report_configured_json(&config, &semantic_report),
             daemon,
         )
     };
@@ -503,8 +508,8 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(false);
     let event_type = optional_string(arguments, "event_type")?;
     let file = optional_string(arguments, "file")?.map(PathBuf::from);
-    let backend =
-        optional_search_backend(arguments, "backend")?.unwrap_or(SearchBackendArg::Hybrid);
+    let config = config::AppConfig::load(data_root)?;
+    let backend = resolve_search_backend(optional_search_backend(arguments, "backend")?, &config)?;
     let semantic_weight = optional_f32(arguments, "semantic_weight")?.unwrap_or(0.35);
     if !(0.0..=1.0).contains(&semantic_weight) || !semantic_weight.is_finite() {
         return Err(anyhow!("semantic_weight must be between 0.0 and 1.0"));
@@ -557,6 +562,7 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
         &[],
         &options,
         backend,
+        config.semantic_search_enabled(),
         semantic_weight,
         RefreshArg::Off,
         false,
@@ -724,7 +730,7 @@ fn tool_definitions() -> Vec<Value> {
                 "session": { "type": "string", "description": "ctx session id." },
                 "events": { "type": "boolean", "default": false },
                 "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." },
-                "backend": { "type": "string", "enum": ["hybrid", "semantic", "lexical"], "default": "hybrid" },
+                "backend": { "type": "string", "enum": ["hybrid", "semantic", "lexical"], "description": "Optional backend override. Defaults to lexical unless local semantic search is enabled in ctx config, then hybrid." },
                 "semantic_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.35 }
             }), vec![]),
             "annotations": { "readOnlyHint": true },

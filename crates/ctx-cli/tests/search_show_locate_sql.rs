@@ -534,10 +534,8 @@ fn fresh_home_search_mvp_flow() {
     let status = json_output(ctx(&temp).args(["status", "--json"]));
     assert_eq!(status["schema_version"], 1);
     assert!(status["indexed_items"].as_u64().unwrap() > 0);
-    assert!(matches!(
-        status["semantic"]["status"].as_str(),
-        Some("pending" | "running" | "ready" | "completed" | "budget_exhausted")
-    ));
+    assert_eq!(status["semantic"]["status"], "disabled");
+    assert_eq!(status["semantic"]["reason"], "semantic_disabled");
     assert_eq!(status["daemon"]["enabled"], true);
     assert!(status["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
@@ -582,12 +580,9 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
         "off",
         "--json",
     ]));
-    assert_eq!(default_search["retrieval"]["requested_mode"], "hybrid");
+    assert_eq!(default_search["retrieval"]["requested_mode"], "lexical");
     assert_eq!(default_search["retrieval"]["effective_mode"], "lexical");
-    assert_eq!(
-        default_search["retrieval"]["semantic_fallback_code"],
-        "semantic_index_missing"
-    );
+    assert!(default_search["retrieval"]["semantic_fallback_code"].is_null());
 
     let hybrid = json_output(ctx(&temp).args([
         "search",
@@ -602,10 +597,10 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
     assert_eq!(hybrid["retrieval"]["effective_mode"], "lexical");
     assert_eq!(
         hybrid["retrieval"]["semantic_fallback_code"],
-        "semantic_index_missing"
+        "semantic_disabled"
     );
 
-    let strict_semantic = ctx(&temp)
+    let disabled_strict_semantic = ctx(&temp)
         .args([
             "search",
             "onboarding",
@@ -620,10 +615,60 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
         .get_output()
         .stderr
         .clone();
-    let strict_semantic = String::from_utf8(strict_semantic).unwrap();
+    let disabled_strict_semantic = String::from_utf8(disabled_strict_semantic).unwrap();
     assert!(
-        strict_semantic.contains("semantic index is not available yet"),
-        "{strict_semantic}"
+        disabled_strict_semantic.contains("semantic search is disabled"),
+        "{disabled_strict_semantic}"
+    );
+
+    fs::write(
+        temp.path().join("config.toml"),
+        "[search]\nsemantic = true\n",
+    )
+    .unwrap();
+
+    let hybrid_missing_sidecar = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--backend",
+        "hybrid",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(
+        hybrid_missing_sidecar["retrieval"]["requested_mode"],
+        "hybrid"
+    );
+    assert_eq!(
+        hybrid_missing_sidecar["retrieval"]["effective_mode"],
+        "lexical"
+    );
+    assert_eq!(
+        hybrid_missing_sidecar["retrieval"]["semantic_fallback_code"],
+        "semantic_index_missing"
+    );
+
+    let missing_sidecar_strict_semantic = ctx(&temp)
+        .args([
+            "search",
+            "onboarding",
+            "--backend",
+            "semantic",
+            "--refresh",
+            "off",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let missing_sidecar_strict_semantic =
+        String::from_utf8(missing_sidecar_strict_semantic).unwrap();
+    assert!(
+        missing_sidecar_strict_semantic.contains("semantic index is not available yet"),
+        "{missing_sidecar_strict_semantic}"
     );
 }
 

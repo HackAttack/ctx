@@ -10,10 +10,12 @@ use serde_json::{json, Value};
 
 use ctx_history_core::database_path;
 
-use crate::config::CONFIG_FILE;
+use crate::config::{self, CONFIG_FILE};
 use crate::output::{compact_json, print_json};
 use crate::progress::format_count;
-use crate::semantic::{daemon_report, semantic_worker_report_cached};
+use crate::semantic::{
+    daemon_report, semantic_worker_report_cached, semantic_worker_report_configured_json,
+};
 use crate::store_util::open_existing_store_snapshot_read_only;
 
 #[derive(Debug, Args)]
@@ -154,6 +156,7 @@ fn index_status_snapshot(data_root: &Path) -> Result<Value> {
     let db_path = database_path(data_root.to_path_buf());
     let initialized = db_path.exists();
     let config_path = data_root.join(CONFIG_FILE);
+    let config = config::AppConfig::load(data_root)?;
     let (
         indexed_items,
         indexed_sessions,
@@ -191,13 +194,23 @@ fn index_status_snapshot(data_root: &Path) -> Result<Value> {
             pending_inventory_units,
             failed_inventory_units,
             stale_inventory_units,
-            semantic_report.to_json(),
+            semantic_worker_report_configured_json(&config, &semantic_report),
             daemon,
         )
     } else {
         let semantic_report = semantic_worker_report_cached(data_root, None)?;
         let daemon = daemon_report(data_root, &semantic_report);
-        (0, 0, 0, 0, 0, 0, 0, semantic_report.to_json(), daemon)
+        (
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            semantic_worker_report_configured_json(&config, &semantic_report),
+            daemon,
+        )
     };
     let lexical_status = lexical_index_status(
         initialized,

@@ -26,6 +26,10 @@ fn daemon_status_path(data_root: &Path) -> PathBuf {
     daemon_root_path(data_root).join(DAEMON_STATUS_FILE)
 }
 
+fn daemon_query_socket_path(data_root: &Path) -> PathBuf {
+    daemon_root_path(data_root).join(DAEMON_QUERY_SOCKET_FILE)
+}
+
 fn daemon_history_refresh_job_path(data_root: &Path) -> PathBuf {
     daemon_jobs_path(data_root).join(DAEMON_HISTORY_REFRESH_JOB_FILE)
 }
@@ -387,6 +391,8 @@ fn semantic_worker_report_with_count_mode(
             "pending".to_owned()
         };
         let preserve_status = (status == "budget_exhausted" && queued_items_estimate > 0)
+            || status == "acquiring_model"
+            || status == "model_acquisition_failed"
             || (status == "failed"
                 && sidecar_error.is_none()
                 && embedded_items == 0
@@ -395,7 +401,10 @@ fn semantic_worker_report_with_count_mode(
     }
     if running {
         status = "running".to_owned();
-    } else if lock_path.exists() && semantic_worker_lock_is_stale(&lock_path) {
+    } else if lock_path.exists()
+        && semantic_worker_lock_is_stale(&lock_path)
+        && queued_items_estimate > 0
+    {
         status = "stale_lock".to_owned();
     }
     Ok(SemanticWorkerReport {
@@ -560,15 +569,25 @@ fn daemon_enabled_for_status(data_root: &Path) -> bool {
         .unwrap_or_else(|_| AppConfig::default().daemon.enabled)
 }
 
+fn semantic_enabled_for_status(data_root: &Path) -> bool {
+    AppConfig::load(data_root)
+        .map(|config| config.semantic_search_enabled())
+        .unwrap_or_else(|_| AppConfig::default().semantic_search_enabled())
+}
+
 fn daemon_semantic_job_report(
     data_root: &Path,
     semantic_report: &SemanticWorkerReport,
     disabled_overrides_lifecycle: bool,
 ) -> Value {
     let daemon_enabled = daemon_enabled_for_status(data_root);
+    let semantic_enabled = semantic_enabled_for_status(data_root);
+    let semantic_supported = semantic_query_service_supported();
     let status_value = read_daemon_job_status(&daemon_semantic_job_path(data_root))
         .filter(|value| semantic_status_file_model_matches(Some(value)));
-    let disabled = !daemon_enabled && disabled_overrides_lifecycle && !semantic_report.running;
+    let disabled = (!daemon_enabled || !semantic_enabled || !semantic_supported)
+        && disabled_overrides_lifecycle
+        && !semantic_report.running;
     let current_status = if disabled {
         "disabled"
     } else if semantic_report.running {
@@ -577,6 +596,10 @@ fn daemon_semantic_job_report(
         "stale_lock"
     } else if semantic_report.status == "unavailable" {
         "unavailable"
+    } else if semantic_report.status == "acquiring_model" {
+        "acquiring_model"
+    } else if semantic_report.status == "model_acquisition_failed" {
+        "skipped"
     } else if !semantic_report.searchable_items_known {
         "unknown"
     } else if semantic_report.searchable_items == 0 {
@@ -591,11 +614,23 @@ fn daemon_semantic_job_report(
         "pending"
     };
     let derived_reason = if disabled {
-        Some("daemon_disabled".to_owned())
+        Some(if semantic_enabled {
+            if semantic_supported {
+                "daemon_disabled".to_owned()
+            } else {
+                "unsupported_platform".to_owned()
+            }
+        } else {
+            "semantic_disabled".to_owned()
+        })
     } else if semantic_report.status == "stale_lock" {
         Some("worker_lock_stale".to_owned())
     } else if semantic_report.status == "unavailable" {
         Some("sidecar_unavailable".to_owned())
+    } else if semantic_report.status == "acquiring_model" {
+        Some("acquiring_model".to_owned())
+    } else if semantic_report.status == "model_acquisition_failed" {
+        Some("model_acquisition_failed".to_owned())
     } else if !semantic_report.searchable_items_known {
         Some("searchable_items_unknown".to_owned())
     } else if semantic_report.searchable_items == 0 {
@@ -609,7 +644,8 @@ fn daemon_semantic_job_report(
     };
     compact_json(json!({
         "status": current_status,
-        "enabled": daemon_enabled,
+        "enabled": daemon_enabled && semantic_enabled && semantic_supported,
+        "semantic_enabled": semantic_enabled,
         "reason": derived_reason,
         "last_run_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "last_run_at_ms")),
         "last_run_status": status_value

@@ -1,14 +1,18 @@
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
-    io::Write,
+    io::{Read, Write},
+    net::Shutdown,
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
+    sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(ctx_sqlite_vec)]
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -18,7 +22,7 @@ use std::sync::{
 use anyhow::{anyhow, Context, Result};
 #[cfg(ctx_semantic_fastembed)]
 use fastembed::{
-    EmbeddingModel, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
+    EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
 use rusqlite::{
@@ -104,6 +108,7 @@ const DAEMON_DIR: &str = "daemon";
 const DAEMON_JOBS_DIR: &str = "jobs";
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const DAEMON_STATUS_FILE: &str = "status.json";
+const DAEMON_QUERY_SOCKET_FILE: &str = "query.sock";
 const DAEMON_HISTORY_REFRESH_JOB_FILE: &str = "history-refresh.json";
 const DAEMON_SEMANTIC_JOB_FILE: &str = "semantic-index.json";
 const DAEMON_CLOUD_SYNC_JOB_FILE: &str = "cloud-sync.json";
@@ -213,6 +218,32 @@ impl SemanticWorkerReport {
             "status_path": self.status_path.display().to_string(),
         }))
     }
+}
+
+pub(crate) fn semantic_worker_report_configured_json(
+    config: &AppConfig,
+    report: &SemanticWorkerReport,
+) -> Value {
+    let enabled = config.semantic_search_enabled();
+    let mut value = report.to_json();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("enabled".to_owned(), json!(enabled));
+        object.insert(
+            "config_source".to_owned(),
+            json!(config.semantic_search_source()),
+        );
+        if !enabled {
+            object.insert("status".to_owned(), json!("disabled"));
+            object.insert("reason".to_owned(), json!("semantic_disabled"));
+        } else if !semantic_query_service_supported() {
+            object.insert("status".to_owned(), json!("blocked"));
+            object.insert("reason".to_owned(), json!("unsupported_platform"));
+        } else if !config.daemon.enabled {
+            object.insert("status".to_owned(), json!("blocked"));
+            object.insert("reason".to_owned(), json!("daemon_disabled"));
+        }
+    }
+    value
 }
 
 #[derive(Debug, Clone)]
@@ -351,14 +382,13 @@ pub(crate) fn search_packet_with_backend(
     terms: &[String],
     options: &ctx_history_search::PacketOptions,
     requested_backend: SearchBackendArg,
+    semantic_enabled: bool,
     semantic_weight: f32,
     _refresh_mode: RefreshArg,
     emit_warnings: bool,
 ) -> Result<(ctx_history_search::SearchPacket, SemanticRetrievalReport)> {
     let uses_composed_terms = terms.iter().any(|term| !term.trim().is_empty());
     let semantic_text = semantic_query_text(query, terms);
-    let semantic_cache_dir = semantic_worker_cache_dir(data_root);
-    let vector_path = semantic_vector_path(data_root);
     let mut effective_backend = requested_backend;
 
     let filters_require_semantic_fallback =
@@ -383,6 +413,44 @@ pub(crate) fn search_packet_with_backend(
     if filters_require_semantic_fallback || terms_require_semantic_fallback {
         effective_backend = SearchBackendArg::Lexical;
     }
+
+    let lexical_search_packet = || -> Result<ctx_history_search::SearchPacket> {
+        if uses_composed_terms {
+            ctx_history_search::search_packet_terms(store, query, terms, options)
+                .map_err(Into::into)
+        } else {
+            ctx_history_search::search_packet(store, query, options).map_err(Into::into)
+        }
+    };
+
+    if !semantic_enabled
+        && matches!(
+            requested_backend,
+            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+        )
+    {
+        if requested_backend == SearchBackendArg::Semantic {
+            return Err(anyhow!(
+                "semantic search is disabled. Set [search] semantic = true in ctx config to enable the local semantic preview"
+            ));
+        }
+        let mut retrieval = SemanticRetrievalReport::lexical(requested_backend, 0);
+        retrieval.effective_mode = SearchBackendArg::Lexical;
+        retrieval.semantic_weight = 0.0;
+        retrieval.semantic_status = "disabled";
+        retrieval.set_semantic_fallback(
+            "semantic_disabled",
+            "local semantic search is disabled by configuration",
+        );
+        warn_if(
+            emit_warnings,
+            "warning: local semantic search is disabled; falling back to lexical search",
+        );
+        return Ok((lexical_search_packet()?, retrieval));
+    }
+
+    let semantic_cache_dir = semantic_worker_cache_dir(data_root);
+    let vector_path = semantic_vector_path(data_root);
 
     let worker_report = if matches!(
         effective_backend,
@@ -443,20 +511,12 @@ pub(crate) fn search_packet_with_backend(
         );
     }
 
-    let lexical_search_packet = || -> Result<ctx_history_search::SearchPacket> {
-        if uses_composed_terms {
-            ctx_history_search::search_packet_terms(store, query, terms, options)
-                .map_err(Into::into)
-        } else {
-            ctx_history_search::search_packet(store, query, options).map_err(Into::into)
-        }
-    };
-
     let packet = if matches!(
         effective_backend,
         SearchBackendArg::Semantic | SearchBackendArg::Hybrid
     ) {
         semantic_or_hybrid_search_packet(
+            data_root,
             store,
             options,
             &lexical_search_packet,
@@ -478,6 +538,7 @@ pub(crate) fn search_packet_with_backend(
 
 #[allow(clippy::too_many_arguments)]
 fn semantic_or_hybrid_search_packet(
+    data_root: &Path,
     store: &Store,
     options: &ctx_history_search::PacketOptions,
     lexical_search_packet: &dyn Fn() -> Result<ctx_history_search::SearchPacket>,
@@ -602,15 +663,32 @@ fn semantic_or_hybrid_search_packet(
                 return lexical_search_packet();
             }
 
+            if !daemon_query_service_available(data_root) {
+                let message = "daemon semantic query service is not available; run `ctx daemon run` or use the default background refresh mode to start it";
+                if effective_backend == SearchBackendArg::Semantic {
+                    return Err(anyhow!("{message}"));
+                }
+                retrieval.effective_mode = SearchBackendArg::Lexical;
+                retrieval.semantic_weight = 0.0;
+                retrieval.embedding_model = None;
+                retrieval.semantic_status = "unavailable";
+                retrieval.set_semantic_fallback("daemon_query_service_unavailable", message);
+                warn_if(
+                    emit_warnings,
+                    "warning: daemon semantic query service is not available; falling back to lexical search",
+                );
+                return lexical_search_packet();
+            }
+
             let semantic_candidate_limit = if semantic_filters_need_overfetch(&options.filters) {
                 SEMANTIC_SOFT_FILTER_SEARCH_CANDIDATES.max(options.limit.saturating_mul(100))
             } else {
                 SEMANTIC_SEARCH_CANDIDATES.max(options.limit.saturating_mul(8))
             };
             match semantic_hits_for_text_query(
+                data_root,
                 store,
                 &vector_store,
-                semantic_cache_dir,
                 semantic_text,
                 semantic_candidate_limit,
                 None,
@@ -628,18 +706,28 @@ fn semantic_or_hybrid_search_packet(
                     .map_err(Into::into)
                 }
                 Err(error) => {
+                    let error_message = format!("{error:#}");
                     if effective_backend == SearchBackendArg::Semantic {
-                        return Err(anyhow!("semantic search failed: {error:#}"));
+                        return Err(anyhow!("semantic search failed: {error_message}"));
                     }
                     retrieval.effective_mode = SearchBackendArg::Lexical;
                     retrieval.semantic_weight = 0.0;
                     retrieval.embedding_model = None;
                     retrieval.semantic_status = "unavailable";
                     retrieval.diagnostics = None;
-                    retrieval.set_semantic_fallback(
-                        "semantic_retrieval_failed",
-                        format!("semantic retrieval failed: {error:#}"),
-                    );
+                    if error_message.contains("daemon query")
+                        || error_message.contains("daemon semantic query service")
+                    {
+                        retrieval.set_semantic_fallback(
+                            "daemon_query_service_unavailable",
+                            format!("daemon semantic query service failed: {error_message}"),
+                        );
+                    } else {
+                        retrieval.set_semantic_fallback(
+                            "semantic_retrieval_failed",
+                            format!("semantic retrieval failed: {error_message}"),
+                        );
+                    }
                     warn_if(
                         emit_warnings,
                         "warning: semantic retrieval failed; falling back to lexical search",

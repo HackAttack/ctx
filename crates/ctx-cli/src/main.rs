@@ -404,11 +404,10 @@ struct SearchArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = SearchBackendArg::Hybrid,
-        help = "Search backend: hybrid, semantic, or lexical",
-        long_help = "Search backend. hybrid combines SQLite FTS/BM25 and semantic vector evidence; lexical uses only the SQLite FTS/BM25 path; semantic uses only an existing semantic sidecar and requires the local embedding model cache to already exist."
+        help = "Search backend override: hybrid, semantic, or lexical",
+        long_help = "Search backend override. By default ctx uses lexical search unless local semantic search is enabled in config, then hybrid. hybrid combines SQLite FTS/BM25 and semantic vector evidence; lexical uses only the SQLite FTS/BM25 path; semantic requires local semantic search to be enabled and ready."
     )]
-    backend: SearchBackendArg,
+    backend: Option<SearchBackendArg>,
     #[arg(
         long = "semantic-weight",
         default_value_t = 0.35,
@@ -516,6 +515,7 @@ impl DaemonStartModeArg {
 pub(crate) enum DaemonTriggerCommandArg {
     Setup,
     Import,
+    Search,
 }
 
 impl DaemonTriggerCommandArg {
@@ -523,6 +523,7 @@ impl DaemonTriggerCommandArg {
         match self {
             Self::Setup => "setup",
             Self::Import => "import",
+            Self::Search => "search",
         }
     }
 }
@@ -696,9 +697,13 @@ fn main() -> Result<()> {
     }
 
     let result = match cli.command {
-        CommandRoot::Setup(args) => {
-            run_setup(args, data_root.clone(), &mut analytics_properties, quiet)
-        }
+        CommandRoot::Setup(args) => run_setup(
+            args,
+            data_root.clone(),
+            &mut analytics_properties,
+            quiet,
+            &config,
+        ),
         CommandRoot::Status(args) => run_status(args, data_root.clone(), quiet),
         CommandRoot::Index(args) => run_index(args, data_root.clone(), quiet),
         CommandRoot::Sources(args) => {

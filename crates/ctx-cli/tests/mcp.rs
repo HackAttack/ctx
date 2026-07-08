@@ -95,6 +95,7 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     for expected in ["hybrid", "semantic", "lexical"] {
         assert!(backend_values.iter().any(|value| value == expected));
     }
+    assert!(search_tool["inputSchema"]["properties"]["backend"]["default"].is_null());
     assert_eq!(
         search_tool["inputSchema"]["properties"]["semantic_weight"]["default"],
         0.35
@@ -105,7 +106,7 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     assert_eq!(status["indexed_sessions"], 0);
     assert_eq!(status["indexed_events"], 0);
     assert_eq!(status["read_only"], true);
-    assert_eq!(status["semantic"]["status"], "unknown");
+    assert_eq!(status["semantic"]["status"], "disabled");
     assert_eq!(status["daemon"]["enabled"], true);
     assert_useful_mcp_text(
         &responses[2]["result"],
@@ -118,7 +119,7 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
             "indexed_events: 0",
             "read_only: true",
             "local_only: true",
-            "semantic: status=unknown",
+            "semantic: status=disabled",
             "semantic_coverage: searchable_items=0",
             "daemon: enabled=true",
             "daemon_jobs:",
@@ -455,7 +456,7 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
     assert_eq!(search["retrieval"]["semantic_weight"], 0.0);
     assert_eq!(
         search["retrieval"]["semantic_fallback_code"],
-        "filtered_vector_lookup_unsupported"
+        "semantic_disabled"
     );
     assert_useful_mcp_text(
         &search_responses[1]["result"],
@@ -465,7 +466,7 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
             "freshness: off/skipped",
             "retrieval: requested=hybrid, effective=lexical",
             "semantic_weight=0",
-            "semantic_fallback: filtered_vector_lookup_unsupported",
+            "semantic_fallback: semantic_disabled",
             "semantic_coverage:",
             "filters: provider=codex",
             "results: 1",
