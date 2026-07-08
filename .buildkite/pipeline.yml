@@ -5,7 +5,7 @@ env:
   CTX_BOOTSTRAP_BAZELISK: "1"
   CTX_BAZELISK_VERSION: "v1.29.0"
   CTX_GO_VERSION: "1.22.12"
-  CTX_RUST_TOOLCHAIN: "1.86.0"
+  CTX_RUST_TOOLCHAIN: "1.88.0"
 
 steps:
   - label: ":bazel: public smoke gate"

@@ -7,7 +7,7 @@ cd "${repo_root}"
 export CTX_BOOTSTRAP_BAZELISK="${CTX_BOOTSTRAP_BAZELISK:-1}"
 export CTX_BAZELISK_VERSION="${CTX_BAZELISK_VERSION:-v1.29.0}"
 export CTX_GO_VERSION="${CTX_GO_VERSION:-1.22.12}"
-export CTX_RUST_TOOLCHAIN="${CTX_RUST_TOOLCHAIN:-1.86.0}"
+export CTX_RUST_TOOLCHAIN="${CTX_RUST_TOOLCHAIN:-1.88.0}"
 
 run_apt_get() {
   if command -v sudo >/dev/null 2>&1; then

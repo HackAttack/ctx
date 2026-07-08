@@ -76,7 +76,7 @@ for required in \
   'bash scripts/buildkite-public-ci.sh' \
   'target/ctx-artifacts/check/**' \
   'concurrency_group: "ctx/public-smoke/default-hosted"' \
-  'CTX_RUST_TOOLCHAIN: "1.86.0"' \
+  'CTX_RUST_TOOLCHAIN: "1.88.0"' \
   'CTX_BAZELISK_VERSION: "v1.29.0"' \
   'CTX_GO_VERSION: "1.22.12"' \
   'rustup toolchain install "${CTX_RUST_TOOLCHAIN}" --profile minimal --component rustfmt --component clippy' \
