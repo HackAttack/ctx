@@ -281,6 +281,13 @@ fn print_index_status_human(status: &Value) {
         "daemon_status: {}",
         string_at(status, &["daemon", "status"], "unknown")
     );
+    let daemon_reason = string_at(status, &["daemon", "reason"], "");
+    if !daemon_reason.is_empty() {
+        println!("daemon_reason: {daemon_reason}");
+    }
+    if bool_at(status, &["daemon", "recoverable"]) {
+        println!("daemon_recoverable: true");
+    }
     println!(
         "daemon_running: {}",
         bool_at(status, &["daemon", "running"])
@@ -317,6 +324,10 @@ fn print_index_watch_human(status: &Value) {
         string_at(status, &["daemon", "status"], "unknown"),
         bool_at(status, &["daemon", "running"])
     );
+    let daemon_reason = string_at(status, &["daemon", "reason"], "");
+    if !daemon_reason.is_empty() {
+        println!("         reason={daemon_reason}");
+    }
 }
 
 fn progress_bar(done: usize, total: usize) -> String {

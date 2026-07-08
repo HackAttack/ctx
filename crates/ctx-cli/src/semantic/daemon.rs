@@ -8,6 +8,56 @@ struct DaemonIteration {
 struct DaemonRuntime {
     semantic_embedder: Option<SemanticEmbedder>,
     recent_semantic_work_enqueued: bool,
+    semantic_bootstrap_passes_since_refresh: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct DaemonTestJobHooks {
+    calls: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+    history_refresh: Option<Value>,
+    semantic_index: Option<Value>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DAEMON_TEST_JOB_HOOKS: std::cell::RefCell<Option<DaemonTestJobHooks>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct DaemonTestJobHookGuard;
+
+#[cfg(test)]
+impl Drop for DaemonTestJobHookGuard {
+    fn drop(&mut self) {
+        DAEMON_TEST_JOB_HOOKS.with(|hooks| {
+            *hooks.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+fn install_daemon_test_job_hooks(hooks: DaemonTestJobHooks) -> DaemonTestJobHookGuard {
+    DAEMON_TEST_JOB_HOOKS.with(|slot| {
+        assert!(slot.borrow().is_none(), "daemon test job hook already installed");
+        *slot.borrow_mut() = Some(hooks);
+    });
+    DaemonTestJobHookGuard
+}
+
+#[cfg(test)]
+fn daemon_test_job(job: &'static str) -> Option<Value> {
+    DAEMON_TEST_JOB_HOOKS.with(|slot| {
+        let hooks = slot.borrow();
+        let hooks = hooks.as_ref()?;
+        hooks.calls.borrow_mut().push(job);
+        match job {
+            "history_refresh" => hooks.history_refresh.clone(),
+            "semantic_index" => hooks.semantic_index.clone(),
+            _ => None,
+        }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +132,16 @@ fn print_daemon_status_human(daemon: &Value) {
             .and_then(Value::as_bool)
             .unwrap_or(false)
     );
+    if let Some(reason) = daemon.get("reason").and_then(Value::as_str) {
+        println!("daemon_reason: {reason}");
+    }
+    if daemon
+        .get("recoverable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        println!("daemon_recoverable: true");
+    }
     println!(
         "history_refresh_status: {}",
         daemon
@@ -153,10 +213,6 @@ fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool)
     };
 
     let run_once = args.once;
-    let max_runtime = StdDuration::from_secs(
-        args.max_runtime_seconds
-            .unwrap_or(DAEMON_MAX_RUNTIME_SECONDS_DEFAULT),
-    );
     let idle_exit = StdDuration::from_secs(
         args.idle_exit_seconds
             .unwrap_or(DAEMON_IDLE_EXIT_SECONDS_DEFAULT),
@@ -165,8 +221,6 @@ fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool)
         args.loop_interval_seconds
             .unwrap_or(DAEMON_LOOP_INTERVAL_SECONDS_DEFAULT),
     );
-    let started = Instant::now();
-    let deadline = started + max_runtime;
     let started_at_ms = utc_now().timestamp_millis();
     let mut failed = false;
     write_daemon_lifecycle_status(data_root, &args, "running", started_at_ms, None, None)?;
@@ -174,10 +228,7 @@ fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool)
     let mut runtime = DaemonRuntime::default();
     let mut idle_since: Option<Instant> = None;
     loop {
-        if !daemon_deadline_has_min_budget(Some(deadline), DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
-            break;
-        }
-        let iteration = run_daemon_once(&args, data_root, &mut runtime, Some(deadline))?;
+        let iteration = run_daemon_once(&args, data_root, &mut runtime, None)?;
         write_daemon_lifecycle_status(data_root, &args, "running", started_at_ms, None, None)?;
         if iteration.failed {
             failed = true;
@@ -194,13 +245,7 @@ fn run_daemon_inner(args: DaemonRunArgs, data_root: &Path, daemon_enabled: bool)
         if idle_since.is_some_and(|idle| idle.elapsed() >= idle_exit) {
             break;
         }
-        let sleep_for = daemon_deadline_remaining(Some(deadline))
-            .map(|remaining| loop_interval.min(remaining))
-            .unwrap_or(loop_interval);
-        if sleep_for.is_zero() {
-            break;
-        }
-        std::thread::sleep(sleep_for);
+        std::thread::sleep(loop_interval);
     }
 
     write_daemon_lifecycle_status(
@@ -226,6 +271,27 @@ fn run_daemon_once(
     runtime: &mut DaemonRuntime,
     deadline: Option<Instant>,
 ) -> Result<DaemonIteration> {
+    if semantic_bootstrap_should_run_first(data_root, runtime)? {
+        let history_refresh_job =
+            daemon_history_refresh_skipped_job("semantic_bootstrap_in_progress");
+        write_daemon_job_status(&daemon_history_refresh_job_path(data_root), &history_refresh_job)?;
+        let semantic_job = run_daemon_semantic_job(args, data_root, runtime, deadline)
+            .unwrap_or_else(|error| daemon_semantic_failed_job(data_root, format!("{error:#}")));
+        let semantic_did_work = daemon_semantic_job_did_work(&semantic_job);
+        runtime.semantic_bootstrap_passes_since_refresh =
+            runtime.semantic_bootstrap_passes_since_refresh.saturating_add(1);
+        write_daemon_job_status_unless_deadline_skip(
+            &daemon_semantic_job_path(data_root),
+            &semantic_job,
+        )?;
+        let cloud_sync_job = daemon_cloud_sync_disabled_job(Some(utc_now().timestamp_millis()));
+        write_daemon_job_status(&daemon_cloud_sync_job_path(data_root), &cloud_sync_job)?;
+        return Ok(DaemonIteration {
+            did_work: semantic_did_work,
+            failed: daemon_job_failed(&semantic_job),
+        });
+    }
+
     let history_refresh_job =
         if daemon_deadline_has_min_budget(deadline, DAEMON_MIN_REMAINING_FOR_JOB_SECS) {
             run_daemon_history_refresh_job(data_root)
@@ -237,6 +303,7 @@ fn run_daemon_once(
         Err(error) => daemon_history_refresh_failed_job(format!("{error:#}")),
     };
     let history_refresh_did_work = daemon_history_refresh_job_did_work(&history_refresh_job);
+    runtime.semantic_bootstrap_passes_since_refresh = 0;
     write_daemon_job_status_unless_deadline_skip(
         &daemon_history_refresh_job_path(data_root),
         &history_refresh_job,
@@ -251,10 +318,7 @@ fn run_daemon_once(
         Ok(value) => value,
         Err(error) => daemon_semantic_failed_job(data_root, format!("{error:#}")),
     };
-    let semantic_did_work = semantic_job
-        .get("indexed_chunks")
-        .and_then(Value::as_u64)
-        .is_some_and(|chunks| chunks > 0);
+    let semantic_did_work = daemon_semantic_job_did_work(&semantic_job);
     write_daemon_job_status_unless_deadline_skip(
         &daemon_semantic_job_path(data_root),
         &semantic_job,
@@ -267,6 +331,37 @@ fn run_daemon_once(
         did_work: history_refresh_did_work || semantic_did_work,
         failed: daemon_job_failed(&history_refresh_job) || daemon_job_failed(&semantic_job),
     })
+}
+
+fn semantic_bootstrap_should_run_first(
+    data_root: &Path,
+    runtime: &mut DaemonRuntime,
+) -> Result<bool> {
+    let db_path = database_path(data_root.to_path_buf());
+    if !db_path.exists() {
+        return Ok(false);
+    }
+    if runtime.semantic_bootstrap_passes_since_refresh
+        >= DAEMON_SEMANTIC_BOOTSTRAP_PASSES_BEFORE_REFRESH
+    {
+        return Ok(false);
+    }
+    let store = open_existing_store_read_only(&db_path, "ctx daemon semantic bootstrap")?;
+    if !runtime.recent_semantic_work_enqueued {
+        let _ = queue_recent_semantic_work(data_root, &store, "daemon_recent");
+        runtime.recent_semantic_work_enqueued = true;
+    }
+    let report = semantic_worker_report(data_root, Some(&store))?;
+    Ok(report.searchable_items > 0
+        && report.queued_items_estimate > 0
+        && report.model_cache_available)
+}
+
+fn daemon_semantic_job_did_work(value: &Value) -> bool {
+    value
+        .get("indexed_chunks")
+        .and_then(Value::as_u64)
+        .is_some_and(|chunks| chunks > 0)
 }
 
 fn daemon_run_start_mode(args: &DaemonRunArgs) -> DaemonStartModeArg {
@@ -301,6 +396,11 @@ fn daemon_deadline_has_min_budget(deadline: Option<Instant>, min_secs: u64) -> b
 }
 
 fn run_daemon_history_refresh_job(data_root: &Path) -> Result<Value> {
+    #[cfg(test)]
+    if let Some(value) = daemon_test_job("history_refresh") {
+        return Ok(value);
+    }
+
     let last_run_at_ms = utc_now().timestamp_millis();
     let sources = search_refresh_sources(None);
     let plugin_sources = search_refresh_plugin_sources(
@@ -423,6 +523,11 @@ fn run_daemon_semantic_job(
     runtime: &mut DaemonRuntime,
     deadline: Option<Instant>,
 ) -> Result<Value> {
+    #[cfg(test)]
+    if let Some(value) = daemon_test_job("semantic_index") {
+        return Ok(value);
+    }
+
     let last_run_at_ms = utc_now().timestamp_millis();
     let db_path = database_path(data_root.to_path_buf());
     if !db_path.exists() {
@@ -605,6 +710,7 @@ fn daemon_semantic_job_json(
         "last_error": last_error,
         "indexed_chunks": indexed_chunks,
         "model_cache_available": report.model_cache_available,
+        "embed_policy": report.embed_policy.clone(),
         "worker_status": report.status,
         "coverage": {
             "searchable_items": report.searchable_items,
@@ -683,6 +789,7 @@ fn write_semantic_worker_failure_status(data_root: &Path, message: String) -> Re
             "heartbeat_at_ms": now,
             "finished_at_ms": now,
             "last_error": message,
+            "embed_policy": semantic_embed_policy_status_json(),
         }),
     )
 }
@@ -719,6 +826,7 @@ fn run_semantic_worker_inner_with_embedder(
         .unwrap_or_else(SemanticSidecarStats::default);
     let initial_dirty_items = vector_store.dirty_event_count()?;
     let searchable_items = store.event_embedding_document_count_cached_or_exact()?;
+    let starting_embed_policy = semantic_embedder_policy_status_json(embedder);
     write_semantic_worker_status(
         data_root,
         &json!({
@@ -734,6 +842,7 @@ fn run_semantic_worker_inner_with_embedder(
             "embedded_items": initial_stats.embedded_items,
             "embedded_chunks": initial_stats.embedded_chunks,
             "dirty_items": initial_dirty_items,
+            "embed_policy": starting_embed_policy,
             "last_error": null,
         }),
     )?;
@@ -759,6 +868,7 @@ fn run_semantic_worker_inner_with_embedder(
         )?
     };
     let elapsed = started.elapsed();
+    let finished_embed_policy = semantic_embedder_policy_status_json(embedder);
     let elapsed_ms = elapsed.as_millis() as u64;
     let final_stats = vector_store
         .cached_stats()?
@@ -794,6 +904,7 @@ fn run_semantic_worker_inner_with_embedder(
             "embedded_items": final_stats.embedded_items,
             "embedded_chunks": final_stats.embedded_chunks,
             "dirty_items": final_dirty_items,
+            "embed_policy": finished_embed_policy,
             "last_error": null,
         }),
     )?;
@@ -854,45 +965,57 @@ pub(crate) fn maybe_autostart_daemon(
     trigger: DaemonTriggerCommandArg,
     json_output: bool,
 ) {
-    if json_output
-        || !config.daemon.enabled
-        || semantic_env_flag(DAEMON_BACKGROUND_CHILD_ENV)
-        || semantic_env_flag(DAEMON_AUTOSTART_OFF_ENV)
-        || semantic_env_flag("CI")
-        || !database_path(data_root.to_path_buf()).exists()
-    {
+    if semantic_env_flag(DAEMON_BACKGROUND_CHILD_ENV) {
+        return;
+    }
+    if !database_path(data_root.to_path_buf()).exists() {
+        return;
+    }
+    if !config.daemon.enabled {
+        return;
+    }
+    if semantic_env_flag(DAEMON_AUTOSTART_OFF_ENV) {
+        return;
+    }
+    if json_output {
+        return;
+    }
+    if semantic_env_flag("CI") {
         return;
     }
     let lock_path = daemon_lock_path(data_root);
     if lock_path.exists() && !daemon_lock_is_stale(&lock_path) {
         return;
     }
-    let Ok(exe) = env::current_exe() else {
-        return;
+    let exe = match daemon_autostart_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            let _ = write_daemon_autostart_status(
+                data_root,
+                trigger,
+                "failed",
+                Some("current_exe"),
+                Some(format!("{error:#}")),
+                None,
+            );
+            return;
+        }
     };
-    let max_runtime = daemon_autostart_u64_env(
-        "CTX_DAEMON_AUTOSTART_MAX_RUNTIME_SECONDS",
-        DAEMON_AUTOSTART_MAX_RUNTIME_SECONDS_DEFAULT,
-        DAEMON_RUNTIME_SECONDS_CAP,
-    );
     let idle_exit = daemon_autostart_u64_env(
         "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
         DAEMON_AUTOSTART_IDLE_EXIT_SECONDS_DEFAULT,
-        DAEMON_RUNTIME_SECONDS_CAP,
+        DAEMON_IDLE_EXIT_SECONDS_CAP,
     );
     let loop_interval = daemon_autostart_u64_env(
         "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS",
         DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS_DEFAULT,
         3_600,
     );
-    let _ = Command::new(exe)
+    match Command::new(exe)
         .arg("--data-root")
         .arg(data_root)
         .arg("daemon")
         .arg("run")
-        .arg("--once")
-        .arg("--max-runtime-seconds")
-        .arg(max_runtime.to_string())
         .arg("--idle-exit-seconds")
         .arg(idle_exit.to_string())
         .arg("--loop-interval-seconds")
@@ -907,7 +1030,54 @@ pub(crate) fn maybe_autostart_daemon(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
+    {
+        Ok(_child) => {}
+        Err(error) => {
+            let _ = write_daemon_autostart_status(
+                data_root,
+                trigger,
+                "failed",
+                Some("spawn_failed"),
+                Some(error.to_string()),
+                None,
+            );
+        }
+    }
+}
+
+fn daemon_autostart_exe() -> Result<PathBuf> {
+    env::var("CTX_DAEMON_AUTOSTART_EXE")
+        .ok()
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(|| env::current_exe().context("resolve ctx daemon autostart executable"))
+}
+
+fn write_daemon_autostart_status(
+    data_root: &Path,
+    trigger: DaemonTriggerCommandArg,
+    status: &str,
+    reason: Option<&str>,
+    last_error: Option<String>,
+    pid: Option<u32>,
+) -> Result<()> {
+    let now = utc_now().timestamp_millis();
+    write_daemon_status(
+        data_root,
+        &compact_json(json!({
+            "schema_version": 1,
+            "status": status,
+            "reason": reason,
+            "pid": pid,
+            "started_at_ms": Value::Null,
+            "heartbeat_at_ms": now,
+            "finished_at_ms": now,
+            "start_mode": DaemonStartModeArg::Auto.as_str(),
+            "trigger_command": trigger.as_str(),
+            "last_error": last_error,
+        })),
+    )
 }
 
 fn daemon_autostart_u64_env(name: &str, default: u64, max: u64) -> u64 {

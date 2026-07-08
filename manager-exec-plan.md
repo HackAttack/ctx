@@ -29,11 +29,13 @@ Coordinate subagents and verification to harden `codex/semantic-hybrid-search` u
   - `hybrid` fell back to lexical with `semantic_fallback_code=semantic_index_missing`.
   - strict `semantic` failed fast and local-only when model cache/sidecar were unavailable.
 - Bounded daemon dogfood:
-  - `ctx daemon run --once --max-runtime-seconds 30 --max-seconds 10 --max-chunks 128 --json` completed in 3.60s.
+  - A short process-timeout bounded `ctx daemon run --once --max-chunks 128
+    --json` pass completed in 3.60s.
   - Imported 2,895 more events / 67 sessions.
   - Semantic job skipped with `model_cache_missing`; cloud sync disabled; daemon status completed.
 - Cached-model semantic dogfood:
-  - `ctx daemon run --once --max-runtime-seconds 180 --max-seconds 120 --max-chunks 5000 --json` completed in 2:05.75 with max RSS about 1.25 GiB.
+  - A process-timeout bounded `ctx daemon run --once --max-chunks 5000
+    --json` pass completed in 2:05.75 with max RSS about 1.25 GiB.
   - Imported 8,166 events / 124 sessions and embedded 1,610 items / 1,974 chunks before `budget_exhausted`.
   - Coverage after the pass was about 1.02% of the isolated corpus; explicit hybrid/semantic worked, while default `auto` correctly stayed lexical because candidate coverage was not ready.
 
@@ -91,7 +93,8 @@ Coordinate subagents and verification to harden `codex/semantic-hybrid-search` u
   - Semantic skipped locally with `model_cache_missing`; no runaway process remained.
 - Full-corpus searches:
   - Representative auto searches returned in about 0.6-0.7s with refresh enabled.
-  - Search auto imported a tiny live delta after setup and correctly stayed lexical with `auto_hybrid_skipped: model_cache_missing`.
+  - The then-current default search path imported a tiny live delta after setup
+    and correctly stayed lexical while the semantic model cache was missing.
   - Explicit hybrid with no semantic index/model fell back to lexical in 0.75s.
   - Strict semantic failed fast in 0.73s with an actionable no-download local-cache message.
 - Incremental real-corpus import after setup:
@@ -132,7 +135,7 @@ Coordinate subagents and verification to harden `codex/semantic-hybrid-search` u
   - Added explicit `daemon_semantic_allowed_for_run`; setup/import autostart returns semantic job `skipped` with reason `autostart_semantic_disabled`.
   - Autostart no longer reserves time for semantic work, queues dirty semantic work, opens/creates `vectors.sqlite`, or initializes the embedding model.
   - `queue_recent_semantic_work` is sidecar-existing-only, so imports with a warm model cache do not introduce semantic storage.
-- Default auto search:
+- Default hybrid search:
   - No-candidate semantic rescue now requires `semantic_worker_coverage_ready` (full coverage and `dirty_items == 0`).
   - Candidate rerank remains allowed only when every lexical candidate has vector coverage.
 - sqlite-vec:
@@ -151,9 +154,11 @@ Coordinate subagents and verification to harden `codex/semantic-hybrid-search` u
   - 10k release vector benchmark: ingest+bulk vec0 sync 208 ms, Rust scan 12 ms, sqlite-vec scan 6 ms, identical top hit.
 - Real-corpus dogfood on `/home/daddy/.cache/ctx-dogfood/semantic-default-20260706T025515`:
   - Status after latest explicit daemon pass: 451,661 searchable semantic items, 357 embedded items, 403 chunks, 954 dirty items.
-  - Default `auto` on representative and no-lexical queries stayed lexical with `auto_hybrid_skipped: coverage_not_ready`.
+  - The then-current default search path on representative and no-lexical
+    queries stayed lexical while semantic coverage was not ready.
   - Explicit semantic search used `sqlite_vec0`; after the small daemon pass it scanned 403 chunks in 2 ms, hydrated in 7 ms, returned 5 results.
-  - Explicit `ctx daemon run --once --max-chunks 16 --max-seconds 30 --json` indexed 16 semantic chunks, wall 26.62s, max RSS 691,300 KB, no error.
+  - Explicit `ctx daemon run --once --max-chunks 16 --json` indexed 16
+    semantic chunks, wall 26.62s, max RSS 691,300 KB, no error.
 
 ## Remaining Before Merge/Default Rollout
 
@@ -165,3 +170,99 @@ Coordinate subagents and verification to harden `codex/semantic-hybrid-search` u
   - explicit daemon RSS/CPU on a warm model;
   - sqlite-vec parity staying clean across prune/delete/VACUUM.
 - Consider modularizing semantic sidecar code out of `main.rs` before merge if the rebase is painful or reviewability blocks the PR.
+
+## 2026-07-07 Semantic Bootstrap Scheduling Pass
+
+- Product decision: remove the public daemon runtime cap and the hidden
+  autostart runtime cap. Daemon runs until `--once`, failure, or idle exit;
+  tests/dogfood can apply process-level timeouts.
+- Scheduling decision: when searchable docs exist, semantic coverage is
+  incomplete, and the local model cache is available, daemon records history
+  refresh as `skipped` with reason `semantic_bootstrap_in_progress` and runs the
+  semantic job first.
+- Test hooks were added for daemon history/semantic jobs so scheduling behavior
+  is tested without initializing the embedding model.
+- Focused coverage now asserts:
+  - semantic bootstrap calls semantic before history refresh;
+  - history refresh still runs when semantic has no backlog;
+  - history refresh still runs when the store is missing;
+  - public daemon help no longer exposes or accepts `--max-seconds`.
+- Verification passed:
+  - `cargo test -p ctx daemon_ -- --nocapture`
+  - `cargo test -p ctx --tests`
+  - `cargo test -p ctx-history-store`
+  - `cargo fmt --check && git diff --check`
+- Real dogfood after the scheduling/query fix:
+  - The first measured release pass on `/home/daddy/.ctx` no longer got stuck in
+    a preflight projection query. It skipped history refresh with
+    `semantic_bootstrap_in_progress`, indexed 64 chunks in 22.2s, and peaked at
+    1.09 GiB RSS.
+  - A warm 512-chunk pass completed in 50.7s at 1.17 GiB RSS.
+  - Higher batch/thread experiments improved chunks/sec only by exceeding the
+    memory budget: 4 threads / batch 64 used 4.68 GiB RSS; 2 threads / batch 64
+    used 4.54 GiB and was slower.
+  - Strict semantic search works on the partial index: a representative query
+    scanned 1,600 sqlite-vec chunks in 15ms, query embedding was 239ms, and the
+    command wall was about 0.86s.
+- Readiness conclusion: scheduling is fixed and tests are green, but this is
+  not yet ready for default local semantic rollout because safe-memory full
+  backfill still extrapolates to hours on the real 108k-doc lite-turn corpus.
+
+## 2026-07-08 Adaptive Semantic Default Pass
+
+- Product decision: use one adaptive default policy, not separate
+  background/turbo tiers. The policy selects
+  `min(20% total RAM, 50% available RAM, 10 GiB)`, floored at `1 GiB`, then
+  derives embedding threads and batch size from that budget.
+- On the real local 64 GB dogfood machine, the release binary selected
+  `threads=8`, `batch_size=128`, and `memory_budget_bytes=10 GiB`.
+- Real release dogfood with no semantic tuning env vars:
+  - `--max-chunks 2048` indexed 2,048 chunks in 1m10.7s, used 683% CPU, and
+    peaked at 8.46 GiB RSS.
+  - `--max-chunks 512` indexed 512 chunks in 20.5s, used 590% CPU, and peaked
+    at 8.11 GiB RSS.
+  - Natural one-pass daemon slice after removing public `--max-seconds`:
+    `ctx daemon run --once --max-chunks 5000 --json` indexed 1,837 chunks /
+    660 lite-turn items in 62.5s, used 624% CPU, and peaked at 8.49 GiB RSS.
+  - Ten-minute foreground daemon-loop soak under process-level `timeout`: used
+    589% CPU, peaked at 8.76 GiB RSS, reached 8,253 embedded items /
+    24,665 chunks, gave history refresh multiple turns, imported fresh events,
+    and reported stale locks as recoverable after external termination.
+  - Cleanup one-pass moved current dogfood coverage to 8,254 / 108,589
+    lite-turn items, 24,666 embedded chunks, 100,335 queued items, zero dirty
+    items, and a 127 MB sidecar including WAL/SHM.
+- Strict semantic search remained lightweight despite the larger indexing
+  policy: cold-ish wall 1.75s, max RSS 266 MB, query embed 180ms, sqlite-vec
+  scan 29ms over 4,672 chunks.
+- Post-soak search eval at 7.6% coverage:
+  - mechanics gate over eight task-shaped queries: no command failures;
+    lexical p95 24ms but usually zero long-query results; hybrid p95 2.1s;
+    semantic p95 2.0s; vector scan about 86ms over 24,666 chunks.
+  - small exact-substring oracle: hybrid/semantic 4/8, lexical 2/8. Manual
+    review found some misses were snippet/oracle artifacts, but relevance still
+    needs a 30-50 query private manifest at higher coverage before default
+    rollout.
+- Review findings fixed:
+  - `CTX_SEMANTIC_CACHE_DIR` now beats generic `HF_HOME`.
+  - Semantic bootstrap can run before history refresh only for one pass before
+    history refresh gets a turn.
+  - Benign autostart skips no longer overwrite daemon lifecycle status.
+  - Adaptive policy tests also run under `ctx_semantic_fastembed` without the
+    sqlite-vec test gate.
+  - `ctx doctor --json` now includes the top-level daemon object promised by
+    the JSON contract.
+- Verification after fixes:
+  - `cargo test -p ctx --tests`
+  - `cargo test -p ctx-history-store`
+  - `cargo build --release -p ctx --bin ctx`
+  - `cargo fmt --check`
+  - `git diff --check`
+  - `bash scripts/check-docs.sh`
+  - `python3 scripts/check-agent-history-contract.py`
+- Real `ctx doctor --json` on the local data root returned `ok: true` and
+  included daemon status plus semantic policy/coverage.
+- Remaining before default-ready:
+  - full semantic backfill to completion or a multi-hour daemon soak that gets
+    materially beyond the current 7.6% coverage;
+  - 30-50 query golden eval at meaningful semantic coverage;
+  - final rebase onto latest `origin/main` and rerun gates.

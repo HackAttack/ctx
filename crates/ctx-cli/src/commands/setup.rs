@@ -177,7 +177,8 @@ pub(crate) fn run_setup(
             "background_indexing": setup_background_indexing_json(
                 &inventory_totals,
                 inventory_units,
-                background_indexing_enabled
+                background_indexing_enabled,
+                args.json
             ),
             "network_required": false,
             "repo_writes": false,
@@ -355,7 +356,9 @@ pub(crate) fn print_setup_status_line(
     }
     if !foreground_import {
         if pending_inventory_units > 0 {
-            println!("ctx is initialized; local history indexing will continue in the background");
+            println!(
+                "ctx is initialized; local history indexing is queued for background processing"
+            );
         } else {
             println!("ctx is initialized; background indexing has no pending local history");
         }
@@ -382,6 +385,7 @@ fn setup_background_indexing_json(
     inventory: &InventoryTotals,
     units: usize,
     enabled: bool,
+    json_output: bool,
 ) -> Value {
     json!({
         "enabled": enabled,
@@ -389,14 +393,37 @@ fn setup_background_indexing_json(
         "source_bytes": inventory.source_bytes,
         "lexical_estimate_seconds": enabled.then(|| estimate_lexical_index_seconds(inventory)),
         "semantic_estimate_seconds": enabled.then(|| estimate_semantic_index_seconds(inventory)),
+        "daemon_autostart": setup_daemon_autostart_json(enabled, json_output),
         "status_command": "ctx index status",
         "watch_command": "ctx index watch",
         "wait_command": "ctx index wait --all",
     })
 }
 
+fn setup_daemon_autostart_json(enabled: bool, json_output: bool) -> Value {
+    if !enabled {
+        return json!({
+            "status": "not_needed",
+            "reason": "not_requested",
+            "status_command": "ctx daemon status",
+        });
+    }
+    if json_output {
+        return json!({
+            "status": "skipped",
+            "reason": "json_output",
+            "status_command": "ctx daemon status",
+        });
+    }
+    json!({
+        "status": "deferred",
+        "reason": null,
+        "status_command": "ctx daemon status",
+    })
+}
+
 fn print_background_indexing_guidance(inventory: &InventoryTotals, units: usize) {
-    println!("ctx is indexing your local agent history in the background.");
+    println!("ctx queued your local agent history for background indexing.");
     println!(
         "Identified {} {} ({}).",
         format_count(units),
@@ -414,6 +441,8 @@ fn print_background_indexing_guidance(inventory: &InventoryTotals, units: usize)
     println!();
     println!("To watch progress:");
     println!("  ctx index watch");
+    println!("To inspect daemon status:");
+    println!("  ctx daemon status");
     println!("To wait until ready:");
     println!("  ctx index wait --all");
     println!();

@@ -534,7 +534,10 @@ fn fresh_home_search_mvp_flow() {
     let status = json_output(ctx(&temp).args(["status", "--json"]));
     assert_eq!(status["schema_version"], 1);
     assert!(status["indexed_items"].as_u64().unwrap() > 0);
-    assert_eq!(status["semantic"]["status"], "pending");
+    assert!(matches!(
+        status["semantic"]["status"].as_str(),
+        Some("pending" | "running" | "ready" | "completed" | "budget_exhausted")
+    ));
     assert_eq!(status["daemon"]["enabled"], true);
     assert!(status["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
@@ -542,6 +545,8 @@ fn fresh_home_search_mvp_flow() {
     assert_eq!(doctor["schema_version"], 1);
     assert_eq!(doctor["ok"], true);
     assert_eq!(doctor["progress"], "auto");
+    assert_eq!(doctor["daemon"]["enabled"], true);
+    assert!(doctor["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
     let doctor_progress = ctx(&temp)
         .args(["doctor", "--json", "--progress", "json"])
@@ -630,6 +635,8 @@ fn doctor_reports_missing_store_without_creating_it() {
 
     assert_eq!(doctor["schema_version"], 1);
     assert_eq!(doctor["ok"], false);
+    assert_eq!(doctor["daemon"]["enabled"], true);
+    assert!(doctor["daemon"]["jobs"]["semantic_index"]["status"].is_string());
     assert!(doctor["findings"]
         .as_array()
         .unwrap()

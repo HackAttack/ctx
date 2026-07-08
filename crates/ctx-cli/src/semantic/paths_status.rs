@@ -378,6 +378,10 @@ pub(crate) fn semantic_worker_report(
         dirty_items,
         queued_items_estimate,
         model_cache_available,
+        embed_policy: status_value
+            .as_ref()
+            .and_then(|value| value.get("embed_policy").cloned())
+            .or_else(|| Some(semantic_embed_policy_status_json())),
         vector_path,
         lock_path,
         status_path,
@@ -404,13 +408,15 @@ fn daemon_report_with_disabled_status(
     let status_path = daemon_status_path(data_root);
     let lock_pid = read_pid_lock_file(&lock_path);
     let running = lock_pid.is_some_and(pid_is_running);
+    let stale_lock = lock_path.exists() && daemon_lock_is_stale(&lock_path);
     let mut status = status_value
         .as_ref()
         .and_then(|value| json_string(value, "status"))
         .unwrap_or_else(|| "unknown".to_owned());
+    let stale_running_status = !running && status == "running";
     if running {
         status = "running".to_owned();
-    } else if lock_path.exists() && daemon_lock_is_stale(&lock_path) {
+    } else if stale_lock || stale_running_status {
         status = "stale_lock".to_owned();
     } else if !enabled && (disabled_overrides_lifecycle || status == "unknown") {
         status = "disabled".to_owned();
@@ -426,6 +432,16 @@ fn daemon_report_with_disabled_status(
         "status": status,
         "enabled": enabled,
         "running": running,
+        "recoverable": stale_lock || stale_running_status,
+        "reason": if stale_lock {
+            Some("daemon_lock_stale".to_owned())
+        } else if stale_running_status {
+            Some("daemon_status_stale".to_owned())
+        } else {
+            status_value
+                .as_ref()
+                .and_then(|value| json_string(value, "reason"))
+        },
         "pid": pid,
         "started_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "started_at_ms")),
         "heartbeat_at_ms": status_value.as_ref().and_then(|value| json_i64(value, "heartbeat_at_ms")),
@@ -565,6 +581,10 @@ fn daemon_semantic_job_report(
             .or_else(|| semantic_report.last_error.clone()),
         "indexed_chunks": status_value.as_ref().and_then(|value| json_usize(value, "indexed_chunks")),
         "model_cache_available": semantic_report.model_cache_available,
+        "embed_policy": status_value
+            .as_ref()
+            .and_then(|value| value.get("embed_policy").cloned())
+            .or_else(|| semantic_report.embed_policy.clone()),
         "worker_status": semantic_report.status,
         "coverage": {
             "searchable_items": semantic_report.searchable_items,

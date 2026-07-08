@@ -407,6 +407,14 @@ fn setup_backgrounds_discovered_codex_sessions_by_default_and_wait_imports() {
     assert_eq!(setup["import"]["reason"], "background");
     assert_eq!(setup["background_indexing"]["enabled"], true);
     assert_eq!(setup["background_indexing"]["units"], 1);
+    assert_eq!(
+        setup["background_indexing"]["daemon_autostart"]["status"],
+        "skipped"
+    );
+    assert_eq!(
+        setup["background_indexing"]["daemon_autostart"]["reason"],
+        "json_output"
+    );
 
     let status = json_output(ctx(&temp).args(["status", "--json"]));
     assert_eq!(status["inventory_units"], 1);
@@ -414,6 +422,10 @@ fn setup_backgrounds_discovered_codex_sessions_by_default_and_wait_imports() {
     assert_eq!(status["cataloged_sessions"], 1);
     assert_eq!(status["indexed_catalog_sessions"], 0);
     assert_eq!(status["pending_catalog_sessions"], 1);
+    assert_eq!(status["daemon"]["status"], "unknown");
+    assert!(status["daemon"]["reason"].is_null());
+    assert!(status["daemon"]["start_mode"].is_null());
+    assert!(status["daemon"]["trigger_command"].is_null());
 
     let ready = json_output(ctx(&temp).args(["setup", "--wait", "--json", "--progress", "none"]));
     assert_eq!(ready["mode"], "ready");
@@ -496,6 +508,30 @@ fn setup_partial_import_isolates_empty_codex_session_file() {
         "--json",
     ]));
     assert_search_provider_oracle(&search, "codex", "setup should import", 1, "message");
+}
+
+#[test]
+fn setup_autostart_records_spawn_failure_status() {
+    let temp = tempdir();
+    write_codex_setup_session(&temp);
+    let missing_exe = temp.path().join("missing-ctx-binary");
+
+    ctx(&temp)
+        .args(["setup", "--progress", "none"])
+        .env("CTX_DAEMON_AUTOSTART_EXE", &missing_exe)
+        .env_remove("CI")
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
+        .assert()
+        .success();
+
+    let status = json_output(ctx(&temp).args(["daemon", "status", "--json"]));
+    assert_eq!(status["daemon"]["status"], "failed");
+    assert_eq!(status["daemon"]["reason"], "spawn_failed");
+    assert_eq!(status["daemon"]["start_mode"], "auto");
+    assert_eq!(status["daemon"]["trigger_command"], "setup");
+    assert!(status["daemon"]["last_error"]
+        .as_str()
+        .is_some_and(|error| !error.is_empty()));
 }
 
 #[test]

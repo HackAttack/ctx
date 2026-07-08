@@ -158,6 +158,16 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
                 .and_then(|value| value.as_str())
                 .unwrap_or("unknown")
         );
+        if let Some(reason) = daemon.get("reason").and_then(|value| value.as_str()) {
+            println!("daemon_reason: {reason}");
+        }
+        if daemon
+            .get("recoverable")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            println!("daemon_recoverable: true");
+        }
         println!("local_only: true");
         println!("read_only: true");
     }

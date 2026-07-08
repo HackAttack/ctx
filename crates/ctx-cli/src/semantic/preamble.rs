@@ -47,7 +47,7 @@ use crate::{
 };
 
 const SEMANTIC_BACKEND: &str = "fastembed";
-const SEMANTIC_MODEL_KEY: &str = "fastembed:all-MiniLM-L6-v2:semantic-payload-chunk-1200-200-v2";
+const SEMANTIC_MODEL_KEY: &str = "fastembed:all-MiniLM-L6-v2:semantic-lite-turn-1200-200-v1";
 const SEMANTIC_MODEL_ID: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const SEMANTIC_HF_MODEL_CACHE_DIR: &str = "models--Qdrant--all-MiniLM-L6-v2-onnx";
 const SEMANTIC_REQUIRED_MODEL_FILES: &[&str] = &[
@@ -70,13 +70,23 @@ const SEMANTIC_VECTOR_BACKEND_RUST: &str = "rust_blob_scan";
 const SEMANTIC_VECTOR_BACKEND_SQLITE_VEC: &str = "sqlite_vec0";
 const SEMANTIC_SQLITE_VEC0_MAX_K: usize = 4_096;
 #[cfg(ctx_semantic_fastembed)]
-const SEMANTIC_EMBED_THREADS_DEFAULT: usize = 2;
+const SEMANTIC_EMBED_THREADS_FALLBACK: usize = 2;
 #[cfg(ctx_semantic_fastembed)]
 const SEMANTIC_EMBED_THREADS_MAX: usize = 8;
 #[cfg(ctx_semantic_fastembed)]
-const SEMANTIC_EMBED_BATCH_DEFAULT: usize = 16;
+const SEMANTIC_EMBED_BATCH_FALLBACK: usize = 16;
 #[cfg(ctx_semantic_fastembed)]
 const SEMANTIC_EMBED_BATCH_MAX: usize = 512;
+#[cfg(ctx_semantic_fastembed)]
+const SEMANTIC_EMBED_BATCH_ADAPTIVE_MAX: usize = 128;
+#[cfg(ctx_semantic_fastembed)]
+const SEMANTIC_MEMORY_BUDGET_MIN_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(ctx_semantic_fastembed)]
+const SEMANTIC_MEMORY_BUDGET_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+#[cfg(ctx_semantic_fastembed)]
+const SEMANTIC_MEMORY_BUDGET_FALLBACK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+#[cfg(ctx_semantic_fastembed)]
+const SEMANTIC_EMBED_BATCH_TARGET_BYTES: u64 = 80 * 1024 * 1024;
 const SEMANTIC_DIRTY_QUEUE_RECENT_LIMIT: usize = 512;
 const SEMANTIC_WORKER_LOCK_FILE: &str = "semantic-worker.lock";
 const SEMANTIC_WORKER_STATUS_FILE: &str = "semantic-worker.json";
@@ -96,15 +106,14 @@ const DAEMON_STATUS_FILE: &str = "status.json";
 const DAEMON_HISTORY_REFRESH_JOB_FILE: &str = "history-refresh.json";
 const DAEMON_SEMANTIC_JOB_FILE: &str = "semantic-index.json";
 const DAEMON_CLOUD_SYNC_JOB_FILE: &str = "cloud-sync.json";
-const DAEMON_MAX_RUNTIME_SECONDS_DEFAULT: u64 = 300;
 const DAEMON_IDLE_EXIT_SECONDS_DEFAULT: u64 = 30;
+pub(crate) const DAEMON_IDLE_EXIT_SECONDS_CAP: u64 = 24 * 60 * 60;
 const DAEMON_LOOP_INTERVAL_SECONDS_DEFAULT: u64 = 5;
-pub(crate) const DAEMON_RUNTIME_SECONDS_CAP: u64 = 24 * 60 * 60;
-const DAEMON_AUTOSTART_MAX_RUNTIME_SECONDS_DEFAULT: u64 = 45;
 const DAEMON_AUTOSTART_IDLE_EXIT_SECONDS_DEFAULT: u64 = 5;
 const DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS_DEFAULT: u64 = 5;
 const DAEMON_BACKGROUND_CHILD_ENV: &str = "CTX_DAEMON_BACKGROUND_CHILD";
 const DAEMON_AUTOSTART_OFF_ENV: &str = "CTX_DAEMON_AUTOSTART_OFF";
+const DAEMON_SEMANTIC_BOOTSTRAP_PASSES_BEFORE_REFRESH: usize = 1;
 const DAEMON_LOCK_STALE_AFTER_MS: i64 = 25 * 60 * 60 * 1_000;
 const DAEMON_SEMANTIC_RESERVE_GRACE_SECS: u64 = 10;
 const DAEMON_MIN_REMAINING_FOR_JOB_SECS: u64 = 2;
@@ -128,6 +137,7 @@ pub(crate) struct SemanticWorkerReport {
     dirty_items: usize,
     queued_items_estimate: usize,
     model_cache_available: bool,
+    embed_policy: Option<Value>,
     vector_path: PathBuf,
     lock_path: PathBuf,
     status_path: PathBuf,
@@ -153,6 +163,7 @@ impl SemanticWorkerReport {
             model_cache_available: semantic_model_cache_available(&semantic_worker_cache_dir(
                 data_root,
             )),
+            embed_policy: Some(semantic_embed_policy_status_json()),
             vector_path: semantic_vector_path(data_root),
             lock_path: semantic_worker_lock_path(data_root),
             status_path: semantic_worker_status_path(data_root),
@@ -187,6 +198,7 @@ impl SemanticWorkerReport {
                 "coverage_ratio": self.coverage_ratio(),
             },
             "model_cache_available": self.model_cache_available,
+            "embed_policy": self.embed_policy.clone(),
             "vector_path": self.vector_path.display().to_string(),
             "lock_path": self.lock_path.display().to_string(),
             "status_path": self.status_path.display().to_string(),

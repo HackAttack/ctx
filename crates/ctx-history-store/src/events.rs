@@ -8,8 +8,8 @@ use crate::connection::{
 };
 use crate::search::projections::{
     adjust_semantic_searchable_item_stats, insert_event_search_projection_for_event,
-    semantic_searchable_event_count_for_event, semantic_searchable_event_count_from_stored_event,
-    upsert_event_search_projection_for_event,
+    semantic_searchable_document_count_for_event,
+    semantic_searchable_document_count_from_stored_event, upsert_event_search_projection_for_event,
 };
 use crate::sync::sync_metadata_from_row;
 use crate::{Result, Store, StoreError};
@@ -57,7 +57,7 @@ impl Store {
             event.id
         };
         let previous_searchable_count =
-            semantic_searchable_event_count_from_stored_event(&self.conn, event_id)?;
+            semantic_searchable_document_count_from_stored_event(&self.conn, event_id)?;
 
         self.conn.execute(
                 r#"
@@ -108,7 +108,7 @@ impl Store {
         adjust_semantic_searchable_item_stats(
             &self.conn,
             previous_searchable_count,
-            semantic_searchable_event_count_for_event(event),
+            semantic_searchable_document_count_for_event(event),
         )?;
         if let Some(dedupe_key) = &event.dedupe_key {
             return self.event_id_by_dedupe_key(dedupe_key);
@@ -156,7 +156,7 @@ impl Store {
             adjust_semantic_searchable_item_stats(
                 &self.conn,
                 0,
-                semantic_searchable_event_count_for_event(event),
+                semantic_searchable_document_count_for_event(event),
             )?;
         }
         Ok(changed > 0)

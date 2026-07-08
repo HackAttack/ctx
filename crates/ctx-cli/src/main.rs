@@ -479,15 +479,13 @@ pub(crate) struct DaemonRunArgs {
     foreground: bool,
     #[arg(long, help = "Run one maintenance pass and exit")]
     once: bool,
-    #[arg(long, value_parser = parse_daemon_runtime_seconds)]
-    max_runtime_seconds: Option<u64>,
-    #[arg(long, value_parser = parse_daemon_runtime_seconds)]
+    #[arg(long, value_parser = parse_daemon_idle_exit_seconds)]
     idle_exit_seconds: Option<u64>,
     #[arg(long, value_parser = parse_daemon_interval_seconds)]
     loop_interval_seconds: Option<u64>,
     #[arg(long, value_parser = parse_semantic_worker_batch)]
     max_chunks: Option<usize>,
-    #[arg(long, value_parser = parse_semantic_worker_seconds)]
+    #[arg(skip)]
     max_seconds: Option<u64>,
     #[arg(long, help = "Run even when daemon.enabled is false")]
     force: bool,
@@ -987,27 +985,14 @@ fn parse_semantic_worker_batch(value: &str) -> std::result::Result<usize, String
     Ok(parsed)
 }
 
-fn parse_semantic_worker_seconds(value: &str) -> std::result::Result<u64, String> {
-    let parsed = value
-        .parse::<u64>()
-        .map_err(|err| format!("invalid semantic worker seconds: {err}"))?;
-    if parsed == 0 || parsed > semantic::SEMANTIC_WORKER_MAX_SECONDS_CAP {
-        return Err(format!(
-            "semantic worker seconds must be between 1 and {}",
-            semantic::SEMANTIC_WORKER_MAX_SECONDS_CAP
-        ));
-    }
-    Ok(parsed)
-}
-
-fn parse_daemon_runtime_seconds(value: &str) -> std::result::Result<u64, String> {
+fn parse_daemon_idle_exit_seconds(value: &str) -> std::result::Result<u64, String> {
     let parsed = value
         .parse::<u64>()
         .map_err(|err| format!("invalid daemon seconds: {err}"))?;
-    if parsed == 0 || parsed > semantic::DAEMON_RUNTIME_SECONDS_CAP {
+    if parsed == 0 || parsed > semantic::DAEMON_IDLE_EXIT_SECONDS_CAP {
         return Err(format!(
             "daemon seconds must be between 1 and {}",
-            semantic::DAEMON_RUNTIME_SECONDS_CAP
+            semantic::DAEMON_IDLE_EXIT_SECONDS_CAP
         ));
     }
     Ok(parsed)

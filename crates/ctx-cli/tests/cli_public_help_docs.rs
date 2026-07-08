@@ -361,11 +361,9 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
             vec![
                 "Usage: ctx daemon run",
                 "--once",
-                "--max-runtime-seconds <MAX_RUNTIME_SECONDS>",
                 "--idle-exit-seconds <IDLE_EXIT_SECONDS>",
                 "--loop-interval-seconds <LOOP_INTERVAL_SECONDS>",
                 "--max-chunks <MAX_CHUNKS>",
-                "--max-seconds <MAX_SECONDS>",
                 "--force",
                 "--json",
             ],
@@ -401,7 +399,21 @@ fn daemon_help_exposes_readable_status_and_run_controls() {
                 "{args:?} help missing {needle} in\n{help}"
             );
         }
+        assert!(
+            !help.contains("--max-seconds"),
+            "{args:?} help must not expose a daemon runtime cap in\n{help}"
+        );
     }
+}
+
+#[test]
+fn daemon_run_rejects_public_runtime_cap() {
+    let temp = tempdir();
+    let stderr = failure_stderr(ctx(&temp).args(["daemon", "run", "--max-seconds", "1"]));
+    assert!(
+        stderr.contains("unexpected argument '--max-seconds'"),
+        "daemon run must not accept --max-seconds; stderr:\n{stderr}"
+    );
 }
 
 #[test]

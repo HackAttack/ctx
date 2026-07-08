@@ -17,7 +17,9 @@ use crate::schema::ddl::table_exists;
 use crate::search::analyzer::{scriptgram_index_text, scriptgram_match_query};
 use crate::{Result, Store};
 
-const SEMANTIC_SEARCHABLE_ITEMS_STAT_KEY: &str = "semantic_searchable_items";
+const SEMANTIC_SEARCHABLE_ITEMS_STAT_KEY: &str = "semantic_searchable_lite_turn_items";
+const SEMANTIC_TURN_TEXT_MAX_CHARS: usize = 64 * 1024;
+const SEMANTIC_LITE_TURN_RANK_BUCKET: &str = "lite_turn";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventSearchHit {
@@ -209,44 +211,15 @@ impl Store {
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            r#"
-            SELECT e.id,
-                   COALESCE(e.history_record_id, s.history_record_id, rs.history_record_id),
-                   COALESCE(e.session_id, s.id, rs.id),
-                   e.run_id,
-                   e.seq,
-                   e.event_type,
-                   e.role,
-                   e.occurred_at_ms,
-                   COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
-                   COALESCE(s.external_session_id, rs.external_session_id),
-                   COALESCE(s.parent_session_id, rs.parent_session_id),
-                   COALESCE(s.root_session_id, rs.root_session_id),
-                   COALESCE(s.agent_type, rs.agent_type),
-                   COALESCE(s.is_primary, rs.is_primary),
-                   COALESCE(event_source.cwd, session_source.cwd, run_source.cwd),
-                   COALESCE(event_source.raw_source_path, session_source.raw_source_path, run_source.raw_source_path),
-                   e.payload_json,
-                   COALESCE(event_source.metadata_json, session_source.metadata_json, run_source.metadata_json),
-                   wr.title,
-                   wr.kind,
-                   wr.workspace,
-                   'safe_preview'
-            FROM events e
-            LEFT JOIN runs r ON r.id = e.run_id
-            LEFT JOIN sessions s ON s.id = e.session_id
-            LEFT JOIN sessions rs ON rs.id = r.session_id
-            LEFT JOIN capture_sources event_source ON event_source.id = e.capture_source_id
-            LEFT JOIN capture_sources session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
-            LEFT JOIN capture_sources run_source ON run_source.id = r.source_id
-            LEFT JOIN history_records wr ON wr.id = COALESCE(e.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id)
-            WHERE e.id IN ({placeholders})
-              AND e.deleted_at_ms IS NULL
-              AND e.visibility != 'withheld'
-              AND e.sync_state != 'withheld'
-              AND 'safe_preview' NOT IN ('raw', 'withheld')
-            "#
+        let sql = semantic_lite_turn_document_select_sql(
+            &format!(
+                r#"
+                WHERE anchor.id IN ({placeholders})
+                  AND {}
+                "#,
+                semantic_lite_turn_anchor_eligible_predicate()
+            ),
+            "",
         );
         let params = event_ids
             .iter()
@@ -255,16 +228,20 @@ impl Store {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
             let event_id = parse_uuid(row.get::<_, String>(0)?)?;
-            let payload_json = row.get::<_, String>(16)?;
-            let source_metadata_json = row.get::<_, Option<String>>(17)?;
+            let payload_json = row.get::<_, String>(8)?;
+            let source_metadata_json = row.get::<_, Option<String>>(15)?;
             let source_identity = event_search_source_identity(source_metadata_json.as_deref())?;
-            let redaction_state = row.get::<_, String>(21)?;
+            let redaction_state = row.get::<_, String>(9)?;
+            let assistant_payload_json = row.get::<_, Option<String>>(19)?;
+            let assistant_redaction_state = row.get::<_, Option<String>>(20)?;
             let preview = chunk_ranges
                 .get(&event_id)
                 .map(|(start_char, end_char)| {
-                    event_semantic_source_chunk(
+                    semantic_lite_turn_source_chunk(
                         &payload_json,
                         &redaction_state,
+                        assistant_payload_json.as_deref(),
+                        assistant_redaction_state.as_deref(),
                         *start_char,
                         *end_char,
                     )
@@ -275,30 +252,30 @@ impl Store {
                 event_id,
                 history_record_id: parse_optional_uuid(row.get(1)?)?,
                 session_id: parse_optional_uuid(row.get(2)?)?,
-                run_id: parse_optional_uuid(row.get(3)?)?,
-                seq: row.get::<_, i64>(4)? as u64,
+                run_id: parse_optional_uuid(row.get(21)?)?,
+                seq: row.get::<_, i64>(3)? as u64,
                 event_type: parse_text_enum::<EventType>(row.get::<_, String>(5)?)?,
                 role: parse_optional_text_enum::<EventRole>(row.get(6)?)?,
-                occurred_at: ms_to_time(row.get(7)?)?,
+                occurred_at: ms_to_time(row.get(22)?)?,
                 preview,
                 score: 0.0,
-                provider: parse_optional_text_enum::<CaptureProvider>(row.get(8)?)?,
-                session_external_session_id: row.get(9)?,
+                provider: parse_optional_text_enum::<CaptureProvider>(row.get(10)?)?,
+                session_external_session_id: row.get(23)?,
                 history_source: source_identity.history_source,
                 history_source_plugin: source_identity.history_source_plugin,
                 provider_key: source_identity.provider_key,
                 source_id: source_identity.source_id,
                 source_format: source_identity.source_format,
-                session_parent_session_id: parse_optional_uuid(row.get(10)?)?,
-                session_root_session_id: parse_optional_uuid(row.get(11)?)?,
-                agent_type: parse_optional_text_enum::<AgentType>(row.get(12)?)?,
-                session_is_primary: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
-                cwd: row.get(14)?,
-                raw_source_path: row.get(15)?,
+                session_parent_session_id: parse_optional_uuid(row.get(24)?)?,
+                session_root_session_id: parse_optional_uuid(row.get(25)?)?,
+                agent_type: parse_optional_text_enum::<AgentType>(row.get(11)?)?,
+                session_is_primary: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
+                cwd: row.get(13)?,
+                raw_source_path: row.get(14)?,
                 cursor: event_search_cursor(&payload_json, source_metadata_json.as_deref())?,
-                record_title: row.get(18)?,
-                record_kind: row.get(19)?,
-                record_workspace: row.get(20)?,
+                record_title: row.get(16)?,
+                record_kind: row.get(17)?,
+                record_workspace: row.get(18)?,
             })
         })?;
         collect_rows(rows)
@@ -308,25 +285,18 @@ impl Store {
         if event_ids.is_empty() {
             return Ok(HashSet::new());
         }
-        if !table_exists(&self.conn, "event_search")? {
-            return Ok(HashSet::new());
-        }
         let placeholders = (0..event_ids.len())
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
             r#"
-            SELECT e.id
-            FROM event_search
-            JOIN events e ON e.id = event_search.event_id
-            WHERE event_search.event_id IN ({placeholders})
-              AND e.deleted_at_ms IS NULL
-              AND e.visibility != 'withheld'
-              AND e.sync_state != 'withheld'
-              AND 'safe_preview' NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.preview_text)) > 0
-            "#
+            SELECT anchor.id
+            FROM events AS anchor
+            WHERE anchor.id IN ({placeholders})
+              AND {}
+            "#,
+            semantic_lite_turn_anchor_eligible_predicate()
         );
         let params = event_ids
             .iter()
@@ -369,53 +339,23 @@ impl Store {
         before: Option<(i64, u64)>,
         limit: usize,
     ) -> Result<Vec<EventEmbeddingDocument>> {
-        if !table_exists(&self.conn, "event_search")? {
-            return Ok(Vec::new());
-        }
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT event_search.event_id,
-                   COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id),
-                   COALESCE(e.session_id, event_search.session_id, s.id, rs.id),
-                   e.seq,
-                   e.occurred_at_ms,
-                   e.event_type,
-                   event_search.role,
-                   event_search.rank_bucket,
-                   e.payload_json,
-                   'safe_preview',
-                   COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
-                   COALESCE(s.agent_type, rs.agent_type),
-                   COALESCE(s.is_primary, rs.is_primary),
-                   COALESCE(event_source.cwd, session_source.cwd, run_source.cwd),
-                   COALESCE(event_source.raw_source_path, session_source.raw_source_path, run_source.raw_source_path),
-                   COALESCE(event_source.metadata_json, session_source.metadata_json, run_source.metadata_json),
-                   wr.title,
-                   wr.kind,
-                   wr.workspace
-            FROM event_search
-            JOIN events e ON e.id = event_search.event_id
-            LEFT JOIN runs r ON r.id = e.run_id
-            LEFT JOIN sessions s ON s.id = e.session_id
-            LEFT JOIN sessions rs ON rs.id = r.session_id
-            LEFT JOIN capture_sources event_source ON event_source.id = e.capture_source_id
-            LEFT JOIN capture_sources session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
-            LEFT JOIN capture_sources run_source ON run_source.id = r.source_id
-            LEFT JOIN history_records wr ON wr.id = COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id)
-            WHERE e.deleted_at_ms IS NULL
-              AND e.visibility != 'withheld'
-              AND e.sync_state != 'withheld'
-              AND 'safe_preview' NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.preview_text)) > 0
-              AND (
-                    ?1 IS NULL
-                    OR e.occurred_at_ms < ?1
-                    OR (e.occurred_at_ms = ?1 AND e.seq < ?2)
-              )
-            ORDER BY e.occurred_at_ms DESC, e.seq DESC
-            LIMIT ?3
-            "#,
-        )?;
+        let sql = semantic_lite_turn_document_select_sql(
+            &format!(
+                r#"
+                WHERE {}
+                  AND (
+                        ?1 IS NULL
+                        OR anchor.occurred_at_ms < ?1
+                        OR (anchor.occurred_at_ms = ?1 AND anchor.seq < ?2)
+                  )
+                ORDER BY anchor.occurred_at_ms DESC, anchor.seq DESC
+                LIMIT ?3
+                "#,
+                semantic_lite_turn_anchor_eligible_predicate()
+            ),
+            "ORDER BY document_activity_at_ms DESC, seq DESC",
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(
             params![
                 before.map(|(occurred_at_ms, _)| occurred_at_ms),
@@ -432,56 +372,82 @@ impl Store {
         terms: &[String],
         limit: usize,
     ) -> Result<Vec<EventEmbeddingDocument>> {
-        if terms.is_empty() || !table_exists(&self.conn, "event_search")? {
+        if terms.is_empty() {
             return Ok(Vec::new());
         }
         let clauses = terms
             .iter()
             .map(|_| {
-                "(lower(event_search.preview_text) LIKE ? ESCAPE '\\' OR \
-                 ('safe_preview' != 'raw' AND lower(e.payload_json) LIKE ? ESCAPE '\\'))"
+                r#"
+                (
+                    lower(anchor.payload_json) LIKE ? ESCAPE '\'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM events AS candidate
+                        WHERE candidate.event_type = 'message'
+                          AND candidate.role = 'assistant'
+                          AND candidate.deleted_at_ms IS NULL
+                          AND candidate.visibility != 'withheld'
+                          AND candidate.sync_state != 'withheld'
+                          AND length(trim(candidate.payload_json)) > 2
+                          AND lower(candidate.payload_json) LIKE ? ESCAPE '\'
+                          AND (
+                                (anchor.run_id IS NOT NULL AND candidate.run_id = anchor.run_id)
+                                OR (
+                                    anchor.run_id IS NULL
+                                    AND anchor.session_id IS NOT NULL
+                                    AND candidate.run_id IS NULL
+                                    AND candidate.session_id = anchor.session_id
+                                )
+                          )
+                          AND (
+                                candidate.occurred_at_ms > anchor.occurred_at_ms
+                                OR (candidate.occurred_at_ms = anchor.occurred_at_ms AND candidate.seq > anchor.seq)
+                                OR (candidate.occurred_at_ms = anchor.occurred_at_ms AND candidate.seq = anchor.seq AND candidate.id > anchor.id)
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM events AS next_user
+                              WHERE next_user.event_type = 'message'
+                                AND next_user.role = 'user'
+                                AND next_user.deleted_at_ms IS NULL
+                                AND (
+                                      (anchor.run_id IS NOT NULL AND next_user.run_id = anchor.run_id)
+                                      OR (
+                                          anchor.run_id IS NULL
+                                          AND anchor.session_id IS NOT NULL
+                                          AND next_user.run_id IS NULL
+                                          AND next_user.session_id = anchor.session_id
+                                      )
+                                )
+                                AND (
+                                      next_user.occurred_at_ms > anchor.occurred_at_ms
+                                      OR (next_user.occurred_at_ms = anchor.occurred_at_ms AND next_user.seq > anchor.seq)
+                                      OR (next_user.occurred_at_ms = anchor.occurred_at_ms AND next_user.seq = anchor.seq AND next_user.id > anchor.id)
+                                )
+                                AND (
+                                      next_user.occurred_at_ms < candidate.occurred_at_ms
+                                      OR (next_user.occurred_at_ms = candidate.occurred_at_ms AND next_user.seq < candidate.seq)
+                                      OR (next_user.occurred_at_ms = candidate.occurred_at_ms AND next_user.seq = candidate.seq AND next_user.id < candidate.id)
+                                )
+                          )
+                    )
+                )
+                "#
             })
             .collect::<Vec<_>>()
             .join(" OR ");
-        let sql = format!(
-            r#"
-            SELECT event_search.event_id,
-                   COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id),
-                   COALESCE(e.session_id, event_search.session_id, s.id, rs.id),
-                   e.seq,
-                   e.occurred_at_ms,
-                   e.event_type,
-                   event_search.role,
-                   event_search.rank_bucket,
-                   e.payload_json,
-                   'safe_preview',
-                   COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
-                   COALESCE(s.agent_type, rs.agent_type),
-                   COALESCE(s.is_primary, rs.is_primary),
-                   COALESCE(event_source.cwd, session_source.cwd, run_source.cwd),
-                   COALESCE(event_source.raw_source_path, session_source.raw_source_path, run_source.raw_source_path),
-                   COALESCE(event_source.metadata_json, session_source.metadata_json, run_source.metadata_json),
-                   wr.title,
-                   wr.kind,
-                   wr.workspace
-            FROM event_search
-            JOIN events e ON e.id = event_search.event_id
-            LEFT JOIN runs r ON r.id = e.run_id
-            LEFT JOIN sessions s ON s.id = e.session_id
-            LEFT JOIN sessions rs ON rs.id = r.session_id
-            LEFT JOIN capture_sources event_source ON event_source.id = e.capture_source_id
-            LEFT JOIN capture_sources session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
-            LEFT JOIN capture_sources run_source ON run_source.id = r.source_id
-            LEFT JOIN history_records wr ON wr.id = COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id)
-            WHERE e.deleted_at_ms IS NULL
-              AND e.visibility != 'withheld'
-              AND e.sync_state != 'withheld'
-              AND 'safe_preview' NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.preview_text)) > 0
-              AND ({clauses})
-            ORDER BY e.seq DESC
-            LIMIT ?
-            "#
+        let sql = semantic_lite_turn_document_select_sql(
+            &format!(
+                r#"
+                WHERE {}
+                  AND ({clauses})
+                ORDER BY anchor.seq DESC
+                LIMIT ?
+                "#,
+                semantic_lite_turn_anchor_eligible_predicate()
+            ),
+            "ORDER BY seq DESC",
         );
         let mut params = Vec::new();
         for term in terms {
@@ -499,50 +465,22 @@ impl Store {
         &self,
         event_ids: &[Uuid],
     ) -> Result<Vec<EventEmbeddingDocument>> {
-        if event_ids.is_empty() || !table_exists(&self.conn, "event_search")? {
+        if event_ids.is_empty() {
             return Ok(Vec::new());
         }
         let placeholders = (0..event_ids.len())
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            r#"
-            SELECT event_search.event_id,
-                   COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id),
-                   COALESCE(e.session_id, event_search.session_id, s.id, rs.id),
-                   e.seq,
-                   e.occurred_at_ms,
-                   e.event_type,
-                   event_search.role,
-                   event_search.rank_bucket,
-                   e.payload_json,
-                   'safe_preview',
-                   COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
-                   COALESCE(s.agent_type, rs.agent_type),
-                   COALESCE(s.is_primary, rs.is_primary),
-                   COALESCE(event_source.cwd, session_source.cwd, run_source.cwd),
-                   COALESCE(event_source.raw_source_path, session_source.raw_source_path, run_source.raw_source_path),
-                   COALESCE(event_source.metadata_json, session_source.metadata_json, run_source.metadata_json),
-                   wr.title,
-                   wr.kind,
-                   wr.workspace
-            FROM event_search
-            JOIN events e ON e.id = event_search.event_id
-            LEFT JOIN runs r ON r.id = e.run_id
-            LEFT JOIN sessions s ON s.id = e.session_id
-            LEFT JOIN sessions rs ON rs.id = r.session_id
-            LEFT JOIN capture_sources event_source ON event_source.id = e.capture_source_id
-            LEFT JOIN capture_sources session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
-            LEFT JOIN capture_sources run_source ON run_source.id = r.source_id
-            LEFT JOIN history_records wr ON wr.id = COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id)
-            WHERE event_search.event_id IN ({placeholders})
-              AND e.deleted_at_ms IS NULL
-              AND e.visibility != 'withheld'
-              AND e.sync_state != 'withheld'
-              AND 'safe_preview' NOT IN ('raw', 'withheld')
-              AND length(trim(event_search.preview_text)) > 0
-            "#
+        let sql = semantic_lite_turn_document_select_sql(
+            &format!(
+                r#"
+                WHERE anchor.id IN ({placeholders})
+                  AND {}
+                "#,
+                semantic_lite_turn_anchor_eligible_predicate()
+            ),
+            "",
         );
         let params = event_ids
             .iter()
@@ -862,13 +800,14 @@ fn semantic_searchable_item_count_exact(conn: &Connection) -> Result<usize> {
     let count = conn.query_row(
         r#"
         SELECT COUNT(*)
-        FROM event_search
-        JOIN events e ON e.id = event_search.event_id
-        WHERE e.deleted_at_ms IS NULL
-          AND e.visibility != 'withheld'
-          AND e.sync_state != 'withheld'
-          AND 'safe_preview' NOT IN ('raw', 'withheld')
-          AND length(trim(event_search.preview_text)) > 0
+        FROM event_search AS anchor_search
+        JOIN events AS anchor ON anchor.id = anchor_search.event_id
+        WHERE anchor.event_type = 'message'
+          AND anchor.role = 'user'
+          AND anchor.deleted_at_ms IS NULL
+          AND anchor.visibility != 'withheld'
+          AND anchor.sync_state != 'withheld'
+          AND length(trim(anchor_search.preview_text)) > 0
         "#,
         [],
         |row| row.get::<_, i64>(0),
@@ -958,6 +897,201 @@ pub(crate) fn adjust_semantic_searchable_item_stats(
 fn linked_artifact_preview_count(conn: &Connection) -> Result<i64> {
     let _ = conn;
     Ok(0)
+}
+
+fn semantic_lite_turn_document_select_sql(anchor_tail: &str, document_tail: &str) -> String {
+    format!(
+        r#"
+        {}
+        SELECT event_id,
+               history_record_id,
+               session_id,
+               seq,
+               document_activity_at_ms,
+               event_type,
+               role,
+               rank_bucket,
+               user_payload_json,
+               redaction_state,
+               provider,
+               agent_type,
+               session_is_primary,
+               cwd,
+               raw_source_path,
+               source_metadata_json,
+               record_title,
+               record_kind,
+               record_workspace,
+               assistant_payload_json,
+               assistant_redaction_state,
+               run_id,
+               occurred_at_ms,
+               session_external_session_id,
+               session_parent_session_id,
+               session_root_session_id
+        FROM semantic_lite_turn_docs
+        {document_tail}
+        "#,
+        semantic_lite_turn_cte_sql(anchor_tail)
+    )
+}
+
+fn semantic_lite_turn_anchor_eligible_predicate() -> &'static str {
+    r#"
+    anchor.event_type = 'message'
+    AND anchor.role = 'user'
+    AND anchor.deleted_at_ms IS NULL
+    AND anchor.visibility != 'withheld'
+    AND anchor.sync_state != 'withheld'
+    AND length(trim(anchor.payload_json)) > 2
+    "#
+}
+
+fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
+    format!(
+        r#"
+        WITH semantic_anchor_page AS MATERIALIZED (
+            SELECT anchor.id AS event_id,
+                   anchor.history_record_id AS history_record_id,
+                   anchor.session_id AS session_id,
+                   anchor.run_id AS run_id,
+                   anchor.seq AS seq,
+                   anchor.occurred_at_ms AS occurred_at_ms,
+                   anchor.event_type AS event_type,
+                   anchor.role AS role,
+                   anchor.payload_json AS payload_json,
+                   anchor.capture_source_id AS capture_source_id
+            FROM events AS anchor
+            {anchor_tail}
+        ),
+        semantic_lite_turn_docs AS (
+            SELECT anchor.event_id AS event_id,
+                   COALESCE(anchor.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id) AS history_record_id,
+                   COALESCE(anchor.session_id, s.id, rs.id) AS session_id,
+                   anchor.run_id AS run_id,
+                   anchor.seq AS seq,
+                   anchor.occurred_at_ms AS occurred_at_ms,
+                   COALESCE(MAX(anchor.occurred_at_ms, assistant.occurred_at_ms), anchor.occurred_at_ms) AS document_activity_at_ms,
+                   anchor.event_type AS event_type,
+                   anchor.role AS role,
+                   '{SEMANTIC_LITE_TURN_RANK_BUCKET}' AS rank_bucket,
+                   anchor.payload_json AS user_payload_json,
+                   'safe_preview' AS redaction_state,
+                   COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider) AS provider,
+                   COALESCE(s.external_session_id, rs.external_session_id) AS session_external_session_id,
+                   COALESCE(s.parent_session_id, rs.parent_session_id) AS session_parent_session_id,
+                   COALESCE(s.root_session_id, rs.root_session_id) AS session_root_session_id,
+                   COALESCE(s.agent_type, rs.agent_type) AS agent_type,
+                   COALESCE(s.is_primary, rs.is_primary) AS session_is_primary,
+                   COALESCE(event_source.cwd, session_source.cwd, run_source.cwd) AS cwd,
+                   COALESCE(event_source.raw_source_path, session_source.raw_source_path, run_source.raw_source_path) AS raw_source_path,
+                   COALESCE(event_source.metadata_json, session_source.metadata_json, run_source.metadata_json) AS source_metadata_json,
+                   wr.title AS record_title,
+                   wr.kind AS record_kind,
+                   wr.workspace AS record_workspace,
+                   assistant.payload_json AS assistant_payload_json,
+                   CASE WHEN assistant.id IS NULL THEN NULL ELSE 'safe_preview' END AS assistant_redaction_state,
+                   anchor.payload_json AS user_preview_text,
+                   assistant.payload_json AS assistant_preview_text
+            FROM semantic_anchor_page AS anchor
+            LEFT JOIN runs AS r ON r.id = anchor.run_id
+            LEFT JOIN sessions AS s ON s.id = anchor.session_id
+            LEFT JOIN sessions AS rs ON rs.id = r.session_id
+            LEFT JOIN events AS next_user ON next_user.id = CASE
+                WHEN anchor.run_id IS NOT NULL THEN (
+                    SELECT candidate_user.id
+                    FROM events AS candidate_user
+                    WHERE candidate_user.run_id = anchor.run_id
+                      AND candidate_user.event_type = 'message'
+                      AND candidate_user.role = 'user'
+                      AND candidate_user.deleted_at_ms IS NULL
+                      AND candidate_user.visibility != 'withheld'
+                      AND candidate_user.sync_state != 'withheld'
+                      AND (
+                            candidate_user.occurred_at_ms > anchor.occurred_at_ms
+                            OR (candidate_user.occurred_at_ms = anchor.occurred_at_ms AND candidate_user.seq > anchor.seq)
+                            OR (candidate_user.occurred_at_ms = anchor.occurred_at_ms AND candidate_user.seq = anchor.seq AND candidate_user.id > anchor.event_id)
+                      )
+                    ORDER BY candidate_user.occurred_at_ms ASC, candidate_user.seq ASC, candidate_user.id ASC
+                    LIMIT 1
+                )
+                WHEN COALESCE(anchor.session_id, r.session_id) IS NOT NULL THEN (
+                    SELECT candidate_user.id
+                    FROM events AS candidate_user
+                    WHERE candidate_user.run_id IS NULL
+                      AND candidate_user.session_id = COALESCE(anchor.session_id, r.session_id)
+                      AND candidate_user.event_type = 'message'
+                      AND candidate_user.role = 'user'
+                      AND candidate_user.deleted_at_ms IS NULL
+                      AND candidate_user.visibility != 'withheld'
+                      AND candidate_user.sync_state != 'withheld'
+                      AND (
+                            candidate_user.occurred_at_ms > anchor.occurred_at_ms
+                            OR (candidate_user.occurred_at_ms = anchor.occurred_at_ms AND candidate_user.seq > anchor.seq)
+                            OR (candidate_user.occurred_at_ms = anchor.occurred_at_ms AND candidate_user.seq = anchor.seq AND candidate_user.id > anchor.event_id)
+                      )
+                    ORDER BY candidate_user.occurred_at_ms ASC, candidate_user.seq ASC, candidate_user.id ASC
+                    LIMIT 1
+                )
+            END
+            LEFT JOIN events AS assistant ON assistant.id = CASE
+                WHEN anchor.run_id IS NOT NULL THEN (
+                    SELECT candidate.id
+                    FROM events AS candidate
+                    WHERE candidate.run_id = anchor.run_id
+                      AND candidate.event_type = 'message'
+                      AND candidate.role = 'assistant'
+                      AND candidate.deleted_at_ms IS NULL
+                      AND candidate.visibility != 'withheld'
+                      AND candidate.sync_state != 'withheld'
+                      AND length(trim(candidate.payload_json)) > 2
+                      AND (
+                            candidate.occurred_at_ms > anchor.occurred_at_ms
+                            OR (candidate.occurred_at_ms = anchor.occurred_at_ms AND candidate.seq > anchor.seq)
+                            OR (candidate.occurred_at_ms = anchor.occurred_at_ms AND candidate.seq = anchor.seq AND candidate.id > anchor.event_id)
+                      )
+                      AND (
+                            next_user.id IS NULL
+                            OR candidate.occurred_at_ms < next_user.occurred_at_ms
+                            OR (candidate.occurred_at_ms = next_user.occurred_at_ms AND candidate.seq < next_user.seq)
+                            OR (candidate.occurred_at_ms = next_user.occurred_at_ms AND candidate.seq = next_user.seq AND candidate.id < next_user.id)
+                      )
+                    ORDER BY candidate.occurred_at_ms DESC, candidate.seq DESC, candidate.id DESC
+                    LIMIT 1
+                )
+                WHEN COALESCE(anchor.session_id, r.session_id) IS NOT NULL THEN (
+                    SELECT candidate.id
+                    FROM events AS candidate
+                    WHERE candidate.run_id IS NULL
+                      AND candidate.session_id = COALESCE(anchor.session_id, r.session_id)
+                      AND candidate.event_type = 'message'
+                      AND candidate.role = 'assistant'
+                      AND candidate.deleted_at_ms IS NULL
+                      AND candidate.visibility != 'withheld'
+                      AND candidate.sync_state != 'withheld'
+                      AND length(trim(candidate.payload_json)) > 2
+                      AND (
+                            candidate.occurred_at_ms > anchor.occurred_at_ms
+                            OR (candidate.occurred_at_ms = anchor.occurred_at_ms AND candidate.seq > anchor.seq)
+                            OR (candidate.occurred_at_ms = anchor.occurred_at_ms AND candidate.seq = anchor.seq AND candidate.id > anchor.event_id)
+                      )
+                      AND (
+                            next_user.id IS NULL
+                            OR candidate.occurred_at_ms < next_user.occurred_at_ms
+                            OR (candidate.occurred_at_ms = next_user.occurred_at_ms AND candidate.seq < next_user.seq)
+                            OR (candidate.occurred_at_ms = next_user.occurred_at_ms AND candidate.seq = next_user.seq AND candidate.id < next_user.id)
+                      )
+                    ORDER BY candidate.occurred_at_ms DESC, candidate.seq DESC, candidate.id DESC
+                    LIMIT 1
+                )
+            END
+            LEFT JOIN capture_sources AS event_source ON event_source.id = anchor.capture_source_id
+            LEFT JOIN capture_sources AS session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
+            LEFT JOIN capture_sources AS run_source ON run_source.id = r.source_id
+            LEFT JOIN history_records AS wr ON wr.id = COALESCE(anchor.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id)
+        )
+        "#
+    )
 }
 
 fn populate_event_search_projection(conn: &Connection) -> Result<()> {
@@ -1229,6 +1363,17 @@ pub(crate) fn semantic_searchable_event_count_for_event(event: &Event) -> usize 
     ))
 }
 
+pub(crate) fn semantic_searchable_document_count_from_stored_event(
+    conn: &Connection,
+    event_id: Uuid,
+) -> Result<usize> {
+    semantic_searchable_event_count_from_stored_event(conn, event_id)
+}
+
+pub(crate) fn semantic_searchable_document_count_for_event(event: &Event) -> usize {
+    semantic_searchable_event_count_for_event(event)
+}
+
 fn semantic_searchable_event_parts(
     payload: &serde_json::Value,
     redaction_state: RedactionState,
@@ -1496,6 +1641,8 @@ fn event_embedding_document_from_row(
     let redaction_state: String = row.get(9)?;
     let source_metadata_json = row.get::<_, Option<String>>(15)?;
     let source_identity = event_search_source_identity(source_metadata_json.as_deref())?;
+    let assistant_payload_json = row.get::<_, Option<String>>(19)?;
+    let assistant_redaction_state = row.get::<_, Option<String>>(20)?;
     Ok(EventEmbeddingDocument {
         event_id: parse_uuid(row.get::<_, String>(0)?)?,
         history_record_id: parse_optional_uuid(row.get(1)?)?,
@@ -1514,7 +1661,12 @@ fn event_embedding_document_from_row(
         record_title: row.get(16)?,
         record_kind: row.get(17)?,
         record_workspace: row.get(18)?,
-        text: event_semantic_source_text(&payload_json, &redaction_state)?,
+        text: semantic_lite_turn_source_text(
+            &payload_json,
+            &redaction_state,
+            assistant_payload_json.as_deref(),
+            assistant_redaction_state.as_deref(),
+        )?,
     })
 }
 
@@ -1528,7 +1680,7 @@ fn event_semantic_source_text(
     }
     let payload: serde_json::Value = serde_json::from_str(payload_json)
         .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
-    let preview = event_payload_preview(&payload)
+    let preview = event_payload_text_preview(&payload)
         .or_else(|| {
             if payload.is_object() || payload.is_array() {
                 Some(payload.to_string())
@@ -1537,19 +1689,48 @@ fn event_semantic_source_text(
             }
         })
         .unwrap_or_default();
-    Ok(local_preview(&preview, 64 * 1024))
+    Ok(local_preview(&preview, SEMANTIC_TURN_TEXT_MAX_CHARS))
 }
 
-fn event_semantic_source_chunk(
+fn semantic_lite_turn_source_text(
+    user_payload_json: &str,
+    user_redaction_state: &str,
+    assistant_payload_json: Option<&str>,
+    assistant_redaction_state: Option<&str>,
+) -> rusqlite::Result<String> {
+    let user_text = event_semantic_source_text(user_payload_json, user_redaction_state)?;
+    let mut sections = vec![format!("user:\n{}", user_text.trim())];
+    if let (Some(payload_json), Some(redaction_state)) =
+        (assistant_payload_json, assistant_redaction_state)
+    {
+        let assistant_text = event_semantic_source_text(payload_json, redaction_state)?;
+        if !assistant_text.trim().is_empty() {
+            sections.push(format!("assistant:\n{}", assistant_text.trim()));
+        }
+    }
+    Ok(local_preview(
+        &sections.join("\n\n"),
+        SEMANTIC_TURN_TEXT_MAX_CHARS,
+    ))
+}
+
+fn semantic_lite_turn_source_chunk(
     payload_json: &str,
     redaction_state: &str,
+    assistant_payload_json: Option<&str>,
+    assistant_redaction_state: Option<&str>,
     start_char: usize,
     end_char: usize,
 ) -> rusqlite::Result<String> {
     if end_char <= start_char {
         return Ok(String::new());
     }
-    let text = event_semantic_source_text(payload_json, redaction_state)?;
+    let text = semantic_lite_turn_source_text(
+        payload_json,
+        redaction_state,
+        assistant_payload_json,
+        assistant_redaction_state,
+    )?;
     Ok(text
         .chars()
         .skip(start_char)

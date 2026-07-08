@@ -1,6 +1,9 @@
 #[cfg(all(test, ctx_sqlite_vec))]
 mod tests {
     use super::*;
+    use ctx_history_core::{
+        new_id, Event, EventRole, EventType, Fidelity, SyncMetadata, SyncState, Visibility,
+    };
 
     fn test_embedding(first: f32, second: f32) -> Vec<f32> {
         let mut embedding = vec![0.0; SEMANTIC_DIMENSIONS];
@@ -11,6 +14,100 @@ mod tests {
 
     fn test_chunk(event_id: Uuid, seq: u64, source_hash: &str) -> SemanticChunkDocument {
         test_chunk_at(event_id, seq, source_hash, 0, 1)
+    }
+
+    fn test_daemon_run_args() -> DaemonRunArgs {
+        DaemonRunArgs {
+            foreground: false,
+            once: true,
+            idle_exit_seconds: None,
+            loop_interval_seconds: None,
+            max_chunks: Some(1),
+            max_seconds: Some(1),
+            force: false,
+            start_mode: Some(DaemonStartModeArg::Manual),
+            trigger_command: None,
+            json: true,
+        }
+    }
+
+    fn test_sync_metadata() -> SyncMetadata {
+        SyncMetadata {
+            visibility: Visibility::LocalOnly,
+            fidelity: Fidelity::Imported,
+            sync_state: SyncState::LocalOnly,
+            sync_version: 0,
+            deleted_at: None,
+            metadata: json!({}),
+        }
+    }
+
+    fn test_searchable_event(seq: u64) -> Event {
+        Event {
+            id: new_id(),
+            seq,
+            history_record_id: None,
+            session_id: None,
+            run_id: None,
+            event_type: EventType::Message,
+            role: Some(EventRole::User),
+            occurred_at: utc_now(),
+            capture_source_id: None,
+            payload: json!({ "text": format!("semantic daemon scheduling fixture {seq}") }),
+            payload_blob_id: None,
+            dedupe_key: None,
+            sync: test_sync_metadata(),
+        }
+    }
+
+    fn write_searchable_store(
+        data_root: &Path,
+        count: usize,
+    ) -> Result<Vec<EventEmbeddingDocument>> {
+        fs::create_dir_all(data_root)?;
+        let store = Store::open(database_path(data_root.to_path_buf()))?;
+        for seq in 1..=count {
+            store.upsert_event(&test_searchable_event(seq as u64))?;
+        }
+        store.refresh_event_embedding_document_count_cache()?;
+        let docs = store.recent_event_embedding_documents(None, count)?;
+        assert_eq!(docs.len(), count);
+        Ok(docs)
+    }
+
+    fn daemon_history_completed_test_job() -> Value {
+        daemon_history_refresh_job_json(
+            "completed",
+            1,
+            ImportTotals::default(),
+            utc_now().timestamp_millis(),
+            None,
+            None,
+        )
+    }
+
+    fn daemon_semantic_indexed_test_job(data_root: &Path) -> Value {
+        let report = semantic_worker_report_for_daemon(data_root);
+        daemon_semantic_job_json(
+            "budget_exhausted",
+            None,
+            utc_now().timestamp_millis(),
+            &report,
+            Some(1),
+            None,
+        )
+    }
+
+    fn install_test_daemon_jobs(
+        calls: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+        history_refresh: Option<Value>,
+        semantic_index: Option<Value>,
+    ) -> DaemonTestJobHookGuard {
+        install_daemon_test_job_hooks(DaemonTestJobHooks {
+            calls,
+            history_refresh,
+            semantic_index,
+        })
     }
 
     fn test_chunk_at(
@@ -33,6 +130,281 @@ mod tests {
             start_char: chunk_index.saturating_mul(10),
             end_char: chunk_index.saturating_mul(10).saturating_add(12),
         }
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    fn write_test_semantic_cache(root: &Path) -> Result<()> {
+        let snapshot = root
+            .join(SEMANTIC_HF_MODEL_CACHE_DIR)
+            .join("snapshots")
+            .join("test-snapshot");
+        fs::create_dir_all(&snapshot)?;
+        fs::create_dir_all(root.join(SEMANTIC_HF_MODEL_CACHE_DIR).join("refs"))?;
+        fs::write(
+            root.join(SEMANTIC_HF_MODEL_CACHE_DIR)
+                .join("refs")
+                .join("main"),
+            "test-snapshot\n",
+        )?;
+        for file in SEMANTIC_REQUIRED_MODEL_FILES {
+            fs::write(snapshot.join(file), b"test")?;
+        }
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn semantic_adaptive_policy_uses_one_memory_budget_formula() {
+        let gib = 1024 * 1024 * 1024;
+        let large = SemanticMemorySnapshot {
+            total_bytes: Some(64 * gib),
+            available_bytes: Some(32 * gib),
+        };
+        let small = SemanticMemorySnapshot {
+            total_bytes: Some(8 * gib),
+            available_bytes: Some(4 * gib),
+        };
+        let constrained = SemanticMemorySnapshot {
+            total_bytes: Some(64 * gib),
+            available_bytes: Some(3 * gib),
+        };
+
+        assert_eq!(
+            semantic_adaptive_memory_budget_bytes(large),
+            SEMANTIC_MEMORY_BUDGET_MAX_BYTES
+        );
+        assert_eq!(semantic_adaptive_embed_policy(large).batch_size, 128);
+        assert_eq!(
+            semantic_adaptive_memory_budget_bytes(small),
+            1_717_986_918
+        );
+        assert_eq!(semantic_adaptive_embed_policy(small).batch_size, 16);
+        assert_eq!(
+            semantic_adaptive_memory_budget_bytes(constrained),
+            1_610_612_736
+        );
+        assert_eq!(semantic_adaptive_embed_policy(constrained).batch_size, 16);
+    }
+
+    #[test]
+    fn semantic_worker_report_preserves_embed_policy_from_status() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_semantic_worker_status(
+            temp.path(),
+            &json!({
+                "schema_version": 1,
+                "status": "budget_exhausted",
+                "pid": 1234,
+                "searchable_items": 10,
+                "embedded_items": 2,
+                "embedded_chunks": 4,
+                "dirty_items": 1,
+                "embed_policy": {
+                    "source": "fixture",
+                    "threads": 7,
+                    "batch_size": 96,
+                    "memory_budget_bytes": 123,
+                },
+            }),
+        )?;
+
+        let report = semantic_worker_report_best_effort(temp.path()).to_json();
+        assert_eq!(report["embed_policy"]["source"], "fixture");
+        assert_eq!(report["embed_policy"]["threads"], 7);
+        assert_eq!(report["coverage"]["embedded_chunks"], 4);
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn semantic_cache_discovery_prefers_explicit_env_roots() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let data_root = temp.path().join("data");
+        let explicit = temp.path().join("explicit");
+        let fallback = temp.path().join("fallback");
+        write_test_semantic_cache(&fallback)?;
+
+        let env = SemanticCacheEnv {
+            semantic_cache_dir: Some(explicit.clone()),
+            hf_home: Some(temp.path().join("bad-hf-home")),
+            current_dir: Some(temp.path().to_path_buf()),
+            home: Some(temp.path().to_path_buf()),
+            xdg_cache_home: Some(fallback.clone()),
+            ..SemanticCacheEnv::default()
+        };
+
+        assert_eq!(semantic_worker_cache_dir_from_env(&data_root, &env), explicit);
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn daemon_allows_history_refresh_after_one_semantic_bootstrap_pass() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_test_semantic_cache(&temp.path().join("semantic-model-cache"))?;
+        write_searchable_store(temp.path(), SEMANTIC_DIRTY_QUEUE_RECENT_LIMIT + 1)?;
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _hooks = install_test_daemon_jobs(
+            calls.clone(),
+            Some(daemon_history_completed_test_job()),
+            Some(daemon_semantic_indexed_test_job(temp.path())),
+        );
+        let mut runtime = DaemonRuntime::default();
+
+        let first = run_daemon_once(&test_daemon_run_args(), temp.path(), &mut runtime, None)?;
+        let second = run_daemon_once(&test_daemon_run_args(), temp.path(), &mut runtime, None)?;
+
+        assert!(first.did_work);
+        assert!(second.did_work);
+        assert!(!first.failed);
+        assert!(!second.failed);
+        assert_eq!(
+            *calls.borrow(),
+            vec!["semantic_index", "history_refresh", "semantic_index"]
+        );
+        let daemon = daemon_report(temp.path(), &semantic_worker_report_for_daemon(temp.path()));
+        assert_eq!(daemon["jobs"]["history_refresh"]["status"], "completed");
+        assert_ne!(
+            daemon["jobs"]["history_refresh"]["reason"],
+            "semantic_bootstrap_in_progress"
+        );
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn semantic_cache_discovery_finds_repo_local_fastembed_cache() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let data_root = temp.path().join("data");
+        let repo_cache = temp.path().join(".fastembed_cache");
+        write_test_semantic_cache(&repo_cache)?;
+
+        let env = SemanticCacheEnv {
+            current_dir: Some(temp.path().to_path_buf()),
+            home: Some(temp.path().join("home")),
+            ..SemanticCacheEnv::default()
+        };
+
+        assert_eq!(
+            semantic_worker_cache_dir_from_env(&data_root, &env),
+            repo_cache
+        );
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn semantic_cache_discovery_finds_common_home_cache() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let data_root = temp.path().join("data");
+        let home = temp.path().join("home");
+        let home_cache = home.join(".cache").join("huggingface").join("hub");
+        write_test_semantic_cache(&home_cache)?;
+
+        let env = SemanticCacheEnv {
+            current_dir: Some(temp.path().join("repo")),
+            home: Some(home),
+            ..SemanticCacheEnv::default()
+        };
+
+        assert_eq!(
+            semantic_worker_cache_dir_from_env(&data_root, &env),
+            home_cache
+        );
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn daemon_prioritizes_semantic_bootstrap_over_history_refresh() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_test_semantic_cache(&temp.path().join("semantic-model-cache"))?;
+        write_searchable_store(temp.path(), SEMANTIC_DIRTY_QUEUE_RECENT_LIMIT + 1)?;
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _hooks = install_test_daemon_jobs(
+            calls.clone(),
+            Some(daemon_history_completed_test_job()),
+            Some(daemon_semantic_indexed_test_job(temp.path())),
+        );
+
+        let mut runtime = DaemonRuntime::default();
+        let iteration = run_daemon_once(&test_daemon_run_args(), temp.path(), &mut runtime, None)?;
+
+        assert!(iteration.did_work);
+        assert!(!iteration.failed);
+        assert_eq!(*calls.borrow(), vec!["semantic_index"]);
+        let daemon = daemon_report(temp.path(), &semantic_worker_report_for_daemon(temp.path()));
+        assert_eq!(daemon["jobs"]["history_refresh"]["status"], "skipped");
+        assert_eq!(
+            daemon["jobs"]["history_refresh"]["reason"],
+            "semantic_bootstrap_in_progress"
+        );
+        assert_eq!(
+            daemon["jobs"]["semantic_index"]["last_run_status"],
+            "budget_exhausted"
+        );
+        Ok(())
+    }
+
+    #[cfg(ctx_semantic_fastembed)]
+    #[test]
+    fn daemon_history_refresh_runs_when_semantic_has_no_backlog() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_test_semantic_cache(&temp.path().join("semantic-model-cache"))?;
+        let docs = write_searchable_store(temp.path(), 1)?;
+        let doc = docs.first().expect("searchable fixture doc");
+        let source_text = semantic_source_text(&doc.text);
+        let source_hash = semantic_document_hash(doc, &source_text);
+        let mut vector_store = SemanticVectorStore::open(&semantic_vector_path(temp.path()))?;
+        vector_store.upsert_chunk_embeddings(&[(
+            test_chunk(doc.event_id, doc.seq, &source_hash),
+            test_embedding(1.0, 0.0),
+        )])?;
+        drop(vector_store);
+
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _hooks = install_test_daemon_jobs(
+            calls.clone(),
+            Some(daemon_history_completed_test_job()),
+            Some(daemon_semantic_indexed_test_job(temp.path())),
+        );
+
+        let mut runtime = DaemonRuntime::default();
+        let iteration = run_daemon_once(&test_daemon_run_args(), temp.path(), &mut runtime, None)?;
+
+        assert!(iteration.did_work);
+        assert!(!iteration.failed);
+        assert_eq!(*calls.borrow(), vec!["history_refresh", "semantic_index"]);
+        let daemon = daemon_report(temp.path(), &semantic_worker_report_for_daemon(temp.path()));
+        assert_eq!(daemon["jobs"]["history_refresh"]["status"], "completed");
+        assert_ne!(
+            daemon["jobs"]["history_refresh"]["reason"],
+            "semantic_bootstrap_in_progress"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn daemon_history_refresh_runs_when_store_is_not_ready() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _hooks =
+            install_test_daemon_jobs(calls.clone(), Some(daemon_history_completed_test_job()), None);
+
+        let mut runtime = DaemonRuntime::default();
+        let iteration = run_daemon_once(&test_daemon_run_args(), temp.path(), &mut runtime, None)?;
+
+        assert!(!iteration.failed);
+        assert_eq!(calls.borrow().first(), Some(&"history_refresh"));
+        let daemon = daemon_report(temp.path(), &semantic_worker_report_for_daemon(temp.path()));
+        assert_eq!(daemon["jobs"]["history_refresh"]["status"], "completed");
+        assert_ne!(
+            daemon["jobs"]["history_refresh"]["reason"],
+            "semantic_bootstrap_in_progress"
+        );
+        assert_eq!(daemon["jobs"]["semantic_index"]["last_run_status"], "skipped");
+        assert_eq!(daemon["jobs"]["semantic_index"]["last_run_reason"], "store_missing");
+        Ok(())
     }
 
     #[test]
@@ -266,7 +638,6 @@ mod tests {
         let args = DaemonRunArgs {
             foreground: false,
             once: true,
-            max_runtime_seconds: None,
             idle_exit_seconds: None,
             loop_interval_seconds: None,
             max_chunks: None,
@@ -281,6 +652,89 @@ mod tests {
         let status = read_daemon_status(temp.path()).expect("daemon status");
         assert_eq!(status["start_mode"], "auto");
         assert_eq!(status["trigger_command"], "setup");
+        Ok(())
+    }
+
+    #[test]
+    fn daemon_report_marks_orphaned_running_status_recoverable() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let args = DaemonRunArgs {
+            foreground: false,
+            once: true,
+            idle_exit_seconds: None,
+            loop_interval_seconds: None,
+            max_chunks: None,
+            max_seconds: None,
+            force: false,
+            start_mode: Some(DaemonStartModeArg::Manual),
+            trigger_command: None,
+            json: true,
+        };
+        write_daemon_lifecycle_status(temp.path(), &args, "running", 123, None, None)?;
+
+        let daemon = daemon_report(temp.path(), &semantic_worker_report_best_effort(temp.path()));
+
+        assert_eq!(daemon["status"], "stale_lock");
+        assert_eq!(daemon["running"], false);
+        assert_eq!(daemon["recoverable"], true);
+        assert_eq!(daemon["reason"], "daemon_status_stale");
+        Ok(())
+    }
+
+}
+
+#[cfg(all(test, ctx_semantic_fastembed))]
+mod fastembed_policy_tests {
+    use super::*;
+
+    fn write_test_semantic_cache(root: &Path) -> Result<()> {
+        let snapshot = root
+            .join(SEMANTIC_HF_MODEL_CACHE_DIR)
+            .join("snapshots")
+            .join("test-snapshot");
+        fs::create_dir_all(&snapshot)?;
+        fs::create_dir_all(root.join(SEMANTIC_HF_MODEL_CACHE_DIR).join("refs"))?;
+        fs::write(
+            root.join(SEMANTIC_HF_MODEL_CACHE_DIR)
+                .join("refs")
+                .join("main"),
+            "test-snapshot\n",
+        )?;
+        for file in SEMANTIC_REQUIRED_MODEL_FILES {
+            fs::write(snapshot.join(file), b"test")?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_policy_formula_runs_without_sqlite_vec() {
+        let gib = 1024 * 1024 * 1024;
+        let snapshot = SemanticMemorySnapshot {
+            total_bytes: Some(64 * gib),
+            available_bytes: Some(32 * gib),
+        };
+
+        let policy = semantic_adaptive_embed_policy(snapshot);
+
+        assert_eq!(policy.memory_budget_bytes, SEMANTIC_MEMORY_BUDGET_MAX_BYTES);
+        assert_eq!(policy.batch_size, SEMANTIC_EMBED_BATCH_ADAPTIVE_MAX);
+        assert_eq!(policy.source, "adaptive");
+    }
+
+    #[test]
+    fn semantic_cache_dir_override_beats_hf_home_without_sqlite_vec() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let data_root = temp.path().join("data");
+        let explicit = temp.path().join("explicit");
+        write_test_semantic_cache(&explicit)?;
+
+        let env = SemanticCacheEnv {
+            semantic_cache_dir: Some(explicit.clone()),
+            hf_home: Some(temp.path().join("bad-hf-home")),
+            ..SemanticCacheEnv::default()
+        };
+
+        assert_eq!(semantic_worker_cache_dir_from_env(&data_root, &env), explicit);
         Ok(())
     }
 }
