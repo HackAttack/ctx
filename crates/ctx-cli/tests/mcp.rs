@@ -107,7 +107,7 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
     assert_eq!(status["indexed_events"], 0);
     assert_eq!(status["read_only"], true);
     assert_eq!(status["semantic"]["status"], "disabled");
-    assert_eq!(status["daemon"]["enabled"], true);
+    assert_eq!(status["daemon"]["enabled"], false);
     assert_useful_mcp_text(
         &responses[2]["result"],
         &[
@@ -121,7 +121,7 @@ fn mcp_status_and_tools_list_are_read_only_without_initialized_store() {
             "local_only: true",
             "semantic: status=disabled",
             "semantic_coverage: searchable_items=0",
-            "daemon: enabled=true",
+            "daemon: enabled=false",
             "daemon_jobs:",
         ],
     );

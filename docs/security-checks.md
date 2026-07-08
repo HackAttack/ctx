@@ -46,9 +46,9 @@ the local retrieval product.
   respect `[daemon].enabled` unless explicitly forced, keep cloud sync disabled
   with `enabled: false` and `network_allowed: false`, and may run only bounded
   native local provider-history refresh plus bounded semantic catch-up under the
-  ctx data root when the required local model cache already exists. It must not
-  run history-source plugins, download models, or use network/cloud sync unless a
-  future product contract explicitly enables that behavior.
+  ctx data root. It must not run history-source plugins or use cloud sync.
+  Network model acquisition is allowed only for the local embedding model when
+  semantic search is explicitly enabled.
 - Provider files are read as sources and not modified.
 - Provider transcript imports reject symlinked JSONL files by default.
 - JSON output is private by default.

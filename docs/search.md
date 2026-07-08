@@ -2,12 +2,14 @@
 
 `ctx search` finds matching indexed history. Default results are session-diverse:
 ctx shows the strongest matching span from each session, then lets you drill
-into dense event-level results when needed. By default it serves the current
-local indexes while the ctx daemon owns bounded background refresh for native
-provider history, enabled auto-refresh plugins, and semantic sidecar catch-up.
-Search itself does not import provider history when `[daemon].enabled` is true,
-start vector backfill, download models, create the semantic sidecar, or start a
-daemon. Use `ctx setup --no-daemon` or `ctx import --no-daemon` to keep a
+into dense event-level results when needed. With daemon maintenance enabled, the
+ctx daemon owns bounded background refresh for native provider history, enabled
+auto-refresh plugins, and semantic sidecar catch-up. Search itself does not
+import provider history when `[daemon].enabled` is true, start vector backfill,
+download models, or create the semantic sidecar. With semantic enabled and
+default background refresh, search may start the configured daemon so the
+daemon-owned query service can embed the query; `--refresh off` skips that
+autostart. Use `ctx setup --no-daemon` or `ctx import --no-daemon` to keep a
 foreground command from starting the daemon after it completes.
 The default `hybrid` backend blends lexical and semantic evidence only when
 existing sidecar coverage is complete and dirty work is drained, and falls back
@@ -216,10 +218,10 @@ runs are enabled in config.
 A long-lived daemon keeps the local embedding model resident after the first
 worker pass, uses a low-memory default embedding batch, and performs recent-work
 freshness checks before it settles into idle loops. Daemon semantic catch-up
-runs only when the required local model cache already exists. Cloud sync reports
-disabled with `enabled: false` and `network_allowed: false`. `ctx doctor` is the
-place for semantic and daemon diagnostics when local status needs
-troubleshooting.
+may acquire the local embedding model when semantic is enabled. Cloud sync
+reports disabled with `enabled: false` and `network_allowed: false`.
+`ctx doctor` is the place for semantic and daemon diagnostics when local status
+needs troubleshooting.
 
 Search never starts the daemon or waits for full semantic coverage. Explicit
 semantic queries may read partial sidecar coverage. Default and explicit

@@ -372,12 +372,13 @@ fn search_analytics_reports_when_search_creates_empty_store() {
     let properties = analytics_event_properties(&events[0]);
     assert_eq!(properties["action"], "search");
     assert_eq!(properties["search_refresh_mode"], "background");
-    assert_eq!(properties["search_refresh_status"], "daemon_background");
+    assert_eq!(properties["search_refresh_status"], "no_sources");
     assert_eq!(properties["had_existing_store_before_search"], false);
     assert_eq!(properties["indexed_content_before_search_known"], true);
     assert_eq!(properties["had_indexed_content_before_search"], false);
     assert_eq!(properties["store_created_by_search"], true);
     assert_eq!(properties["has_indexed_content_after_search"], false);
+    assert!(!data_root.join("config.toml").exists());
     assert!(!data_root.join("daemon/status.json").exists());
     assert!(!data_root.join("daemon/daemon.lock").exists());
     assert_analytics_properties_are_allowlisted(properties);

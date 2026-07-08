@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::{self, Write},
+    env, fs, io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -9,6 +8,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 pub const CONFIG_FILE: &str = "config.toml";
+pub const DAEMON_DEFAULT_ENABLED: bool = false;
 pub const SEMANTIC_SEARCH_DEFAULT_ENABLED: bool = false;
 
 #[derive(Debug, Clone)]
@@ -56,7 +56,9 @@ impl Default for AppConfig {
                 interval: Duration::from_secs(24 * 60 * 60),
                 functions_base: "https://cli.ctx.rs/functions/v1".to_owned(),
             },
-            daemon: DaemonConfig { enabled: true },
+            daemon: DaemonConfig {
+                enabled: DAEMON_DEFAULT_ENABLED,
+            },
             search: SearchConfig { semantic: None },
         }
     }
@@ -193,28 +195,18 @@ impl AppConfig {
 }
 
 pub fn write_default_config(data_root: &Path) -> Result<()> {
-    let path = AppConfig::config_path(data_root);
-    if path.exists() {
-        return Ok(());
-    }
-    let mut file = fs::File::create(&path)?;
-    file.write_all(
-        b"[upgrade]\n\
-auto = \"apply\"\n\
-channel = \"stable\"\n\
-interval_hours = 24\n\
-\n\
-[daemon]\n\
-enabled = true\n",
-    )?;
+    fs::create_dir_all(data_root)?;
     Ok(())
 }
 
 pub fn set_daemon_enabled(data_root: &Path, enabled: bool) -> Result<()> {
     fs::create_dir_all(data_root)?;
-    write_default_config(data_root)?;
     let path = AppConfig::config_path(data_root);
-    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
     let parsed = parse_toml_subset(&text).with_context(|| format!("parse {}", path.display()))?;
     let mut config = AppConfig::default();
     config
@@ -550,7 +542,7 @@ enabled = false
         assert_eq!(config.upgrade.auto, "apply");
         assert_eq!(config.upgrade.channel, "stable");
         assert_eq!(config.upgrade.interval, Duration::from_secs(24 * 60 * 60));
-        assert!(config.daemon.enabled);
+        assert!(!config.daemon.enabled);
     }
 
     #[test]
@@ -592,7 +584,6 @@ enabled = false
     #[test]
     fn set_daemon_enabled_rewrites_or_adds_config_key() {
         let temp = tempfile::tempdir().unwrap();
-        write_default_config(temp.path()).unwrap();
 
         set_daemon_enabled(temp.path(), false).unwrap();
         let disabled = AppConfig::load(temp.path()).unwrap();
@@ -609,14 +600,11 @@ enabled = false
     }
 
     #[test]
-    fn default_config_omits_search_semantic() {
+    fn default_config_is_not_written_for_implicit_defaults() {
         let temp = tempfile::tempdir().unwrap();
         write_default_config(temp.path()).unwrap();
 
-        let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
-
-        assert!(!text.contains("[search]"));
-        assert!(!text.contains("semantic"));
+        assert!(!temp.path().join(CONFIG_FILE).exists());
     }
 
     #[test]

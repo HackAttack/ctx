@@ -41,15 +41,15 @@ fn setup_does_not_migrate_legacy_shim_directory() {
 }
 
 #[test]
-fn setup_writes_day_one_config_contract_without_overwriting_existing_config() {
+fn setup_does_not_write_default_config_and_preserves_existing_config() {
     let temp = tempdir();
     let config_path = temp.path().join("config.toml");
 
     ctx(&temp).arg("setup").assert().success();
-    let default_config = fs::read_to_string(&config_path).unwrap();
-    assert!(default_config.contains("[upgrade]"));
-    assert!(default_config.contains("auto = \"apply\""));
-    assert!(default_config.contains("channel = \"stable\""));
+    assert!(
+        !config_path.exists(),
+        "setup must not write implicit default values to config.toml"
+    );
 
     let user_config = "# user managed ctx config\n[analytics]\nenabled = false\n";
     fs::write(&config_path, user_config).unwrap();
@@ -393,9 +393,14 @@ fn quiet_status_suppresses_success_output_but_not_json() {
 }
 
 #[test]
-fn setup_backgrounds_discovered_codex_sessions_by_default_and_wait_imports() {
+fn setup_backgrounds_discovered_codex_sessions_when_daemon_is_enabled_and_wait_imports() {
     let temp = tempdir();
     write_codex_setup_session(&temp);
+    fs::write(
+        temp.path().join("config.toml"),
+        "[daemon]\nenabled = true\n",
+    )
+    .unwrap();
 
     let setup = json_output(ctx(&temp).args(["setup", "--json", "--progress", "none"]));
     assert_eq!(setup["mode"], "background");
@@ -514,6 +519,11 @@ fn setup_partial_import_isolates_empty_codex_session_file() {
 fn setup_autostart_records_spawn_failure_status() {
     let temp = tempdir();
     write_codex_setup_session(&temp);
+    fs::write(
+        temp.path().join("config.toml"),
+        "[daemon]\nenabled = true\n",
+    )
+    .unwrap();
     let missing_exe = temp.path().join("missing-ctx-binary");
 
     ctx(&temp)

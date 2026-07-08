@@ -33,14 +33,12 @@ mod tests {
     }
 
     fn write_semantic_enabled_config(data_root: &Path) -> Result<()> {
-        config::write_default_config(data_root)?;
+        fs::create_dir_all(data_root)?;
         let path = data_root.join(CONFIG_FILE);
-        let mut text = fs::read_to_string(&path)?;
-        if !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str("\n[search]\nsemantic = true\n");
-        fs::write(path, text)?;
+        fs::write(
+            path,
+            "[daemon]\nenabled = true\n\n[search]\nsemantic = true\n",
+        )?;
         Ok(())
     }
 

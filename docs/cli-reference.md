@@ -40,13 +40,13 @@ ctx daemon disable
 ctx daemon enable
 ```
 
-- `setup` creates the data root, opens or creates `work.sqlite`, writes
-  `config.toml` when needed, discovers known provider history locations,
-  inventories local history sources, imports discovered native provider sources,
-  optimizes the local search index, and prints next steps. It does not execute
-  history-source plugin commands. When `[daemon].enabled` is true, setup may
-  opportunistically start the ctx-owned background daemon after foreground setup
-  work completes. Use `setup --no-daemon` for a one-run opt-out.
+- `setup` creates the data root, opens or creates `work.sqlite`, discovers known
+  provider history locations, inventories local history sources, imports
+  discovered native provider sources, optimizes the local search index, and
+  prints next steps. It does not write `config.toml` for implicit defaults and
+  does not execute history-source plugin commands. When `[daemon].enabled` is
+  true, setup may opportunistically start the ctx-owned background daemon after
+  foreground setup work completes. Use `setup --no-daemon` for a one-run opt-out.
 - `setup --catalog-only` stops after source discovery and inventory. The flag
   name is kept for compatibility; it is useful for fast troubleshooting, but it
   does not make history searchable and does not autostart daemon maintenance.
@@ -65,23 +65,24 @@ ctx daemon enable
 - `daemon status` reports the same ctx-owned daemon coordinator state without
   mutating storage.
 - `daemon run` runs bounded local maintenance in the foreground. That means
-  bounded native provider-history refresh followed by semantic catch-up when the
-  required local model cache already exists. Missing model cache is reported as
-  skipped rather than downloaded. A looping daemon keeps the embedding model
-  resident after cold start and performs recent-work freshness checks before
-  settling into idle loops; cloud sync remains disabled with `enabled: false`
-  and `network_allowed: false`.
+  bounded native provider-history refresh followed by semantic catch-up when
+  semantic is enabled. The daemon may acquire the local embedding model for
+  semantic indexing. A looping daemon keeps the embedding model resident after
+  cold start and performs recent-work freshness checks before settling into idle
+  loops; cloud sync remains disabled with `enabled: false` and
+  `network_allowed: false`.
 - `daemon disable` and `daemon enable` update `[daemon].enabled` in
-  `config.toml`. The default is enabled so setup/import can use an opt-out
-  local maintenance path; `daemon run --force` overrides a disabled config for
-  explicit manual troubleshooting.
+  `config.toml`. The prerelease default is disabled, so daemon maintenance is an
+  explicit opt-in; `daemon run --force` overrides a disabled config for explicit
+  manual troubleshooting.
 
 Setup and health checks do not change shell startup files, install repository
-integrations, write into source repositories, call model APIs, download
-embedding models, or require API keys. Daemon maintenance is local-only and
-bounded; cloud sync remains disabled. Core storage checks use the configured
-data root, and JSON stdout remains structured. JSON-output commands do not
-autostart daemon maintenance. Installer-managed binaries can run a signed
+integrations, write into source repositories, call model APIs, or require API
+keys. Without semantic opt-in they do not download embedding models; with
+semantic enabled, daemon maintenance may acquire the local embedding model.
+Daemon maintenance is local-only and bounded; cloud sync remains disabled. Core
+storage checks use the configured data root, and JSON stdout remains structured.
+JSON-output commands do not autostart daemon maintenance. Installer-managed binaries can run a signed
 background upgrade check after successful non-JSON commands other than
 `ctx status`; that check is
 separate from provider history indexing.
@@ -253,9 +254,9 @@ ctx import --progress json --json
 normal first-run path is `ctx setup`, which already imports discovered native
 provider sources.
 Use `import` to repair, re-run, resume, or target a specific provider/path. It
-creates the data root and default config if needed, reads provider transcript
-files, and writes indexed source metadata, sessions, events, searchable text,
-citations, and import totals to SQLite.
+creates the data root if needed, reads provider transcript files, and writes
+indexed source metadata, sessions, events, searchable text, citations, and
+import totals to SQLite. It does not write `config.toml` for implicit defaults.
 
 Imports are source-atomic by default. If a source contains malformed rows, ctx
 reports that source as failed and does not commit the valid rows from that same
@@ -265,8 +266,8 @@ and report malformed or skipped rows in the import summary.
 When `[daemon].enabled` is true, `import` may opportunistically start a short
 one-pass ctx-owned maintenance profile after the foreground import finishes.
 The daemon work is local-only: bounded native provider-history refresh plus
-semantic status reporting; semantic catch-up is reserved for explicit
-`ctx daemon run`. It does not download models or enable cloud sync. Use
+semantic indexing when semantic is enabled. It may acquire the local embedding
+model for semantic indexing, but it does not enable cloud sync. Use
 `import --no-daemon` for a one-run opt-out. Custom
 JSONL imports, explicit history-source-only imports, and `import --json` do not
 autostart daemon maintenance.
@@ -462,10 +463,11 @@ interactive use; run `--refresh wait` or `ctx import` for exhaustive foreground
 plugin catch-up. Foreground refresh may write newly discovered provider or
 plugin history into the local `work.sqlite` index before querying. Semantic retrieval reads the
 `vectors.sqlite` sidecar when it already exists; search itself does not start
-semantic indexing, start a daemon, download models, or write semantic worker
-status. Setup/import can opportunistically start the ctx-owned background daemon
-when `[daemon].enabled` is true. Use `ctx daemon run` for explicit foreground
-local native history refresh and semantic catch-up. JSON status includes a top-level `semantic` object with worker
+semantic indexing or download models. With semantic enabled and default
+background refresh, search may start the configured daemon so the daemon-owned
+query service can embed the query; `--refresh off` skips that autostart. Use
+`ctx daemon run` for explicit foreground local native history refresh and
+semantic catch-up. JSON status includes a top-level `semantic` object with worker
 `status`, `running`, `pid`, heartbeat/error timestamps, `indexed_chunks`, and a
 `coverage` object with `searchable_items`, `embedded_items`, `embedded_chunks`,
 `dirty_items`, `queued_items_estimate`, and `coverage_ratio`, plus the private

@@ -16,17 +16,16 @@ and private relevance evals justify flipping the default.
   cross-device continuity, shared/team memory, admin controls, policy,
   compliance, hosted acceleration, and LLM summaries. The free local CLI should
   stay useful enough to create trust.
-- Semantic search is disabled by default for the prerelease. Advanced users opt
-  in with:
+- Daemon maintenance and semantic search are both disabled by default for the
+  prerelease. Advanced users opt into daemon-owned background maintenance with:
 
   ```toml
-  [search]
-  semantic = true
+  [daemon]
+  enabled = true
   ```
 
-- `CTX_SEARCH_SEMANTIC=1` is available as an operator/test override.
-  `CTX_DISABLE_SEMANTIC_SEARCH=1` forces semantic off.
-- Semantic requires the daemon. The supported prerelease opt-in shape is:
+- Semantic requires the daemon. The supported prerelease semantic opt-in shape
+  is:
 
   ```toml
   [daemon]
@@ -36,6 +35,9 @@ and private relevance evals justify flipping the default.
   semantic = true
   ```
 
+- `CTX_DAEMON_ENABLED=1` and `CTX_SEARCH_SEMANTIC=1` are available as
+  operator/test overrides. `CTX_DISABLE_DAEMON=1` and
+  `CTX_DISABLE_SEMANTIC_SEARCH=1` force them off.
 - Daemon without semantic is valid and useful: it owns lexical incremental
   refresh and can later own additional local query-service work. The semantic
   query-embedding socket is created only when semantic is enabled. Semantic
@@ -46,23 +48,28 @@ and private relevance evals justify flipping the default.
 - There is no product `max-runtime-seconds` option. Tests and dogfood can wrap
   foreground daemon commands in process-level timeouts; the product daemon runs
   until `--once`, failure, idle exit, or normal service shutdown.
+- `ctx setup`, `ctx import`, and `ctx search` should not write `config.toml` for
+  implicit defaults. The config file is user-managed override surface.
 - `ctx setup` should be repeatable. If an existing user later enables
-  `[search] semantic = true` and reruns setup, setup should leave existing data
-  intact, start daemon-owned indexing when possible, and let the daemon acquire
-  the local embedding model and build missing semantic sidecars.
+  `[daemon] enabled = true` and `[search] semantic = true` and reruns setup,
+  setup should leave existing data intact, start daemon-owned indexing when
+  possible, and let the daemon acquire the local embedding model and build
+  missing semantic sidecars.
 - This branch supports the semantic query service on Unix. Non-Unix semantic
   opt-in is blocked for v1 until there is an equivalent query-service transport.
 
 ## Current Branch Addendum
 
-- Config now has `[search] semantic = true|false`, default unset/off, and env
-  overrides for prerelease dogfood.
+- Config now has `[daemon] enabled = true|false` and
+  `[search] semantic = true|false`. Both are default unset/off for prerelease
+  dogfood, and both have env overrides.
 - Default search backend resolution is config-aware: lexical by default while
   semantic is off, hybrid by default while semantic is on, and explicit semantic
   fails fast when disabled.
 - Status, doctor, MCP status, and index status report `semantic.status =
   disabled` with `reason = semantic_disabled` when semantic is not enabled.
-- Setup refuses the invalid semantic-without-daemon configuration, reports
+- Setup refuses the invalid semantic-without-daemon configuration, runs
+  foreground lexical indexing when daemon maintenance is not enabled, reports
   semantic background estimates only when semantic is enabled, and states that
   the daemon will download the local embedding model if needed.
 - The daemon does not create or mutate semantic sidecars when semantic is
@@ -303,10 +310,10 @@ and private relevance evals justify flipping the default.
 - With semantic disabled by default, the completed dogfood sidecar reports
   `semantic.status = disabled` and `reason = semantic_disabled`, while retaining
   coverage counts for diagnostics.
-- After adding `[search] semantic = true` to the isolated dogfood root, status
-  reported ready with 60,726-60,740 searchable semantic documents and about
-  158,663-158,688 embedded chunks. The count moved during dogfood because live
-  local work continued to be imported.
+- After adding `[daemon] enabled = true` and `[search] semantic = true` to the
+  isolated dogfood root, status reported ready with 60,726-60,740 searchable
+  semantic documents and about 158,663-158,688 embedded chunks. The count moved
+  during dogfood because live local work continued to be imported.
 - A manual daemon query-service smoke exposed a private
   `0600` `daemon/query.sock`. Strict semantic search for
   `opal maple lantern semantic count drift` found the expected incremental
@@ -333,9 +340,11 @@ and private relevance evals justify flipping the default.
 
 ## Ship Goals
 
-- `ctx setup` starts daemon-owned lexical indexing by default and reports a
-  truthful, actionable status. When semantic is explicitly enabled, setup also
-  queues daemon-owned semantic indexing and model acquisition.
+- `ctx setup` runs foreground lexical indexing by default during prerelease.
+  When daemon maintenance is explicitly enabled, setup can start daemon-owned
+  lexical indexing and report a truthful, actionable status. When semantic is
+  also explicitly enabled, setup queues daemon-owned semantic indexing and model
+  acquisition.
 - Existing local model caches are discovered without env-var handholding; if no
   cache exists, the daemon should acquire the model or semantic status should
   explain exactly what failed.
@@ -549,9 +558,14 @@ and private relevance evals justify flipping the default.
 
 - Done on this branch:
   - `[search] semantic = true|false`;
+  - `[daemon] enabled = true|false`;
   - `CTX_SEARCH_SEMANTIC`;
   - `CTX_DISABLE_SEMANTIC_SEARCH`;
+  - `CTX_DAEMON_ENABLED`;
+  - `CTX_DISABLE_DAEMON`;
   - default search backend is lexical until semantic is enabled;
+  - daemon maintenance is default off for prerelease;
+  - setup/import/search do not write default values to `config.toml`;
   - no public `auto` mode.
 - Remaining product work:
   - decide whether cloud-randomized feature flags should live outside this CLI

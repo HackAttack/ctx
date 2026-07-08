@@ -217,15 +217,19 @@ fn fresh_home_search_mvp_flow() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "background indexing has no pending local history",
+            "ctx is initialized; no local history was indexed",
         ));
+    assert!(
+        !temp.path().join("config.toml").exists(),
+        "setup should not write config.toml for implicit defaults"
+    );
 
     let setup_json = json_output(ctx(&temp).args(["setup", "--json"]));
     assert_eq!(setup_json["schema_version"], 1);
     assert_eq!(setup_json["network_required"], false);
     assert_eq!(setup_json["repo_writes"], false);
-    assert_eq!(setup_json["mode"], "background");
-    assert_eq!(setup_json["import"]["ran"], false);
+    assert_eq!(setup_json["mode"], "ready");
+    assert_eq!(setup_json["import"]["ran"], true);
     assert_eq!(setup_json["background_indexing"]["enabled"], false);
 
     let sources = json_output(ctx(&temp).args(["sources", "--json"]));
@@ -536,14 +540,14 @@ fn fresh_home_search_mvp_flow() {
     assert!(status["indexed_items"].as_u64().unwrap() > 0);
     assert_eq!(status["semantic"]["status"], "disabled");
     assert_eq!(status["semantic"]["reason"], "semantic_disabled");
-    assert_eq!(status["daemon"]["enabled"], true);
+    assert_eq!(status["daemon"]["enabled"], false);
     assert!(status["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
     let doctor = json_output(ctx(&temp).args(["doctor", "--json"]));
     assert_eq!(doctor["schema_version"], 1);
     assert_eq!(doctor["ok"], true);
     assert_eq!(doctor["progress"], "auto");
-    assert_eq!(doctor["daemon"]["enabled"], true);
+    assert_eq!(doctor["daemon"]["enabled"], false);
     assert!(doctor["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
     let doctor_progress = ctx(&temp)
@@ -623,7 +627,7 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
 
     fs::write(
         temp.path().join("config.toml"),
-        "[search]\nsemantic = true\n",
+        "[daemon]\nenabled = true\n\n[search]\nsemantic = true\n",
     )
     .unwrap();
 
@@ -680,7 +684,7 @@ fn doctor_reports_missing_store_without_creating_it() {
 
     assert_eq!(doctor["schema_version"], 1);
     assert_eq!(doctor["ok"], false);
-    assert_eq!(doctor["daemon"]["enabled"], true);
+    assert_eq!(doctor["daemon"]["enabled"], false);
     assert!(doctor["daemon"]["jobs"]["semantic_index"]["status"].is_string());
     assert!(doctor["findings"]
         .as_array()

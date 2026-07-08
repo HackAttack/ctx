@@ -23,9 +23,9 @@ to manage `PATH` yourself.
 
 The install script installs `ctx`, runs the bundled agent-history skill
 installer, and runs `ctx setup` so discovered local history is indexed before it
-exits. When the default daemon config is enabled, that setup run can also start
-the ctx-owned background daemon for native-history freshness and semantic
-catch-up. The skill installer opens an agent picker when interactive;
+exits. If daemon maintenance has been explicitly enabled, that setup run can
+also start the ctx-owned background daemon for native-history freshness and
+semantic catch-up. The skill installer opens an agent picker when interactive;
 otherwise it installs the universal `~/.agents/skills` copy plus detected
 agent-specific folders for tools that need them. Use `sh -s -- --no-setup` on
 Unix, or set `CTX_INSTALL_NO_SETUP=1` on Windows, for install-only CI or
@@ -55,15 +55,15 @@ ctx setup
 ctx status
 ```
 
-Setup creates the configured ctx data root, initializes SQLite, writes
-`config.toml` when missing, discovers known provider history paths, inventories
-local history sources, imports discovered native provider sources, optimizes
-the local search index, and prints next steps. It does not execute
-history-source plugin commands. The default data root is `~/.ctx`. The daemon
-is enabled by default; when enabled, setup may start the ctx-owned background
-daemon after its foreground indexing work. Use `ctx setup --no-daemon` for a
-one-run opt-out, or disable it with `ctx daemon disable` when you want only explicit
-foreground maintenance. `ctx setup --catalog-only` and `ctx setup --json` do
+Setup creates the configured ctx data root, initializes SQLite, discovers known
+provider history paths, inventories local history sources, imports discovered
+native provider sources, optimizes the local search index, and prints next
+steps. It does not write `config.toml` for implicit defaults and does not
+execute history-source plugin commands. The default data root is `~/.ctx`. The
+daemon is disabled by default during the prerelease; enable it with
+`ctx daemon enable` when you want daemon-owned background maintenance. Use
+`ctx setup --no-daemon` for a one-run opt-out after daemon maintenance is
+enabled. `ctx setup --catalog-only` and `ctx setup --json` do
 not autostart daemon maintenance.
 
 Use a different root when testing:
@@ -118,10 +118,10 @@ failures are reported.
 
 When daemon maintenance is enabled, `ctx import` can start the same ctx-owned
 background daemon profile after the foreground import finishes.
-The daemon refreshes native history within local budgets and performs semantic
-catch-up only when the required local model cache already exists; it does not
-download models. Use `ctx import --no-daemon` for a one-run opt-out. JSON import
-output does not autostart daemon maintenance.
+The daemon refreshes native history within local budgets and, when semantic is
+enabled, may acquire the local embedding model and perform semantic catch-up.
+Use `ctx import --no-daemon` for a one-run opt-out. JSON import output does not
+autostart daemon maintenance.
 
 After upgrading an older data root to `0.10.x` or newer, the first refresh or import may
 re-read previously indexed provider transcripts once. That rebuilds search

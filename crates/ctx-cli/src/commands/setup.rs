@@ -46,7 +46,8 @@ pub(crate) fn run_setup(
     let sources = discovered_sources();
     let progress_arg = setup_progress_arg(args.progress, quiet);
     let progress = ProgressReporter::new(progress_arg, args.json, "setup", 0);
-    let foreground_import = !args.catalog_only && args.wait;
+    let daemon_backgrounding_enabled = config.daemon.enabled && !args.no_daemon;
+    let foreground_import = !args.catalog_only && (args.wait || !daemon_backgrounding_enabled);
     let mut inventory_only = None;
     let import_report = if args.catalog_only || !foreground_import {
         progress.message("inventorying", "Preparing local history...");
@@ -147,8 +148,7 @@ pub(crate) fn run_setup(
         "has_indexed_content_after_setup",
         setup_has_indexed_content(indexed_items),
     );
-    let background_indexing_enabled = config.daemon.enabled
-        && !args.no_daemon
+    let background_indexing_enabled = daemon_backgrounding_enabled
         && !args.catalog_only
         && !foreground_import
         && (pending_inventory_units > 0 || config.semantic_search_enabled());
