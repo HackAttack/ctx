@@ -18,7 +18,9 @@ use serde_json::{json, Value};
 
 use crate::stable_capture_uuid;
 
-use crate::common::io::{ensure_regular_provider_transcript_file, read_provider_jsonl_line};
+use crate::common::io::{
+    ensure_regular_provider_transcript_file, read_provider_jsonl_record_or_skip_oversized,
+};
 use crate::{
     ProviderAdapterContext, ProviderFileTouchedEnvelope, ProviderImportFailure,
     ProviderImportSummary, ProviderNormalizationResult, Result,
@@ -76,8 +78,12 @@ pub(crate) fn normalize_custom_history_jsonl_v1_reader(
     let mut line = Vec::new();
     let mut line_number = 0usize;
 
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut summary,
+    )? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }

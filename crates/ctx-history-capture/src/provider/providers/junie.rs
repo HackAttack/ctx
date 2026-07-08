@@ -14,7 +14,10 @@ use serde_json::{json, Value};
 
 use crate::JUNIE_SESSION_EVENTS_SOURCE_FORMAT;
 
-use crate::common::io::{ensure_regular_provider_transcript_file, read_provider_jsonl_line};
+use crate::common::io::{
+    ensure_regular_provider_transcript_file, read_provider_jsonl_line_or_skip_oversized,
+    read_provider_jsonl_record_or_skip_oversized, ProviderJsonlLineRead,
+};
 use crate::provider::custom_history_jsonl::push_provider_import_failure;
 use crate::provider::native::{
     native_event, native_provider_capture, provider_capped_json_value, provider_timestamp_millis,
@@ -182,7 +185,12 @@ pub(crate) fn junie_read_index(path: &Path) -> Result<Vec<JunieIndexMeta>> {
     let mut reader = BufReader::new(file);
     let mut metas = Vec::new();
     let mut line = Vec::new();
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
+    loop {
+        match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line)? {
+            ProviderJsonlLineRead::Eof => break,
+            ProviderJsonlLineRead::Line { .. } => {}
+            ProviderJsonlLineRead::Oversized { .. } => continue,
+        }
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -330,8 +338,12 @@ pub(crate) fn normalize_junie_session_events_file(
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     let mut line_number = 0usize;
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
         let import_line = base_line.saturating_add(line_number);
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;

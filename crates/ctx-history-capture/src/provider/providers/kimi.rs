@@ -16,8 +16,9 @@ use crate::provider::providers::native_jsonl::native_jsonl_missing_reason;
 use crate::provider::providers::openclaw::provider_path_has_component;
 
 use crate::common::io::{
-    collect_jsonl_paths, ensure_regular_provider_transcript_file, read_provider_jsonl_line,
-    read_text_file_limited,
+    collect_jsonl_paths, ensure_regular_provider_transcript_file,
+    read_provider_jsonl_line_or_skip_oversized, read_provider_jsonl_record_or_skip_oversized,
+    read_text_file_limited, ProviderJsonlLineRead,
 };
 use crate::common::time::parse_rfc3339_utc;
 use crate::provider::custom_history_jsonl::push_provider_import_failure;
@@ -80,8 +81,12 @@ pub(crate) fn normalize_kimi_wire_jsonl_file(
     let mut line = Vec::new();
     let mut line_number = 0usize;
 
-    while read_provider_jsonl_line(&mut reader, &mut line)? {
-        line_number += 1;
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -531,16 +536,23 @@ pub(crate) fn kimi_session_index(path: &Path) -> BTreeMap<String, KimiSessionInd
 }
 
 pub(crate) fn read_kimi_session_index(path: &Path) -> BTreeMap<String, KimiSessionIndexEntry> {
-    let Ok(text) = read_text_file_limited(
-        path,
-        MAX_PROVIDER_JSONL_LINE_BYTES,
-        "Kimi Code CLI session_index.jsonl",
-    ) else {
+    let Ok(file) = File::open(path) else {
         return BTreeMap::new();
     };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
     let mut entries = BTreeMap::new();
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
+    loop {
+        match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line) {
+            Ok(ProviderJsonlLineRead::Eof) => break,
+            Ok(ProviderJsonlLineRead::Line { .. }) => {}
+            Ok(ProviderJsonlLineRead::Oversized { .. }) => continue,
+            Err(_) => return BTreeMap::new(),
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         let Some(session_id) = value

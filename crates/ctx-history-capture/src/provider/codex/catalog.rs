@@ -11,7 +11,9 @@ use ctx_history_core::{AgentType, CaptureProvider};
 use ctx_history_store::{CatalogSession, Store};
 use serde_json::{json, Value};
 
-use crate::common::io::{collect_jsonl_paths, read_provider_jsonl_line};
+use crate::common::io::{
+    collect_jsonl_paths, read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead,
+};
 use crate::common::time::{parse_rfc3339_utc, system_time_ms};
 use crate::{
     CaptureError, CatalogSummary, CodexSessionCatalogOptions, Result, CODEX_SESSION_SOURCE_FORMAT,
@@ -354,8 +356,10 @@ pub(crate) fn read_codex_session_meta(path: &Path) -> Result<Option<Value>> {
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     for _ in 0..32 {
-        if !read_provider_jsonl_line(&mut reader, &mut line)? {
-            break;
+        match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line)? {
+            ProviderJsonlLineRead::Eof => break,
+            ProviderJsonlLineRead::Line { .. } => {}
+            ProviderJsonlLineRead::Oversized { .. } => continue,
         }
         if !line.contains(&b'{') || !contains_bytes(&line, br#""session_meta""#) {
             continue;

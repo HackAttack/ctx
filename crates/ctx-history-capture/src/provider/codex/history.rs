@@ -13,7 +13,9 @@ use serde_json::json;
 
 use crate::CodexHistoryJsonlAdapter;
 
-use crate::common::io::{ensure_regular_provider_transcript_file, read_provider_jsonl_line};
+use crate::common::io::{
+    ensure_regular_provider_transcript_file, read_provider_jsonl_record_or_skip_oversized,
+};
 use crate::provider::importer::{import_normalized_provider_captures, provider_cursor_stream};
 use crate::{
     CodexHistoryImportOptions, NormalizedProviderImportOptions, ProviderAdapterContext,
@@ -50,8 +52,12 @@ impl ProviderCaptureAdapter for CodexHistoryJsonlAdapter {
         let mut line = Vec::new();
         let mut line_number = 0usize;
 
-        while read_provider_jsonl_line(&mut reader, &mut line)? {
-            line_number += 1;
+        while read_provider_jsonl_record_or_skip_oversized(
+            &mut reader,
+            &mut line,
+            &mut line_number,
+            &mut result.summary,
+        )? {
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }

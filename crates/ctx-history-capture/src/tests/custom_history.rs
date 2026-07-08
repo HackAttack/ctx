@@ -279,21 +279,135 @@ fn custom_history_jsonl_malformed_import_is_atomic_by_default() {
 }
 
 #[test]
-fn custom_history_jsonl_rejects_oversized_line() {
+fn codex_history_jsonl_skips_oversized_line_and_imports_remaining_records() {
     let temp = tempdir();
-    let path = temp.path().join("oversized-custom.jsonl");
-    write_oversized_jsonl_line(&path);
+    let path = temp.path().join("codex-history-oversized.jsonl");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "session_id": "codex-history-oversized",
+            "ts": 1783170000,
+            "text": "before oversized codex history"
+        }))
+        .as_bytes(),
+    );
+    bytes.extend_from_slice(&oversized_jsonl_line());
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "session_id": "codex-history-oversized",
+            "ts": 1783170001,
+            "text": "after oversized codex history"
+        }))
+        .as_bytes(),
+    );
+    fs::write(&path, bytes).unwrap();
     let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
 
-    let err = import_custom_history_jsonl_v1(
+    let summary = import_codex_history_jsonl(
         &path,
         &mut store,
-        CustomHistoryJsonlV1ImportOptions::default(),
+        CodexHistoryImportOptions {
+            source_path: Some(path.clone()),
+            imported_at: "2026-07-04T13:30:00Z".parse().unwrap(),
+            ..CodexHistoryImportOptions::default()
+        },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(err.to_string().contains("provider JSONL line exceeds"));
-    assert_eq!(store.capture_source_count().unwrap(), 0);
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped_events, 1);
+    assert_eq!(summary.imported_sessions, 1);
+    assert_eq!(summary.imported_events, 2);
+    let session_id = provider_import_session_id_for_path(
+        CaptureProvider::Codex,
+        "codex_history_jsonl",
+        &path,
+        "codex-history-oversized",
+    );
+    let events = store.events_for_session(session_id).unwrap();
+    let rendered = serde_json::to_string(&events).unwrap();
+    assert!(rendered.contains("before oversized codex history"));
+    assert!(rendered.contains("after oversized codex history"));
+}
+
+#[test]
+fn custom_history_jsonl_skips_oversized_record_and_imports_remaining_records() {
+    let temp = tempdir();
+    let path = temp.path().join("oversized-custom.jsonl");
+    let mut bytes = Vec::new();
+    for line in [
+        jsonl_line(json!({
+            "record_type": "manifest",
+            "schema_version": "ctx-history-jsonl-v1"
+        })),
+        jsonl_line(json!({
+            "record_type": "source",
+            "source_id": "src",
+            "provider_key": "custom-agent",
+            "source_format": "demo"
+        })),
+        jsonl_line(json!({
+            "record_type": "session",
+            "source_id": "src",
+            "session_id": "run",
+            "started_at": "2026-07-04T13:00:00Z"
+        })),
+        jsonl_line(json!({
+            "record_type": "event",
+            "source_id": "src",
+            "session_id": "run",
+            "event_index": 0,
+            "event_type": "message",
+            "role": "user",
+            "occurred_at": "2026-07-04T13:00:01Z",
+            "preview": "before oversized custom history"
+        })),
+    ] {
+        bytes.extend_from_slice(line.as_bytes());
+    }
+    bytes.extend_from_slice(&oversized_jsonl_line());
+    bytes.extend_from_slice(
+        jsonl_line(json!({
+            "record_type": "event",
+            "source_id": "src",
+            "session_id": "run",
+            "event_index": 1,
+            "event_type": "message",
+            "role": "assistant",
+            "occurred_at": "2026-07-04T13:00:02Z",
+            "preview": "after oversized custom history"
+        }))
+        .as_bytes(),
+    );
+    fs::write(&path, bytes).unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_custom_history_jsonl_v1(
+        &path,
+        &mut store,
+        CustomHistoryJsonlV1ImportOptions {
+            source_path: Some(path.clone()),
+            imported_at: "2026-07-04T13:30:00Z".parse().unwrap(),
+            ..CustomHistoryJsonlV1ImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.skipped, 1);
+    assert_eq!(summary.skipped_events, 1);
+    assert_eq!(summary.imported_sessions, 1);
+    assert_eq!(summary.imported_events, 2);
+    let session_id = provider_session_uuid(
+        CaptureProvider::Custom,
+        &custom_history_internal_session_id("custom-agent", "src", "run"),
+    );
+    let events = store.events_for_session(session_id).unwrap();
+    assert_eq!(events.len(), 2);
+    let rendered = serde_json::to_string(&events).unwrap();
+    assert!(rendered.contains("before oversized custom history"));
+    assert!(rendered.contains("after oversized custom history"));
 }
 
 #[test]
