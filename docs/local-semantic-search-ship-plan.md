@@ -112,6 +112,36 @@ safe to ship by default.
   the next daemon loop must attempt history refresh, preventing semantic
   backlog from starving fresh lexical import.
 
+## Post-Projection-Fix Dogfood Notes
+
+- Lite-turn construction now reads deterministic preview text from an indexed
+  `event_search_lookup` table instead of joining the FTS table by `event_id` or
+  reparsing raw event JSON in the hot path. The real SQLite plan for recent
+  semantic work now uses `idx_events_role_occurred_seq` plus the lookup primary
+  key, rather than scanning all FTS rows.
+- The lookup table is limited to previewable user/assistant messages. On this
+  corpus it contains 426,974 rows: 108,612 user messages and 318,362 assistant
+  messages.
+- A schema-45 lookup-only repair on the real 435k-event store took 1m47s,
+  peaked at 964 MiB RSS, and avoided the 7m46s full FTS rebuild path observed
+  before the repair was targeted.
+- `ctx daemon status --json` on the incomplete real semantic sidecar is now
+  effectively instant: under 0.01s and about 15 MiB RSS.
+- The pathological one-chunk daemon pass no longer hangs before the worker:
+  `ctx daemon run --once --max-chunks 1 --json` completed in 12.9s, peaked at
+  286 MiB RSS, pruned 1,150 stale chunks, and indexed one chunk. This is still
+  dominated by prune plus single-item embedding overhead, so it is not a
+  throughput estimate.
+- The default daemon worker chunk budget now lets the worker use its existing
+  60s budget. A default `ctx daemon run --once --json` pass on the post-migration
+  stale sidecar completed in 65.6s, indexed 1,407 chunks, used about 5.1 cores,
+  and peaked at 8.18 GiB RSS. This is a conservative throughput slice because
+  the sidecar is still invalidating old pre-lookup vectors while indexing new
+  ones.
+- During incomplete bootstrap, eager recent dirty detection is skipped. Recent
+  dirty detection is reserved for the complete/clean incremental path; bootstrap
+  relies on ordered backfill plus bounded prune.
+
 ## Ship Goals
 
 - `ctx setup` starts daemon-owned indexing by default and reports a truthful,
@@ -191,6 +221,9 @@ safe to ship by default.
   standalone semantic documents. They may remain discoverable lexically.
 - Hydrated semantic snippets should come from the lite-turn text range so result
   previews explain why the vector matched.
+- Maintain a normal `event_search_lookup` projection for semantic document
+  assembly. FTS remains the lexical index; semantic by-id/recency work must not
+  join FTS by unindexed columns.
 - Tests:
   - one user + multiple assistant messages before next user becomes one doc
     containing only the user and final assistant message;
@@ -209,11 +242,15 @@ safe to ship by default.
   local model cache is available, and semantic coverage is incomplete, the
   daemon skips history refresh for that pass with reason
   `semantic_bootstrap_in_progress` and runs semantic indexing first.
+- Do not run eager recent dirty detection while semantic coverage is incomplete
+  or dirty work is already queued.
 - Do not expose a daemon runtime-cap product option. Tests and dogfood scripts
   can wrap foreground daemon commands in process-level timeouts, but the daemon
   product behavior is to run until `--once`, failure, or idle exit.
 - Keep the embedder warm within daemon loops.
-- Prefer small, observable capped batches over hidden long-running work.
+- Let default daemon semantic passes use the existing worker time budget; keep
+  peak memory controlled by the adaptive embed policy rather than an artificially
+  tiny per-pass chunk count.
 - Tests:
   - dirty queue drains before historical backfill;
   - a new assistant response updates the existing turn document hash;

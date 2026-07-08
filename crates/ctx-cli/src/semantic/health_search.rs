@@ -245,7 +245,6 @@ fn semantic_status_needs_exact_sidecar_stats(
         return false;
     }
     stats.embedded_items >= searchable_items
-        || !semantic_hybrid_coverage_ready(stats.embedded_items, searchable_items, dirty_items)
 }
 
 fn semantic_hits_for_text_query(

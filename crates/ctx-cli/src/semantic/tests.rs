@@ -618,6 +618,45 @@ mod tests {
     }
 
     #[test]
+    fn prune_ineligible_events_is_bounded_and_advances_cursor() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let docs = write_searchable_store(temp.path(), SEMANTIC_PRUNE_EVENTS_PER_PASS + 1)?;
+        let store = Store::open(database_path(temp.path().to_path_buf()))?;
+        let mut vector_store = SemanticVectorStore::open(&semantic_vector_path(temp.path()))?;
+        let chunks = docs
+            .iter()
+            .map(|doc| {
+                (
+                    test_chunk(doc.event_id, doc.seq, "intentionally-stale"),
+                    test_embedding(1.0, 0.0),
+                )
+            })
+            .collect::<Vec<_>>();
+        vector_store.upsert_chunk_embeddings(&chunks)?;
+        assert_eq!(
+            vector_store.cached_or_exact_stats()?.embedded_items,
+            SEMANTIC_PRUNE_EVENTS_PER_PASS + 1
+        );
+
+        let first = vector_store.prune_ineligible_events(&store)?;
+        assert_eq!(first.queued_stale_events, SEMANTIC_PRUNE_EVENTS_PER_PASS);
+        assert_eq!(
+            vector_store.cached_or_exact_stats()?.embedded_items,
+            1,
+            "first pass should leave the oldest event for the next cursor page"
+        );
+
+        let second = vector_store.prune_ineligible_events(&store)?;
+        assert_eq!(second.queued_stale_events, 1);
+        assert_eq!(vector_store.cached_or_exact_stats()?.embedded_items, 0);
+        assert_eq!(
+            vector_store.dirty_event_count()?,
+            SEMANTIC_PRUNE_EVENTS_PER_PASS + 1
+        );
+        Ok(())
+    }
+
+    #[test]
     fn sqlite_vec0_overfetches_until_unique_events_match_rust_scan() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let mut store = SemanticVectorStore::open(&temp.path().join("vectors.sqlite"))?;

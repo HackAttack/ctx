@@ -82,6 +82,35 @@ impl SemanticVectorStore {
         Ok(stats)
     }
 
+    fn maintenance_state_i64(&self, key: &str) -> Result<Option<i64>> {
+        if !sqlite_table_exists(&self.conn, "semantic_maintenance_state")? {
+            return Ok(None);
+        }
+        let value = self
+            .conn
+            .query_row(
+                "SELECT value FROM semantic_maintenance_state WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(value.and_then(|value| value.parse::<i64>().ok()))
+    }
+
+    fn set_maintenance_state_i64(&self, key: &str, value: i64) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO semantic_maintenance_state (key, value, updated_at_ms)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at_ms = excluded.updated_at_ms
+            "#,
+            params![key, value.to_string(), utc_now().timestamp_millis()],
+        )?;
+        Ok(())
+    }
+
     fn dirty_event_count(&self) -> Result<usize> {
         if !sqlite_table_exists(&self.conn, "semantic_dirty_events")? {
             return Ok(0);
@@ -369,33 +398,22 @@ impl SemanticVectorStore {
         if !sqlite_table_exists(&self.conn, "event_embedding_chunks")? {
             return Ok(SemanticPruneOutcome::default());
         }
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT event_id, MIN(source_text_sha256), COUNT(DISTINCT source_text_sha256)
-            FROM event_embedding_chunks
-            WHERE model_key = ?1
-            GROUP BY event_id
-            ORDER BY MAX(event_seq) DESC
-            "#,
-        )?;
-        let mut rows = stmt.query(params![SEMANTIC_MODEL_KEY])?;
-        let mut sidecar_events = Vec::<(Uuid, String, bool)>::new();
-        while let Some(row) = rows.next()? {
-            let event_id_text = row.get::<_, String>(0)?;
-            if let Ok(event_id) = Uuid::parse_str(&event_id_text) {
-                let source_text_hash = row.get::<_, String>(1)?;
-                let hash_versions = row.get::<_, i64>(2)?.max(0);
-                sidecar_events.push((event_id, source_text_hash, hash_versions == 1));
-            }
+        let mut sidecar_events =
+            self.prune_candidate_events(self.maintenance_state_i64("prune_event_seq_before")?)?;
+        if sidecar_events.is_empty()
+            && self
+                .maintenance_state_i64("prune_event_seq_before")?
+                .is_some()
+        {
+            sidecar_events = self.prune_candidate_events(None)?;
         }
-        drop(rows);
-        drop(stmt);
 
+        let next_cursor = sidecar_events.last().map(|(_, _, _, event_seq)| *event_seq);
         let mut outcome = SemanticPruneOutcome::default();
         for chunk in sidecar_events.chunks(SEMANTIC_PRUNE_EVENT_BATCH) {
             let event_ids = chunk
                 .iter()
-                .map(|(event_id, _, _)| *event_id)
+                .map(|(event_id, _, _, _)| *event_id)
                 .collect::<Vec<_>>();
             let eligible_event_ids = store.semantic_eligible_event_ids(&event_ids)?;
             let current_docs = store.event_embedding_documents_by_ids(&event_ids)?;
@@ -405,7 +423,7 @@ impl SemanticVectorStore {
                 .collect::<HashMap<_, _>>();
             let mut delete_event_ids = Vec::new();
             let mut stale_docs = Vec::new();
-            for (event_id, stored_hash, single_hash) in chunk {
+            for (event_id, stored_hash, single_hash, _) in chunk {
                 let Some(doc) = current_by_id.get(event_id) else {
                     delete_event_ids.push(*event_id);
                     continue;
@@ -430,16 +448,47 @@ impl SemanticVectorStore {
                     .saturating_add(self.enqueue_dirty_documents(&stale_docs, "stale_hash")?);
             }
         }
-
-        let scrubbed_chunk_text = self.conn.execute(
-            "UPDATE event_embedding_chunks SET chunk_text = '' WHERE model_key = ?1 AND chunk_text != ''",
-            params![SEMANTIC_MODEL_KEY],
-        )?;
-        self.refresh_cached_stats()?;
-        if scrubbed_chunk_text > 0 {
-            self.compact_after_plaintext_scrub()?;
+        if let Some(next_cursor) = next_cursor {
+            self.set_maintenance_state_i64("prune_event_seq_before", next_cursor)?;
         }
+        self.refresh_cached_stats()?;
         Ok(outcome)
+    }
+
+    fn prune_candidate_events(
+        &self,
+        before_event_seq: Option<i64>,
+    ) -> Result<Vec<(Uuid, String, bool, i64)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT event_id,
+                   MIN(source_text_sha256),
+                   COUNT(DISTINCT source_text_sha256),
+                   MAX(event_seq)
+            FROM event_embedding_chunks
+            WHERE model_key = ?1
+              AND (?2 IS NULL OR event_seq < ?2)
+            GROUP BY event_id
+            ORDER BY MAX(event_seq) DESC
+            LIMIT ?3
+            "#,
+        )?;
+        let mut rows = stmt.query(params![
+            SEMANTIC_MODEL_KEY,
+            before_event_seq,
+            SEMANTIC_PRUNE_EVENTS_PER_PASS as i64
+        ])?;
+        let mut sidecar_events = Vec::<(Uuid, String, bool, i64)>::new();
+        while let Some(row) = rows.next()? {
+            let event_id_text = row.get::<_, String>(0)?;
+            if let Ok(event_id) = Uuid::parse_str(&event_id_text) {
+                let source_text_hash = row.get::<_, String>(1)?;
+                let hash_versions = row.get::<_, i64>(2)?.max(0);
+                let event_seq = row.get::<_, i64>(3)?.max(0);
+                sidecar_events.push((event_id, source_text_hash, hash_versions == 1, event_seq));
+            }
+        }
+        Ok(sidecar_events)
     }
 
     fn delete_embedding_chunks_for_event_ids(&mut self, event_ids: &[Uuid]) -> Result<usize> {

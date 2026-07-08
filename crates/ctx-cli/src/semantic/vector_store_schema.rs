@@ -175,6 +175,11 @@ impl SemanticVectorStore {
             );
             CREATE INDEX IF NOT EXISTS idx_semantic_dirty_events_model_priority
                 ON semantic_dirty_events(model_key, priority_seq, queued_at_ms);
+            CREATE TABLE IF NOT EXISTS semantic_maintenance_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
             PRAGMA user_version = 5;
             "#,
         )?;

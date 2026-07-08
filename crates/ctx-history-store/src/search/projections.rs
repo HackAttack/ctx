@@ -13,7 +13,7 @@ use crate::connection::{
     parse_optional_text_enum, parse_optional_uuid, parse_text_enum, parse_uuid,
 };
 use crate::records::{record_from_row, record_select_sql};
-use crate::schema::ddl::table_exists;
+use crate::schema::ddl::{table_exists, table_has_column};
 use crate::search::analyzer::{scriptgram_index_text, scriptgram_match_query};
 use crate::{Result, Store};
 
@@ -98,11 +98,17 @@ impl Store {
     }
 
     pub fn event_search_projection_needs_backfill(&self) -> Result<bool> {
-        if !table_exists(&self.conn, "event_search")? {
+        let has_event_search = table_exists(&self.conn, "event_search")?;
+        let has_event_lookup = event_search_lookup_table_ready(&self.conn)?;
+        if !has_event_search && !has_event_lookup {
             return Ok(false);
         }
-        Ok(table_row_count(&self.conn, "events")? > 0
-            && table_row_count(&self.conn, "event_search")? == 0)
+        let events = table_row_count(&self.conn, "events")?;
+        Ok(events > 0
+            && ((has_event_search && table_row_count(&self.conn, "event_search")? == 0)
+                || (has_event_lookup
+                    && table_row_count(&self.conn, "event_search_lookup")? == 0
+                    && event_search_lookup_candidate_count(&self.conn)? > 0)))
     }
 
     pub fn search_event_hits(&self, query: &str, limit: usize) -> Result<Vec<EventSearchHit>> {
@@ -228,19 +234,19 @@ impl Store {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
             let event_id = parse_uuid(row.get::<_, String>(0)?)?;
-            let payload_json = row.get::<_, String>(8)?;
+            let preview_text = row.get::<_, String>(8)?;
             let source_metadata_json = row.get::<_, Option<String>>(15)?;
             let source_identity = event_search_source_identity(source_metadata_json.as_deref())?;
             let redaction_state = row.get::<_, String>(9)?;
-            let assistant_payload_json = row.get::<_, Option<String>>(19)?;
+            let assistant_preview_text = row.get::<_, Option<String>>(19)?;
             let assistant_redaction_state = row.get::<_, Option<String>>(20)?;
             let preview = chunk_ranges
                 .get(&event_id)
                 .map(|(start_char, end_char)| {
                     semantic_lite_turn_source_chunk(
-                        &payload_json,
+                        &preview_text,
                         &redaction_state,
-                        assistant_payload_json.as_deref(),
+                        assistant_preview_text.as_deref(),
                         assistant_redaction_state.as_deref(),
                         *start_char,
                         *end_char,
@@ -272,7 +278,7 @@ impl Store {
                 session_is_primary: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
                 cwd: row.get(13)?,
                 raw_source_path: row.get(14)?,
-                cursor: event_search_cursor(&payload_json, source_metadata_json.as_deref())?,
+                cursor: event_search_cursor(&preview_text, source_metadata_json.as_deref())?,
                 record_title: row.get(16)?,
                 record_kind: row.get(17)?,
                 record_workspace: row.get(18)?,
@@ -293,6 +299,9 @@ impl Store {
             r#"
             SELECT anchor.id
             FROM events AS anchor
+            JOIN event_search_lookup AS anchor_search
+              ON anchor_search.event_id = anchor.id
+             AND length(trim(anchor_search.preview_text)) > 0
             WHERE anchor.id IN ({placeholders})
               AND {}
             "#,
@@ -380,23 +389,20 @@ impl Store {
             .map(|_| {
                 r#"
                 (
-                    lower(anchor.payload_json) LIKE ? ESCAPE '\'
+                    lower(anchor_search.preview_text) LIKE ? ESCAPE '\'
                     OR EXISTS (
                         SELECT 1
                         FROM events AS candidate
+                        JOIN event_search_lookup AS candidate_search
+                          ON candidate_search.event_id = candidate.id
+                         AND length(trim(candidate_search.preview_text)) > 0
                         WHERE candidate.event_type = 'message'
                           AND candidate.role = 'assistant'
                           AND candidate.deleted_at_ms IS NULL
                           AND candidate.visibility != 'withheld'
                           AND candidate.sync_state != 'withheld'
                           AND length(trim(candidate.payload_json)) > 2
-                          AND EXISTS (
-                              SELECT 1
-                              FROM event_search AS candidate_search
-                              WHERE candidate_search.event_id = candidate.id
-                                AND length(trim(candidate_search.preview_text)) > 0
-                          )
-                          AND lower(candidate.payload_json) LIKE ? ESCAPE '\'
+                          AND lower(candidate_search.preview_text) LIKE ? ESCAPE '\'
                           AND (
                                 (anchor.run_id IS NOT NULL AND candidate.run_id = anchor.run_id)
                                 OR (
@@ -600,12 +606,27 @@ pub(crate) fn rebuild_search_projection(conn: &Connection) -> Result<()> {
         conn.execute("DELETE FROM ctx_history_search_scriptgram", [])?;
     }
     let has_event_search = table_exists(conn, "event_search")?;
+    if event_search_lookup_table_malformed(conn)? {
+        conn.execute("DROP TABLE event_search_lookup", [])?;
+    }
+    let has_event_lookup = event_search_lookup_table_ready(conn)?;
+    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
     if has_event_search {
         conn.execute("DELETE FROM event_search", [])?;
-        if event_scriptgram_table_ready(conn)? {
-            conn.execute("DELETE FROM event_search_scriptgram", [])?;
-        }
-        populate_event_search_projection(conn)?;
+    }
+    if has_event_scriptgram {
+        conn.execute("DELETE FROM event_search_scriptgram", [])?;
+    }
+    if has_event_lookup {
+        conn.execute("DELETE FROM event_search_lookup", [])?;
+    }
+    if has_event_search || has_event_lookup {
+        populate_event_search_projection(
+            conn,
+            has_event_search,
+            has_event_lookup,
+            has_event_scriptgram,
+        )?;
     }
     if table_exists(conn, "artifact_search")? {
         conn.execute("DELETE FROM artifact_search", [])?;
@@ -763,10 +784,23 @@ fn ensure_search_projection_initialized(conn: &Connection) -> Result<()> {
     if event_scriptgram_table_ready(conn)? {
         projection_rows += table_row_count(conn, "event_search_scriptgram")?;
     }
+    let event_lookup_rows = if event_search_lookup_table_ready(conn)? {
+        table_row_count(conn, "event_search_lookup")?
+    } else {
+        0
+    };
+    projection_rows += event_lookup_rows;
     if table_exists(conn, "artifact_search")? {
         projection_rows += table_row_count(conn, "artifact_search")?;
     }
     if projection_rows > 0 {
+        if event_search_lookup_table_ready(conn)?
+            && event_lookup_rows == 0
+            && event_search_lookup_candidate_count(conn)? > 0
+        {
+            rebuild_event_search_lookup_projection(conn)?;
+            return Ok(());
+        }
         if cached_semantic_searchable_item_count(conn)?.is_none() {
             refresh_semantic_searchable_item_stats(conn)?;
         }
@@ -790,6 +824,7 @@ fn table_row_count(conn: &Connection, table: &str) -> Result<i64> {
         | "events"
         | "event_search"
         | "event_search_scriptgram"
+        | "event_search_lookup"
         | "history_records"
         | "ctx_history_search"
         | "ctx_history_search_scriptgram" => {}
@@ -799,8 +834,50 @@ fn table_row_count(conn: &Connection, table: &str) -> Result<i64> {
     Ok(conn.query_row(&sql, [], |row| row.get(0))?)
 }
 
+fn event_search_lookup_table_ready(conn: &Connection) -> Result<bool> {
+    Ok(table_exists(conn, "event_search_lookup")?
+        && table_has_column(conn, "event_search_lookup", "history_record_id")?
+        && table_has_column(conn, "event_search_lookup", "preview_text")?)
+}
+
+fn event_search_lookup_table_malformed(conn: &Connection) -> Result<bool> {
+    Ok(table_exists(conn, "event_search_lookup")? && !event_search_lookup_table_ready(conn)?)
+}
+
+fn event_search_lookup_candidate_count(conn: &Connection) -> Result<i64> {
+    if table_exists(conn, "event_search")? && table_row_count(conn, "event_search")? > 0 {
+        return Ok(conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM event_search
+            WHERE rank_bucket = 'message'
+              AND role IN ('user', 'assistant')
+            "#,
+            [],
+            |row| row.get::<_, i64>(0),
+        )?);
+    }
+    if !table_exists(conn, "events")? {
+        return Ok(0);
+    }
+    Ok(conn.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM events
+        WHERE event_type = 'message'
+          AND role IN ('user', 'assistant')
+          AND deleted_at_ms IS NULL
+          AND visibility != 'withheld'
+          AND sync_state != 'withheld'
+          AND length(trim(payload_json)) > 2
+        "#,
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+}
+
 fn semantic_searchable_item_count_exact(conn: &Connection) -> Result<usize> {
-    if !table_exists(conn, "event_search")? {
+    if !event_search_lookup_table_ready(conn)? {
         return Ok(0);
     }
     let sql = format!(
@@ -947,12 +1024,6 @@ fn semantic_lite_turn_anchor_eligible_predicate() -> &'static str {
     AND anchor.visibility != 'withheld'
     AND anchor.sync_state != 'withheld'
     AND length(trim(anchor.payload_json)) > 2
-    AND EXISTS (
-        SELECT 1
-        FROM event_search AS anchor_search
-        WHERE anchor_search.event_id = anchor.id
-          AND length(trim(anchor_search.preview_text)) > 0
-    )
     "#
 }
 
@@ -968,9 +1039,12 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
                    anchor.occurred_at_ms AS occurred_at_ms,
                    anchor.event_type AS event_type,
                    anchor.role AS role,
-                   anchor.payload_json AS payload_json,
+                   anchor_search.preview_text AS preview_text,
                    anchor.capture_source_id AS capture_source_id
             FROM events AS anchor
+            JOIN event_search_lookup AS anchor_search
+              ON anchor_search.event_id = anchor.id
+             AND length(trim(anchor_search.preview_text)) > 0
             {anchor_tail}
         ),
         semantic_lite_turn_docs AS (
@@ -984,7 +1058,7 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
                    anchor.event_type AS event_type,
                    anchor.role AS role,
                    '{SEMANTIC_LITE_TURN_RANK_BUCKET}' AS rank_bucket,
-                   anchor.payload_json AS user_payload_json,
+                   anchor.preview_text AS user_payload_json,
                    'safe_preview' AS redaction_state,
                    COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider) AS provider,
                    COALESCE(s.external_session_id, rs.external_session_id) AS session_external_session_id,
@@ -998,10 +1072,8 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
                    wr.title AS record_title,
                    wr.kind AS record_kind,
                    wr.workspace AS record_workspace,
-                   assistant.payload_json AS assistant_payload_json,
-                   CASE WHEN assistant.id IS NULL THEN NULL ELSE 'safe_preview' END AS assistant_redaction_state,
-                   anchor.payload_json AS user_preview_text,
-                   assistant.payload_json AS assistant_preview_text
+                   assistant_search.preview_text AS assistant_payload_json,
+                   CASE WHEN assistant_search.event_id IS NULL THEN NULL ELSE 'safe_preview' END AS assistant_redaction_state
             FROM semantic_anchor_page AS anchor
             LEFT JOIN runs AS r ON r.id = anchor.run_id
             LEFT JOIN sessions AS s ON s.id = anchor.session_id
@@ -1056,7 +1128,7 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
                       AND length(trim(candidate.payload_json)) > 2
                       AND EXISTS (
                           SELECT 1
-                          FROM event_search AS candidate_search
+                          FROM event_search_lookup AS candidate_search
                           WHERE candidate_search.event_id = candidate.id
                             AND length(trim(candidate_search.preview_text)) > 0
                       )
@@ -1087,7 +1159,7 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
                       AND length(trim(candidate.payload_json)) > 2
                       AND EXISTS (
                           SELECT 1
-                          FROM event_search AS candidate_search
+                          FROM event_search_lookup AS candidate_search
                           WHERE candidate_search.event_id = candidate.id
                             AND length(trim(candidate_search.preview_text)) > 0
                       )
@@ -1106,6 +1178,9 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
                     LIMIT 1
                 )
             END
+            LEFT JOIN event_search_lookup AS assistant_search
+              ON assistant_search.event_id = assistant.id
+             AND length(trim(assistant_search.preview_text)) > 0
             LEFT JOIN capture_sources AS event_source ON event_source.id = anchor.capture_source_id
             LEFT JOIN capture_sources AS session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
             LEFT JOIN capture_sources AS run_source ON run_source.id = r.source_id
@@ -1115,7 +1190,20 @@ fn semantic_lite_turn_cte_sql(anchor_tail: &str) -> String {
     )
 }
 
-fn populate_event_search_projection(conn: &Connection) -> Result<()> {
+pub(crate) fn rebuild_event_search_lookup_projection(conn: &Connection) -> Result<()> {
+    if !event_search_lookup_table_ready(conn)? {
+        return Ok(());
+    }
+    conn.execute("DELETE FROM event_search_lookup", [])?;
+    populate_event_search_projection(conn, false, true, false)
+}
+
+fn populate_event_search_projection(
+    conn: &Connection,
+    include_event_search: bool,
+    include_event_lookup: bool,
+    include_event_scriptgram: bool,
+) -> Result<()> {
     let mut stmt = conn.prepare(
         r#"
         SELECT e.id,
@@ -1143,19 +1231,33 @@ fn populate_event_search_projection(conn: &Connection) -> Result<()> {
             row.get::<_, String>(6)?,
         ))
     })?;
-    let mut insert_event_search = conn.prepare(
-        r#"
-        INSERT INTO event_search
-        (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-        "#,
-    )?;
-    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
-    let mut insert_event_scriptgram = if has_event_scriptgram {
+    let mut insert_event_search = if include_event_search {
+        Some(conn.prepare(
+            r#"
+            INSERT INTO event_search
+            (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )?)
+    } else {
+        None
+    };
+    let mut insert_event_scriptgram = if include_event_scriptgram {
         Some(conn.prepare(
             r#"
             INSERT INTO event_search_scriptgram
             (event_id, history_record_id, session_id, role, token_text, rank_bucket)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )?)
+    } else {
+        None
+    };
+    let mut insert_event_lookup = if include_event_lookup {
+        Some(conn.prepare(
+            r#"
+            INSERT INTO event_search_lookup
+            (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             "#,
         )?)
@@ -1179,24 +1281,40 @@ fn populate_event_search_projection(conn: &Connection) -> Result<()> {
         if preview.trim().is_empty() {
             continue;
         }
-        insert_event_search.execute(params![
-            event_id,
-            history_record_id,
-            session_id,
-            role.map(|role| role.as_str()),
-            preview,
-            event_type.as_str()
-        ])?;
+        let role = role.map(|role| role.as_str());
+        let rank_bucket = event_type.as_str();
+        if let Some(insert_event_search) = insert_event_search.as_mut() {
+            insert_event_search.execute(params![
+                &event_id,
+                &history_record_id,
+                &session_id,
+                role,
+                &preview,
+                rank_bucket
+            ])?;
+        }
         if let Some(insert_event_scriptgram) = insert_event_scriptgram.as_mut() {
             let token_text = scriptgram_index_text(&preview);
             if !token_text.is_empty() {
                 insert_event_scriptgram.execute(params![
-                    event_id,
-                    history_record_id,
-                    session_id,
-                    role.map(|role| role.as_str()),
+                    &event_id,
+                    &history_record_id,
+                    &session_id,
+                    role,
                     token_text,
-                    event_type.as_str()
+                    rank_bucket
+                ])?;
+            }
+        }
+        if semantic_lookup_event_parts(event_type, role) {
+            if let Some(insert_event_lookup) = insert_event_lookup.as_mut() {
+                insert_event_lookup.execute(params![
+                    &event_id,
+                    &history_record_id,
+                    &session_id,
+                    role,
+                    &preview,
+                    rank_bucket
                 ])?;
             }
         }
@@ -1208,16 +1326,7 @@ pub(crate) fn insert_event_search_projection_for_event(
     conn: &Connection,
     event: &Event,
 ) -> Result<()> {
-    if !table_exists(conn, "event_search")? {
-        return Ok(());
-    }
-    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
-    insert_event_search_projection_for_event_id_with_sidecar(
-        conn,
-        event.id,
-        event,
-        has_event_scriptgram,
-    )
+    insert_event_search_projection_for_event_id(conn, event.id, event)
 }
 
 pub(crate) fn upsert_event_search_projection_for_event(
@@ -1225,35 +1334,43 @@ pub(crate) fn upsert_event_search_projection_for_event(
     event_id: Uuid,
     event: &Event,
 ) -> Result<()> {
-    if !table_exists(conn, "event_search")? {
+    let has_event_search = table_exists(conn, "event_search")?;
+    let has_event_lookup = table_exists(conn, "event_search_lookup")?;
+    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
+    if !has_event_search && !has_event_lookup && !has_event_scriptgram {
         return Ok(());
     }
-    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
-    conn.execute(
-        "DELETE FROM event_search WHERE event_id = ?1",
-        params![event_id.to_string()],
-    )?;
+    let event_id_text = event_id.to_string();
+    if has_event_search {
+        conn.execute(
+            "DELETE FROM event_search WHERE event_id = ?1",
+            params![&event_id_text],
+        )?;
+    }
     if has_event_scriptgram {
         conn.execute(
             "DELETE FROM event_search_scriptgram WHERE event_id = ?1",
-            params![event_id.to_string()],
+            params![&event_id_text],
         )?;
     }
-    insert_event_search_projection_for_event_id_with_sidecar(
-        conn,
-        event_id,
-        event,
-        has_event_scriptgram,
-    )
+    if has_event_lookup {
+        conn.execute(
+            "DELETE FROM event_search_lookup WHERE event_id = ?1",
+            params![&event_id_text],
+        )?;
+    }
+    insert_event_search_projection_for_event_id(conn, event_id, event)
 }
 
-fn insert_event_search_projection_for_event_id_with_sidecar(
+pub(crate) fn insert_event_search_projection_for_event_id(
     conn: &Connection,
     event_id: Uuid,
     event: &Event,
-    has_event_scriptgram: bool,
 ) -> Result<()> {
-    if !table_exists(conn, "event_search")? {
+    let has_event_search = table_exists(conn, "event_search")?;
+    let has_event_lookup = table_exists(conn, "event_search_lookup")?;
+    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
+    if !has_event_search && !has_event_lookup && !has_event_scriptgram {
         return Ok(());
     }
     if !event_searchable_event_parts(
@@ -1276,21 +1393,28 @@ fn insert_event_search_projection_for_event_id_with_sidecar(
     if preview.trim().is_empty() {
         return Ok(());
     }
-    conn.prepare_cached(
-        r#"
-        INSERT INTO event_search
-        (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-        "#,
-    )?
-    .execute(params![
-        event_id.to_string(),
-        optional_uuid_string(event.history_record_id),
-        optional_uuid_string(event.session_id),
-        event.role.map(|role| role.as_str()),
-        preview,
-        event.event_type.as_str(),
-    ])?;
+    let event_id = event_id.to_string();
+    let history_record_id = optional_uuid_string(event.history_record_id);
+    let session_id = optional_uuid_string(event.session_id);
+    let role = event.role.map(|role| role.as_str());
+    let rank_bucket = event.event_type.as_str();
+    if has_event_search {
+        conn.prepare_cached(
+            r#"
+            INSERT INTO event_search
+            (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )?
+        .execute(params![
+            &event_id,
+            &history_record_id,
+            &session_id,
+            role,
+            &preview,
+            rank_bucket,
+        ])?;
+    }
     if has_event_scriptgram {
         let token_text = scriptgram_index_text(&preview);
         if !token_text.is_empty() {
@@ -1302,16 +1426,37 @@ fn insert_event_search_projection_for_event_id_with_sidecar(
                 "#,
             )?
             .execute(params![
-                event_id.to_string(),
-                optional_uuid_string(event.history_record_id),
-                optional_uuid_string(event.session_id),
-                event.role.map(|role| role.as_str()),
+                &event_id,
+                &history_record_id,
+                &session_id,
+                role,
                 token_text,
-                event.event_type.as_str(),
+                rank_bucket,
             ])?;
         }
     }
+    if has_event_lookup && semantic_lookup_event_parts(event.event_type, role) {
+        conn.prepare_cached(
+            r#"
+            INSERT INTO event_search_lookup
+            (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )?
+        .execute(params![
+            &event_id,
+            &history_record_id,
+            &session_id,
+            role,
+            &preview,
+            rank_bucket,
+        ])?;
+    }
     Ok(())
+}
+
+fn semantic_lookup_event_parts(event_type: EventType, role: Option<&str>) -> bool {
+    event_type == EventType::Message && matches!(role, Some("user" | "assistant"))
 }
 
 pub(crate) fn semantic_searchable_event_count_from_stored_event(
@@ -1626,20 +1771,20 @@ pub(crate) fn fts_match_query(query: &str) -> Option<String> {
 }
 
 fn event_search_cursor(
-    payload_json: &str,
+    payload_json_or_preview: &str,
     source_metadata_json: Option<&str>,
 ) -> rusqlite::Result<Option<String>> {
-    let payload: serde_json::Value = serde_json::from_str(payload_json)
-        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
-    if let Some(cursor) = payload.get("cursor").and_then(|value| value.as_str()) {
-        return Ok(Some(cursor.to_owned()));
-    }
-    if let Some(cursor) = payload
-        .get("body")
-        .and_then(|body| body.get("cursor"))
-        .and_then(|value| value.as_str())
-    {
-        return Ok(Some(cursor.to_owned()));
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(payload_json_or_preview) {
+        if let Some(cursor) = payload.get("cursor").and_then(|value| value.as_str()) {
+            return Ok(Some(cursor.to_owned()));
+        }
+        if let Some(cursor) = payload
+            .get("body")
+            .and_then(|body| body.get("cursor"))
+            .and_then(|value| value.as_str())
+        {
+            return Ok(Some(cursor.to_owned()));
+        }
     }
 
     let Some(source_metadata_json) = source_metadata_json else {
@@ -1658,11 +1803,11 @@ fn event_search_cursor(
 fn event_embedding_document_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<EventEmbeddingDocument> {
-    let payload_json: String = row.get(8)?;
+    let preview_text: String = row.get(8)?;
     let redaction_state: String = row.get(9)?;
     let source_metadata_json = row.get::<_, Option<String>>(15)?;
     let source_identity = event_search_source_identity(source_metadata_json.as_deref())?;
-    let assistant_payload_json = row.get::<_, Option<String>>(19)?;
+    let assistant_preview_text = row.get::<_, Option<String>>(19)?;
     let assistant_redaction_state = row.get::<_, Option<String>>(20)?;
     Ok(EventEmbeddingDocument {
         event_id: parse_uuid(row.get::<_, String>(0)?)?,
@@ -1683,38 +1828,35 @@ fn event_embedding_document_from_row(
         record_kind: row.get(17)?,
         record_workspace: row.get(18)?,
         text: semantic_lite_turn_source_text(
-            &payload_json,
+            &preview_text,
             &redaction_state,
-            assistant_payload_json.as_deref(),
+            assistant_preview_text.as_deref(),
             assistant_redaction_state.as_deref(),
         )?,
     })
 }
 
 fn event_semantic_source_text(
-    payload_json: &str,
+    preview_text: &str,
     redaction_state: &str,
 ) -> rusqlite::Result<String> {
     let redaction = parse_text_enum::<RedactionState>(redaction_state.to_owned())?;
     if matches!(redaction, RedactionState::Raw | RedactionState::Withheld) {
         return Ok("raw event payload withheld".to_owned());
     }
-    let payload: serde_json::Value = serde_json::from_str(payload_json)
-        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
-    let preview = event_payload_text_preview(&payload).unwrap_or_default();
-    Ok(local_preview(&preview, SEMANTIC_TURN_TEXT_MAX_CHARS))
+    Ok(local_preview(preview_text, SEMANTIC_TURN_TEXT_MAX_CHARS))
 }
 
 fn semantic_lite_turn_source_text(
-    user_payload_json: &str,
+    user_preview_text: &str,
     user_redaction_state: &str,
-    assistant_payload_json: Option<&str>,
+    assistant_preview_text: Option<&str>,
     assistant_redaction_state: Option<&str>,
 ) -> rusqlite::Result<String> {
-    let user_text = event_semantic_source_text(user_payload_json, user_redaction_state)?;
+    let user_text = event_semantic_source_text(user_preview_text, user_redaction_state)?;
     let mut sections = vec![format!("user:\n{}", user_text.trim())];
     if let (Some(payload_json), Some(redaction_state)) =
-        (assistant_payload_json, assistant_redaction_state)
+        (assistant_preview_text, assistant_redaction_state)
     {
         let assistant_text = event_semantic_source_text(payload_json, redaction_state)?;
         if !assistant_text.trim().is_empty() {
@@ -1728,9 +1870,9 @@ fn semantic_lite_turn_source_text(
 }
 
 fn semantic_lite_turn_source_chunk(
-    payload_json: &str,
+    preview_text: &str,
     redaction_state: &str,
-    assistant_payload_json: Option<&str>,
+    assistant_preview_text: Option<&str>,
     assistant_redaction_state: Option<&str>,
     start_char: usize,
     end_char: usize,
@@ -1739,9 +1881,9 @@ fn semantic_lite_turn_source_chunk(
         return Ok(String::new());
     }
     let text = semantic_lite_turn_source_text(
-        payload_json,
+        preview_text,
         redaction_state,
-        assistant_payload_json,
+        assistant_preview_text,
         assistant_redaction_state,
     )?;
     Ok(text

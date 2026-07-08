@@ -353,11 +353,16 @@ fn semantic_bootstrap_should_run_first(
         return Ok(false);
     }
     let store = open_existing_store_read_only(&db_path, "ctx daemon semantic bootstrap")?;
-    let _ = queue_recent_semantic_work(data_root, &store, "daemon_recent");
     let report = semantic_worker_report(data_root, Some(&store))?;
     Ok(report.searchable_items > 0
         && report.queued_items_estimate > 0
         && report.model_cache_available)
+}
+
+fn semantic_report_should_queue_recent_work(report: &SemanticWorkerReport) -> bool {
+    report.searchable_items > 0
+        && report.embedded_items >= report.searchable_items
+        && report.dirty_items == 0
 }
 
 fn daemon_semantic_job_did_work(value: &Value) -> bool {
@@ -546,8 +551,12 @@ fn run_daemon_semantic_job(
     }
 
     let store = open_existing_store_read_only(&db_path, "ctx daemon semantic job")?;
-    let _ = queue_recent_semantic_work(data_root, &store, "daemon_recent");
-    let before = semantic_worker_report(data_root, Some(&store))?;
+    let mut before = semantic_worker_report(data_root, Some(&store))?;
+    if semantic_report_should_queue_recent_work(&before)
+        && queue_recent_semantic_work(data_root, &store, "daemon_recent").unwrap_or(0) > 0
+    {
+        before = semantic_worker_report(data_root, Some(&store))?;
+    }
     if before.searchable_items == 0 {
         return Ok(daemon_semantic_job_json(
             "empty",

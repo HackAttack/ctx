@@ -369,6 +369,15 @@ CREATE TABLE IF NOT EXISTS events (
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS event_search_lookup (
+    event_id TEXT PRIMARY KEY NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    history_record_id TEXT REFERENCES history_records(id),
+    session_id TEXT REFERENCES sessions(id),
+    role TEXT CHECK (role IS NULL OR role IN ('user', 'assistant', 'system', 'tool', 'unknown')),
+    preview_text TEXT NOT NULL,
+    rank_bucket TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS vcs_changes (
     id TEXT PRIMARY KEY NOT NULL,
     vcs_workspace_id TEXT NOT NULL REFERENCES vcs_workspaces(id),

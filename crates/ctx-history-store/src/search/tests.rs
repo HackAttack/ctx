@@ -672,6 +672,14 @@ fn semantic_embedding_documents_use_user_assistant_lite_turns() {
         store.upsert_event(event).unwrap();
     }
 
+    let lookup_rows = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM event_search_lookup", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert_eq!(lookup_rows, 2);
+
     assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 1);
     store
         .refresh_event_embedding_document_count_cache()
