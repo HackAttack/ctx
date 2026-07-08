@@ -138,6 +138,16 @@ safe to ship by default.
   and peaked at 8.18 GiB RSS. This is a conservative throughput slice because
   the sidecar is still invalidating old pre-lookup vectors while indexing new
   ones.
+- A cleaner isolated run copied the real schema-45 `work.sqlite` to a fresh
+  data root with no vector sidecar. The copy took 45.8s. Three default daemon
+  passes then indexed 4,720 chunks / 2,418 semantic items in 183.8s total,
+  with zero dirty churn, history refresh skipped for semantic bootstrap, and
+  peak RSS between 8.18 and 8.25 GiB. Linear extrapolation from this clean
+  slice puts the 108,612-item corpus around 2.3 hours of daemon work, with a
+  roughly 1 GiB final vector sidecar if the observed chunk/item and bytes/chunk
+  ratios hold. This replaces the stale-sidecar pass as the best current
+  initial-backfill estimate, though it is still a 2.2% sample rather than a
+  completed full backfill.
 - During incomplete bootstrap, eager recent dirty detection is skipped. Recent
   dirty detection is reserved for the complete/clean incremental path; bootstrap
   relies on ordered backfill plus bounded prune.
@@ -159,8 +169,9 @@ safe to ship by default.
   ranking.
 - Local dogfood on this corpus meets:
   - lexical initial refresh: under 5 minutes;
-  - semantic initial backfill: acceptable as multi-hour daemon work if it is
-    resumable, observable, and lower priority than fresh incremental work;
+  - semantic initial backfill: target 2-4 hours on this 64 GB power-user
+    corpus, acceptable as daemon work if it is resumable, observable, and lower
+    priority than fresh incremental work;
   - lexical incremental p95: under 10 seconds;
   - semantic incremental p95: under 60 seconds after model cache is available;
   - warm hybrid search p95: under 1 second;
