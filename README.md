@@ -13,8 +13,19 @@ ctx indexes those logs into SQLite on your machine, then gives current and futur
 
 ## Install and set up ctx
 
+macOS, Linux, and FreeBSD:
 ```bash
 curl -fsSL https://ctx.rs/install | sh
+```
+
+Windows PowerShell:
+```
+irm https://ctx.rs/install.ps1 | iex
+```
+
+or prompt your agent:
+```
+Please install and setup ctx CLI (see github.com/ctxrs/ctx)
 ```
 
 ## 50x more token-efficient than raw transcript search
