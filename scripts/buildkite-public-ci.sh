@@ -9,6 +9,11 @@ export CTX_BAZELISK_VERSION="${CTX_BAZELISK_VERSION:-v1.29.0}"
 export CTX_GO_VERSION="${CTX_GO_VERSION:-1.22.12}"
 export CTX_RUST_TOOLCHAIN="${CTX_RUST_TOOLCHAIN:-1.88.0}"
 
+check_args=("$@")
+if (( "${#check_args[@]}" == 0 )); then
+  check_args=(--mode=ci)
+fi
+
 run_apt_get() {
   if command -v sudo >/dev/null 2>&1; then
     sudo "$@"
@@ -139,4 +144,4 @@ install_go
 install_rust
 configure_bazelisk
 print_tool_versions
-bash scripts/check.sh --mode=ci
+bash scripts/check.sh "${check_args[@]}"

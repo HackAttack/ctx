@@ -8,17 +8,110 @@ env:
   CTX_RUST_TOOLCHAIN: "1.88.0"
 
 steps:
-  - label: ":bazel: public smoke gate"
-    key: "public-smoke"
+  - label: ":bazel: public static gate"
+    key: "public-static"
     command: |
-      bash scripts/buildkite-public-ci.sh
+      bash scripts/buildkite-public-ci.sh -- test \
+        //:buildkite_pipeline_check \
+        //:cargo_fmt_check \
+        //:docs_check \
+        //:installer_path_smoke \
+        //:loc_check \
+        //:package_audit_fast \
+        //:sdk_contract_checks \
+        //:source_diff_check \
+        --config=ci
     agents:
       queue: "default"
-    env:
-      CARGO_BUILD_JOBS: "1"
-      RUST_TEST_THREADS: "1"
-    concurrency: 1
-    concurrency_group: "ctx/public-smoke/default-hosted"
+    timeout_in_minutes: 60
+    artifact_paths:
+      - "bazel-testlogs/**/*.log"
+      - "bazel-testlogs/**/test.outputs/**/*"
+      - "bazel-testlogs/**/*.zip"
+      - "target/ctx-artifacts/check/**"
+
+  - label: ":rust: public cargo check"
+    key: "public-cargo-check"
+    command: |
+      bash scripts/buildkite-public-ci.sh -- test //:cargo_check --config=ci
+    agents:
+      queue: "default"
+    timeout_in_minutes: 60
+    artifact_paths:
+      - "bazel-testlogs/**/*.log"
+      - "bazel-testlogs/**/test.outputs/**/*"
+      - "bazel-testlogs/**/*.zip"
+      - "target/ctx-artifacts/check/**"
+
+  - label: ":rust: public clippy"
+    key: "public-cargo-clippy"
+    command: |
+      bash scripts/buildkite-public-ci.sh -- test //:cargo_clippy --config=ci
+    agents:
+      queue: "default"
+    timeout_in_minutes: 60
+    artifact_paths:
+      - "bazel-testlogs/**/*.log"
+      - "bazel-testlogs/**/test.outputs/**/*"
+      - "bazel-testlogs/**/*.zip"
+      - "target/ctx-artifacts/check/**"
+
+  - label: ":rust: public workspace tests"
+    key: "public-cargo-test"
+    command: |
+      bash scripts/buildkite-public-ci.sh -- test //:cargo_test_default --config=ci
+    agents:
+      queue: "default"
+    timeout_in_minutes: 60
+    artifact_paths:
+      - "bazel-testlogs/**/*.log"
+      - "bazel-testlogs/**/test.outputs/**/*"
+      - "bazel-testlogs/**/*.zip"
+      - "target/ctx-artifacts/check/**"
+
+  - label: ":bazel: public native rust"
+    key: "public-native-rust"
+    command: |
+      bash scripts/buildkite-public-ci.sh -- test //:native_rust --config=ci
+    agents:
+      queue: "default"
+    timeout_in_minutes: 60
+    artifact_paths:
+      - "bazel-testlogs/**/*.log"
+      - "bazel-testlogs/**/test.outputs/**/*"
+      - "bazel-testlogs/**/*.zip"
+      - "target/ctx-artifacts/check/**"
+
+  - label: ":test_tube: public cli e2e"
+    key: "public-cli-e2e"
+    command: |
+      bash scripts/buildkite-public-ci.sh -- test \
+        //:cli_contract_tests \
+        //:fresh_home_e2e \
+        //:local_transcript_oracle \
+        //:mcp_integration_e2e \
+        //:provider_fixture_e2e \
+        //:search_determinism_tests \
+        //:slash_command_e2e \
+        --config=ci
+    agents:
+      queue: "default"
+    timeout_in_minutes: 60
+    artifact_paths:
+      - "bazel-testlogs/**/*.log"
+      - "bazel-testlogs/**/test.outputs/**/*"
+      - "bazel-testlogs/**/*.zip"
+      - "target/ctx-artifacts/check/**"
+
+  - label: ":package: public package gates"
+    key: "public-package-gates"
+    command: |
+      bash scripts/buildkite-public-ci.sh -- test \
+        //:package_audit_release \
+        //:sdk_package_dry_run \
+        --config=ci
+    agents:
+      queue: "default"
     timeout_in_minutes: 60
     artifact_paths:
       - "bazel-testlogs/**/*.log"

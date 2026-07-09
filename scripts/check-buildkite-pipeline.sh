@@ -17,17 +17,36 @@ if command -v ruby >/dev/null 2>&1; then
     data = YAML.load_file(ARGV.fetch(0))
     abort "pipeline must have steps" unless data.is_a?(Hash) && data["steps"].is_a?(Array)
     steps = data["steps"]
-    abort "pipeline should include public smoke and gated artifact matrix" unless steps.length == 8
-    smoke = steps.fetch(0)
-    abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
-    abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
-    abort "missing public-smoke step" unless smoke["key"] == "public-smoke"
-    abort "public-smoke must use the Buildkite hosted default queue" unless smoke.dig("agents", "queue") == "default"
-    abort "public-smoke must not require self-hosted runner tags" if smoke.dig("agents", "ctx-runner-class") || smoke.dig("agents", "os") || smoke.dig("agents", "arch")
-    abort "public-smoke should run one hosted Linux job at a time" unless smoke["concurrency"] == 1 && smoke["concurrency_group"].to_s.include?("default-hosted")
-    command = smoke["command"].to_s
-    abort "public-smoke must run the Buildkite public CI script" unless command.include?("scripts/buildkite-public-ci.sh")
+    public_keys = %w[
+      public-static
+      public-cargo-check
+      public-cargo-clippy
+      public-cargo-test
+      public-native-rust
+      public-cli-e2e
+      public-package-gates
+    ]
+    abort "pipeline should include split public gates and gated artifact matrix" unless steps.length == public_keys.length + 1 + 6
+    public_steps = steps.take(public_keys.length)
+    actual_public_keys = public_steps.map { |step| step["key"] if step.is_a?(Hash) }
+    abort "public gate keys changed: #{actual_public_keys.inspect}" unless actual_public_keys == public_keys
+    public_steps.each do |step|
+      abort "pipeline public gate step must be a mapping" unless step.is_a?(Hash)
+      key = step.fetch("key")
+      abort "#{key} must use the Buildkite hosted default queue" unless step.dig("agents", "queue") == "default"
+      abort "#{key} must not require self-hosted runner tags" if step.dig("agents", "ctx-runner-class") || step.dig("agents", "os") || step.dig("agents", "arch")
+      command = step["command"].to_s
+      abort "#{key} must run the Buildkite public CI script" unless command.include?("scripts/buildkite-public-ci.sh")
+      abort "#{key} must pass an explicit check slice" unless command.include?("scripts/buildkite-public-ci.sh --")
+    end
     required_keys = %w[
+      public-static
+      public-cargo-check
+      public-cargo-clippy
+      public-cargo-test
+      public-native-rust
+      public-cli-e2e
+      public-package-gates
       public-cli-linux-x64
       public-cli-linux-aarch64
       public-cli-windows-x64
@@ -37,7 +56,7 @@ if command -v ruby >/dev/null 2>&1; then
     ]
     actual_keys = steps.filter_map { |step| step["key"] if step.is_a?(Hash) }
     required_keys.each { |key| abort "missing gated artifact step #{key}" unless actual_keys.include?(key) }
-    steps.drop(2).each do |step|
+    steps.drop(public_keys.length + 1).each do |step|
       next unless step.is_a?(Hash)
       abort "artifact step #{step["key"]} must be gated" unless step["if"].to_s.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX")
     end
@@ -64,18 +83,23 @@ else
       END { print count + 0 }
     ' "${pipeline}"
   )"
-  if [[ "${top_level_steps}" != "8" ]]; then
-    printf 'pipeline should include public smoke and gated artifact matrix\n' >&2
+  if [[ "${top_level_steps}" != "14" ]]; then
+    printf 'pipeline should include split public gates and gated artifact matrix\n' >&2
     exit 1
   fi
 fi
 
 for required in \
-  'key: "public-smoke"' \
+  'key: "public-static"' \
+  'key: "public-cargo-check"' \
+  'key: "public-cargo-clippy"' \
+  'key: "public-cargo-test"' \
+  'key: "public-native-rust"' \
+  'key: "public-cli-e2e"' \
+  'key: "public-package-gates"' \
   'queue: "default"' \
   'bash scripts/buildkite-public-ci.sh' \
   'target/ctx-artifacts/check/**' \
-  'concurrency_group: "ctx/public-smoke/default-hosted"' \
   'CTX_RUST_TOOLCHAIN: "1.88.0"' \
   'CTX_BAZELISK_VERSION: "v1.29.0"' \
   'CTX_GO_VERSION: "1.22.12"' \
@@ -88,7 +112,8 @@ for required in \
   'python3-build' \
   'python3-venv' \
   'ctx_bootstrap_bazelisk' \
-  'bash scripts/check.sh --mode=ci' \
+  'check_args=(--mode=ci)' \
+  'bash scripts/check.sh "${check_args[@]}"' \
   'queue: "release-linux-managed"' \
   'ctx-runner-class: "release-linux-control"' \
   'CTX_PUBLIC_CLI_ARTIFACT_MATRIX' \
@@ -119,12 +144,18 @@ if grep -F -q 'golang-go' "${public_ci_script}"; then
 fi
 
 if awk '
-    index($0, "key: \"public-smoke\"") { in_step = 1 }
-    in_step && /^  - label:/ && index($0, "public smoke gate") == 0 { in_step = 0 }
-    in_step && /release-linux-managed|ctx-runner-class|arch:|os:/ { found = 1 }
+    /^  - label:/ {
+      in_public = 0
+    }
+    /key: "public-(static|cargo-check|cargo-clippy|cargo-test|native-rust|cli-e2e|package-gates)"/ {
+      in_public = 1
+    }
+    in_public && /release-linux-managed|ctx-runner-class|arch:|os:/ {
+      found = 1
+    }
     END { exit found ? 0 : 1 }
   ' "${pipeline}"; then
-  printf 'public-smoke must not target self-hosted runner tags\n' >&2
+  printf 'public gates must not target self-hosted runner tags\n' >&2
   exit 1
 fi
 
