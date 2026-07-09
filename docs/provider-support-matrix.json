@@ -200,6 +200,47 @@
       ]
     },
     {
+      "id": "mimocode",
+      "display_name": "MiMo Code",
+      "status": "supported",
+      "capture_provider": "mimocode",
+      "implemented_paths": [
+        {
+          "kind": "native_import",
+          "source_format": "mimocode_sqlite",
+          "fidelity": "imported",
+          "notes": [
+            "Reads MiMo Code SQLite history using the OpenCode-family SQLite normalizer against a read-only connection.",
+            "Discovers the database at $XDG_DATA_HOME/mimocode/mimocode.db or ~/.local/share/mimocode/mimocode.db."
+          ]
+        }
+      ],
+      "history_locations": [
+        "$XDG_DATA_HOME/mimocode/mimocode.db",
+        "~/.local/share/mimocode/mimocode.db"
+      ],
+      "imports_existing_history": true,
+      "captures_new_runs_passively": false,
+      "child_sessions_supported": true,
+      "fidelity": {
+        "user_prompts": true,
+        "assistant_messages": true,
+        "tool_calls": true,
+        "tool_output": false,
+        "command_output": true,
+        "files_touched": true,
+        "artifacts": false,
+        "model_identity": true,
+        "costs": true,
+        "token_usage": true,
+        "parent_child_session_edges": true
+      },
+      "public_docs": "docs/providers.md",
+      "limitations": [
+        "MiMo Code is based on OpenCode and uses a similar SQLite schema; the adapter reuses the OpenCode-family normalizer."
+      ]
+    },
+    {
       "id": "kiro_cli",
       "display_name": "Kiro CLI",
       "status": "supported",

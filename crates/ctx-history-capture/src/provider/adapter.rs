@@ -201,6 +201,9 @@ pub struct OpenCodeSqliteAdapter;
 pub struct KiloSqliteAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct MiMoCodeSqliteAdapter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct KiroSqliteAdapter;
 
 #[derive(Debug, Clone, Copy, Default)]

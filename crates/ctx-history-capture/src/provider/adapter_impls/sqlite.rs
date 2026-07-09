@@ -6,8 +6,8 @@ use crate::common::io::ensure_regular_provider_transcript_file;
 use crate::provider::adapter::{
     AstrBotSqliteAdapter, CrushSqliteAdapter, DeepAgentsSqliteAdapter, FirebenderSqliteAdapter,
     ForgeCodeSqliteAdapter, GooseSessionsSqliteAdapter, HermesSqliteAdapter, KiloSqliteAdapter,
-    KiroSqliteAdapter, LingmaSqliteAdapter, OpenCodeSqliteAdapter, ShelleySqliteAdapter,
-    ZedThreadsSqliteAdapter,
+    KiroSqliteAdapter, LingmaSqliteAdapter, MiMoCodeSqliteAdapter, OpenCodeSqliteAdapter,
+    ShelleySqliteAdapter, ZedThreadsSqliteAdapter,
 };
 use crate::provider::providers::{
     astrbot::normalize_astrbot_sqlite,
@@ -19,7 +19,7 @@ use crate::provider::providers::{
     hermes::normalize_hermes_sqlite,
     kiro::normalize_kiro_sqlite,
     lingma::normalize_lingma_sqlite,
-    opencode::{normalize_opencode_sqlite, KILO_SQLITE_DIALECT, OPENCODE_SQLITE_DIALECT},
+    opencode::{normalize_opencode_sqlite, KILO_SQLITE_DIALECT, MIMOCODE_SQLITE_DIALECT, OPENCODE_SQLITE_DIALECT},
     shelley::normalize_shelley_sqlite,
     zed::normalize_zed_threads_sqlite,
 };
@@ -28,8 +28,8 @@ use crate::{
     ASTRBOT_SQLITE_SOURCE_FORMAT, CRUSH_SQLITE_SOURCE_FORMAT, DEEPAGENTS_SQLITE_SOURCE_FORMAT,
     FIREBENDER_SQLITE_SOURCE_FORMAT, FORGECODE_SQLITE_SOURCE_FORMAT,
     GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT, HERMES_SQLITE_SOURCE_FORMAT, KILO_SQLITE_SOURCE_FORMAT,
-    KIRO_SQLITE_SOURCE_FORMAT, LINGMA_SQLITE_SOURCE_FORMAT, OPENCODE_SQLITE_SOURCE_FORMAT,
-    SHELLEY_SQLITE_SOURCE_FORMAT, ZED_THREADS_SQLITE_SOURCE_FORMAT,
+    KIRO_SQLITE_SOURCE_FORMAT, LINGMA_SQLITE_SOURCE_FORMAT, MIMOCODE_SQLITE_SOURCE_FORMAT,
+    OPENCODE_SQLITE_SOURCE_FORMAT, SHELLEY_SQLITE_SOURCE_FORMAT, ZED_THREADS_SQLITE_SOURCE_FORMAT,
 };
 
 macro_rules! sqlite_adapter {
@@ -156,5 +156,24 @@ impl ProviderCaptureAdapter for KiloSqliteAdapter {
     ) -> Result<ProviderNormalizationResult> {
         ensure_regular_provider_transcript_file(path)?;
         normalize_opencode_sqlite(path, context, &KILO_SQLITE_DIALECT)
+    }
+}
+
+impl ProviderCaptureAdapter for MiMoCodeSqliteAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::MiMoCode
+    }
+
+    fn source_format(&self) -> &str {
+        MIMOCODE_SQLITE_SOURCE_FORMAT
+    }
+
+    fn normalize_path(
+        &self,
+        path: &Path,
+        context: &ProviderAdapterContext,
+    ) -> Result<ProviderNormalizationResult> {
+        ensure_regular_provider_transcript_file(path)?;
+        normalize_opencode_sqlite(path, context, &MIMOCODE_SQLITE_DIALECT)
     }
 }

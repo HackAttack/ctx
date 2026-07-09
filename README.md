@@ -124,6 +124,7 @@ Support means ctx can discover or read that harness's persisted local history an
 | Kimi Code CLI | Supported |
 | Kiro CLI | Supported |
 | Lingma | Supported |
+| MiMo Code | Supported |
 | Mistral Vibe | Supported |
 | Mux | Supported |
 | OpenHands | Supported |

@@ -65,6 +65,18 @@ pub(crate) const KILO_SQLITE_DIALECT: OpenCodeSqliteDialect = OpenCodeSqliteDial
     event_time_created_field: "Kilo event time.created",
 };
 
+pub(crate) const MIMOCODE_SQLITE_SOURCE_FORMAT: &str = "mimocode_sqlite";
+
+pub(crate) const MIMOCODE_SQLITE_DIALECT: OpenCodeSqliteDialect = OpenCodeSqliteDialect {
+    provider: CaptureProvider::MiMoCode,
+    display_name: "MiMo Code",
+    source_format: MIMOCODE_SQLITE_SOURCE_FORMAT,
+    session_time_created_field: "MiMo Code session time_created",
+    session_message_seq_field: "MiMo Code session_message seq",
+    session_message_time_created_field: "MiMo Code session_message time_created",
+    event_time_created_field: "MiMo Code event time.created",
+};
+
 #[derive(Debug, Clone)]
 pub(crate) struct OpenCodeMessageSelection {
     pub(crate) rows: Vec<OpenCodeMessageRow>,

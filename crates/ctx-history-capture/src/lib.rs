@@ -22,6 +22,7 @@ pub(crate) const JUNIE_SESSION_EVENTS_SOURCE_FORMAT: &str = "junie_session_event
 pub(crate) const FIREBENDER_SQLITE_SOURCE_FORMAT: &str = "firebender_chat_history_sqlite";
 pub(crate) const OPENCODE_SQLITE_SOURCE_FORMAT: &str = "opencode_sqlite";
 pub(crate) const KILO_SQLITE_SOURCE_FORMAT: &str = "kilo_sqlite";
+pub(crate) const MIMOCODE_SQLITE_SOURCE_FORMAT: &str = "mimocode_sqlite";
 pub(crate) const KIRO_SQLITE_SOURCE_FORMAT: &str = "kiro_cli_sqlite";
 pub(crate) const CRUSH_SQLITE_SOURCE_FORMAT: &str = "crush_sqlite";
 pub(crate) const GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT: &str = "goose_sessions_sqlite";
@@ -76,12 +77,13 @@ pub use options::{
     FirebenderSqliteImportOptions, FixtureOptions, ForgeCodeSqliteImportOptions,
     GeminiCliImportOptions, GooseSessionsSqliteImportOptions, HermesSqliteImportOptions,
     JunieImportOptions, KiloSqliteImportOptions, KimiCodeCliImportOptions, KiroSqliteImportOptions,
-    LingmaSqliteImportOptions, MistralVibeImportOptions, MuxImportOptions, NanoClawImportOptions,
-    OpenClawImportOptions, OpenCodeSqliteImportOptions, OpenHandsImportOptions,
-    PiSessionImportOptions, ProviderFixtureImportOptions, QoderImportOptions,
-    QwenCodeImportOptions, RooTaskJsonImportOptions, RovoDevImportOptions,
-    ShelleySqliteImportOptions, TabnineCliImportOptions, TraeImportOptions,
-    WarpSqliteImportOptions, WindsurfCascadeHookImportOptions, ZedThreadsSqliteImportOptions,
+    LingmaSqliteImportOptions, MiMoCodeSqliteImportOptions, MistralVibeImportOptions,
+    MuxImportOptions, NanoClawImportOptions, OpenClawImportOptions,
+    OpenCodeSqliteImportOptions, OpenHandsImportOptions, PiSessionImportOptions,
+    ProviderFixtureImportOptions, QoderImportOptions, QwenCodeImportOptions,
+    RooTaskJsonImportOptions, RovoDevImportOptions, ShelleySqliteImportOptions,
+    TabnineCliImportOptions, TraeImportOptions, WarpSqliteImportOptions,
+    WindsurfCascadeHookImportOptions, ZedThreadsSqliteImportOptions,
 };
 
 pub(crate) mod common {
@@ -108,14 +110,14 @@ pub use provider::adapter::{
     DeepAgentsSqliteAdapter, FactoryAiDroidJsonlAdapter, FirebenderSqliteAdapter,
     ForgeCodeSqliteAdapter, GeminiCliJsonlAdapter, GooseSessionsSqliteAdapter, HermesSqliteAdapter,
     JunieSessionEventsAdapter, KiloSqliteAdapter, KimiCodeCliWireJsonlAdapter, KiroSqliteAdapter,
-    LingmaSqliteAdapter, MistralVibeJsonlAdapter, MuxJsonlAdapter, NanoClawProjectAdapter,
-    NormalizedProviderImportOptions, OpenClawJsonlAdapter, OpenCodeSqliteAdapter,
-    OpenHandsFileEventsAdapter, PiSessionJsonlAdapter, ProviderAdapterContext,
-    ProviderCaptureAdapter, ProviderEventDto, ProviderFileTouchedEnvelope,
-    ProviderFixtureJsonlAdapter, ProviderFixtureLine, ProviderNormalizationResult,
-    ProviderSessionDto, QoderJsonlAdapter, QwenCodeJsonlAdapter, RooTaskJsonAdapter,
-    RovoDevSessionJsonAdapter, ShelleySqliteAdapter, TabnineCliJsonlAdapter,
-    WindsurfCascadeHookTranscriptJsonlAdapter, ZedThreadsSqliteAdapter,
+    LingmaSqliteAdapter, MiMoCodeSqliteAdapter, MistralVibeJsonlAdapter, MuxJsonlAdapter,
+    NanoClawProjectAdapter, NormalizedProviderImportOptions, OpenClawJsonlAdapter,
+    OpenCodeSqliteAdapter, OpenHandsFileEventsAdapter, PiSessionJsonlAdapter,
+    ProviderAdapterContext, ProviderCaptureAdapter, ProviderEventDto,
+    ProviderFileTouchedEnvelope, ProviderFixtureJsonlAdapter, ProviderFixtureLine,
+    ProviderNormalizationResult, ProviderSessionDto, QoderJsonlAdapter, QwenCodeJsonlAdapter,
+    RooTaskJsonAdapter, RovoDevSessionJsonAdapter, ShelleySqliteAdapter,
+    TabnineCliJsonlAdapter, WindsurfCascadeHookTranscriptJsonlAdapter, ZedThreadsSqliteAdapter,
 };
 pub use provider::api::{
     import_antigravity_cli_history, import_astrbot_sqlite, import_auggie_history,
@@ -126,11 +128,12 @@ pub use provider::api::{
     import_factory_ai_droid_sessions, import_firebender_sqlite, import_forgecode_sqlite,
     import_gemini_cli_history, import_goose_sessions_sqlite, import_hermes_sqlite,
     import_junie_history, import_kilo_sqlite, import_kimi_code_cli_history, import_kiro_sqlite,
-    import_lingma_sqlite, import_mistral_vibe_history, import_mux_history, import_nanoclaw_project,
-    import_openclaw_history, import_opencode_sqlite, import_openhands_file_events,
-    import_pi_session_jsonl, import_provider_fixture_jsonl, import_qoder_history,
-    import_qwen_code_history, import_roo_task_json_history, import_rovodev_history,
-    import_shelley_sqlite, import_tabnine_cli_history, import_trae_history, import_warp_sqlite,
+    import_lingma_sqlite, import_mimocode_sqlite, import_mistral_vibe_history,
+    import_mux_history, import_nanoclaw_project, import_openclaw_history,
+    import_opencode_sqlite, import_openhands_file_events, import_pi_session_jsonl,
+    import_provider_fixture_jsonl, import_qoder_history, import_qwen_code_history,
+    import_roo_task_json_history, import_rovodev_history, import_shelley_sqlite,
+    import_tabnine_cli_history, import_trae_history, import_warp_sqlite,
     import_windsurf_cascade_hook_transcripts, import_zed_threads_sqlite,
     validate_custom_history_jsonl_v1, validate_custom_history_jsonl_v1_reader,
 };

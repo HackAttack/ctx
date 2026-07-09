@@ -51,6 +51,12 @@ const KILO_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     source_kind: ProviderSourceKind::NativeHistory,
 }];
 
+const MIMOCODE_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
+    path_components: &[".local", "share", "mimocode", "mimocode.db"],
+    source_format: "mimocode_sqlite",
+    source_kind: ProviderSourceKind::NativeHistory,
+}];
+
 const KIRO_DEFAULTS: &[ProviderDefaultLocation] = &[
     ProviderDefaultLocation {
         path_components: &[".local", "share", "kiro-cli", "data.sqlite3"],
@@ -448,6 +454,14 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         provider: CaptureProvider::Kilo,
         display_name: "Kilo Code",
         default_locations: KILO_DEFAULTS,
+        import_support: ProviderImportSupport::Native,
+        catalog_support: ProviderCatalogSupport::None,
+        unsupported_reason: None,
+    },
+    ProviderSourceSpec {
+        provider: CaptureProvider::MiMoCode,
+        display_name: "MiMo Code",
+        default_locations: MIMOCODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
         unsupported_reason: None,

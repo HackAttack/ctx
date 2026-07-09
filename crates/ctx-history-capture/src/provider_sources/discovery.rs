@@ -124,6 +124,17 @@ fn discover_provider_sources_for_spec(
                 ));
             }
         }
+        CaptureProvider::MiMoCode => {
+            let mimocode_data_dir = env_path("XDG_DATA_HOME")
+                .unwrap_or_else(|| home.join(".local").join("share"))
+                .join("mimocode");
+            sources.push(provider_source_from_parts(
+                spec,
+                mimocode_data_dir.join("mimocode.db"),
+                "mimocode_sqlite",
+                ProviderSourceKind::NativeHistory,
+            ));
+        }
         CaptureProvider::Goose => {
             if let Some(path) = env_path("GOOSE_PATH_ROOT") {
                 sources.push(goose_db_source(
@@ -772,6 +783,7 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
         CaptureProvider::OpenCode => "opencode_sqlite",
         CaptureProvider::Kilo => "kilo_sqlite",
         CaptureProvider::KiroCli => "kiro_cli_sqlite",
+        CaptureProvider::MiMoCode => "mimocode_sqlite",
         CaptureProvider::Crush => "crush_sqlite",
         CaptureProvider::Goose => "goose_sessions_sqlite",
         CaptureProvider::Antigravity => "antigravity_cli_transcript_jsonl_tree",

@@ -228,6 +228,17 @@ pub(crate) fn import_one_source_inner(
                 },
             )
             .map_err(anyhow::Error::from),
+            CaptureProvider::MiMoCode => import_mimocode_sqlite(
+                &source.path,
+                store,
+                MiMoCodeSqliteImportOptions {
+                    source_path: Some(source.path.clone()),
+                    history_record_id: Some(record_id),
+                    allow_partial_failures,
+                    ..MiMoCodeSqliteImportOptions::default()
+                },
+            )
+            .map_err(anyhow::Error::from),
             CaptureProvider::KiroCli => import_kiro_sqlite(
                 &source.path,
                 store,

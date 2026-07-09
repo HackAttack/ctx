@@ -5,17 +5,17 @@ use ctx_history_store::Store;
 use crate::provider::adapter::{
     AstrBotSqliteAdapter, ContinueCliSessionsAdapter, DeepAgentsSqliteAdapter,
     FirebenderSqliteAdapter, ForgeCodeSqliteAdapter, KiloSqliteAdapter, KiroSqliteAdapter,
-    NanoClawProjectAdapter, OpenCodeSqliteAdapter, OpenHandsFileEventsAdapter,
-    ProviderCaptureAdapter, ShelleySqliteAdapter,
+    MiMoCodeSqliteAdapter, NanoClawProjectAdapter, OpenCodeSqliteAdapter,
+    OpenHandsFileEventsAdapter, ProviderCaptureAdapter, ShelleySqliteAdapter,
 };
 use crate::provider::importer::import_normalized_provider_captures;
 use crate::provider::providers::firebender::firebender_source_root;
 use crate::{
     AstrBotSqliteImportOptions, ContinueCliImportOptions, DeepAgentsSqliteImportOptions,
     FirebenderSqliteImportOptions, ForgeCodeSqliteImportOptions, KiloSqliteImportOptions,
-    KiroSqliteImportOptions, NanoClawImportOptions, NormalizedProviderImportOptions,
-    OpenCodeSqliteImportOptions, OpenHandsImportOptions, ProviderAdapterContext,
-    ProviderImportSummary, Result, ShelleySqliteImportOptions,
+    KiroSqliteImportOptions, MiMoCodeSqliteImportOptions, NanoClawImportOptions,
+    NormalizedProviderImportOptions, OpenCodeSqliteImportOptions, OpenHandsImportOptions,
+    ProviderAdapterContext, ProviderImportSummary, Result, ShelleySqliteImportOptions,
 };
 
 pub fn import_firebender_sqlite(
@@ -356,6 +356,38 @@ pub fn import_openhands_file_events(
         .clone()
         .unwrap_or_else(|| path.to_path_buf());
     let normalization = OpenHandsFileEventsAdapter.normalize_path(
+        path,
+        &ProviderAdapterContext {
+            machine_id: options.machine_id,
+            source_path: Some(source_path),
+            source_root: None,
+            imported_at: options.imported_at,
+        },
+    )?;
+    import_normalized_provider_captures(
+        store,
+        normalization,
+        NormalizedProviderImportOptions {
+            history_record_id: options.history_record_id,
+            allow_partial_failures: options.allow_partial_failures,
+            persist_cursors: true,
+            wrap_transaction: true,
+            fast_event_inserts: true,
+        },
+    )
+}
+
+pub fn import_mimocode_sqlite(
+    path: impl AsRef<Path>,
+    store: &mut Store,
+    options: MiMoCodeSqliteImportOptions,
+) -> Result<ProviderImportSummary> {
+    let path = path.as_ref();
+    let source_path = options
+        .source_path
+        .clone()
+        .unwrap_or_else(|| path.to_path_buf());
+    let normalization = MiMoCodeSqliteAdapter.normalize_path(
         path,
         &ProviderAdapterContext {
             machine_id: options.machine_id,

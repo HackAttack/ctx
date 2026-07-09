@@ -87,6 +87,12 @@ pub(crate) enum NativeProviderArg {
     RooCode,
     #[value(alias = "qoder-cn", alias = "qoder_cn")]
     Lingma,
+    #[value(
+        name = "mimocode",
+        alias = "mimo-code",
+        alias = "mimo_code"
+    )]
+    MiMoCode,
     Qoder,
     Warp,
     #[value(name = "codebuddy", alias = "code-buddy", alias = "code_buddy")]
@@ -181,6 +187,12 @@ pub(crate) enum ProviderArg {
     RooCode,
     #[value(alias = "qoder-cn", alias = "qoder_cn")]
     Lingma,
+    #[value(
+        name = "mimocode",
+        alias = "mimo-code",
+        alias = "mimo_code"
+    )]
+    MiMoCode,
     Qoder,
     Warp,
     #[value(name = "codebuddy", alias = "code-buddy", alias = "code_buddy")]
@@ -243,6 +255,7 @@ impl NativeProviderArg {
             Self::Cline => CaptureProvider::Cline,
             Self::RooCode => CaptureProvider::RooCode,
             Self::Lingma => CaptureProvider::Lingma,
+            Self::MiMoCode => CaptureProvider::MiMoCode,
             Self::Qoder => CaptureProvider::Qoder,
             Self::Warp => CaptureProvider::Warp,
             Self::CodeBuddy => CaptureProvider::CodeBuddy,
@@ -313,6 +326,7 @@ impl ProviderArg {
             Self::Cline => CaptureProvider::Cline,
             Self::RooCode => CaptureProvider::RooCode,
             Self::Lingma => CaptureProvider::Lingma,
+            Self::MiMoCode => CaptureProvider::MiMoCode,
             Self::Qoder => CaptureProvider::Qoder,
             Self::Warp => CaptureProvider::Warp,
             Self::CodeBuddy => CaptureProvider::CodeBuddy,
@@ -359,6 +373,7 @@ impl ProviderArg {
             Self::Cline => "cline",
             Self::RooCode => "roo",
             Self::Lingma => "lingma",
+            Self::MiMoCode => "mimocode",
             Self::Qoder => "qoder",
             Self::Warp => "warp",
             Self::CodeBuddy => "codebuddy",
@@ -407,6 +422,7 @@ pub(crate) fn cli_supported_provider(provider: CaptureProvider) -> bool {
             | CaptureProvider::Cline
             | CaptureProvider::RooCode
             | CaptureProvider::Lingma
+            | CaptureProvider::MiMoCode
             | CaptureProvider::Qoder
             | CaptureProvider::Warp
             | CaptureProvider::CodeBuddy

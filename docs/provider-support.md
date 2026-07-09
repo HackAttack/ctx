@@ -27,6 +27,7 @@ support matrix is:
 | Claude | Supported | `claude_projects_jsonl_tree` |
 | OpenCode | Supported | `opencode_sqlite` |
 | Kilo Code | Supported | `kilo_sqlite` |
+| MiMo Code | Supported | `mimocode_sqlite` |
 | Kiro CLI | Supported | `kiro_cli_sqlite` |
 | Crush | Supported | `crush_sqlite` |
 | Goose | Supported | `goose_sessions_sqlite` |
