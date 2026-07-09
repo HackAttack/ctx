@@ -23,12 +23,18 @@ to manage `PATH` yourself.
 
 The install script installs `ctx`, runs the bundled agent-history skill
 installer, and runs `ctx setup` so discovered local history is indexed before it
-exits. The skill installer opens an agent picker when interactive; otherwise it
-installs the universal `~/.agents/skills` copy plus detected agent-specific
-folders for tools that need them. Use `sh -s -- --no-setup` on Unix, or set
-`CTX_INSTALL_NO_SETUP=1` on Windows, for install-only CI or packaging flows.
-Install-only mode also skips skill setup unless you explicitly pass a skill
-option.
+exits. If daemon maintenance has been explicitly enabled, that setup run can
+also start the ctx-owned background daemon for native-history freshness and
+semantic catch-up. The skill installer opens an agent picker when interactive;
+otherwise it installs the universal `~/.agents/skills` copy plus detected
+agent-specific folders for tools that need them. Use `sh -s -- --no-setup` on
+Unix, or set `CTX_INSTALL_NO_SETUP=1` on Windows, for install-only CI or
+packaging flows. Install-only mode also skips skill setup unless you explicitly
+pass a skill option.
+
+To keep installer setup but opt out of setup daemon autostart, use
+`sh -s -- --no-daemon` on Unix, `-NoDaemon` on Windows, or set
+`CTX_INSTALL_NO_DAEMON=1`.
 
 To skip only the skill step, use `--no-skill` on Unix or `-NoSkill` on Windows,
 or set `CTX_INSTALL_NO_SKILL=1`. To target agent-specific skill folders during
@@ -49,11 +55,16 @@ ctx setup
 ctx status
 ```
 
-Setup creates the configured ctx data root, initializes SQLite, writes
-`config.toml` when missing, discovers known provider history paths, inventories
-local history sources, imports discovered native provider sources, optimizes
-the local search index, and prints next steps. It does not execute
-history-source plugin commands. The default data root is `~/.ctx`.
+Setup creates the configured ctx data root, initializes SQLite, discovers known
+provider history paths, inventories local history sources, imports discovered
+native provider sources, optimizes the local search index, and prints next
+steps. It does not write `config.toml` for implicit defaults and does not
+execute history-source plugin commands. The default data root is `~/.ctx`. The
+daemon is disabled by default during the prerelease; enable it with
+`ctx daemon enable` when you want daemon-owned background maintenance. Use
+`ctx setup --no-daemon` for a one-run opt-out after daemon maintenance is
+enabled. `ctx setup --catalog-only` and `ctx setup --json` do
+not autostart daemon maintenance.
 
 Use a different root when testing:
 
@@ -62,10 +73,12 @@ ctx --data-root /tmp/ctx-demo setup
 CTX_DATA_ROOT=/tmp/ctx-demo ctx status
 ```
 
-Setup does not write to source repositories, call model APIs, or require API
-keys. Official installer-managed binaries can run a signed background
-auto-upgrade check after later successful non-JSON commands other than
-`ctx status`; that updater does not collect provider history.
+Setup does not write to source repositories, call model APIs, download embedding
+models, or require API keys. Daemon maintenance is local-only; cloud sync
+remains disabled and reports `network_allowed: false`. Official
+installer-managed binaries can run a signed background auto-upgrade check after
+later successful non-JSON commands other than `ctx status`; that updater does
+not collect provider history.
 
 ## 3. See Available Sources
 
@@ -103,6 +116,13 @@ native cursor-resume API. Imports are source-atomic by default; use `--partial`
 only when you want valid rows from a malformed source to commit while row
 failures are reported.
 
+When daemon maintenance is enabled, `ctx import` can start the same ctx-owned
+background daemon profile after the foreground import finishes.
+The daemon refreshes native history within local budgets and, when semantic is
+enabled, may acquire the local embedding model and perform semantic catch-up.
+Use `ctx import --no-daemon` for a one-run opt-out. JSON import output does not
+autostart daemon maintenance.
+
 After upgrading an older data root to `0.10.x` or newer, the first refresh or import may
 re-read previously indexed provider transcripts once. That rebuilds search
 content with touched-file metadata and local/private transcript text.
@@ -125,20 +145,26 @@ transcript. Commands accept full ctx IDs or unambiguous ID prefixes of at least
 eight hex characters. Search also accepts filters such as `--provider`,
 `--workspace`, `--since`, `--event-type`, `--file`, `--include-subagents`,
 `--include-current-session`, `--term`, `--limit`, and
-`--refresh auto|off|strict`.
+`--refresh background|off|wait`.
 `--limit` is capped at `200`.
-Search defaults to `--refresh auto`, a best-effort refresh of discovered native
-provider sources before querying. On large discovered sources or
-already-inventoried indexes, `auto` serves current results without a foreground
-catch-up scan; use
-`--refresh strict` or `ctx import --all` when you need a full
-catch-up before querying.
+Search defaults to `--refresh background`, which serves existing indexes while
+daemon maintenance refreshes lexical and semantic indexes when enabled. Use
+`--refresh wait` for foreground text refresh, or `ctx import --all` for an
+explicit import catch-up.
 
 When ctx runs inside Codex, search excludes the active Codex session tree by
 default when it can identify it. Use `--include-current-session` if the current
 session or its subagent work is the history you want to search. Use
 `--refresh off` when you need a strictly read-only query over the existing ctx
 index.
+
+Semantic and hybrid search read existing local sidecar coverage. Search never
+starts the daemon, runs semantic catch-up, or downloads embedding models.
+Hybrid uses semantic evidence only after coverage is complete and dirty work is
+drained; until then it falls back to lexical search with a structured reason.
+Explicit semantic search can query partial coverage for diagnostics, but reports
+a local error when the model cache is missing or the semantic worker is actively
+indexing.
 
 ## 6. Use JSON For Scripts
 

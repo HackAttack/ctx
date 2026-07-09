@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 mod analytics;
 mod commands;
@@ -23,6 +23,7 @@ mod provider_args;
 mod provider_sources;
 mod search_filters;
 mod search_render;
+mod semantic;
 mod skill;
 mod store_util;
 mod transcript;
@@ -35,8 +36,9 @@ use analytics::{AnalyticsEvent, AnalyticsProperties};
 use commands::search::{RefreshArg, SearchRefreshReport};
 use commands::sql::{parse_sql_timeout, raw_sql_result_json};
 use commands::{
-    doctor::run_doctor, import::run_import, locate::run_locate, search::run_search,
-    setup::run_setup, show::run_show, sources::run_sources, sql::run_sql, status::run_status,
+    doctor::run_doctor, import::run_import, index::run_index, locate::run_locate,
+    search::run_search, setup::run_setup, show::run_show, sources::run_sources, sql::run_sql,
+    status::run_status,
 };
 use config::AppConfig;
 use ctx_history_core::{default_data_root, CaptureProvider};
@@ -94,6 +96,8 @@ enum CommandRoot {
     Setup(SetupArgs),
     #[command(about = "Show local ctx index status")]
     Status(JsonArgs),
+    #[command(about = "Show, watch, or wait for local indexing progress")]
+    Index(commands::index::IndexArgs),
     #[command(about = "List configured and discovered agent history sources")]
     Sources(SourcesArgs),
     #[command(about = "Index provider history into local search")]
@@ -112,6 +116,8 @@ enum CommandRoot {
     Integrations(integrations::IntegrationsArgs),
     #[command(about = "Serve read-only ctx tools over MCP")]
     Mcp(mcp::McpArgs),
+    #[command(about = "Run or inspect local ctx background maintenance")]
+    Daemon(DaemonArgs),
     #[command(about = "Check or apply signed ctx CLI upgrades")]
     Upgrade(upgrade::UpgradeArgs),
     #[command(about = "Check local ctx health")]
@@ -126,6 +132,10 @@ struct SetupArgs {
         help = "Prepare local history inventory without importing searchable history"
     )]
     catalog_only: bool,
+    #[arg(long, help = "Do not start daemon maintenance after setup")]
+    no_daemon: bool,
+    #[arg(long, help = "Wait for foreground lexical indexing before returning")]
+    wait: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, value_enum, default_value_t = ProgressArg::Auto)]
@@ -202,10 +212,21 @@ struct ImportArgs {
         help = "Allow valid rows in a source to commit when malformed rows are encountered"
     )]
     partial: bool,
+    #[arg(long, help = "Do not start daemon maintenance after import")]
+    no_daemon: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, value_enum, default_value_t = ProgressArg::Auto)]
     progress: ProgressArg,
+}
+
+impl ImportArgs {
+    fn should_autostart_daemon(&self) -> bool {
+        !self.no_daemon
+            && self.format.is_none()
+            && self.history_source.is_none()
+            && self.history_source_manifest.is_empty()
+    }
 }
 
 #[derive(Debug, Args)]
@@ -383,9 +404,23 @@ struct SearchArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = RefreshArg::Auto,
-        help = "Pre-search refresh behavior: auto, off, or strict",
-        long_help = "Pre-search refresh behavior. auto best-effort refreshes discovered native provider sources and enabled auto history-source plugins, then serves the existing index if refresh fails; off searches the existing index only; strict fails if the refresh cannot run or import successfully."
+        help = "Search backend override: hybrid, semantic, or lexical",
+        long_help = "Search backend override. By default ctx uses lexical search unless local semantic search is enabled in config, then hybrid. hybrid combines SQLite FTS/BM25 and semantic vector evidence; lexical uses only the SQLite FTS/BM25 path; semantic requires local semantic search to be enabled and ready."
+    )]
+    backend: Option<SearchBackendArg>,
+    #[arg(
+        long = "semantic-weight",
+        default_value_t = 0.35,
+        value_parser = parse_semantic_weight,
+        help = "Hybrid ranking weight for semantic evidence, from 0.0 to 1.0"
+    )]
+    semantic_weight: f32,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = RefreshArg::Background,
+        help = "Index freshness behavior: background, off, or wait",
+        long_help = "Index freshness behavior. background serves the existing index and lets daemon maintenance refresh history/indexes; off searches the existing index only; wait runs or waits for required refresh work before searching."
     )]
     refresh: RefreshArg,
     #[arg(
@@ -400,6 +435,97 @@ struct SearchArgs {
         help = "Print expanded text details such as full ids, provider ids, citations, and next commands"
     )]
     verbose: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum SearchBackendArg {
+    Hybrid,
+    Lexical,
+    Semantic,
+}
+
+impl SearchBackendArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Lexical => "lexical",
+            Self::Semantic => "semantic",
+        }
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct DaemonArgs {
+    #[command(subcommand)]
+    command: DaemonCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+pub(crate) enum DaemonCommand {
+    #[command(about = "Run ctx background maintenance in the foreground")]
+    Run(DaemonRunArgs),
+    #[command(about = "Show ctx daemon status")]
+    Status(JsonArgs),
+    #[command(about = "Enable ctx daemon maintenance")]
+    Enable(JsonArgs),
+    #[command(about = "Disable ctx daemon maintenance")]
+    Disable(JsonArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct DaemonRunArgs {
+    #[arg(long, conflicts_with = "once", hide = true)]
+    foreground: bool,
+    #[arg(long, help = "Run one maintenance pass and exit")]
+    once: bool,
+    #[arg(long, value_parser = parse_daemon_idle_exit_seconds)]
+    idle_exit_seconds: Option<u64>,
+    #[arg(long, value_parser = parse_daemon_interval_seconds)]
+    loop_interval_seconds: Option<u64>,
+    #[arg(long, value_parser = parse_semantic_worker_batch)]
+    max_chunks: Option<usize>,
+    #[arg(skip)]
+    max_seconds: Option<u64>,
+    #[arg(long, help = "Run even when daemon.enabled is false")]
+    force: bool,
+    #[arg(long, value_enum, hide = true)]
+    start_mode: Option<DaemonStartModeArg>,
+    #[arg(long, value_enum, hide = true)]
+    trigger_command: Option<DaemonTriggerCommandArg>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum DaemonStartModeArg {
+    Auto,
+    Manual,
+}
+
+impl DaemonStartModeArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum DaemonTriggerCommandArg {
+    Setup,
+    Import,
+    Search,
+}
+
+impl DaemonTriggerCommandArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Import => "import",
+            Self::Search => "search",
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -445,6 +571,7 @@ impl CommandRoot {
         match self {
             Self::Setup(_) => "setup",
             Self::Status(_) => "status",
+            Self::Index(_) => "index",
             Self::Sources(_) => "sources",
             Self::Import(_) => "import",
             Self::Show(_) => "show",
@@ -454,19 +581,25 @@ impl CommandRoot {
             Self::Docs(_) => "docs",
             Self::Integrations(_) => "integrations",
             Self::Mcp(_) => "mcp",
+            Self::Daemon(_) => "daemon",
             Self::Upgrade(_) => "upgrade",
             Self::Doctor(_) => "doctor",
         }
     }
 
     fn sends_analytics(&self) -> bool {
-        !matches!(self, Self::Status(_) | Self::Sql(_) | Self::Mcp(_))
+        match self {
+            Self::Status(_) | Self::Index(_) | Self::Sql(_) | Self::Mcp(_) => false,
+            Self::Daemon(args) => !matches!(&args.command, DaemonCommand::Status(_)),
+            _ => true,
+        }
     }
 
     fn json_output(&self) -> bool {
         match self {
             Self::Setup(args) => args.json,
             Self::Status(args) => args.json,
+            Self::Index(args) => args.json_output(),
             Self::Sources(args) => args.json,
             Self::Import(args) => args.json,
             Self::Show(args) => args.json_output(),
@@ -476,6 +609,12 @@ impl CommandRoot {
             Self::Docs(args) => args.json_output(),
             Self::Integrations(args) => args.json_output(),
             Self::Mcp(_) => false,
+            Self::Daemon(args) => match &args.command {
+                DaemonCommand::Run(args) => args.json,
+                DaemonCommand::Status(args)
+                | DaemonCommand::Enable(args)
+                | DaemonCommand::Disable(args) => args.json,
+            },
             Self::Upgrade(args) => args.json_output(),
             Self::Doctor(args) => args.json,
         }
@@ -484,8 +623,26 @@ impl CommandRoot {
     fn allows_background_upgrade(&self) -> bool {
         !matches!(
             self,
-            Self::Status(_) | Self::Docs(_) | Self::Mcp(_) | Self::Sql(_) | Self::Upgrade(_)
+            Self::Status(_)
+                | Self::Index(_)
+                | Self::Docs(_)
+                | Self::Mcp(_)
+                | Self::Sql(_)
+                | Self::Upgrade(_)
+                | Self::Daemon(_)
         )
+    }
+
+    fn daemon_autostart_trigger(&self) -> Option<DaemonTriggerCommandArg> {
+        match self {
+            Self::Setup(args) if !args.catalog_only && !args.no_daemon => {
+                Some(DaemonTriggerCommandArg::Setup)
+            }
+            Self::Import(args) if args.should_autostart_daemon() => {
+                Some(DaemonTriggerCommandArg::Import)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -515,6 +672,7 @@ fn main() -> Result<()> {
     let is_setup = matches!(&cli.command, CommandRoot::Setup(_));
     let json_output = cli.command.json_output();
     let allow_background_upgrade = cli.command.allows_background_upgrade();
+    let daemon_autostart_trigger = cli.command.daemon_autostart_trigger();
     let mut analytics_properties = command_analytics_properties(&cli.command);
     let quiet = quiet_output(cli.quiet);
     let data_root = cli
@@ -539,21 +697,29 @@ fn main() -> Result<()> {
     }
 
     let result = match cli.command {
-        CommandRoot::Setup(args) => {
-            run_setup(args, data_root.clone(), &mut analytics_properties, quiet)
-        }
+        CommandRoot::Setup(args) => run_setup(
+            args,
+            data_root.clone(),
+            &mut analytics_properties,
+            quiet,
+            &config,
+        ),
         CommandRoot::Status(args) => run_status(args, data_root.clone(), quiet),
+        CommandRoot::Index(args) => run_index(args, data_root.clone(), quiet),
         CommandRoot::Sources(args) => {
             run_sources(args, data_root.clone(), &mut analytics_properties)
         }
         CommandRoot::Import(args) => run_import(args, data_root.clone(), &mut analytics_properties),
         CommandRoot::Show(args) => run_show(args, data_root.clone(), &mut analytics_properties),
         CommandRoot::Locate(args) => run_locate(args, data_root.clone(), &mut analytics_properties),
-        CommandRoot::Search(args) => run_search(args, data_root.clone(), &mut analytics_properties),
+        CommandRoot::Search(args) => {
+            run_search(args, data_root.clone(), &mut analytics_properties, &config)
+        }
         CommandRoot::Sql(args) => run_sql(args, data_root.clone()),
         CommandRoot::Docs(args) => docs::run(args),
         CommandRoot::Integrations(args) => integrations::run(args, &mut analytics_properties),
         CommandRoot::Mcp(args) => mcp::run(args, data_root.clone()),
+        CommandRoot::Daemon(args) => semantic::run_daemon_command(args, data_root.clone(), &config),
         CommandRoot::Upgrade(args) => upgrade::run(
             args,
             data_root.clone(),
@@ -591,6 +757,11 @@ fn main() -> Result<()> {
             },
         );
     }
+    if result.is_ok() {
+        if let Some(trigger) = daemon_autostart_trigger {
+            semantic::maybe_autostart_daemon(&data_root, &config, trigger, json_output);
+        }
+    }
     result
 }
 
@@ -599,6 +770,7 @@ fn command_analytics_properties(command: &CommandRoot) -> AnalyticsProperties {
     match command {
         CommandRoot::Setup(args) => {
             analytics::insert_bool(&mut properties, "catalog_only", args.catalog_only);
+            analytics::insert_bool(&mut properties, "no_daemon", args.no_daemon);
             analytics::insert_str(
                 &mut properties,
                 "progress_mode",
@@ -606,12 +778,14 @@ fn command_analytics_properties(command: &CommandRoot) -> AnalyticsProperties {
             );
         }
         CommandRoot::Status(_)
+        | CommandRoot::Index(_)
         | CommandRoot::Sources(_)
         | CommandRoot::Sql(_)
         | CommandRoot::Doctor(_) => {}
         CommandRoot::Import(args) => {
             analytics::insert_bool(&mut properties, "resume", args.resume);
             analytics::insert_bool(&mut properties, "all_sources", args.all);
+            analytics::insert_bool(&mut properties, "no_daemon", args.no_daemon);
             analytics::insert_str(
                 &mut properties,
                 "source_mode",
@@ -726,6 +900,28 @@ fn command_analytics_properties(command: &CommandRoot) -> AnalyticsProperties {
             }
         }
         CommandRoot::Mcp(_) => {}
+        CommandRoot::Daemon(args) => match &args.command {
+            DaemonCommand::Run(args) => {
+                analytics::insert_str(&mut properties, "daemon_command", "run");
+                analytics::insert_bool(&mut properties, "once", args.once);
+                analytics::insert_bool(&mut properties, "force", args.force);
+                if let Some(start_mode) = args.start_mode {
+                    analytics::insert_str(&mut properties, "start_mode", start_mode.as_str());
+                }
+                if let Some(trigger) = args.trigger_command {
+                    analytics::insert_str(&mut properties, "trigger_command", trigger.as_str());
+                }
+            }
+            DaemonCommand::Status(_) => {
+                analytics::insert_str(&mut properties, "daemon_command", "status");
+            }
+            DaemonCommand::Enable(_) => {
+                analytics::insert_str(&mut properties, "daemon_command", "enable");
+            }
+            DaemonCommand::Disable(_) => {
+                analytics::insert_str(&mut properties, "daemon_command", "disable");
+            }
+        },
         CommandRoot::Docs(_) => {}
         CommandRoot::Integrations(args) => {
             args.add_initial_analytics(&mut properties);
@@ -764,6 +960,52 @@ fn env_truthy(key: &str) -> bool {
             "" | "0" | "false" | "no" | "off"
         )
     })
+}
+
+fn parse_semantic_weight(value: &str) -> std::result::Result<f32, String> {
+    let weight = value
+        .parse::<f32>()
+        .map_err(|err| format!("invalid semantic weight: {err}"))?;
+    if !(0.0..=1.0).contains(&weight) || !weight.is_finite() {
+        return Err("semantic weight must be between 0.0 and 1.0".to_owned());
+    }
+    Ok(weight)
+}
+
+fn parse_semantic_worker_batch(value: &str) -> std::result::Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|err| format!("invalid semantic worker batch: {err}"))?;
+    if parsed == 0 || parsed > semantic::SEMANTIC_WORKER_BATCH_MAX {
+        return Err(format!(
+            "semantic worker batch must be between 1 and {}",
+            semantic::SEMANTIC_WORKER_BATCH_MAX
+        ));
+    }
+    Ok(parsed)
+}
+
+fn parse_daemon_idle_exit_seconds(value: &str) -> std::result::Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|err| format!("invalid daemon seconds: {err}"))?;
+    if parsed == 0 || parsed > semantic::DAEMON_IDLE_EXIT_SECONDS_CAP {
+        return Err(format!(
+            "daemon seconds must be between 1 and {}",
+            semantic::DAEMON_IDLE_EXIT_SECONDS_CAP
+        ));
+    }
+    Ok(parsed)
+}
+
+fn parse_daemon_interval_seconds(value: &str) -> std::result::Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|err| format!("invalid daemon loop interval seconds: {err}"))?;
+    if !(1..=3_600).contains(&parsed) {
+        return Err("daemon loop interval seconds must be between 1 and 3600".to_owned());
+    }
+    Ok(parsed)
 }
 
 fn parse_event_window_limit(value: &str) -> std::result::Result<usize, String> {

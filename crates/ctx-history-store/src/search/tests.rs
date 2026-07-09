@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::fs;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use ctx_history_core::{
     new_id, Event, EventRole, EventType, Fidelity, HistoryRecord, SyncMetadata, SyncState,
     Visibility,
@@ -77,6 +78,40 @@ fn policy_event(
         dedupe_key: None,
         sync: sync_metadata(),
     }
+}
+
+fn insert_session(store: &Store, session_id: Uuid) {
+    store
+        .conn
+        .execute(
+            r#"
+            INSERT INTO sessions
+            (id, provider, external_session_id, agent_type, is_primary, status, fidelity,
+             started_at_ms, created_at_ms, updated_at_ms)
+            VALUES (?1, 'codex', ?2, 'primary', 1, 'imported', 'full', 1, 1, 1)
+            "#,
+            params![session_id.to_string(), format!("session-{session_id}")],
+        )
+        .unwrap();
+}
+
+fn session_event(
+    seq: u64,
+    session_id: Uuid,
+    event_type: EventType,
+    role: Option<EventRole>,
+    text: &str,
+) -> Event {
+    let mut event = local_preview_event(seq, text);
+    event.session_id = Some(session_id);
+    event.event_type = event_type;
+    event.role = role;
+    event
+}
+
+fn with_occurred_at(mut event: Event, offset_minutes: i64) -> Event {
+    event.occurred_at = fixed_time() + Duration::minutes(offset_minutes);
+    event
 }
 
 #[test]
@@ -595,4 +630,458 @@ fn upsert_record_updates_record_search_without_rebuilding_event_search() {
         .unwrap();
     assert_eq!(sentinel_count, 1);
     assert_search_order(&store, &[record.id]);
+}
+
+#[test]
+fn semantic_embedding_documents_use_user_assistant_lite_turns() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let session_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000080001").unwrap();
+    insert_session(&store, session_id);
+
+    let user = session_event(
+        1,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "How should semantic snippets work?",
+    );
+    let tool_call = session_event(
+        2,
+        session_id,
+        EventType::ToolCall,
+        Some(EventRole::Assistant),
+        "call search_index_probe",
+    );
+    let tool_output = session_event(
+        3,
+        session_id,
+        EventType::ToolOutput,
+        Some(EventRole::Tool),
+        "probe output should not become its own semantic document",
+    );
+    let assistant = session_event(
+        4,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "Use deterministic lite turn text for snippets.",
+    );
+
+    for event in [&user, &tool_call, &tool_output, &assistant] {
+        store.upsert_event(event).unwrap();
+    }
+
+    let lookup_rows = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM event_search_lookup", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert_eq!(lookup_rows, 2);
+
+    assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 1);
+    store
+        .conn
+        .execute(
+            "DELETE FROM search_projection_stats WHERE key = 'semantic_searchable_lite_turn_items_v2'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(store.cached_event_embedding_document_count().unwrap(), None);
+    assert_eq!(store.count_event_embedding_documents().unwrap(), 1);
+    assert_eq!(store.cached_event_embedding_document_count().unwrap(), None);
+    store
+        .refresh_event_embedding_document_count_cache()
+        .unwrap();
+    assert_eq!(store.count_event_embedding_documents().unwrap(), 1);
+
+    let docs = store.recent_event_embedding_documents(None, 10).unwrap();
+    assert_eq!(docs.len(), 1);
+    let doc = &docs[0];
+    assert_eq!(doc.event_id, user.id);
+    assert_eq!(doc.role, Some(EventRole::User));
+    assert_eq!(doc.rank_bucket, "lite_turn");
+    assert!(doc
+        .text
+        .contains("user:\nHow should semantic snippets work?"));
+    assert!(doc
+        .text
+        .contains("assistant:\nUse deterministic lite turn text for snippets."));
+    assert!(!doc.text.contains("probe output should not become"));
+
+    let by_ids = store
+        .event_embedding_documents_by_ids(&[user.id, tool_call.id, tool_output.id, assistant.id])
+        .unwrap();
+    assert_eq!(
+        by_ids.iter().map(|doc| doc.event_id).collect::<Vec<_>>(),
+        vec![user.id]
+    );
+
+    let matching = store
+        .event_embedding_documents_matching_terms(&["deterministic".to_owned()], 10)
+        .unwrap();
+    assert_eq!(
+        matching.iter().map(|doc| doc.event_id).collect::<Vec<_>>(),
+        vec![user.id]
+    );
+
+    let eligible = store
+        .semantic_eligible_event_ids(&[user.id, tool_call.id, tool_output.id, assistant.id])
+        .unwrap();
+    assert_eq!(eligible.len(), 1);
+    assert!(eligible.contains(&user.id));
+
+    let hit_preview_chars = doc.text.chars().count();
+    let hits = store
+        .semantic_event_hits_by_id(&HashMap::from([(user.id, (0, hit_preview_chars))]))
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].event_id, user.id);
+    assert!(hits[0]
+        .preview
+        .contains("assistant:\nUse deterministic lite turn text for snippets."));
+    assert!(!hits[0].preview.contains("probe output should not become"));
+}
+
+#[test]
+fn semantic_lite_turn_count_ignores_payloads_without_preview_text() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let session_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000080005").unwrap();
+    insert_session(&store, session_id);
+
+    let mut user_without_preview = session_event(
+        1,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "placeholder",
+    );
+    user_without_preview.payload = serde_json::json!({ "opaque": ["not", "previewable"] });
+    let assistant_without_preview = session_event(
+        2,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "assistant should not leak through raw JSON fallback",
+    );
+    let valid_user = session_event(
+        3,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "Valid semantic user prompt",
+    );
+    let mut opaque_assistant = session_event(
+        4,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "placeholder",
+    );
+    opaque_assistant.payload = serde_json::json!({ "opaque": ["assistant", "object"] });
+
+    for event in [
+        &user_without_preview,
+        &assistant_without_preview,
+        &valid_user,
+        &opaque_assistant,
+    ] {
+        store.upsert_event(event).unwrap();
+    }
+
+    assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 1);
+    let docs = store.recent_event_embedding_documents(None, 10).unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].event_id, valid_user.id);
+    assert!(docs[0].text.contains("user:\nValid semantic user prompt"));
+    assert!(!docs[0].text.contains("assistant:\n"));
+    assert!(!docs[0].text.contains("opaque"));
+}
+
+#[test]
+fn semantic_lite_turn_ignores_transcript_control_user_messages() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let session_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000080009").unwrap();
+    insert_session(&store, session_id);
+
+    let control_messages = [
+        "<environment_context>\n  <cwd>/tmp</cwd>\n</environment_context>",
+        "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+        "<subagent_notification>\n{\"status\":\"shutdown\"}\n</subagent_notification>",
+        "Warning: The maximum number of unified exec processes you can keep open is 60",
+    ];
+    let mut control_ids = Vec::new();
+    for (index, text) in control_messages.iter().enumerate() {
+        let event = session_event(
+            (index + 1) as u64,
+            session_id,
+            EventType::Message,
+            Some(EventRole::User),
+            text,
+        );
+        control_ids.push(event.id);
+        store.upsert_event(&event).unwrap();
+    }
+
+    let valid = session_event(
+        10,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "Please remember this ordinary semantic user request.",
+    );
+    store.upsert_event(&valid).unwrap();
+
+    assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 1);
+    let docs = store.recent_event_embedding_documents(None, 10).unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].event_id, valid.id);
+
+    let mut ids = control_ids;
+    ids.push(valid.id);
+    let eligible = store.semantic_eligible_event_ids(&ids).unwrap();
+    assert_eq!(eligible.len(), 1);
+    assert!(eligible.contains(&valid.id));
+}
+
+#[test]
+fn semantic_lite_turn_cached_count_ignores_control_user_messages() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    store
+        .refresh_event_embedding_document_count_cache()
+        .unwrap();
+    assert_eq!(
+        store.cached_event_embedding_document_count().unwrap(),
+        Some(0)
+    );
+
+    let control = local_preview_event(
+        1,
+        "<environment_context>\n{\"cwd\":\"/tmp\"}\n</environment_context>",
+    );
+    store.upsert_event(&control).unwrap();
+    assert_eq!(
+        store.cached_event_embedding_document_count().unwrap(),
+        Some(0)
+    );
+    assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 0);
+
+    let mut valid = local_preview_event(2, "Real semantic indexing task.");
+    store.upsert_event(&valid).unwrap();
+    assert_eq!(
+        store.cached_event_embedding_document_count().unwrap(),
+        Some(1)
+    );
+    assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 1);
+
+    valid.payload = serde_json::json!({
+        "text": "<subagent_notification>\n{\"status\":\"completed\"}\n</subagent_notification>",
+    });
+    store.upsert_event(&valid).unwrap();
+    assert_eq!(
+        store.cached_event_embedding_document_count().unwrap(),
+        Some(0)
+    );
+    assert_eq!(store.count_event_embedding_documents_exact().unwrap(), 0);
+}
+
+#[test]
+fn semantic_lite_turn_control_user_messages_do_not_split_turns() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let session_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000080010").unwrap();
+    insert_session(&store, session_id);
+
+    let user = session_event(
+        1,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "Find the semantic indexing status bug.",
+    );
+    let draft = session_event(
+        2,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "Initial draft should be replaced.",
+    );
+    let control = session_event(
+        3,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "<subagent_notification>\n{\"status\":\"completed\"}\n</subagent_notification>",
+    );
+    let final_answer = session_event(
+        4,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "Final answer includes the actual status cache fix.",
+    );
+    let next_user = session_event(
+        5,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "Start the next real turn.",
+    );
+
+    for event in [&user, &draft, &control, &final_answer, &next_user] {
+        store.upsert_event(event).unwrap();
+    }
+
+    let docs = store.recent_event_embedding_documents(None, 10).unwrap();
+    let user_doc = docs
+        .iter()
+        .find(|doc| doc.event_id == user.id)
+        .expect("user semantic doc");
+    assert!(user_doc
+        .text
+        .contains("assistant:\nFinal answer includes the actual status cache fix."));
+    assert!(!user_doc.text.contains("Initial draft should be replaced."));
+    assert!(!docs.iter().any(|doc| doc.event_id == control.id));
+
+    let term_docs = store
+        .event_embedding_documents_matching_terms(&["actual".to_owned(), "cache".to_owned()], 10)
+        .unwrap();
+    assert!(term_docs.iter().any(|doc| doc.event_id == user.id));
+    assert!(!term_docs.iter().any(|doc| doc.event_id == control.id));
+}
+
+#[test]
+fn semantic_lite_turn_uses_last_assistant_before_next_user() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let session_id = Uuid::parse_str("018f45d0-0000-7000-8000-000000080002").unwrap();
+    insert_session(&store, session_id);
+
+    let first_user = session_event(
+        1,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "First user prompt",
+    );
+    let early_assistant = session_event(
+        2,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "early assistant draft",
+    );
+    let last_assistant = session_event(
+        3,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "last assistant before boundary",
+    );
+    let second_user = session_event(
+        4,
+        session_id,
+        EventType::Message,
+        Some(EventRole::User),
+        "Second user prompt",
+    );
+    let second_assistant = session_event(
+        5,
+        session_id,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        "second assistant answer",
+    );
+
+    for event in [
+        &first_user,
+        &early_assistant,
+        &last_assistant,
+        &second_user,
+        &second_assistant,
+    ] {
+        store.upsert_event(event).unwrap();
+    }
+
+    let docs = store
+        .event_embedding_documents_by_ids(&[first_user.id, second_user.id])
+        .unwrap();
+    assert_eq!(docs.len(), 2);
+    let first_doc = docs
+        .iter()
+        .find(|doc| doc.event_id == first_user.id)
+        .unwrap();
+    assert!(first_doc.text.contains("user:\nFirst user prompt"));
+    assert!(first_doc
+        .text
+        .contains("assistant:\nlast assistant before boundary"));
+    assert!(!first_doc.text.contains("early assistant draft"));
+    assert!(!first_doc.text.contains("second assistant answer"));
+
+    let second_doc = docs
+        .iter()
+        .find(|doc| doc.event_id == second_user.id)
+        .unwrap();
+    assert!(second_doc.text.contains("user:\nSecond user prompt"));
+    assert!(second_doc
+        .text
+        .contains("assistant:\nsecond assistant answer"));
+}
+
+#[test]
+fn semantic_recent_documents_order_by_lite_turn_activity() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let older_session = Uuid::parse_str("018f45d0-0000-7000-8000-000000080003").unwrap();
+    let newer_session = Uuid::parse_str("018f45d0-0000-7000-8000-000000080004").unwrap();
+    insert_session(&store, older_session);
+    insert_session(&store, newer_session);
+
+    let older_user = with_occurred_at(
+        session_event(
+            1,
+            older_session,
+            EventType::Message,
+            Some(EventRole::User),
+            "Older user prompt",
+        ),
+        -30,
+    );
+    let newer_user = with_occurred_at(
+        session_event(
+            2,
+            newer_session,
+            EventType::Message,
+            Some(EventRole::User),
+            "Newer user prompt without assistant yet",
+        ),
+        0,
+    );
+    let late_assistant = with_occurred_at(
+        session_event(
+            3,
+            older_session,
+            EventType::Message,
+            Some(EventRole::Assistant),
+            "Late assistant makes older turn active again",
+        ),
+        30,
+    );
+
+    for event in [&older_user, &newer_user, &late_assistant] {
+        store.upsert_event(event).unwrap();
+    }
+
+    let docs = store.recent_event_embedding_documents(None, 10).unwrap();
+    assert_eq!(
+        docs.iter().map(|doc| doc.event_id).collect::<Vec<_>>(),
+        vec![older_user.id, newer_user.id]
+    );
+    assert!(docs[0].text.contains("Late assistant makes older turn"));
+    assert!(docs[0].occurred_at_ms > docs[1].occurred_at_ms);
 }

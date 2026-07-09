@@ -21,12 +21,19 @@ mod text;
 use text::render_tool_text;
 
 use super::{
-    cli_supported_provider, compact_json, config::CONFIG_FILE, discovered_plugin_sources_json,
-    discovered_sources, event_window, event_window_json, raw_sql_result_json, search_filters,
-    search_has_intent, session_transcript_json, sources_json, OutputFormat, ProviderArg,
-    RefreshArg, SearchDto, SearchFilterInput, SearchIntentInput, SearchRefreshReport,
-    SourceIdentityFilterArgs, TranscriptMode, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
+    cli_supported_provider, compact_json, config, config::CONFIG_FILE,
+    discovered_plugin_sources_json, discovered_sources, event_window, event_window_json,
+    raw_sql_result_json, search_filters, search_has_intent, session_transcript_json, sources_json,
+    OutputFormat, ProviderArg, RefreshArg, SearchBackendArg, SearchDto, SearchFilterInput,
+    SearchIntentInput, SearchRefreshReport, SourceIdentityFilterArgs, TranscriptMode,
+    MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
 };
+use crate::commands::search::resolve_search_backend;
+use crate::semantic::{
+    daemon_report, search_packet_with_backend, semantic_worker_report_cached,
+    semantic_worker_report_configured_json,
+};
+use crate::store_util::open_existing_store_read_only;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_PROTOCOL_VERSION, "2025-06-18"];
@@ -323,6 +330,8 @@ fn handle_tools_call(params: Value, data_root: &Path) -> Result<Value, Value> {
                     "session",
                     "events",
                     "include_current_session",
+                    "backend",
+                    "semantic_weight",
                 ],
             )?;
             tool_search(&arguments, data_root)
@@ -367,6 +376,7 @@ fn handle_tools_call(params: Value, data_root: &Path) -> Result<Value, Value> {
 fn tool_status(data_root: &Path) -> Result<Value> {
     let db_path = database_path(data_root.to_path_buf());
     let initialized = db_path.exists();
+    let config = config::AppConfig::load(data_root)?;
     let (
         indexed_items,
         indexed_sessions,
@@ -382,12 +392,16 @@ fn tool_status(data_root: &Path) -> Result<Value> {
         pending_source_import_files,
         failed_source_import_files,
         stale_source_import_files,
+        semantic,
+        daemon,
     ) = if initialized {
-        let store = Store::open_read_only(&db_path)
-            .with_context(|| format!("open read-only ctx store {}", db_path.display()))?;
+        let store = open_existing_store_read_only(&db_path, "ctx mcp status")?;
         let catalog_counts = store.catalog_session_counts()?;
         let source_import_file_counts = store.source_import_file_counts()?;
         let indexed_counts = store.indexed_history_counts()?;
+        let semantic_report = semantic_worker_report_cached(data_root, Some(&store))?;
+        let daemon = daemon_report(data_root, &semantic_report);
+        let semantic = semantic_worker_report_configured_json(&config, &semantic_report);
         (
             indexed_counts.items(),
             indexed_counts.sessions,
@@ -403,9 +417,30 @@ fn tool_status(data_root: &Path) -> Result<Value> {
             source_import_file_counts.pending,
             source_import_file_counts.failed,
             source_import_file_counts.stale,
+            semantic,
+            daemon,
         )
     } else {
-        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        let semantic_report = semantic_worker_report_cached(data_root, None)?;
+        let daemon = daemon_report(data_root, &semantic_report);
+        (
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            semantic_worker_report_configured_json(&config, &semantic_report),
+            daemon,
+        )
     };
     let inventory_units = cataloged_sessions.saturating_add(source_import_files);
     let pending_inventory_units =
@@ -437,6 +472,8 @@ fn tool_status(data_root: &Path) -> Result<Value> {
         "pending_source_import_files": pending_source_import_files,
         "failed_source_import_files": failed_source_import_files,
         "stale_source_import_files": stale_source_import_files,
+        "semantic": semantic,
+        "daemon": daemon,
         "local_only": true,
         "read_only": true,
     }))
@@ -471,6 +508,12 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
     let include_subagents = optional_bool(arguments, "include_subagents")?.unwrap_or(false);
     let event_type = optional_string(arguments, "event_type")?;
     let file = optional_string(arguments, "file")?.map(PathBuf::from);
+    let config = config::AppConfig::load(data_root)?;
+    let backend = resolve_search_backend(optional_search_backend(arguments, "backend")?, &config)?;
+    let semantic_weight = optional_f32(arguments, "semantic_weight")?.unwrap_or(0.35);
+    if !(0.0..=1.0).contains(&semantic_weight) || !semantic_weight.is_finite() {
+        return Err(anyhow!("semantic_weight must be between 0.0 and 1.0"));
+    }
     if !search_has_intent(SearchIntentInput {
         query: Some(&query),
         terms: &[],
@@ -512,9 +555,26 @@ fn tool_search(arguments: &Value, data_root: &Path) -> Result<Value> {
         },
         ..ctx_history_search::PacketOptions::default()
     };
-    let packet = ctx_history_search::search_packet(&store, &query, &options)?;
+    let (packet, retrieval) = search_packet_with_backend(
+        &store,
+        data_root,
+        &query,
+        &[],
+        &options,
+        backend,
+        config.semantic_search_enabled(),
+        semantic_weight,
+        RefreshArg::Off,
+        false,
+    )?;
     let refresh = SearchRefreshReport::skipped(RefreshArg::Off, "skipped");
-    Ok(SearchDto::packet(&store, &packet, &refresh, Some(&query)))
+    Ok(SearchDto::packet(
+        &store,
+        &packet,
+        &refresh,
+        &retrieval,
+        Some(&query),
+    ))
 }
 
 fn tool_sql(arguments: &Value, data_root: &Path) -> Result<Value> {
@@ -669,7 +729,9 @@ fn tool_definitions() -> Vec<Value> {
                 "file": { "type": "string", "description": "Indexed touched-file path. Required unless query is provided." },
                 "session": { "type": "string", "description": "ctx session id." },
                 "events": { "type": "boolean", "default": false },
-                "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." }
+                "include_current_session": { "type": "boolean", "default": false, "description": "Include the active Codex session tree when CODEX_THREAD_ID is set." },
+                "backend": { "type": "string", "enum": ["hybrid", "semantic", "lexical"], "description": "Optional backend override. Defaults to lexical unless local semantic search is enabled in ctx config, then hybrid." },
+                "semantic_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.35 }
             }), vec![]),
             "annotations": { "readOnlyHint": true },
         }),
@@ -781,6 +843,18 @@ fn optional_usize(arguments: &Value, key: &str) -> Result<Option<usize>> {
     }
 }
 
+fn optional_f32(arguments: &Value, key: &str) -> Result<Option<f32>> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_f64()
+            .map(|value| value as f32)
+            .ok_or_else(|| anyhow!("{key} must be a number"))
+            .map(Some),
+        Some(_) => Err(anyhow!("{key} must be a number")),
+    }
+}
+
 fn required_uuid(arguments: &Value, key: &str) -> Result<Uuid> {
     optional_uuid(arguments, key)?.ok_or_else(|| anyhow!("{key} is required"))
 }
@@ -799,6 +873,18 @@ fn optional_provider(arguments: &Value, key: &str) -> Result<Option<ProviderArg>
         .filter(|provider| cli_supported_provider(provider.capture_provider()))
         .map(Some)
         .ok_or_else(|| anyhow!("provider must be one of {}", provider_names().join(", ")))
+}
+
+fn optional_search_backend(arguments: &Value, key: &str) -> Result<Option<SearchBackendArg>> {
+    let Some(value) = optional_string(arguments, key)? else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "hybrid" => Ok(Some(SearchBackendArg::Hybrid)),
+        "lexical" => Ok(Some(SearchBackendArg::Lexical)),
+        "semantic" => Ok(Some(SearchBackendArg::Semantic)),
+        _ => Err(anyhow!("backend must be one of hybrid, semantic, lexical")),
+    }
 }
 
 fn validate_argument_keys(arguments: &Value, allowed: &[&str]) -> std::result::Result<(), Value> {

@@ -60,8 +60,14 @@
         "pendingCatalogSessions": { "type": "integer", "minimum": 0 },
         "failedCatalogSessions": { "type": "integer", "minimum": 0 },
         "staleCatalogSessions": { "type": "integer", "minimum": 0 },
-        "freshness": { "$ref": "#/$defs/freshness" }
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "semantic": { "$ref": "#/$defs/extensibleObject" },
+        "daemon": { "$ref": "#/$defs/extensibleObject" }
       },
+      "additionalProperties": true
+    },
+    "extensibleObject": {
+      "type": "object",
       "additionalProperties": true
     },
     "providerSource": {
@@ -101,6 +107,7 @@
         "query": { "type": ["string", "null"] },
         "filters": { "type": "object", "additionalProperties": true },
         "freshness": { "$ref": "#/$defs/freshness" },
+        "retrieval": { "$ref": "#/$defs/searchRetrieval" },
         "generatedAt": { "type": ["string", "null"] },
         "results": {
           "type": "array",
@@ -142,6 +149,38 @@
           "items": { "type": "string" }
         },
         "visibility": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "searchRetrieval": {
+      "type": "object",
+      "properties": {
+        "requestedMode": {
+          "type": ["string", "null"],
+          "enum": ["hybrid", "semantic", "lexical", null]
+        },
+        "effectiveMode": {
+          "type": ["string", "null"],
+          "enum": ["lexical", "semantic", "hybrid", null]
+        },
+        "semanticWeight": { "type": ["number", "null"] },
+        "semanticStatus": { "type": ["string", "null"] },
+        "semanticFallbackCode": { "type": ["string", "null"] },
+        "semanticFallback": { "type": ["string", "null"] },
+        "embeddingModel": { "type": ["string", "null"] },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "embeddedItems": { "type": "integer", "minimum": 0 },
+            "embeddedChunks": { "type": "integer", "minimum": 0 },
+            "searchableItems": { "type": "integer", "minimum": 0 },
+            "indexedNow": { "type": "integer", "minimum": 0 },
+            "dirtyItems": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "worker": { "type": ["object", "null"], "additionalProperties": true },
+        "diagnostics": { "type": ["object", "null"], "additionalProperties": true }
       },
       "additionalProperties": true
     },
@@ -221,7 +260,13 @@
       "properties": {
         "mode": { "type": ["string", "null"] },
         "status": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "budgetReasons": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
         "sourceCount": { "type": ["integer", "null"], "minimum": 0 },
+        "daemonLastRunAtMs": { "type": ["integer", "null"] },
         "totals": { "$ref": "#/$defs/totals" },
         "error": { "type": ["string", "null"] }
       },

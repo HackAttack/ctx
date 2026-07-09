@@ -1,6 +1,9 @@
 /target/
+target/
 /.bazel/
 /bazel-*
+__pycache__/
+*.py[cod]
 *.db
 *.sqlite
 *.sqlite3
@@ -15,6 +18,4 @@
 /sdks/jvm/build/
 /sdks/swift/.build/
 
-# Python bytecode
-__pycache__/
-*.py[cod]
+.fastembed_cache/

@@ -7,7 +7,42 @@ cd "${repo_root}"
 export CTX_BOOTSTRAP_BAZELISK="${CTX_BOOTSTRAP_BAZELISK:-1}"
 export CTX_BAZELISK_VERSION="${CTX_BAZELISK_VERSION:-v1.29.0}"
 export CTX_GO_VERSION="${CTX_GO_VERSION:-1.22.12}"
-export CTX_RUST_TOOLCHAIN="${CTX_RUST_TOOLCHAIN:-1.86.0}"
+export CTX_RUST_TOOLCHAIN="${CTX_RUST_TOOLCHAIN:-1.88.0}"
+
+check_args=("$@")
+if (( "${#check_args[@]}" == 0 )); then
+  check_args=(--mode=ci)
+fi
+
+init_buildkite_job_tool_env() {
+  if [[ -z "${BUILDKITE_JOB_ID:-}" ]]; then
+    return 0
+  fi
+
+  local base_tmp job_slug tool_root
+  base_tmp="${TMPDIR:-/tmp}"
+  job_slug="${BUILDKITE_JOB_ID//[^A-Za-z0-9_.-]/_}"
+  tool_root="${CTX_PUBLIC_CI_TOOL_ROOT:-${base_tmp}/ctx-public-ci-${job_slug}}"
+
+  export TMPDIR="${CTX_PUBLIC_CI_TMPDIR:-${tool_root}/tmp}"
+  export HOME="${CTX_PUBLIC_CI_HOME:-${tool_root}/home}"
+  export CARGO_HOME="${CARGO_HOME:-${tool_root}/cargo-home}"
+  export RUSTUP_HOME="${RUSTUP_HOME:-${tool_root}/rustup-home}"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${tool_root}/cargo-target}"
+  export CTX_TOOL_ENV_ROOT="${CTX_TOOL_ENV_ROOT:-${tool_root}/tool-env}"
+  export BAZELISK_HOME="${BAZELISK_HOME:-${tool_root}/bazelisk-home}"
+  export BAZEL_OUTPUT_USER_ROOT="${BAZEL_OUTPUT_USER_ROOT:-${tool_root}/bazel-output}"
+  mkdir -p \
+    "${TMPDIR}" \
+    "${HOME}" \
+    "${CARGO_HOME}" \
+    "${RUSTUP_HOME}" \
+    "${CARGO_TARGET_DIR}" \
+    "${CTX_TOOL_ENV_ROOT}" \
+    "${BAZELISK_HOME}" \
+    "${BAZEL_OUTPUT_USER_ROOT}"
+  printf 'Buildkite job tool root: %s\n' "${tool_root}"
+}
 
 run_apt_get() {
   if command -v sudo >/dev/null 2>&1; then
@@ -23,8 +58,8 @@ install_ubuntu_tools() {
     exit 127
   }
 
-  run_apt_get apt-get update
-  run_apt_get env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  run_apt_get apt-get -o DPkg::Lock::Timeout=300 update
+  run_apt_get env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     curl \
@@ -90,11 +125,12 @@ install_rust() {
   export RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"
   export PATH="${CARGO_HOME}/bin:${PATH}"
 
-  if ! command -v rustup >/dev/null 2>&1; then
+  if [[ ! -x "${CARGO_HOME}/bin/rustup" ]]; then
     rustup_installer="$(mktemp "${TMPDIR:-/tmp}/ctx-rustup-init.XXXXXX")"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "${rustup_installer}"
     sh "${rustup_installer}" -y --profile minimal --default-toolchain none
     rm -f "${rustup_installer}"
+    export PATH="${CARGO_HOME}/bin:${PATH}"
   fi
 
   rustup toolchain install "${CTX_RUST_TOOLCHAIN}" --profile minimal --component rustfmt --component clippy
@@ -133,9 +169,10 @@ print_tool_versions() {
   zip --version
 }
 
+init_buildkite_job_tool_env
 install_ubuntu_tools
 install_go
 install_rust
 configure_bazelisk
 print_tool_versions
-bash scripts/check.sh --mode=ci
+bash scripts/check.sh "${check_args[@]}"

@@ -5,18 +5,24 @@ env:
   CTX_BOOTSTRAP_BAZELISK: "1"
   CTX_BAZELISK_VERSION: "v1.29.0"
   CTX_GO_VERSION: "1.22.12"
-  CTX_RUST_TOOLCHAIN: "1.86.0"
+  CTX_RUST_TOOLCHAIN: "1.88.0"
 
 steps:
   - label: ":bazel: public smoke gate"
     key: "public-smoke"
     command: |
-      bash scripts/buildkite-public-ci.sh
+      bash scripts/buildkite-public-ci.sh -- test \
+        //:buildkite_pipeline_check \
+        //:cargo_check \
+        //:cargo_fmt_check \
+        //:docs_check \
+        //:installer_path_smoke \
+        //:loc_check \
+        //:package_audit_fast \
+        //:source_diff_check \
+        --config=ci
     agents:
       queue: "default"
-    env:
-      CARGO_BUILD_JOBS: "1"
-      RUST_TEST_THREADS: "1"
     concurrency: 1
     concurrency_group: "ctx/public-smoke/default-hosted"
     timeout_in_minutes: 60

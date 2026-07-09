@@ -82,11 +82,15 @@ from the supplied manifest path.
 checkpoint if the rescan succeeds; ctx rejects reset runs that do not emit a
 new after checkpoint so an old cursor cannot be reused accidentally.
 
-`ctx setup` does not execute plugins. `ctx search` defaults to `--refresh auto`
-and runs discovered plugin sources only when they are both `enabled: true` and
-`refresh: auto`; `--refresh off` never runs plugins, and `--refresh strict`
-fails if an auto plugin refresh fails. Plugin refresh is incremental because ctx
-passes the previously stored source cursor before invoking the command.
+`ctx setup` does not execute plugins. `ctx search` defaults to
+`--refresh background` and lets daemon maintenance refresh discovered plugin
+sources when they are both `enabled: true` and `refresh: auto`. If daemon
+maintenance is disabled, foreground background refresh applies a short runtime
+cap so search can serve the existing index promptly. `--refresh off` never runs
+plugins, and `--refresh wait` fails if an auto plugin refresh fails while using
+the normal configured timeout. `ctx import` also uses the normal configured
+timeout. Plugin refresh is incremental because ctx passes the previously stored
+source cursor before invoking the command.
 
 Search can be limited to a custom history source after import:
 

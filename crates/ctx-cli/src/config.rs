@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::{self, Write},
+    env, fs, io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -9,11 +8,15 @@ use std::{
 use anyhow::{bail, Context, Result};
 
 pub const CONFIG_FILE: &str = "config.toml";
+pub const DAEMON_DEFAULT_ENABLED: bool = false;
+pub const SEMANTIC_SEARCH_DEFAULT_ENABLED: bool = false;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub analytics: AnalyticsConfig,
     pub upgrade: UpgradeConfig,
+    pub daemon: DaemonConfig,
+    pub search: SearchConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +33,16 @@ pub struct UpgradeConfig {
     pub functions_base: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchConfig {
+    pub semantic: Option<bool>,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -43,11 +56,29 @@ impl Default for AppConfig {
                 interval: Duration::from_secs(24 * 60 * 60),
                 functions_base: "https://cli.ctx.rs/functions/v1".to_owned(),
             },
+            daemon: DaemonConfig {
+                enabled: DAEMON_DEFAULT_ENABLED,
+            },
+            search: SearchConfig { semantic: None },
         }
     }
 }
 
 impl AppConfig {
+    pub fn semantic_search_enabled(&self) -> bool {
+        self.search
+            .semantic
+            .unwrap_or(SEMANTIC_SEARCH_DEFAULT_ENABLED)
+    }
+
+    pub fn semantic_search_source(&self) -> &'static str {
+        if self.search.semantic.is_some() {
+            "config"
+        } else {
+            "default"
+        }
+    }
+
     pub fn load(data_root: &Path) -> Result<Self> {
         let mut config = Self::default();
         let path = data_root.join(CONFIG_FILE);
@@ -90,6 +121,12 @@ impl AppConfig {
                 }
                 "upgrade.functions_base" => {
                     self.upgrade.functions_base = parse_non_empty_string(key, value)?;
+                }
+                "daemon.enabled" => {
+                    self.daemon.enabled = parse_config_bool(key, value)?;
+                }
+                "search.semantic" => {
+                    self.search.semantic = Some(parse_config_bool(key, value)?);
                 }
                 _ => bail!("unknown config key `{key}` at line {}", value.line),
             }
@@ -134,6 +171,22 @@ impl AppConfig {
                 self.upgrade.interval = Duration::from_secs(seconds);
             }
         }
+        if let Ok(value) = env::var("CTX_DAEMON_ENABLED") {
+            if let Some(enabled) = parse_bool_value(&value) {
+                self.daemon.enabled = enabled;
+            }
+        }
+        if env_flag("CTX_DAEMON_OFF") || env_flag("CTX_DISABLE_DAEMON") {
+            self.daemon.enabled = false;
+        }
+        if let Ok(value) = env::var("CTX_SEARCH_SEMANTIC") {
+            if let Some(enabled) = parse_bool_value(&value) {
+                self.search.semantic = Some(enabled);
+            }
+        }
+        if env_flag("CTX_DISABLE_SEMANTIC_SEARCH") {
+            self.search.semantic = Some(false);
+        }
     }
 
     pub fn config_path(data_root: &Path) -> PathBuf {
@@ -142,18 +195,84 @@ impl AppConfig {
 }
 
 pub fn write_default_config(data_root: &Path) -> Result<()> {
-    let path = AppConfig::config_path(data_root);
-    if path.exists() {
-        return Ok(());
-    }
-    let mut file = fs::File::create(&path)?;
-    file.write_all(
-        b"[upgrade]\n\
-auto = \"apply\"\n\
-channel = \"stable\"\n\
-interval_hours = 24\n",
-    )?;
+    fs::create_dir_all(data_root)?;
     Ok(())
+}
+
+pub fn set_daemon_enabled(data_root: &Path, enabled: bool) -> Result<()> {
+    fs::create_dir_all(data_root)?;
+    let path = AppConfig::config_path(data_root);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let parsed = parse_toml_subset(&text).with_context(|| format!("parse {}", path.display()))?;
+    let mut config = AppConfig::default();
+    config
+        .apply_values(&parsed)
+        .with_context(|| format!("load {}", path.display()))?;
+    let updated = set_toml_bool(&text, "daemon", "enabled", enabled);
+    let parsed =
+        parse_toml_subset(&updated).with_context(|| format!("parse updated {}", path.display()))?;
+    let mut config = AppConfig::default();
+    config
+        .apply_values(&parsed)
+        .with_context(|| format!("load updated {}", path.display()))?;
+    fs::write(&path, updated).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn set_toml_bool(text: &str, section: &str, key: &str, enabled: bool) -> String {
+    let rendered = format!("{key} = {enabled}");
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let mut current_section = String::new();
+    let mut section_start = None;
+    let mut insert_before = lines.len();
+    for (index, raw_line) in lines.iter().enumerate() {
+        let line = strip_comment(raw_line).trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            if section_start.is_some() && current_section == section {
+                insert_before = index;
+                break;
+            }
+            current_section = line[1..line.len() - 1].trim().to_owned();
+            if current_section == section {
+                section_start = Some(index);
+                insert_before = lines.len();
+            }
+            continue;
+        }
+        if current_section == section {
+            if let Some((candidate, _)) = line.split_once('=') {
+                if candidate.trim() == key {
+                    lines[index] = rendered;
+                    return ensure_trailing_newline(lines.join("\n"));
+                }
+            }
+        }
+    }
+    match section_start {
+        Some(start) => {
+            let insert_at = insert_before.max(start + 1);
+            lines.insert(insert_at, rendered);
+        }
+        None => {
+            if !lines.last().is_none_or(|line| line.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(format!("[{section}]"));
+            lines.push(rendered);
+        }
+    }
+    ensure_trailing_newline(lines.join("\n"))
+}
+
+fn ensure_trailing_newline(mut text: String) -> String {
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
 }
 
 #[derive(Debug, Clone)]
@@ -307,6 +426,47 @@ fn env_flag(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        ffi::OsString,
+        sync::{Mutex, MutexGuard},
+    };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let saved = keys
+                .iter()
+                .map(|&key| {
+                    let value = env::var_os(key);
+                    env::remove_var(key);
+                    (key, value)
+                })
+                .collect();
+            Self { _lock: lock, saved }
+        }
+
+        fn set(&self, key: &'static str, value: &str) {
+            env::set_var(key, value);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => env::set_var(*key, value),
+                    None => env::remove_var(*key),
+                }
+            }
+        }
+    }
 
     #[test]
     fn parses_day_one_config_values() {
@@ -319,6 +479,9 @@ enabled = false
 auto = "off"
 channel = "beta"
 interval_seconds = 60
+
+[daemon]
+enabled = false
 "#,
         )
         .unwrap();
@@ -329,11 +492,44 @@ interval_seconds = 60
         );
         assert!(config.analytics.enabled);
         assert_eq!(config.upgrade.auto, "apply");
+        assert_eq!(config.search.semantic, None);
         config.apply_values(&values).unwrap();
         assert!(!config.analytics.enabled);
         assert_eq!(config.upgrade.auto, "off");
         assert_eq!(config.upgrade.channel, "beta");
         assert_eq!(config.upgrade.interval, Duration::from_secs(60));
+        assert!(!config.daemon.enabled);
+        assert_eq!(config.search.semantic, None);
+    }
+
+    #[test]
+    fn search_semantic_is_unset_when_absent() {
+        let values = parse_toml_subset("[upgrade]\nauto = \"off\"\n").unwrap();
+        let mut config = AppConfig::default();
+
+        config.apply_values(&values).unwrap();
+
+        assert_eq!(config.search.semantic, None);
+    }
+
+    #[test]
+    fn parses_search_semantic_true() {
+        let values = parse_toml_subset("[search]\nsemantic = true\n").unwrap();
+        let mut config = AppConfig::default();
+
+        config.apply_values(&values).unwrap();
+
+        assert_eq!(config.search.semantic, Some(true));
+    }
+
+    #[test]
+    fn parses_search_semantic_false() {
+        let values = parse_toml_subset("[search]\nsemantic = false\n").unwrap();
+        let mut config = AppConfig::default();
+
+        config.apply_values(&values).unwrap();
+
+        assert_eq!(config.search.semantic, Some(false));
     }
 
     #[test]
@@ -346,6 +542,7 @@ interval_seconds = 60
         assert_eq!(config.upgrade.auto, "apply");
         assert_eq!(config.upgrade.channel, "stable");
         assert_eq!(config.upgrade.interval, Duration::from_secs(24 * 60 * 60));
+        assert!(!config.daemon.enabled);
     }
 
     #[test]
@@ -363,6 +560,9 @@ auto = "off"
 channel = "beta"
 interval_hours = 2
 functions_base = "https://example.test/functions/v1"
+
+[daemon]
+enabled = false
 "#,
         )
         .unwrap();
@@ -378,6 +578,33 @@ functions_base = "https://example.test/functions/v1"
             config.upgrade.functions_base,
             "https://example.test/functions/v1"
         );
+        assert!(!config.daemon.enabled);
+    }
+
+    #[test]
+    fn set_daemon_enabled_rewrites_or_adds_config_key() {
+        let temp = tempfile::tempdir().unwrap();
+
+        set_daemon_enabled(temp.path(), false).unwrap();
+        let disabled = AppConfig::load(temp.path()).unwrap();
+        assert!(!disabled.daemon.enabled);
+        let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("[daemon]"));
+        assert!(text.contains("enabled = false"));
+
+        set_daemon_enabled(temp.path(), true).unwrap();
+        let enabled = AppConfig::load(temp.path()).unwrap();
+        assert!(enabled.daemon.enabled);
+        let text = fs::read_to_string(temp.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("enabled = true"));
+    }
+
+    #[test]
+    fn default_config_is_not_written_for_implicit_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        write_default_config(temp.path()).unwrap();
+
+        assert!(!temp.path().join(CONFIG_FILE).exists());
     }
 
     #[test]
@@ -393,6 +620,46 @@ functions_base = "https://example.test/functions/v1"
 
         assert!(error.contains("analytics.enabled"), "{error}");
         assert!(error.contains("boolean"), "{error}");
+    }
+
+    #[test]
+    fn rejects_invalid_search_semantic_values() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(CONFIG_FILE),
+            "[search]\nsemantic = maybe\n",
+        )
+        .unwrap();
+
+        let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+
+        assert!(error.contains("search.semantic"), "{error}");
+        assert!(error.contains("boolean"), "{error}");
+    }
+
+    #[test]
+    fn env_overrides_search_semantic_config() {
+        let env_guard = EnvGuard::new(&["CTX_SEARCH_SEMANTIC", "CTX_DISABLE_SEMANTIC_SEARCH"]);
+        let temp = tempfile::tempdir().unwrap();
+
+        fs::write(
+            temp.path().join(CONFIG_FILE),
+            "[search]\nsemantic = false\n",
+        )
+        .unwrap();
+        env_guard.set("CTX_SEARCH_SEMANTIC", "true");
+        let config = AppConfig::load(temp.path()).unwrap();
+        assert_eq!(config.search.semantic, Some(true));
+
+        fs::write(temp.path().join(CONFIG_FILE), "[search]\nsemantic = true\n").unwrap();
+        env_guard.set("CTX_SEARCH_SEMANTIC", "false");
+        let config = AppConfig::load(temp.path()).unwrap();
+        assert_eq!(config.search.semantic, Some(false));
+
+        env_guard.set("CTX_SEARCH_SEMANTIC", "true");
+        env_guard.set("CTX_DISABLE_SEMANTIC_SEARCH", "1");
+        let config = AppConfig::load(temp.path()).unwrap();
+        assert_eq!(config.search.semantic, Some(false));
     }
 
     #[test]
@@ -457,5 +724,20 @@ functions_base = "https://example.test/functions/v1"
 
         assert!(error.contains("unknown config key"), "{error}");
         assert!(error.contains("analytics.enabld"), "{error}");
+    }
+
+    #[test]
+    fn rejects_unknown_search_config_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(CONFIG_FILE),
+            "[search]\nsemantics = true\n",
+        )
+        .unwrap();
+
+        let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+
+        assert!(error.contains("unknown config key"), "{error}");
+        assert!(error.contains("search.semantics"), "{error}");
     }
 }

@@ -22,12 +22,12 @@ chrono.workspace = true
 clap.workspace = true
 clap_mangen.workspace = true
 ring.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9"
 sha2.workspace = true
 toml_edit = "0.22"
-rusqlite.workspace = true
 ureq = { version = "2.10", default-features = true }
 uuid.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }
@@ -37,6 +37,12 @@ ctx-history-store = { path = "../ctx-history-store" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(any(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"), target_env = "gnu"), all(target_os = "macos", target_arch = "aarch64"), all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))'.dependencies]
+fastembed = { version = "5.17.2", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"), target_env = "gnu"))'.dependencies]
+sqlite-vec = "=0.1.9"
 
 [dev-dependencies]
 assert_cmd.workspace = true

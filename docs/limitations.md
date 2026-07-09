@@ -23,7 +23,14 @@ shipped.
 
 ## Import Semantics
 
-- Imports are explicit; ctx does not collect provider history in the background.
+- Imports are explicit unless non-JSON `ctx setup`, native-provider
+  `ctx import`, or `ctx daemon run` starts ctx-owned local daemon maintenance.
+  Setup/import autostart uses the normal background daemon profile and exits
+  after it becomes idle; explicit `ctx daemon run` runs the same coordinator in
+  the foreground. Use
+  `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run autostart
+  opt-out. Semantic catch-up runs only when the required local model cache
+  already exists.
 - Current importers use idempotent rescans.
 - `--resume` is reported in output but is not a universal provider cursor
   contract.
@@ -37,6 +44,11 @@ shipped.
   not a claim of semantic understanding.
 - Empty or punctuation-only search is invalid. Broad valid queries can still
   return metadata-driven matches.
+- Semantic embeddings depend on a compatible local ONNX Runtime backend.
+  Linux GNU and macOS arm64 builds can use the local FastEmbed backend when the
+  model cache already exists. Windows GNU, FreeBSD, and macOS x64 public
+  artifacts currently remain lexical-safe and report semantic unavailable rather
+  than linking an unsupported backend.
 
 ## Retrieval Semantics
 

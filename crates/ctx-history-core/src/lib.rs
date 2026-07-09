@@ -132,9 +132,9 @@ pub use provider::{
 };
 pub use source::{CaptureProvider, CaptureSource, CaptureSourceDescriptor, CaptureSourceKind};
 pub use sync::{
-    AuditActorKind, AuditLogEntry, EntityTimestamps, Fidelity, SyncAlias, SyncBatch,
-    SyncBatchStatus, SyncCursor, SyncDirection, SyncMetadata, SyncOutboxItem, SyncOutboxOperation,
-    SyncState, Visibility,
+    AuditActorKind, AuditLogEntry, EntityTimestamps, Fidelity, RedactionState, SyncAlias,
+    SyncBatch, SyncBatchStatus, SyncCursor, SyncDirection, SyncMetadata, SyncOutboxItem,
+    SyncOutboxOperation, SyncState, Visibility,
 };
 
 pub(crate) use sync::default_metadata;

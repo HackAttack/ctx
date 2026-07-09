@@ -57,6 +57,14 @@ public final class SearchResult {
         return getGeneratedAt();
     }
 
+    public Object getRetrieval() {
+        return fields.get("retrieval");
+    }
+
+    public Object retrieval() {
+        return getRetrieval();
+    }
+
     public List<SearchHit> getResults() {
         return results;
     }

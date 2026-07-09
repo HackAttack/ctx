@@ -99,10 +99,9 @@ ctx search "build failure" --limit 5
 ctx search "build failure" --term checksum --term release --limit 5
 ```
 
-`--limit` is capped at `200`. Search defaults to `--refresh auto`, which
-best-effort refreshes discovered native provider sources and enabled auto
-history-source plugins before querying; use `--refresh off` to search only the
-existing index.
+`--limit` is capped at `200`. Search defaults to `--refresh background`, which
+serves existing indexes while daemon maintenance refreshes history and semantic
+coverage when enabled; use `--refresh off` to search only the existing index.
 
 Inside Codex, ctx excludes the active session tree by default when it can
 identify it, so your current prompt and subagents do not dominate results. Add

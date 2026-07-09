@@ -15,7 +15,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ctxrs/ctx"
 homepage = "https://github.com/ctxrs/ctx"
-rust-version = "1.81"
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0"

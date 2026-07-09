@@ -216,13 +216,21 @@ fn fresh_home_search_mvp_flow() {
         .arg("setup")
         .assert()
         .success()
-        .stdout(predicate::str::contains("no local history was indexed"));
+        .stdout(predicate::str::contains(
+            "ctx is initialized; no local history was indexed",
+        ));
+    assert!(
+        !temp.path().join("config.toml").exists(),
+        "setup should not write config.toml for implicit defaults"
+    );
 
     let setup_json = json_output(ctx(&temp).args(["setup", "--json"]));
     assert_eq!(setup_json["schema_version"], 1);
     assert_eq!(setup_json["network_required"], false);
     assert_eq!(setup_json["repo_writes"], false);
+    assert_eq!(setup_json["mode"], "ready");
     assert_eq!(setup_json["import"]["ran"], true);
+    assert_eq!(setup_json["background_indexing"]["enabled"], false);
 
     let sources = json_output(ctx(&temp).args(["sources", "--json"]));
     assert_eq!(sources["schema_version"], 1);
@@ -530,11 +538,17 @@ fn fresh_home_search_mvp_flow() {
     let status = json_output(ctx(&temp).args(["status", "--json"]));
     assert_eq!(status["schema_version"], 1);
     assert!(status["indexed_items"].as_u64().unwrap() > 0);
+    assert_eq!(status["semantic"]["status"], "disabled");
+    assert_eq!(status["semantic"]["reason"], "semantic_disabled");
+    assert_eq!(status["daemon"]["enabled"], false);
+    assert!(status["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
     let doctor = json_output(ctx(&temp).args(["doctor", "--json"]));
     assert_eq!(doctor["schema_version"], 1);
     assert_eq!(doctor["ok"], true);
     assert_eq!(doctor["progress"], "auto");
+    assert_eq!(doctor["daemon"]["enabled"], false);
+    assert!(doctor["daemon"]["jobs"]["semantic_index"]["status"].is_string());
 
     let doctor_progress = ctx(&temp)
         .args(["doctor", "--json", "--progress", "json"])
@@ -549,6 +563,120 @@ fn fresh_home_search_mvp_flow() {
 }
 
 #[test]
+fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
+    let temp = tempdir();
+    let fixture = provider_history_fixture("codex-sessions");
+    json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--path",
+        &fixture,
+        "--json",
+        "--progress",
+        "none",
+    ]));
+
+    let default_search = json_output(ctx(&temp).args([
+        "search",
+        "semantic-only-missing-sidecar",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(default_search["retrieval"]["requested_mode"], "lexical");
+    assert_eq!(default_search["retrieval"]["effective_mode"], "lexical");
+    assert!(default_search["retrieval"]["semantic_fallback_code"].is_null());
+
+    let hybrid = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--backend",
+        "hybrid",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(hybrid["retrieval"]["requested_mode"], "hybrid");
+    assert_eq!(hybrid["retrieval"]["effective_mode"], "lexical");
+    assert_eq!(
+        hybrid["retrieval"]["semantic_fallback_code"],
+        "semantic_disabled"
+    );
+
+    let disabled_strict_semantic = ctx(&temp)
+        .args([
+            "search",
+            "onboarding",
+            "--backend",
+            "semantic",
+            "--refresh",
+            "off",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let disabled_strict_semantic = String::from_utf8(disabled_strict_semantic).unwrap();
+    assert!(
+        disabled_strict_semantic.contains("semantic search is disabled"),
+        "{disabled_strict_semantic}"
+    );
+
+    fs::write(
+        temp.path().join("config.toml"),
+        "[daemon]\nenabled = true\n\n[search]\nsemantic = true\n",
+    )
+    .unwrap();
+
+    let hybrid_missing_sidecar = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--backend",
+        "hybrid",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(
+        hybrid_missing_sidecar["retrieval"]["requested_mode"],
+        "hybrid"
+    );
+    assert_eq!(
+        hybrid_missing_sidecar["retrieval"]["effective_mode"],
+        "lexical"
+    );
+    assert_eq!(
+        hybrid_missing_sidecar["retrieval"]["semantic_fallback_code"],
+        "semantic_index_missing"
+    );
+
+    let missing_sidecar_strict_semantic = ctx(&temp)
+        .args([
+            "search",
+            "onboarding",
+            "--backend",
+            "semantic",
+            "--refresh",
+            "off",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let missing_sidecar_strict_semantic =
+        String::from_utf8(missing_sidecar_strict_semantic).unwrap();
+    assert!(
+        missing_sidecar_strict_semantic.contains("semantic index is not available yet"),
+        "{missing_sidecar_strict_semantic}"
+    );
+}
+
+#[test]
 fn doctor_reports_missing_store_without_creating_it() {
     let temp = tempdir();
 
@@ -556,6 +684,8 @@ fn doctor_reports_missing_store_without_creating_it() {
 
     assert_eq!(doctor["schema_version"], 1);
     assert_eq!(doctor["ok"], false);
+    assert_eq!(doctor["daemon"]["enabled"], false);
+    assert!(doctor["daemon"]["jobs"]["semantic_index"]["status"].is_string());
     assert!(doctor["findings"]
         .as_array()
         .unwrap()
@@ -1112,6 +1242,8 @@ fn pi_cli_discovers_env_session_dir_for_sources_and_search_refresh() {
         "pi env refresh oracle",
         "--provider",
         "pi",
+        "--refresh",
+        "wait",
         "--json",
     ]));
     assert_search_provider_oracle(&search, "pi", "pi env refresh oracle", 1, "message");

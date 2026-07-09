@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
 use ctx_history_core::database_path;
@@ -16,8 +16,9 @@ use crate::commands::import::{
 };
 use crate::config::CONFIG_FILE;
 use crate::output::print_json;
-use crate::progress::{format_count, plural, ProgressArg, ProgressReporter};
+use crate::progress::{format_bytes, format_count, plural, ProgressArg, ProgressReporter};
 use crate::provider_sources::{discovered_sources, sources_json};
+use crate::semantic::semantic_query_service_supported;
 use crate::{analytics, config, ImportArgs, SetupArgs};
 
 pub(crate) fn run_setup(
@@ -25,17 +26,30 @@ pub(crate) fn run_setup(
     data_root: PathBuf,
     analytics_properties: &mut AnalyticsProperties,
     quiet: bool,
+    config: &config::AppConfig,
 ) -> Result<()> {
     fs::create_dir_all(&data_root)?;
     let db_path = database_path(data_root.clone());
     let store = Store::open(&db_path)?;
     let config_path = data_root.join(CONFIG_FILE);
     config::write_default_config(&data_root)?;
+    if config.semantic_search_enabled() && !semantic_query_service_supported() {
+        bail!(
+            "local semantic search is not supported on this platform yet. Set [search] semantic = false"
+        );
+    }
+    if config.semantic_search_enabled() && (!config.daemon.enabled || args.no_daemon) {
+        bail!(
+            "local semantic search requires the ctx daemon. Set [daemon] enabled = true, remove --no-daemon, or set [search] semantic = false"
+        );
+    }
     let sources = discovered_sources();
     let progress_arg = setup_progress_arg(args.progress, quiet);
     let progress = ProgressReporter::new(progress_arg, args.json, "setup", 0);
+    let daemon_backgrounding_enabled = config.daemon.enabled && !args.no_daemon;
+    let foreground_import = !args.catalog_only && (args.wait || !daemon_backgrounding_enabled);
     let mut inventory_only = None;
-    let import_report = if args.catalog_only {
+    let import_report = if args.catalog_only || !foreground_import {
         progress.message("inventorying", "Preparing local history...");
         let inventory = inventory_available_sources(&store, &sources)?;
         progress.done(
@@ -62,6 +76,7 @@ pub(crate) fn run_setup(
             all: true,
             resume: false,
             partial: true,
+            no_daemon: args.no_daemon,
             json: args.json,
             progress: progress_arg,
         };
@@ -85,6 +100,9 @@ pub(crate) fn run_setup(
     let setup_store = Store::open(&db_path)?;
     let catalog_counts = setup_store.catalog_session_counts()?;
     let source_import_file_counts = setup_store.source_import_file_counts()?;
+    let inventory_units = catalog_counts
+        .total
+        .saturating_add(source_import_file_counts.total);
     let pending_inventory_units = catalog_counts
         .pending
         .saturating_add(source_import_file_counts.pending);
@@ -130,6 +148,10 @@ pub(crate) fn run_setup(
         "has_indexed_content_after_setup",
         setup_has_indexed_content(indexed_items),
     );
+    let background_indexing_enabled = daemon_backgrounding_enabled
+        && !args.catalog_only
+        && !foreground_import
+        && (pending_inventory_units > 0 || config.semantic_search_enabled());
 
     if args.json {
         print_json(json!({
@@ -137,7 +159,13 @@ pub(crate) fn run_setup(
             "data_root": data_root,
             "database_path": db_path,
             "config_path": config_path,
-            "mode": if args.catalog_only { "catalog_only" } else { "ready" },
+            "mode": if args.catalog_only {
+                "catalog_only"
+            } else if foreground_import {
+                "ready"
+            } else {
+                "background"
+            },
             "indexed_items": indexed_items,
             "sources": sources_json(&sources),
             "inventory": inventory_totals_json(
@@ -160,7 +188,14 @@ pub(crate) fn run_setup(
                 "stale_sessions": catalog_counts.stale,
             },
             "catalog_sources": catalog_sources,
-            "import": setup_import_json(import_report.as_ref()),
+            "import": setup_import_json(import_report.as_ref(), args.catalog_only),
+            "background_indexing": setup_background_indexing_json(
+                &inventory_totals,
+                inventory_units,
+                background_indexing_enabled,
+                config.semantic_search_enabled(),
+                args.json
+            ),
             "network_required": false,
             "repo_writes": false,
         }))?;
@@ -173,6 +208,7 @@ pub(crate) fn run_setup(
             print_setup_status_line(
                 import_report.as_ref(),
                 args.catalog_only,
+                foreground_import,
                 pending_inventory_units,
                 indexed_items,
             );
@@ -207,10 +243,24 @@ pub(crate) fn run_setup(
             }
             println!("Data: {}", data_root.display());
             println!();
+            if background_indexing_enabled {
+                print_background_indexing_guidance(
+                    &inventory_totals,
+                    inventory_units,
+                    config.semantic_search_enabled(),
+                );
+            }
             println!("Get started:");
             if args.catalog_only {
                 println!("  ctx import --all");
                 println!("  ctx sources");
+            } else if background_indexing_enabled {
+                println!("  ctx index watch");
+                println!("  ctx search \"test failure\"");
+                println!("  ctx status");
+            } else if !foreground_import {
+                println!("  ctx search \"test failure\"");
+                println!("  ctx status");
             } else if setup_has_indexed_content(indexed_items) {
                 println!("  ctx search \"test failure\"");
                 println!("  ctx show event <event-id> --window 3");
@@ -236,7 +286,7 @@ fn setup_progress_arg(progress: ProgressArg, quiet: bool) -> ProgressArg {
     }
 }
 
-pub(crate) fn setup_import_json(report: Option<&ImportReport>) -> Value {
+pub(crate) fn setup_import_json(report: Option<&ImportReport>, catalog_only: bool) -> Value {
     match report {
         Some(report) => json!({
             "ran": true,
@@ -247,7 +297,7 @@ pub(crate) fn setup_import_json(report: Option<&ImportReport>) -> Value {
         }),
         None => json!({
             "ran": false,
-            "reason": "catalog_only",
+            "reason": if catalog_only { "catalog_only" } else { "background" },
         }),
     }
 }
@@ -312,6 +362,7 @@ fn setup_catalog_sources(
 pub(crate) fn print_setup_status_line(
     report: Option<&ImportReport>,
     catalog_only: bool,
+    foreground_import: bool,
     pending_inventory_units: usize,
     indexed_items: usize,
 ) {
@@ -320,6 +371,16 @@ pub(crate) fn print_setup_status_line(
             println!("ctx local history inventory is ready; import is still pending");
         } else {
             println!("ctx local history inventory is ready");
+        }
+        return;
+    }
+    if !foreground_import {
+        if pending_inventory_units > 0 {
+            println!(
+                "ctx is initialized; local history indexing is queued for background processing"
+            );
+        } else {
+            println!("ctx is initialized; background indexing has no pending local history");
         }
         return;
     }
@@ -338,6 +399,130 @@ pub(crate) fn print_setup_status_line(
 
 pub(crate) fn setup_has_indexed_content(indexed_items: usize) -> bool {
     indexed_items > 0
+}
+
+fn setup_background_indexing_json(
+    inventory: &InventoryTotals,
+    units: usize,
+    enabled: bool,
+    semantic_enabled: bool,
+    json_output: bool,
+) -> Value {
+    json!({
+        "enabled": enabled,
+        "semantic_enabled": semantic_enabled,
+        "units": units,
+        "source_bytes": inventory.source_bytes,
+        "lexical_estimate_seconds": enabled.then(|| estimate_lexical_index_seconds(inventory)),
+        "semantic_estimate_seconds": (enabled && semantic_enabled).then(|| estimate_semantic_index_seconds(inventory)),
+        "daemon_autostart": setup_daemon_autostart_json(enabled, json_output),
+        "status_command": "ctx index status",
+        "watch_command": "ctx index watch",
+        "wait_command": "ctx index wait --all",
+    })
+}
+
+fn setup_daemon_autostart_json(enabled: bool, json_output: bool) -> Value {
+    if !enabled {
+        return json!({
+            "status": "not_needed",
+            "reason": "not_requested",
+            "status_command": "ctx daemon status",
+        });
+    }
+    if json_output {
+        return json!({
+            "status": "skipped",
+            "reason": "json_output",
+            "status_command": "ctx daemon status",
+        });
+    }
+    json!({
+        "status": "deferred",
+        "reason": null,
+        "status_command": "ctx daemon status",
+    })
+}
+
+fn print_background_indexing_guidance(
+    inventory: &InventoryTotals,
+    units: usize,
+    semantic_enabled: bool,
+) {
+    println!("ctx queued your local agent history for background indexing.");
+    println!(
+        "Identified {} {} ({}).",
+        format_count(units),
+        plural(units, "record", "records"),
+        format_bytes(inventory.source_bytes)
+    );
+    println!(
+        "Estimated lexical indexing: {}.",
+        format_duration_estimate(estimate_lexical_index_seconds(inventory))
+    );
+    if semantic_enabled {
+        println!(
+            "Semantic search: enabled; the daemon will download the local embedding model if needed."
+        );
+        println!(
+            "Estimated semantic indexing: {}.",
+            format_duration_estimate(estimate_semantic_index_seconds(inventory))
+        );
+    } else {
+        println!("Semantic search: disabled.");
+    }
+    println!();
+    println!("To watch progress:");
+    println!("  ctx index watch");
+    println!("To inspect daemon status:");
+    println!("  ctx daemon status");
+    println!("To wait until ready:");
+    println!("  ctx index wait --all");
+    println!();
+}
+
+fn estimate_lexical_index_seconds(inventory: &InventoryTotals) -> u64 {
+    estimate_seconds_for_bytes(inventory.source_bytes, 16 * 1024 * 1024)
+}
+
+fn estimate_semantic_index_seconds(inventory: &InventoryTotals) -> u64 {
+    estimate_seconds_for_bytes(inventory.source_bytes, 5 * 1024 * 1024)
+}
+
+fn estimate_seconds_for_bytes(bytes: u64, bytes_per_second: u64) -> u64 {
+    if bytes == 0 {
+        return 0;
+    }
+    bytes.div_ceil(bytes_per_second).max(1)
+}
+
+fn format_duration_estimate(seconds: u64) -> String {
+    if seconds == 0 {
+        "under 1 minute".to_owned()
+    } else if seconds < 60 {
+        format!("{seconds} sec")
+    } else if seconds < 3_600 {
+        let minutes = seconds.div_ceil(60);
+        format!(
+            "{} {}",
+            minutes,
+            plural(minutes as usize, "minute", "minutes")
+        )
+    } else {
+        let hours = seconds / 3_600;
+        let minutes = (seconds % 3_600).div_ceil(60);
+        if minutes == 0 {
+            format!("{} {}", hours, plural(hours as usize, "hour", "hours"))
+        } else {
+            format!(
+                "{} {}, {} {}",
+                hours,
+                plural(hours as usize, "hour", "hours"),
+                minutes,
+                plural(minutes as usize, "minute", "minutes")
+            )
+        }
+    }
 }
 
 pub(crate) fn indexed_history_item_count(store: &Store) -> Result<usize> {

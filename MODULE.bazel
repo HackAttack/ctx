@@ -8,7 +8,7 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 # separate explicit lane rather than in this CI parity graph.
 rust.toolchain(
     edition = "2021",
-    versions = ["1.86.0"],
+    versions = ["1.88.0"],
 )
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")

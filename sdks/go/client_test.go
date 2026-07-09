@@ -54,11 +54,14 @@ func TestSearchBuildsAgentHistoryV1Operation(t *testing.T) {
 		"truncation": {}
 	}`}
 	client := NewClient(WithTransport(transport))
+	semanticWeight := 0.35
 
 	_, err := client.Search(context.Background(), SearchOptions{
 		Query:                 "panic",
 		Terms:                 []string{"sqlite", "retry"},
 		Limit:                 5,
+		Backend:               "hybrid",
+		SemanticWeight:        &semanticWeight,
 		Provider:              "codex",
 		Workspace:             "ctx",
 		Since:                 "30d",
@@ -76,6 +79,8 @@ func TestSearchBuildsAgentHistoryV1Operation(t *testing.T) {
 	want := []string{
 		"search", "panic", "--json", "--limit", "5",
 		"--term", "sqlite", "--term", "retry",
+		"--backend", "hybrid",
+		"--semantic-weight", "0.35",
 		"--provider", "codex",
 		"--workspace", "ctx",
 		"--since", "30d",
@@ -88,6 +93,48 @@ func TestSearchBuildsAgentHistoryV1Operation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(transport.op.Args, want) {
 		t.Fatalf("args mismatch\nwant: %#v\n got: %#v", want, transport.op.Args)
+	}
+}
+
+func TestSearchCamelizesRetrievalJSON(t *testing.T) {
+	client := NewClient(WithTransport(fakeTransport{response: `{
+		"schema_version": 1,
+		"query": "agent history",
+		"retrieval": {
+			"requested_mode": "hybrid",
+			"effective_mode": "lexical",
+			"semantic_weight": 0.0,
+			"semantic_fallback_code": "semantic_retrieval_failed",
+			"semantic_fallback": "semantic_retrieval_failed",
+			"coverage": {"embedded_items": 4, "indexed_now": 1},
+			"diagnostics": {"query_embed_ms": 2}
+		},
+		"results": [{
+			"result_scope": "event"
+		}]
+	}`}))
+
+	response, err := client.Search(context.Background(), SearchOptions{Query: "agent history"})
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	retrieval, ok := response.Search.Retrieval.(map[string]any)
+	if !ok {
+		t.Fatalf("top-level retrieval was not decoded: %#v", response.Search.Retrieval)
+	}
+	if retrieval["requestedMode"] != "hybrid" || retrieval["effectiveMode"] != "lexical" || retrieval["semanticWeight"] != 0.0 {
+		t.Fatalf("top-level retrieval was not camelized: %#v", retrieval)
+	}
+	if retrieval["semanticFallbackCode"] != "semantic_retrieval_failed" {
+		t.Fatalf("retrieval fallback code was not camelized: %#v", retrieval)
+	}
+	coverage, ok := retrieval["coverage"].(map[string]any)
+	if !ok || coverage["embeddedItems"] != float64(4) || coverage["indexedNow"] != float64(1) {
+		t.Fatalf("retrieval coverage was not camelized: %#v", retrieval)
+	}
+	diagnostics, ok := retrieval["diagnostics"].(map[string]any)
+	if !ok || diagnostics["queryEmbedMs"] != float64(2) {
+		t.Fatalf("retrieval diagnostics were not camelized: %#v", retrieval)
 	}
 }
 

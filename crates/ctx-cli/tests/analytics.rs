@@ -114,6 +114,41 @@ fn status_does_not_emit_analytics_or_create_identities_when_enabled() {
 }
 
 #[test]
+fn daemon_status_does_not_emit_analytics_or_create_identities_when_enabled() {
+    let temp = tempdir();
+    let events_path = temp.path().join("analytics.jsonl");
+    let home = temp.path().join("home");
+    let state = temp.path().join("state");
+    let data_root = temp.path().join("data");
+    fs::create_dir_all(&home).unwrap();
+
+    ctx(&temp)
+        .args(["daemon", "status"])
+        .env("CTX_DATA_ROOT", &data_root)
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", &state)
+        .env("LOCALAPPDATA", &state)
+        .env_remove("CTX_ANALYTICS_OFF")
+        .env("CTX_ANALYTICS_ENDPOINT", file_url(&events_path))
+        .env("CTX_UPGRADE_OFF", "1")
+        .assert()
+        .success();
+
+    assert!(
+        !events_path.exists(),
+        "daemon status must not write analytics events"
+    );
+    assert!(
+        !data_root.exists(),
+        "daemon status must not create the data root for install identity"
+    );
+    assert!(
+        !expected_device_path(&home, &state).exists(),
+        "daemon status must not create a device identity"
+    );
+}
+
+#[test]
 fn analytics_device_id_persists_across_data_roots() {
     let temp = tempdir();
     let home = temp.path().join("home");
@@ -336,12 +371,16 @@ fn search_analytics_reports_when_search_creates_empty_store() {
     assert_eq!(events.len(), 1);
     let properties = analytics_event_properties(&events[0]);
     assert_eq!(properties["action"], "search");
+    assert_eq!(properties["search_refresh_mode"], "background");
     assert_eq!(properties["search_refresh_status"], "no_sources");
     assert_eq!(properties["had_existing_store_before_search"], false);
     assert_eq!(properties["indexed_content_before_search_known"], true);
     assert_eq!(properties["had_indexed_content_before_search"], false);
     assert_eq!(properties["store_created_by_search"], true);
     assert_eq!(properties["has_indexed_content_after_search"], false);
+    assert!(!data_root.join("config.toml").exists());
+    assert!(!data_root.join("daemon/status.json").exists());
+    assert!(!data_root.join("daemon/daemon.lock").exists());
     assert_analytics_properties_are_allowlisted(properties);
 }
 

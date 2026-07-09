@@ -5,20 +5,32 @@ the local retrieval product.
 
 ## Required Invariants
 
-- `ctx setup` reads supported provider history and writes only the configured
-  ctx data root and SQLite index.
+- `ctx setup` reads supported provider history and writes only under the
+  configured ctx data root: SQLite index/config data, and optional daemon
+  lock/status/job state when daemon autostart runs.
 - `ctx sources` writes nothing in local-only security mode.
-- `ctx import` writes only the configured ctx data root and SQLite index.
-- `ctx search` may refresh discovered native provider history into the
-  configured ctx data root before querying.
+- `ctx import` writes only under the configured ctx data root: SQLite
+  index/config data, and optional daemon lock/status/job state when daemon
+  autostart runs.
+- `ctx search` may refresh a bounded batch of discovered native provider
+  history into the configured ctx data root before querying. Default search must
+  not download embedding models, start semantic indexing, start a daemon, or
+  write the semantic sidecar.
 - `ctx show` and `ctx locate` write nothing in local-only security mode, except
   `ctx show session --out` writes only the explicit path when one is provided.
 - `ctx status` is strictly read-only: missing stores stay missing, and existing
   stores are not migrated, repaired, or used to create search projections.
 - `ctx sql` opens only the existing SQLite index, rejects write statements and
   multiple statements, and does not run background upgrade checks.
-- In local-only security mode, setup/import/search do not use network access or
-  API keys.
+- In local-only security mode, setup/import/default search do not use network
+  access or API keys. Explicit semantic use still must not call hosted model
+  APIs, and search must not download the local embedding model when the required
+  cache is missing. Explicit semantic/hybrid search may initialize an
+  already-cached local model to embed the query.
+- `ctx setup --no-daemon`, `ctx setup --catalog-only`, `ctx setup --json`,
+  `ctx import --no-daemon`, and `ctx import --json` must not autostart daemon
+  maintenance. Search and all JSON-output commands must not autostart daemon
+  maintenance.
 - `ctx docs` reads embedded documentation and writes only an explicit topic
   output path for `ctx docs show --out` or an explicit man-page output
   directory when `ctx docs man --out` is used.
@@ -28,6 +40,15 @@ the local retrieval product.
 - Background auto-upgrade is managed-install-only, skipped for status/JSON/MCP/
   docs/sql/upgrade commands, requires explicit signed auto-upgrade policy, and
   must not collect provider history or pollute command stdout/stderr.
+
+- A ctx-owned background coordinator, when launched by `ctx daemon run` or
+  setup/import autostart, must write only under the configured ctx data root,
+  respect `[daemon].enabled` unless explicitly forced, keep cloud sync disabled
+  with `enabled: false` and `network_allowed: false`, and may run only bounded
+  native local provider-history refresh plus bounded semantic catch-up under the
+  ctx data root. It must not run history-source plugins or use cloud sync.
+  Network model acquisition is allowed only for the local embedding model when
+  semantic search is explicitly enabled.
 - Provider files are read as sources and not modified.
 - Provider transcript imports reject symlinked JSONL files by default.
 - JSON output is private by default.

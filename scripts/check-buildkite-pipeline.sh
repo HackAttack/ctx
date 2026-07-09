@@ -27,6 +27,7 @@ if command -v ruby >/dev/null 2>&1; then
     abort "public-smoke should run one hosted Linux job at a time" unless smoke["concurrency"] == 1 && smoke["concurrency_group"].to_s.include?("default-hosted")
     command = smoke["command"].to_s
     abort "public-smoke must run the Buildkite public CI script" unless command.include?("scripts/buildkite-public-ci.sh")
+    abort "public-smoke must pass an explicit hosted-safe target list" unless command.include?("scripts/buildkite-public-ci.sh -- test") && command.include?("//:cargo_check")
     required_keys = %w[
       public-cli-linux-x64
       public-cli-linux-aarch64
@@ -73,14 +74,18 @@ fi
 for required in \
   'key: "public-smoke"' \
   'queue: "default"' \
-  'bash scripts/buildkite-public-ci.sh' \
+  'bash scripts/buildkite-public-ci.sh -- test' \
+  '//:cargo_check' \
   'target/ctx-artifacts/check/**' \
   'concurrency_group: "ctx/public-smoke/default-hosted"' \
-  'CTX_RUST_TOOLCHAIN: "1.86.0"' \
+  'CTX_RUST_TOOLCHAIN: "1.88.0"' \
   'CTX_BAZELISK_VERSION: "v1.29.0"' \
   'CTX_GO_VERSION: "1.22.12"' \
+  'BUILDKITE_JOB_ID' \
+  'CTX_PUBLIC_CI_TOOL_ROOT' \
+  'DPkg::Lock::Timeout=300' \
   'rustup toolchain install "${CTX_RUST_TOOLCHAIN}" --profile minimal --component rustfmt --component clippy' \
-  'apt-get install -y --no-install-recommends' \
+  'apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends' \
   'default-jdk-headless' \
   'install_go' \
   'go${CTX_GO_VERSION}.linux-${go_arch}.tar.gz' \
@@ -88,7 +93,8 @@ for required in \
   'python3-build' \
   'python3-venv' \
   'ctx_bootstrap_bazelisk' \
-  'bash scripts/check.sh --mode=ci' \
+  'check_args=(--mode=ci)' \
+  'bash scripts/check.sh "${check_args[@]}"' \
   'queue: "release-linux-managed"' \
   'ctx-runner-class: "release-linux-control"' \
   'CTX_PUBLIC_CLI_ARTIFACT_MATRIX' \

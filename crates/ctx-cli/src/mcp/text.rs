@@ -70,6 +70,8 @@ fn render_status_text(value: &Value) -> String {
     );
     push_key_value(&mut out, "read_only", value.get("read_only"));
     push_key_value(&mut out, "local_only", value.get("local_only"));
+    push_status_semantic_summary(&mut out, value.get("semantic"));
+    push_status_daemon_summary(&mut out, value.get("daemon"));
     out
 }
 
@@ -156,6 +158,7 @@ fn render_search_text(value: &Value) -> String {
             (None, None) => {}
         }
     }
+    push_retrieval_summary(&mut out, value.get("retrieval"));
     push_filter_summary(&mut out, value.get("filters"));
     out.push_str(&format!("results: {}\n", results.len()));
     if results.is_empty() {
@@ -199,6 +202,137 @@ fn render_search_text(value: &Value) -> String {
         "results",
     );
     out
+}
+
+fn push_status_semantic_summary(out: &mut String, semantic: Option<&Value>) {
+    let Some(semantic) = semantic else {
+        return;
+    };
+    push_object_summary(
+        out,
+        "semantic",
+        semantic,
+        &[
+            ("status", "status"),
+            ("running", "running"),
+            ("model_cache_available", "model_cache_available"),
+        ],
+    );
+    if let Some(coverage) = semantic.get("coverage") {
+        push_object_summary(
+            out,
+            "semantic_coverage",
+            coverage,
+            &[
+                ("searchable_items", "searchable_items"),
+                ("embedded_items", "embedded_items"),
+                ("embedded_chunks", "embedded_chunks"),
+                ("dirty_items", "dirty_items"),
+                ("queued_items_estimate", "queued_items_estimate"),
+            ],
+        );
+    }
+}
+
+fn push_status_daemon_summary(out: &mut String, daemon: Option<&Value>) {
+    let Some(daemon) = daemon else {
+        return;
+    };
+    push_object_summary(
+        out,
+        "daemon",
+        daemon,
+        &[
+            ("enabled", "enabled"),
+            ("status", "status"),
+            ("running", "running"),
+        ],
+    );
+    let Some(jobs) = daemon.get("jobs") else {
+        return;
+    };
+    let job_parts = ["history_refresh", "semantic_index", "cloud_sync"]
+        .into_iter()
+        .filter_map(|key| {
+            jobs.get(key)
+                .and_then(|job| value_field(job, "status"))
+                .filter(|status| !status.trim().is_empty())
+                .map(|status| format!("{key}={status}"))
+        })
+        .collect::<Vec<_>>();
+    if !job_parts.is_empty() {
+        out.push_str(&format!("daemon_jobs: {}\n", job_parts.join(", ")));
+    }
+}
+
+fn push_retrieval_summary(out: &mut String, retrieval: Option<&Value>) {
+    let Some(retrieval) = retrieval else {
+        return;
+    };
+    push_object_summary(
+        out,
+        "retrieval",
+        retrieval,
+        &[
+            ("requested", "requested_mode"),
+            ("effective", "effective_mode"),
+            ("semantic_weight", "semantic_weight"),
+            ("semantic_status", "semantic_status"),
+        ],
+    );
+    if let Some(fallback_code) =
+        value_field(retrieval, "semantic_fallback_code").filter(|code| !code.trim().is_empty())
+    {
+        out.push_str(&format!("semantic_fallback: {fallback_code}\n"));
+    }
+    if let Some(fallback) =
+        value_field(retrieval, "semantic_fallback").filter(|message| !message.trim().is_empty())
+    {
+        out.push_str(&format!(
+            "semantic_fallback_detail: {}\n",
+            clip_inline(&fallback, MCP_TEXT_MAX_SNIPPET_CHARS)
+        ));
+    }
+    if let Some(coverage) = retrieval.get("coverage") {
+        push_object_summary(
+            out,
+            "semantic_coverage",
+            coverage,
+            &[
+                ("searchable_items", "searchable_items"),
+                ("embedded_items", "embedded_items"),
+                ("embedded_chunks", "embedded_chunks"),
+                ("indexed_now", "indexed_now"),
+                ("dirty_items", "dirty_items"),
+            ],
+        );
+    }
+    if let Some(diagnostics) = retrieval.get("diagnostics") {
+        push_object_summary(
+            out,
+            "retrieval_diagnostics",
+            diagnostics,
+            &[
+                ("vector_backend", "vector_backend"),
+                ("semantic_candidates", "semantic_candidates"),
+                ("stale_events_dropped", "stale_events_dropped"),
+            ],
+        );
+    }
+}
+
+fn push_object_summary(out: &mut String, label: &str, value: &Value, fields: &[(&str, &str)]) {
+    let parts = fields
+        .iter()
+        .filter_map(|(label, key)| {
+            value_field(value, key)
+                .filter(|field| !field.trim().is_empty())
+                .map(|field| format!("{label}={field}"))
+        })
+        .collect::<Vec<_>>();
+    if !parts.is_empty() {
+        out.push_str(&format!("{label}: {}\n", parts.join(", ")));
+    }
 }
 
 fn push_filter_summary(out: &mut String, filters: Option<&Value>) {
@@ -363,8 +497,7 @@ fn push_event_summary(out: &mut String, index: usize, event: &Value) {
         format!(" {occurred_at}")
     };
     out.push_str(&format!(
-        "\n{}. {sequence}{role} {event_type}{suffix}\n",
-        index
+        "\n{index}. {sequence}{role} {event_type}{suffix}\n"
     ));
     push_indented_key_value(out, "ctx_event_id", event.get("ctx_event_id"));
     if let Some(text) = value_field(event, "text")

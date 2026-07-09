@@ -841,6 +841,15 @@ fn schema_v44_removes_payload_state_columns_and_rebuilds_preview_fts() {
         )
         .unwrap();
     assert_eq!(preview, "v44 migration preview");
+    let lookup_preview: String = store
+        .conn
+        .query_row(
+            "SELECT preview_text FROM event_search_lookup WHERE event_id = ?1",
+            params![event_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lookup_preview, "v44 migration preview");
 }
 
 #[test]

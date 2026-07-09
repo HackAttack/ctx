@@ -39,6 +39,9 @@ CREATE INDEX IF NOT EXISTS idx_events_session_occurred_at_ms ON events(session_i
 CREATE INDEX IF NOT EXISTS idx_events_history_record_id ON events(history_record_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_run_id ON events(run_id);
+CREATE INDEX IF NOT EXISTS idx_events_role_occurred_seq ON events(event_type, role, occurred_at_ms DESC, seq DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_events_run_role_occurred_seq ON events(run_id, event_type, role, occurred_at_ms DESC, seq DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_events_session_run_role_occurred_seq ON events(session_id, run_id, event_type, role, occurred_at_ms DESC, seq DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_events_capture_source_id ON events(capture_source_id);
 CREATE INDEX IF NOT EXISTS idx_events_payload_blob_id ON events(payload_blob_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedupe_key ON events(dedupe_key) WHERE dedupe_key IS NOT NULL;

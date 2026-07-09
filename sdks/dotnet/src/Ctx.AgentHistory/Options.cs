@@ -20,6 +20,8 @@ public sealed record SearchOptions
     public string? Query { get; init; }
     public IReadOnlyList<string>? Terms { get; init; }
     public int? Limit { get; init; }
+    public string? Backend { get; init; }
+    public double? SemanticWeight { get; init; }
     public string? Provider { get; init; }
     public string? Workspace { get; init; }
     public string? Since { get; init; }

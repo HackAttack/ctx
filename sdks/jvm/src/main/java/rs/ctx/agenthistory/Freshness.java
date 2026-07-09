@@ -1,6 +1,7 @@
 package rs.ctx.agenthistory;
 
 import java.util.Map;
+import java.util.List;
 
 /** Optional pre-search refresh metadata. */
 public final class Freshness {
@@ -33,12 +34,36 @@ public final class Freshness {
         return getStatus();
     }
 
+    public String getReason() {
+        return AgentHistoryValue.string(fields.get("reason"));
+    }
+
+    public String reason() {
+        return getReason();
+    }
+
+    public List<String> getBudgetReasons() {
+        return AgentHistoryValue.stringList(fields.get("budgetReasons"));
+    }
+
+    public List<String> budgetReasons() {
+        return getBudgetReasons();
+    }
+
     public Integer getSourceCount() {
         return AgentHistoryValue.integer(fields.get("sourceCount"));
     }
 
     public Integer sourceCount() {
         return getSourceCount();
+    }
+
+    public Long getDaemonLastRunAtMs() {
+        return AgentHistoryValue.longValue(fields.get("daemonLastRunAtMs"));
+    }
+
+    public Long daemonLastRunAtMs() {
+        return getDaemonLastRunAtMs();
     }
 
     public Totals getTotals() {

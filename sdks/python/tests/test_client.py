@@ -23,6 +23,7 @@ from ctx_agent_history import (
 )
 from ctx_agent_history.errors import CtxAgentHistoryCliError, CtxAgentHistoryProtocolError
 from ctx_agent_history.errors import CtxAgentHistoryTimeoutError, CtxAgentHistoryValidationError
+from ctx_agent_history.transport import LocalCliAdapter
 from ctx_agent_history.types import AgentHistoryErrorCode
 import dogfood_local
 
@@ -112,6 +113,66 @@ class LocalCliAdapterTests(unittest.TestCase):
                     with self.assertRaises(CtxAgentHistoryValidationError) as raised:
                         call()
                     self.assertEqual(raised.exception.code, "invalid_request")
+
+    def test_search_backend_and_semantic_weight_flags_are_optional(self) -> None:
+        adapter = RecordingSearchAdapter()
+        client = AgentHistoryClient(adapter)
+
+        client.search("semantic defaults")
+        client.search("semantic override", backend="hybrid", semantic_weight=0.8, refresh="off")
+
+        self.assertNotIn("--backend", adapter.calls[0])
+        self.assertNotIn("--semantic-weight", adapter.calls[0])
+        self.assertEqual(
+            adapter.calls[1],
+            [
+                "search",
+                "--json",
+                "semantic override",
+                "--backend",
+                "hybrid",
+                "--semantic-weight",
+                "0.8",
+                "--refresh",
+                "off",
+            ],
+        )
+
+    def test_search_normalization_camelizes_retrieval_json(self) -> None:
+        adapter = RecordingSearchAdapter(
+            {
+                "query": "semantic retrieval",
+                "retrieval": {
+                    "requested_mode": "hybrid",
+                    "effective_mode": "lexical",
+                    "semantic_weight": 0.0,
+                    "semantic_status": "fallback",
+                    "semantic_fallback_code": "semantic_retrieval_failed",
+                    "semantic_fallback": "semantic_retrieval_failed",
+                    "coverage": {
+                        "embedded_items": 4,
+                        "embedded_chunks": 9,
+                        "searchable_items": 12,
+                        "indexed_now": 1,
+                    },
+                    "diagnostics": {"query_embed_ms": 2, "vector_scan_ms": 3},
+                },
+                "results": [{"result_scope": "event"}],
+            }
+        )
+        client = AgentHistoryClient(adapter)
+
+        result = client.search("semantic retrieval")
+
+        retrieval = result["search"]["retrieval"]
+        self.assertEqual(retrieval["requestedMode"], "hybrid")
+        self.assertEqual(retrieval["effectiveMode"], "lexical")
+        self.assertEqual(retrieval["semanticWeight"], 0.0)
+        self.assertEqual(retrieval["semanticFallbackCode"], "semantic_retrieval_failed")
+        self.assertEqual(retrieval["semanticFallback"], "semantic_retrieval_failed")
+        self.assertEqual(retrieval["coverage"]["embeddedItems"], 4)
+        self.assertEqual(retrieval["coverage"]["indexedNow"], 1)
+        self.assertEqual(retrieval["diagnostics"]["queryEmbedMs"], 2)
 
     def test_versioning_reports_sdk_api_transport_and_ctx_version(self) -> None:
         with fake_ctx() as cli:
@@ -248,6 +309,17 @@ class DogfoodExampleTests(unittest.TestCase):
         self.assertEqual(snapshot.event_location["operation"], "locateEvent")
         self.assertEqual(snapshot.session_location["operation"], "locateSession")
         self.assertEqual(snapshot.search["search"]["results"][0]["resultScope"], "event")
+
+
+class RecordingSearchAdapter(LocalCliAdapter):
+    def __init__(self, raw: dict[str, object] | None = None) -> None:
+        super().__init__()
+        self.raw = raw or {"query": "semantic defaults", "results": []}
+        self.calls: list[list[str]] = []
+
+    def _json(self, args: typing.Sequence[str]) -> dict[str, object]:
+        self.calls.append(list(args))
+        return self.raw
 
 
 class fake_ctx:

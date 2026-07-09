@@ -7,7 +7,9 @@ use crate::connection::{
     parse_json, parse_optional_uuid, parse_text_enum, parse_uuid, timestamp_ms,
 };
 use crate::search::projections::{
-    insert_event_search_projection_for_event, upsert_event_search_projection_for_event,
+    adjust_semantic_searchable_item_stats, insert_event_search_projection_for_event,
+    semantic_searchable_document_count_for_event,
+    semantic_searchable_document_count_from_stored_event, upsert_event_search_projection_for_event,
 };
 use crate::sync::sync_metadata_from_row;
 use crate::{Result, Store, StoreError};
@@ -54,6 +56,8 @@ impl Store {
         } else {
             event.id
         };
+        let previous_searchable_count =
+            semantic_searchable_document_count_from_stored_event(&self.conn, event_id)?;
 
         self.conn.execute(
                 r#"
@@ -101,6 +105,11 @@ impl Store {
                 ],
             )?;
         upsert_event_search_projection_for_event(&self.conn, event_id, event)?;
+        adjust_semantic_searchable_item_stats(
+            &self.conn,
+            previous_searchable_count,
+            semantic_searchable_document_count_for_event(event),
+        )?;
         if let Some(dedupe_key) = &event.dedupe_key {
             return self.event_id_by_dedupe_key(dedupe_key);
         }
@@ -144,6 +153,11 @@ impl Store {
         }
         if changed > 0 {
             insert_event_search_projection_for_event(&self.conn, event)?;
+            adjust_semantic_searchable_item_stats(
+                &self.conn,
+                0,
+                semantic_searchable_document_count_for_event(event),
+            )?;
         }
         Ok(changed > 0)
     }

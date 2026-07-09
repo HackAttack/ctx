@@ -1,5 +1,6 @@
 pub(crate) mod doctor;
 pub(crate) mod import;
+pub(crate) mod index;
 pub(crate) mod locate;
 pub(crate) mod search;
 pub(crate) mod setup;

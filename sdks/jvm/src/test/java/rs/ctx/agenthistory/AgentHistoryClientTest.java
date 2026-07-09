@@ -12,6 +12,7 @@ public final class AgentHistoryClientTest {
         wrapsRawStatusAsTypedEnvelope();
         normalizesSetupJsonAsInitStatus();
         acceptsCanonicalSearchFixture();
+        camelizesSearchRetrievalJson();
         decodesAllCanonicalFixturesThroughTypedResponses();
         normalizesRawShowAndLocateResponses();
         buildsSearchCommand();
@@ -70,6 +71,38 @@ public final class AgentHistoryClientTest {
         assertEquals("11111111-1111-4111-8111-111111111111", hit.getCtxEventId());
         assertEquals("event", hit.getResultScope());
         assertEquals("codex event", hit.getCitations().get(0).getLabel());
+    }
+
+    private static void camelizesSearchRetrievalJson() {
+        AgentHistoryClient client = AgentHistoryClient.withTransport(new FakeTransport(
+                "local-cli",
+                "{"
+                        + "\"schema_version\":1,"
+                        + "\"query\":\"agent history\","
+                        + "\"retrieval\":{"
+                        + "\"requested_mode\":\"hybrid\","
+                        + "\"effective_mode\":\"lexical\","
+                        + "\"semantic_weight\":0.0,"
+                        + "\"semantic_fallback_code\":\"semantic_retrieval_failed\","
+                        + "\"semantic_fallback\":\"semantic_retrieval_failed\","
+                        + "\"coverage\":{\"embedded_items\":4,\"indexed_now\":1},"
+                        + "\"diagnostics\":{\"query_embed_ms\":2}"
+                        + "},"
+                        + "\"results\":[{\"result_scope\":\"event\"}]"
+                        + "}"));
+
+        SearchResponse response = client.search(AgentHistoryOptions.search().query("agent history"));
+        Map<String, Object> retrieval = AgentHistoryValue.object(response.getSearch().getRetrieval());
+        assertEquals("hybrid", retrieval.get("requestedMode"));
+        assertEquals("lexical", retrieval.get("effectiveMode"));
+        assertEquals(Double.valueOf(0.0), AgentHistoryValue.doubleValue(retrieval.get("semanticWeight")));
+        assertEquals("semantic_retrieval_failed", retrieval.get("semanticFallbackCode"));
+        assertEquals("semantic_retrieval_failed", retrieval.get("semanticFallback"));
+        Map<String, Object> coverage = AgentHistoryValue.object(retrieval.get("coverage"));
+        assertEquals(Integer.valueOf(4), AgentHistoryValue.integer(coverage.get("embeddedItems")));
+        assertEquals(Integer.valueOf(1), AgentHistoryValue.integer(coverage.get("indexedNow")));
+        Map<String, Object> diagnostics = AgentHistoryValue.object(retrieval.get("diagnostics"));
+        assertEquals(Integer.valueOf(2), AgentHistoryValue.integer(diagnostics.get("queryEmbedMs")));
     }
 
     private static void normalizesRawShowAndLocateResponses() {
@@ -165,11 +198,19 @@ public final class AgentHistoryClientTest {
                 "{\"schema_version\":1,\"query\":\"client\",\"results\":[]}");
         AgentHistoryClient client = AgentHistoryClient.withTransport(transport);
 
-        client.search(AgentHistoryOptions.search().query("agent history").term("ctx").limit(5).refresh("off"));
+        client.search(AgentHistoryOptions.search()
+                .query("agent history")
+                .term("ctx")
+                .limit(5)
+                .backend("hybrid")
+                .semanticWeight(Double.valueOf(0.35))
+                .refresh("off"));
 
         assertEquals("search", transport.lastOperation.name());
         assertContainsInOrder(transport.lastOperation.args(), "search", "agent history", "--json");
         assertContainsInOrder(transport.lastOperation.args(), "--limit", "5");
+        assertContainsInOrder(transport.lastOperation.args(), "--backend", "hybrid");
+        assertContainsInOrder(transport.lastOperation.args(), "--semantic-weight", "0.35");
         assertContainsInOrder(transport.lastOperation.args(), "--term", "ctx");
         assertContainsInOrder(transport.lastOperation.args(), "--refresh", "off");
     }

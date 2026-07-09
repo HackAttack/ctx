@@ -9,10 +9,17 @@ fn search_refreshes_discovered_codex_sessions_before_query() {
     let discovered = temp.path().join(".codex").join("sessions");
     copy_dir_all(&fixture, &discovered);
 
-    let search =
-        json_output(ctx(&temp).args(["search", "onboarding", "--provider", "codex", "--json"]));
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--provider",
+        "codex",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
     assert_search_provider_oracle(&search, "codex", "onboarding", 1, "message");
-    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_eq!(search["freshness"]["totals"]["imported_sessions"], 2);
@@ -56,8 +63,15 @@ fn search_refresh_off_serves_existing_index_without_importing() {
     assert_eq!(status["cataloged_sessions"], 2);
     assert_eq!(status["indexed_catalog_sessions"], 2);
 
-    let fresh =
-        json_output(ctx(&temp).args(["search", "onboarding", "--provider", "codex", "--json"]));
+    let fresh = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--provider",
+        "codex",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
     assert_search_provider_oracle(&fresh, "codex", "onboarding", 1, "message");
 }
 
@@ -81,10 +95,12 @@ fn search_refresh_auto_runs_enabled_auto_history_source_plugins_incrementally() 
                 "hermes plugin initial marker",
                 "--provider",
                 "custom",
+                "--refresh",
+                "wait",
                 "--json",
             ]),
     );
-    assert_eq!(initial["freshness"]["mode"], "auto");
+    assert_eq!(initial["freshness"]["mode"], "wait");
     assert_eq!(initial["freshness"]["status"], "completed");
     assert_eq!(initial["freshness"]["source_count"], 1);
     assert_eq!(initial["freshness"]["totals"]["imported_sources"], 1);
@@ -105,10 +121,12 @@ fn search_refresh_auto_runs_enabled_auto_history_source_plugins_incrementally() 
                 "hermes plugin incremental marker",
                 "--provider",
                 "custom",
+                "--refresh",
+                "wait",
                 "--json",
             ]),
     );
-    assert_eq!(incremental["freshness"]["mode"], "auto");
+    assert_eq!(incremental["freshness"]["mode"], "wait");
     assert_eq!(incremental["freshness"]["status"], "completed");
     assert_eq!(incremental["freshness"]["source_count"], 1);
     assert_eq!(incremental["freshness"]["totals"]["imported_sources"], 1);
@@ -151,6 +169,8 @@ fn search_refresh_history_source_filter_runs_only_matching_auto_plugin() {
                 "dorkos plugin initial marker",
                 "--history-source",
                 "dorkos/default",
+                "--refresh",
+                "wait",
                 "--json",
             ]),
     );
@@ -178,10 +198,16 @@ fn search_refresh_auto_combines_native_sources_and_auto_history_source_plugins()
     let search = json_output(
         ctx(&temp)
             .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
-            .args(["search", "hermes plugin initial marker", "--json"]),
+            .args([
+                "search",
+                "hermes plugin initial marker",
+                "--refresh",
+                "wait",
+                "--json",
+            ]),
     );
 
-    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 2);
     assert!(
@@ -208,10 +234,18 @@ fn search_refresh_provider_filter_does_not_execute_history_source_plugins() {
     let search = json_output(
         ctx(&temp)
             .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
-            .args(["search", "onboarding", "--provider", "codex", "--json"]),
+            .args([
+                "search",
+                "onboarding",
+                "--provider",
+                "codex",
+                "--refresh",
+                "wait",
+                "--json",
+            ]),
     );
 
-    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_search_provider_oracle(&search, "codex", "onboarding", 1, "message");
@@ -248,6 +282,7 @@ fn search_refresh_off_does_not_execute_history_source_plugins() {
 #[test]
 fn search_refresh_auto_skips_disabled_or_manual_history_source_plugins() {
     let temp = tempdir();
+    ctx(&temp).args(["daemon", "disable"]).assert().success();
     let plugin_root = temp.path().join("history-plugins");
     let manual = write_history_source_plugin_at_with_refresh(
         &plugin_root,
@@ -272,11 +307,13 @@ fn search_refresh_auto_skips_disabled_or_manual_history_source_plugins() {
                 "plugin initial marker",
                 "--provider",
                 "custom",
+                "--refresh",
+                "background",
                 "--json",
             ]),
     );
 
-    assert_eq!(search["freshness"]["mode"], "auto");
+    assert_eq!(search["freshness"]["mode"], "background");
     assert_eq!(search["freshness"]["status"], "no_sources");
     assert_eq!(search["freshness"]["source_count"], 0);
     assert!(search["results"].as_array().unwrap().is_empty());
@@ -285,7 +322,7 @@ fn search_refresh_auto_skips_disabled_or_manual_history_source_plugins() {
 }
 
 #[test]
-fn search_refresh_strict_fails_on_history_source_plugin_failure() {
+fn search_refresh_wait_fails_on_history_source_plugin_failure() {
     let temp = tempdir();
     let script = r#"#!/usr/bin/env python3
 import sys
@@ -309,7 +346,7 @@ sys.exit(23)
                 "--provider",
                 "custom",
                 "--refresh",
-                "strict",
+                "wait",
                 "--json",
             ]),
     );
@@ -325,6 +362,7 @@ sys.exit(23)
 #[test]
 fn search_refresh_auto_failure_without_prior_store_fails_instead_of_serving_empty_index() {
     let temp = tempdir();
+    ctx(&temp).args(["daemon", "disable"]).assert().success();
     let script = r#"#!/usr/bin/env python3
 import sys
 print("plugin exploded", file=sys.stderr)
@@ -341,7 +379,15 @@ sys.exit(23)
     let stderr = failure_stderr(
         ctx(&temp)
             .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
-            .args(["search", "anything", "--provider", "custom", "--json"]),
+            .args([
+                "search",
+                "anything",
+                "--provider",
+                "custom",
+                "--refresh",
+                "background",
+                "--json",
+            ]),
     );
 
     assert!(
@@ -358,6 +404,7 @@ sys.exit(23)
 #[test]
 fn search_refresh_auto_failure_serves_prior_index() {
     let temp = tempdir();
+    ctx(&temp).args(["daemon", "disable"]).assert().success();
     let fixture = provider_history_fixture("codex-sessions");
     let script = r#"#!/usr/bin/env python3
 import sys
@@ -383,9 +430,10 @@ sys.exit(23)
     let search = json_output(
         ctx(&temp)
             .env("CTX_HISTORY_PLUGIN_PATH", &plugin.manifest_dir)
-            .args(["search", "onboarding", "--json"]),
+            .args(["search", "onboarding", "--refresh", "background", "--json"]),
     );
 
+    assert_eq!(search["freshness"]["mode"], "background");
     assert_eq!(search["freshness"]["status"], "failed");
     assert!(search["freshness"]["error"]
         .as_str()
@@ -395,7 +443,7 @@ sys.exit(23)
 }
 
 #[test]
-fn search_refresh_strict_times_out_when_plugin_helper_keeps_stdout_open() {
+fn search_refresh_wait_times_out_when_plugin_helper_keeps_stdout_open() {
     let temp = tempdir();
     let script = r#"#!/usr/bin/env python3
 import json
@@ -436,7 +484,7 @@ subprocess.Popen(["sh", "-c", "sleep 5"])
                 "--provider",
                 "custom",
                 "--refresh",
-                "strict",
+                "wait",
                 "--json",
             ]),
     );
@@ -485,9 +533,16 @@ fn search_refresh_auto_imports_fresh_work_despite_large_existing_catalog() {
     }
     tx.commit().unwrap();
     drop(conn);
-    let search =
-        json_output(ctx(&temp).args(["search", "onboarding", "--provider", "codex", "--json"]));
-    assert_eq!(search["freshness"]["mode"], "auto");
+    let search = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--provider",
+        "codex",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_eq!(search["freshness"]["mode"], "wait");
     assert_eq!(search["freshness"]["status"], "completed");
     assert_eq!(search["freshness"]["source_count"], 1);
     assert_eq!(search["freshness"]["totals"]["imported_sessions"], 2);
@@ -526,8 +581,15 @@ fn search_refresh_auto_tail_imports_appended_codex_session_event() {
     }
     drop(file);
 
-    let first =
-        json_output(ctx(&temp).args(["search", "onboarding", "--provider", "codex", "--json"]));
+    let first = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--provider",
+        "codex",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
     assert_search_provider_oracle(&first, "codex", "onboarding", 1, "message");
 
     let appended_needle = "tail-refresh-append-oracle";
@@ -551,8 +613,15 @@ fn search_refresh_auto_tail_imports_appended_codex_session_event() {
     .unwrap();
 
     let started = Instant::now();
-    let refreshed =
-        json_output(ctx(&temp).args(["search", appended_needle, "--provider", "codex", "--json"]));
+    let refreshed = json_output(ctx(&temp).args([
+        "search",
+        appended_needle,
+        "--provider",
+        "codex",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(2),
@@ -595,6 +664,8 @@ fn search_refresh_auto_tail_imports_appended_codex_session_event() {
         second_append_needle,
         "--provider",
         "codex",
+        "--refresh",
+        "wait",
         "--json",
     ]));
     assert_eq!(second_refreshed["freshness"]["status"], "completed");
@@ -645,9 +716,16 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
         let query = format!("{stored_provider}-default-refresh-oracle");
         install_fixture(&temp, &query);
 
-        let search =
-            json_output(ctx(&temp).args(["search", &query, "--provider", cli_provider, "--json"]));
-        assert_eq!(search["freshness"]["mode"], "auto");
+        let search = json_output(ctx(&temp).args([
+            "search",
+            &query,
+            "--provider",
+            cli_provider,
+            "--refresh",
+            "wait",
+            "--json",
+        ]));
+        assert_eq!(search["freshness"]["mode"], "wait");
         assert_eq!(search["freshness"]["status"], "completed");
         assert_eq!(search["freshness"]["source_count"], 1);
         assert!(
@@ -669,9 +747,16 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
         );
 
         let started = Instant::now();
-        let refreshed =
-            json_output(ctx(&temp).args(["search", &query, "--provider", cli_provider, "--json"]));
-        assert_eq!(refreshed["freshness"]["mode"], "auto");
+        let refreshed = json_output(ctx(&temp).args([
+            "search",
+            &query,
+            "--provider",
+            cli_provider,
+            "--refresh",
+            "wait",
+            "--json",
+        ]));
+        assert_eq!(refreshed["freshness"]["mode"], "wait");
         assert_eq!(refreshed["freshness"]["status"], "completed");
         assert_eq!(refreshed["freshness"]["totals"]["imported_events"], 0);
         assert!(
@@ -682,7 +767,7 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
 }
 
 #[test]
-fn search_refresh_strict_json_emits_progress_on_stderr() {
+fn search_refresh_wait_json_emits_progress_on_stderr() {
     let temp = tempdir();
     let fixture = PathBuf::from(provider_history_fixture("codex-sessions"));
     copy_dir_all(&fixture, &temp.path().join(".codex").join("sessions"));
@@ -694,7 +779,7 @@ fn search_refresh_strict_json_emits_progress_on_stderr() {
             "--provider",
             "codex",
             "--refresh",
-            "strict",
+            "wait",
             "--json",
         ])
         .assert()
@@ -714,13 +799,13 @@ fn search_refresh_strict_json_emits_progress_on_stderr() {
 }
 
 #[test]
-fn search_refresh_strict_fails_when_no_supported_refresh_source_exists() {
+fn search_refresh_wait_fails_when_no_supported_refresh_source_exists() {
     let temp = tempdir();
     ctx(&temp)
-        .args(["search", "anything", "--refresh", "strict", "--json"])
+        .args(["search", "anything", "--refresh", "wait", "--json"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "strict search refresh found no supported",
+            "wait search refresh found no supported",
         ));
 }

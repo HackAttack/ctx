@@ -83,40 +83,94 @@ analytics marker described under network behavior.
 
 | Command | Reads | Writes |
 | --- | --- | --- |
-| `ctx setup` | provider transcript files and home path metadata for source discovery | data root, `work.sqlite`, `config.toml`, and SQLite index |
-| `ctx status` | data root metadata and existing SQLite store, opened read-only when present | none |
+| `ctx setup` | provider transcript files and home path metadata for source discovery | data root, `work.sqlite`, SQLite index, and optional daemon lock/status/job files when daemon autostart runs |
+| `ctx status` | data root metadata, existing SQLite store, semantic sidecar/status metadata, and ctx-owned daemon lock/status/job metadata | none |
 | `ctx sources` | known provider paths under the user's home and local history-source plugin manifests | none |
-| `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--format ctx-history-jsonl-v1 --path`, or stdout from an explicit history-source plugin command | data root, `config.toml` if missing, and SQLite index |
+| `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--format ctx-history-jsonl-v1 --path`, or stdout from an explicit history-source plugin command | data root, SQLite index, and optional daemon lock/status/job files when daemon autostart runs |
 | `ctx show` | SQLite index | selected `--out` path for `show session` when provided |
 | `ctx locate` | SQLite index and raw source path metadata | none |
-| `ctx search` | native provider transcript files, path metadata, enabled auto history-source plugin stdout, and SQLite index | SQLite index for newly discovered native provider or plugin history |
+| `ctx search` | native provider transcript files, path metadata, enabled auto history-source plugin stdout, SQLite index, and existing semantic sidecar/status metadata | SQLite index for newly discovered native provider or plugin history |
 | `ctx sql` | existing SQLite index only | none |
 | `ctx docs` | embedded documentation in the binary | selected topic `--out` path for `ctx docs show --out` or selected `--out` directory for `ctx docs man --out` |
 | `ctx upgrade` | signed release metadata and installed binary/sidecar metadata | installed binary for manual upgrade, install sidecar, `upgrade-state.json`, `upgrade.lock`, and `logs/upgrade.log` |
-| `ctx doctor` | SQLite index and data root metadata | none |
+| `ctx doctor` | SQLite index, data root metadata, semantic sidecar/status metadata, and ctx-owned daemon lock/status/job metadata | none |
+| `ctx daemon status` | semantic sidecar/status metadata and ctx-owned daemon lock/status/job metadata | none |
+| `ctx daemon enable` / `ctx daemon disable` | `config.toml` | `config.toml` |
+| `ctx daemon run` | native provider transcript files, SQLite index, semantic sidecar/status metadata, model-cache metadata, and ctx-owned daemon lock/status/job metadata | SQLite index for bounded native provider refresh, ctx-owned daemon lock/status/job metadata, and semantic sidecar/status metadata when local semantic indexing or dirty-queue freshness checks run |
 
-Setup, import, and search do not require source repository writes, model APIs,
-API keys, or remote accounts.
+Setup, import, and default search do not require source repository writes, model
+APIs, API keys, or remote accounts. Without semantic opt-in they do not download
+models; with semantic enabled, daemon maintenance may acquire the local embedding
+model. Non-JSON setup and native provider imports may opportunistically start
+the ctx-owned background daemon maintenance profile when `[daemon].enabled` is true; use
+`ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run opt-out.
+`ctx setup --catalog-only`, `ctx setup --json`, and `ctx import --json` do not
+autostart daemon maintenance.
+`ctx search --refresh off` does not refresh providers, run plugins, start
+semantic workers, schedule semantic indexing, or write the main store or
+semantic sidecar. Default `--backend hybrid --refresh off` uses semantic
+evidence only when sidecar coverage is complete and dirty work is drained, and
+otherwise falls back to lexical. Explicit semantic searches may initialize an
+already-cached local embedding model to embed the query and read partial
+existing sidecar coverage, but they do not download a model or write semantic
+catch-up work during search.
+Explicit imports may best-effort mark recent semantic-eligible items dirty in
+the semantic sidecar when the sidecar already exists; this does not create the
+sidecar, initialize the model, or embed text.
+Explicit semantic search also refuses to initialize or download the embedding
+model when the required local cache is missing; hybrid falls back to lexical in
+that case. Default `--refresh background` lets daemon maintenance own enabled
+auto history-source plugin refresh when possible; use `--refresh wait` or
+`ctx import` for exhaustive foreground plugin catch-up.
 
-## Default Config
+When `ctx daemon run` or setup/import autostart runs the ctx-owned background
+coordinator, it stores private lock/status files under `daemon/` in the ctx data
+root. Setup/import autostart uses the normal background daemon profile and exits
+after it becomes idle; explicit `ctx daemon run` runs the same coordinator in
+the foreground. The current coordinator status surface is local-only: bounded
+native provider-history refresh updates the local SQLite index, semantic
+indexing is bounded by the local model cache, and cloud sync reports `disabled`
+with `enabled: false` and `network_allowed: false`.
+A looping daemon may keep the
+local embedding model resident between passes and uses the sidecar dirty queue
+to prioritize recent/stale events. With semantic enabled and default background
+refresh, search may start the configured daemon so the daemon-owned query
+service can embed the query; `ctx search --refresh off` does not start it.
 
-`ctx setup` creates `~/.ctx/config.toml` when the default root is used, or
-`config.toml` under the configured data root when `CTX_DATA_ROOT` or
-`--data-root` points elsewhere. Existing config files are left in place.
+## Config Overrides
 
-The day-1 generated config is:
+`ctx setup`, `ctx import`, and `ctx search` do not create `config.toml` for
+implicit defaults. The config file is for user-managed overrides. Existing
+config files are read and left in place.
+
+Daemon maintenance is disabled by default during the prerelease. Enable it with:
 
 ```toml
-[upgrade]
-auto = "apply"
-channel = "stable"
-interval_hours = 24
+[daemon]
+enabled = true
 ```
 
-`upgrade.auto = "apply"` only takes effect for official installer-managed
-binaries with a valid install sidecar. Unmanaged installs do not self-upgrade.
-Set `auto = "off"` or use `ctx upgrade disable` to disable background
-auto-upgrade for the configured data root.
+`daemon.enabled = true` allows non-JSON setup and native provider imports to
+opportunistically start the ctx-owned background daemon maintenance profile.
+Use `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run opt-out.
+`ctx daemon enable` and `ctx daemon disable` write only the `[daemon] enabled`
+override.
+
+Local semantic search requires daemon maintenance and is also disabled by
+default. The prerelease opt-in is:
+
+```toml
+[daemon]
+enabled = true
+
+[search]
+semantic = true
+```
+
+`upgrade.auto = "apply"` remains the implicit default for official
+installer-managed binaries with a valid install sidecar. Unmanaged installs do
+not self-upgrade. Set `auto = "off"` or use `ctx upgrade disable` to disable
+background auto-upgrade for the configured data root.
 
 ## Index Lifecycle
 

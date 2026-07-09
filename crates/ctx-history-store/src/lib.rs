@@ -34,7 +34,7 @@ pub use raw_sql::{
     RAW_SQL_MAX_RESULT_CELLS, RAW_SQL_MAX_RESULT_PREVIEW_BYTES, RAW_SQL_MAX_ROWS_CAP,
     RAW_SQL_MAX_SQL_BYTES_CAP, RAW_SQL_MAX_TIMEOUT, RAW_SQL_MAX_VALUE_BYTES_CAP,
 };
-pub use search::projections::EventSearchHit;
+pub use search::projections::{EventEmbeddingDocument, EventSearchHit};
 
 use std::{path::PathBuf, time::Duration};
 

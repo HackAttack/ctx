@@ -1,0 +1,10 @@
+include!("semantic/preamble.rs");
+include!("semantic/vector_store_schema.rs");
+include!("semantic/vector_store_state.rs");
+include!("semantic/vector_store_search.rs");
+include!("semantic/paths_status.rs");
+include!("semantic/daemon.rs");
+include!("semantic/health_search.rs");
+include!("semantic/indexing.rs");
+#[cfg(test)]
+include!("semantic/tests.rs");

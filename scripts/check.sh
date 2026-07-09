@@ -26,10 +26,24 @@ init_bazel() {
 
 run_bazel() {
   init_bazel
+  local -a bazel_args
+
+  bazel_args=("$@")
+  case "${1:-}" in
+    build|coverage|test)
+      bazel_args=(
+        "$@"
+        "--jobs=${BAZEL_JOBS}"
+        "--local_resources=cpu=${BAZEL_LOCAL_CPU_RESOURCES}"
+        "--local_resources=memory=${BAZEL_LOCAL_RAM_RESOURCES}"
+      )
+      ;;
+  esac
+
   printf '==> %s' "${bazel_bin}"
-  printf ' %q' "$@"
+  printf ' %q' "${bazel_args[@]}"
   printf '\n'
-  "${bazel_bin}" "$@"
+  "${bazel_bin}" "${bazel_args[@]}"
 }
 
 usage() {

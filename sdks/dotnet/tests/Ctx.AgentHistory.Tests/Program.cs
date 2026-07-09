@@ -12,6 +12,7 @@ internal static class Program
             ("builds local CLI operation arguments", BuildsOperationArguments),
             ("normalizes setup init status", NormalizesSetupInitStatus),
             ("builds search flags", BuildsSearchFlags),
+            ("camelizes search retrieval json", CamelizesSearchRetrievalJson),
             ("rejects search without intent", RejectsSearchWithoutIntent),
             ("wraps show and locate commands", WrapsShowAndLocate),
             ("reports versioning metadata", ReportsVersioning),
@@ -109,6 +110,8 @@ internal static class Program
             Query = "retry",
             Terms = ["timeout", "backoff"],
             Limit = 5,
+            Backend = "hybrid",
+            SemanticWeight = 0.35,
             Provider = "codex",
             Workspace = "ctx",
             Since = "30d",
@@ -122,10 +125,47 @@ internal static class Program
             IncludeCurrentSession = true
         });
 
-        Equal("search retry --term timeout --term backoff --limit 5 --provider codex --workspace ctx --since 30d --primary-only --include-subagents --event-type message --file src/lib.rs --session session-1 --events --refresh off --include-current-session --json", Join(transport.Calls[0]));
+        Equal("search retry --term timeout --term backoff --limit 5 --backend hybrid --semantic-weight 0.35 --provider codex --workspace ctx --since 30d --primary-only --include-subagents --event-type message --file src/lib.rs --session session-1 --events --refresh off --include-current-session --json", Join(transport.Calls[0]));
         Equal("search", response.Operation);
         Equal("retry", response.Search.Query ?? "");
         Equal("off", response.Search.Freshness!.Mode ?? "");
+    }
+
+    private static async Task CamelizesSearchRetrievalJson()
+    {
+        var transport = new RecordingTransport("""
+            {
+              "schema_version": 1,
+              "query": "agent history",
+              "retrieval": {
+                "requested_mode": "hybrid",
+                "effective_mode": "lexical",
+                "semantic_weight": 0.0,
+                "semantic_fallback_code": "semantic_retrieval_failed",
+                "semantic_fallback": "semantic_retrieval_failed",
+                "coverage": {"embedded_items":4,"indexed_now":1},
+                "diagnostics": {"query_embed_ms":2}
+              },
+              "results": [
+                {
+                  "result_scope": "event"
+                }
+              ]
+            }
+            """);
+        var client = new AgentHistoryClient(transport);
+
+        var response = await client.SearchAsync(new SearchOptions { Query = "agent history" });
+
+        var retrieval = response.Search.Retrieval!.AsObject();
+        Equal("hybrid", retrieval["requestedMode"]!.GetValue<string>());
+        Equal("lexical", retrieval["effectiveMode"]!.GetValue<string>());
+        Equal(0.0, retrieval["semanticWeight"]!.GetValue<double>());
+        Equal("semantic_retrieval_failed", retrieval["semanticFallbackCode"]!.GetValue<string>());
+        Equal("semantic_retrieval_failed", retrieval["semanticFallback"]!.GetValue<string>());
+        Equal(4, retrieval["coverage"]!["embeddedItems"]!.GetValue<int>());
+        Equal(1, retrieval["coverage"]!["indexedNow"]!.GetValue<int>());
+        Equal(2, retrieval["diagnostics"]!["queryEmbedMs"]!.GetValue<int>());
     }
 
     private static async Task RejectsSearchWithoutIntent()

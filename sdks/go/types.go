@@ -58,19 +58,21 @@ const (
 type FreshnessMode string
 
 const (
-	FreshnessModeOff    FreshnessMode = "off"
-	FreshnessModeAuto   FreshnessMode = "auto"
-	FreshnessModeAlways FreshnessMode = "always"
+	FreshnessModeBackground FreshnessMode = "background"
+	FreshnessModeOff        FreshnessMode = "off"
+	FreshnessModeWait       FreshnessMode = "wait"
 )
 
 // FreshnessStatus describes the outcome of a freshness pass.
 type FreshnessStatus string
 
 const (
-	FreshnessStatusSkipped FreshnessStatus = "skipped"
-	FreshnessStatusFresh   FreshnessStatus = "fresh"
-	FreshnessStatusStale   FreshnessStatus = "stale"
-	FreshnessStatusFailed  FreshnessStatus = "failed"
+	FreshnessStatusSkipped         FreshnessStatus = "skipped"
+	FreshnessStatusNoSources       FreshnessStatus = "no_sources"
+	FreshnessStatusCompleted       FreshnessStatus = "completed"
+	FreshnessStatusReadOnly        FreshnessStatus = "read_only"
+	FreshnessStatusBudgetExhausted FreshnessStatus = "budget_exhausted"
+	FreshnessStatusFailed          FreshnessStatus = "failed"
 )
 
 // ResultScope classifies the granularity of a search hit.
@@ -124,6 +126,8 @@ type StatusRecord struct {
 	FailedCatalogSessions  int        `json:"failedCatalogSessions,omitempty"`
 	StaleCatalogSessions   int        `json:"staleCatalogSessions,omitempty"`
 	Freshness              *Freshness `json:"freshness,omitempty"`
+	Semantic               Object     `json:"semantic,omitempty"`
+	Daemon                 Object     `json:"daemon,omitempty"`
 }
 
 // InitResponse is returned by Client.Init.
@@ -201,8 +205,9 @@ type SearchResponse struct {
 type SearchResult struct {
 	Query       string            `json:"query,omitempty"`
 	Filters     Object            `json:"filters,omitempty"`
-	Freshness   *Freshness         `json:"freshness,omitempty"`
+	Freshness   *Freshness        `json:"freshness,omitempty"`
 	GeneratedAt string            `json:"generatedAt,omitempty"`
+	Retrieval   any               `json:"retrieval,omitempty"`
 	Results     []SearchHit       `json:"results"`
 	Pagination  *SearchPagination `json:"pagination,omitempty"`
 	Truncation  *SearchTruncation `json:"truncation,omitempty"`
@@ -227,33 +232,36 @@ type SearchTruncation struct {
 
 // Freshness describes an optional pre-search refresh.
 type Freshness struct {
-	Mode        FreshnessMode   `json:"mode,omitempty"`
-	Status      FreshnessStatus `json:"status,omitempty"`
-	SourceCount int             `json:"sourceCount,omitempty"`
-	Totals      Totals          `json:"totals,omitempty"`
-	Error       string          `json:"error,omitempty"`
+	Mode              FreshnessMode   `json:"mode,omitempty"`
+	Status            FreshnessStatus `json:"status,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	BudgetReasons     []string        `json:"budgetReasons,omitempty"`
+	SourceCount       int             `json:"sourceCount,omitempty"`
+	DaemonLastRunAtMs int64           `json:"daemonLastRunAtMs,omitempty"`
+	Totals            Totals          `json:"totals,omitempty"`
+	Error             string          `json:"error,omitempty"`
 }
 
 // SearchHit is one agent history search hit.
 type SearchHit struct {
-	CtxEventID            string     `json:"ctxEventId,omitempty"`
-	CtxSessionID          string     `json:"ctxSessionId,omitempty"`
-	ProviderSessionID     string     `json:"providerSessionId,omitempty"`
-	EventSeq              int        `json:"eventSeq,omitempty"`
-	Title                 string     `json:"title,omitempty"`
-	Snippet               string     `json:"snippet,omitempty"`
-	Rank                  float64    `json:"rank,omitempty"`
+	CtxEventID            string      `json:"ctxEventId,omitempty"`
+	CtxSessionID          string      `json:"ctxSessionId,omitempty"`
+	ProviderSessionID     string      `json:"providerSessionId,omitempty"`
+	EventSeq              int         `json:"eventSeq,omitempty"`
+	Title                 string      `json:"title,omitempty"`
+	Snippet               string      `json:"snippet,omitempty"`
+	Rank                  float64     `json:"rank,omitempty"`
 	ResultScope           ResultScope `json:"resultScope"`
-	Provider              string     `json:"provider,omitempty"`
-	Timestamp             string     `json:"timestamp,omitempty"`
-	CWD                   string     `json:"cwd,omitempty"`
-	SourcePath            string     `json:"sourcePath,omitempty"`
-	SourceExists          *bool      `json:"sourceExists,omitempty"`
-	Cursor                string     `json:"cursor,omitempty"`
-	WhyMatched            []string   `json:"whyMatched,omitempty"`
-	Citations             []Citation `json:"citations,omitempty"`
-	SuggestedNextCommands []string   `json:"suggestedNextCommands,omitempty"`
-	Visibility            string     `json:"visibility,omitempty"`
+	Provider              string      `json:"provider,omitempty"`
+	Timestamp             string      `json:"timestamp,omitempty"`
+	CWD                   string      `json:"cwd,omitempty"`
+	SourcePath            string      `json:"sourcePath,omitempty"`
+	SourceExists          *bool       `json:"sourceExists,omitempty"`
+	Cursor                string      `json:"cursor,omitempty"`
+	WhyMatched            []string    `json:"whyMatched,omitempty"`
+	Citations             []Citation  `json:"citations,omitempty"`
+	SuggestedNextCommands []string    `json:"suggestedNextCommands,omitempty"`
+	Visibility            string      `json:"visibility,omitempty"`
 }
 
 // Citation identifies source material for a agent history result.

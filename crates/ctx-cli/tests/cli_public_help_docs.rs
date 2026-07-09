@@ -22,6 +22,7 @@ fn help_exposes_session_retrieval_commands() {
     for expected in [
         "setup",
         "status",
+        "index",
         "sources",
         "import",
         "show",
@@ -31,6 +32,7 @@ fn help_exposes_session_retrieval_commands() {
         "mcp",
         "sql",
         "integrations",
+        "daemon",
         "upgrade",
         "doctor",
     ] {
@@ -206,6 +208,16 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
     for (command, required) in [
         ("setup", vec!["Usage: ctx setup", "--json"]),
         ("status", vec!["Usage: ctx status", "--json"]),
+        (
+            "index",
+            vec![
+                "Usage: ctx index",
+                "status",
+                "watch",
+                "wait",
+                "Show, watch, or wait for local indexing progress",
+            ],
+        ),
         ("sources", vec!["Usage: ctx sources", "--json"]),
         (
             "import",
@@ -253,6 +265,17 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
             ],
         ),
         (
+            "daemon",
+            vec![
+                "Usage: ctx daemon",
+                "run",
+                "status",
+                "enable",
+                "disable",
+                "Run or inspect local ctx background maintenance",
+            ],
+        ),
+        (
             "upgrade",
             vec![
                 "Usage: ctx upgrade",
@@ -287,7 +310,7 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
                 "--limit <LIMIT>",
                 "Maximum results to return, from 1 to 200",
                 "--refresh <REFRESH>",
-                "Pre-search refresh behavior. auto best-effort refreshes",
+                "Index freshness behavior. background serves the existing index",
                 "--include-current-session",
                 "Include the active Codex session tree when CODEX_THREAD_ID is set",
                 "--json",
@@ -318,6 +341,93 @@ fn public_subcommand_help_is_golden_enough_for_session_retrieval() {
                 "{command} help leaked {forbidden} in\n{help}"
             );
         }
+    }
+}
+
+#[test]
+fn daemon_help_exposes_readable_status_and_run_controls() {
+    let temp = tempdir();
+    for (args, required) in [
+        (
+            vec!["daemon", "status", "--help"],
+            vec![
+                "Usage: ctx daemon status",
+                "--json",
+                "Show ctx daemon status",
+            ],
+        ),
+        (
+            vec!["daemon", "run", "--help"],
+            vec![
+                "Usage: ctx daemon run",
+                "--once",
+                "--idle-exit-seconds <IDLE_EXIT_SECONDS>",
+                "--loop-interval-seconds <LOOP_INTERVAL_SECONDS>",
+                "--max-chunks <MAX_CHUNKS>",
+                "--force",
+                "--json",
+            ],
+        ),
+        (
+            vec!["daemon", "enable", "--help"],
+            vec![
+                "Usage: ctx daemon enable",
+                "--json",
+                "Enable ctx daemon maintenance",
+            ],
+        ),
+        (
+            vec!["daemon", "disable", "--help"],
+            vec![
+                "Usage: ctx daemon disable",
+                "--json",
+                "Disable ctx daemon maintenance",
+            ],
+        ),
+    ] {
+        let output = ctx(&temp)
+            .args(args.clone())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let help = String::from_utf8(output).unwrap();
+        for needle in required {
+            assert!(
+                help.contains(needle),
+                "{args:?} help missing {needle} in\n{help}"
+            );
+        }
+        assert!(
+            !help.contains("--max-seconds"),
+            "{args:?} help must not expose a daemon runtime cap in\n{help}"
+        );
+    }
+}
+
+#[test]
+fn daemon_run_rejects_public_runtime_cap() {
+    let temp = tempdir();
+    let stderr = failure_stderr(ctx(&temp).args(["daemon", "run", "--max-seconds", "1"]));
+    assert!(
+        stderr.contains("unexpected argument '--max-seconds'"),
+        "daemon run must not accept --max-seconds; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn daemon_run_rejects_internal_autostart_metadata_flags() {
+    let temp = tempdir();
+    for args in [
+        ["daemon", "run", "--start-mode", "auto"],
+        ["daemon", "run", "--trigger-command", "setup"],
+    ] {
+        let stderr = failure_stderr(ctx(&temp).args(args));
+        assert!(
+            stderr.contains("daemon autostart metadata flags are internal"),
+            "daemon run must reject internal metadata flags; stderr:\n{stderr}"
+        );
     }
 }
 

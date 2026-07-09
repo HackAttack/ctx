@@ -8,6 +8,7 @@ use ctx_history_core::database_path;
 use crate::analytics::AnalyticsProperties;
 use crate::output::print_json;
 use crate::progress::{progress_mode_name, ProgressReporter};
+use crate::semantic::{daemon_report, semantic_health_findings, semantic_worker_report};
 use crate::store_util::open_existing_store_read_only;
 use crate::{analytics, DoctorArgs};
 
@@ -36,6 +37,14 @@ pub(crate) fn run_doctor(
         );
         findings.extend(store.validate()?);
     }
+    findings.extend(semantic_health_findings(&data_root));
+    let semantic_report = if db_path.exists() {
+        let store = open_existing_store_read_only(&db_path, "ctx doctor semantic status")?;
+        semantic_worker_report(&data_root, Some(&store))?
+    } else {
+        semantic_worker_report(&data_root, None)?
+    };
+    let daemon = daemon_report(&data_root, &semantic_report);
     analytics::insert_count_bucket(
         analytics_properties,
         "finding_count_bucket",
@@ -56,6 +65,7 @@ pub(crate) fn run_doctor(
             "ok": findings.is_empty(),
             "progress": progress_mode_name(args.progress),
             "findings": findings,
+            "daemon": daemon,
         }))?;
     } else if findings.is_empty() {
         println!("ok");

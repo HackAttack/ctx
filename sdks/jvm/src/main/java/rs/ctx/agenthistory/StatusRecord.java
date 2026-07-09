@@ -104,6 +104,22 @@ public final class StatusRecord {
         return freshness;
     }
 
+    public Map<String, Object> getSemantic() {
+        return AgentHistoryValue.objectAt(fields, "semantic");
+    }
+
+    public Map<String, Object> semantic() {
+        return getSemantic();
+    }
+
+    public Map<String, Object> getDaemon() {
+        return AgentHistoryValue.objectAt(fields, "daemon");
+    }
+
+    public Map<String, Object> daemon() {
+        return getDaemon();
+    }
+
     public Map<String, Object> asMap() {
         return fields;
     }
