@@ -1,5 +1,5 @@
 path	max_lines	kind	reason	review_after
-crates/ctx-history-capture/src/tests/native_json.rs	2694	test	native JSON import regression matrix with shared fixtures; split after provider fixture consolidation lands	2026-10-01
+crates/ctx-history-capture/src/tests/native_json.rs	2796	test	native JSON import regression matrix with shared fixtures; split after provider fixture consolidation lands	2026-10-01
 crates/ctx-history-capture/src/tests/native_providers.rs	2430	test	native provider parser matrix with cross-provider fixture setup; split after provider fixture consolidation lands	2026-10-01
 crates/ctx-cli/src/integrations/mcp.rs	1638	source	MCP config writer matrix spans many agent formats; split after the initial integrations installer surface stabilizes	2026-10-01
 crates/ctx-history-capture/src/tests/support.rs	2074	test	shared capture test fixture support plus hermetic fixture roots; splitting now would add indirection without narrowing callers	2026-10-01
