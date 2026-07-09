@@ -136,4 +136,6 @@ case "${actual_version}" in
     ;;
 esac
 
+bash scripts/check-release-binary-compat.sh "${platform}" "${artifact}"
+
 printf 'public CLI artifact ok: %s sha256=%s\n' "${platform}" "${actual_sha}"

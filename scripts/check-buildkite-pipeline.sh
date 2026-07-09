@@ -3,8 +3,14 @@ set -euo pipefail
 
 pipeline=".buildkite/pipeline.yml"
 public_ci_script="scripts/buildkite-public-ci.sh"
+artifact_script="scripts/build-public-cli-artifact.sh"
+artifact_check_script="scripts/check-public-cli-artifact.sh"
+compat_check_script="scripts/check-release-binary-compat.sh"
 test -f "${pipeline}"
 test -f "${public_ci_script}"
+test -f "${artifact_script}"
+test -f "${artifact_check_script}"
+test -f "${compat_check_script}"
 
 if [[ -e ".github/workflows/public-ci.yml" ]]; then
   printf 'public GitHub Actions CI workflow should be migrated to Buildkite\n' >&2
@@ -104,18 +110,32 @@ for required in \
   'scripts/build-public-cli-artifact.sh freebsd-x64' \
   'scripts/build-public-cli-artifact.sh macos-arm64' \
   'scripts/build-public-cli-artifact.sh macos-x64' \
-  'cargo zigbuild -p ctx --release --target "${target}" --locked' \
+  'cargo zigbuild -p ctx --release --target "${build_target}" --locked' \
+  'LINUX_GLIBC_BASELINE="2.39"' \
+  'LINUX_RELEASE_IMAGE_UBUNTU="24.04"' \
+  'scripts/check-release-binary-compat.sh' \
+  'LINUX_GLIBC_MAX_VERSION="2.39"' \
+  'scripts/docker/linux-release.Dockerfile' \
+  'CTX_PUBLIC_CLI_IN_CONTAINER=1' \
+  'MACOS_DEPLOYMENT_TARGET="13.0"' \
   'CARGO_ZIGBUILD_VERSION' \
-  'ZIG_LINUX_X64_SHA256'; do
-  if ! grep -F -q "${required}" "${pipeline}"; then
-    if ! grep -F -q "${required}" "${public_ci_script}"; then
-      if ! grep -F -q "${required}" scripts/build-public-cli-artifact.sh; then
-        printf 'pipeline, public CI script, or artifact script missing required snippet: %s\n' "${required}" >&2
-        exit 1
-      fi
-      continue
+  'ZIG_LINUX_X64_SHA256' \
+  'ZIG_LINUX_AARCH64_SHA256'; do
+  found=0
+  for checked_file in \
+    "${pipeline}" \
+    "${public_ci_script}" \
+    "${artifact_script}" \
+    "${artifact_check_script}" \
+    "${compat_check_script}"; do
+    if grep -F -q "${required}" "${checked_file}"; then
+      found=1
+      break
     fi
-    continue
+  done
+  if [[ "${found}" != "1" ]]; then
+    printf 'pipeline or release scripts missing required snippet: %s\n' "${required}" >&2
+    exit 1
   fi
 done
 
