@@ -141,6 +141,7 @@ class LocalCliAdapterTests(unittest.TestCase):
     def test_search_normalization_camelizes_retrieval_json(self) -> None:
         adapter = RecordingSearchAdapter(
             {
+                "payloadType": "search_results",
                 "query": "semantic retrieval",
                 "retrieval": {
                     "requested_mode": "hybrid",
@@ -157,7 +158,15 @@ class LocalCliAdapterTests(unittest.TestCase):
                     },
                     "diagnostics": {"query_embed_ms": 2, "vector_scan_ms": 3},
                 },
-                "results": [{"result_scope": "event"}],
+                "results": [
+                    {
+                        "result_type": "event",
+                        "recordType": "event",
+                        "itemType": "event",
+                        "result_scope": "event",
+                        "citations": [{"target_type": "event", "label": "codex event"}],
+                    }
+                ],
             }
         )
         client = AgentHistoryClient(adapter)
@@ -173,6 +182,12 @@ class LocalCliAdapterTests(unittest.TestCase):
         self.assertEqual(retrieval["coverage"]["embeddedItems"], 4)
         self.assertEqual(retrieval["coverage"]["indexedNow"], 1)
         self.assertEqual(retrieval["diagnostics"]["queryEmbedMs"], 2)
+        hit = result["search"]["results"][0]
+        self.assertNotIn("payloadType", result["search"])
+        self.assertNotIn("recordType", hit)
+        self.assertNotIn("itemType", hit)
+        self.assertEqual(hit["resultType"], "event")
+        self.assertEqual(hit["citations"][0]["targetType"], "event")
 
     def test_versioning_reports_sdk_api_transport_and_ctx_version(self) -> None:
         with fake_ctx() as cli:
@@ -396,7 +411,7 @@ def _fake_ctx_script(
         if args[:2] == ["show", "event"]:
             payload.update(
                 {
-                    "item_type": "event_window",
+                    "payload_type": "event_window",
                     "ctx_event_id": args[2],
                     "ctx_session_id": "session-1",
                     "event": {
@@ -411,7 +426,7 @@ def _fake_ctx_script(
         elif args[:2] == ["show", "session"]:
             payload.update(
                 {
-                    "item_type": "session_transcript",
+                    "payload_type": "session_transcript",
                     "ctx_session_id": args[2],
                     "provider": "codex",
                     "provider_session_id": "provider-session-1",
@@ -424,7 +439,7 @@ def _fake_ctx_script(
         elif args[:2] == ["locate", "event"]:
             payload.update(
                 {
-                    "item_type": "event_location",
+                    "payload_type": "event_location",
                     "ctx_event_id": args[2],
                     "ctx_session_id": "session-1",
                     "provider": "codex",
@@ -434,7 +449,7 @@ def _fake_ctx_script(
         elif args[:2] == ["locate", "session"]:
             payload.update(
                 {
-                    "item_type": "session_location",
+                    "payload_type": "session_location",
                     "ctx_session_id": args[2],
                     "provider": "codex",
                     "source": {"path": "/tmp/session.jsonl", "exists": True},
@@ -444,7 +459,14 @@ def _fake_ctx_script(
             payload.update(
                 {
                     "query": "sqlite",
-                    "results": [{"result_scope": "event"}],
+                    "payload_type": "search_results",
+                    "results": [
+                        {
+                            "result_type": "event",
+                            "result_scope": "event",
+                            "citations": [{"target_type": "event", "label": "codex event"}],
+                        }
+                    ],
                     "freshness": {"mode": "off", "status": "skipped"},
                 }
             )

@@ -73,6 +73,14 @@ public final class SearchHit {
         return getRank();
     }
 
+    public String getResultType() {
+        return AgentHistoryValue.string(fields.get("resultType"));
+    }
+
+    public String resultType() {
+        return getResultType();
+    }
+
     public String getResultScope() {
         return AgentHistoryValue.string(fields.get("resultScope"));
     }

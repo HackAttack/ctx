@@ -20,6 +20,7 @@ impl SearchDto {
     ) -> Value {
         compact_json(json!({
             "schema_version": packet.schema_version,
+            "payload_type": "search_results",
             "query": packet.query,
             "filters": packet.filters,
             "freshness": refresh.to_json(),
@@ -31,7 +32,7 @@ impl SearchDto {
                 .map(|result| {
                     compact_json(json!({
                         "item_id": result.record_id,
-                        "item_type": search_result_item_type(store, result),
+                        "result_type": search_result_type(store, result),
                         "ctx_event_id": result.event_id,
                         "ctx_session_id": result.session_id,
                         "session_id": result.session_id,
@@ -71,7 +72,7 @@ impl SearchDto {
     }
 }
 
-pub(crate) fn search_result_item_type(
+pub(crate) fn search_result_type(
     store: &Store,
     result: &ctx_history_search::SearchPacketResult,
 ) -> String {
@@ -84,7 +85,7 @@ pub(crate) fn search_result_item_type(
     if result.session_id == Some(result.record_id) {
         return "session".to_owned();
     }
-    item_type_for_id(store, result.record_id)
+    result_type_for_id(store, result.record_id)
 }
 
 pub(crate) fn search_next_commands(
@@ -146,7 +147,7 @@ pub(crate) fn public_citations(citations: &[ContextCitation]) -> Vec<Value> {
             };
             compact_json(json!({
                 "item_id": citation.id,
-                "item_type": public_citation_item_type(citation.citation_type),
+                "target_type": public_citation_target_type(citation.citation_type),
                 "ctx_event_id": ctx_event_id,
                 "ctx_session_id": ctx_session_id,
                 "label": citation.label,
@@ -162,7 +163,7 @@ pub(crate) fn public_citations(citations: &[ContextCitation]) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn public_citation_item_type(citation_type: ContextCitationType) -> &'static str {
+pub(crate) fn public_citation_target_type(citation_type: ContextCitationType) -> &'static str {
     match citation_type {
         ContextCitationType::HistoryRecord => "indexed_item",
         ContextCitationType::Session => "session",
@@ -175,17 +176,17 @@ pub(crate) fn public_citation_item_type(citation_type: ContextCitationType) -> &
     }
 }
 
-pub(crate) fn public_record_item_type(record: &HistoryRecord) -> String {
-    let item_type = record.kind.trim();
-    match item_type {
+pub(crate) fn public_record_type(record: &HistoryRecord) -> String {
+    let record_type = record.kind.trim();
+    match record_type {
         "" | "record" => "indexed_item".to_owned(),
         value => value.to_owned(),
     }
 }
 
-pub(crate) fn item_type_for_id(store: &Store, item_id: Uuid) -> String {
+pub(crate) fn result_type_for_id(store: &Store, item_id: Uuid) -> String {
     if let Ok(record) = store.get_record(item_id) {
-        return public_record_item_type(&record);
+        return public_record_type(&record);
     }
     if store.get_event(item_id).is_ok() {
         return "event".to_owned();
@@ -271,7 +272,7 @@ pub(crate) fn print_search_result_verbose(
     for citation in result.citations.iter().take(2) {
         println!(
             "  citation: {} {}",
-            public_citation_item_type(citation.citation_type),
+            public_citation_target_type(citation.citation_type),
             citation.id
         );
     }

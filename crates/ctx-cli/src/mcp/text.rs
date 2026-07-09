@@ -10,7 +10,7 @@ const MCP_TEXT_MAX_EVENT_CHARS: usize = 500;
 const MCP_TEXT_MAX_CELL_CHARS: usize = 80;
 
 pub(super) fn render_tool_text(value: &Value) -> String {
-    match value.get("item_type").and_then(Value::as_str) {
+    match value.get("payload_type").and_then(Value::as_str) {
         Some("sql_result") => render_sql_text(value),
         Some("session_transcript") => render_session_text(value),
         Some("event_window") => render_event_window_text(value),
@@ -168,7 +168,7 @@ fn render_search_text(value: &Value) -> String {
     for (index, result) in results.iter().take(MCP_TEXT_MAX_SEARCH_RESULTS).enumerate() {
         let heading = value_field(result, "title")
             .filter(|title| !title.trim().is_empty())
-            .or_else(|| value_field(result, "item_type"))
+            .or_else(|| value_field(result, "result_type"))
             .unwrap_or_else(|| "result".to_owned());
         out.push_str(&format!(
             "\n{}. {}\n",

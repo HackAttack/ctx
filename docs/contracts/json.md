@@ -266,7 +266,7 @@ ctx show event <ctx-event-id> --format json
 Writes nothing and returns:
 
 - `schema_version`;
-- `item_type`, either `session_transcript` or `event_window`;
+- `payload_type`, either `session_transcript` or `event_window`;
 - `mode` for session transcripts;
 - `format`;
 - `session` for session output;
@@ -274,10 +274,10 @@ Writes nothing and returns:
 - `source`;
 - `events[]`.
 
-`session` includes the ctx-owned `item_id`, `provider`, and
+`session` includes the ctx-owned `item_id`, `record_type`, `provider`, and
 `provider_session_id` when known. `event` and `events[]` rows include
-`ctx_event_id`, `ctx_session_id`, `sequence`, `event_type`, `role`,
-`occurred_at`, `source`, `cursor`, and `text` or `preview`.
+`ctx_event_id`, `record_type`, `ctx_session_id`, `sequence`, `event_type`,
+`role`, `occurred_at`, `source`, `cursor`, and `text` or `preview`.
 
 ## Locate
 
@@ -289,7 +289,7 @@ ctx locate event <ctx-event-id> --format json
 Writes nothing and returns provenance metadata:
 
 - `schema_version`;
-- `item_type`, either `session_location` or `event_location`;
+- `payload_type`, either `session_location` or `event_location`;
 - `ctx_session_id`;
 - `ctx_event_id` for event output;
 - `provider`;
@@ -310,7 +310,8 @@ ctx show session <ctx-session-id> --mode full --format json --out transcript.jso
 With `--out`, writes the requested transcript artifact to that path and prints
 nothing on success. Without `--out`, stdout is the requested transcript
 artifact. JSON and JSONL artifact rows use the same ctx-owned ID fields as
-`show`.
+`show`; JSONL rows include `payload_type: "session_transcript_event"` and wrap
+the transcript row in `event`.
 
 ## Search
 
@@ -321,6 +322,7 @@ ctx search <query>|--term <term>|--file <path> --json
 Returns:
 
 - `schema_version`;
+- `payload_type: "search_results"`;
 - `query`;
 - `filters`;
 - `freshness`;
@@ -339,6 +341,8 @@ Each result can include:
 - `title`;
 - `snippet`;
 - `rank`;
+- `result_type`, the concrete hit kind such as `event`, `session`,
+  `session_result`, or `indexed_item`;
 - `result_scope`, either `session` for a session-level result or `event` for an
   event-level result;
 - `session_importance` for default session results;
@@ -450,7 +454,7 @@ Runs one read-only SQL statement against the existing local SQLite index and
 returns:
 
 - `schema_version`;
-- `item_type: "sql_result"`;
+- `payload_type: "sql_result"`;
 - `read_only: true`;
 - `columns[]`, ordered selected column names;
 - `rows[]`, ordered arrays matching `columns[]`;
@@ -608,7 +612,7 @@ for the running `ctx.exe` to exit and then replaces the binary and sidecar.
 Citations can include:
 
 - `item_id`;
-- `item_type`;
+- `target_type`;
 - `ctx_event_id`;
 - `ctx_session_id`;
 - `label`;

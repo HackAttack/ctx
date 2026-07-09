@@ -100,7 +100,7 @@ class ImportResult(_ImportResultRequired, total=False):
 
 class Citation(TypedDict, total=False):
     itemId: Optional[str]
-    itemType: Optional[str]
+    targetType: Optional[str]
     ctxEventId: Optional[str]
     ctxSessionId: Optional[str]
     label: Optional[str]
@@ -125,6 +125,7 @@ class SearchHit(_SearchHitRequired, total=False):
     title: Optional[str]
     snippet: Optional[str]
     rank: Optional[float]
+    resultType: Optional[str]
     provider: Optional[str]
     timestamp: Optional[str]
     cwd: Optional[str]

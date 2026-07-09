@@ -111,12 +111,14 @@ test("builds search flags and normalizes nested CLI search output", async () => 
           ctx_session_id: "00000000-0000-0000-0000-000000000102",
           provider_session_id: "codex-session",
           event_seq: 7,
+          result_type: "event",
           result_scope: "event",
           source_path: "/tmp/session.jsonl",
           source_exists: true,
           why_matched: ["text"],
           citations: [
             {
+              target_type: "event",
               ctx_event_id: "00000000-0000-0000-0000-000000000101",
               ctx_session_id: "00000000-0000-0000-0000-000000000102",
               source_path: "/tmp/session.jsonl",
@@ -155,10 +157,12 @@ test("builds search flags and normalizes nested CLI search output", async () => 
   assert.equal(result.search.results[0].ctxSessionId, "00000000-0000-0000-0000-000000000102");
   assert.equal(result.search.results[0].providerSessionId, "codex-session");
   assert.equal(result.search.results[0].eventSeq, 7);
+  assert.equal(result.search.results[0].resultType, "event");
   assert.equal(result.search.results[0].resultScope, "event");
   assert.equal(result.search.results[0].sourcePath, "/tmp/session.jsonl");
   assert.equal(result.search.results[0].sourceExists, true);
   assert.equal(result.search.results[0].whyMatched[0], "text");
+  assert.equal(result.search.results[0].citations[0].targetType, "event");
   assert.equal(result.search.results[0].citations[0].sourcePath, "/tmp/session.jsonl");
   assert.equal(result.search.retrieval.requestedMode, "hybrid");
   assert.equal(result.search.retrieval.effectiveMode, "lexical");

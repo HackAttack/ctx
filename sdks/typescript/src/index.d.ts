@@ -216,6 +216,7 @@ export interface SearchHit {
   title?: string | null;
   snippet?: string | null;
   rank?: number | null;
+  resultType?: string | null;
   resultScope: string;
   provider?: string | null;
   timestamp?: string | null;
@@ -252,7 +253,7 @@ export interface SearchRetrieval extends JsonObject {
 
 export interface Citation {
   itemId?: string | null;
-  itemType?: string | null;
+  targetType?: string | null;
   ctxEventId?: string | null;
   ctxSessionId?: string | null;
   label?: string | null;

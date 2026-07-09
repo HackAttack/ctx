@@ -301,6 +301,8 @@ pub struct SearchHit {
     pub snippet: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_type: Option<String>,
     pub result_scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -332,7 +334,7 @@ pub struct Citation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub item_type: Option<String>,
+    pub target_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctx_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -523,12 +525,23 @@ pub fn camelize_object_keys(value: &Value) -> Value {
         Value::Object(object) => {
             let mut out = Map::new();
             for (key, item) in object {
-                out.insert(snake_to_camel(key), camelize_object_keys(item));
+                let camel_key = snake_to_camel(key);
+                if omitted_public_key(&camel_key) {
+                    continue;
+                }
+                out.insert(camel_key, camelize_object_keys(item));
             }
             Value::Object(out)
         }
         _ => value.clone(),
     }
+}
+
+fn omitted_public_key(key: &str) -> bool {
+    matches!(
+        key,
+        "itemType" | "payloadType" | "recordType" | "databasePath" | "configPath"
+    )
 }
 
 fn snake_to_camel(key: &str) -> String {
@@ -625,16 +638,25 @@ mod tests {
     #[test]
     fn camelizes_private_cli_keys_recursively() {
         let raw = serde_json::json!({
+            "payload_type": "search_results",
             "generated_at": "now",
             "results": [{
+                "record_type": "event",
+                "item_type": "event",
                 "ctx_event_id": "event",
+                "result_type": "event",
                 "result_scope": "event",
-                "citations": [{"source_path": "/tmp/session.jsonl"}]
+                "citations": [{"target_type": "event", "source_path": "/tmp/session.jsonl"}]
             }]
         });
         let camel = camelize_object_keys(&raw);
+        assert!(camel.get("payloadType").is_none());
         assert_eq!(camel["generatedAt"], "now");
+        assert!(camel["results"][0].get("recordType").is_none());
+        assert!(camel["results"][0].get("itemType").is_none());
         assert_eq!(camel["results"][0]["ctxEventId"], "event");
+        assert_eq!(camel["results"][0]["resultType"], "event");
+        assert_eq!(camel["results"][0]["citations"][0]["targetType"], "event");
         assert_eq!(
             camel["results"][0]["citations"][0]["sourcePath"],
             "/tmp/session.jsonl"

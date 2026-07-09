@@ -160,7 +160,16 @@ def _camelize_public(value: Any) -> Any:
     if isinstance(value, dict):
         result: JsonObject = {}
         for key, nested in value.items():
-            if key in {"schema_version", "target", "item_type"}:
+            if key in {
+                "schema_version",
+                "target",
+                "item_type",
+                "itemType",
+                "payload_type",
+                "payloadType",
+                "record_type",
+                "recordType",
+            }:
                 continue
             result[_snake_to_camel(key)] = _camelize_public(nested)
         return _drop_none(result)

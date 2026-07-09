@@ -205,7 +205,7 @@ pub(crate) fn print_sql_truncation_notice(result: &RawSqlResult) {
 pub(crate) fn raw_sql_result_json(result: &RawSqlResult) -> Value {
     compact_json(json!({
         "schema_version": 1,
-        "item_type": "sql_result",
+        "payload_type": "sql_result",
         "read_only": true,
         "columns": result.columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>(),
         "rows": result

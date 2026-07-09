@@ -191,7 +191,7 @@ internal static class AgentHistoryContract
             var result = new JsonObject();
             foreach (var pair in obj)
             {
-                if (pair.Key is "schema_version" or "schemaVersion" or "contractVersion" or "operation" or "backend" or "target" or "item_type")
+                if (pair.Key is "schema_version" or "schemaVersion" or "contractVersion" or "operation" or "backend" or "target" or "item_type" or "itemType" or "payload_type" or "payloadType" or "record_type" or "recordType")
                 {
                     continue;
                 }

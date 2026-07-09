@@ -18,12 +18,12 @@ public final class Citation {
         return getItemId();
     }
 
-    public String getItemType() {
-        return AgentHistoryValue.string(fields.get("itemType"));
+    public String getTargetType() {
+        return AgentHistoryValue.string(fields.get("targetType"));
     }
 
-    public String itemType() {
-        return getItemType();
+    public String targetType() {
+        return getTargetType();
     }
 
     public String getCtxEventId() {

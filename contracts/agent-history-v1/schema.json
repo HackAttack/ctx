@@ -129,6 +129,7 @@
         "title": { "type": ["string", "null"] },
         "snippet": { "type": ["string", "null"] },
         "rank": { "type": ["number", "null"] },
+        "resultType": { "type": ["string", "null"] },
         "resultScope": { "type": "string" },
         "provider": { "type": ["string", "null"] },
         "timestamp": { "type": ["string", "null"] },
@@ -276,7 +277,7 @@
       "type": "object",
       "properties": {
         "itemId": { "type": ["string", "null"] },
-        "itemType": { "type": ["string", "null"] },
+        "targetType": { "type": ["string", "null"] },
         "ctxEventId": { "type": ["string", "null"] },
         "ctxSessionId": { "type": ["string", "null"] },
         "label": { "type": ["string", "null"] },

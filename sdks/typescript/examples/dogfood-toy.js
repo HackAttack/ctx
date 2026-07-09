@@ -86,6 +86,7 @@ function mockResponse(args) {
           ctx_session_id: SESSION_ID,
           provider_session_id: PROVIDER_SESSION_ID,
           event_seq: 1,
+          result_type: "event",
           result_scope: "event",
           provider: "codex",
           snippet: "local agent history search result",

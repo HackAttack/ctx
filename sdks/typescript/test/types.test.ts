@@ -41,8 +41,10 @@ expectType<"sync">(synced.operation);
 
 const search = await client.search("local agent history", { refresh: "off" });
 expectType<SearchEnvelope>(search);
+expectType<string | null | undefined>(search.search.results[0]!.resultType);
 expectType<string>(search.search.results[0]!.resultScope);
 expectType<string | null | undefined>(search.search.results[0]!.ctxEventId);
+expectType<string | null | undefined>(search.search.results[0]!.citations?.[0]?.targetType);
 expectType<SearchBackendMode | string | null | undefined>(search.search.retrieval?.requestedMode);
 expectType<number | null | undefined>(search.search.retrieval?.semanticWeight);
 expectType<string | null | undefined>(search.search.retrieval?.semanticFallbackCode);

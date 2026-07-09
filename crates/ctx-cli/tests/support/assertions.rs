@@ -82,7 +82,7 @@ pub(crate) fn assert_search_provider_oracle_with_scope(
     query: &str,
     expected_results: usize,
     expected_match_reason: &str,
-    expected_item_type: &str,
+    expected_result_type: &str,
     expected_scope: &str,
 ) {
     assert_eq!(packet["schema_version"], 1);
@@ -98,7 +98,7 @@ pub(crate) fn assert_search_provider_oracle_with_scope(
     for result in results {
         assert_eq!(result["provider"], provider, "provider filter failed");
         assert_eq!(result["source_exists"], true, "source_exists failed");
-        assert_eq!(result["item_type"], expected_item_type);
+        assert_eq!(result["result_type"], expected_result_type);
         assert_eq!(result["result_scope"], expected_scope);
         assert!(result["ctx_event_id"].is_string());
         assert!(result["ctx_session_id"].is_string());

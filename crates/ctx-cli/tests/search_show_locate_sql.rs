@@ -104,7 +104,7 @@ fn sql_reads_existing_store_and_supports_formats_and_input_sources() {
 
     let json = json_output(ctx(&temp).args(["sql", "SELECT 1 AS one, 'two' AS two", "--json"]));
     assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["item_type"], "sql_result");
+    assert_eq!(json["payload_type"], "sql_result");
     assert_eq!(json["read_only"], true);
     assert_eq!(json["columns"], json!(["one", "two"]));
     assert_eq!(json["rows"], json!([[1, "two"]]));
@@ -267,7 +267,7 @@ fn fresh_home_search_mvp_flow() {
         ],
     );
     let first_result = &search["results"][0];
-    assert_eq!(first_result["item_type"], "session_result");
+    assert_eq!(first_result["result_type"], "session_result");
     assert_eq!(first_result["result_scope"], "session");
     let ctx_event_id = first_result["ctx_event_id"].as_str().unwrap().to_owned();
     let ctx_session_id = first_result["ctx_session_id"].as_str().unwrap().to_owned();
@@ -397,7 +397,7 @@ fn fresh_home_search_mvp_flow() {
         "json",
     ]));
     assert_eq!(show_event["schema_version"], 1);
-    assert_eq!(show_event["item_type"], "event_window");
+    assert_eq!(show_event["payload_type"], "event_window");
     assert_eq!(show_event["event"]["ctx_event_id"], ctx_event_id);
     assert_eq!(show_event["event"]["ctx_session_id"], ctx_session_id);
     assert_omits_keys(
@@ -458,8 +458,8 @@ fn fresh_home_search_mvp_flow() {
     let show_session =
         json_output(ctx(&temp).args(["show", "session", &ctx_session_id, "--format", "json"]));
     assert_eq!(show_session["schema_version"], 1);
-    assert_eq!(show_session["item_type"], "session_transcript");
-    assert_eq!(show_session["session"]["item_type"], "session");
+    assert_eq!(show_session["payload_type"], "session_transcript");
+    assert_eq!(show_session["session"]["record_type"], "session");
     assert_eq!(show_session["session"]["item_id"], ctx_session_id);
     assert_eq!(show_session["mode"], "lite");
 
@@ -477,13 +477,13 @@ fn fresh_home_search_mvp_flow() {
         "json",
     ]));
     assert_eq!(show_session_full["schema_version"], 1);
-    assert_eq!(show_session_full["item_type"], "session_transcript");
+    assert_eq!(show_session_full["payload_type"], "session_transcript");
     assert_eq!(show_session_full["session"]["item_id"], ctx_session_id);
     assert_eq!(show_session_full["mode"], "full");
 
     let locate_event = json_output(ctx(&temp).args(["locate", "event", &ctx_event_id, "--json"]));
     assert_eq!(locate_event["schema_version"], 1);
-    assert_eq!(locate_event["item_type"], "event_location");
+    assert_eq!(locate_event["payload_type"], "event_location");
     assert_eq!(locate_event["ctx_event_id"], ctx_event_id);
     assert_eq!(locate_event["ctx_session_id"], ctx_session_id);
     assert_eq!(locate_event["provider"], "codex");
@@ -1143,7 +1143,7 @@ fn file_only_search_returns_touched_file_matches() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|citation| citation["item_type"] == "file" && citation["label"] == "file touched"));
+        .any(|citation| citation["target_type"] == "file" && citation["label"] == "file touched"));
 }
 
 #[test]
