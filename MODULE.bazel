@@ -1,8 +1,12 @@
-module(name = "ctx_search", version = "0.22.0")
+module(
+    name = "ctx_search",
+    version = "0.22.0",
+)
 
 bazel_dep(name = "rules_rust", version = "0.71.3")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+
 # Native Bazel Rust uses the same toolchain as public CI. The workspace
 # rust-version remains package MSRV metadata; MSRV enforcement belongs in a
 # separate explicit lane rather than in this CI parity graph.
