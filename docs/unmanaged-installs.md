@@ -34,6 +34,12 @@ Stable releases publish prebuilt binaries on GitHub Releases:
 
 Each release also publishes `SHA256SUMS` for the binary assets.
 
+Official Linux release binaries are checked to require no newer than glibc
+2.39. The Linux x64 artifact is built in an Ubuntu 24.04 container because its
+semantic-search native dependency currently requires a modern glibc baseline.
+Older Linux distributions may need a future legacy build without that x64
+native dependency. The macOS binaries currently target macOS 13 or newer.
+
 For pinned installs, GitHub release asset URLs use this pattern:
 
 ```text

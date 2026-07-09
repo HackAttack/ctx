@@ -12,6 +12,7 @@ USAGE
 
 tag="${1:-}"
 repo="${2:-ctxrs/ctx}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ -z "${tag}" || "${tag}" == "-h" || "${tag}" == "--help" ]]; then
   usage
@@ -71,14 +72,16 @@ for asset in "${expected_assets[@]}"; do
 done
 
 cd "${tmp_dir}"
-for asset in \
-  ctx-linux-aarch64 \
-  ctx-linux-x64 \
-  ctx-macos-arm64 \
-  ctx-macos-x64 \
-  ctx-windows-x64.exe \
-  ctx-freebsd-x64; do
+for asset in "${expected_assets[@]}"; do
+  [[ "${asset}" == "SHA256SUMS" ]] && continue
   grep "  ${asset}$" SHA256SUMS | sha256_check
 done
+
+bash "${repo_root}/scripts/check-release-binary-compat.sh" linux-aarch64 ctx-linux-aarch64
+bash "${repo_root}/scripts/check-release-binary-compat.sh" linux-x64 ctx-linux-x64
+bash "${repo_root}/scripts/check-release-binary-compat.sh" macos-arm64 ctx-macos-arm64
+bash "${repo_root}/scripts/check-release-binary-compat.sh" macos-x64 ctx-macos-x64
+bash "${repo_root}/scripts/check-release-binary-compat.sh" windows-x64 ctx-windows-x64.exe
+bash "${repo_root}/scripts/check-release-binary-compat.sh" freebsd-x64 ctx-freebsd-x64
 
 printf 'GitHub release assets ok: %s %s\n' "${repo}" "${tag}"
