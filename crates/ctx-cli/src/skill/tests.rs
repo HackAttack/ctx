@@ -103,7 +103,7 @@ fn project_paths_are_agent_specific_and_relative_to_cwd() {
     );
     assert_eq!(
         paths["mimocode"],
-        PathBuf::from("/repo/.mimocode/skills/ctx-agent-history-search")
+        PathBuf::from("/repo/.agents/skills/ctx-agent-history-search")
     );
 }
 
@@ -140,11 +140,7 @@ fn default_selection_includes_universal_and_detected_agent_specific_dirs() {
     assert_eq!(selection.source, SkillSelectionSource::Detected);
     assert_eq!(
         selection.agents,
-        vec![
-            SkillAgentArg::Universal,
-            SkillAgentArg::ClaudeCode,
-            SkillAgentArg::MiMoCode
-        ]
+        vec![SkillAgentArg::Universal, SkillAgentArg::ClaudeCode]
     );
 }
 

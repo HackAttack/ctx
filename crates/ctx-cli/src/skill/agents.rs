@@ -84,13 +84,13 @@ impl SkillAgentArg {
     pub(super) fn project_skills_dir(self) -> &'static str {
         match self {
             Self::ClaudeCode => ".claude/skills",
-            Self::MiMoCode => ".mimocode/skills",
             Self::Pi => ".pi/skills",
             Self::Goose => ".goose/skills",
             Self::Universal
             | Self::Codex
             | Self::Cursor
             | Self::OpenCode
+            | Self::MiMoCode
             | Self::Amp
             | Self::GeminiCli
             | Self::Antigravity

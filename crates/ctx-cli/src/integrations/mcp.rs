@@ -121,15 +121,16 @@ impl McpPathContext {
         let xdg_config_home =
             non_empty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
         let mut env_overrides = BTreeMap::new();
-        for key in [
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "COPILOT_HOME",
-            "MIMOCODE_HOME",
-        ] {
+        for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "COPILOT_HOME"] {
             if let Some(path) = non_empty_env_path(key) {
                 env_overrides.insert(key.to_owned(), path);
             }
+        }
+        if let Some(path) = non_empty_absolute_env_path("MIMOCODE_HOME")? {
+            env_overrides.insert("MIMOCODE_HOME".to_owned(), path);
+        }
+        if let Some(path) = non_empty_env_path("MIMOCODE_CONFIG_DIR") {
+            env_overrides.insert("MIMOCODE_CONFIG_DIR".to_owned(), path);
         }
         Ok(Self {
             home,
@@ -169,10 +170,36 @@ impl McpPathContext {
     }
 
     fn mimocode_config_dir(&self) -> PathBuf {
+        if let Some(path) = self.env_overrides.get("MIMOCODE_CONFIG_DIR") {
+            return path.clone();
+        }
         self.env_overrides
             .get("MIMOCODE_HOME")
             .map(|home| home.join("config"))
             .unwrap_or_else(|| self.xdg_config_home.join("mimocode"))
+    }
+
+    fn mimocode_global_config_file(&self) -> PathBuf {
+        existing_or_default(
+            [
+                self.mimocode_config_dir().join("mimocode.jsonc"),
+                self.mimocode_config_dir().join("mimocode.json"),
+                self.mimocode_config_dir().join("config.json"),
+            ],
+            self.mimocode_config_dir().join("mimocode.jsonc"),
+        )
+    }
+
+    fn mimocode_project_config_file(&self) -> PathBuf {
+        existing_or_default(
+            [
+                self.cwd.join(".mimocode").join("mimocode.jsonc"),
+                self.cwd.join(".mimocode").join("mimocode.json"),
+                self.cwd.join("mimocode.jsonc"),
+                self.cwd.join("mimocode.json"),
+            ],
+            self.cwd.join(".mimocode").join("mimocode.jsonc"),
+        )
     }
 
     fn claude_user_config(&self) -> PathBuf {
@@ -191,6 +218,26 @@ fn non_empty_env_path(key: &str) -> Option<PathBuf> {
     env::var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
+    let Some(path) = non_empty_env_path(key) else {
+        return Ok(None);
+    };
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "{key} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
+}
+
+fn existing_or_default(paths: impl IntoIterator<Item = PathBuf>, default: PathBuf) -> PathBuf {
+    paths
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or(default)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -311,6 +358,7 @@ impl McpAgentArg {
             Self::OpenCode => context.xdg_config_home.join("opencode").exists(),
             Self::MiMoCode => {
                 context.env_overrides.contains_key("MIMOCODE_HOME")
+                    || context.env_overrides.contains_key("MIMOCODE_CONFIG_DIR")
                     || context.mimocode_config_dir().exists()
             }
             Self::GeminiCli => context.home.join(".gemini").exists(),
@@ -369,7 +417,7 @@ impl McpAgentArg {
                 ConfigKind::opencode_json(),
             ),
             Self::MiMoCode => (
-                context.mimocode_config_dir().join("mimocode.jsonc"),
+                context.mimocode_global_config_file(),
                 ConfigKind::opencode_json(),
             ),
             Self::GeminiCli => (
@@ -474,7 +522,7 @@ impl McpAgentArg {
                 ConfigKind::opencode_json(),
             )),
             Self::MiMoCode => Some((
-                context.cwd.join(".mimocode").join("mimocode.jsonc"),
+                context.mimocode_project_config_file(),
                 ConfigKind::opencode_json(),
             )),
             Self::GeminiCli => Some((
@@ -995,7 +1043,7 @@ fn read_target_status(path: &Path, kind: ConfigKind) -> Result<McpConfigStatus> 
         ConfigKind::CodexToml => status_codex_toml(&body),
         ConfigKind::GooseYaml => status_goose_yaml(&body),
         ConfigKind::ContinueYaml => status_continue_yaml(&body),
-        ConfigKind::Json { root, .. } => status_json(&body, root),
+        ConfigKind::Json { root, server } => status_json(&body, root, server, path),
     }
 }
 
@@ -1019,13 +1067,18 @@ fn write_target(target: &McpTarget, force: bool) -> Result<()> {
         ConfigKind::CodexToml => update_codex_toml(&existing, force)?,
         ConfigKind::GooseYaml => update_goose_yaml(&existing, force)?,
         ConfigKind::ContinueYaml => update_continue_yaml(&existing, force)?,
-        ConfigKind::Json { root, server } => update_json(&existing, root, server, force)?,
+        ConfigKind::Json { root, server } => update_json(&existing, root, server, force, path)?,
     };
     fs::write(path, body).with_context(|| format!("write {}", path.display()))
 }
 
-fn status_json(body: &str, root: JsonRoot) -> Result<McpConfigStatus> {
-    let doc: Value = serde_json::from_str(body).context("parse JSON config")?;
+fn status_json(
+    body: &str,
+    root: JsonRoot,
+    shape: JsonServerShape,
+    path: &Path,
+) -> Result<McpConfigStatus> {
+    let doc = parse_json_config(body, path)?;
     let object = doc
         .as_object()
         .ok_or_else(|| anyhow!("JSON config root must be an object"))?;
@@ -1038,18 +1091,24 @@ fn status_json(body: &str, root: JsonRoot) -> Result<McpConfigStatus> {
     let Some(server) = servers.get(SERVER_NAME) else {
         return Ok(McpConfigStatus::Missing);
     };
-    Ok(if json_server_is_current(server) {
+    Ok(if json_server_is_current(server, shape) {
         McpConfigStatus::Current
     } else {
         McpConfigStatus::Conflict
     })
 }
 
-fn update_json(body: &str, root: JsonRoot, shape: JsonServerShape, force: bool) -> Result<String> {
+fn update_json(
+    body: &str,
+    root: JsonRoot,
+    shape: JsonServerShape,
+    force: bool,
+    path: &Path,
+) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         Value::Object(Map::new())
     } else {
-        serde_json::from_str(body).context("parse JSON config")?
+        parse_json_config(body, path)?
     };
     let object = doc
         .as_object_mut()
@@ -1061,7 +1120,7 @@ fn update_json(body: &str, root: JsonRoot, shape: JsonServerShape, force: bool) 
         .as_object_mut()
         .ok_or_else(|| anyhow!("{} must be an object", root.key()))?;
     if let Some(existing) = servers.get(SERVER_NAME) {
-        if json_server_is_current(existing) {
+        if json_server_is_current(existing, shape) {
             return format_json(&doc);
         }
         if !force {
@@ -1072,6 +1131,18 @@ fn update_json(body: &str, root: JsonRoot, shape: JsonServerShape, force: bool) 
     }
     servers.insert(SERVER_NAME.to_owned(), json_server_value(shape));
     format_json(&doc)
+}
+
+fn parse_json_config(body: &str, path: &Path) -> Result<Value> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "jsonc")
+    {
+        jsonc_parser::parse_to_serde_value::<Value>(body, &Default::default())
+            .with_context(|| format!("parse JSONC config {}", path.display()))
+    } else {
+        serde_json::from_str(body).with_context(|| format!("parse JSON config {}", path.display()))
+    }
 }
 
 fn format_json(value: &Value) -> Result<String> {
@@ -1111,33 +1182,58 @@ fn json_server_value(shape: JsonServerShape) -> Value {
     }
 }
 
-fn json_server_is_current(value: &Value) -> bool {
+fn json_server_is_current(value: &Value, shape: JsonServerShape) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    if let Some(command) = object.get("command") {
-        if command.as_str() == Some(SERVER_COMMAND) {
-            return json_args_are_current(object.get("args"));
+    match shape {
+        JsonServerShape::Plain => {
+            json_command_string_is_current(object) && json_args_are_current(object.get("args"))
         }
-        if command.as_array().is_some_and(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .eq([SERVER_COMMAND, "mcp", "serve"])
-        }) {
-            return true;
+        JsonServerShape::StdioType => {
+            object.get("type").and_then(Value::as_str) == Some("stdio")
+                && json_command_string_is_current(object)
+                && json_args_are_current(object.get("args"))
+        }
+        JsonServerShape::OpenCodeLocal => {
+            object.get("type").and_then(Value::as_str) == Some("local")
+                && object.get("enabled").and_then(Value::as_bool) != Some(false)
+                && json_command_array_is_current(object.get("command"))
+        }
+        JsonServerShape::CopilotLocal => {
+            object.get("type").and_then(Value::as_str) == Some("local")
+                && json_command_string_is_current(object)
+                && json_args_are_current(object.get("args"))
+        }
+        JsonServerShape::ClineLocal => {
+            json_command_string_is_current(object)
+                && json_args_are_current(object.get("args"))
+                && object.get("disabled").and_then(Value::as_bool) != Some(true)
         }
     }
-    false
+}
+
+fn json_command_string_is_current(object: &Map<String, Value>) -> bool {
+    object.get("command").and_then(Value::as_str) == Some(SERVER_COMMAND)
+}
+
+fn json_command_array_is_current(value: Option<&Value>) -> bool {
+    json_string_array_is(value, &[SERVER_COMMAND, "mcp", "serve"])
 }
 
 fn json_args_are_current(value: Option<&Value>) -> bool {
+    json_string_array_is(value, SERVER_ARGS)
+}
+
+fn json_string_array_is(value: Option<&Value>, expected: &[&str]) -> bool {
     let Some(args) = value.and_then(Value::as_array) else {
         return false;
     };
-    args.iter()
-        .filter_map(Value::as_str)
-        .eq(SERVER_ARGS.iter().copied())
+    args.len() == expected.len()
+        && args
+            .iter()
+            .zip(expected.iter().copied())
+            .all(|(arg, expected)| arg.as_str() == Some(expected))
 }
 
 fn status_codex_toml(body: &str) -> Result<McpConfigStatus> {

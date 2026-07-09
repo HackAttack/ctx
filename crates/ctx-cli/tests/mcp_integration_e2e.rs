@@ -311,6 +311,160 @@ fn mimocode_global_and_project_configs_are_connected_with_command_array_shape() 
 }
 
 #[test]
+fn mimocode_mcp_honors_config_dir_env_and_existing_jsonc() {
+    let temp = tempdir();
+    let config_dir = temp.path().join("mimocode-config");
+    let config_path = config_dir.join("mimocode.jsonc");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        &config_path,
+        r#"{
+          // Existing MiMo JSONC should be readable.
+          "mcp": {
+            "other": {
+              "type": "local",
+              "command": ["other"],
+            },
+          },
+        }"#,
+    )
+    .unwrap();
+
+    let status = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "status",
+        "mcp",
+        "--agent",
+        "mimocode",
+        "--json",
+    ]));
+    assert_eq!(result_for_agent(&status, "mimocode")["status"], "missing");
+
+    let output = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "install",
+        "mcp",
+        "--agent",
+        "mimocode",
+        "--json",
+    ]));
+    let expected_path = config_path.to_string_lossy().to_string();
+    assert_eq!(
+        result_for_agent(&output, "mimocode")["path"].as_str(),
+        Some(expected_path.as_str())
+    );
+    assert_eq!(
+        fake_mimocode_config(&config_path),
+        Some(OpenCodeServer::ctx_local())
+    );
+}
+
+#[test]
+fn mimocode_mcp_default_detection_honors_config_dir_env() {
+    let temp = tempdir();
+    let config_dir = temp.path().join("new-mimocode-config");
+    let config_path = config_dir.join("mimocode.jsonc");
+
+    let status = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "status",
+        "mcp",
+        "--json",
+    ]));
+    assert_eq!(output_agents(&status), vec!["mimocode"]);
+    assert_eq!(result_for_agent(&status, "mimocode")["status"], "missing");
+
+    let output = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "install",
+        "mcp",
+        "--json",
+    ]));
+    assert_eq!(output_agents(&output), vec!["mimocode"]);
+    let expected_path = config_path.to_string_lossy().to_string();
+    assert_eq!(
+        result_for_agent(&output, "mimocode")["path"].as_str(),
+        Some(expected_path.as_str())
+    );
+    assert_eq!(
+        fake_mimocode_config(&config_path),
+        Some(OpenCodeServer::ctx_local())
+    );
+}
+
+#[test]
+fn mimocode_mcp_uses_existing_config_names_before_defaulting() {
+    let temp = tempdir();
+    let config_dir = temp.path().join("mimocode-config");
+    let global_config = config_dir.join("config.json");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(&global_config, r#"{"mcp":{}}"#).unwrap();
+
+    let global = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "install",
+        "mcp",
+        "--agent",
+        "mimocode",
+        "--json",
+    ]));
+    let expected_global_path = global_config.to_string_lossy().to_string();
+    assert_eq!(
+        result_for_agent(&global, "mimocode")["path"].as_str(),
+        Some(expected_global_path.as_str())
+    );
+    assert!(!config_dir.join("mimocode.jsonc").exists());
+    assert_eq!(
+        fake_mimocode_config(&global_config),
+        Some(OpenCodeServer::ctx_local())
+    );
+
+    let project = temp.path().join("workspace");
+    fs::create_dir_all(&project).unwrap();
+    let project_config = project.join("mimocode.json");
+    fs::write(&project_config, r#"{"mcp":{}}"#).unwrap();
+    let project_output = json_output(ctx(&temp).current_dir(&project).args([
+        "integrations",
+        "install",
+        "mcp",
+        "--agent",
+        "mimocode",
+        "--project",
+        "--json",
+    ]));
+    let expected_project_path = project_config.to_string_lossy().to_string();
+    assert_eq!(
+        result_for_agent(&project_output, "mimocode")["path"].as_str(),
+        Some(expected_project_path.as_str())
+    );
+    assert!(!project.join(".mimocode").join("mimocode.jsonc").exists());
+    assert_eq!(
+        fake_mimocode_config(&project_config),
+        Some(OpenCodeServer::ctx_local())
+    );
+}
+
+#[test]
+fn mimocode_mcp_rejects_relative_home_override() {
+    let temp = tempdir();
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("MIMOCODE_HOME", "relative-mimocode-home")
+            .args([
+                "integrations",
+                "install",
+                "mcp",
+                "--agent",
+                "mimocode",
+                "--json",
+            ]),
+    );
+
+    assert!(stderr.contains("MIMOCODE_HOME must be an absolute path"));
+}
+
+#[test]
 fn mcp_global_all_agents_json_covers_the_complete_supported_matrix() {
     let temp = tempdir();
     let xdg_config = temp.path().join("xdg-config");
@@ -914,11 +1068,45 @@ fn fake_opencode_project(project: &Path) -> Option<OpenCodeServer> {
 }
 
 fn fake_mimocode_global(config_dir: &Path) -> Option<OpenCodeServer> {
-    json_opencode_server(&config_dir.join("mimocode.jsonc"))
+    json_opencode_server(&mimocode_global_config_path(config_dir))
 }
 
 fn fake_mimocode_project(project: &Path) -> Option<OpenCodeServer> {
-    json_opencode_server(&project.join(".mimocode").join("mimocode.jsonc"))
+    json_opencode_server(&mimocode_project_config_path(project))
+}
+
+fn fake_mimocode_config(path: &Path) -> Option<OpenCodeServer> {
+    json_opencode_server(path)
+}
+
+fn mimocode_global_config_path(config_dir: &Path) -> PathBuf {
+    existing_or_default(
+        [
+            config_dir.join("mimocode.jsonc"),
+            config_dir.join("mimocode.json"),
+            config_dir.join("config.json"),
+        ],
+        config_dir.join("mimocode.jsonc"),
+    )
+}
+
+fn mimocode_project_config_path(project: &Path) -> PathBuf {
+    existing_or_default(
+        [
+            project.join(".mimocode").join("mimocode.jsonc"),
+            project.join(".mimocode").join("mimocode.json"),
+            project.join("mimocode.jsonc"),
+            project.join("mimocode.json"),
+        ],
+        project.join(".mimocode").join("mimocode.jsonc"),
+    )
+}
+
+fn existing_or_default(paths: impl IntoIterator<Item = PathBuf>, default: PathBuf) -> PathBuf {
+    paths
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or(default)
 }
 
 fn fake_cursor_global(home: &Path) -> Option<CommandServer> {

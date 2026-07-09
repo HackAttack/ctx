@@ -144,7 +144,9 @@ impl SlashCommandAgentArg {
         match self {
             Self::OpenCode => context.xdg_config_home.join("opencode").exists(),
             Self::MiMoCode => {
-                context.mimocode_home.is_some() || context.mimocode_config_dir().exists()
+                context.mimocode_home.is_some()
+                    || context.mimocode_config_dir.is_some()
+                    || context.mimocode_config_dir().exists()
             }
             Self::GeminiCli => context.home.join(".gemini").exists(),
             Self::QwenCode => context.home.join(".qwen").exists(),
@@ -285,6 +287,7 @@ pub(crate) struct PathContext {
     xdg_config_home: PathBuf,
     cwd: PathBuf,
     mimocode_home: Option<PathBuf>,
+    mimocode_config_dir: Option<PathBuf>,
 }
 
 impl PathContext {
@@ -292,12 +295,14 @@ impl PathContext {
         let home = home_dir().context("resolve home directory")?;
         let xdg_config_home =
             non_empty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
-        let mimocode_home = non_empty_env_path("MIMOCODE_HOME");
+        let mimocode_home = non_empty_absolute_env_path("MIMOCODE_HOME")?;
+        let mimocode_config_dir = non_empty_env_path("MIMOCODE_CONFIG_DIR");
         Ok(Self {
             home,
             xdg_config_home,
             cwd: env::current_dir().context("resolve current directory")?,
             mimocode_home,
+            mimocode_config_dir,
         })
     }
 
@@ -308,6 +313,7 @@ impl PathContext {
             home,
             cwd,
             mimocode_home: None,
+            mimocode_config_dir: None,
         }
     }
 
@@ -318,6 +324,9 @@ impl PathContext {
     }
 
     fn mimocode_config_dir(&self) -> PathBuf {
+        if let Some(path) = &self.mimocode_config_dir {
+            return path.clone();
+        }
         self.mimocode_home
             .as_ref()
             .map(|home| home.join("config"))
@@ -333,6 +342,19 @@ fn non_empty_env_path(key: &str) -> Option<PathBuf> {
     env::var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
+    let Some(path) = non_empty_env_path(key) else {
+        return Ok(None);
+    };
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "{key} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
 }
 
 #[derive(Debug, Clone)]

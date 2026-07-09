@@ -23,10 +23,16 @@ impl PathContext {
         let xdg_config_home =
             non_empty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
         let mut env_overrides = BTreeMap::new();
-        for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "MIMOCODE_HOME"] {
+        for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
             if let Some(path) = non_empty_env_path(key) {
                 env_overrides.insert(key.to_owned(), path);
             }
+        }
+        if let Some(path) = non_empty_absolute_env_path("MIMOCODE_HOME")? {
+            env_overrides.insert("MIMOCODE_HOME".to_owned(), path);
+        }
+        if let Some(path) = non_empty_env_path("MIMOCODE_CONFIG_DIR") {
+            env_overrides.insert("MIMOCODE_CONFIG_DIR".to_owned(), path);
         }
         Ok(Self {
             home,
@@ -66,6 +72,9 @@ impl PathContext {
     }
 
     pub(super) fn mimocode_config_dir(&self) -> PathBuf {
+        if let Some(path) = self.env_overrides.get("MIMOCODE_CONFIG_DIR") {
+            return path.clone();
+        }
         self.env_overrides
             .get("MIMOCODE_HOME")
             .map(|home| home.join("config"))
@@ -79,7 +88,10 @@ impl PathContext {
         {
             return true;
         }
-        if agent == SkillAgentArg::MiMoCode && self.env_overrides.contains_key("MIMOCODE_HOME") {
+        if agent == SkillAgentArg::MiMoCode
+            && (self.env_overrides.contains_key("MIMOCODE_HOME")
+                || self.env_overrides.contains_key("MIMOCODE_CONFIG_DIR"))
+        {
             return true;
         }
         agent.detect_dir(self).is_some_and(|path| path.exists())
@@ -94,6 +106,19 @@ fn non_empty_env_path(key: &str) -> Option<PathBuf> {
     env::var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
+    let Some(path) = non_empty_env_path(key) else {
+        return Ok(None);
+    };
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "{key} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
 }
 
 pub(super) fn sanitize_skill_name(name: &str) -> Result<String> {

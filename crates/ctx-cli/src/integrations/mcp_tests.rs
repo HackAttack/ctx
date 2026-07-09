@@ -1,4 +1,14 @@
+use std::path::Path;
+
 use super::*;
+
+fn json_path() -> &'static Path {
+    Path::new("config.json")
+}
+
+fn jsonc_path() -> &'static Path {
+    Path::new("mimocode.jsonc")
+}
 
 #[test]
 fn json_writer_adds_ctx_and_is_idempotent() {
@@ -7,6 +17,7 @@ fn json_writer_adds_ctx_and_is_idempotent() {
         JsonRoot::McpServers,
         JsonServerShape::StdioType,
         false,
+        json_path(),
     )
     .unwrap();
     let value: Value = serde_json::from_str(&first).unwrap();
@@ -15,7 +26,13 @@ fn json_writer_adds_ctx_and_is_idempotent() {
     assert_eq!(value["mcpServers"]["ctx"]["args"], json!(["mcp", "serve"]));
     assert_eq!(value["mcpServers"]["ctx"]["type"], "stdio");
     assert_eq!(
-        status_json(&first, JsonRoot::McpServers).unwrap(),
+        status_json(
+            &first,
+            JsonRoot::McpServers,
+            JsonServerShape::StdioType,
+            json_path()
+        )
+        .unwrap(),
         McpConfigStatus::Current
     );
     let second = update_json(
@@ -23,6 +40,7 @@ fn json_writer_adds_ctx_and_is_idempotent() {
         JsonRoot::McpServers,
         JsonServerShape::StdioType,
         false,
+        json_path(),
     )
     .unwrap();
     assert_eq!(first, second);
@@ -32,29 +50,51 @@ fn json_writer_adds_ctx_and_is_idempotent() {
 fn json_writer_preserves_conflicting_ctx_unless_forced() {
     let original = r#"{"mcpServers":{"ctx":{"command":"old","args":[]}}}"#;
     assert_eq!(
-        status_json(original, JsonRoot::McpServers).unwrap(),
+        status_json(
+            original,
+            JsonRoot::McpServers,
+            JsonServerShape::Plain,
+            json_path()
+        )
+        .unwrap(),
         McpConfigStatus::Conflict
     );
     assert!(update_json(
         original,
         JsonRoot::McpServers,
         JsonServerShape::Plain,
-        false
+        false,
+        json_path(),
     )
     .is_err());
-    let forced = update_json(original, JsonRoot::McpServers, JsonServerShape::Plain, true).unwrap();
+    let forced = update_json(
+        original,
+        JsonRoot::McpServers,
+        JsonServerShape::Plain,
+        true,
+        json_path(),
+    )
+    .unwrap();
     let value: Value = serde_json::from_str(&forced).unwrap();
     assert_eq!(value["mcpServers"]["ctx"]["command"], "ctx");
 }
 
 #[test]
 fn json_writer_reports_invalid_shapes() {
-    assert!(update_json("[]", JsonRoot::McpServers, JsonServerShape::Plain, false).is_err());
+    assert!(update_json(
+        "[]",
+        JsonRoot::McpServers,
+        JsonServerShape::Plain,
+        false,
+        json_path()
+    )
+    .is_err());
     assert!(update_json(
         r#"{"mcpServers":[]}"#,
         JsonRoot::McpServers,
         JsonServerShape::Plain,
         false,
+        json_path(),
     )
     .is_err());
 }
@@ -71,7 +111,14 @@ fn codex_toml_writer_preserves_existing_settings() {
 
 #[test]
 fn opencode_writer_uses_command_array_shape() {
-    let body = update_json("", JsonRoot::Mcp, JsonServerShape::OpenCodeLocal, false).unwrap();
+    let body = update_json(
+        "",
+        JsonRoot::Mcp,
+        JsonServerShape::OpenCodeLocal,
+        false,
+        json_path(),
+    )
+    .unwrap();
     let value: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
         value["mcp"]["ctx"]["command"],
@@ -79,8 +126,92 @@ fn opencode_writer_uses_command_array_shape() {
     );
     assert_eq!(value["mcp"]["ctx"]["type"], "local");
     assert_eq!(
-        status_json(&body, JsonRoot::Mcp).unwrap(),
+        status_json(
+            &body,
+            JsonRoot::Mcp,
+            JsonServerShape::OpenCodeLocal,
+            json_path()
+        )
+        .unwrap(),
         McpConfigStatus::Current
+    );
+}
+
+#[test]
+fn opencode_shape_rejects_stdio_style_server() {
+    let body = r#"{"mcp":{"ctx":{"type":"stdio","command":"ctx","args":["mcp","serve"]}}}"#;
+    assert_eq!(
+        status_json(
+            body,
+            JsonRoot::Mcp,
+            JsonServerShape::OpenCodeLocal,
+            json_path()
+        )
+        .unwrap(),
+        McpConfigStatus::Conflict
+    );
+}
+
+#[test]
+fn json_current_detection_rejects_non_string_array_items() {
+    let opencode = r#"{"mcp":{"ctx":{"type":"local","command":["ctx","mcp","serve",1]}}}"#;
+    assert_eq!(
+        status_json(
+            opencode,
+            JsonRoot::Mcp,
+            JsonServerShape::OpenCodeLocal,
+            json_path()
+        )
+        .unwrap(),
+        McpConfigStatus::Conflict
+    );
+
+    let plain = r#"{"mcpServers":{"ctx":{"command":"ctx","args":["mcp","serve",1]}}}"#;
+    assert_eq!(
+        status_json(
+            plain,
+            JsonRoot::McpServers,
+            JsonServerShape::Plain,
+            json_path()
+        )
+        .unwrap(),
+        McpConfigStatus::Conflict
+    );
+}
+
+#[test]
+fn jsonc_configs_with_comments_are_parsed_and_updated() {
+    let body = r#"{
+      // keep parsing existing MiMo JSONC
+      "mcp": {
+        "other": {
+          "type": "local",
+          "command": ["other"],
+        },
+      },
+    }"#;
+    assert_eq!(
+        status_json(
+            body,
+            JsonRoot::Mcp,
+            JsonServerShape::OpenCodeLocal,
+            jsonc_path()
+        )
+        .unwrap(),
+        McpConfigStatus::Missing
+    );
+    let updated = update_json(
+        body,
+        JsonRoot::Mcp,
+        JsonServerShape::OpenCodeLocal,
+        false,
+        jsonc_path(),
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&updated).unwrap();
+    assert_eq!(
+        value["mcp"]["ctx"]["command"],
+        json!(["ctx", "mcp", "serve"])
     );
 }
 
@@ -132,6 +263,18 @@ fn detection_uses_home_xdg_and_env_paths() {
     assert!(McpAgentArg::OpenCode.detected(&context));
     assert!(McpAgentArg::MiMoCode.detected(&context));
     assert!(!McpAgentArg::QwenCode.detected(&context));
+}
+
+#[test]
+fn detection_treats_mimocode_config_dir_env_as_present() {
+    let temp = tempfile::tempdir().unwrap();
+    let context = McpPathContext::for_tests(temp.path().join("home"), temp.path().join("repo"))
+        .with_env_override(
+            "MIMOCODE_CONFIG_DIR",
+            temp.path().join("new-mimocode-config"),
+        );
+
+    assert!(McpAgentArg::MiMoCode.detected(&context));
 }
 
 #[test]
