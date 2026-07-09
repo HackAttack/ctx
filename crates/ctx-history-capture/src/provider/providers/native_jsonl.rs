@@ -355,7 +355,12 @@ pub(crate) fn native_jsonl_header_session_id(
         }
         CaptureProvider::FactoryAiDroid => (value.get("type").and_then(Value::as_str)
             == Some("session_start"))
-        .then(|| value.get("sessionId").and_then(Value::as_str))
+        .then(|| {
+            value
+                .get("sessionId")
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+        })
         .flatten(),
         CaptureProvider::CopilotCli => (value.get("type").and_then(Value::as_str)
             == Some("session.start"))
@@ -768,7 +773,12 @@ pub(crate) fn native_jsonl_role(provider: CaptureProvider, value: &Value) -> Eve
                 _ => EventRole::System,
             }
         }
-        CaptureProvider::FactoryAiDroid => provider_role(value.get("role").and_then(Value::as_str)),
+        CaptureProvider::FactoryAiDroid => provider_role(
+            value
+                .get("role")
+                .or_else(|| value.pointer("/message/role"))
+                .and_then(Value::as_str),
+        ),
         CaptureProvider::CopilotCli => match value.get("type").and_then(Value::as_str) {
             Some("user.message") => EventRole::User,
             Some("assistant.message") => EventRole::Assistant,
@@ -837,6 +847,7 @@ pub(crate) fn native_jsonl_event_text(
             .unwrap_or_default(),
         CaptureProvider::FactoryAiDroid => value
             .get("content")
+            .or_else(|| value.pointer("/message/content"))
             .and_then(provider_value_text)
             .or_else(|| {
                 value
@@ -909,6 +920,7 @@ pub(crate) fn native_jsonl_model(provider: CaptureProvider, value: &Value) -> Op
         CaptureProvider::FactoryAiDroid => value
             .get("model")
             .cloned()
+            .or_else(|| value.pointer("/message/model").cloned())
             .or_else(|| value.pointer("/metadata/model").cloned()),
         CaptureProvider::CopilotCli => value.pointer("/data/selectedModel").cloned(),
         CaptureProvider::QwenCode => value
@@ -941,6 +953,7 @@ pub(crate) fn gemini_tool_calls_have_result(value: &Value) -> bool {
 pub(crate) fn droid_content_has(value: &Value, expected: &str) -> bool {
     value
         .get("content")
+        .or_else(|| value.pointer("/message/content"))
         .and_then(Value::as_array)
         .map(|blocks| {
             blocks
