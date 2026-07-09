@@ -153,7 +153,7 @@ for package in metadata.get("packages", []):
   fi
 fi
 
-if grep_files 'ctx dashboard|ctx shim|ctx publish|ctx evidence|ctx pr([^[:alnum:]_]|$)|ctx link-pr|ctx context|ctx update|ctx uninstall|ctx watch|publish pr-comment|dashboard export|gh CLI|GhCli|upsert_github|wrapper scripts|write-shim-command|write_shim_command|capture_shim_command|shim_command_envelope|\bShimCommandOptions\b|CommandRoot::Context|CommandRoot::Update|CommandRoot::Uninstall|CommandRoot::Watch|\bContextArgs\b|\bUpdateArgs\b|\bUninstallArgs\b|\bWatchArgs\b|run_context|run_update|run_uninstall|run_watch|maybe_auto_update|check_or_apply_update|watch_strategy|polling_catch_up' \
+if grep_files 'ctx (dashboard|shim|publish|evidence|link-pr|context|update|uninstall|watch)([^[:alnum:]_-]|$)|ctx pr([^[:alnum:]_-]|$)|publish pr-comment|dashboard export|gh CLI|GhCli|upsert_github|wrapper scripts|write-shim-command|write_shim_command|capture_shim_command|shim_command_envelope|(^|[^[:alnum:]_])ShimCommandOptions([^[:alnum:]_]|$)|CommandRoot::Context([^[:alnum:]_]|$)|CommandRoot::Update([^[:alnum:]_]|$)|CommandRoot::Uninstall([^[:alnum:]_]|$)|CommandRoot::Watch([^[:alnum:]_]|$)|(^|[^[:alnum:]_])ContextArgs([^[:alnum:]_]|$)|(^|[^[:alnum:]_])UpdateArgs([^[:alnum:]_]|$)|(^|[^[:alnum:]_])UninstallArgs([^[:alnum:]_]|$)|(^|[^[:alnum:]_])WatchArgs([^[:alnum:]_]|$)|(^|[^[:alnum:]_])run_context([^[:alnum:]_]|$)|(^|[^[:alnum:]_])run_update([^[:alnum:]_]|$)|(^|[^[:alnum:]_])run_uninstall([^[:alnum:]_]|$)|(^|[^[:alnum:]_])run_watch([^[:alnum:]_]|$)|maybe_auto_update|check_or_apply_update|watch_strategy|polling_catch_up' \
   .bazelignore .bazelrc .bazelversion .buildkite .gitignore Cargo.toml BUILD.bazel MODULE.bazel scripts crates/ctx-cli/src crates/ctx-history-capture/src crates/ctx-history-search/src >/dev/null 2>&1; then
   fail 'default binary/release path contains dashboard, shim, PR publish, watch, or gh integration text'
 fi
@@ -176,7 +176,7 @@ if [[ "${CTX_AUDIT_SKIP_RELEASE_BUILD:-0}" != "1" ]]; then
   elif command -v strings >/dev/null 2>&1; then
     binary_strings="$(strings "${binary}")"
     if printf '%s\n' "${binary_strings}" \
-      | grep -E 'ctx dashboard|ctx shim|ctx publish|ctx evidence|ctx pr([^[:alnum:]_]|$)|ctx link-pr|ctx context|ctx update|ctx uninstall|ctx watch|GhCli|upsert_github|write-shim-command|write_shim_command|capture_shim_command|shim_command_envelope|dashboard export|maybe_auto_update|check_or_apply_update|run_update|run_uninstall|watch_strategy|polling_catch_up' >/dev/null; then
+      | grep -E 'ctx (dashboard|shim|publish|evidence|link-pr|context|update|uninstall|watch)([^[:alnum:]_-]|$)|ctx pr([^[:alnum:]_-]|$)|GhCli|upsert_github|write-shim-command|write_shim_command|capture_shim_command|shim_command_envelope|dashboard export|maybe_auto_update|check_or_apply_update|(^|[^[:alnum:]_])run_update([^[:alnum:]_]|$)|(^|[^[:alnum:]_])run_uninstall([^[:alnum:]_]|$)|watch_strategy|polling_catch_up' >/dev/null; then
       fail 'release ctx binary contains removed dashboard/shim/PR-publish/watch command strings'
     fi
     if printf '%s\n' "${binary_strings}" \

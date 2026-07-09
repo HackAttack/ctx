@@ -434,6 +434,7 @@ dependencies = [
  "ctx-history-search",
  "ctx-history-store",
  "fastembed",
+ "jsonc-parser",
  "libc",
  "predicates",
  "proptest",
@@ -1257,6 +1258,16 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonc-parser"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "362fdb0bfedf94ebd31e4e82ff38ba705b6b82417b3b25f0c4bbb024dd11f552"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

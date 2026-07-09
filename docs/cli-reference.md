@@ -151,7 +151,7 @@ project MCP config locations that already exist.
 The MCP installer parses structured config files, preserves unrelated settings,
 and is idempotent. If a config already contains a `ctx` MCP server with a
 different command or args, install reports a conflict and leaves the file
-untouched unless `--force` is passed. Invalid JSON, TOML, or YAML configs are
+untouched unless `--force` is passed. Invalid JSON, JSONC, TOML, or YAML configs are
 reported and left untouched. `integrations status mcp` reports `current`,
 `missing`, `conflict`, `invalid_config`, or `unsupported`.
 
@@ -189,7 +189,7 @@ machine. Current rows include:
 - Codex session trees at `~/.codex/sessions`;
 - Codex prompt history at `~/.codex/history.jsonl`;
 - Pi session JSONL files under `~/.pi/agent/sessions`;
-- native rows for supported Claude Code, Codex, Cursor, Pi, GitHub Copilot CLI, OpenCode, Gemini CLI/Antigravity, Kilo Code, Kiro CLI, Crush, Goose, Tabnine, Windsurf, Zed, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes, NanoClaw, AstrBot, Shelley, Continue, and OpenHands local history locations;
+- native rows for supported Claude Code, Codex, Cursor, Pi, GitHub Copilot CLI, OpenCode, MiMo Code, Gemini CLI/Antigravity, Kilo Code, Kiro CLI, Crush, Goose, Tabnine, Windsurf, Zed, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes, NanoClaw, AstrBot, Shelley, Continue, and OpenHands local history locations;
 - AstrBot `data_v4.db` history when those files exist;
 - explicit-import rows for NanoClaw project roots when those paths are discoverable;
 - local history-source plugin manifests under `$CTX_DATA_ROOT/plugins` or
@@ -215,6 +215,7 @@ ctx import --provider pi
 ctx import --provider antigravity
 ctx import --provider claude
 ctx import --provider opencode
+ctx import --provider mimocode
 ctx import --provider forgecode
 ctx import --provider deepagents
 ctx import --provider mistral-vibe

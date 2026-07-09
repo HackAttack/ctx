@@ -177,6 +177,40 @@ fn skill_install_auto_targets_universal_and_detected_claude_code() {
 }
 
 #[test]
+fn skill_install_detected_mimocode_uses_universal_skill_location() {
+    let temp = tempdir();
+    let xdg = temp.path().join("xdg-config");
+    fs::create_dir_all(xdg.join("mimocode")).unwrap();
+
+    let output = json_output(ctx(&temp).env("XDG_CONFIG_HOME", &xdg).args([
+        "integrations",
+        "install",
+        "skills",
+        "--json",
+    ]));
+
+    let agents = output["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["agent"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(agents, vec!["universal"]);
+    assert!(temp
+        .path()
+        .join(".agents")
+        .join("skills")
+        .join("ctx-agent-history-search")
+        .join("SKILL.md")
+        .exists());
+    assert!(!xdg
+        .join("mimocode")
+        .join("skills")
+        .join("ctx-agent-history-search")
+        .exists());
+}
+
+#[test]
 fn skill_install_refreshes_stale_bundled_copy() {
     let temp = tempdir();
     let skill_dir = temp
@@ -497,7 +531,7 @@ fn skill_install_agent_paths_respect_env_xdg_and_project_scope() {
         .join("SKILL.md")
         .exists());
     assert!(project
-        .join(".mimocode")
+        .join(".agents")
         .join("skills")
         .join("ctx-agent-history-search")
         .join("SKILL.md")
@@ -507,4 +541,52 @@ fn skill_install_agent_paths_respect_env_xdg_and_project_scope() {
         .join("skills")
         .join("ctx-agent-history-search")
         .exists());
+}
+
+#[test]
+fn skill_install_mimocode_honors_config_dir_env() {
+    let temp = tempdir();
+    let config_dir = temp.path().join("mimocode-config");
+
+    let output = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "install",
+        "skills",
+        "--agent",
+        "mimocode",
+        "--json",
+    ]));
+
+    assert_eq!(output["results"][0]["agent"], "mimocode");
+    assert!(config_dir
+        .join("skills")
+        .join("ctx-agent-history-search")
+        .join("SKILL.md")
+        .exists());
+    assert!(!temp
+        .path()
+        .join(".config")
+        .join("mimocode")
+        .join("skills")
+        .exists());
+}
+
+#[test]
+fn skill_install_mimocode_rejects_relative_home_override() {
+    let temp = tempdir();
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("MIMOCODE_HOME", "relative-mimocode-home")
+            .args([
+                "integrations",
+                "install",
+                "skills",
+                "--agent",
+                "mimocode",
+                "--json",
+            ]),
+    );
+
+    assert!(stderr.contains("MIMOCODE_HOME must be an absolute path"));
 }

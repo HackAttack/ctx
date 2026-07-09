@@ -30,14 +30,20 @@ detected agent-specific folders, such as Claude Code, only when ctx sees
 evidence that the agent is installed. Re-run the same command whenever you
 upgrade ctx or want to refresh the installed skill instructions.
 
-Install into specific agent skill folders when an agent does not read the
-universal `.agents/skills` location:
+Install into specific global agent skill folders when an agent does not read the
+universal `.agents/skills` location, or when you explicitly want a native
+global copy:
 
 ```bash
 ctx integrations install skills --agent codex
 ctx integrations install skills --agent claude-code --agent cursor --agent mimocode
 ctx integrations install skills --all-agents
 ```
+
+MiMo Code reads the universal `.agents/skills` location, so default and project
+installs use that shared folder. An explicit global MiMo install writes to the
+MiMo config skill directory, honoring `MIMOCODE_CONFIG_DIR`, absolute
+`MIMOCODE_HOME/config`, or `$XDG_CONFIG_HOME/mimocode`.
 
 Use project scope when you want a repository-local skill folder:
 

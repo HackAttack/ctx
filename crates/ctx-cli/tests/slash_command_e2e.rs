@@ -95,6 +95,69 @@ fn slash_command_e2e_detected_global_harnesses_discover_and_invoke() {
 }
 
 #[test]
+fn slash_command_e2e_mimocode_honors_config_dir_env() {
+    let temp = tempdir();
+    let config_dir = temp.path().join("mimocode-config");
+
+    let output = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "install",
+        "slash-commands",
+        "--agent",
+        "mimocode",
+        "--json",
+    ]));
+
+    let mimocode = MiMoCodeHarness::global_config_dir(&config_dir);
+    assert_result_path(&output, "mimocode", &mimocode.command_path(COMMAND_NAME));
+    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+    assert!(!temp
+        .path()
+        .join(".config")
+        .join("mimocode")
+        .join("commands")
+        .exists());
+}
+
+#[test]
+fn slash_command_e2e_mimocode_default_detection_honors_config_dir_env() {
+    let temp = tempdir();
+    let config_dir = temp.path().join("new-mimocode-config");
+
+    let output = json_output(ctx(&temp).env("MIMOCODE_CONFIG_DIR", &config_dir).args([
+        "integrations",
+        "install",
+        "slash-commands",
+        "--json",
+    ]));
+
+    assert_eq!(output_agents(&output), vec!["mimocode"]);
+    let mimocode = MiMoCodeHarness::global_config_dir(&config_dir);
+    assert_result_path(&output, "mimocode", &mimocode.command_path(COMMAND_NAME));
+    assert_ctx_history_prompt(&mimocode.invoke(COMMAND_NAME, QUERY), QUERY);
+}
+
+#[test]
+fn slash_command_e2e_mimocode_rejects_relative_home_override() {
+    let temp = tempdir();
+
+    let stderr = failure_stderr(
+        ctx(&temp)
+            .env("MIMOCODE_HOME", "relative-mimocode-home")
+            .args([
+                "integrations",
+                "install",
+                "slash-commands",
+                "--agent",
+                "mimocode",
+                "--json",
+            ]),
+    );
+
+    assert!(stderr.contains("MIMOCODE_HOME must be an absolute path"));
+}
+
+#[test]
 fn slash_command_e2e_project_harnesses_discover_and_invoke() {
     let temp = tempdir();
     let project = temp.path().join("project");
@@ -327,6 +390,12 @@ impl MiMoCodeHarness {
     fn global(xdg_config_home: &Path) -> Self {
         Self {
             command_dir: xdg_config_home.join("mimocode").join("commands"),
+        }
+    }
+
+    fn global_config_dir(config_dir: &Path) -> Self {
+        Self {
+            command_dir: config_dir.join("commands"),
         }
     }
 
