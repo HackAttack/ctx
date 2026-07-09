@@ -103,8 +103,11 @@ for required in \
   'CTX_RUST_TOOLCHAIN: "1.88.0"' \
   'CTX_BAZELISK_VERSION: "v1.29.0"' \
   'CTX_GO_VERSION: "1.22.12"' \
+  'BUILDKITE_JOB_ID' \
+  'CTX_PUBLIC_CI_TOOL_ROOT' \
+  'DPkg::Lock::Timeout=300' \
   'rustup toolchain install "${CTX_RUST_TOOLCHAIN}" --profile minimal --component rustfmt --component clippy' \
-  'apt-get install -y --no-install-recommends' \
+  'apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends' \
   'default-jdk-headless' \
   'install_go' \
   'go${CTX_GO_VERSION}.linux-${go_arch}.tar.gz' \
