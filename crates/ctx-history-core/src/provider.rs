@@ -102,10 +102,12 @@ pub enum ProviderId {
     Junie,
     Kilo,
     SweAgent,
+    #[serde(rename = "mimocode", alias = "mimo-code", alias = "mimo_code")]
+    MiMoCode,
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::ClaudeCliCrp,
@@ -156,6 +158,7 @@ impl ProviderId {
         Self::Junie,
         Self::Kilo,
         Self::SweAgent,
+        Self::MiMoCode,
     ];
 }
 
@@ -441,6 +444,7 @@ mod tests {
             ProviderId::KiroCli,
             ProviderId::KimiCodeCli,
             ProviderId::Lingma,
+            ProviderId::MiMoCode,
             ProviderId::Qoder,
             ProviderId::Warp,
             ProviderId::Junie,

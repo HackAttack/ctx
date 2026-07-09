@@ -128,6 +128,7 @@ import_options!(
 
 pub type KiloSqliteImportOptions = OpenCodeSqliteImportOptions;
 pub type KiroSqliteImportOptions = OpenCodeSqliteImportOptions;
+pub type MiMoCodeSqliteImportOptions = OpenCodeSqliteImportOptions;
 pub type TabnineCliImportOptions = GeminiCliImportOptions;
 
 #[derive(Clone)]

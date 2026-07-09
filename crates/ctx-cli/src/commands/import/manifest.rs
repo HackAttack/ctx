@@ -182,6 +182,7 @@ pub(crate) fn source_import_file_matches(source: &SourceInfo, path: &Path) -> bo
         }
         CaptureProvider::OpenCode
         | CaptureProvider::Kilo
+        | CaptureProvider::MiMoCode
         | CaptureProvider::KiroCli
         | CaptureProvider::ForgeCode
         | CaptureProvider::DeepAgents

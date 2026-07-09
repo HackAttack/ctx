@@ -34,8 +34,8 @@ pub use native_streams::{
 pub use sqlite_sources::{
     import_astrbot_sqlite, import_continue_cli_sessions, import_deepagents_sqlite,
     import_firebender_sqlite, import_forgecode_sqlite, import_kilo_sqlite, import_kiro_sqlite,
-    import_nanoclaw_project, import_opencode_sqlite, import_openhands_file_events,
-    import_shelley_sqlite,
+    import_mimocode_sqlite, import_nanoclaw_project, import_opencode_sqlite,
+    import_openhands_file_events, import_shelley_sqlite,
 };
 
 pub fn import_provider_fixture_jsonl(

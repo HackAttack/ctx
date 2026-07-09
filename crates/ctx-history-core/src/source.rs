@@ -64,6 +64,7 @@ text_enum! {
         Gh => "gh",
         Custom => "custom",
         Unknown => "unknown",
+        MiMoCode => "mimocode",
     }
     default Unknown
 }
