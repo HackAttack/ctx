@@ -97,16 +97,16 @@
         "usagesDigest": "trZT1wMYy/tgV92a1ogDlCDavOm0R9plXCfxm6DTWdw=",
         "recordedFileInputs": {
           "@@//crates/ctx-sdk/Cargo.toml": "36d7b44b8415faf5a6b81989f92d421ad145f43a8bf822a08599ebf5c56b2b2c",
-          "@@//crates/ctx-cli/Cargo.toml": "89857fdac9e37ee1c92edc7048417662383425fddc2b04cafab326f8fcf82791",
-          "@@//crates/ctx-history-core/Cargo.toml": "d9de142ec35f3a17ef8a0c6a2993b541681a217aeed74b5942f233c29ce64127",
+          "@@//crates/ctx-cli/Cargo.toml": "b4dddb0f96739adf6946aa716a41735598cac2d0ea33250e87a17921dfe9ddc9",
+          "@@//crates/ctx-history-core/Cargo.toml": "b96429c1c01bc372c165697d51c62c814f1d9f5b3f78df538f8eca42239b105a",
           "@@//Cargo.toml": "6efe5f0db516ea552124aba34912d46d4075cc956fcb0f4dde1e0f4f9b059ef6",
-          "@@//Cargo.lock": "a7ab59634d425d5746598146dd8d82112d526bb07ecac3b10abd523148f5cce9",
+          "@@//Cargo.lock": "28bcfe1349c3b96727d26eb4d6f4cf08e44e2d13e7fa4e5da1ad868b45d84d2d",
           "@@//crates/ctx-protocol/Cargo.toml": "e9e75a7c7ca116f86e58ee0e09d174612607c8c45cce0213e66825e403046bce",
-          "@@//crates/ctx-history-store/Cargo.toml": "d4d30eb58b46fbea6c5b22697dceea3c04ea043d5d8a354e3944aebb196b406f",
+          "@@//crates/ctx-history-store/Cargo.toml": "082c0a34d1ac15f957d43b582c80b868be113a80bf648475b3172b40699b82e1",
           "@@//MODULE.bazel": "af5bf753c78e7ff90e70ecf56be23084a9496332722600ddc72ac42e899f448f",
           "@@rules_rust~~rust_host_tools~rust_host_tools//rust_host_tools": "ENOENT",
-          "@@//crates/ctx-history-search/Cargo.toml": "fd6ad521656e0128b5af111b261b746e6815bfb46a30535e9746d9437b4bafe2",
-          "@@//crates/ctx-history-capture/Cargo.toml": "01c355f01ae979d67cd9238127ce9e926dc54b095de67bf67a464b085e38f589"
+          "@@//crates/ctx-history-search/Cargo.toml": "0453edbe6568f321cbe47d7eaabdacb619df575bcb832fbd3b3224f58554cf53",
+          "@@//crates/ctx-history-capture/Cargo.toml": "3812ff4f4e7f257c8856ecbd5f719059c164bcf53e73da551898fccf5226efec"
         },
         "recordedDirentsInputs": {},
         "envVariables": {
