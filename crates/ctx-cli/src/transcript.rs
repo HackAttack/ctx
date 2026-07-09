@@ -456,7 +456,7 @@ pub(crate) fn session_transcript_json(
     compact_json(json!({
         "schema_version": 1,
         "target": "session",
-        "item_type": "session_transcript",
+        "payload_type": "session_transcript",
         "ctx_session_id": session.id,
         "provider": session.provider,
         "provider_session_id": session.external_session_id,
@@ -480,7 +480,7 @@ pub(crate) fn event_window_json(
     compact_json(json!({
         "schema_version": 1,
         "target": "event",
-        "item_type": "event_window",
+        "payload_type": "event_window",
         "ctx_event_id": selected.id,
         "ctx_session_id": selected.session_id,
         "format": format.as_str(),
@@ -497,7 +497,7 @@ pub(crate) fn transcript_event_json(store: &Store, event: &Event) -> Value {
     compact_json(json!({
         "ctx_event_id": event.id,
         "item_id": event.id,
-        "item_type": "event",
+        "record_type": "event",
         "ctx_session_id": event.session_id,
         "provider": session.as_ref().map(|session| session.provider),
         "provider_session_id": session
@@ -527,7 +527,7 @@ pub(crate) fn render_session_jsonl(
     for event in selected_transcript_events(events, mode) {
         lines.push(serde_json::to_string(&compact_json(json!({
             "schema_version": 1,
-            "item_type": "session_transcript_event",
+            "payload_type": "session_transcript_event",
             "mode": mode.as_str(),
             "ctx_session_id": session.id,
             "provider": session.provider,
@@ -550,7 +550,7 @@ pub(crate) fn locate_session_json(store: &Store, session: &Session) -> Value {
     compact_json(json!({
         "schema_version": 1,
         "target": "session",
-        "item_type": "session_location",
+        "payload_type": "session_location",
         "ctx_session_id": session.id,
         "provider": session.provider,
         "provider_session_id": session.external_session_id,
@@ -571,7 +571,7 @@ pub(crate) fn locate_event_json(store: &Store, event: &Event) -> Value {
     compact_json(json!({
         "schema_version": 1,
         "target": "event",
-        "item_type": "event_location",
+        "payload_type": "event_location",
         "ctx_event_id": event.id,
         "ctx_session_id": event.session_id,
         "provider": session.as_ref().map(|session| session.provider),
@@ -736,7 +736,7 @@ impl ShowDto {
         compact_json(json!({
             "id": session.id,
             "item_id": session.id,
-            "item_type": "session",
+            "record_type": "session",
             "provider": session.provider,
             "external_session_id": session.external_session_id,
             "agent_type": session.agent_type,

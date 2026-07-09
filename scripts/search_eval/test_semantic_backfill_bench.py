@@ -304,7 +304,7 @@ class SemanticWorkerBenchTest(unittest.TestCase):
     def test_sanitize_search_json_drops_results_and_keeps_worker_coverage(self):
         data = {
             "schema_version": 1,
-            "item_type": "search_results",
+            "payload_type": "search_results",
             "results": [
                 {"snippet": "private one"},
                 {"snippet": "private two"},

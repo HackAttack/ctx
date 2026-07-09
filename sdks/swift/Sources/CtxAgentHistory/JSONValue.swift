@@ -145,7 +145,16 @@ extension JSONValue {
         }
     }
 
-    private static let omittedPublicKeys = Set(["schema_version", "target", "item_type"])
+    private static let omittedPublicKeys = Set([
+        "schema_version",
+        "target",
+        "item_type",
+        "itemType",
+        "payload_type",
+        "payloadType",
+        "record_type",
+        "recordType"
+    ])
 
     private static func snakeToCamel(_ value: String) -> String {
         let parts = value.split(separator: "_", omittingEmptySubsequences: false)

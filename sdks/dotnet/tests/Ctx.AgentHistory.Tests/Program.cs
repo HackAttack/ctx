@@ -136,6 +136,7 @@ internal static class Program
         var transport = new RecordingTransport("""
             {
               "schema_version": 1,
+              "payloadType": "search_results",
               "query": "agent history",
               "retrieval": {
                 "requested_mode": "hybrid",
@@ -148,7 +149,11 @@ internal static class Program
               },
               "results": [
                 {
-                  "result_scope": "event"
+                  "result_type": "event",
+                  "recordType": "event",
+                  "itemType": "event",
+                  "result_scope": "event",
+                  "citations": [{"target_type":"event","label":"codex event"}]
                 }
               ]
             }
@@ -166,6 +171,11 @@ internal static class Program
         Equal(4, retrieval["coverage"]!["embeddedItems"]!.GetValue<int>());
         Equal(1, retrieval["coverage"]!["indexedNow"]!.GetValue<int>());
         Equal(2, retrieval["diagnostics"]!["queryEmbedMs"]!.GetValue<int>());
+        True(!response.Search.ToJsonObject().ContainsKey("payloadType"), "search payload leaked payloadType");
+        True(!response.Search.Results[0].ToJsonObject().ContainsKey("recordType"), "search hit leaked recordType");
+        True(!response.Search.Results[0].ToJsonObject().ContainsKey("itemType"), "search hit leaked itemType");
+        Equal("event", response.Search.Results[0].ResultType ?? "");
+        Equal("event", response.Search.Results[0].Citations[0].TargetType ?? "");
     }
 
     private static async Task RejectsSearchWithoutIntent()

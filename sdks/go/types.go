@@ -251,6 +251,7 @@ type SearchHit struct {
 	Title                 string      `json:"title,omitempty"`
 	Snippet               string      `json:"snippet,omitempty"`
 	Rank                  float64     `json:"rank,omitempty"`
+	ResultType            string      `json:"resultType,omitempty"`
 	ResultScope           ResultScope `json:"resultScope"`
 	Provider              string      `json:"provider,omitempty"`
 	Timestamp             string      `json:"timestamp,omitempty"`
@@ -267,7 +268,7 @@ type SearchHit struct {
 // Citation identifies source material for a agent history result.
 type Citation struct {
 	ItemID       string `json:"itemId,omitempty"`
-	ItemType     string `json:"itemType,omitempty"`
+	TargetType   string `json:"targetType,omitempty"`
 	CtxEventID   string `json:"ctxEventId,omitempty"`
 	CtxSessionID string `json:"ctxSessionId,omitempty"`
 	Label        string `json:"label,omitempty"`

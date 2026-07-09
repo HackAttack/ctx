@@ -278,7 +278,7 @@ fn mcp_sql_tool_returns_structured_json_and_rejects_writes() {
     );
 
     let sql = &responses[1]["result"]["structuredContent"];
-    assert_eq!(sql["item_type"], "sql_result");
+    assert_eq!(sql["payload_type"], "sql_result");
     assert_eq!(sql["read_only"], true);
     assert_eq!(sql["columns"], json!(["sessions"]));
     assert_eq!(sql["rows"], json!([[0]]));
@@ -449,6 +449,7 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
     );
     let search = &search_responses[1]["result"]["structuredContent"];
     assert_eq!(search["schema_version"], 1);
+    assert_eq!(search["payload_type"], "search_results");
     assert_eq!(search["query"], "onboarding");
     assert_eq!(search["freshness"]["mode"], "off");
     assert_eq!(search["freshness"]["status"], "skipped");
@@ -478,6 +479,7 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
         ],
     );
     let first_result = &search["results"][0];
+    assert!(first_result["result_type"].is_string());
     let ctx_session_id = first_result["ctx_session_id"].as_str().unwrap();
     let ctx_event_id = first_result["ctx_event_id"].as_str().unwrap();
 
@@ -522,7 +524,7 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
     );
 
     let session = &show_responses[1]["result"]["structuredContent"];
-    assert_eq!(session["item_type"], "session_transcript");
+    assert_eq!(session["payload_type"], "session_transcript");
     assert_eq!(session["ctx_session_id"], ctx_session_id);
     assert_eq!(session["mode"], "lite");
     assert!(session["events"].as_array().unwrap().iter().all(|event| {
@@ -542,7 +544,7 @@ fn mcp_search_and_show_tools_return_structured_json_without_refresh() {
     );
 
     let event = &show_responses[2]["result"]["structuredContent"];
-    assert_eq!(event["item_type"], "event_window");
+    assert_eq!(event["payload_type"], "event_window");
     assert_eq!(event["ctx_event_id"], ctx_event_id);
     assert_eq!(event["ctx_session_id"], ctx_session_id);
     assert!(!event["events"].as_array().unwrap().is_empty());
@@ -726,7 +728,9 @@ fn mcp_sources_and_search_support_history_source_plugins() {
     let search = &responses[2]["result"]["structuredContent"];
     assert_eq!(search["filters"]["provider"], "custom");
     assert_eq!(search["filters"]["history_source"], "hermes/default");
+    assert_eq!(search["payload_type"], "search_results");
     assert_eq!(search["results"][0]["history_source"], "hermes/default");
+    assert!(search["results"][0]["result_type"].is_string());
     assert_useful_mcp_text(
         &responses[2]["result"],
         &[

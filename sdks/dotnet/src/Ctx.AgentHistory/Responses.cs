@@ -383,6 +383,7 @@ public sealed record SearchHit
         Title = JsonHelpers.GetString(json, "title");
         Snippet = JsonHelpers.GetString(json, "snippet");
         Rank = JsonHelpers.GetDouble(json, "rank");
+        ResultType = JsonHelpers.GetString(json, "resultType");
         ResultScope = JsonHelpers.GetString(json, "resultScope");
         Provider = JsonHelpers.GetString(json, "provider");
         Timestamp = JsonHelpers.GetString(json, "timestamp");
@@ -403,6 +404,7 @@ public sealed record SearchHit
     public string? Title { get; }
     public string? Snippet { get; }
     public double? Rank { get; }
+    public string? ResultType { get; }
     public string? ResultScope { get; }
     public string? Provider { get; }
     public string? Timestamp { get; }
@@ -428,7 +430,7 @@ public sealed record Citation
     {
         _json = JsonHelpers.CloneObject(json);
         ItemId = JsonHelpers.GetString(json, "itemId");
-        ItemType = JsonHelpers.GetString(json, "itemType");
+        TargetType = JsonHelpers.GetString(json, "targetType");
         CtxEventId = JsonHelpers.GetString(json, "ctxEventId");
         CtxSessionId = JsonHelpers.GetString(json, "ctxSessionId");
         Label = JsonHelpers.GetString(json, "label");
@@ -442,7 +444,7 @@ public sealed record Citation
     }
 
     public string? ItemId { get; }
-    public string? ItemType { get; }
+    public string? TargetType { get; }
     public string? CtxEventId { get; }
     public string? CtxSessionId { get; }
     public string? Label { get; }

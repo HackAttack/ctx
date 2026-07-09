@@ -176,6 +176,7 @@ public struct AgentHistorySearchHit: Codable, Equatable, Sendable {
     public var title: String?
     public var snippet: String?
     public var rank: Double?
+    public var resultType: String?
     public var resultScope: String
     public var provider: String?
     public var timestamp: String?
@@ -196,6 +197,7 @@ public struct AgentHistorySearchHit: Codable, Equatable, Sendable {
         title: String? = nil,
         snippet: String? = nil,
         rank: Double? = nil,
+        resultType: String? = nil,
         resultScope: String,
         provider: String? = nil,
         timestamp: String? = nil,
@@ -215,6 +217,7 @@ public struct AgentHistorySearchHit: Codable, Equatable, Sendable {
         self.title = title
         self.snippet = snippet
         self.rank = rank
+        self.resultType = resultType
         self.resultScope = resultScope
         self.provider = provider
         self.timestamp = timestamp
@@ -236,6 +239,7 @@ public struct AgentHistorySearchHit: Codable, Equatable, Sendable {
         case title
         case snippet
         case rank
+        case resultType
         case resultScope
         case provider
         case timestamp
@@ -258,6 +262,7 @@ public struct AgentHistorySearchHit: Codable, Equatable, Sendable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         snippet = try container.decodeIfPresent(String.self, forKey: .snippet)
         rank = try container.decodeIfPresent(Double.self, forKey: .rank)
+        resultType = try container.decodeIfPresent(String.self, forKey: .resultType)
         resultScope = try container.decodeIfPresent(String.self, forKey: .resultScope) ?? "unknown"
         provider = try container.decodeIfPresent(String.self, forKey: .provider)
         timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
@@ -472,7 +477,7 @@ public struct AgentHistoryFreshness: Codable, Equatable, Sendable {
 
 public struct AgentHistoryCitation: Codable, Equatable, Sendable {
     public var itemId: String?
-    public var itemType: String?
+    public var targetType: String?
     public var ctxEventId: String?
     public var ctxSessionId: String?
     public var label: String?
@@ -486,7 +491,7 @@ public struct AgentHistoryCitation: Codable, Equatable, Sendable {
 
     public init(
         itemId: String? = nil,
-        itemType: String? = nil,
+        targetType: String? = nil,
         ctxEventId: String? = nil,
         ctxSessionId: String? = nil,
         label: String? = nil,
@@ -499,7 +504,7 @@ public struct AgentHistoryCitation: Codable, Equatable, Sendable {
         cursor: String? = nil
     ) {
         self.itemId = itemId
-        self.itemType = itemType
+        self.targetType = targetType
         self.ctxEventId = ctxEventId
         self.ctxSessionId = ctxSessionId
         self.label = label

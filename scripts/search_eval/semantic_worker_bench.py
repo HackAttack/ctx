@@ -406,7 +406,7 @@ def sanitize_search_json(data: Any) -> dict[str, Any] | None:
     results = data.get("results")
     summary = {
         "schema_version": data.get("schema_version"),
-        "item_type": data.get("item_type"),
+        "payload_type": data.get("payload_type"),
         "result_count": len(results) if isinstance(results, list) else None,
         "freshness": sanitize_freshness(data.get("freshness")),
         "retrieval": sanitize_retrieval(data),

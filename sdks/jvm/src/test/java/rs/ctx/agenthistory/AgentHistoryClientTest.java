@@ -69,7 +69,9 @@ public final class AgentHistoryClientTest {
         assertEquals(Integer.valueOf(1), Integer.valueOf(response.getSearch().getResults().size()));
         SearchHit hit = response.getSearch().getResults().get(0);
         assertEquals("11111111-1111-4111-8111-111111111111", hit.getCtxEventId());
+        assertEquals("event", hit.getResultType());
         assertEquals("event", hit.getResultScope());
+        assertEquals("event", hit.getCitations().get(0).getTargetType());
         assertEquals("codex event", hit.getCitations().get(0).getLabel());
     }
 

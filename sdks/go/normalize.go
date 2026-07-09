@@ -81,7 +81,7 @@ func camelize(value any) any {
 		out := make(map[string]any, len(typed))
 		for key, nested := range typed {
 			camelKey := snakeToCamel(key)
-			if camelKey == "databasePath" || camelKey == "configPath" {
+			if camelKey == "databasePath" || camelKey == "configPath" || camelKey == "itemType" || camelKey == "payloadType" || camelKey == "recordType" {
 				continue
 			}
 			out[camelKey] = camelize(nested)

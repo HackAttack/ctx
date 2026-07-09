@@ -393,7 +393,13 @@ function camelizeKeys(value) {
   const out = {};
   for (const [key, item] of Object.entries(value)) {
     const camelKey = key.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
-    if (camelKey === "databasePath" || camelKey === "configPath") {
+    if (
+      camelKey === "databasePath" ||
+      camelKey === "configPath" ||
+      camelKey === "itemType" ||
+      camelKey === "payloadType" ||
+      camelKey === "recordType"
+    ) {
       continue;
     }
     out[camelKey] = camelizeKeys(item);

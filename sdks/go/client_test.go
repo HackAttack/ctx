@@ -321,6 +321,9 @@ func TestCanonicalFixturesExposeTypedFields(t *testing.T) {
 	if len(search.Search.Results) != 1 || search.Search.Results[0].WhyMatched[0] != "text" {
 		t.Fatalf("unexpected typed search results: %+v", search.Search.Results)
 	}
+	if search.Search.Results[0].ResultType != "event" || search.Search.Results[0].Citations[0].TargetType != "event" {
+		t.Fatalf("unexpected typed result/citation type: %+v", search.Search.Results[0])
+	}
 	if search.Search.Pagination == nil || search.Search.Pagination.Limit != 20 {
 		t.Fatalf("unexpected pagination: %+v", search.Search.Pagination)
 	}
