@@ -14,6 +14,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(ctx_sqlite_vec)]
+use std::os::raw::c_char;
+#[cfg(ctx_sqlite_vec)]
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Once,
@@ -798,7 +800,7 @@ fn register_sqlite_vec_auto_extension() -> bool {
                 *const (),
                 unsafe extern "C" fn(
                     *mut rusqlite::ffi::sqlite3,
-                    *mut *mut i8,
+                    *mut *mut c_char,
                     *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> i32,
             >(
