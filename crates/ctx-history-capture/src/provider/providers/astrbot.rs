@@ -15,8 +15,8 @@ use crate::provider::native::{
     provider_timestamp_millis, provider_value_text, NativeEventDraft, NativeSessionDraft,
 };
 use crate::provider::sqlite::{
-    ensure_sqlite_table_columns, opencode_schema_fingerprint, optional_column_expr,
-    sqlite_table_columns, sqlite_table_exists,
+    ensure_sqlite_table_columns, opencode_schema_fingerprint, sqlite_table_columns,
+    sqlite_table_exists,
 };
 use crate::{
     CaptureError, ProviderAdapterContext, ProviderNormalizationResult, Result,
@@ -428,19 +428,22 @@ pub(crate) fn astrbot_conversations(conn: &Connection) -> Result<Vec<AstrBotConv
     } else {
         "rowid"
     };
-    let inner_conversation_id = optional_column_expr(&columns, "inner_conversation_id", "NULL");
-    let conversation_id = optional_column_expr(
-        &columns,
-        "conversation_id",
-        optional_column_expr(&columns, "inner_conversation_id", "CAST(rowid AS TEXT)"),
-    );
-    let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
-    let user_id = optional_column_expr(&columns, "user_id", "NULL");
-    let title = optional_column_expr(&columns, "title", "NULL");
-    let persona_id = optional_column_expr(&columns, "persona_id", "NULL");
-    let token_usage = optional_column_expr(&columns, "token_usage", "NULL");
-    let created_at = optional_column_expr(&columns, "created_at", "NULL");
-    let updated_at = optional_column_expr(&columns, "updated_at", "NULL");
+    let inner_conversation_id =
+        astrbot_optional_text_column_expr(&columns, "inner_conversation_id", "NULL");
+    let conversation_id = if columns.contains("conversation_id") {
+        "CAST(conversation_id AS TEXT)".to_owned()
+    } else if columns.contains("inner_conversation_id") {
+        "CAST(inner_conversation_id AS TEXT)".to_owned()
+    } else {
+        "CAST(rowid AS TEXT)".to_owned()
+    };
+    let platform_id = astrbot_optional_text_column_expr(&columns, "platform_id", "NULL");
+    let user_id = astrbot_optional_text_column_expr(&columns, "user_id", "NULL");
+    let title = astrbot_optional_text_column_expr(&columns, "title", "NULL");
+    let persona_id = astrbot_optional_text_column_expr(&columns, "persona_id", "NULL");
+    let token_usage = astrbot_optional_text_column_expr(&columns, "token_usage", "NULL");
+    let created_at = astrbot_optional_timestamp_millis_expr(&columns, "created_at", "NULL");
+    let updated_at = astrbot_optional_timestamp_millis_expr(&columns, "updated_at", "NULL");
     let sql = format!(
         "select {row_id}, {inner_conversation_id}, {conversation_id}, {platform_id}, \
          {user_id}, content, {title}, {persona_id}, {token_usage}, {created_at}, \
@@ -478,13 +481,14 @@ pub(crate) fn astrbot_platform_messages(
     } else {
         "rowid"
     };
-    let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
-    let user_id = optional_column_expr(&columns, "user_id", "NULL");
-    let sender_id = optional_column_expr(&columns, "sender_id", "NULL");
-    let sender_name = optional_column_expr(&columns, "sender_name", "NULL");
-    let content = optional_column_expr(&columns, "content", "NULL");
-    let llm_checkpoint_id = optional_column_expr(&columns, "llm_checkpoint_id", "NULL");
-    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let platform_id = astrbot_optional_text_column_expr(&columns, "platform_id", "NULL");
+    let user_id = astrbot_optional_text_column_expr(&columns, "user_id", "NULL");
+    let sender_id = astrbot_optional_text_column_expr(&columns, "sender_id", "NULL");
+    let sender_name = astrbot_optional_text_column_expr(&columns, "sender_name", "NULL");
+    let content = astrbot_optional_text_column_expr(&columns, "content", "NULL");
+    let llm_checkpoint_id =
+        astrbot_optional_text_column_expr(&columns, "llm_checkpoint_id", "NULL");
+    let created_at = astrbot_optional_timestamp_millis_expr(&columns, "created_at", "NULL");
     let sql = format!(
         "select {id}, {platform_id}, {user_id}, {sender_id}, {sender_name}, \
          {content}, {llm_checkpoint_id}, {created_at} from platform_message_history \
@@ -505,6 +509,36 @@ pub(crate) fn astrbot_platform_messages(
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(CaptureError::from)
+}
+
+fn astrbot_optional_text_column_expr(
+    columns: &std::collections::BTreeSet<String>,
+    column: &str,
+    fallback: &str,
+) -> String {
+    if columns.contains(column) {
+        format!("CAST({column} AS TEXT)")
+    } else {
+        fallback.to_owned()
+    }
+}
+
+fn astrbot_optional_timestamp_millis_expr(
+    columns: &std::collections::BTreeSet<String>,
+    column: &str,
+    fallback: &str,
+) -> String {
+    if !columns.contains(column) {
+        return fallback.to_owned();
+    }
+    format!(
+        "CASE WHEN {column} IS NULL THEN NULL \
+         WHEN typeof({column}) IN ('integer', 'real') THEN \
+             CASE WHEN abs(CAST({column} AS INTEGER)) < 100000000000 \
+                  THEN CAST({column} AS INTEGER) * 1000 \
+                  ELSE CAST({column} AS INTEGER) END \
+         ELSE CAST(strftime('%s', {column}) AS INTEGER) * 1000 END"
+    )
 }
 
 pub(crate) fn astrbot_selected_conversation(conn: &Connection) -> Result<Option<String>> {
