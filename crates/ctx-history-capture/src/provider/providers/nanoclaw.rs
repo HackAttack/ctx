@@ -15,9 +15,11 @@ use crate::provider::native::{
     provider_nonnegative_i64_to_u64, provider_timestamp_millis, provider_value_text, text_id_index,
     NativeEventDraft, NativeSessionDraft,
 };
+use crate::provider::provider_safe_path_segment;
 use crate::provider::sqlite::{
     ensure_sqlite_table_columns, opencode_schema_fingerprint, optional_column_expr,
-    sqlite_table_columns, sqlite_table_exists,
+    optional_text_column_expr, optional_timestamp_millis_expr, sqlite_table_columns,
+    sqlite_table_exists,
 };
 use crate::{
     fnv1a64, CaptureError, ProviderAdapterContext, ProviderNormalizationResult, Result,
@@ -72,6 +74,16 @@ pub(crate) fn normalize_nanoclaw_project(
     let sessions = nanoclaw_sessions(&conn)?;
     let mut result = ProviderNormalizationResult::default();
     for session in sessions {
+        if !provider_safe_path_segment(&session.agent_group_id)
+            || !provider_safe_path_segment(&session.id)
+        {
+            push_provider_import_failure(
+                &mut result.summary,
+                0,
+                "NanoClaw session identifiers are not safe path segments".to_owned(),
+            );
+            continue;
+        }
         let session_dir = project_root
             .join("data")
             .join("v2-sessions")
@@ -268,8 +280,8 @@ pub(crate) fn nanoclaw_sessions(conn: &Connection) -> Result<Vec<NanoClawSession
     let agent_provider = optional_column_expr(&columns, "agent_provider", "NULL");
     let status = optional_column_expr(&columns, "status", "NULL");
     let container_status = optional_column_expr(&columns, "container_status", "NULL");
-    let last_active = optional_column_expr(&columns, "last_active", "NULL");
-    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let last_active = optional_timestamp_millis_expr(&columns, "last_active", "NULL");
+    let created_at = optional_timestamp_millis_expr(&columns, "created_at", "NULL");
     let agent_group_columns = if sqlite_table_exists(conn, "agent_groups")? {
         sqlite_table_columns(conn, "agent_groups")?
     } else {
@@ -355,9 +367,9 @@ pub(crate) fn nanoclaw_inbound_messages(path: &Path) -> Result<Vec<NanoClawMessa
     ensure_sqlite_table_columns(&columns, "NanoClaw inbound messages table", &["id"])?;
     let seq = optional_column_expr(&columns, "seq", "NULL");
     let kind = optional_column_expr(&columns, "kind", "NULL");
-    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let timestamp = optional_timestamp_millis_expr(&columns, "timestamp", "NULL");
     let status = optional_column_expr(&columns, "status", "NULL");
-    let trigger = optional_column_expr(&columns, "trigger", "NULL");
+    let trigger = optional_text_column_expr(&columns, "trigger", "NULL");
     let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
     let channel_type = optional_column_expr(&columns, "channel_type", "NULL");
     let thread_id = optional_column_expr(&columns, "thread_id", "NULL");
@@ -401,7 +413,7 @@ pub(crate) fn nanoclaw_outbound_messages(path: &Path) -> Result<Vec<NanoClawMess
     ensure_sqlite_table_columns(&columns, "NanoClaw outbound messages table", &["id"])?;
     let seq = optional_column_expr(&columns, "seq", "NULL");
     let kind = optional_column_expr(&columns, "kind", "NULL");
-    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let timestamp = optional_timestamp_millis_expr(&columns, "timestamp", "NULL");
     let in_reply_to = optional_column_expr(&columns, "in_reply_to", "NULL");
     let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
     let channel_type = optional_column_expr(&columns, "channel_type", "NULL");

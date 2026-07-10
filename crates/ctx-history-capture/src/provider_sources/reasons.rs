@@ -54,7 +54,7 @@ pub(super) fn empty_source_reason(provider: CaptureProvider) -> Option<&'static 
             Some("path exists but no Mistral Vibe meta.json/messages.jsonl session directories were found")
         }
         CaptureProvider::Junie => {
-            Some("path exists but no Junie index.jsonl entries with session events.jsonl files were found")
+            Some("path exists but no Junie session events.jsonl files were found")
         }
         CaptureProvider::Mux => {
             Some("path exists but no Mux chat.jsonl or partial.json session files were found")
@@ -90,7 +90,7 @@ pub(super) fn empty_source_reason(provider: CaptureProvider) -> Option<&'static 
         }
         CaptureProvider::Warp => Some("path exists but no Warp SQLite database was found"),
         CaptureProvider::CodeBuddy => {
-            Some("path exists but no CodeBuddy history sessions were found")
+            Some("path exists but no CodeBuddy extension sessions or CLI project JSONL files were found")
         }
         _ => None,
     }

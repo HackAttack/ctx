@@ -43,6 +43,47 @@ pub(crate) fn optional_column_expr<'a>(
     }
 }
 
+pub(crate) fn optional_text_column_expr(
+    columns: &BTreeSet<String>,
+    column: &str,
+    fallback: &str,
+) -> String {
+    if columns.contains(column) {
+        format!("CAST({column} AS TEXT)")
+    } else {
+        fallback.to_owned()
+    }
+}
+
+pub(crate) fn optional_timestamp_millis_expr(
+    columns: &BTreeSet<String>,
+    column: &str,
+    fallback: &str,
+) -> String {
+    if !columns.contains(column) {
+        return fallback.to_owned();
+    }
+    let text = format!("trim(CAST({column} AS TEXT))");
+    let numeric_body = format!(
+        "CASE WHEN substr({text}, 1, 1) IN ('+', '-') THEN substr({text}, 2) ELSE {text} END"
+    );
+    let numeric_value = format!(
+        "CASE WHEN abs(CAST({column} AS REAL)) < 100000000000 \
+         THEN CAST(ROUND(CAST({column} AS REAL) * 1000) AS INTEGER) \
+         ELSE CAST(ROUND(CAST({column} AS REAL)) AS INTEGER) END"
+    );
+    format!(
+        "CASE WHEN {column} IS NULL THEN NULL \
+         WHEN typeof({column}) IN ('integer', 'real') THEN {numeric_value} \
+         WHEN {numeric_body} != '' \
+              AND {numeric_body} != '.' \
+              AND {numeric_body} NOT GLOB '*[^0-9.]*' \
+              AND length({numeric_body}) - length(replace({numeric_body}, '.', '')) <= 1 \
+         THEN {numeric_value} \
+         ELSE CAST(ROUND(unixepoch({column}, 'subsec') * 1000) AS INTEGER) END"
+    )
+}
+
 pub(crate) fn ensure_sqlite_table_columns(
     columns: &BTreeSet<String>,
     label: &str,
@@ -221,4 +262,101 @@ pub(crate) fn opencode_schema_fingerprint(conn: &Connection) -> Result<String> {
     })?;
     let schema = rows.collect::<std::result::Result<Vec<_>, _>>()?.join("\n");
     compute_payload_hash(&json!({ "schema": schema }))
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, types::Value as SqlValue, Connection};
+
+    use super::{optional_text_column_expr, optional_timestamp_millis_expr, BTreeSet};
+
+    #[test]
+    fn optional_sqlite_casts_normalize_native_text_and_timestamp_shapes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE samples (position INTEGER, value)", [])
+            .unwrap();
+        let samples = [
+            (SqlValue::Integer(1_783_653_514), Some(1_783_653_514_000)),
+            (SqlValue::Real(1_783_653_514.491), Some(1_783_653_514_491)),
+            (
+                SqlValue::Integer(1_783_653_514_491),
+                Some(1_783_653_514_491),
+            ),
+            (SqlValue::Real(1_783_653_514_491.0), Some(1_783_653_514_491)),
+            (SqlValue::Text("1783653514".into()), Some(1_783_653_514_000)),
+            (
+                SqlValue::Text("+1783653514".into()),
+                Some(1_783_653_514_000),
+            ),
+            (SqlValue::Text("-1.25".into()), Some(-1_250)),
+            (
+                SqlValue::Text("1783653514.491".into()),
+                Some(1_783_653_514_491),
+            ),
+            (
+                SqlValue::Text("1783653514491".into()),
+                Some(1_783_653_514_491),
+            ),
+            (
+                SqlValue::Text("0001783653514".into()),
+                Some(1_783_653_514_000),
+            ),
+            (
+                SqlValue::Text("2026-07-10T03:18:34.491Z".into()),
+                Some(1_783_653_514_491),
+            ),
+            (
+                SqlValue::Text("2026-07-10T05:48:34.491+02:30".into()),
+                Some(1_783_653_514_491),
+            ),
+            (SqlValue::Text("not-a-timestamp".into()), None),
+            (SqlValue::Text("  ".into()), None),
+            (SqlValue::Null, None),
+        ];
+        for (position, (value, _)) in samples.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO samples VALUES (?1, ?2)",
+                params![position as i64, value],
+            )
+            .unwrap();
+        }
+
+        let columns = BTreeSet::from(["value".to_owned()]);
+        let timestamp = optional_timestamp_millis_expr(&columns, "value", "NULL");
+        let sql = format!("SELECT {timestamp} FROM samples ORDER BY position");
+        let actual = conn
+            .prepare(&sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, Option<i64>>(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            actual,
+            samples
+                .iter()
+                .map(|(_, expected)| *expected)
+                .collect::<Vec<_>>()
+        );
+
+        let text = optional_text_column_expr(&columns, "value", "NULL");
+        let value: String = conn
+            .query_row(
+                &format!("SELECT {text} FROM samples WHERE position = 0"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "1783653514");
+
+        let missing = BTreeSet::new();
+        assert_eq!(
+            optional_timestamp_millis_expr(&missing, "value", "fallback"),
+            "fallback"
+        );
+        assert_eq!(
+            optional_text_column_expr(&missing, "value", "fallback"),
+            "fallback"
+        );
+    }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::BufReader,
     path::{Path, PathBuf},
@@ -23,6 +23,7 @@ use crate::provider::native::{
     native_event, native_provider_capture, provider_capped_json_value, provider_timestamp_millis,
     NativeEventDraft, NativeSessionDraft,
 };
+use crate::provider::provider_safe_path_segment;
 use crate::{
     CaptureError, ProviderAdapterContext, ProviderFileTouchedEnvelope, ProviderImportFailure,
     ProviderNormalizationResult, Result, PROVIDER_MAX_PREVIEW_CHARS,
@@ -42,6 +43,7 @@ pub(crate) struct JunieIndexMeta {
 pub(crate) struct JunieSessionPath {
     pub(crate) events_path: PathBuf,
     pub(crate) index_meta: JunieIndexMeta,
+    pub(crate) require_supported_events: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +129,7 @@ pub(crate) fn junie_session_event_paths(path: &Path) -> Result<Vec<JunieSessionP
         return Ok(vec![JunieSessionPath {
             events_path: path.to_path_buf(),
             index_meta,
+            require_supported_events: true,
         }]);
     }
     if !metadata.file_type().is_dir() {
@@ -144,6 +147,7 @@ pub(crate) fn junie_session_event_paths(path: &Path) -> Result<Vec<JunieSessionP
         return Ok(vec![JunieSessionPath {
             events_path: direct_events,
             index_meta,
+            require_supported_events: true,
         }]);
     }
 
@@ -153,15 +157,47 @@ pub(crate) fn junie_session_event_paths(path: &Path) -> Result<Vec<JunieSessionP
     }
     let metas = junie_read_index(&index_path)?;
     let mut out = Vec::new();
+    let mut seen_session_ids = BTreeSet::new();
     for meta in metas {
         if !junie_session_id_is_safe(&meta.session_id) {
             continue;
         }
         let events_path = path.join(&meta.session_id).join("events.jsonl");
         if events_path.is_file() {
+            seen_session_ids.insert(meta.session_id.clone());
             out.push(JunieSessionPath {
                 events_path,
                 index_meta: meta,
+                require_supported_events: true,
+            });
+        }
+    }
+
+    let mut session_dirs = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+    session_dirs.sort_by_key(|entry| entry.file_name());
+    for entry in session_dirs {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(session_id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !junie_session_id_is_safe(&session_id) || seen_session_ids.contains(&session_id) {
+            continue;
+        }
+        let events_path = entry.path().join("events.jsonl");
+        if events_path.is_file() {
+            seen_session_ids.insert(session_id.clone());
+            out.push(JunieSessionPath {
+                events_path,
+                index_meta: JunieIndexMeta {
+                    session_id,
+                    ..JunieIndexMeta::default()
+                },
+                require_supported_events: false,
             });
         }
     }
@@ -254,11 +290,7 @@ pub(crate) fn junie_session_id_from_events_path(path: &Path) -> Result<String> {
 }
 
 pub(crate) fn junie_session_id_is_safe(session_id: &str) -> bool {
-    !session_id.is_empty()
-        && session_id != "."
-        && session_id != ".."
-        && !session_id.contains('/')
-        && !session_id.contains('\\')
+    provider_safe_path_segment(session_id)
 }
 
 pub(crate) fn normalize_junie_session_events_file(
@@ -457,6 +489,23 @@ pub(crate) fn normalize_junie_session_events_file(
                     }
                 }
             }
+            "AgentFailureEvent" => {
+                junie_ensure_assistant(&mut buffer, last_ts);
+                if let Some(message) = agent_event.get("message").and_then(Value::as_str) {
+                    if !message.trim().is_empty() {
+                        let step_id = agent_event
+                            .get("errorCode")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .map(|value| format!("failure-{value}-{line_number}"))
+                            .unwrap_or_else(|| format!("failure-{line_number}"));
+                        buffer
+                            .results
+                            .insert(step_id, format!("Junie failed: {message}"));
+                        saw_supported_event = true;
+                    }
+                }
+            }
             "ToolBlockUpdatedEvent"
             | "TerminalBlockUpdatedEvent"
             | "ViewFilesBlockUpdatedEvent"
@@ -476,7 +525,7 @@ pub(crate) fn normalize_junie_session_events_file(
         &mut provider_event_index,
     );
 
-    if result.captures.is_empty() && !saw_supported_event {
+    if result.captures.is_empty() && !saw_supported_event && session_path.require_supported_events {
         push_provider_import_failure(
             &mut result.summary,
             base_line,
