@@ -49,6 +49,43 @@ fn upgrade_status_check_and_apply_support_managed_installs() {
 
 #[cfg(unix)]
 #[test]
+fn upgrade_status_text_output_shows_error_details() {
+    let temp = tempdir();
+    let release = fake_release(&temp, "9.9.9");
+
+    let state = json!({
+        "schema_version": 1,
+        "status": "error",
+        "checked_at": "2026-07-10T12:00:00Z",
+        "last_checked_unix_s": 1778500000,
+        "error": "download artifact: connection refused",
+    });
+    fs::write(
+        temp.path().join("upgrade-state.json"),
+        serde_json::to_vec_pretty(&state).unwrap(),
+    )
+    .unwrap();
+
+    let stdout = {
+        let mut command = ctx(&temp);
+        command.args(["upgrade", "status"]);
+        let assert = fake_release_env(&mut command, &release).assert().success();
+        let output = assert.get_output();
+        String::from_utf8(output.stdout.clone()).unwrap()
+    };
+
+    assert!(
+        stdout.contains("ctx upgrade status: error"),
+        "status line should be present: {stdout}"
+    );
+    assert!(
+        stdout.contains("download artifact: connection refused"),
+        "error details should appear in text output: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn upgrade_status_reports_path_shadowing() {
     let temp = tempdir();
     let release = fake_release(&temp, "9.9.9");
