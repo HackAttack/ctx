@@ -23,6 +23,7 @@ use crate::provider::native::{
     provider_capped_json, provider_policy_body, provider_policy_event_text, provider_role,
     provider_value_text, task_json_string_field, task_json_time_field,
 };
+use crate::provider::provider_safe_path_segment;
 use crate::{
     CaptureError, ProviderAdapterContext, ProviderImportFailure, ProviderNormalizationResult,
     Result, CODEBUDDY_SOURCE_FORMAT, MAX_PROVIDER_JSONL_LINE_BYTES, PROVIDER_MAX_PREVIEW_CHARS,
@@ -299,6 +300,14 @@ pub(crate) fn normalize_codebuddy_session_dir(
             });
             continue;
         };
+        if !provider_safe_path_segment(message_id) {
+            result.summary.failed += 1;
+            result.summary.failures.push(ProviderImportFailure {
+                line: line_number,
+                error: "CodeBuddy message ref id is not a safe path segment".to_owned(),
+            });
+            continue;
+        }
         let message_path = session_dir
             .join("messages")
             .join(format!("{message_id}.json"));
@@ -423,7 +432,9 @@ pub(crate) fn normalize_codebuddy_cli_jsonl_file(
     let mut reader = BufReader::new(file);
     let mut result = ProviderNormalizationResult::default();
     let mut events = Vec::new();
-    let mut rows = Vec::new();
+    let mut row_count = 0usize;
+    let mut native_session_id = None;
+    let mut cwd = None;
     let mut line = Vec::new();
     let mut line_number = 0usize;
 
@@ -447,6 +458,23 @@ pub(crate) fn normalize_codebuddy_cli_jsonl_file(
                 continue;
             }
         };
+        row_count = row_count.saturating_add(1);
+        if native_session_id.is_none() {
+            native_session_id = value
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+        }
+        if cwd.is_none() {
+            cwd = value
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+        }
         let text = codebuddy_cli_message_text(&value);
         if value.get("type").and_then(Value::as_str) == Some("message") && !text.trim().is_empty() {
             events.push(CodeBuddyEventInput {
@@ -465,10 +493,9 @@ pub(crate) fn normalize_codebuddy_cli_jsonl_file(
                 occurred_at: codebuddy_cli_message_time(&value, context.imported_at),
                 text,
                 raw_message: value.clone(),
-                decoded_message: value.clone(),
+                decoded_message: value,
             });
         }
-        rows.push((line_number, value));
     }
 
     if events.is_empty() {
@@ -479,11 +506,7 @@ pub(crate) fn normalize_codebuddy_cli_jsonl_file(
         return Ok(result);
     }
 
-    let native_session_id = rows
-        .iter()
-        .find_map(|(_, value)| value.get("sessionId").and_then(Value::as_str))
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_owned)
+    let native_session_id = native_session_id
         .or_else(|| {
             path.file_stem()
                 .and_then(|name| name.to_str())
@@ -500,17 +523,12 @@ pub(crate) fn normalize_codebuddy_cli_jsonl_file(
         .unwrap_or(context.imported_at);
     let ended_at = events.iter().map(|event| event.occurred_at).max();
     let title = codebuddy_generated_title(&events);
-    let cwd = rows
-        .iter()
-        .find_map(|(_, value)| value.get("cwd").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let source_path = path.display().to_string();
     let file_names = vec!["projects/*/*.jsonl"];
     let session_index = json!({
         "source": "codebuddy_cli_jsonl",
         "path": source_path,
-        "rows": rows.len(),
+        "rows": row_count,
     });
     let capture = CodeBuddyCaptureDraft {
         provider_session_id: &provider_session_id,
@@ -521,7 +539,7 @@ pub(crate) fn normalize_codebuddy_cli_jsonl_file(
         started_at,
         ended_at,
         title: title.as_deref(),
-        cwd,
+        cwd: cwd.as_deref(),
         project_index: None,
         conversation: None,
         session_index: &session_index,
@@ -797,7 +815,7 @@ impl CodeBuddyNativeShape {
                 "Non-text content blocks and binary attachments are preserved only in capped native JSON metadata",
             ],
             Self::Cli => &[
-                "Non-message CLI JSONL rows are preserved only in capped session metadata",
+                "Non-message CLI JSONL rows are not imported; only their contribution to the source row count is recorded",
                 "Non-text content blocks and binary attachments are preserved only in capped native JSON metadata",
             ],
         }

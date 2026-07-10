@@ -530,5 +530,26 @@ pub(crate) fn astrbot_selected_conversation(conn: &Connection) -> Result<Option<
         .query_row(&sql, [], |row| row.get::<_, Option<String>>(0))
         .optional()?
         .flatten();
-    Ok(value)
+    Ok(value.and_then(astrbot_selected_conversation_value))
+}
+
+fn astrbot_selected_conversation_value(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        let selected = match &parsed {
+            Value::Object(object) => object.get("val").and_then(provider_value_text),
+            Value::String(_) | Value::Number(_) | Value::Bool(_) => provider_value_text(&parsed),
+            Value::Array(_) | Value::Null => None,
+        };
+        if let Some(selected) = selected
+            .map(|selected| selected.trim().to_owned())
+            .filter(|selected| !selected.is_empty())
+        {
+            return Some(selected);
+        }
+    }
+    Some(trimmed.to_owned())
 }

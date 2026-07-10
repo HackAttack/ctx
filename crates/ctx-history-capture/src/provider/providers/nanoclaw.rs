@@ -15,6 +15,7 @@ use crate::provider::native::{
     provider_nonnegative_i64_to_u64, provider_timestamp_millis, provider_value_text, text_id_index,
     NativeEventDraft, NativeSessionDraft,
 };
+use crate::provider::provider_safe_path_segment;
 use crate::provider::sqlite::{
     ensure_sqlite_table_columns, opencode_schema_fingerprint, optional_column_expr,
     optional_text_column_expr, optional_timestamp_millis_expr, sqlite_table_columns,
@@ -73,6 +74,16 @@ pub(crate) fn normalize_nanoclaw_project(
     let sessions = nanoclaw_sessions(&conn)?;
     let mut result = ProviderNormalizationResult::default();
     for session in sessions {
+        if !provider_safe_path_segment(&session.agent_group_id)
+            || !provider_safe_path_segment(&session.id)
+        {
+            push_provider_import_failure(
+                &mut result.summary,
+                0,
+                "NanoClaw session identifiers are not safe path segments".to_owned(),
+            );
+            continue;
+        }
         let session_dir = project_root
             .join("data")
             .join("v2-sessions")

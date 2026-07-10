@@ -1,8 +1,15 @@
-use std::{fs, io::ErrorKind, path::Path};
+use std::{
+    fs::{self, File},
+    io::{BufReader, ErrorKind},
+    path::Path,
+};
 
 use ctx_history_core::CaptureProvider;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
+
+use crate::common::io::{read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead};
+use crate::provider::provider_safe_path_segment;
 
 use super::types::ProviderDefaultLocation;
 
@@ -166,25 +173,43 @@ fn has_junie_session_events(root: &Path, max_entries: usize) -> BoundedProbe {
     }
 
     let index_path = root.join("index.jsonl");
-    match path_is_file_probe(&index_path) {
-        BoundedProbe::Found => {}
-        BoundedProbe::NotFound => return BoundedProbe::NotFound,
-        other => return other,
+    match fs::symlink_metadata(&index_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return BoundedProbe::NotFound,
+        Err(err) if err.kind() == ErrorKind::NotFound => return BoundedProbe::NotFound,
+        Err(_) => return BoundedProbe::IoError,
     }
 
-    let text = match fs::read_to_string(&index_path) {
-        Ok(text) => text,
+    let file = match File::open(&index_path) {
+        Ok(file) => file,
         Err(_) => return BoundedProbe::IoError,
     };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
     let mut visited = 0usize;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+    loop {
+        match read_provider_jsonl_line_or_skip_oversized(&mut reader, &mut line) {
+            Ok(ProviderJsonlLineRead::Eof) => break,
+            Ok(ProviderJsonlLineRead::Line { .. }) => {}
+            Ok(ProviderJsonlLineRead::Oversized { .. }) => {
+                visited = visited.saturating_add(1);
+                if visited > max_entries {
+                    return BoundedProbe::BudgetExhausted;
+                }
+                continue;
+            }
+            Err(_) => return BoundedProbe::IoError,
         }
         visited = visited.saturating_add(1);
         if visited > max_entries {
             return BoundedProbe::BudgetExhausted;
+        }
+        let Ok(line) = std::str::from_utf8(&line) else {
+            continue;
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -192,7 +217,7 @@ fn has_junie_session_events(root: &Path, max_entries: usize) -> BoundedProbe {
         let Some(session_id) = value.get("sessionId").and_then(Value::as_str) else {
             continue;
         };
-        if !junie_session_id_is_safe(session_id) {
+        if !provider_safe_path_segment(session_id) {
             continue;
         }
         match path_is_file_probe(&root.join(session_id).join("events.jsonl")) {
@@ -224,7 +249,7 @@ fn has_junie_session_events(root: &Path, max_entries: usize) -> BoundedProbe {
         let Some(session_id) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !junie_session_id_is_safe(&session_id) {
+        if !provider_safe_path_segment(&session_id) {
             continue;
         }
         match path_is_file_probe(&entry.path().join("events.jsonl")) {
@@ -234,14 +259,6 @@ fn has_junie_session_events(root: &Path, max_entries: usize) -> BoundedProbe {
         }
     }
     BoundedProbe::NotFound
-}
-
-fn junie_session_id_is_safe(session_id: &str) -> bool {
-    !session_id.is_empty()
-        && session_id != "."
-        && session_id != ".."
-        && !session_id.contains('/')
-        && !session_id.contains('\\')
 }
 
 fn has_forgecode_conversations_table(path: &Path) -> BoundedProbe {

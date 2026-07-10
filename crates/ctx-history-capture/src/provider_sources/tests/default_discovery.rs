@@ -148,6 +148,51 @@ fn junie_default_source_accepts_unindexed_session_sibling() {
 }
 
 #[test]
+fn junie_default_source_stops_at_index_entry_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let sessions = temp.path().join(".junie/sessions");
+    let target = sessions.join("session-after-budget");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("events.jsonl"), "{}\n").unwrap();
+    let mut index = "{}\n".repeat(10_000);
+    index.push_str(r#"{"sessionId":"session-after-budget"}"#);
+    index.push('\n');
+    std::fs::write(sessions.join("index.jsonl"), index).unwrap();
+
+    let source = discover_provider_sources(temp.path())
+        .into_iter()
+        .find(|source| source.provider == CaptureProvider::Junie)
+        .unwrap();
+    assert_eq!(source.status, ProviderSourceStatus::Unknown);
+    assert!(source.unsupported_reason.unwrap().contains("scan budget"));
+}
+
+#[cfg(unix)]
+#[test]
+fn junie_default_source_does_not_follow_symlinked_index() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let sessions = temp.path().join(".junie/sessions");
+    let target = sessions.join("session-from-linked-index");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("events.jsonl"), "{}\n").unwrap();
+    let outside_index = temp.path().join("outside-index.jsonl");
+    std::fs::write(
+        &outside_index,
+        r#"{"sessionId":"session-from-linked-index"}"#,
+    )
+    .unwrap();
+    symlink(outside_index, sessions.join("index.jsonl")).unwrap();
+
+    let source = discover_provider_sources(temp.path())
+        .into_iter()
+        .find(|source| source.provider == CaptureProvider::Junie)
+        .unwrap();
+    assert_eq!(source.status, ProviderSourceStatus::Empty);
+}
+
+#[test]
 fn codex_default_source_is_empty_until_jsonl_sessions_exist() {
     let temp = tempfile::tempdir().unwrap();
     let sessions = temp.path().join(".codex/sessions");

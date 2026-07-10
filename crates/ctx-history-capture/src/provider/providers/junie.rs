@@ -23,6 +23,7 @@ use crate::provider::native::{
     native_event, native_provider_capture, provider_capped_json_value, provider_timestamp_millis,
     NativeEventDraft, NativeSessionDraft,
 };
+use crate::provider::provider_safe_path_segment;
 use crate::{
     CaptureError, ProviderAdapterContext, ProviderFileTouchedEnvelope, ProviderImportFailure,
     ProviderNormalizationResult, Result, PROVIDER_MAX_PREVIEW_CHARS,
@@ -289,11 +290,7 @@ pub(crate) fn junie_session_id_from_events_path(path: &Path) -> Result<String> {
 }
 
 pub(crate) fn junie_session_id_is_safe(session_id: &str) -> bool {
-    !session_id.is_empty()
-        && session_id != "."
-        && session_id != ".."
-        && !session_id.contains('/')
-        && !session_id.contains('\\')
+    provider_safe_path_segment(session_id)
 }
 
 pub(crate) fn normalize_junie_session_events_file(

@@ -59,8 +59,8 @@ fn native_astrbot_real_schema_casts_ids_metadata_and_datetime_millis() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO preferences VALUES ('umo', 'sel_conv_id', 7)",
-        [],
+        "INSERT INTO preferences VALUES ('umo', 'sel_conv_id', ?1)",
+        [json!({"val": "conversation-real-shape"}).to_string()],
     )
     .unwrap();
     drop(conn);
@@ -107,7 +107,7 @@ fn native_astrbot_real_schema_casts_ids_metadata_and_datetime_millis() {
     );
     assert_eq!(
         session.sync.metadata["metadata"]["selected_conversation"].as_str(),
-        Some("7")
+        Some("conversation-real-shape")
     );
 
     let events = store.events_for_session(session_id).unwrap();
@@ -209,6 +209,19 @@ fn native_codebuddy_cli_jsonl_imports_searches_and_reimports() {
         stored_session.sync.metadata["metadata"]["native_shape"].as_str(),
         Some("cli_jsonl")
     );
+    let session_index: Value = serde_json::from_str(
+        stored_session.sync.metadata["metadata"]["session_index"]["json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session_index["rows"].as_u64(), Some(3));
+    assert!(stored_session.sync.metadata["metadata"]["limitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|limitation| limitation.contains("Non-message CLI JSONL rows are not imported")));
     let capture_source = store
         .capture_source_by_external_session(
             CaptureProvider::CodeBuddy,
@@ -260,6 +273,103 @@ fn native_codebuddy_cli_jsonl_imports_searches_and_reimports() {
     assert_eq!(second.imported_events, 0);
     assert_eq!(second.skipped_sessions, 1);
     assert_eq!(second.skipped_events, 2);
+}
+
+#[test]
+fn native_codebuddy_rejects_message_id_path_traversal() {
+    let temp = tempdir();
+    let project = temp.path().join("codebuddy/project");
+    let session = project.join("session-traversal");
+    fs::create_dir_all(session.join("messages")).unwrap();
+    fs::write(
+        session.join("index.json"),
+        json!({"messages": [{"id": "../../outside", "role": "user"}]}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        project.join("outside.json"),
+        json!({"content": "codebuddy traversal content must not import"}).to_string(),
+    )
+    .unwrap();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+
+    let summary = import_codebuddy_history(
+        &project,
+        &mut store,
+        CodeBuddyImportOptions {
+            allow_partial_failures: true,
+            ..CodeBuddyImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert!(summary.failed >= 1, "{:?}", summary.failures);
+    assert!(summary
+        .failures
+        .iter()
+        .any(|failure| failure.error.contains("not a safe path segment")));
+    assert!(store
+        .search_event_hits("codebuddy traversal content must not import", 10)
+        .unwrap()
+        .is_empty());
+    assert!(store.list_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn native_nanoclaw_rejects_database_path_traversal() {
+    let temp = tempdir();
+    let root = write_nanoclaw_smoke_project(&temp, "nanoclaw safe session oracle");
+    let central = Connection::open(root.join("data/v2.db")).unwrap();
+    central
+        .execute(
+            "INSERT INTO agent_groups VALUES ('../../outside', 'Outside', '/outside', 'codex')",
+            [],
+        )
+        .unwrap();
+    central
+        .execute(
+            "INSERT INTO sessions VALUES (
+                'escaped', '../../outside', NULL, NULL, 'codex', 'active',
+                'running', 1782259203000, 1782259203000
+            )",
+            [],
+        )
+        .unwrap();
+    drop(central);
+
+    let outside = root.join("outside/escaped");
+    fs::create_dir_all(&outside).unwrap();
+    let inbound = Connection::open(outside.join("inbound.db")).unwrap();
+    inbound
+        .execute_batch("CREATE TABLE messages_in (id TEXT PRIMARY KEY, content TEXT);")
+        .unwrap();
+    inbound
+        .execute(
+            "INSERT INTO messages_in VALUES ('escaped-message', ?1)",
+            [json!({"text": "nanoclaw traversal content must not import"}).to_string()],
+        )
+        .unwrap();
+    drop(inbound);
+
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let summary = import_nanoclaw_project(
+        &root,
+        &mut store,
+        NanoClawImportOptions {
+            allow_partial_failures: true,
+            ..NanoClawImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+    assert!(summary.failures[0]
+        .error
+        .contains("identifiers are not safe path segments"));
+    assert!(store
+        .search_event_hits("nanoclaw traversal content must not import", 10)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
