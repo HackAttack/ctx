@@ -685,6 +685,11 @@ fn render_status(data_root: &Path, json_output: bool) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         println!("ctx upgrade status: {status}");
+        if status == "error" {
+            if let Some(error) = state.get("error").and_then(Value::as_str) {
+                println!("{error}");
+            }
+        }
         if let Some(path) = marker.get("install_path").and_then(Value::as_str) {
             println!("install: {path}");
         }
