@@ -268,8 +268,8 @@ pub(crate) fn nanoclaw_sessions(conn: &Connection) -> Result<Vec<NanoClawSession
     let agent_provider = optional_column_expr(&columns, "agent_provider", "NULL");
     let status = optional_column_expr(&columns, "status", "NULL");
     let container_status = optional_column_expr(&columns, "container_status", "NULL");
-    let last_active = optional_column_expr(&columns, "last_active", "NULL");
-    let created_at = optional_column_expr(&columns, "created_at", "NULL");
+    let last_active = nanoclaw_optional_timestamp_millis_expr(&columns, "last_active", "NULL");
+    let created_at = nanoclaw_optional_timestamp_millis_expr(&columns, "created_at", "NULL");
     let agent_group_columns = if sqlite_table_exists(conn, "agent_groups")? {
         sqlite_table_columns(conn, "agent_groups")?
     } else {
@@ -355,9 +355,9 @@ pub(crate) fn nanoclaw_inbound_messages(path: &Path) -> Result<Vec<NanoClawMessa
     ensure_sqlite_table_columns(&columns, "NanoClaw inbound messages table", &["id"])?;
     let seq = optional_column_expr(&columns, "seq", "NULL");
     let kind = optional_column_expr(&columns, "kind", "NULL");
-    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let timestamp = nanoclaw_optional_timestamp_millis_expr(&columns, "timestamp", "NULL");
     let status = optional_column_expr(&columns, "status", "NULL");
-    let trigger = optional_column_expr(&columns, "trigger", "NULL");
+    let trigger = nanoclaw_optional_text_expr(&columns, "trigger", "NULL");
     let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
     let channel_type = optional_column_expr(&columns, "channel_type", "NULL");
     let thread_id = optional_column_expr(&columns, "thread_id", "NULL");
@@ -401,7 +401,7 @@ pub(crate) fn nanoclaw_outbound_messages(path: &Path) -> Result<Vec<NanoClawMess
     ensure_sqlite_table_columns(&columns, "NanoClaw outbound messages table", &["id"])?;
     let seq = optional_column_expr(&columns, "seq", "NULL");
     let kind = optional_column_expr(&columns, "kind", "NULL");
-    let timestamp = optional_column_expr(&columns, "timestamp", "NULL");
+    let timestamp = nanoclaw_optional_timestamp_millis_expr(&columns, "timestamp", "NULL");
     let in_reply_to = optional_column_expr(&columns, "in_reply_to", "NULL");
     let platform_id = optional_column_expr(&columns, "platform_id", "NULL");
     let channel_type = optional_column_expr(&columns, "channel_type", "NULL");
@@ -432,4 +432,35 @@ pub(crate) fn nanoclaw_outbound_messages(path: &Path) -> Result<Vec<NanoClawMess
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(CaptureError::from)
+}
+
+fn nanoclaw_optional_timestamp_millis_expr(
+    columns: &BTreeSet<String>,
+    column: &str,
+    fallback: &str,
+) -> String {
+    if !columns.contains(column) {
+        return fallback.to_owned();
+    }
+    format!(
+        "CASE WHEN {column} IS NULL THEN NULL \
+         WHEN typeof({column}) IN ('integer', 'real') THEN \
+             CASE WHEN abs(CAST({column} AS INTEGER)) < 100000000000 \
+                  THEN CAST({column} AS INTEGER) * 1000 \
+                  ELSE CAST({column} AS INTEGER) END \
+         WHEN trim(CAST({column} AS TEXT)) != '' \
+              AND trim(CAST({column} AS TEXT)) NOT GLOB '*[^0-9]*' THEN \
+             CASE WHEN length(trim(CAST({column} AS TEXT))) < 12 \
+                  THEN CAST({column} AS INTEGER) * 1000 \
+                  ELSE CAST({column} AS INTEGER) END \
+         ELSE CAST((julianday({column}) - 2440587.5) * 86400000 AS INTEGER) END"
+    )
+}
+
+fn nanoclaw_optional_text_expr(columns: &BTreeSet<String>, column: &str, fallback: &str) -> String {
+    if columns.contains(column) {
+        format!("CAST({column} AS TEXT)")
+    } else {
+        fallback.to_owned()
+    }
 }

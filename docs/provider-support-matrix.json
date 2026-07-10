@@ -527,7 +527,8 @@
           "source_format": "codebuddy_history_json",
           "fidelity": "imported",
           "notes": [
-            "Reads CodeBuddy JSON history under recursive history/<md5(projectPath)> project directories.",
+            "Reads CodeBuddy extension JSON history under recursive history/<md5(projectPath)> project directories.",
+            "Reads CodeBuddy Code CLI JSONL transcripts under ~/.codebuddy/projects/<workspace>/*.jsonl.",
             "Session index.json lists messages; message bodies are read from messages/*.json and may contain stringified JSON.",
             "Discovery checks ~/.codebuddy, ~/Library/Application Support/CodeBuddyExtension/Data, and LOCALAPPDATA/CodeBuddyExtension."
           ]
@@ -537,6 +538,7 @@
         "~/.codebuddy",
         "~/Library/Application Support/CodeBuddyExtension/Data",
         "%LOCALAPPDATA%/CodeBuddyExtension",
+        "~/.codebuddy/projects/<workspace>/*.jsonl",
         "*/history/<md5(projectPath)>/<session>/index.json",
         "*/history/<md5(projectPath)>/<session>/messages/*.json"
       ],
@@ -558,7 +560,7 @@
       },
       "public_docs": "docs/providers.md",
       "limitations": [
-        "Official CodeBuddy docs do not describe this JSON history format; future schema changes may require adapter updates."
+        "Official CodeBuddy docs describe CodeBuddy Code installation, models.json, and the configuration directory, but not the native transcript schema; future schema changes may require adapter updates."
       ]
     },
     {

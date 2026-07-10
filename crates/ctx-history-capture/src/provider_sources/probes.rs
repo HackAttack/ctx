@@ -434,10 +434,17 @@ fn has_openhands_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
 }
 
 fn has_codebuddy_history_json(root: &Path, max_entries: usize) -> BoundedProbe {
-    has_json_file_under_matching(root, max_entries, |path| {
+    match has_json_file_under_matching(root, max_entries, |path| {
         path.file_name().and_then(|name| name.to_str()) == Some("index.json")
             && path_has_component(path, "history")
-    })
+    }) {
+        BoundedProbe::Found => BoundedProbe::Found,
+        BoundedProbe::IoError => BoundedProbe::IoError,
+        BoundedProbe::BudgetExhausted => BoundedProbe::BudgetExhausted,
+        BoundedProbe::NotFound => has_jsonl_file_under_matching(root, max_entries, |path| {
+            path_has_component(path, "projects")
+        }),
+    }
 }
 
 fn has_nanoclaw_project(root: &Path) -> BoundedProbe {

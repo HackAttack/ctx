@@ -68,6 +68,36 @@ fn tabnine_default_source_is_empty_until_chat_transcripts_exist() {
 }
 
 #[test]
+fn codebuddy_default_source_accepts_cli_project_jsonl() {
+    let temp = tempfile::tempdir().unwrap();
+    let codebuddy = temp.path().join(".codebuddy");
+    std::fs::create_dir_all(&codebuddy).unwrap();
+
+    let source = discover_provider_sources(temp.path())
+        .into_iter()
+        .find(|source| source.provider == CaptureProvider::CodeBuddy)
+        .unwrap();
+    assert!(source.exists);
+    assert_eq!(source.status, ProviderSourceStatus::Empty);
+    assert_eq!(source.import_support, ProviderImportSupport::Native);
+
+    let project = codebuddy.join("projects/sanitized-workspace");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("codebuddy-cli-native.jsonl"),
+        r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}],"sessionId":"codebuddy-cli-native"}"#,
+    )
+    .unwrap();
+
+    let source = discover_provider_sources(temp.path())
+        .into_iter()
+        .find(|source| source.provider == CaptureProvider::CodeBuddy)
+        .unwrap();
+    assert_eq!(source.status, ProviderSourceStatus::Available);
+    assert_eq!(source.unsupported_reason, None);
+}
+
+#[test]
 fn codex_default_source_is_empty_until_jsonl_sessions_exist() {
     let temp = tempfile::tempdir().unwrap();
     let sessions = temp.path().join(".codex/sessions");

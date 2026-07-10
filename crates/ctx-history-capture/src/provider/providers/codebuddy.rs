@@ -1,5 +1,6 @@
 use std::{
-    fs::{self},
+    fs::{self, File},
+    io::BufReader,
     path::{Path, PathBuf},
 };
 
@@ -12,11 +13,15 @@ use ctx_history_core::{
 };
 use serde_json::{json, Value};
 
-use crate::common::io::{ensure_regular_provider_transcript_file, read_json_file_limited};
+use crate::common::io::{
+    collect_jsonl_paths, ensure_regular_provider_transcript_file, read_json_file_limited,
+    read_provider_jsonl_record_or_skip_oversized,
+};
+use crate::common::time::parse_rfc3339_utc;
 use crate::provider::importer::provider_cursor_stream;
 use crate::provider::native::{
     provider_capped_json, provider_policy_body, provider_policy_event_text, provider_role,
-    task_json_string_field, task_json_time_field,
+    provider_value_text, task_json_string_field, task_json_time_field,
 };
 use crate::{
     CaptureError, ProviderAdapterContext, ProviderImportFailure, ProviderNormalizationResult,
@@ -30,10 +35,13 @@ pub(crate) fn normalize_codebuddy_history(
     let mut session_dirs = collect_codebuddy_session_dirs(path)?;
     session_dirs.sort();
     session_dirs.dedup();
-    if session_dirs.is_empty() {
+    let mut cli_jsonl_paths = collect_codebuddy_cli_jsonl_paths(path)?;
+    cli_jsonl_paths.sort();
+    cli_jsonl_paths.dedup();
+    if session_dirs.is_empty() && cli_jsonl_paths.is_empty() {
         return Err(CaptureError::InvalidProviderTranscriptPath {
             path: path.to_path_buf(),
-            reason: "no CodeBuddy history sessions with index.json and messages/*.json were found",
+            reason: "no CodeBuddy history sessions with index.json and messages/*.json or CLI project JSONL files were found",
         });
     }
 
@@ -41,6 +49,13 @@ pub(crate) fn normalize_codebuddy_history(
     for (session_ordinal, session_dir) in session_dirs.iter().enumerate() {
         let mut result =
             normalize_codebuddy_session_dir(session_dir, context, session_ordinal + 1)?;
+        merged.summary.merge(result.summary);
+        merged.captures.append(&mut result.captures);
+        merged.files_touched.append(&mut result.files_touched);
+    }
+    for (session_ordinal, cli_jsonl_path) in cli_jsonl_paths.iter().enumerate() {
+        let mut result =
+            normalize_codebuddy_cli_jsonl_file(cli_jsonl_path, context, session_ordinal + 1)?;
         merged.summary.merge(result.summary);
         merged.captures.append(&mut result.captures);
         merged.files_touched.append(&mut result.files_touched);
@@ -89,6 +104,31 @@ pub(crate) fn collect_codebuddy_session_dirs(path: &Path) -> Result<Vec<PathBuf>
         }
     }
     Ok(sessions)
+}
+
+pub(crate) fn collect_codebuddy_cli_jsonl_paths(path: &Path) -> Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_file() {
+        ensure_regular_provider_transcript_file(path)?;
+        return Ok(
+            (path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+                .then(|| path.to_path_buf())
+                .into_iter()
+                .collect(),
+        );
+    }
+    if !metadata.file_type().is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    collect_jsonl_paths(path, &mut paths)?;
+    paths.retain(|candidate| {
+        candidate
+            .components()
+            .any(|component| component.as_os_str() == "projects")
+    });
+    Ok(paths)
 }
 
 pub(crate) fn codebuddy_is_session_dir(path: &Path) -> bool {
@@ -359,6 +399,168 @@ pub(crate) fn normalize_codebuddy_session_dir(
     }
 
     Ok(result)
+}
+
+pub(crate) fn normalize_codebuddy_cli_jsonl_file(
+    path: &Path,
+    context: &ProviderAdapterContext,
+    session_ordinal: usize,
+) -> Result<ProviderNormalizationResult> {
+    ensure_regular_provider_transcript_file(path)?;
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut result = ProviderNormalizationResult::default();
+    let mut events = Vec::new();
+    let mut rows = Vec::new();
+    let mut line = Vec::new();
+    let mut line_number = 0usize;
+
+    while read_provider_jsonl_record_or_skip_oversized(
+        &mut reader,
+        &mut line,
+        &mut line_number,
+        &mut result.summary,
+    )? {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: Value = match serde_json::from_slice(&line) {
+            Ok(value) => value,
+            Err(err) => {
+                result.summary.failed += 1;
+                result.summary.failures.push(ProviderImportFailure {
+                    line: line_number,
+                    error: format!("{}: malformed JSONL: {err}", path.display()),
+                });
+                continue;
+            }
+        };
+        let text = codebuddy_cli_message_text(&value);
+        if value.get("type").and_then(Value::as_str) == Some("message") && !text.trim().is_empty() {
+            events.push(CodeBuddyEventInput {
+                line_number: session_ordinal
+                    .saturating_mul(10_000)
+                    .saturating_add(line_number),
+                provider_event_index: line_number.saturating_sub(1) as u64,
+                native_message_id: value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("line-{line_number}")),
+                role: value.get("role").and_then(Value::as_str).map(str::to_owned),
+                ref_type: value.get("type").and_then(Value::as_str).map(str::to_owned),
+                occurred_at: codebuddy_cli_message_time(&value, context.imported_at),
+                text,
+                raw_message: value.clone(),
+                decoded_message: value.clone(),
+            });
+        }
+        rows.push((line_number, value));
+    }
+
+    if events.is_empty() {
+        if result.summary.failed == 0 {
+            result.summary.skipped += 1;
+            result.summary.skipped_sessions += 1;
+        }
+        return Ok(result);
+    }
+
+    let native_session_id = rows
+        .iter()
+        .find_map(|(_, value)| value.get("sessionId").and_then(Value::as_str))
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown-session".to_owned());
+    let project_hash = codebuddy_cli_project_hash(path);
+    let provider_session_id = format!("{project_hash}/{native_session_id}");
+    let started_at = events
+        .iter()
+        .map(|event| event.occurred_at)
+        .min()
+        .unwrap_or(context.imported_at);
+    let ended_at = events.iter().map(|event| event.occurred_at).max();
+    let title = codebuddy_generated_title(&events);
+    let source_path = path.display().to_string();
+    let file_names = vec!["projects/*/*.jsonl"];
+    let session_index = json!({
+        "source": "codebuddy_cli_jsonl",
+        "path": source_path,
+        "rows": rows.len(),
+    });
+
+    for event in events {
+        let line_number = event.line_number;
+        result.captures.push((
+            line_number,
+            codebuddy_capture(
+                &provider_session_id,
+                &native_session_id,
+                &project_hash,
+                &source_path,
+                context,
+                started_at,
+                ended_at,
+                title.clone(),
+                None,
+                None,
+                &session_index,
+                &file_names,
+                event,
+            ),
+        ));
+    }
+
+    Ok(result)
+}
+
+fn codebuddy_cli_project_hash(path: &Path) -> String {
+    path.parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty() && *name != "projects")
+        .map(str::to_owned)
+        .unwrap_or_else(|| "unknown-project".to_owned())
+}
+
+pub(crate) fn codebuddy_cli_message_text(value: &Value) -> String {
+    let text = value
+        .get("content")
+        .and_then(provider_value_text)
+        .or_else(|| {
+            value
+                .pointer("/message/content")
+                .and_then(provider_value_text)
+        })
+        .unwrap_or_default();
+    codebuddy_clean_content(&text)
+}
+
+pub(crate) fn codebuddy_cli_message_time(value: &Value, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .or_else(|| {
+            value
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339_utc)
+        })
+        .or_else(|| {
+            value
+                .get("__timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339_utc)
+        })
+        .unwrap_or(fallback)
 }
 
 #[derive(Debug, Clone)]
@@ -672,7 +874,7 @@ pub(crate) fn codebuddy_event(
             "native_message_id": event.native_message_id,
             "role": event.role,
             "ref_type": event.ref_type,
-            "model": event.decoded_message.get("model").cloned(),
+            "model": event.decoded_message.get("model").cloned().or_else(|| event.decoded_message.pointer("/providerData/model").cloned()),
         }),
     }
 }

@@ -1006,6 +1006,132 @@ fn native_junie_fixture_imports_searches_reimports_and_file_touches() {
 }
 
 #[test]
+fn native_junie_current_cli_failure_sessions_import_and_search() {
+    let temp = tempdir();
+    let sessions = temp.path().join("junie-current/sessions");
+    let indexed_session = sessions.join("session-260709-212712-hq1w");
+    let failure_session = sessions.join("session-260709-212620-18se");
+    fs::create_dir_all(&indexed_session).unwrap();
+    fs::create_dir_all(&failure_session).unwrap();
+    fs::write(
+        sessions.join("index.jsonl"),
+        format!(
+            "{}\n",
+            json!({
+                "sessionId": "session-260709-212712-hq1w",
+                "createdAt": 1783650432344i64,
+                "updatedAt": 1783650440849i64,
+                "projectDir": "/tmp/ctx-junie-proxy-openrouter-router/project",
+                "taskName": "Answer exact code, no file edits, no shell commands",
+                "status": "Sending LLM request"
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        indexed_session.join("events.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "kind": "TaskStartedEvent",
+                "taskId": "task-260709-212711-1ov9",
+                "timestampMs": 1783650432366i64
+            }),
+            json!({
+                "kind": "SessionA2uxEvent",
+                "timestampMs": 1783650435508i64,
+                "event": {
+                    "state": "IN_PROGRESS",
+                    "agentEvent": {
+                        "kind": "LlmResponseMetadataEvent",
+                        "agent": { "kind": "MainAgent", "id": "main", "name": "main" },
+                        "modelUsage": [{
+                            "model": "openrouter/free",
+                            "cost": 0.0,
+                            "inputTokens": 12041,
+                            "cacheInputTokens": 0,
+                            "cacheCreateTokens": 0,
+                            "outputTokens": 121,
+                            "time": 0
+                        }]
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        failure_session.join("events.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "kind": "TaskStartedEvent",
+                "taskId": "task-260709-212620-svyz",
+                "timestampMs": 1783650380750i64
+            }),
+            json!({
+                "kind": "SessionA2uxEvent",
+                "timestampMs": 1783650390610i64,
+                "event": {
+                    "state": "FAILED",
+                    "agentEvent": {
+                        "kind": "AgentFailureEvent",
+                        "agent": { "kind": "MainAgent", "id": "main", "name": "main" },
+                        "message": "OpenAI: Can not parse response. JSON input: {\"solution_summary\": \"junie-real-openrouter-free-ok</arg_value:",
+                        "errorCode": "ExitEarly"
+                    }
+                }
+            })
+        ),
+    )
+    .unwrap();
+
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let source = provider_source_for_path(CaptureProvider::Junie, sessions.clone());
+    assert_eq!(source.source_format, JUNIE_SESSION_EVENTS_SOURCE_FORMAT);
+    assert_eq!(source.status, ProviderSourceStatus::Available);
+
+    let first = import_junie_history(
+        &sessions,
+        &mut store,
+        JunieImportOptions {
+            machine_id: "test-machine".into(),
+            source_path: Some(sessions.clone()),
+            imported_at: DateTime::parse_from_rfc3339("2026-07-10T03:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            allow_partial_failures: true,
+            ..JunieImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(first.failed, 0, "{:?}", first.failures);
+    assert_eq!(first.imported_sessions, 1);
+    assert_eq!(first.imported_events, 1);
+    assert!(store
+        .search_event_hits("junie-real-openrouter-free-ok", 10)
+        .unwrap()
+        .iter()
+        .any(|hit| hit.provider == Some(CaptureProvider::Junie)));
+
+    let second = import_junie_history(
+        &sessions,
+        &mut store,
+        JunieImportOptions {
+            allow_partial_failures: true,
+            ..JunieImportOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(second.failed, 0, "{:?}", second.failures);
+    assert_eq!(second.imported_sessions, 0);
+    assert_eq!(second.imported_events, 0);
+    assert_eq!(second.skipped_sessions, 1);
+    assert_eq!(second.skipped_events, 1);
+}
+
+#[test]
 fn native_junie_index_rejects_traversal_session_ids() {
     let temp = tempdir();
     let sessions = temp.path().join("sessions");

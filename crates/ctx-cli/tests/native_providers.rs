@@ -436,6 +436,12 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
             write_native_codebuddy_fixture,
         ),
         (
+            "codebuddy",
+            "codebuddy",
+            "codebuddy_history_json",
+            write_native_codebuddy_cli_jsonl_fixture,
+        ),
+        (
             "auggie",
             "auggie",
             "auggie_session_json",
@@ -1431,6 +1437,61 @@ fn nanoclaw_import_tolerates_partial_auxiliary_tables() {
     ]));
     assert_eq!(imported["totals"]["failed"], 0);
     assert_eq!(imported["totals"]["imported_sources"], 1);
+
+    let search =
+        json_output(ctx(&temp).args(["search", query, "--provider", "nanoclaw", "--json"]));
+    assert_search_provider_oracle(&search, "nanoclaw", query, 1, "message");
+}
+
+#[test]
+fn nanoclaw_import_accepts_text_timestamps_from_real_sqlite() {
+    let temp = tempdir();
+    let query = "nanoclaw-real-text-timestamp-oracle";
+    let path = write_native_nanoclaw_fixture(&temp, query);
+
+    let central = Connection::open(Path::new(&path).join("data/v2.db")).unwrap();
+    central
+        .execute_batch(
+            "update sessions
+             set created_at = '2026-07-10T03:18:34.491Z',
+                 last_active = '2026-07-10 03:19:51'",
+        )
+        .unwrap();
+    let inbound = Connection::open(
+        Path::new(&path)
+            .join("data/v2-sessions/ag-1/session-1")
+            .join("inbound.db"),
+    )
+    .unwrap();
+    inbound
+        .execute(
+            "update messages_in set timestamp = ?1, trigger = 1 where id = 'in-1'",
+            ["2026-07-10T03:18:34.491Z"],
+        )
+        .unwrap();
+    let outbound = Connection::open(
+        Path::new(&path)
+            .join("data/v2-sessions/ag-1/session-1")
+            .join("outbound.db"),
+    )
+    .unwrap();
+    outbound
+        .execute(
+            "update messages_out set timestamp = ?1 where id = 'out-1'",
+            ["2026-07-10 03:19:51"],
+        )
+        .unwrap();
+
+    let imported = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "nanoclaw",
+        "--path",
+        &path,
+        "--json",
+    ]));
+    assert_eq!(imported["totals"]["failed"], 0);
+    assert_eq!(imported["totals"]["imported_events"], 2);
 
     let search =
         json_output(ctx(&temp).args(["search", query, "--provider", "nanoclaw", "--json"]));

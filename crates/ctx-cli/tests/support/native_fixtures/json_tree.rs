@@ -919,6 +919,62 @@ pub(crate) fn write_native_codebuddy_fixture(temp: &TempDir, query: &str) -> Str
     root.to_str().unwrap().to_owned()
 }
 
+pub(crate) fn write_native_codebuddy_cli_jsonl_fixture(temp: &TempDir, query: &str) -> String {
+    let root = temp
+        .path()
+        .join("native-codebuddy-cli/.codebuddy/projects/sanitized-workspace");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("codebuddy-cli-native.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "id": "codebuddy-cli-user",
+                "timestamp": 1783170001000i64,
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": query}],
+                "providerData": {"agent": "cli"},
+                "sessionId": "codebuddy-cli-native",
+                "cwd": "/workspace/codebuddy"
+            }),
+            json!({
+                "id": "codebuddy-cli-snapshot",
+                "timestamp": 1783170001500i64,
+                "type": "file-history-snapshot",
+                "isSnapshotUpdate": false,
+                "snapshot": {"messageId": "codebuddy-cli-user", "trackedFileBackups": {}},
+                "sessionId": "codebuddy-cli-native",
+                "cwd": "/workspace/codebuddy"
+            }),
+            json!({
+                "id": "codebuddy-cli-assistant",
+                "parentId": "codebuddy-cli-user",
+                "timestamp": 1783170002000i64,
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "CodeBuddy CLI JSONL native import ok"}],
+                "providerData": {
+                    "model": "tencent/hy3-20260706:free",
+                    "requestModelId": "custom-local:tencent/hy3:free",
+                    "requestModelName": "OpenRouter Tencent Hunyuan Free",
+                    "agent": "cli"
+                },
+                "sessionId": "codebuddy-cli-native",
+                "message": {"usage": {"input_tokens": 11, "output_tokens": 13, "total_tokens": 24}},
+                "cwd": "/workspace/codebuddy"
+            })
+        ),
+    )
+    .unwrap();
+    temp.path()
+        .join("native-codebuddy-cli/.codebuddy")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
 pub(crate) fn write_native_openclaw_fixture(temp: &TempDir, query: &str) -> String {
     let root = temp.path().join("native-openclaw");
     let sessions = root.join("agents/personal-agent/sessions");

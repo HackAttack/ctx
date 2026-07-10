@@ -1526,6 +1526,121 @@ fn native_codebuddy_fixture_imports_searches_and_reimports() {
 }
 
 #[test]
+fn native_codebuddy_cli_jsonl_imports_searches_and_reimports() {
+    let temp = tempdir();
+    let fixture = temp
+        .path()
+        .join("codebuddy-cli/.codebuddy/projects/sanitized-workspace");
+    fs::create_dir_all(&fixture).unwrap();
+    fs::write(
+        fixture.join("codebuddy-cli-native.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "id": "codebuddy-cli-user",
+                "timestamp": 1783170001000i64,
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "codebuddy cli jsonl oracle prompt"}],
+                "providerData": {"agent": "cli"},
+                "sessionId": "codebuddy-cli-native",
+                "cwd": "/workspace/codebuddy"
+            }),
+            json!({
+                "id": "codebuddy-cli-snapshot",
+                "timestamp": 1783170001500i64,
+                "type": "file-history-snapshot",
+                "isSnapshotUpdate": false,
+                "snapshot": {"messageId": "codebuddy-cli-user", "trackedFileBackups": {}},
+                "sessionId": "codebuddy-cli-native",
+                "cwd": "/workspace/codebuddy"
+            }),
+            json!({
+                "id": "codebuddy-cli-assistant",
+                "parentId": "codebuddy-cli-user",
+                "timestamp": 1783170002000i64,
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "CodeBuddy CLI JSONL native import ok"}],
+                "providerData": {
+                    "model": "tencent/hy3-20260706:free",
+                    "requestModelId": "custom-local:tencent/hy3:free",
+                    "requestModelName": "OpenRouter Tencent Hunyuan Free",
+                    "agent": "cli"
+                },
+                "sessionId": "codebuddy-cli-native",
+                "message": {"usage": {"input_tokens": 11, "output_tokens": 13, "total_tokens": 24}},
+                "cwd": "/workspace/codebuddy"
+            })
+        ),
+    )
+    .unwrap();
+
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let source = temp.path().join("codebuddy-cli/.codebuddy");
+    let first = import_codebuddy_history(
+        &source,
+        &mut store,
+        CodeBuddyImportOptions {
+            machine_id: "test-machine".into(),
+            source_path: Some(source.clone()),
+            imported_at: DateTime::parse_from_rfc3339("2026-07-04T16:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            allow_partial_failures: true,
+            ..CodeBuddyImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(first.failed, 0, "{:?}", first.failures);
+    assert_eq!(first.imported_sessions, 1);
+    assert_eq!(first.imported_events, 2);
+
+    let session = stored_provider_session_id(
+        &store,
+        CaptureProvider::CodeBuddy,
+        "sanitized-workspace/codebuddy-cli-native",
+    );
+    let events = store.events_for_session(session).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].role, Some(EventRole::User));
+    assert_eq!(events[1].role, Some(EventRole::Assistant));
+    assert_eq!(
+        events[1]
+            .sync
+            .metadata
+            .pointer("/metadata/model")
+            .and_then(Value::as_str),
+        Some("tencent/hy3-20260706:free")
+    );
+    assert!(store
+        .search_event_hits("CodeBuddy CLI JSONL native import ok", 10)
+        .unwrap()
+        .iter()
+        .any(|hit| hit.provider == Some(CaptureProvider::CodeBuddy)));
+    let source_status = provider_source_for_path(CaptureProvider::CodeBuddy, source.clone());
+    assert_eq!(source_status.source_format, CODEBUDDY_SOURCE_FORMAT);
+    assert_eq!(source_status.status, ProviderSourceStatus::Available);
+
+    let second = import_codebuddy_history(
+        &source,
+        &mut store,
+        CodeBuddyImportOptions {
+            allow_partial_failures: true,
+            ..CodeBuddyImportOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(second.failed, 0, "{:?}", second.failures);
+    assert_eq!(second.imported_sessions, 0);
+    assert_eq!(second.imported_events, 0);
+    assert_eq!(second.skipped_sessions, 1);
+    assert_eq!(second.skipped_events, 2);
+}
+
+#[test]
 fn native_codebuddy_empty_messages_rejects_no_real_message() {
     let temp = tempdir();
     let session_dir = temp.path().join("codebuddy/project/session-empty");
