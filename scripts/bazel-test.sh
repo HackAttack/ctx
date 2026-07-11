@@ -138,6 +138,18 @@ case "${mode}" in
   buildkite_pipeline_check)
     run bash scripts/check-buildkite-pipeline.sh
     ;;
+  release_binary_compat_tests)
+    run bash scripts/tests/check-release-binary-compat-test.sh
+    ;;
+  native_candidate_smoke_tests)
+    run bash scripts/tests/run-native-candidate-smoke-test.sh
+    if command -v pwsh >/dev/null 2>&1; then
+      run pwsh -NoLogo -NoProfile -File scripts/tests/run-native-candidate-smoke-test.ps1
+    fi
+    ;;
+  linux_release_construction_tests)
+    run bash scripts/test-linux-release-construction.sh
+    ;;
   loc_check)
     run bash scripts/check-loc.sh
     ;;

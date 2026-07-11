@@ -47,6 +47,8 @@ if command -v ruby >/dev/null 2>&1; then
     steps.drop(2).each do |step|
       next unless step.is_a?(Hash)
       abort "artifact step #{step["key"]} must be gated" unless step["if"].to_s.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX")
+      artifact_paths = Array(step["artifact_paths"]).map(&:to_s)
+      abort "artifact step #{step["key"]} must upload build-info evidence" unless artifact_paths.any? { |path| path.end_with?(".build-info.json") }
     end
     %w[public-cli-macos-arm64 public-cli-macos-x64].each do |key|
       step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
@@ -82,6 +84,9 @@ for required in \
   'queue: "default"' \
   'bash scripts/buildkite-public-ci.sh -- test' \
   '//:cargo_check' \
+  '//:linux_release_construction_tests' \
+  '//:native_candidate_smoke_tests' \
+  '//:release_binary_compat_tests' \
   'target/ctx-artifacts/check/**' \
   'concurrency_group: "ctx/public-smoke/default-hosted"' \
   'CTX_RUST_TOOLCHAIN: "1.88.0"' \
@@ -111,10 +116,11 @@ for required in \
   'scripts/build-public-cli-artifact.sh macos-arm64' \
   'scripts/build-public-cli-artifact.sh macos-x64' \
   'cargo zigbuild -p ctx --release --target "${build_target}" --locked' \
-  'LINUX_GLIBC_BASELINE="2.39"' \
-  'LINUX_RELEASE_IMAGE_UBUNTU="24.04"' \
+  'LINUX_GLIBC_BASELINE="2.35"' \
+  'LINUX_RELEASE_IMAGE_UBUNTU="22.04"' \
   'scripts/check-release-binary-compat.sh' \
-  'LINUX_GLIBC_MAX_VERSION="2.39"' \
+  'check_symbol_ceiling GLIBC 2.35' \
+  '.build-info.json' \
   'scripts/docker/linux-release.Dockerfile' \
   'CTX_PUBLIC_CLI_IN_CONTAINER=1' \
   'MACOS_DEPLOYMENT_TARGET="13.0"' \

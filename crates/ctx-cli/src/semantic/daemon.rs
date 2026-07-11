@@ -159,7 +159,7 @@ fn handle_daemon_query_stream_inner(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, ctx_sqlite_vec))]
 #[derive(Clone)]
 struct DaemonTestJobHooks {
     calls: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
@@ -167,16 +167,16 @@ struct DaemonTestJobHooks {
     semantic_index: Option<Value>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, ctx_sqlite_vec))]
 thread_local! {
     static DAEMON_TEST_JOB_HOOKS: std::cell::RefCell<Option<DaemonTestJobHooks>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, ctx_sqlite_vec))]
 struct DaemonTestJobHookGuard;
 
-#[cfg(test)]
+#[cfg(all(test, ctx_sqlite_vec))]
 impl Drop for DaemonTestJobHookGuard {
     fn drop(&mut self) {
         DAEMON_TEST_JOB_HOOKS.with(|hooks| {
@@ -185,7 +185,7 @@ impl Drop for DaemonTestJobHookGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, ctx_sqlite_vec))]
 fn install_daemon_test_job_hooks(hooks: DaemonTestJobHooks) -> DaemonTestJobHookGuard {
     DAEMON_TEST_JOB_HOOKS.with(|slot| {
         assert!(slot.borrow().is_none(), "daemon test job hook already installed");
@@ -194,7 +194,7 @@ fn install_daemon_test_job_hooks(hooks: DaemonTestJobHooks) -> DaemonTestJobHook
     DaemonTestJobHookGuard
 }
 
-#[cfg(test)]
+#[cfg(all(test, ctx_sqlite_vec))]
 fn daemon_test_job(job: &'static str) -> Option<Value> {
     DAEMON_TEST_JOB_HOOKS.with(|slot| {
         let hooks = slot.borrow();
@@ -581,7 +581,7 @@ fn daemon_deadline_has_min_budget(deadline: Option<Instant>, min_secs: u64) -> b
 }
 
 fn run_daemon_history_refresh_job(data_root: &Path) -> Result<Value> {
-    #[cfg(test)]
+    #[cfg(all(test, ctx_sqlite_vec))]
     if let Some(value) = daemon_test_job("history_refresh") {
         return Ok(value);
     }
@@ -722,7 +722,7 @@ fn run_daemon_semantic_job(
         ));
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, ctx_sqlite_vec))]
     if let Some(value) = daemon_test_job("semantic_index") {
         return Ok(value);
     }
@@ -1339,7 +1339,7 @@ fn maybe_autostart_daemon_inner(
 }
 
 pub(crate) fn semantic_query_service_supported() -> bool {
-    cfg!(unix)
+    cfg!(all(unix, ctx_semantic_fastembed, ctx_sqlite_vec))
 }
 
 #[cfg(unix)]

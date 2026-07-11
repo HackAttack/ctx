@@ -439,7 +439,7 @@ impl SemanticVectorStore {
         Ok(Some((canonical_chunks, meta_rows, vec_rows)))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, ctx_sqlite_vec))]
     fn sqlite_vec0_ready(&self) -> Result<bool> {
         let Some((canonical_chunks, meta_rows, vec_rows)) = self.sqlite_vec0_counts()? else {
             return Ok(false);

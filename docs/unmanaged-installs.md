@@ -34,11 +34,17 @@ Stable releases publish prebuilt binaries on GitHub Releases:
 
 Each release also publishes `SHA256SUMS` for the binary assets.
 
+The hosted installer and managed-upgrade path verify signed ctx release
+metadata. The macOS and Windows binaries are not currently Developer ID
+signed/notarized or Authenticode-signed; a checksum verifies bytes against the
+release metadata, but it is not OS-native application signing.
+
 Official Linux release binaries are checked to require no newer than glibc
-2.39. The Linux x64 artifact is built in an Ubuntu 24.04 container because its
-semantic-search native dependency currently requires a modern glibc baseline.
-Older Linux distributions may need a future legacy build without that x64
-native dependency. The macOS binaries currently target macOS 13 or newer.
+2.35 and are built from pinned Ubuntu 22.04 container inputs rather than the
+runner's host libraries. The public release matrix is currently lexical-only on
+every platform; a future semantic build must not raise the baseline CPU or ABI
+contract without an explicit compatibility decision. The macOS binaries
+currently target macOS 13 or newer.
 
 For pinned installs, GitHub release asset URLs use this pattern:
 

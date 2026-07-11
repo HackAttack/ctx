@@ -130,12 +130,11 @@ semantic evidence with reciprocal-rank fusion; `--semantic-weight` controls the
 semantic contribution and defaults to `0.35`. Public reports name the model as
 `sentence-transformers/all-MiniLM-L6-v2`; the required local FastEmbed cache is
 the Qdrant ONNX artifact directory `models--Qdrant--all-MiniLM-L6-v2-onnx`.
-The local embedding backend is compiled only for targets where the bundled ONNX
-Runtime backend is supported. Current Linux GNU builds and macOS arm64 builds
-can use semantic embeddings when the cache already exists. Current Windows GNU,
-FreeBSD, and macOS x64 public artifacts are lexical-safe builds: `hybrid` falls
-back to lexical, while explicit `semantic` reports a local unavailable/cache
-error instead of downloading or linking a model at runtime.
+Current builds do not link a local embedding backend on any platform. With the
+semantic preview disabled, `hybrid` reports a lexical fallback and explicit
+`semantic` reports that semantic search is disabled. If semantic is enabled in
+configuration, semantic and hybrid requests fail clearly as unsupported;
+neither downloads a model nor silently returns lexical results.
 Semantic and hybrid searches read the coverage that is already present in the
 semantic sidecar; they do not perform foreground vector catch-up. They also
 require the local embedding model cache to already exist. If the cache is

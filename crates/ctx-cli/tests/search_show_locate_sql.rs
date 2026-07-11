@@ -563,7 +563,7 @@ fn fresh_home_search_mvp_flow() {
 }
 
 #[test]
-fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
+fn search_backend_defaults_and_unsupported_semantic_config_are_reported() {
     let temp = tempdir();
     let fixture = provider_history_fixture("codex-sessions");
     json_output(ctx(&temp).args([
@@ -631,7 +631,7 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
     )
     .unwrap();
 
-    let hybrid_missing_sidecar = json_output(ctx(&temp).args([
+    let unsupported_hybrid = failure_stderr(ctx(&temp).args([
         "search",
         "onboarding",
         "--backend",
@@ -640,20 +640,12 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
         "off",
         "--json",
     ]));
-    assert_eq!(
-        hybrid_missing_sidecar["retrieval"]["requested_mode"],
-        "hybrid"
-    );
-    assert_eq!(
-        hybrid_missing_sidecar["retrieval"]["effective_mode"],
-        "lexical"
-    );
-    assert_eq!(
-        hybrid_missing_sidecar["retrieval"]["semantic_fallback_code"],
-        "semantic_index_missing"
+    assert!(
+        unsupported_hybrid.contains("local semantic search is not supported"),
+        "{unsupported_hybrid}"
     );
 
-    let missing_sidecar_strict_semantic = ctx(&temp)
+    let unsupported_strict_semantic = ctx(&temp)
         .args([
             "search",
             "onboarding",
@@ -668,12 +660,28 @@ fn search_backend_defaults_and_missing_semantic_sidecar_are_reported() {
         .get_output()
         .stderr
         .clone();
-    let missing_sidecar_strict_semantic =
-        String::from_utf8(missing_sidecar_strict_semantic).unwrap();
+    let unsupported_strict_semantic = String::from_utf8(unsupported_strict_semantic).unwrap();
     assert!(
-        missing_sidecar_strict_semantic.contains("semantic index is not available yet"),
-        "{missing_sidecar_strict_semantic}"
+        unsupported_strict_semantic.contains("local semantic search is not supported"),
+        "{unsupported_strict_semantic}"
     );
+
+    let explicit_lexical = json_output(ctx(&temp).args([
+        "search",
+        "onboarding",
+        "--backend",
+        "lexical",
+        "--refresh",
+        "off",
+        "--json",
+    ]));
+    assert_eq!(explicit_lexical["retrieval"]["requested_mode"], "lexical");
+    assert_eq!(explicit_lexical["retrieval"]["effective_mode"], "lexical");
+
+    let status = json_output(ctx(&temp).args(["index", "status", "--json"]));
+    assert_eq!(status["semantic"]["status"], "blocked");
+    assert_eq!(status["semantic"]["reason"], "unsupported_platform");
+    assert_eq!(status["semantic"]["embed_policy"]["source"], "unsupported");
 }
 
 #[test]
