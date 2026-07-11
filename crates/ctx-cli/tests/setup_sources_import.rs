@@ -192,7 +192,7 @@ fn status_rejects_unsupported_schema_without_migrating_or_creating_side_dirs() {
     let stderr = failure_stderr(ctx(&temp).args(["status", "--json"]));
     assert!(stderr.contains("schema version 1"), "{stderr}");
     assert!(stderr.contains("writable command"), "{stderr}");
-    assert!(!stderr.contains("ctx status"), "{stderr}");
+    assert!(stderr.contains("ctx status"), "{stderr}");
 
     let conn = Connection::open(&db_path).unwrap();
     let user_version: i64 = conn
