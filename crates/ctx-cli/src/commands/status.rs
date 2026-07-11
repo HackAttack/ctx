@@ -28,7 +28,7 @@ pub(crate) fn run_status(args: JsonArgs, data_root: PathBuf, quiet: bool) -> Res
         semantic,
         daemon,
     ) = if initialized {
-        let store = open_existing_store_snapshot_read_only(&db_path, "status")?;
+        let store = open_existing_store_snapshot_read_only(&db_path, "ctx status")?;
         let counts = store.indexed_history_counts()?;
         let semantic_report = semantic_worker_report_cached(&data_root, Some(&store))?;
         let daemon = daemon_report(&data_root, &semantic_report);
