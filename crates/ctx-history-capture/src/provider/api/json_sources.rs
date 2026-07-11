@@ -10,7 +10,8 @@ use crate::provider::adapter::{
 };
 use crate::provider::importer::{
     import_native_jsonl_tree, import_normalized_provider_captures,
-    import_normalized_provider_captures_in_batches, NativeJsonlTreeImport,
+    import_normalized_provider_captures_in_batches,
+    import_normalized_provider_captures_with_bulk_search, NativeJsonlTreeImport,
 };
 use crate::provider::providers::trae::normalize_trae_history;
 use crate::{
@@ -341,7 +342,7 @@ pub fn import_hermes_sqlite(
             HERMES_TRANSACTION_BATCH_MESSAGES,
         )
     } else {
-        import_normalized_provider_captures(store, normalization, import_options)
+        import_normalized_provider_captures_with_bulk_search(store, normalization, import_options)
     }
 }
 

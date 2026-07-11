@@ -24,6 +24,7 @@ use crate::{
     ProviderNormalizationResult, Result,
 };
 
+mod batches;
 mod commands;
 mod cursors;
 mod identity;
@@ -101,12 +102,15 @@ pub fn import_normalized_provider_captures(
     normalization: ProviderNormalizationResult,
     options: NormalizedProviderImportOptions,
 ) -> Result<ProviderImportSummary> {
-    let ProviderNormalizationResult {
-        summary,
-        captures,
-        files_touched,
-    } = normalization;
-    import_provider_capture_lines(store, options, summary, captures, files_touched)
+    batches::import_normalized_provider_captures(store, normalization, options, false)
+}
+
+pub(crate) fn import_normalized_provider_captures_with_bulk_search(
+    store: &mut Store,
+    normalization: ProviderNormalizationResult,
+    options: NormalizedProviderImportOptions,
+) -> Result<ProviderImportSummary> {
+    batches::import_normalized_provider_captures(store, normalization, options, true)
 }
 
 pub(crate) fn import_normalized_provider_captures_in_batches(
@@ -115,18 +119,11 @@ pub(crate) fn import_normalized_provider_captures_in_batches(
     options: NormalizedProviderImportOptions,
     transaction_batch_size: usize,
 ) -> Result<ProviderImportSummary> {
-    let ProviderNormalizationResult {
-        summary,
-        captures,
-        files_touched,
-    } = normalization;
-    import_provider_capture_lines_with_batch_size(
+    batches::import_normalized_provider_captures_in_batches(
         store,
+        normalization,
         options,
-        summary,
-        captures,
-        files_touched,
-        Some(transaction_batch_size.max(1)),
+        transaction_batch_size,
     )
 }
 
@@ -137,133 +134,7 @@ pub(crate) fn import_provider_capture_lines(
     captures: Vec<(usize, ProviderCaptureEnvelope)>,
     files_touched: Vec<(usize, ProviderFileTouchedEnvelope)>,
 ) -> Result<ProviderImportSummary> {
-    import_provider_capture_lines_with_batch_size(
-        store,
-        options,
-        summary,
-        captures,
-        files_touched,
-        None,
-    )
-}
-
-fn import_provider_capture_lines_with_batch_size(
-    store: &mut Store,
-    options: NormalizedProviderImportOptions,
-    mut summary: ProviderImportSummary,
-    mut captures: Vec<(usize, ProviderCaptureEnvelope)>,
-    mut files_touched: Vec<(usize, ProviderFileTouchedEnvelope)>,
-    transaction_batch_size: Option<usize>,
-) -> Result<ProviderImportSummary> {
-    let mut caches = ProviderImportCaches::default();
-    filter_provider_capture_lines_without_real_session_messages(
-        &mut summary,
-        &mut captures,
-        &mut files_touched,
-    );
-    let supplied_file_touch_lines = files_touched
-        .iter()
-        .map(|(line_number, _)| *line_number)
-        .collect::<BTreeSet<_>>();
-    if summary.failed == 0 && !provider_capture_lines_have_real_message(&captures) {
-        let line = captures
-            .first()
-            .map(|(line_number, _)| *line_number)
-            .or_else(|| files_touched.first().map(|(line_number, _)| *line_number))
-            .unwrap_or(0);
-        summary.failed += 1;
-        summary.failures.push(ProviderImportFailure {
-            line,
-            error: "provider source contained no real conversation message".to_owned(),
-        });
-        return Ok(summary);
-    }
-    for (line_number, capture) in &captures {
-        if capture.provider == CaptureProvider::Codex {
-            continue;
-        }
-        if supplied_file_touch_lines.contains(line_number) {
-            continue;
-        }
-        if let Some(event) = &capture.event {
-            files_touched.extend(provider_file_touches_from_event(
-                capture.provider,
-                &capture.session.provider_session_id,
-                &capture.source.source_format,
-                capture.source.raw_source_path.as_deref(),
-                capture.source.source_root.as_deref(),
-                event,
-                *line_number,
-            ));
-        }
-    }
-    let has_captures = !captures.is_empty() || !files_touched.is_empty();
-
-    if summary.failed > 0 && !options.allow_partial_failures {
-        return Ok(summary);
-    }
-
-    if has_captures && options.wrap_transaction {
-        store.begin_immediate_batch()?;
-    }
-    let mut captures_in_transaction = 0usize;
-    let capture_count = captures.len();
-    for (capture_index, (line_number, capture)) in captures.into_iter().enumerate() {
-        match import_provider_capture_line(store, &capture, &options, line_number, &mut caches) {
-            Ok(line_summary) => summary.merge(line_summary),
-            Err(err) => {
-                summary.failed += 1;
-                summary.failures.push(ProviderImportFailure {
-                    line: line_number,
-                    error: err.to_string(),
-                });
-            }
-        }
-        captures_in_transaction += 1;
-        if has_captures
-            && options.wrap_transaction
-            && transaction_batch_size
-                .is_some_and(|batch_size| captures_in_transaction >= batch_size)
-            && capture_index + 1 < capture_count
-        {
-            if let Err(err) = store.commit_batch() {
-                let _ = store.rollback_batch();
-                return Err(err.into());
-            }
-            store.checkpoint_wal_truncate()?;
-            store.begin_immediate_batch()?;
-            captures_in_transaction = 0;
-        }
-    }
-    if let Err(err) = resolve_pending_provider_edges(store, &mut summary, &mut caches) {
-        if has_captures && options.wrap_transaction {
-            let _ = store.rollback_batch();
-        }
-        return Err(err);
-    }
-    for (line_number, file) in files_touched {
-        if let Err(err) = import_provider_file_touched_line(store, &file, &options) {
-            summary.failed += 1;
-            summary.failures.push(ProviderImportFailure {
-                line: line_number,
-                error: err.to_string(),
-            });
-        }
-    }
-    if summary.failed > 0 && !options.allow_partial_failures {
-        if has_captures && options.wrap_transaction {
-            let _ = store.rollback_batch();
-        }
-        return Ok(summary);
-    }
-    if has_captures && options.wrap_transaction {
-        if let Err(err) = store.commit_batch() {
-            let _ = store.rollback_batch();
-            return Err(err.into());
-        }
-    }
-
-    Ok(summary)
+    batches::import_provider_capture_lines(store, options, summary, captures, files_touched)
 }
 
 fn filter_provider_capture_lines_without_real_session_messages(
@@ -999,53 +870,60 @@ pub(crate) fn resolve_pending_provider_edges(
 ) -> Result<()> {
     let pending = std::mem::take(&mut caches.pending_edges);
     for (edge_id, edge) in pending {
-        if caches.processed_edges.contains(&edge_id) {
-            update_session_parent_if_needed(store, &edge, caches)?;
-            continue;
-        }
-        if !provider_session_exists_cached(
-            store,
-            edge.parent_session_id,
-            &mut caches.session_exists,
-        )? {
-            summary.skipped_edges += 1;
-            summary.skipped += 1;
-            continue;
-        }
-        let root_session_id = resolve_pending_root_session_id(store, &edge, caches)?;
-        update_session_parent(store, &edge, root_session_id)?;
-        caches.session_exists.insert(edge.session_id, true);
+        resolve_pending_provider_edge(store, summary, caches, edge_id, edge)?;
+    }
+    Ok(())
+}
 
-        let was_present = store.session_edge_exists(edge_id)?;
-        let session_edge = SessionEdge {
-            id: edge_id,
-            from_session_id: edge.parent_session_id,
-            to_session_id: edge.session_id,
-            edge_type: SessionEdgeType::ParentChild,
-            confidence: Confidence::Explicit,
-            source_id: Some(edge.source_id),
-            timestamps: timestamps(edge.imported_at),
-            sync: provider_sync_metadata(
-                edge.fidelity,
-                json!({
-                    "provider_session_id": edge.provider_session_id,
-                    "parent_provider_session_id": edge.parent_provider_session_id,
-                    "source_format": edge.source_format,
-                    "fixture_line": edge.line_number,
-                    "imported_at": edge.imported_at,
-                    "deferred_edge_resolution": true,
-                }),
-            ),
-        };
-        store.upsert_session_edge(&session_edge)?;
-        caches.processed_edges.insert(edge_id);
-        if !was_present && caches.imported_edges.insert(edge_id) {
-            summary.imported_edges += 1;
-            summary.imported += 1;
-        } else {
-            summary.skipped_edges += 1;
-            summary.skipped += 1;
-        }
+fn resolve_pending_provider_edge(
+    store: &mut Store,
+    summary: &mut ProviderImportSummary,
+    caches: &mut ProviderImportCaches,
+    edge_id: Uuid,
+    edge: PendingProviderEdge,
+) -> Result<()> {
+    if caches.processed_edges.contains(&edge_id) {
+        update_session_parent_if_needed(store, &edge, caches)?;
+        return Ok(());
+    }
+    if !provider_session_exists_cached(store, edge.parent_session_id, &mut caches.session_exists)? {
+        summary.skipped_edges += 1;
+        summary.skipped += 1;
+        return Ok(());
+    }
+    let root_session_id = resolve_pending_root_session_id(store, &edge, caches)?;
+    update_session_parent(store, &edge, root_session_id)?;
+    caches.session_exists.insert(edge.session_id, true);
+
+    let was_present = store.session_edge_exists(edge_id)?;
+    let session_edge = SessionEdge {
+        id: edge_id,
+        from_session_id: edge.parent_session_id,
+        to_session_id: edge.session_id,
+        edge_type: SessionEdgeType::ParentChild,
+        confidence: Confidence::Explicit,
+        source_id: Some(edge.source_id),
+        timestamps: timestamps(edge.imported_at),
+        sync: provider_sync_metadata(
+            edge.fidelity,
+            json!({
+                "provider_session_id": edge.provider_session_id,
+                "parent_provider_session_id": edge.parent_provider_session_id,
+                "source_format": edge.source_format,
+                "fixture_line": edge.line_number,
+                "imported_at": edge.imported_at,
+                "deferred_edge_resolution": true,
+            }),
+        ),
+    };
+    store.upsert_session_edge(&session_edge)?;
+    caches.processed_edges.insert(edge_id);
+    if !was_present && caches.imported_edges.insert(edge_id) {
+        summary.imported_edges += 1;
+        summary.imported += 1;
+    } else {
+        summary.skipped_edges += 1;
+        summary.skipped += 1;
     }
     Ok(())
 }

@@ -21,6 +21,17 @@ pub enum StoreError {
     UnsupportedSchemaVersion(i64),
     #[error("unsupported session history archive version: {0}")]
     UnsupportedArchiveVersion(u32),
+    #[error(
+        "ctx index is busy: WAL checkpoint could not complete ({log_frames} log frames, {checkpointed_frames} checkpointed)"
+    )]
+    WalCheckpointBusy {
+        log_frames: i64,
+        checkpointed_frames: i64,
+    },
+    #[error("ctx index is busy: another bulk search import is active")]
+    BulkSearchImportBusy,
+    #[error("bulk search guard belongs to a different ctx index")]
+    InvalidBulkSearchGuard,
     #[error("archive conflicts with existing {kind}: {id}")]
     ImportConflict { kind: &'static str, id: Uuid },
     #[error("archive artifact {id} content does not match its blob hash")]

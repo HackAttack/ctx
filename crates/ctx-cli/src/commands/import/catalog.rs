@@ -332,6 +332,7 @@ pub(crate) fn source_uses_incremental_event_search(source: &SourceInfo) -> bool 
             | CaptureProvider::Firebender
             | CaptureProvider::ForgeCode
             | CaptureProvider::DeepAgents
+            | CaptureProvider::Hermes
             | CaptureProvider::MistralVibe
             | CaptureProvider::Mux
             | CaptureProvider::RovoDev

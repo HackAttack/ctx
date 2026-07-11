@@ -1,5 +1,6 @@
 pub mod archive;
 mod artifacts;
+mod bulk_search;
 mod catalog;
 mod connection;
 mod error;
@@ -19,6 +20,7 @@ mod sync;
 mod vcs;
 
 pub use archive::validate_archive_version;
+pub use bulk_search::EventSearchBulkGuard;
 pub use catalog::{
     CatalogCounts, CatalogIndexedStatus, CatalogSession, CatalogSourceIndexState,
     CatalogSourceIndexUpdate, IndexedHistoryCounts, SourceImportFile, SourceImportFileCounts,
@@ -48,3 +50,6 @@ pub struct Store {
     conn: Connection,
     busy_timeout: Duration,
 }
+
+#[cfg(test)]
+mod connection_tests;
