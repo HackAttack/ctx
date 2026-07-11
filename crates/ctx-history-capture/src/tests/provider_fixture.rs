@@ -1,6 +1,346 @@
 use super::support::*;
 
 #[test]
+fn batched_provider_import_rejects_nonpartial_unwrapped_and_zero_sized_modes() {
+    let temp = tempdir();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let occurred_at = DateTime::parse_from_rfc3339("2026-07-11T11:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let capture = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "invalid-batch-options",
+        "hermes_state_sqlite",
+        "/tmp/invalid-batch-options.db",
+        occurred_at,
+    );
+    let normalization = ProviderNormalizationResult {
+        summary: ProviderImportSummary::default(),
+        captures: vec![(1, capture)],
+        files_touched: Vec::new(),
+    };
+
+    let nonpartial = import_normalized_provider_captures_in_batches(
+        &mut store,
+        normalization.clone(),
+        NormalizedProviderImportOptions::default(),
+        1,
+    )
+    .unwrap_err();
+    assert!(nonpartial
+        .to_string()
+        .contains("requires allow_partial_failures"));
+
+    let unwrapped = import_normalized_provider_captures_in_batches(
+        &mut store,
+        normalization.clone(),
+        NormalizedProviderImportOptions {
+            allow_partial_failures: true,
+            wrap_transaction: false,
+            ..NormalizedProviderImportOptions::default()
+        },
+        1,
+    )
+    .unwrap_err();
+    assert!(unwrapped
+        .to_string()
+        .contains("requires transaction wrapping"));
+
+    let zero = import_normalized_provider_captures_in_batches(
+        &mut store,
+        normalization,
+        NormalizedProviderImportOptions {
+            allow_partial_failures: true,
+            ..NormalizedProviderImportOptions::default()
+        },
+        0,
+    )
+    .unwrap_err();
+    assert!(zero
+        .to_string()
+        .contains("batch size must be greater than zero"));
+}
+
+#[test]
+fn batched_provider_import_stops_on_pinned_wal_and_resumes_idempotently() {
+    let temp = tempdir();
+    let db_path = temp.path().join("work.sqlite");
+    let mut store =
+        Store::open_with_busy_timeout(&db_path, std::time::Duration::from_millis(10)).unwrap();
+    let occurred_at = DateTime::parse_from_rfc3339("2026-07-11T12:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let source_path = temp.path().join("batched-provider.jsonl");
+    let source_path = source_path.display().to_string();
+    let mut first = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "batched-provider-first",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at,
+    );
+    first.event.as_mut().unwrap().payload = json!({"text": "first batch oracle"});
+    let mut second = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "batched-provider-second",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at + chrono::Duration::seconds(1),
+    );
+    second.event.as_mut().unwrap().payload = json!({"text": "second batch oracle"});
+    let normalization = ProviderNormalizationResult {
+        summary: ProviderImportSummary::default(),
+        captures: vec![(1, first), (2, second)],
+        files_touched: Vec::new(),
+    };
+    let options = NormalizedProviderImportOptions {
+        allow_partial_failures: true,
+        fast_event_inserts: true,
+        ..NormalizedProviderImportOptions::default()
+    };
+
+    let reader = Connection::open(&db_path).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let initial_events = reader
+        .query_row("SELECT COUNT(*) FROM events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert_eq!(initial_events, 0);
+
+    let error = import_normalized_provider_captures_in_batches(
+        &mut store,
+        normalization.clone(),
+        options.clone(),
+        1,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("ctx index is busy"), "{error}");
+    reader.execute_batch("ROLLBACK").unwrap();
+
+    assert_eq!(store.list_sessions().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .search_event_hits("first batch oracle", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .search_event_hits("second batch oracle", 10)
+        .unwrap()
+        .is_empty());
+
+    let resumed = import_normalized_provider_captures_in_batches(
+        &mut store,
+        normalization.clone(),
+        options.clone(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(resumed.failed, 0, "{:?}", resumed.failures);
+    assert_eq!(resumed.imported_events, 1);
+    assert_eq!(store.list_sessions().unwrap().len(), 2);
+    assert_eq!(
+        store
+            .search_event_hits("second batch oracle", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let replayed =
+        import_normalized_provider_captures_in_batches(&mut store, normalization, options, 1)
+            .unwrap();
+    assert_eq!(replayed.imported_events, 0);
+    assert_eq!(replayed.skipped_events, 2);
+    assert_eq!(
+        store.search_event_hits("batch oracle", 10).unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn batched_provider_import_rotates_on_serialized_byte_budget() {
+    let temp = tempdir();
+    let db_path = temp.path().join("work.sqlite");
+    let mut store =
+        Store::open_with_busy_timeout(&db_path, std::time::Duration::from_millis(10)).unwrap();
+    let occurred_at = DateTime::parse_from_rfc3339("2026-07-11T12:30:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let source_path = temp.path().join("byte-batched-provider.db");
+    let source_path = source_path.display().to_string();
+    let mut first = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "byte-batched-first",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at,
+    );
+    first.event.as_mut().unwrap().payload =
+        json!({"text": format!("first byte-budget oracle {}", "a".repeat(4_500_000))});
+    let mut second = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "byte-batched-second",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at + chrono::Duration::seconds(1),
+    );
+    second.event.as_mut().unwrap().payload =
+        json!({"text": format!("second byte-budget oracle {}", "b".repeat(4_500_000))});
+
+    let reader = Connection::open(&db_path).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    assert_eq!(
+        reader
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let error = import_normalized_provider_captures_in_batches(
+        &mut store,
+        ProviderNormalizationResult {
+            summary: ProviderImportSummary::default(),
+            captures: vec![(1, first), (2, second)],
+            files_touched: Vec::new(),
+        },
+        NormalizedProviderImportOptions {
+            allow_partial_failures: true,
+            fast_event_inserts: true,
+            ..NormalizedProviderImportOptions::default()
+        },
+        64,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("ctx index is busy"), "{error}");
+    reader.execute_batch("ROLLBACK").unwrap();
+
+    assert_eq!(store.list_sessions().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .search_event_hits("first byte-budget oracle", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .search_event_hits("second byte-budget oracle", 10)
+        .unwrap()
+        .is_empty());
+    store.optimize_search_index().unwrap();
+}
+
+#[test]
+fn batched_provider_import_chunks_edges_and_file_touches() {
+    let temp = tempdir();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let occurred_at = DateTime::parse_from_rfc3339("2026-07-11T13:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let source_path = temp.path().join("batched-graph.jsonl");
+    let source_path = source_path.display().to_string();
+    let parent = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "batched-parent",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at,
+    );
+    let mut child = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "batched-child",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at + chrono::Duration::seconds(1),
+    );
+    child.session.parent_provider_session_id = Some("batched-parent".to_owned());
+    let files_touched = vec![
+        (
+            1,
+            provider_collision_file_touch(
+                CaptureProvider::Hermes,
+                "batched-parent",
+                "hermes_state_sqlite",
+                &source_path,
+                occurred_at,
+            ),
+        ),
+        (
+            2,
+            provider_collision_file_touch(
+                CaptureProvider::Hermes,
+                "batched-child",
+                "hermes_state_sqlite",
+                &source_path,
+                occurred_at + chrono::Duration::seconds(1),
+            ),
+        ),
+    ];
+    let summary = import_normalized_provider_captures_in_batches(
+        &mut store,
+        ProviderNormalizationResult {
+            summary: ProviderImportSummary::default(),
+            captures: vec![(1, parent), (2, child)],
+            files_touched,
+        },
+        NormalizedProviderImportOptions {
+            allow_partial_failures: true,
+            fast_event_inserts: true,
+            ..NormalizedProviderImportOptions::default()
+        },
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 0, "{:?}", summary.failures);
+    assert_eq!(summary.imported_edges, 1);
+    assert_eq!(store.export_archive().unwrap().files_touched.len(), 2);
+}
+
+#[test]
+fn nonpartial_provider_import_remains_source_atomic() {
+    let temp = tempdir();
+    let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let occurred_at = DateTime::parse_from_rfc3339("2026-07-11T14:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let source_path = temp.path().join("atomic-conflict.jsonl");
+    let source_path = source_path.display().to_string();
+    let first = provider_collision_capture(
+        CaptureProvider::Hermes,
+        "atomic-conflict",
+        "hermes_state_sqlite",
+        &source_path,
+        occurred_at,
+    );
+    let mut conflicting = first.clone();
+    conflicting.event.as_mut().unwrap().payload = json!({"text": "conflicting payload"});
+
+    let summary = import_normalized_provider_captures(
+        &mut store,
+        ProviderNormalizationResult {
+            summary: ProviderImportSummary::default(),
+            captures: vec![(1, first), (2, conflicting)],
+            files_touched: Vec::new(),
+        },
+        NormalizedProviderImportOptions {
+            fast_event_inserts: true,
+            ..NormalizedProviderImportOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.failed, 1, "{:?}", summary.failures);
+    assert!(store.list_sessions().unwrap().is_empty());
+    assert!(store
+        .search_event_hits("same provider event payload", 10)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn provider_fixture_replay_supports_antigravity_gemini_and_cursor() {
     let temp = tempdir();
     let mut store = Store::open(temp.path().join("work.sqlite")).unwrap();

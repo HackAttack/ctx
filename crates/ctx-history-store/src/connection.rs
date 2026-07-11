@@ -86,6 +86,7 @@ impl Store {
             busy_timeout,
         };
         store.migrate()?;
+        store.recover_event_search_bulk_mode()?;
         if migrated_legacy_layout {
             store.normalize_legacy_blob_paths()?;
         }
@@ -113,14 +114,23 @@ impl Store {
     }
 
     pub fn checkpoint_wal_passive(&self) -> Result<()> {
-        self.conn
-            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+        let _ = self.checkpoint_wal("PASSIVE")?;
         Ok(())
     }
 
     pub fn checkpoint_wal_truncate(&self) -> Result<()> {
-        self.conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        let _ = self.checkpoint_wal("TRUNCATE")?;
+        Ok(())
+    }
+
+    pub fn checkpoint_wal_truncate_required(&self) -> Result<()> {
+        let outcome = self.checkpoint_wal("TRUNCATE")?;
+        if outcome.busy {
+            return Err(StoreError::WalCheckpointBusy {
+                log_frames: outcome.log_frames,
+                checkpointed_frames: outcome.checkpointed_frames,
+            });
+        }
         Ok(())
     }
 
@@ -160,6 +170,23 @@ impl Store {
         }
     }
 
+    fn checkpoint_wal(&self, mode: &'static str) -> Result<WalCheckpointOutcome> {
+        let sql = match mode {
+            "PASSIVE" => "PRAGMA wal_checkpoint(PASSIVE)",
+            "TRUNCATE" => "PRAGMA wal_checkpoint(TRUNCATE)",
+            _ => unreachable!("unsupported WAL checkpoint mode"),
+        };
+        self.conn
+            .query_row(sql, [], |row| {
+                Ok(WalCheckpointOutcome {
+                    busy: row.get::<_, i64>(0)? != 0,
+                    log_frames: row.get(1)?,
+                    checkpointed_frames: row.get(2)?,
+                })
+            })
+            .map_err(StoreError::from)
+    }
+
     pub fn validate(&self) -> Result<Vec<String>> {
         let integrity: String = self
             .conn
@@ -177,6 +204,13 @@ impl Store {
         }
         Ok(findings)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WalCheckpointOutcome {
+    busy: bool,
+    log_frames: i64,
+    checkpointed_frames: i64,
 }
 
 pub(crate) fn configure_connection(conn: &Connection, busy_timeout: Duration) -> Result<()> {

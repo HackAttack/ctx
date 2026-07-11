@@ -80,21 +80,7 @@ impl Store {
     }
 
     pub fn optimize_search_index(&self) -> Result<()> {
-        for table in [
-            "ctx_history_search",
-            "event_search",
-            "artifact_search",
-            "ctx_history_search_scriptgram",
-            "event_search_scriptgram",
-        ] {
-            if table_exists(&self.conn, table)? {
-                self.conn.execute(
-                    format!("INSERT INTO {table}({table}) VALUES ('optimize')").as_str(),
-                    [],
-                )?;
-            }
-        }
-        Ok(())
+        self.merge_all_fts_tables_bounded()
     }
 
     pub fn event_search_projection_needs_backfill(&self) -> Result<bool> {
