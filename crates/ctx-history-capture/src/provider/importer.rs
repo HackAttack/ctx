@@ -108,12 +108,52 @@ pub fn import_normalized_provider_captures(
     } = normalization;
     import_provider_capture_lines(store, options, summary, captures, files_touched)
 }
+
+pub(crate) fn import_normalized_provider_captures_in_batches(
+    store: &mut Store,
+    normalization: ProviderNormalizationResult,
+    options: NormalizedProviderImportOptions,
+    transaction_batch_size: usize,
+) -> Result<ProviderImportSummary> {
+    let ProviderNormalizationResult {
+        summary,
+        captures,
+        files_touched,
+    } = normalization;
+    import_provider_capture_lines_with_batch_size(
+        store,
+        options,
+        summary,
+        captures,
+        files_touched,
+        Some(transaction_batch_size.max(1)),
+    )
+}
+
 pub(crate) fn import_provider_capture_lines(
+    store: &mut Store,
+    options: NormalizedProviderImportOptions,
+    summary: ProviderImportSummary,
+    captures: Vec<(usize, ProviderCaptureEnvelope)>,
+    files_touched: Vec<(usize, ProviderFileTouchedEnvelope)>,
+) -> Result<ProviderImportSummary> {
+    import_provider_capture_lines_with_batch_size(
+        store,
+        options,
+        summary,
+        captures,
+        files_touched,
+        None,
+    )
+}
+
+fn import_provider_capture_lines_with_batch_size(
     store: &mut Store,
     options: NormalizedProviderImportOptions,
     mut summary: ProviderImportSummary,
     mut captures: Vec<(usize, ProviderCaptureEnvelope)>,
     mut files_touched: Vec<(usize, ProviderFileTouchedEnvelope)>,
+    transaction_batch_size: Option<usize>,
 ) -> Result<ProviderImportSummary> {
     let mut caches = ProviderImportCaches::default();
     filter_provider_capture_lines_without_real_session_messages(
@@ -166,7 +206,9 @@ pub(crate) fn import_provider_capture_lines(
     if has_captures && options.wrap_transaction {
         store.begin_immediate_batch()?;
     }
-    for (line_number, capture) in captures {
+    let mut captures_in_transaction = 0usize;
+    let capture_count = captures.len();
+    for (capture_index, (line_number, capture)) in captures.into_iter().enumerate() {
         match import_provider_capture_line(store, &capture, &options, line_number, &mut caches) {
             Ok(line_summary) => summary.merge(line_summary),
             Err(err) => {
@@ -176,6 +218,21 @@ pub(crate) fn import_provider_capture_lines(
                     error: err.to_string(),
                 });
             }
+        }
+        captures_in_transaction += 1;
+        if has_captures
+            && options.wrap_transaction
+            && transaction_batch_size
+                .is_some_and(|batch_size| captures_in_transaction >= batch_size)
+            && capture_index + 1 < capture_count
+        {
+            if let Err(err) = store.commit_batch() {
+                let _ = store.rollback_batch();
+                return Err(err.into());
+            }
+            store.checkpoint_wal_truncate()?;
+            store.begin_immediate_batch()?;
+            captures_in_transaction = 0;
         }
     }
     if let Err(err) = resolve_pending_provider_edges(store, &mut summary, &mut caches) {

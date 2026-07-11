@@ -9,7 +9,8 @@ use crate::provider::adapter::{
     ProviderCaptureAdapter, RooTaskJsonAdapter,
 };
 use crate::provider::importer::{
-    import_native_jsonl_tree, import_normalized_provider_captures, NativeJsonlTreeImport,
+    import_native_jsonl_tree, import_normalized_provider_captures,
+    import_normalized_provider_captures_in_batches, NativeJsonlTreeImport,
 };
 use crate::provider::providers::trae::normalize_trae_history;
 use crate::{
@@ -323,17 +324,25 @@ pub fn import_hermes_sqlite(
             imported_at: options.imported_at,
         },
     )?;
-    import_normalized_provider_captures(
-        store,
-        normalization,
-        NormalizedProviderImportOptions {
-            history_record_id: options.history_record_id,
-            allow_partial_failures: options.allow_partial_failures,
-            persist_cursors: true,
-            wrap_transaction: true,
-            fast_event_inserts: true,
-        },
-    )
+    const HERMES_TRANSACTION_BATCH_MESSAGES: usize = 64;
+    let allow_partial_failures = options.allow_partial_failures;
+    let import_options = NormalizedProviderImportOptions {
+        history_record_id: options.history_record_id,
+        allow_partial_failures,
+        persist_cursors: true,
+        wrap_transaction: true,
+        fast_event_inserts: true,
+    };
+    if allow_partial_failures {
+        import_normalized_provider_captures_in_batches(
+            store,
+            normalization,
+            import_options,
+            HERMES_TRANSACTION_BATCH_MESSAGES,
+        )
+    } else {
+        import_normalized_provider_captures(store, normalization, import_options)
+    }
 }
 
 pub fn import_auggie_history(
