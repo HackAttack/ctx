@@ -1,0 +1,258 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/run-native-candidate-smoke.sh BINARY FIXTURE EXPECTED_VERSION RESULT_PATH
+
+Runs a bounded exact-byte ctx candidate smoke on native Linux, macOS, or
+FreeBSD. The fixture must be ctx-history-jsonl-v1. RESULT_PATH is written only
+after every step passes.
+USAGE
+}
+
+if [ "$#" -ne 4 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 2
+fi
+
+absolute_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "${PWD}" "$1" ;;
+  esac
+}
+
+binary="$(absolute_path "$1")"
+fixture="$(absolute_path "$2")"
+expected_version="$3"
+result_path="$(absolute_path "$4")"
+command_timeout_seconds="${CTX_NATIVE_CANDIDATE_COMMAND_TIMEOUT_SECONDS:-60}"
+
+case "${command_timeout_seconds}" in
+  ''|*[!0-9]*|0)
+    printf 'candidate smoke timeout must be a positive whole number of seconds\n' >&2
+    exit 2
+    ;;
+esac
+if [ "${command_timeout_seconds}" -gt 900 ]; then
+  printf 'candidate smoke timeout must not exceed 900 seconds\n' >&2
+  exit 2
+fi
+
+if [ ! -f "${binary}" ] || [ ! -x "${binary}" ]; then
+  printf 'candidate smoke binary is missing or not executable: %s\n' "${binary}" >&2
+  exit 1
+fi
+if [ ! -f "${fixture}" ]; then
+  printf 'candidate smoke fixture is missing: %s\n' "${fixture}" >&2
+  exit 1
+fi
+if ! command -v ps >/dev/null 2>&1; then
+  printf 'candidate smoke requires ps for survivor detection\n' >&2
+  exit 127
+fi
+if ! printf '%s\n' "${expected_version}" \
+  | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+  printf 'candidate smoke expected version is invalid: %s\n' "${expected_version}" >&2
+  exit 1
+fi
+
+result_dir="$(dirname "${result_path}")"
+mkdir -p "${result_dir}"
+rm -f "${result_path}"
+result_tmp="${result_path}.tmp.$$"
+root="$(mktemp -d "${TMPDIR:-/tmp}/ctx-native-candidate-smoke.XXXXXX")"
+cleanup() {
+  rm -f "${result_tmp}"
+  rm -rf "${root}"
+}
+trap cleanup 0
+trap 'exit 1' 1 2 15
+
+profile="${root}/profile"
+data_root="${root}/data"
+config_root="${root}/config"
+cache_root="${root}/cache"
+state_root="${root}/state"
+tmp_root="${root}/tmp"
+work_root="${root}/work"
+mkdir -p "${profile}" "${data_root}" "${config_root}" "${cache_root}" \
+  "${state_root}" "${tmp_root}" "${work_root}"
+
+# Start from an empty environment so provider overrides and user configuration
+# cannot escape the isolated roots. These commands have no networked product
+# path: analytics/upgrades are off, semantic search is explicitly lexical, and
+# daemon autostart is disabled.
+clean_env() {
+  env -i \
+    PATH="${PATH:-/usr/bin:/bin}" \
+    HOME="${profile}" \
+    USER="${USER:-ctx-smoke}" \
+    LOGNAME="${LOGNAME:-ctx-smoke}" \
+    TMPDIR="${tmp_root}" \
+    XDG_CONFIG_HOME="${config_root}" \
+    XDG_CACHE_HOME="${cache_root}" \
+    XDG_DATA_HOME="${root}/xdg-data" \
+    XDG_STATE_HOME="${state_root}" \
+    CTX_DATA_ROOT="${data_root}" \
+    CTX_ANALYTICS_OFF=1 \
+    CTX_UPGRADE_OFF=1 \
+    CTX_DAEMON_AUTOSTART_OFF=1 \
+    CTX_SEMANTIC_CACHE_DIR="${root}/semantic-cache" \
+    HF_HOME="${root}/huggingface" \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    "$@"
+}
+
+ctx() {
+  clean_env \
+    CTX_DISABLE_DAEMON=1 \
+    CTX_SEARCH_SEMANTIC=0 \
+    "${binary}" "$@"
+}
+
+run_bounded() {
+  bounded_stdout="$1"
+  bounded_stderr="$2"
+  shift 2
+  bounded_timeout_marker="${root}/command-timeout.$$"
+  rm -f "${bounded_timeout_marker}"
+  ( "$@" ) >"${bounded_stdout}" 2>"${bounded_stderr}" &
+  bounded_pid=$!
+  (
+    sleep "${command_timeout_seconds}"
+    if kill -0 "${bounded_pid}" 2>/dev/null; then
+      : > "${bounded_timeout_marker}"
+      kill -TERM "${bounded_pid}" 2>/dev/null || true
+      sleep 2
+      kill -KILL "${bounded_pid}" 2>/dev/null || true
+    fi
+  ) &
+  bounded_watcher=$!
+  bounded_status=0
+  wait "${bounded_pid}" || bounded_status=$?
+  kill "${bounded_watcher}" 2>/dev/null || true
+  wait "${bounded_watcher}" 2>/dev/null || true
+  if [ -e "${bounded_timeout_marker}" ]; then
+    rm -f "${bounded_timeout_marker}"
+    printf 'candidate command exceeded %s seconds: %s\n' \
+      "${command_timeout_seconds}" "$*" >&2
+    return 124
+  fi
+  return "${bounded_status}"
+}
+
+process_ids_for_binary() {
+  ps -axo pid=,command= 2>/dev/null \
+    | awk -v executable="${binary}" '$2 == executable { print $1 }' \
+    | LC_ALL=C sort -n
+}
+
+baseline_processes="${root}/baseline-processes"
+final_processes="${root}/final-processes"
+process_ids_for_binary > "${baseline_processes}"
+
+cd "${work_root}"
+
+if ! run_bounded "${root}/version.out" "${root}/version.err" ctx --version; then
+  cat "${root}/version.err" >&2
+  printf 'candidate version command failed\n' >&2
+  exit 1
+fi
+version_output="$(cat "${root}/version.out")"
+if [ "${version_output}" != "ctx ${expected_version}" ]; then
+  printf 'candidate version mismatch: expected ctx %s, got %s\n' \
+    "${expected_version}" "${version_output}" >&2
+  exit 1
+fi
+
+run_bounded "${root}/setup.out" "${root}/setup.err" \
+  ctx setup --catalog-only --no-daemon --progress none || {
+  cat "${root}/setup.err" >&2
+  exit 1
+}
+run_bounded "${root}/import.json" "${root}/import.err" ctx import \
+  --format ctx-history-jsonl-v1 \
+  --path "${fixture}" \
+  --no-daemon \
+  --json \
+  --progress none || {
+  cat "${root}/import.err" >&2
+  exit 1
+}
+grep -Eq '"imported_events"[[:space:]]*:[[:space:]]*[1-9][0-9]*' "${root}/import.json" || {
+  printf 'candidate fixture import did not import events\n' >&2
+  exit 1
+}
+
+run_bounded "${root}/search.json" "${root}/search.err" ctx search "parser test" \
+  --backend lexical \
+  --refresh off \
+  --json || {
+  cat "${root}/search.err" >&2
+  exit 1
+}
+grep -Eq '"requested_mode"[[:space:]]*:[[:space:]]*"lexical"' "${root}/search.json" \
+  || { printf 'candidate search did not request lexical mode\n' >&2; exit 1; }
+grep -Eq '"effective_mode"[[:space:]]*:[[:space:]]*"lexical"' "${root}/search.json" \
+  || { printf 'candidate search did not remain lexical\n' >&2; exit 1; }
+grep -Fq 'Add a parser test.' "${root}/search.json" \
+  || { printf 'candidate search did not return the fixture event\n' >&2; exit 1; }
+
+run_bounded "${root}/status.json" "${root}/status.err" ctx status --json || {
+  cat "${root}/status.err" >&2
+  exit 1
+}
+grep -Eq '"read_only"[[:space:]]*:[[:space:]]*true' "${root}/status.json" || {
+  printf 'candidate read-only status command returned an unexpected payload\n' >&2
+  exit 1
+}
+
+# Every public release target is intentionally lexical-only. Prove that an
+# explicit semantic-only request fails closed without lexical fallback, model
+# cache, vector index, daemon, or download.
+grep -Eq '"source"[[:space:]]*:[[:space:]]*"unsupported"' "${root}/status.json" || {
+  printf 'native candidate does not report the unsupported semantic capability\n' >&2
+  exit 1
+}
+if run_bounded "${root}/semantic.out" "${root}/semantic.err" clean_env \
+  CTX_DAEMON_ENABLED=1 \
+  CTX_SEARCH_SEMANTIC=1 \
+  "${binary}" search "parser test" --backend semantic --refresh off --json; then
+  printf 'semantic-only search unexpectedly succeeded\n' >&2
+  exit 1
+fi
+if ! grep -Eq \
+  'semantic-only search will not initialize or download|local semantic search is not supported on this platform yet' \
+  "${root}/semantic.err"; then
+  printf 'semantic-only search did not report the fail-closed capability contract\n' >&2
+  exit 1
+fi
+if grep -Eq '"effective_mode"[[:space:]]*:[[:space:]]*"lexical"' \
+  "${root}/semantic.out"; then
+  printf 'semantic-only search silently fell back to lexical\n' >&2
+  exit 1
+fi
+if [ -e "${root}/semantic-cache" ] || [ -e "${root}/huggingface" ] \
+  || [ -e "${data_root}/vectors.sqlite" ] || [ -e "${data_root}/daemon" ]; then
+  printf 'semantic-only search created semantic or daemon state\n' >&2
+  exit 1
+fi
+
+process_ids_for_binary > "${final_processes}"
+survivors="$(comm -13 "${baseline_processes}" "${final_processes}")"
+if [ -n "${survivors}" ]; then
+  printf 'candidate left a background process running: %s\n' "${survivors}" >&2
+  exit 1
+fi
+if [ -e "${data_root}/daemon/daemon.lock" ]; then
+  printf 'candidate left a daemon lock behind\n' >&2
+  exit 1
+fi
+
+printf '%s\n' '{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","capability":"passed"}}' \
+  > "${result_tmp}"
+mv "${result_tmp}" "${result_path}"
+printf 'native candidate smoke passed: %s %s\n' "$(uname -s)" "$(uname -m)"

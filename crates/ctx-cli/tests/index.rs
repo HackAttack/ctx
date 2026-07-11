@@ -76,17 +76,8 @@ fn index_status_reports_stale_daemon_lock_as_recoverable() {
     );
 }
 
-#[cfg(any(
-    all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        target_env = "gnu"
-    ),
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
-))]
 #[test]
-fn index_status_discovers_existing_semantic_model_cache_dirs() {
+fn index_status_ignores_semantic_model_caches_when_backend_is_unsupported() {
     let temp = tempdir();
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
@@ -96,7 +87,8 @@ fn index_status_discovers_existing_semantic_model_cache_dirs() {
     current_dir_command.current_dir(&workspace);
     remove_semantic_cache_env(&mut current_dir_command);
     let status = json_output(current_dir_command.args(["index", "status", "--json"]));
-    assert_eq!(status["semantic"]["model_cache_available"], true);
+    assert_eq!(status["semantic"]["model_cache_available"], false);
+    assert_eq!(status["semantic"]["embed_policy"]["source"], "unsupported");
 
     let temp = tempdir();
     let hf_home = temp.path().join("hf-home");
@@ -105,7 +97,8 @@ fn index_status_discovers_existing_semantic_model_cache_dirs() {
     remove_semantic_cache_env(&mut hf_home_command);
     hf_home_command.env("HF_HOME", &hf_home);
     let status = json_output(hf_home_command.args(["index", "status", "--json"]));
-    assert_eq!(status["semantic"]["model_cache_available"], true);
+    assert_eq!(status["semantic"]["model_cache_available"], false);
+    assert_eq!(status["semantic"]["embed_policy"]["source"], "unsupported");
 }
 
 #[test]

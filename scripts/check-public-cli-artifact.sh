@@ -5,9 +5,10 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/check-public-cli-artifact.sh PLATFORM [ARTIFACT_DIR]
 
-Checks one locally staged public ctx CLI artifact. This validates only local
-public release outputs: artifact presence, SHA-256 sidecar consistency, and
-version sidecar contents.
+Checks one locally staged public ctx CLI artifact. This validates construction
+outputs: artifact presence, SHA-256 consistency, the construction-time version
+sidecar, and the static binary contract. A version sidecar is never native
+runtime proof; promotion consumes separate exact-byte native evidence.
 USAGE
 }
 
@@ -46,7 +47,10 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
-version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(pkg["version"] for pkg in data["packages"] if pkg["name"] == "ctx"))')"
+version="${CTX_PUBLIC_CLI_EXPECTED_VERSION:-}"
+if [[ -z "${version}" ]]; then
+  version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(pkg["version"] for pkg in data["packages"] if pkg["name"] == "ctx"))')"
+fi
 artifact="${artifact_dir%/}/${binary_name}"
 sha_file="${artifact}.sha256"
 version_file="${artifact}.version"
@@ -122,13 +126,17 @@ case "${platform}" in
     ;;
 esac
 
+construction_version_status=""
 case "${actual_version}" in
-  "ctx ${version}") ;;
+  "ctx ${version}")
+    construction_version_status="executed-on-construction-host"
+    ;;
   "not run on this host: ${platform}")
     if [[ "${can_run_on_host}" == "1" ]]; then
       printf 'public CLI artifact version sidecar skipped a runnable host platform: %s\n' "${platform}" >&2
       exit 1
     fi
+    construction_version_status="not-executed-on-construction-host"
     ;;
   *)
     printf 'public CLI artifact version sidecar has unexpected content: %s\n' "${actual_version}" >&2
@@ -138,4 +146,5 @@ esac
 
 bash scripts/check-release-binary-compat.sh "${platform}" "${artifact}"
 
-printf 'public CLI artifact ok: %s sha256=%s\n' "${platform}" "${actual_sha}"
+printf 'public CLI artifact ok: %s sha256=%s construction_version=%s native_runtime_proof=not-claimed\n' \
+  "${platform}" "${actual_sha}" "${construction_version_status}"

@@ -45,10 +45,8 @@ shipped.
 - Empty or punctuation-only search is invalid. Broad valid queries can still
   return metadata-driven matches.
 - Semantic embeddings depend on a compatible local ONNX Runtime backend.
-  Linux GNU and macOS arm64 builds can use the local FastEmbed backend when the
-  model cache already exists. Windows GNU, FreeBSD, and macOS x64 public
-  artifacts currently remain lexical-safe and report semantic unavailable rather
-  than linking an unsupported backend.
+  The current public release artifacts are lexical-only on every platform and
+  report semantic unavailable rather than linking a target-specific backend.
 
 ## Retrieval Semantics
 

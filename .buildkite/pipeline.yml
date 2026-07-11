@@ -17,8 +17,11 @@ steps:
         //:cargo_fmt_check \
         //:docs_check \
         //:installer_path_smoke \
+        //:linux_release_construction_tests \
         //:loc_check \
+        //:native_candidate_smoke_tests \
         //:package_audit_fast \
+        //:release_binary_compat_tests \
         //:source_diff_check \
         --config=ci
     agents:
@@ -50,6 +53,7 @@ steps:
       - "target/public-cli-artifacts/ctx"
       - "target/public-cli-artifacts/ctx.sha256"
       - "target/public-cli-artifacts/ctx.version"
+      - "target/public-cli-artifacts/ctx.build-info.json"
 
   - label: ":package: public CLI linux-aarch64"
     key: "public-cli-linux-aarch64"
@@ -66,6 +70,7 @@ steps:
       - "target/public-cli-artifacts/ctx-linux-aarch64"
       - "target/public-cli-artifacts/ctx-linux-aarch64.sha256"
       - "target/public-cli-artifacts/ctx-linux-aarch64.version"
+      - "target/public-cli-artifacts/ctx-linux-aarch64.build-info.json"
 
   - label: ":package: public CLI windows-x64"
     key: "public-cli-windows-x64"
@@ -82,6 +87,7 @@ steps:
       - "target/public-cli-artifacts/ctx.exe"
       - "target/public-cli-artifacts/ctx.exe.sha256"
       - "target/public-cli-artifacts/ctx.exe.version"
+      - "target/public-cli-artifacts/ctx.exe.build-info.json"
 
   - label: ":package: public CLI freebsd-x64"
     key: "public-cli-freebsd-x64"
@@ -98,6 +104,7 @@ steps:
       - "target/public-cli-artifacts/ctx-freebsd-x64"
       - "target/public-cli-artifacts/ctx-freebsd-x64.sha256"
       - "target/public-cli-artifacts/ctx-freebsd-x64.version"
+      - "target/public-cli-artifacts/ctx-freebsd-x64.build-info.json"
 
   - label: ":package: public CLI macos-arm64"
     key: "public-cli-macos-arm64"
@@ -114,6 +121,7 @@ steps:
       - "target/public-cli-artifacts/ctx-macos-arm64"
       - "target/public-cli-artifacts/ctx-macos-arm64.sha256"
       - "target/public-cli-artifacts/ctx-macos-arm64.version"
+      - "target/public-cli-artifacts/ctx-macos-arm64.build-info.json"
 
   - label: ":package: public CLI macos-x64"
     key: "public-cli-macos-x64"
@@ -130,3 +138,4 @@ steps:
       - "target/public-cli-artifacts/ctx-macos-x64"
       - "target/public-cli-artifacts/ctx-macos-x64.sha256"
       - "target/public-cli-artifacts/ctx-macos-x64.version"
+      - "target/public-cli-artifacts/ctx-macos-x64.build-info.json"

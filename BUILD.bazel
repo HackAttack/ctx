@@ -7,6 +7,7 @@ CTX_GATE_DATA = glob([
     "BUILD.bazel",
     "Cargo.lock",
     "Cargo.toml",
+    "Cross.toml",
     "LICENSE",
     "MODULE.bazel",
     "README.md",
@@ -214,6 +215,27 @@ sh_test(
 )
 
 sh_test(
+    name = "release_binary_compat_tests",
+    srcs = ["scripts/bazel-test.sh"],
+    args = ["release_binary_compat_tests"],
+    data = CTX_GATE_DATA,
+)
+
+sh_test(
+    name = "native_candidate_smoke_tests",
+    srcs = ["scripts/bazel-test.sh"],
+    args = ["native_candidate_smoke_tests"],
+    data = CTX_GATE_DATA,
+)
+
+sh_test(
+    name = "linux_release_construction_tests",
+    srcs = ["scripts/bazel-test.sh"],
+    args = ["linux_release_construction_tests"],
+    data = CTX_GATE_DATA,
+)
+
+sh_test(
     name = "loc_check",
     srcs = ["scripts/bazel-test.sh"],
     args = ["loc_check"],
@@ -346,6 +368,9 @@ test_suite(
         ":mcp_integration_e2e",
         ":installer_path_smoke",
         ":buildkite_pipeline_check",
+        ":release_binary_compat_tests",
+        ":native_candidate_smoke_tests",
+        ":linux_release_construction_tests",
         ":loc_check",
         ":native_rust_smoke",
         ":source_diff_check",
