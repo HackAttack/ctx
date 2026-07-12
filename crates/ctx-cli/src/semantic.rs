@@ -12,6 +12,15 @@ use model_acquisition::*;
 #[cfg(target_os = "macos")]
 use model_bundle::*;
 include!("semantic/resource_policy.rs");
+mod cache_paths;
+#[cfg(ctx_semantic_fastembed)]
+mod cpu_model_cache;
+#[cfg(ctx_semantic_fastembed)]
+use cpu_model_cache::{
+    maybe_cleanup_semantic_cpu_download_cache_after_cached_acquisition, read_semantic_model_file,
+    replace_cpu_model_cache_from_pinned_revision, semantic_cpu_cache_repairable,
+    semantic_cpu_cache_snapshot,
+};
 include!("semantic/embedding_backend.rs");
 include!("semantic/vector_store_schema.rs");
 include!("semantic/vector_store_state.rs");

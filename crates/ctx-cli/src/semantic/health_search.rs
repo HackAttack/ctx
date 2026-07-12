@@ -545,29 +545,29 @@ fn semantic_worker_default_cache_candidates(
     env: &SemanticCacheEnv,
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    push_unique_path(&mut candidates, data_root.join("semantic-model-cache"));
+    cache_paths::push_unique_path(&mut candidates, data_root.join("semantic-model-cache"));
     if let Some(current_dir) = env.current_dir.as_ref() {
-        push_unique_path(&mut candidates, current_dir.join(".fastembed_cache"));
+        cache_paths::push_unique_path(&mut candidates, current_dir.join(".fastembed_cache"));
     }
     if let Some(xdg_cache_home) = env.xdg_cache_home.as_ref() {
-        push_unique_path(&mut candidates, xdg_cache_home.join("fastembed"));
-        push_unique_path(&mut candidates, xdg_cache_home.join("huggingface").join("hub"));
-        push_unique_path(&mut candidates, xdg_cache_home.join("huggingface"));
+        cache_paths::push_unique_path(&mut candidates, xdg_cache_home.join("fastembed"));
+        cache_paths::push_unique_path(
+            &mut candidates,
+            xdg_cache_home.join("huggingface").join("hub"),
+        );
+        cache_paths::push_unique_path(&mut candidates, xdg_cache_home.join("huggingface"));
     }
     if let Some(home) = env.home.as_ref() {
         let cache = home.join(".cache");
-        push_unique_path(&mut candidates, home.join(".fastembed_cache"));
-        push_unique_path(&mut candidates, cache.join("fastembed"));
-        push_unique_path(&mut candidates, cache.join("huggingface").join("hub"));
-        push_unique_path(&mut candidates, cache.join("huggingface"));
+        cache_paths::push_unique_path(&mut candidates, home.join(".fastembed_cache"));
+        cache_paths::push_unique_path(&mut candidates, cache.join("fastembed"));
+        cache_paths::push_unique_path(
+            &mut candidates,
+            cache.join("huggingface").join("hub"),
+        );
+        cache_paths::push_unique_path(&mut candidates, cache.join("huggingface"));
     }
     candidates
-}
-
-fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.iter().any(|existing| existing == &path) {
-        paths.push(path);
-    }
 }
 
 fn semantic_model_cache_available(cache_dir: &Path) -> bool {
@@ -628,35 +628,12 @@ fn semantic_model_cache_snapshot_dir(cache_dir: &Path) -> Option<PathBuf> {
     if cache_dir.as_os_str().is_empty() {
         return None;
     }
-    for model_root in semantic_model_cache_roots(cache_dir) {
+    for model_root in cache_paths::semantic_model_cache_roots(cache_dir) {
         if let Some(snapshot) = semantic_model_snapshot_from_root(&model_root) {
             return Some(snapshot);
         }
     }
     None
-}
-
-fn semantic_model_cache_roots(cache_dir: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    push_unique_path(
-        &mut roots,
-        cache_dir
-            .join(SEMANTIC_MANAGED_MODEL_CACHE_DIR)
-            .join(SEMANTIC_HF_MODEL_CACHE_DIR),
-    );
-    if cache_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        == Some(SEMANTIC_HF_MODEL_CACHE_DIR)
-    {
-        push_unique_path(&mut roots, cache_dir.to_path_buf());
-    }
-    push_unique_path(&mut roots, cache_dir.join(SEMANTIC_HF_MODEL_CACHE_DIR));
-    push_unique_path(
-        &mut roots,
-        cache_dir.join("hub").join(SEMANTIC_HF_MODEL_CACHE_DIR),
-    );
-    roots
 }
 
 fn semantic_model_snapshot_from_root(model_root: &Path) -> Option<PathBuf> {
