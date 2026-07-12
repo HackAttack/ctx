@@ -1,5 +1,12 @@
 mod support;
 
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Barrier,
+    },
+    thread,
+};
 use support::*;
 
 fn write_codex_setup_session(temp: &TempDir) {
@@ -640,6 +647,196 @@ fn setup_inventories_whole_source_sqlite_providers() {
     assert_eq!(status["source_import_files"], 1);
     assert_eq!(status["indexed_source_import_files"], 1);
     assert_eq!(status["pending_inventory_units"], 0);
+}
+
+#[test]
+fn clean_multisource_setup_with_hermes_bounds_wal_through_final_optimization() {
+    let temp = tempdir();
+    write_large_codex_setup_sessions(&temp, 40, 4, 4 * 1024);
+    write_large_hermes_setup_db(&temp, 130, 8 * 1024);
+    let db_path = temp.path().join("work.sqlite");
+    let wal_path = temp.path().join("work.sqlite-wal");
+
+    let running = Arc::new(AtomicBool::new(true));
+    let peak_wal_bytes = Arc::new(AtomicU64::new(0));
+    let sampler_ready = Arc::new(Barrier::new(2));
+    let sampler = {
+        let running = Arc::clone(&running);
+        let peak_wal_bytes = Arc::clone(&peak_wal_bytes);
+        let sampler_ready = Arc::clone(&sampler_ready);
+        thread::spawn(move || {
+            sampler_ready.wait();
+            loop {
+                if let Ok(metadata) = fs::metadata(&wal_path) {
+                    peak_wal_bytes.fetch_max(metadata.len(), Ordering::AcqRel);
+                }
+                if !running.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    sampler_ready.wait();
+    let mut setup_command = ctx(&temp);
+    setup_command.args(["setup", "--wait", "--json", "--progress", "none"]);
+    let setup_output = setup_command.output().unwrap();
+    running.store(false, Ordering::Release);
+    sampler.join().unwrap();
+
+    assert!(
+        setup_output.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&setup_output.stderr)
+    );
+    let setup: Value = serde_json::from_slice(&setup_output.stdout).unwrap();
+    assert_eq!(setup["import"]["totals"]["failed_sources"], 0);
+    assert!(
+        peak_wal_bytes.load(Ordering::Acquire) <= 32 * 1024 * 1024,
+        "clean multi-source setup grew WAL to {} bytes",
+        peak_wal_bytes.load(Ordering::Acquire)
+    );
+    assert!(
+        fs::metadata(temp.path().join("work.sqlite-wal"))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            <= 4 * 1024 * 1024,
+        "setup left a large final WAL"
+    );
+
+    let conn = Connection::open(&db_path).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert_eq!(
+        sqlite_count(
+            &conn,
+            "SELECT COUNT(*) FROM search_projection_stats WHERE key LIKE 'event_search_bulk_mode_v1%'"
+        ),
+        0
+    );
+    assert!(
+        sqlite_count(
+            &conn,
+            "SELECT COUNT(*) FROM event_search WHERE event_search MATCH 'codex AND setup AND history'"
+        ) > 0
+    );
+    assert!(
+        sqlite_count(
+            &conn,
+            "SELECT COUNT(*) FROM event_search WHERE event_search MATCH 'hermes AND setup AND current'"
+        ) > 0
+    );
+    let event_count = sqlite_count(&conn, "SELECT COUNT(*) FROM events");
+    drop(conn);
+
+    let replay = json_output(ctx(&temp).args(["setup", "--wait", "--json", "--progress", "none"]));
+    assert_eq!(replay["import"]["totals"]["failed_sources"], 0);
+    let conn = Connection::open(&db_path).unwrap();
+    assert_eq!(
+        sqlite_count(&conn, "SELECT COUNT(*) FROM events"),
+        event_count
+    );
+}
+
+fn write_large_codex_setup_sessions(
+    temp: &TempDir,
+    sessions: usize,
+    messages_per_session: usize,
+    payload_bytes: usize,
+) {
+    let sessions_dir = temp.path().join(".codex/sessions/2026/07/12");
+    fs::create_dir_all(&sessions_dir).unwrap();
+    let payload = "database migration checkpoint bounded wal search index ".repeat(
+        payload_bytes / "database migration checkpoint bounded wal search index ".len() + 1,
+    );
+    for session_index in 0..sessions {
+        let session_id = format!("codex-setup-history-{session_index}");
+        let path = sessions_dir.join(format!("rollout-{session_id}.jsonl"));
+        let mut file = fs::File::create(path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-07-12T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": session_id,
+                    "timestamp": "2026-07-12T10:00:00.000Z",
+                    "cwd": "/repo/setup",
+                    "originator": "codex-cli",
+                    "cli_version": "0.200.0",
+                    "source": "cli",
+                    "model_provider": "openai"
+                }
+            })
+        )
+        .unwrap();
+        for message_index in 0..messages_per_session {
+            writeln!(
+                file,
+                "{}",
+                json!({
+                    "timestamp": "2026-07-12T10:00:01.000Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": format!(
+                                "codex-setup-history session {session_index} message {message_index} {payload}"
+                            )
+                        }]
+                    }
+                })
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn write_large_hermes_setup_db(temp: &TempDir, messages: usize, payload_bytes: usize) {
+    let hermes_dir = temp.path().join(".hermes");
+    fs::create_dir_all(&hermes_dir).unwrap();
+    let mut conn = Connection::open(hermes_dir.join("state.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            started_at REAL NOT NULL
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            timestamp REAL NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            compacted INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO sessions VALUES ('hermes-setup-current', 'acp', 1782259200.0);",
+    )
+    .unwrap();
+    let payload = "provider import fts merge recovery bounded checkpoint "
+        .repeat(payload_bytes / "provider import fts merge recovery bounded checkpoint ".len() + 1);
+    let transaction = conn.transaction().unwrap();
+    for index in 0..messages {
+        transaction
+            .execute(
+                "INSERT INTO messages (session_id, role, content, timestamp)
+                 VALUES ('hermes-setup-current', ?1, ?2, ?3)",
+                params![
+                    if index % 2 == 0 { "user" } else { "assistant" },
+                    format!("hermes-setup-current message {index} {payload}"),
+                    1782259201.0 + index as f64,
+                ],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
 }
 
 #[test]

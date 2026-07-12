@@ -238,6 +238,127 @@ fn bulk_search_mode_crosses_crisis_threshold_without_automatic_merge() {
 }
 
 #[test]
+fn bulk_search_finish_preserves_preexisting_optimized_segment() {
+    let temp = tempdir();
+    let db_path = temp.path().join("work.sqlite");
+    let store = Store::open(&db_path).unwrap();
+
+    let first_guard = store.begin_event_search_bulk_mode().unwrap();
+    insert_bulk_search_events(&store, "historic", 80, 512);
+    store.finish_event_search_bulk_mode(&first_guard).unwrap();
+    drop(first_guard);
+    assert_eq!(event_search_segment_count(&store), 1);
+
+    let second_guard = store.begin_event_search_bulk_mode().unwrap();
+    insert_bulk_search_events(&store, "new", 20, 128);
+    assert_eq!(event_search_segment_count(&store), 21);
+    store.finish_event_search_bulk_mode(&second_guard).unwrap();
+
+    assert_eq!(
+        event_search_segment_count(&store),
+        2,
+        "finishing one provider import must not re-optimize the historical index"
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_search WHERE event_search MATCH 'historic OR new'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        100
+    );
+}
+
+#[test]
+fn bulk_search_recovery_resumes_legacy_in_progress_full_merge() {
+    let temp = tempdir();
+    let db_path = temp.path().join("work.sqlite");
+    let store = Store::open(&db_path).unwrap();
+    let guard = store.begin_event_search_bulk_mode().unwrap();
+    insert_bulk_search_events(&store, "legacy-recovery", 40, 512);
+    store
+        .conn
+        .execute(
+            "INSERT INTO event_search(event_search, rank) VALUES ('merge', -1)",
+            [],
+        )
+        .unwrap();
+    store
+        .conn
+        .execute(
+            r#"
+            INSERT INTO search_projection_stats (key, value, updated_at_ms)
+            VALUES ('event_search_bulk_mode_v1:merge_started:event_search', 1, 0)
+            "#,
+            [],
+        )
+        .unwrap();
+    drop(store);
+    drop(guard);
+
+    let reopened = Store::open(&db_path).unwrap();
+    assert_eq!(bulk_mode_marker(&reopened), None);
+    assert_eq!(
+        reopened
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM search_projection_stats WHERE key LIKE 'event_search_bulk_mode_v1:%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        reopened
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_search WHERE event_search MATCH 'legacy'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        40
+    );
+}
+
+fn insert_bulk_search_events(store: &Store, prefix: &str, count: usize, payload_words: usize) {
+    for index in 0..count {
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO event_search
+                (event_id, history_record_id, session_id, role, preview_text, rank_bucket)
+                VALUES (?1, NULL, NULL, 'user', ?2, 'message')
+                "#,
+                params![
+                    format!("{prefix}-event-{index}"),
+                    format!(
+                        "{prefix} token {index} {}",
+                        "payload ".repeat(payload_words)
+                    )
+                ],
+            )
+            .unwrap();
+    }
+}
+
+fn event_search_segment_count(store: &Store) -> i64 {
+    store
+        .conn
+        .query_row(
+            "SELECT COUNT(DISTINCT segid) FROM event_search_idx",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
 fn interrupted_bounded_merge_resumes_after_reopen() {
     let temp = tempdir();
     let db_path = temp.path().join("work.sqlite");
