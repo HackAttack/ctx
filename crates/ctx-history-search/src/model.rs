@@ -10,6 +10,7 @@ pub(crate) struct Candidate {
     pub(crate) record: HistoryRecord,
     pub(crate) context: RecordContext,
     pub(crate) score: f32,
+    pub(crate) matched_term_count: usize,
     pub(crate) why_matched: Vec<String>,
     pub(crate) citations: Vec<ContextCitation>,
     pub(crate) primary_hit: Option<HitMetadata>,

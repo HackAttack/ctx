@@ -201,6 +201,33 @@ fn preferred_event_search_keeps_materially_stronger_tool_evidence_first() {
 }
 
 #[test]
+fn preferred_event_search_keeps_term_coverage_ahead_of_event_type_preference() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let message = policy_event(
+        1,
+        EventType::Message,
+        Some(EventRole::Assistant),
+        serde_json::json!({"text": "coverage-alpha"}),
+    );
+    let tool = policy_event(
+        2,
+        EventType::ToolCall,
+        Some(EventRole::Assistant),
+        serde_json::json!({"text": "coverage-alpha coverage-beta"}),
+    );
+    store.upsert_event(&message).unwrap();
+    store.upsert_event(&tool).unwrap();
+
+    let hits = store
+        .search_event_hits_page_prefer_conversation("coverage-alpha coverage-beta", 10, 0)
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].event_id, tool.id);
+    assert_eq!(hits[1].event_id, message.id);
+}
+
+#[test]
 fn indexed_history_item_count_uses_sessions_and_events() {
     let temp = tempdir();
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();
@@ -362,6 +389,76 @@ fn search_records_empty_or_no_token_query_returns_empty() {
 }
 
 #[test]
+fn multi_word_record_search_returns_partial_matches_and_orders_by_term_coverage() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let all_terms = record_with_id(
+        "018f45d0-0000-7000-8000-000000080010",
+        "Complete migration diagnosis",
+        "sqlite rollback checksum",
+    );
+    let sqlite_only = record_with_id(
+        "018f45d0-0000-7000-8000-000000080011",
+        "SQLite diagnosis",
+        "sqlite investigation",
+    );
+    let rollback_only = record_with_id(
+        "018f45d0-0000-7000-8000-000000080012",
+        "Rollback diagnosis",
+        "rollback investigation",
+    );
+    for record in [&sqlite_only, &all_terms, &rollback_only] {
+        store.insert_record(record).unwrap();
+    }
+
+    let first = store
+        .search_records("sqlite rollback checksum", 10)
+        .unwrap();
+    let second = store
+        .search_records("sqlite rollback checksum", 10)
+        .unwrap();
+    let ids = first.iter().map(|record| record.id).collect::<Vec<_>>();
+
+    assert_eq!(ids.first(), Some(&all_terms.id));
+    assert!(ids.contains(&sqlite_only.id));
+    assert!(ids.contains(&rollback_only.id));
+    assert_eq!(first, second, "multi-word ordering must be deterministic");
+    assert_eq!(
+        first,
+        store
+            .search_records("sqlite SQLITE rollback ROLLBACK checksum", 10)
+            .unwrap(),
+        "duplicate query words must not change coverage or ordering"
+    );
+}
+
+#[test]
+fn multi_word_record_search_fallback_uses_the_same_or_semantics() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let all_terms = record_with_id(
+        "018f45d0-0000-7000-8000-000000080013",
+        "Complete fallback match",
+        "sqlite rollback",
+    );
+    let partial = record_with_id(
+        "018f45d0-0000-7000-8000-000000080014",
+        "Partial fallback match",
+        "sqlite only",
+    );
+    store.insert_record(&partial).unwrap();
+    store.insert_record(&all_terms).unwrap();
+    store
+        .conn
+        .execute_batch("DROP TABLE ctx_history_search")
+        .unwrap();
+
+    let hits = store.search_records("sqlite rollback", 10).unwrap();
+    let ids = hits.iter().map(|record| record.id).collect::<Vec<_>>();
+    assert_eq!(ids, vec![all_terms.id, partial.id]);
+}
+
+#[test]
 fn search_records_still_matches_latin_code_tokens() {
     let temp = tempdir();
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();
@@ -484,6 +581,56 @@ fn event_search_preserves_local_payload_text() {
 
     let hits = store.search_event_hits("rawmarker", 10).unwrap();
     assert!(hits.iter().any(|hit| hit.event_id == raw_event.id));
+}
+
+#[test]
+fn multi_word_event_search_returns_partial_matches_and_orders_by_term_coverage() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let all_terms = local_preview_event(1, "sqlite rollback checksum");
+    let sqlite_only = local_preview_event(2, "sqlite investigation");
+    let rollback_only = local_preview_event(3, "rollback investigation");
+    for event in [&sqlite_only, &all_terms, &rollback_only] {
+        store.upsert_event(event).unwrap();
+    }
+
+    let first = store
+        .search_event_hits("sqlite rollback checksum", 10)
+        .unwrap();
+    let second = store
+        .search_event_hits("sqlite rollback checksum", 10)
+        .unwrap();
+    let ids = first.iter().map(|hit| hit.event_id).collect::<Vec<_>>();
+
+    assert_eq!(ids.first(), Some(&all_terms.id));
+    assert!(ids.contains(&sqlite_only.id));
+    assert!(ids.contains(&rollback_only.id));
+    assert_eq!(first, second, "multi-word ordering must be deterministic");
+    assert_eq!(
+        first,
+        store
+            .search_event_hits("sqlite SQLITE rollback ROLLBACK checksum", 10)
+            .unwrap(),
+        "duplicate query words must not change coverage or ordering"
+    );
+}
+
+#[test]
+fn mixed_script_event_search_keeps_logical_term_coverage_aligned() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let all_terms = local_preview_event(1, "OAuth認証を修正しました");
+    let oauth_only = local_preview_event(2, "OAuth integration notes");
+    let auth_only = local_preview_event(3, "認証を確認しました");
+    for event in [&oauth_only, &auth_only, &all_terms] {
+        store.upsert_event(event).unwrap();
+    }
+
+    let hits = store.search_event_hits("OAuth 認証", 10).unwrap();
+    let ids = hits.iter().map(|hit| hit.event_id).collect::<Vec<_>>();
+    assert_eq!(ids.first(), Some(&all_terms.id));
+    assert!(ids.contains(&oauth_only.id));
+    assert!(ids.contains(&auth_only.id));
 }
 
 #[test]

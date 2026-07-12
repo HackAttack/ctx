@@ -139,6 +139,10 @@ ctx show event <ctx-event-id> --window 3
 ctx show session <ctx-session-id>
 ```
 
+Lexical search treats words in a multi-word query as alternatives and ranks
+results matching more of those words ahead of partial matches. Repeated
+`--term` values merge additional queries or keywords into the same result set.
+
 Use `ctx_event_id` with `ctx show event` when you need a hit plus surrounding
 events. Use `ctx_session_id` with `ctx show session` when you need the
 transcript. Commands accept full ctx IDs or unambiguous ID prefixes of at least

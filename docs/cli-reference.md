@@ -397,9 +397,11 @@ that session also matched. Use `--session <ctx-session-id>` after a default
 search has identified a session to inspect; scoped session search returns dense
 event hits. Session/event commands accept full ctx IDs or unambiguous ctx ID
 prefixes of at least eight hex characters. Use `--events` without `--session`
-for dense event-level results across sessions. Repeat
+for dense event-level results across sessions. Lexical search matches any word
+in an ordinary multi-word query and ranks results matching more query words
+ahead of partial matches. Repeat
 `--term <query-or-keyword>` when you want to broaden a search across several
-related words or phrases and merge the ranked results; `--term` is OR-style
+related queries or keywords and merge the ranked results; `--term` is OR-style
 broadening, not a must-include filter.
 Custom history imports can be filtered by `--history-source` using
 `plugin/source` or `provider_key/source_id`, or by exact `--provider-key`,
@@ -441,7 +443,7 @@ Filters:
 - `--file <path>`, indexed touched-file path metadata, not the current
   filesystem;
 - `--session <ctx-session-id-or-prefix>`, for dense event results within one session;
-- `--term <query-or-keyword>`, repeatable broadening terms merged with OR-style semantics;
+- `--term <query-or-keyword>`, repeatable broadening queries or keywords merged with OR-style semantics;
 - `--events`, for dense event-level results instead of the default session-diverse results;
 - `--backend hybrid|semantic|lexical`, where `hybrid` blends lexical and
   semantic evidence only when existing sidecar coverage is complete and dirty
