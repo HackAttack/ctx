@@ -1184,6 +1184,21 @@ case "${platform}" in
     ;;
 esac
 
+macos_signing_mode="${CTX_MACOS_RELEASE_SIGNING:-optional}"
+if [[ "${platform}" == macos-* && "${CTX_PUBLIC_CLI_ARTIFACT_MATRIX:-0}" == "1" ]]; then
+  macos_signing_mode=required
+fi
+if [[ "${platform}" == macos-* ]]; then
+  case "${macos_signing_mode}" in
+    required)
+      scripts/run-macos-release-signing.sh \
+        "${platform}" runtime "${stage_dir}/lib/${library_name}" "${output_dir}"
+      ;;
+    optional) ;;
+    *) die "CTX_MACOS_RELEASE_SIGNING must be optional or required, got ${macos_signing_mode}" ;;
+  esac
+fi
+
 package_path="${package_dir}/${asset_name}"
 create_archive "${stage_dir}" "${package_path}"
 validate_archive "${package_path}"
@@ -1196,5 +1211,17 @@ chmod 644 "${temporary_output}"
 mv "${temporary_output}" "${output_dir%/}/${asset_name}"
 sha256_file "${output_dir%/}/${asset_name}" > "${output_dir%/}/${asset_name}.sha256.tmp.$$"
 mv "${output_dir%/}/${asset_name}.sha256.tmp.$$" "${output_dir%/}/${asset_name}.sha256"
+if [[ "${platform}" == macos-* && "${macos_signing_mode}" == required ]]; then
+  python3 scripts/macos-release-signing-evidence.py bind-archive \
+    --evidence "${output_dir%/}/ctx-onnxruntime-${platform}.signing.json" \
+    --platform "${platform}" \
+    --archive "${output_dir%/}/${asset_name}" \
+    --checksum "${output_dir%/}/${asset_name}.sha256" \
+    --nested-artifact "${stage_dir}/lib/${library_name}" \
+    --role builder
+  scripts/check-macos-release-signing.sh \
+    "${platform}" runtime "${output_dir%/}/${asset_name}" \
+    "${output_dir%/}/ctx-onnxruntime-${platform}.signing.json"
+fi
 printf 'built %s sha256=%s\n' \
   "${output_dir%/}/${asset_name}" "$(cat "${output_dir%/}/${asset_name}.sha256")"

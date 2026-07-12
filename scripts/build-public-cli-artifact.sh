@@ -620,6 +620,28 @@ if [[ "${platform}" == "windows-x64" ]]; then
   printf '%s\n' "${version}" > "${staged}.expected-version"
 fi
 
+if [[ "${platform}" == macos-* ]]; then
+  macos_signing_mode="${CTX_MACOS_RELEASE_SIGNING:-optional}"
+  if [[ "${CTX_PUBLIC_CLI_ARTIFACT_MATRIX:-0}" == "1" ]]; then
+    macos_signing_mode=required
+  fi
+  case "${macos_signing_mode}" in
+    required)
+      scripts/run-macos-release-signing.sh \
+        "${platform}" cli "${staged}" "${out_dir}"
+      scripts/verify-macos-quarantined-cli.sh \
+        "${platform}" "${staged}" "${version}" \
+        "${out_dir}/ctx-${platform}.signing.json"
+      ;;
+    optional) ;;
+    *)
+      printf 'error: CTX_MACOS_RELEASE_SIGNING must be optional or required, got %s\n' \
+        "${macos_signing_mode}" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if command -v file >/dev/null 2>&1; then
   file "${staged}"
 fi
@@ -702,6 +724,10 @@ if [[ "${platform}" != linux-* ]]; then
     --static-status passed \
     --local-runtime-status "${local_runtime_status}" \
     --local-runtime-authority "${local_runtime_authority}"
+  if [[ "${platform}" == macos-* && "${macos_signing_mode}" == required ]]; then
+    scripts/check-macos-release-signing.sh \
+      "${platform}" cli "${staged}" "${out_dir}/ctx-${platform}.signing.json"
+  fi
 fi
 
 printf 'built %s for %s sha256=%s\n' "${staged}" "${platform}" "$(cat "${sha_file}")"

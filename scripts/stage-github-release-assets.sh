@@ -104,6 +104,47 @@ with open(destination, "wb") as raw_output:
 PY
   mv "${dest_path}.tmp" "${dest_path}"
   sha256_file "${dest_path}" > "${dest_path}.sha256"
+  macos_signing_mode="${CTX_MACOS_RELEASE_SIGNING:-optional}"
+  if [[ "${platform}" == macos-* && "${CTX_PUBLIC_CLI_ARTIFACT_MATRIX:-0}" == "1" ]]; then
+    macos_signing_mode=required
+  fi
+  if [[ "${platform}" == macos-* && "${macos_signing_mode}" == required ]]; then
+    signing_evidence="${artifact_dir%/}/ctx-onnxruntime-${platform}.signing.json"
+    transcode_work="$(mktemp -d "${TMPDIR:-/tmp}/ctx-transcoded-runtime.XXXXXX")"
+    nested_runtime="${transcode_work}/libonnxruntime.dylib"
+    trap 'rm -rf "${transcode_work:-}"' EXIT
+    python3 - "${dest_path}" "${nested_runtime}" <<'PY'
+import shutil
+import sys
+import tarfile
+
+archive, output = sys.argv[1:]
+with tarfile.open(archive, "r:gz") as bundle:
+    matches = [member for member in bundle.getmembers() if member.name == "lib/libonnxruntime.dylib"]
+    if len(matches) != 1 or not matches[0].isfile():
+        raise SystemExit("transcoded runtime must contain one regular lib/libonnxruntime.dylib")
+    source = bundle.extractfile(matches[0])
+    if source is None:
+        raise SystemExit("could not read transcoded lib/libonnxruntime.dylib")
+    with source, open(output, "wb") as destination:
+        shutil.copyfileobj(source, destination)
+PY
+    python3 scripts/macos-release-signing-evidence.py bind-archive \
+      --evidence "${signing_evidence}" \
+      --platform "${platform}" \
+      --archive "${dest_path}" \
+      --checksum "${dest_path}.sha256" \
+      --nested-artifact "${nested_runtime}" \
+      --role release
+    scripts/check-macos-release-signing.sh \
+      "${platform}" runtime "${dest_path}" "${signing_evidence}"
+    scripts/check-macos-release-signing.sh \
+      "${platform}" cli "${artifact_dir%/}/ctx-${platform}"
+    scripts/run-macos-release-signing.sh --attest-runtime-archive \
+      "${platform}" "${dest_path}" "${nested_runtime}" "${artifact_dir}"
+    rm -rf "${transcode_work}"
+    trap - EXIT
+  fi
   rm -f "${source_path}" "${source_path}.sha256"
   printf 'transcoded runtime release asset %s\n' "${dest_path}"
 }
@@ -345,6 +386,74 @@ validate_authoritative_runtime_proof() {
   }
 }
 
+validate_macos_signing_evidence() (
+  set -euo pipefail
+  local platform="$1"
+  local binary="${artifact_dir%/}/ctx-${platform}"
+  local runtime="${artifact_dir%/}/ctx-onnxruntime-${platform}.tar.gz"
+  local cli_evidence="${artifact_dir%/}/ctx-${platform}.signing.json"
+  local runtime_evidence="${artifact_dir%/}/ctx-onnxruntime-${platform}.signing.json"
+  local cli_attestation="${artifact_dir%/}/ctx-${platform}.attestation.json"
+  local cli_attestation_cms="${artifact_dir%/}/ctx-${platform}.attestation.cms"
+  local runtime_attestation="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.json"
+  local runtime_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.cms"
+  local release_attestation="${artifact_dir%/}/ctx-onnxruntime-${platform}.release-attestation.json"
+  local release_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.release-attestation.cms"
+  local work nested
+
+  # JSON records diagnostics and archive bindings. The Developer ID CMS
+  # checks below are the cross-platform authorization for executable bytes.
+  [[ -s "${cli_evidence}" ]] || {
+    printf 'required macOS CLI signing evidence missing: %s\n' "${cli_evidence}" >&2
+    exit 1
+  }
+  [[ -s "${runtime_evidence}" ]] || {
+    printf 'required macOS runtime signing evidence missing: %s\n' "${runtime_evidence}" >&2
+    exit 1
+  }
+  python3 scripts/macos-release-signing-evidence.py verify-artifact \
+    --evidence "${cli_evidence}" \
+    --platform "${platform}" \
+    --kind cli \
+    --artifact "${binary}" \
+    --checksum "${binary}.sha256"
+  scripts/verify-macos-release-attestation.sh \
+    "${platform}" cli "${binary}" "${cli_attestation}" "${cli_attestation_cms}"
+
+  work="$(mktemp -d "${TMPDIR:-/tmp}/ctx-stage-macos-signing.XXXXXX")"
+  trap 'rm -rf "${work}"' EXIT
+  nested="${work}/libonnxruntime.dylib"
+  python3 - "${runtime}" "${nested}" <<'PY'
+import shutil
+import sys
+import tarfile
+
+archive, output = sys.argv[1:]
+with tarfile.open(archive, "r:gz") as bundle:
+    matches = [member for member in bundle.getmembers() if member.name == "lib/libonnxruntime.dylib"]
+    if len(matches) != 1 or not matches[0].isfile():
+        raise SystemExit("macOS runtime must contain one regular lib/libonnxruntime.dylib")
+    source = bundle.extractfile(matches[0])
+    if source is None:
+        raise SystemExit("could not read macOS runtime dylib")
+    with source, open(output, "wb") as destination:
+        shutil.copyfileobj(source, destination)
+PY
+  python3 scripts/macos-release-signing-evidence.py verify-archive \
+    --evidence "${runtime_evidence}" \
+    --platform "${platform}" \
+    --archive "${runtime}" \
+    --checksum "${runtime}.sha256" \
+    --nested-artifact "${nested}" \
+    --role release
+  scripts/verify-macos-release-attestation.sh \
+    "${platform}" runtime "${nested}" \
+    "${runtime_attestation}" "${runtime_attestation_cms}"
+  scripts/verify-macos-release-attestation.sh --runtime-archive \
+    "${platform}" "${runtime}" "${nested}" \
+    "${release_attestation}" "${release_attestation_cms}"
+)
+
 validate_authoritative_runtime_proof \
   linux-x64 ctx ctx-linux-x64.native-runtime-proof.txt \
   onnxruntime Linux x86_64 x86_64 ctx-onnxruntime-linux-x64.tar.gz uname
@@ -363,6 +472,8 @@ validate_authoritative_runtime_proof \
 validate_authoritative_runtime_proof \
   freebsd-x64 ctx-freebsd-x64 ctx-freebsd-x64.native-runtime-proof.txt \
   onnxruntime FreeBSD amd64 amd64 ctx-onnxruntime-freebsd-x64.tar.gz uname
+validate_macos_signing_evidence macos-arm64
+validate_macos_signing_evidence macos-x64
 
 mkdir -p "${out_dir}"
 rm -f \
