@@ -782,6 +782,106 @@ fn source_import_manifest_upsert_ignores_observed_at_for_unchanged_files() {
 }
 
 #[test]
+fn source_root_inventory_change_token_marks_same_stat_source_pending() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let observed_at_ms = timestamp_ms(fixed_time());
+    let root = "/home/user/.hermes/state.db";
+    let mut file = SourceImportFile {
+        provider: CaptureProvider::Hermes,
+        source_format: "hermes_state_sqlite".into(),
+        source_root: root.into(),
+        source_path: root.into(),
+        file_size_bytes: 42,
+        file_modified_at_ms: observed_at_ms,
+        observed_at_ms,
+        metadata: serde_json::json!({
+            "inventory_unit": "source_root",
+            "source_files": 1,
+            "change_token_v1": "before",
+        }),
+    };
+    store
+        .upsert_source_import_files(std::slice::from_ref(&file))
+        .unwrap();
+    store
+        .mark_source_import_file_indexed(
+            CaptureProvider::Hermes,
+            SourceImportFileIndexUpdate {
+                source_root: root,
+                source_path: root,
+                file_size_bytes: file.file_size_bytes,
+                file_modified_at_ms: file.file_modified_at_ms,
+                indexed_at_ms: observed_at_ms + 1,
+            },
+        )
+        .unwrap();
+    assert!(store
+        .list_pending_source_import_files(CaptureProvider::Hermes, root)
+        .unwrap()
+        .is_empty());
+
+    file.metadata["change_token_v1"] = serde_json::json!("after");
+    file.observed_at_ms += 1;
+    store
+        .upsert_source_import_files(std::slice::from_ref(&file))
+        .unwrap();
+
+    assert_eq!(
+        store
+            .list_pending_source_import_files(CaptureProvider::Hermes, root)
+            .unwrap(),
+        vec![file]
+    );
+}
+
+#[test]
+fn source_import_format_change_marks_same_stat_source_pending() {
+    let temp = tempdir();
+    let store = Store::open(temp.path().join("work.sqlite")).unwrap();
+    let observed_at_ms = timestamp_ms(fixed_time());
+    let root = "/home/user/agent/state.db";
+    let mut file = SourceImportFile {
+        provider: CaptureProvider::Custom,
+        source_format: "old_format".into(),
+        source_root: root.into(),
+        source_path: root.into(),
+        file_size_bytes: 42,
+        file_modified_at_ms: observed_at_ms,
+        observed_at_ms,
+        metadata: serde_json::json!({}),
+    };
+    store
+        .upsert_source_import_files(std::slice::from_ref(&file))
+        .unwrap();
+    store
+        .mark_source_import_file_indexed(
+            CaptureProvider::Custom,
+            SourceImportFileIndexUpdate {
+                source_root: root,
+                source_path: root,
+                file_size_bytes: file.file_size_bytes,
+                file_modified_at_ms: file.file_modified_at_ms,
+                indexed_at_ms: observed_at_ms + 1,
+            },
+        )
+        .unwrap();
+
+    file.source_format = "new_format".into();
+    file.observed_at_ms += 1;
+    store
+        .upsert_source_import_files(std::slice::from_ref(&file))
+        .unwrap();
+
+    assert_eq!(
+        store
+            .list_pending_source_import_files(CaptureProvider::Custom, root)
+            .unwrap(),
+        vec![file]
+    );
+}
+
+#[test]
 fn source_import_file_counts_track_pending_indexed_failed_and_stale() {
     let temp = tempdir();
     let store = Store::open(temp.path().join("work.sqlite")).unwrap();

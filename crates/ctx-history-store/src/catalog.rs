@@ -530,32 +530,47 @@ impl Store {
                     observed_at_ms = excluded.observed_at_ms,
                     is_stale = 0,
                     indexed_at_ms = CASE
-                        WHEN source_import_files.file_size_bytes = excluded.file_size_bytes
+                        WHEN source_import_files.source_format IS excluded.source_format
+                         AND source_import_files.file_size_bytes = excluded.file_size_bytes
                          AND source_import_files.file_modified_at_ms = excluded.file_modified_at_ms
+                         AND (json_extract(excluded.metadata_json, '$.inventory_unit') IS NOT 'source_root'
+                              OR source_import_files.metadata_json IS excluded.metadata_json)
                         THEN source_import_files.indexed_at_ms
                         ELSE NULL
                     END,
                     indexed_file_size_bytes = CASE
-                        WHEN source_import_files.file_size_bytes = excluded.file_size_bytes
+                        WHEN source_import_files.source_format IS excluded.source_format
+                         AND source_import_files.file_size_bytes = excluded.file_size_bytes
                          AND source_import_files.file_modified_at_ms = excluded.file_modified_at_ms
+                         AND (json_extract(excluded.metadata_json, '$.inventory_unit') IS NOT 'source_root'
+                              OR source_import_files.metadata_json IS excluded.metadata_json)
                         THEN source_import_files.indexed_file_size_bytes
                         ELSE NULL
                     END,
                     indexed_file_modified_at_ms = CASE
-                        WHEN source_import_files.file_size_bytes = excluded.file_size_bytes
+                        WHEN source_import_files.source_format IS excluded.source_format
+                         AND source_import_files.file_size_bytes = excluded.file_size_bytes
                          AND source_import_files.file_modified_at_ms = excluded.file_modified_at_ms
+                         AND (json_extract(excluded.metadata_json, '$.inventory_unit') IS NOT 'source_root'
+                              OR source_import_files.metadata_json IS excluded.metadata_json)
                         THEN source_import_files.indexed_file_modified_at_ms
                         ELSE NULL
                     END,
                     indexed_status = CASE
-                        WHEN source_import_files.file_size_bytes = excluded.file_size_bytes
+                        WHEN source_import_files.source_format IS excluded.source_format
+                         AND source_import_files.file_size_bytes = excluded.file_size_bytes
                          AND source_import_files.file_modified_at_ms = excluded.file_modified_at_ms
+                         AND (json_extract(excluded.metadata_json, '$.inventory_unit') IS NOT 'source_root'
+                              OR source_import_files.metadata_json IS excluded.metadata_json)
                         THEN source_import_files.indexed_status
                         ELSE 'pending'
                     END,
                     indexed_error = CASE
-                        WHEN source_import_files.file_size_bytes = excluded.file_size_bytes
+                        WHEN source_import_files.source_format IS excluded.source_format
+                         AND source_import_files.file_size_bytes = excluded.file_size_bytes
                          AND source_import_files.file_modified_at_ms = excluded.file_modified_at_ms
+                         AND (json_extract(excluded.metadata_json, '$.inventory_unit') IS NOT 'source_root'
+                              OR source_import_files.metadata_json IS excluded.metadata_json)
                         THEN source_import_files.indexed_error
                         ELSE NULL
                     END,

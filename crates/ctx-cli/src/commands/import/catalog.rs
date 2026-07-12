@@ -1,6 +1,7 @@
 use super::*;
 use crate::commands::import::manifest::collect_source_import_paths;
 use crate::commands::import::native::merge_provider_import_summary;
+use sha2::{Digest, Sha256};
 
 pub(crate) fn system_time_ms(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
@@ -346,17 +347,56 @@ pub(crate) fn source_uses_incremental_event_search(source: &SourceInfo) -> bool 
 pub(crate) fn source_stats(path: &Path) -> Result<SourceStats> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("stat import source {}", path.display()))?;
+    let mut stats = SourceStats::default();
+    let mut change_entries = Vec::new();
     if metadata.file_type().is_file() {
-        return Ok(SourceStats {
-            files: 1,
-            bytes: metadata.len(),
-        });
+        add_source_stat(
+            &mut stats,
+            &mut change_entries,
+            path.parent().unwrap_or(path),
+            path,
+            &metadata,
+            true,
+            true,
+        );
+        // WAL and rollback-journal files can hold committed changes that have
+        // not reached the main database. The shared-memory file is excluded
+        // because read-only SQLite clients may update it.
+        for suffix in ["-wal", "-journal"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            match fs::symlink_metadata(&sidecar) {
+                Ok(metadata) if metadata.file_type().is_file() => add_source_stat(
+                    &mut stats,
+                    &mut change_entries,
+                    path.parent().unwrap_or(path),
+                    &sidecar,
+                    &metadata,
+                    false,
+                    true,
+                ),
+                Ok(_) => {
+                    return Err(anyhow!(
+                        "import source sidecar is not a regular file: {}",
+                        sidecar.display()
+                    ))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("stat import source sidecar {}", sidecar.display())
+                    })
+                }
+            }
+        }
+        stats.change_token = Some(source_change_token(change_entries));
+        return Ok(stats);
     }
     if !metadata.file_type().is_dir() {
         return Ok(SourceStats::default());
     }
 
-    let mut stats = SourceStats::default();
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir)
@@ -374,12 +414,74 @@ pub(crate) fn source_stats(path: &Path) -> Result<SourceStats> {
                 let metadata = entry
                     .metadata()
                     .with_context(|| format!("stat import source file {}", entry_path.display()))?;
-                stats.files += 1;
-                stats.bytes = stats.bytes.saturating_add(metadata.len());
+                let include_in_token = !entry_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("-shm"));
+                add_source_stat(
+                    &mut stats,
+                    &mut change_entries,
+                    path,
+                    &entry_path,
+                    &metadata,
+                    true,
+                    include_in_token,
+                );
             }
         }
     }
+    stats.change_token = Some(source_change_token(change_entries));
     Ok(stats)
+}
+
+struct SourceChangeEntry {
+    path: PathBuf,
+    len: u64,
+    modified_secs: u64,
+    modified_nanos: u32,
+}
+
+fn add_source_stat(
+    stats: &mut SourceStats,
+    change_entries: &mut Vec<SourceChangeEntry>,
+    base: &Path,
+    path: &Path,
+    metadata: &fs::Metadata,
+    include_in_totals: bool,
+    include_in_token: bool,
+) {
+    if include_in_totals {
+        stats.files += 1;
+        stats.bytes = stats.bytes.saturating_add(metadata.len());
+    }
+    if !include_in_token {
+        return;
+    }
+    let modified = metadata
+        .modified()
+        .unwrap_or(UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    change_entries.push(SourceChangeEntry {
+        path: path.strip_prefix(base).unwrap_or(path).to_path_buf(),
+        len: metadata.len(),
+        modified_secs: modified.as_secs(),
+        modified_nanos: modified.subsec_nanos(),
+    });
+}
+
+fn source_change_token(mut entries: Vec<SourceChangeEntry>) -> [u8; 32] {
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut hasher = Sha256::new();
+    for entry in entries {
+        let path = entry.path.as_os_str().as_encoded_bytes();
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path);
+        hasher.update(entry.len.to_le_bytes());
+        hasher.update(entry.modified_secs.to_le_bytes());
+        hasher.update(entry.modified_nanos.to_le_bytes());
+    }
+    hasher.finalize().into()
 }
 
 pub(crate) fn source_import_stats(source: &SourceInfo) -> Result<SourceStats> {

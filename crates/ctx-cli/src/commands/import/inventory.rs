@@ -99,6 +99,7 @@ fn inventory_import_source(
         let stats = SourceStats {
             files: summary.source_files,
             bytes: summary.source_bytes,
+            change_token: None,
         };
         let plan = PlannedImportSource {
             source,
@@ -172,6 +173,7 @@ fn source_stats_from_import_files(files: &[SourceImportFile]) -> SourceStats {
         bytes: files.iter().fold(0_u64, |bytes, file| {
             bytes.saturating_add(file.file_size_bytes)
         }),
+        change_token: None,
     }
 }
 
@@ -189,6 +191,13 @@ fn source_root_import_file(source: &SourceInfo, stats: SourceStats) -> Result<So
         metadata: json!({
             "inventory_unit": "source_root",
             "source_files": stats.files,
+            "change_token_v1": stats
+                .change_token
+                .unwrap_or_default()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(""),
         }),
     })
 }
