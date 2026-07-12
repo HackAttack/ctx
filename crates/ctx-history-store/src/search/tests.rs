@@ -11,6 +11,9 @@ use uuid::Uuid;
 
 use crate::Store;
 
+#[path = "event_query_tests.rs"]
+mod event_query_tests;
+
 fn tempdir() -> tempfile::TempDir {
     let root = std::env::var_os("TEST_TMPDIR")
         .map(|path| std::path::PathBuf::from(path).join("test-data"))
