@@ -74,9 +74,13 @@ def code_directory_flags(details: str) -> set[str]:
 
 
 def require_base_document(
-    document: dict[str, Any], platform: str, kind: str
+    document: dict[str, Any],
+    platform: str,
+    kind: str,
+    *,
+    allow_pending_cli: bool = False,
 ) -> dict[str, Any]:
-    if document.get("schema_version") != 1:
+    if document.get("schema_version") != 2:
         raise SystemExit("unsupported macOS signing evidence schema")
     if document.get("platform") != platform:
         raise SystemExit(
@@ -90,7 +94,7 @@ def require_base_document(
         )
     signing = document.get("codesign")
     notarization = document.get("notarization")
-    gatekeeper = document.get("gatekeeper")
+    verification = document.get("artifact_verification")
     if not isinstance(signing, dict) or signing.get("verified") is not True:
         raise SystemExit("signing evidence does not record strict codesign verification")
     if signing.get("authority") != EXPECTED_AUTHORITY:
@@ -105,9 +109,42 @@ def require_base_document(
         raise SystemExit("signing evidence does not record accepted notarization")
     if not notarization.get("submission_id"):
         raise SystemExit("signing evidence is missing the notarization submission id")
-    if not isinstance(gatekeeper, dict) or gatekeeper.get("verified") is not True:
-        raise SystemExit("signing evidence does not record Gatekeeper verification")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(notarization.get("submit_sha256", ""))):
+        raise SystemExit("signing evidence is missing the exact notary response hash")
+    expected_method = {
+        "cli": "quarantined-exact-byte-version-execution",
+        "runtime": "accepted-notary-strict-codesign-attestation",
+    }[kind]
+    if allow_pending_cli and kind == "cli":
+        if verification != {
+            "method": "quarantined-exact-byte-version-execution",
+            "status": "pending",
+        }:
+            raise SystemExit("CLI signing evidence has invalid pending verification state")
+    elif not isinstance(verification, dict) or verification != {
+        "method": expected_method,
+        "status": "passed",
+    }:
+        raise SystemExit(
+            f"signing evidence does not record passed {expected_method} verification"
+        )
     return document
+
+
+def accepted_notary_fields(path: Path) -> dict[str, str]:
+    submit = read_json(path)
+    if submit.get("status") != "Accepted":
+        raise SystemExit(
+            f"notarization status is not Accepted: {submit.get('status', 'missing')}"
+        )
+    submission_id = submit.get("id")
+    if not isinstance(submission_id, str) or not submission_id:
+        raise SystemExit("accepted notarization response is missing an id")
+    return {
+        "notarization_status": "Accepted",
+        "notarization_submission_id": submission_id,
+        "notary_submit_sha256": sha256(path),
+    }
 
 
 def command_write(args: argparse.Namespace) -> None:
@@ -126,16 +163,7 @@ def command_write(args: argparse.Namespace) -> None:
     if not re.search(r"^Timestamp=.+$", details, re.MULTILINE):
         raise SystemExit("codesign details do not contain a secure timestamp")
 
-    submit = read_json(args.notary_submit)
-    if submit.get("status") != "Accepted":
-        raise SystemExit(
-            f"notarization status is not Accepted: {submit.get('status', 'missing')}"
-        )
-    submission_id = submit.get("id")
-    if not isinstance(submission_id, str) or not submission_id:
-        raise SystemExit("accepted notarization response is missing an id")
-    if not args.gatekeeper_details.read_text(encoding="utf-8").strip():
-        raise SystemExit("Gatekeeper verification output is empty")
+    notary = accepted_notary_fields(args.notary_submit)
 
     document = {
         "artifact_kind": args.kind,
@@ -149,13 +177,39 @@ def command_write(args: argparse.Namespace) -> None:
             "team_identifier": team_identifier,
             "verified": True,
         },
-        "gatekeeper": {"verified": True},
-        "notarization": {"status": "Accepted", "submission_id": submission_id},
+        "artifact_verification": {
+            "method": (
+                "quarantined-exact-byte-version-execution"
+                if args.kind == "cli"
+                else "accepted-notary-strict-codesign-attestation"
+            ),
+            "status": "pending" if args.kind == "cli" else "passed",
+        },
+        "notarization": {
+            "status": notary["notarization_status"],
+            "submission_id": notary["notarization_submission_id"],
+            "submit_sha256": notary["notary_submit_sha256"],
+        },
         "packages": [],
         "platform": args.platform,
-        "schema_version": 1,
+        "schema_version": 2,
     }
     write_json(args.output, document)
+
+
+def command_record_cli_quarantine_verification(args: argparse.Namespace) -> None:
+    document = require_base_document(
+        read_json(args.evidence), args.platform, "cli", allow_pending_cli=True
+    )
+    if document.get("artifact_sha256") != sha256(args.artifact):
+        raise SystemExit("quarantined CLI bytes do not match signing evidence")
+    if not re.fullmatch(r"ctx [^\r\n]+", args.version_output):
+        raise SystemExit("quarantined CLI version output is invalid")
+    document["artifact_verification"] = {
+        "method": "quarantined-exact-byte-version-execution",
+        "status": "passed",
+    }
+    write_json(args.evidence, document)
 
 
 def command_verify_artifact(args: argparse.Namespace) -> None:
@@ -240,10 +294,11 @@ def command_create_attestation(args: argparse.Namespace) -> None:
         "artifact_sha256": sha256(args.artifact),
         "codesign_authority": EXPECTED_AUTHORITY,
         "platform": args.platform,
-        "schema_version": 1,
+        "schema_version": 2,
         "source_commit": args.source_commit,
         "team_identifier": EXPECTED_TEAM_ID,
     }
+    document.update(accepted_notary_fields(args.notary_submit))
     write_json(args.output, document)
 
 
@@ -255,10 +310,11 @@ def command_verify_attestation(args: argparse.Namespace) -> None:
         "artifact_sha256": sha256(args.artifact),
         "codesign_authority": EXPECTED_AUTHORITY,
         "platform": args.platform,
-        "schema_version": 1,
+        "schema_version": 2,
         "source_commit": args.source_commit,
         "team_identifier": EXPECTED_TEAM_ID,
     }
+    expected.update(accepted_notary_fields(args.notary_submit))
     if document != expected:
         raise SystemExit("signed macOS attestation does not bind the exact pinned artifact")
 
@@ -266,7 +322,7 @@ def command_verify_attestation(args: argparse.Namespace) -> None:
 def runtime_archive_attestation_document(args: argparse.Namespace) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
         raise SystemExit("attestation source commit must be a lowercase 40-character git SHA")
-    return {
+    document = {
         "archive_name": args.archive.name,
         "archive_sha256": sha256(args.archive),
         "artifact_kind": "runtime-release-archive",
@@ -276,10 +332,12 @@ def runtime_archive_attestation_document(args: argparse.Namespace) -> dict[str, 
         "platform": args.platform,
         "provenance": "native-post-transcode",
         "role": "release",
-        "schema_version": 1,
+        "schema_version": 2,
         "source_commit": args.source_commit,
         "team_identifier": EXPECTED_TEAM_ID,
     }
+    document.update(accepted_notary_fields(args.notary_submit))
+    return document
 
 
 def command_create_runtime_archive_attestation(args: argparse.Namespace) -> None:
@@ -307,8 +365,14 @@ def build_parser() -> argparse.ArgumentParser:
     write.add_argument("--artifact", required=True, type=Path)
     write.add_argument("--codesign-details", required=True, type=Path)
     write.add_argument("--notary-submit", required=True, type=Path)
-    write.add_argument("--gatekeeper-details", required=True, type=Path)
     write.set_defaults(handler=command_write)
+
+    record_cli = subparsers.add_parser("record-cli-quarantine-verification")
+    record_cli.add_argument("--evidence", required=True, type=Path)
+    record_cli.add_argument("--platform", required=True)
+    record_cli.add_argument("--artifact", required=True, type=Path)
+    record_cli.add_argument("--version-output", required=True)
+    record_cli.set_defaults(handler=command_record_cli_quarantine_verification)
 
     verify = subparsers.add_parser("verify-artifact")
     verify.add_argument("--evidence", required=True, type=Path)
@@ -345,6 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--kind", required=True, choices=("cli", "runtime")
     )
     create_attestation.add_argument("--artifact", required=True, type=Path)
+    create_attestation.add_argument("--notary-submit", required=True, type=Path)
     create_attestation.add_argument("--source-commit", required=True)
     create_attestation.set_defaults(handler=command_create_attestation)
 
@@ -355,6 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--kind", required=True, choices=("cli", "runtime")
     )
     verify_attestation.add_argument("--artifact", required=True, type=Path)
+    verify_attestation.add_argument("--notary-submit", required=True, type=Path)
     verify_attestation.add_argument("--source-commit", required=True)
     verify_attestation.set_defaults(handler=command_verify_attestation)
 
@@ -366,6 +432,9 @@ def build_parser() -> argparse.ArgumentParser:
     create_archive_attestation.add_argument("--archive", required=True, type=Path)
     create_archive_attestation.add_argument(
         "--nested-artifact", required=True, type=Path
+    )
+    create_archive_attestation.add_argument(
+        "--notary-submit", required=True, type=Path
     )
     create_archive_attestation.add_argument("--source-commit", required=True)
     create_archive_attestation.set_defaults(
@@ -382,6 +451,9 @@ def build_parser() -> argparse.ArgumentParser:
     verify_archive_attestation.add_argument("--archive", required=True, type=Path)
     verify_archive_attestation.add_argument(
         "--nested-artifact", required=True, type=Path
+    )
+    verify_archive_attestation.add_argument(
+        "--notary-submit", required=True, type=Path
     )
     verify_archive_attestation.add_argument("--source-commit", required=True)
     verify_archive_attestation.set_defaults(

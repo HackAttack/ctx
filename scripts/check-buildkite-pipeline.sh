@@ -12,6 +12,8 @@ macos_launcher_script="scripts/run-macos-release-signing.sh"
 macos_trust_script="scripts/check-macos-signing-trusted-ref.sh"
 macos_attestation_script="scripts/verify-macos-release-attestation.sh"
 macos_archive_attester_script="scripts/attest-macos-runtime-release-archive.sh"
+macos_quarantine_script="scripts/verify-macos-quarantined-cli.sh"
+macos_evidence_script="scripts/macos-release-signing-evidence.py"
 macos_precommand_script="scripts/buildkite/macos_agent_pre_command.sh"
 macos_ca_file="scripts/apple-developer-id-g2-ca.pem"
 test -f "${pipeline}"
@@ -25,6 +27,8 @@ test -f "${macos_launcher_script}"
 test -f "${macos_trust_script}"
 test -f "${macos_attestation_script}"
 test -f "${macos_archive_attester_script}"
+test -f "${macos_quarantine_script}"
+test -f "${macos_evidence_script}"
 test -f "${macos_precommand_script}"
 test -f "${macos_ca_file}"
 
@@ -94,6 +98,8 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must upload CLI signing evidence" unless Array(step["artifact_paths"]).include?(evidence)
       attestation = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.attestation.cms"
       abort "#{key} must upload the CLI cryptographic attestation" unless Array(step["artifact_paths"]).include?(attestation)
+      quarantine = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.quarantine.txt"
+      abort "#{key} must upload quarantined CLI execution evidence" unless Array(step["artifact_paths"]).include?(quarantine)
     end
     macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
     abort "macos-arm64 smoke must require authoritative evidence" unless macos_arm64["command"].to_s.include?("runtime_authority=authoritative")
@@ -103,6 +109,11 @@ if command -v ruby >/dev/null 2>&1; then
     abort "macos-arm64 must upload runtime signing evidence" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json")
     abort "macos-arm64 must upload runtime cryptographic attestation" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.cms")
     abort "macos-arm64 must upload final runtime archive authorization" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.release-attestation.cms")
+    arm_command = macos_arm64["command"].to_s
+    arm_runtime_build = arm_command.index("scripts/build-onnxruntime-sidecar.sh macos-arm64")
+    arm_transcode = arm_command.index("scripts/stage-github-release-assets.sh --transcode-runtime macos-arm64")
+    arm_smoke = arm_command.index("--runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz")
+    abort "macos-arm64 native runtime smoke must follow signed final packaging" unless arm_runtime_build && arm_transcode && arm_smoke && arm_runtime_build < arm_transcode && arm_transcode < arm_smoke
     abort "macos-arm64 must allow two bounded notarizations" unless macos_arm64["timeout_in_minutes"].to_i >= 120
     inline_proofs = {
       "public-cli-linux-x64" => "ctx-linux-x64.native-runtime-proof.txt",
@@ -149,6 +160,10 @@ if command -v ruby >/dev/null 2>&1; then
     abort "macos-x64 native lane must upload runtime signing evidence" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.signing.json")
     abort "macos-x64 native lane must upload runtime cryptographic attestation" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.cms")
     abort "macos-x64 native lane must upload final runtime archive authorization" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.release-attestation.cms")
+    native_runtime_build = native_command.index("scripts/build-onnxruntime-sidecar.sh macos-x64")
+    native_transcode = native_command.index("scripts/stage-github-release-assets.sh --transcode-runtime macos-x64")
+    native_runtime_smoke = native_command.index("--runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz")
+    abort "macos-x64 native runtime smoke must follow signed final packaging" unless native_runtime_build && native_transcode && native_runtime_smoke && native_runtime_build < native_transcode && native_transcode < native_runtime_smoke
     abort "macos-x64 native lane must upload default smoke evidence" unless native_paths.include?("target/public-cli-native-smoke/macos-x64-native/candidate-smoke.json")
     runtime_builds = {
       "public-cli-linux-x64" => "linux-x64",
@@ -233,6 +248,9 @@ for required in \
   'scripts/check-macos-signing-trusted-ref.sh' \
   'scripts/verify-macos-release-attestation.sh' \
   'scripts/attest-macos-runtime-release-archive.sh' \
+  'scripts/verify-macos-quarantined-cli.sh' \
+  'quarantined-exact-byte-version-execution' \
+  'accepted-notary-strict-codesign-attestation' \
   'refs/remotes/origin/main' \
   'BUILDKITE_PULL_REQUEST' \
   'CTX_LOCAL_MACOS_SIGNING_LIVE_TEST' \
@@ -275,6 +293,8 @@ for required in \
     "${macos_trust_script}" \
     "${macos_attestation_script}" \
     "${macos_archive_attester_script}" \
+    "${macos_quarantine_script}" \
+    "${macos_evidence_script}" \
     "${macos_precommand_script}"; do
     if grep -F -q -- "${required}" "${checked_file}"; then
       found=1
@@ -311,6 +331,7 @@ require_order(
     "macOS CLI signing/hash/build-info",
     cli,
     'scripts/run-macos-release-signing.sh',
+    'scripts/verify-macos-quarantined-cli.sh',
     'sha_file="${staged}.sha256"',
     'scripts/run-native-candidate-smoke.sh',
     'python3 scripts/write-public-cli-build-info.py',
@@ -347,6 +368,12 @@ require_order(
     'scripts/run-macos-release-signing.sh --attest-runtime-archive',
 )
 PY
+
+if grep -Fq 'spctl ' "${macos_sign_script}" \
+  || grep -Fq 'spctl ' "${macos_check_script}"; then
+  printf 'standalone macOS Mach-O verification must not require spctl app classification\n' >&2
+  exit 1
+fi
 
 if grep -Fq 'scripts/run-macos-release-signing.sh --preflight' "${pipeline}"; then
   printf 'macOS release lanes must not fetch signing values before construction\n' >&2

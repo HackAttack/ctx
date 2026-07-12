@@ -8,9 +8,9 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/check-macos-release-signing.sh PLATFORM KIND ARTIFACT [EVIDENCE]
 
-Verifies Developer ID, notarization, Gatekeeper, checksum, and evidence binding
-for a standalone macOS CLI or packaged ONNX Runtime sidecar. KIND is cli or
-runtime.
+Verifies Developer ID, accepted notarization, checksum, cryptographic
+attestation, and artifact-specific evidence for a standalone macOS CLI or
+packaged ONNX Runtime sidecar. KIND is cli or runtime.
 USAGE
 }
 
@@ -70,47 +70,36 @@ attestation_cms="${evidence_dir}/${evidence_prefix}.attestation.cms"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 require_command codesign
 require_command python3
-require_command spctl
 
 verify_macho() {
   local path="$1"
-  local details gatekeeper
+  local details
   details="$(mktemp "${TMPDIR:-/tmp}/ctx-codesign-check.XXXXXX")"
-  gatekeeper="$(mktemp "${TMPDIR:-/tmp}/ctx-gatekeeper-check.XXXXXX")"
   if ! codesign --verify --strict --verbose=4 "${path}" >/dev/null 2>&1; then
-    rm -f "${details}" "${gatekeeper}"
+    rm -f "${details}"
     die "strict codesign verification failed: ${path}"
   fi
   if ! codesign -d --verbose=4 "${path}" >"${details}" 2>&1; then
-    rm -f "${details}" "${gatekeeper}"
+    rm -f "${details}"
     die "could not inspect Developer ID signature: ${path}"
   fi
   grep -Fqx "Authority=${EXPECTED_AUTHORITY}" "${details}" || {
-    rm -f "${details}" "${gatekeeper}"
+    rm -f "${details}"
     die "artifact does not have the pinned ctx Apple authority: ${path}"
   }
   grep -Fqx "TeamIdentifier=${EXPECTED_TEAM_ID}" "${details}" || {
-    rm -f "${details}" "${gatekeeper}"
+    rm -f "${details}"
     die "artifact does not have the pinned ctx Apple Team ID: ${path}"
   }
   codesign_details_have_runtime "${details}" || {
-    rm -f "${details}" "${gatekeeper}"
+    rm -f "${details}"
     die "artifact is missing hardened runtime flags: ${path}"
   }
   grep -Eq '^Timestamp=.+$' "${details}" || {
-    rm -f "${details}" "${gatekeeper}"
+    rm -f "${details}"
     die "artifact is missing a secure timestamp: ${path}"
   }
   rm -f "${details}"
-  if ! spctl --assess --type execute --verbose=4 "${path}" >"${gatekeeper}" 2>&1; then
-    rm -f "${gatekeeper}"
-    die "Gatekeeper rejected macOS release artifact: ${path}"
-  fi
-  grep -Fq 'Notarized Developer ID' "${gatekeeper}" || {
-    rm -f "${gatekeeper}"
-    die "Gatekeeper did not report Notarized Developer ID: ${path}"
-  }
-  rm -f "${gatekeeper}"
 }
 
 if [[ "${kind}" == "cli" ]]; then

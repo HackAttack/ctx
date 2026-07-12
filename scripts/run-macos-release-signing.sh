@@ -104,7 +104,7 @@ for command_name in base64 find git openssl python3 stat; do
 done
 require_openssl3_exclusive_trust
 if [[ "${mode}" == "sign" || "${mode}" == "preflight" ]]; then
-  for command_name in codesign ditto rcodesign spctl xcode-select xcrun; do
+  for command_name in codesign ditto rcodesign xcode-select xcrun; do
     require_command "${command_name}"
   done
   xcode-select -p >/dev/null 2>&1 || die "xcode-select has no active developer directory"

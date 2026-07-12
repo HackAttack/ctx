@@ -98,6 +98,8 @@ archive="$(cd "$(dirname "${archive}")" && pwd)/$(basename "${archive}")"
 nested_artifact="$(cd "$(dirname "${nested_artifact}")" && pwd)/libonnxruntime.dylib"
 statement="${evidence_dir}/ctx-onnxruntime-${platform}.release-attestation.json"
 cms="${evidence_dir}/ctx-onnxruntime-${platform}.release-attestation.cms"
+notary_submit="${evidence_dir}/ctx-onnxruntime-${platform}.notary-submit.json"
+[[ -s "${notary_submit}" ]] || die "accepted runtime notarization response is missing"
 
 umask 077
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ctx-macos-runtime-attestation.XXXXXX")"
@@ -147,6 +149,7 @@ python3 "${root_dir}/scripts/macos-release-signing-evidence.py" \
   --platform "${platform}" \
   --archive "${archive}" \
   --nested-artifact "${nested_artifact}" \
+  --notary-submit "${notary_submit}" \
   --source-commit "$(git -C "${root_dir}" rev-parse --verify HEAD)"
 openssl cms -sign -binary \
   -in "${statement}" \

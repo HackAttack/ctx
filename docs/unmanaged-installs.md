@@ -44,11 +44,15 @@ The hosted installer and managed-upgrade path verify signed ctx release
 metadata. Beginning with ctx 0.25.0, official macOS CLI binaries and the
 executable code in their ONNX Runtime sidecars are Developer ID signed with
 hardened runtime compatibility and notarized by Apple. Release construction
-also verifies those exact signed bytes with `codesign`, Gatekeeper, a
-Developer ID cryptographic attestation, and the published checksums. The final
-macOS runtime `tar.gz` is separately authorized by a Developer ID statement
-binding the archive, nested dylib, release role, native provenance, and source
-commit. Windows
+also verifies those exact signed bytes with strict `codesign`, a Developer ID
+cryptographic attestation, and the published checksums. Each standalone CLI is
+executed from an exact-byte copy carrying Safari-style quarantine metadata;
+`spctl` app-bundle classification is not used for standalone Mach-O files. The
+runtime dylib requires Accepted notarization and pinned signature/attestation,
+then a native packaged semantic smoke proves dyld loading. The final macOS
+runtime `tar.gz` is separately authorized by a Developer ID statement binding
+the archive, nested dylib, release role, native provenance, and source commit.
+Windows
 binaries and ONNX Runtime DLLs remain unsigned by Authenticode; signed release
 metadata and checksums authenticate their bytes, but they are not OS-native
 application signatures.

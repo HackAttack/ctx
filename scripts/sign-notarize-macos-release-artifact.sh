@@ -200,7 +200,7 @@ elif [[ "$(uname -s)" != "Darwin" ]]; then
   die "macOS release signing requires a native Darwin host"
 fi
 
-for command_name in base64 codesign ditto find openssl python3 rcodesign spctl stat xcrun; do
+for command_name in base64 codesign ditto find openssl python3 rcodesign stat xcrun; do
   require_command "${command_name}"
 done
 
@@ -248,12 +248,11 @@ submit_stderr="${evidence_dir}/${evidence_prefix}.notary-submit.stderr"
 log_json="${evidence_dir}/${evidence_prefix}.notary-log.json"
 log_stderr="${evidence_dir}/${evidence_prefix}.notary-log.stderr"
 codesign_details="${evidence_dir}/${evidence_prefix}.codesign.txt"
-gatekeeper_details="${evidence_dir}/${evidence_prefix}.gatekeeper.txt"
 evidence_json="${evidence_dir}/${evidence_prefix}.signing.json"
 attestation_json="${evidence_dir}/${evidence_prefix}.attestation.json"
 attestation_cms="${evidence_dir}/${evidence_prefix}.attestation.cms"
 rm -f "${submit_json}" "${submit_stderr}" "${log_json}" "${log_stderr}" \
-  "${codesign_details}" "${gatekeeper_details}" "${evidence_json}" \
+  "${codesign_details}" "${evidence_json}" \
   "${attestation_json}" "${attestation_cms}"
 
 umask 077
@@ -360,14 +359,6 @@ fi
 
 codesign --verify --strict --verbose=4 "${artifact}" >/dev/null 2>&1 || \
   die "post-notarization codesign verification failed for ${platform} ${kind}"
-if ! spctl --assess --type execute --verbose=4 "${artifact}" >"${gatekeeper_details}" 2>&1; then
-  chmod 0644 "${gatekeeper_details}" 2>/dev/null || true
-  sed -n '1,40p' "${gatekeeper_details}" >&2 || true
-  die "Gatekeeper rejected notarized ${platform} ${kind}"
-fi
-chmod 0644 "${gatekeeper_details}"
-grep -Fq 'Notarized Developer ID' "${gatekeeper_details}" || \
-  die "Gatekeeper did not report Notarized Developer ID for ${platform} ${kind}"
 final_sha256="$(sha256_file "${artifact}")"
 [[ "${final_sha256}" == "${signed_sha256}" ]] || \
   die "${platform} ${kind} mutated after Developer ID signing"
@@ -378,13 +369,13 @@ python3 "${root_dir}/scripts/macos-release-signing-evidence.py" write \
   --kind "${kind}" \
   --artifact "${artifact}" \
   --codesign-details "${codesign_details}" \
-  --notary-submit "${submit_json}" \
-  --gatekeeper-details "${gatekeeper_details}"
+  --notary-submit "${submit_json}"
 python3 "${root_dir}/scripts/macos-release-signing-evidence.py" create-attestation \
   --output "${attestation_json}" \
   --platform "${platform}" \
   --kind "${kind}" \
   --artifact "${artifact}" \
+  --notary-submit "${submit_json}" \
   --source-commit "$(git -C "${root_dir}" rev-parse --verify HEAD)"
 if ! openssl cms -sign \
   -binary \

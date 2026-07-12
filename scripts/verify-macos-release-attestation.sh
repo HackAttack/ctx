@@ -48,6 +48,12 @@ if [[ "${mode}" == "runtime_archive" ]]; then
 fi
 [[ -s "${attestation}" ]] || die "macOS attestation statement missing: ${attestation}"
 [[ -s "${cms}" ]] || die "macOS attestation signature missing: ${cms}"
+if [[ "${mode}" == "runtime_archive" ]]; then
+  notary_submit="${attestation%.release-attestation.json}.notary-submit.json"
+else
+  notary_submit="${attestation%.attestation.json}.notary-submit.json"
+fi
+[[ -s "${notary_submit}" ]] || die "bound Apple notarization response missing: ${notary_submit}"
 command -v openssl >/dev/null 2>&1 || die "openssl is required to verify macOS attestation"
 command -v python3 >/dev/null 2>&1 || die "python3 is required to verify macOS attestation"
 [[ "$(openssl version 2>/dev/null || true)" == OpenSSL\ 3.* ]] || \
@@ -114,6 +120,7 @@ if [[ "${mode}" == "runtime_archive" ]]; then
     --platform "${platform}" \
     --archive "${artifact}" \
     --nested-artifact "${nested_artifact}" \
+    --notary-submit "${notary_submit}" \
     --source-commit "${source_commit}"
   printf 'macOS release attestation ok: %s runtime release archive\n' "${platform}"
 else
@@ -122,6 +129,7 @@ else
     --platform "${platform}" \
     --kind "${kind}" \
     --artifact "${artifact}" \
+    --notary-submit "${notary_submit}" \
     --source-commit "${source_commit}"
   printf 'macOS release attestation ok: %s %s\n' "${platform}" "${kind}"
 fi
