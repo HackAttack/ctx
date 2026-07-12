@@ -137,6 +137,8 @@ PY
       --role release
     scripts/check-macos-release-signing.sh \
       "${platform}" runtime "${dest_path}" "${signing_evidence}"
+    scripts/check-macos-release-signing.sh \
+      "${platform}" cli "${artifact_dir%/}/ctx-${platform}"
     rm -f "${nested_runtime}"
     trap - EXIT
   fi
@@ -388,8 +390,14 @@ validate_macos_signing_evidence() (
   local runtime="${artifact_dir%/}/ctx-onnxruntime-${platform}.tar.gz"
   local cli_evidence="${artifact_dir%/}/ctx-${platform}.signing.json"
   local runtime_evidence="${artifact_dir%/}/ctx-onnxruntime-${platform}.signing.json"
+  local cli_attestation="${artifact_dir%/}/ctx-${platform}.attestation.json"
+  local cli_attestation_cms="${artifact_dir%/}/ctx-${platform}.attestation.cms"
+  local runtime_attestation="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.json"
+  local runtime_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.cms"
   local work nested
 
+  # JSON records diagnostics and archive bindings. The Developer ID CMS
+  # checks below are the cross-platform authorization for executable bytes.
   [[ -s "${cli_evidence}" ]] || {
     printf 'required macOS CLI signing evidence missing: %s\n' "${cli_evidence}" >&2
     exit 1
@@ -404,6 +412,8 @@ validate_macos_signing_evidence() (
     --kind cli \
     --artifact "${binary}" \
     --checksum "${binary}.sha256"
+  scripts/verify-macos-release-attestation.sh \
+    "${platform}" cli "${binary}" "${cli_attestation}" "${cli_attestation_cms}"
 
   work="$(mktemp -d "${TMPDIR:-/tmp}/ctx-stage-macos-signing.XXXXXX")"
   trap 'rm -rf "${work}"' EXIT
@@ -431,6 +441,9 @@ PY
     --checksum "${runtime}.sha256" \
     --nested-artifact "${nested}" \
     --role release
+  scripts/verify-macos-release-attestation.sh \
+    "${platform}" runtime "${nested}" \
+    "${runtime_attestation}" "${runtime_attestation_cms}"
 )
 
 validate_authoritative_runtime_proof \

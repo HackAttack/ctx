@@ -156,13 +156,13 @@ steps:
 
   - label: ":package: public CLI macos-arm64"
     key: "public-cli-macos-arm64"
-    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       export CTX_MACOS_RELEASE_SIGNING=required
-      infisical run --env=prod --path=/ -- \
-        scripts/build-public-cli-artifact.sh macos-arm64
-      infisical run --env=prod --path=/ -- \
-        scripts/build-onnxruntime-sidecar.sh macos-arm64
+      export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
+      scripts/run-macos-release-signing.sh --preflight
+      scripts/build-public-cli-artifact.sh macos-arm64
+      scripts/build-onnxruntime-sidecar.sh macos-arm64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-arm64
       if [[ "${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_root="target/public-cli-native-smoke/macos-arm64/coreml"
@@ -204,19 +204,23 @@ steps:
       arch: "arm64"
     concurrency: 1
     concurrency_group: "ctx-public-cli-macos-native"
-    timeout_in_minutes: 60
+    timeout_in_minutes: 120
     artifact_paths:
       - "target/public-cli-artifacts/ctx-macos-arm64"
       - "target/public-cli-artifacts/ctx-macos-arm64.sha256"
       - "target/public-cli-artifacts/ctx-macos-arm64.version"
       - "target/public-cli-artifacts/ctx-macos-arm64.build-info.json"
       - "target/public-cli-artifacts/ctx-macos-arm64.signing.json"
+      - "target/public-cli-artifacts/ctx-macos-arm64.attestation.json"
+      - "target/public-cli-artifacts/ctx-macos-arm64.attestation.cms"
       - "target/public-cli-artifacts/ctx-macos-arm64.codesign.txt"
       - "target/public-cli-artifacts/ctx-macos-arm64.gatekeeper.txt"
       - "target/public-cli-artifacts/ctx-macos-arm64.notary-*"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz.sha256"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.json"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.cms"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.codesign.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.gatekeeper.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.notary-*"
@@ -230,11 +234,12 @@ steps:
 
   - label: ":package: public CLI macos-x64"
     key: "public-cli-macos-x64"
-    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       export CTX_MACOS_RELEASE_SIGNING=required
-      infisical run --env=prod --path=/ -- \
-        scripts/build-public-cli-artifact.sh macos-x64
+      export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
+      scripts/run-macos-release-signing.sh --preflight
+      scripts/build-public-cli-artifact.sh macos-x64
       if [[ "${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_root="target/public-cli-native-smoke/macos-x64"
         mkdir -p "${smoke_root}"
@@ -265,6 +270,8 @@ steps:
       - "target/public-cli-artifacts/ctx-macos-x64.version"
       - "target/public-cli-artifacts/ctx-macos-x64.build-info.json"
       - "target/public-cli-artifacts/ctx-macos-x64.signing.json"
+      - "target/public-cli-artifacts/ctx-macos-x64.attestation.json"
+      - "target/public-cli-artifacts/ctx-macos-x64.attestation.cms"
       - "target/public-cli-artifacts/ctx-macos-x64.codesign.txt"
       - "target/public-cli-artifacts/ctx-macos-x64.gatekeeper.txt"
       - "target/public-cli-artifacts/ctx-macos-x64.notary-*"
@@ -277,12 +284,14 @@ steps:
   - label: ":test_tube: public CLI macos-x64 native semantic"
     key: "public-cli-macos-x64-native-smoke"
     depends_on: "public-cli-macos-x64"
-    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-macos-x64*" . \
         --step public-cli-macos-x64
       export CTX_MACOS_RELEASE_SIGNING=required
+      export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
+      scripts/run-macos-release-signing.sh --preflight
       scripts/check-macos-release-signing.sh \
         macos-x64 cli target/public-cli-artifacts/ctx-macos-x64
       expected_version="$(sed -n 's/^ctx //p' \
@@ -293,8 +302,7 @@ steps:
         tests/fixtures/custom-history-jsonl/basic.jsonl \
         "${expected_version}" \
         target/public-cli-native-smoke/macos-x64-native/candidate-smoke.json
-      infisical run --env=prod --path=/ -- \
-        scripts/build-onnxruntime-sidecar.sh macos-x64
+      scripts/build-onnxruntime-sidecar.sh macos-x64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-x64
       smoke_root="target/public-cli-native-smoke/macos-x64-native"
       mkdir -p "${smoke_root}"
@@ -322,6 +330,8 @@ steps:
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz.sha256"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.signing.json"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.json"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.cms"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.codesign.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.gatekeeper.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.notary-*"

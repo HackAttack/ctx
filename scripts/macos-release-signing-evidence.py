@@ -11,6 +11,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+EXPECTED_AUTHORITY = (
+    "Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)"
+)
+EXPECTED_TEAM_ID = "SJSNARH4TG"
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -76,8 +81,10 @@ def require_base_document(
     gatekeeper = document.get("gatekeeper")
     if not isinstance(signing, dict) or signing.get("verified") is not True:
         raise SystemExit("signing evidence does not record strict codesign verification")
-    if not str(signing.get("authority", "")).startswith("Developer ID Application:"):
-        raise SystemExit("signing evidence does not record a Developer ID Application authority")
+    if signing.get("authority") != EXPECTED_AUTHORITY:
+        raise SystemExit("signing evidence does not record the pinned ctx Apple authority")
+    if signing.get("team_identifier") != EXPECTED_TEAM_ID:
+        raise SystemExit("signing evidence does not record the pinned ctx Apple Team ID")
     if signing.get("hardened_runtime") is not True:
         raise SystemExit("signing evidence does not record hardened runtime")
     if signing.get("secure_timestamp") is not True:
@@ -96,10 +103,10 @@ def command_write(args: argparse.Namespace) -> None:
     authority = detail_value(details, "Authority")
     identifier = detail_value(details, "Identifier")
     team_identifier = detail_value(details, "TeamIdentifier")
-    if not authority.startswith("Developer ID Application:"):
+    if authority != EXPECTED_AUTHORITY:
         raise SystemExit(f"unexpected codesign authority: {authority}")
-    if team_identifier in ("", "not set"):
-        raise SystemExit("codesign details do not contain a TeamIdentifier")
+    if team_identifier != EXPECTED_TEAM_ID:
+        raise SystemExit(f"unexpected codesign TeamIdentifier: {team_identifier}")
     flags = detail_value(details, "flags")
     if "runtime" not in flags.lower():
         raise SystemExit("codesign details do not contain hardened runtime flags")
@@ -211,6 +218,38 @@ def command_verify_archive(args: argparse.Namespace) -> None:
         )
 
 
+def command_create_attestation(args: argparse.Namespace) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
+        raise SystemExit("attestation source commit must be a lowercase 40-character git SHA")
+    document = {
+        "artifact_kind": args.kind,
+        "artifact_name": args.artifact.name,
+        "artifact_sha256": sha256(args.artifact),
+        "codesign_authority": EXPECTED_AUTHORITY,
+        "platform": args.platform,
+        "schema_version": 1,
+        "source_commit": args.source_commit,
+        "team_identifier": EXPECTED_TEAM_ID,
+    }
+    write_json(args.output, document)
+
+
+def command_verify_attestation(args: argparse.Namespace) -> None:
+    document = read_json(args.attestation)
+    expected = {
+        "artifact_kind": args.kind,
+        "artifact_name": args.artifact.name,
+        "artifact_sha256": sha256(args.artifact),
+        "codesign_authority": EXPECTED_AUTHORITY,
+        "platform": args.platform,
+        "schema_version": 1,
+        "source_commit": args.source_commit,
+        "team_identifier": EXPECTED_TEAM_ID,
+    }
+    if document != expected:
+        raise SystemExit("signed macOS attestation does not bind the exact pinned artifact")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -252,6 +291,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--role", required=True, choices=("builder", "release")
     )
     verify_archive.set_defaults(handler=command_verify_archive)
+
+    create_attestation = subparsers.add_parser("create-attestation")
+    create_attestation.add_argument("--output", required=True, type=Path)
+    create_attestation.add_argument("--platform", required=True)
+    create_attestation.add_argument(
+        "--kind", required=True, choices=("cli", "runtime")
+    )
+    create_attestation.add_argument("--artifact", required=True, type=Path)
+    create_attestation.add_argument("--source-commit", required=True)
+    create_attestation.set_defaults(handler=command_create_attestation)
+
+    verify_attestation = subparsers.add_parser("verify-attestation")
+    verify_attestation.add_argument("--attestation", required=True, type=Path)
+    verify_attestation.add_argument("--platform", required=True)
+    verify_attestation.add_argument(
+        "--kind", required=True, choices=("cli", "runtime")
+    )
+    verify_attestation.add_argument("--artifact", required=True, type=Path)
+    verify_attestation.add_argument("--source-commit", required=True)
+    verify_attestation.set_defaults(handler=command_verify_attestation)
     return parser
 
 

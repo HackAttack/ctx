@@ -627,7 +627,7 @@ if [[ "${platform}" == macos-* ]]; then
   fi
   case "${macos_signing_mode}" in
     required)
-      scripts/sign-notarize-macos-release-artifact.sh \
+      scripts/run-macos-release-signing.sh \
         "${platform}" cli "${staged}" "${out_dir}"
       ;;
     optional) ;;

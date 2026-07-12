@@ -41,11 +41,12 @@ assets automatically when present; direct unmanaged installs should follow the
 release notes for any required runtime sidecar placement.
 
 The hosted installer and managed-upgrade path verify signed ctx release
-metadata. Official macOS CLI binaries and the executable code in their ONNX
-Runtime sidecars are Developer ID signed with hardened runtime compatibility
-and notarized by Apple. Release construction also verifies those exact signed
-bytes with `codesign`, Gatekeeper, and the published checksums. The Windows
-binary and ONNX Runtime DLL remain unsigned by Authenticode; signed release
+metadata. Beginning with ctx 0.25.0, official macOS CLI binaries and the
+executable code in their ONNX Runtime sidecars are Developer ID signed with
+hardened runtime compatibility and notarized by Apple. Release construction
+also verifies those exact signed bytes with `codesign`, Gatekeeper, a
+Developer ID cryptographic attestation, and the published checksums. Windows
+binaries and ONNX Runtime DLLs remain unsigned by Authenticode; signed release
 metadata and checksums authenticate their bytes, but they are not OS-native
 application signatures.
 
@@ -83,8 +84,8 @@ install -m 0755 ctx-linux-x64 ~/.local/bin/ctx
 
 Use `ctx-linux-aarch64` in the commands above on Linux ARM64.
 
-On macOS, choose the Developer ID signed and notarized asset for your CPU and
-verify its release checksum with `shasum`:
+For ctx 0.25.0 and later on macOS, choose the Developer ID signed and notarized
+asset for your CPU and verify its release checksum with `shasum`:
 
 ```bash
 curl -fL -O https://github.com/ctxrs/ctx/releases/latest/download/ctx-macos-arm64

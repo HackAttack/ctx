@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+EXPECTED_AUTHORITY="Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)"
+EXPECTED_TEAM_ID="SJSNARH4TG"
+
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/check-macos-release-signing.sh PLATFORM KIND ARTIFACT [EVIDENCE]
@@ -44,6 +47,9 @@ if [[ -z "${evidence}" ]]; then
 fi
 [[ -s "${evidence}" ]] || die "macOS signing evidence missing: ${evidence}"
 [[ -s "${artifact}.sha256" ]] || die "macOS release checksum missing: ${artifact}.sha256"
+evidence_dir="$(cd "$(dirname "${evidence}")" && pwd)"
+attestation_json="${evidence_dir}/${evidence_prefix}.attestation.json"
+attestation_cms="${evidence_dir}/${evidence_prefix}.attestation.cms"
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 require_command codesign
@@ -63,9 +69,13 @@ verify_macho() {
     rm -f "${details}" "${gatekeeper}"
     die "could not inspect Developer ID signature: ${path}"
   fi
-  grep -Eq '^Authority=Developer ID Application:' "${details}" || {
+  grep -Fqx "Authority=${EXPECTED_AUTHORITY}" "${details}" || {
     rm -f "${details}" "${gatekeeper}"
-    die "artifact has the wrong Developer ID authority: ${path}"
+    die "artifact does not have the pinned ctx Apple authority: ${path}"
+  }
+  grep -Fqx "TeamIdentifier=${EXPECTED_TEAM_ID}" "${details}" || {
+    rm -f "${details}" "${gatekeeper}"
+    die "artifact does not have the pinned ctx Apple Team ID: ${path}"
   }
   grep -Eiq '^flags=.*runtime' "${details}" || {
     rm -f "${details}" "${gatekeeper}"
@@ -94,6 +104,8 @@ if [[ "${kind}" == "cli" ]]; then
     --kind cli \
     --artifact "${artifact}" \
     --checksum "${artifact}.sha256"
+  "${root_dir}/scripts/verify-macos-release-attestation.sh" \
+    "${platform}" cli "${artifact}" "${attestation_json}" "${attestation_cms}"
   verify_macho "${artifact}"
   build_info="${artifact}.build-info.json"
   if [[ -s "${build_info}" ]]; then
@@ -162,5 +174,8 @@ python3 "${root_dir}/scripts/macos-release-signing-evidence.py" verify-archive \
   --checksum "${artifact}.sha256" \
   --nested-artifact "${nested_artifact}" \
   --role "${package_role}"
+"${root_dir}/scripts/verify-macos-release-attestation.sh" \
+  "${platform}" runtime "${nested_artifact}" \
+  "${attestation_json}" "${attestation_cms}"
 verify_macho "${nested_artifact}"
 printf 'macOS release signing ok: %s runtime %s\n' "${platform}" "${package_role}"

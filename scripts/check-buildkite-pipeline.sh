@@ -8,6 +8,11 @@ artifact_check_script="scripts/check-public-cli-artifact.sh"
 compat_check_script="scripts/check-release-binary-compat.sh"
 macos_sign_script="scripts/sign-notarize-macos-release-artifact.sh"
 macos_check_script="scripts/check-macos-release-signing.sh"
+macos_launcher_script="scripts/run-macos-release-signing.sh"
+macos_trust_script="scripts/check-macos-signing-trusted-ref.sh"
+macos_attestation_script="scripts/verify-macos-release-attestation.sh"
+macos_precommand_script="scripts/buildkite/macos_agent_pre_command.sh"
+macos_ca_file="scripts/apple-developer-id-g2-ca.pem"
 test -f "${pipeline}"
 test -f "${public_ci_script}"
 test -f "${artifact_script}"
@@ -15,6 +20,11 @@ test -f "${artifact_check_script}"
 test -f "${compat_check_script}"
 test -f "${macos_sign_script}"
 test -f "${macos_check_script}"
+test -f "${macos_launcher_script}"
+test -f "${macos_trust_script}"
+test -f "${macos_attestation_script}"
+test -f "${macos_precommand_script}"
+test -f "${macos_ca_file}"
 
 if [[ -e ".github/workflows/public-ci.yml" ]]; then
   printf 'public GitHub Actions CI workflow should be migrated to Buildkite\n' >&2
@@ -65,8 +75,11 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must run on Apple Silicon" unless step.dig("agents", "arch") == "arm64"
       abort "#{key} must serialize native Mac construction" unless step["concurrency"] == 1 && step["concurrency_group"] == "ctx-public-cli-macos-native"
       command = step["command"].to_s
+      condition = step["if"].to_s
+      abort "#{key} must be restricted to trusted main builds" unless condition.include?(%q{build.branch == "main"}) && condition.include?("build.pull_request.id == null")
       abort "#{key} must require macOS release signing" unless command.include?("CTX_MACOS_RELEASE_SIGNING=required")
-      abort "#{key} must obtain signing/notary credentials through Infisical" unless command.include?("infisical run --env=prod --path=/ --")
+      abort "#{key} must use the narrow Infisical signing launcher" unless command.include?("CTX_MACOS_SIGNING_SECRET_SOURCE=infisical") && command.include?("scripts/run-macos-release-signing.sh --preflight")
+      abort "#{key} must not inject secrets around a whole build" if command.include?("infisical run")
       abort "#{key} must gate native smoke explicitly" unless command.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
       abort "#{key} must force the CoreML smoke" unless command.include?("--coreml")
       abort "#{key} must preserve native smoke evidence" unless command.include?("--keep-root")
@@ -76,6 +89,8 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must upload native smoke failure diagnostics" unless Array(step["artifact_paths"]).include?(diagnostics)
       evidence = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.signing.json"
       abort "#{key} must upload CLI signing evidence" unless Array(step["artifact_paths"]).include?(evidence)
+      attestation = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.attestation.cms"
+      abort "#{key} must upload the CLI cryptographic attestation" unless Array(step["artifact_paths"]).include?(attestation)
     end
     macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
     abort "macos-arm64 smoke must require authoritative evidence" unless macos_arm64["command"].to_s.include?("runtime_authority=authoritative")
@@ -83,6 +98,8 @@ if command -v ruby >/dev/null 2>&1; then
     abort "macos-x64 Rosetta smoke must remain explicitly non-authoritative" unless macos_x64["command"].to_s.include?("runtime_authority=non_authoritative")
     macos_arm64_paths = Array(macos_arm64["artifact_paths"])
     abort "macos-arm64 must upload runtime signing evidence" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json")
+    abort "macos-arm64 must upload runtime cryptographic attestation" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.cms")
+    abort "macos-arm64 must allow two bounded notarizations" unless macos_arm64["timeout_in_minutes"].to_i >= 120
     inline_proofs = {
       "public-cli-linux-x64" => "ctx-linux-x64.native-runtime-proof.txt",
       "public-cli-linux-aarch64" => "ctx-linux-aarch64.native-runtime-proof.txt",
@@ -116,11 +133,16 @@ if command -v ruby >/dev/null 2>&1; then
     end
     macos_x64_native = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64-native-smoke" }
     native_command = macos_x64_native["command"].to_s
+    native_condition = macos_x64_native["if"].to_s
+    abort "macos-x64 native lane must be restricted to trusted main builds" unless native_condition.include?(%q{build.branch == "main"}) && native_condition.include?("build.pull_request.id == null")
     abort "macos-x64 native lane must verify the downloaded signed CLI" unless native_command.include?("scripts/check-macos-release-signing.sh") && native_command.include?("macos-x64 cli")
     abort "macos-x64 native lane must rerun the exact signed default candidate smoke" unless native_command.include?("scripts/run-native-candidate-smoke.sh")
-    abort "macos-x64 native lane must sign the runtime with Infisical credentials" unless native_command.include?("infisical run --env=prod --path=/ --") && native_command.include?("scripts/build-onnxruntime-sidecar.sh macos-x64")
+    abort "macos-x64 native lane must use the narrow Infisical preflight" unless native_command.include?("CTX_MACOS_SIGNING_SECRET_SOURCE=infisical") && native_command.include?("scripts/run-macos-release-signing.sh --preflight")
+    abort "macos-x64 native lane must not inject secrets around a whole build" if native_command.include?("infisical run")
+    abort "macos-x64 native lane must build its signed runtime" unless native_command.include?("scripts/build-onnxruntime-sidecar.sh macos-x64")
     native_paths = Array(macos_x64_native["artifact_paths"])
     abort "macos-x64 native lane must upload runtime signing evidence" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.signing.json")
+    abort "macos-x64 native lane must upload runtime cryptographic attestation" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.cms")
     abort "macos-x64 native lane must upload default smoke evidence" unless native_paths.include?("target/public-cli-native-smoke/macos-x64-native/candidate-smoke.json")
     runtime_builds = {
       "public-cli-linux-x64" => "linux-x64",
@@ -195,10 +217,21 @@ for required in \
   'scripts/build-public-cli-artifact.sh freebsd-x64' \
   'scripts/build-public-cli-artifact.sh macos-arm64' \
   'scripts/build-public-cli-artifact.sh macos-x64' \
-  'infisical run --env=prod --path=/ --' \
   'CTX_MACOS_RELEASE_SIGNING=required' \
+  'CTX_MACOS_SIGNING_SECRET_SOURCE=infisical' \
+  'scripts/run-macos-release-signing.sh --preflight' \
+  'CTX_MACOS_SIGNING_SECRET_DIR' \
+  '590927ab-758e-41b0-9e15-4cf070e87cf4' \
   'scripts/sign-notarize-macos-release-artifact.sh' \
   'scripts/check-macos-release-signing.sh' \
+  'scripts/check-macos-signing-trusted-ref.sh' \
+  'scripts/verify-macos-release-attestation.sh' \
+  'refs/remotes/origin/main' \
+  'BUILDKITE_PULL_REQUEST' \
+  'CTX_LOCAL_MACOS_SIGNING_LIVE_TEST' \
+  'F1:6C:D3:C5:4C:7F:83:CE:A4:BF:1A:3E:6A:08:19:C8:AA:A8:E4:A1:52:8F:D1:44:71:5F:35:06:43:D2:DF:3A' \
+  'Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)' \
+  'SJSNARH4TG' \
   'APPLE_CODESIGN_CERT_P12_B64' \
   'APPLE_CODESIGN_CERT_PASSWORD' \
   'NOTARY_ISSUER' \
@@ -224,7 +257,11 @@ for required in \
     "${artifact_check_script}" \
     "${compat_check_script}" \
     "${macos_sign_script}" \
-    "${macos_check_script}"; do
+    "${macos_check_script}" \
+    "${macos_launcher_script}" \
+    "${macos_trust_script}" \
+    "${macos_attestation_script}" \
+    "${macos_precommand_script}"; do
     if grep -F -q "${required}" "${checked_file}"; then
       found=1
       break
@@ -259,7 +296,7 @@ def require_order(label, source, *needles):
 require_order(
     "macOS CLI signing/hash/build-info",
     cli,
-    'scripts/sign-notarize-macos-release-artifact.sh',
+    'scripts/run-macos-release-signing.sh',
     'sha_file="${staged}.sha256"',
     'scripts/run-native-candidate-smoke.sh',
     'python3 scripts/write-public-cli-build-info.py',
@@ -268,7 +305,7 @@ require_order(
 require_order(
     "macOS runtime signing/archive/checksum evidence",
     runtime,
-    'scripts/sign-notarize-macos-release-artifact.sh',
+    'scripts/run-macos-release-signing.sh',
     'create_archive "${stage_dir}" "${package_path}"',
     'sha256_file "${output_dir%/}/${asset_name}"',
     'python3 scripts/macos-release-signing-evidence.py bind-archive',
@@ -284,7 +321,26 @@ require_order(
 for source, label in ((cli, "CLI"), (runtime, "runtime")):
     if 'CTX_PUBLIC_CLI_ARTIFACT_MATRIX:-0' not in source:
         raise SystemExit(f"macOS {label} release matrix must fail closed into required signing")
+if "scripts/verify-macos-release-attestation.sh" not in staging:
+    raise SystemExit("final release assembly must cryptographically verify macOS attestations")
+require_order(
+    "native macOS final-transcode verification",
+    staging,
+    'mv "${dest_path}.tmp" "${dest_path}"',
+    '"${platform}" runtime "${dest_path}"',
+    '"${platform}" cli "${artifact_dir%/}/ctx-${platform}"',
+)
 PY
+
+if grep -Fq 'infisical run' "${pipeline}"; then
+  printf 'macOS release builds must not run under broad Infisical injection\n' >&2
+  exit 1
+fi
+if grep -Fq 'minimal_env+=("${secret_name}=' "${macos_launcher_script}" \
+  || grep -Fq '$(cat "${secret_root}/${secret_name}")' "${macos_launcher_script}"; then
+  printf 'macOS signing launcher must pass file paths, never secret values, to env -i\n' >&2
+  exit 1
+fi
 
 if grep -F -q 'golang-go' "${public_ci_script}"; then
   printf 'Buildkite hosted public CI must install pinned Go instead of Ubuntu golang-go\n' >&2

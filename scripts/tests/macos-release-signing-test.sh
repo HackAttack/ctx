@@ -19,25 +19,51 @@ case "${1:-}" in
   pkcs12)
     output=""
     while [[ $# -gt 0 ]]; do
-      if [[ "$1" == "-out" ]]; then
-        output="$2"
-        break
-      fi
+      if [[ "$1" == "-out" ]]; then output="$2"; break; fi
       shift
     done
     [[ -n "${output}" ]]
-    printf '%s\n' 'fake certificate' >"${output}"
+    printf '%s\n' 'fake certificate or key' >"${output}"
     ;;
   x509)
-    if [[ "${CTX_FAKE_WRONG_IDENTITY:-0}" == "1" ]]; then
-      printf '%s\n' 'subject=CN=Apple Development: Wrong Identity,OU=BADTEAM'
-    elif [[ "${CTX_FAKE_WRONG_TEAM:-0}" == "1" ]]; then
-      printf '%s\n' 'subject=CN=Developer ID Application: Other (OTHERTEAM),OU=OTHERTEAM'
+    if [[ " $* " == *' -fingerprint '* ]]; then
+      printf '%s\n' 'sha256 Fingerprint=F1:6C:D3:C5:4C:7F:83:CE:A4:BF:1A:3E:6A:08:19:C8:AA:A8:E4:A1:52:8F:D1:44:71:5F:35:06:43:D2:DF:3A'
+    elif [[ -e "${TMPDIR}/fake-coherent-wrong-identity" ]]; then
+      printf '%s\n' 'subject=CN=Developer ID Application: Other Corp (OTHERTEAM),OU=OTHERTEAM,O=Other Corp'
     else
-      printf '%s\n' 'subject=CN=Developer ID Application: ctx test (TESTTEAM),OU=TESTTEAM'
+      printf '%s\n' 'subject=CN=Developer ID Application: Legacy Publisher LLC (SJSNARH4TG),OU=SJSNARH4TG,O=Legacy Publisher LLC'
     fi
     ;;
   pkey) ;;
+  verify) ;;
+  cms)
+    operation="${2:-}"
+    [[ "${operation}" != "-help" ]] || exit 0
+    input=""
+    output=""
+    content=""
+    certsout=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -in) input="$2"; shift 2 ;;
+        -out) output="$2"; shift 2 ;;
+        -content) content="$2"; shift 2 ;;
+        -certsout) certsout="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "${operation}" in
+      -sign)
+        sha256sum "${input}" | awk '{print $1}' >"${output}"
+        printf '%s\n' attest >>"${TMPDIR}/tool-order.log"
+        ;;
+      -verify)
+        [[ "$(cat "${input}")" == "$(sha256sum "${content}" | awk '{print $1}')" ]] || exit 1
+        printf '%s\n' 'fake signer certificate' >"${certsout}"
+        ;;
+      *) exit 2 ;;
+    esac
+    ;;
   *) exit 2 ;;
 esac
 SH
@@ -45,7 +71,9 @@ SH
 cat >"${fake_bin}/rcodesign" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then printf '%s\n' 'rcodesign 0.test'; exit 0; fi
 [[ " $* " == *' --for-notarization '* ]]
+original_args="$*"
 p12=""
 password=""
 artifact="${!#}"
@@ -56,11 +84,12 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
+printf '%s\n' "${original_args}" >"${TMPDIR}/rcodesign-argv.txt"
 [[ "$(stat -c '%a' "${p12}" 2>/dev/null || stat -f '%Lp' "${p12}")" == "600" ]]
 [[ "$(stat -c '%a' "${password}" 2>/dev/null || stat -f '%Lp' "${password}")" == "600" ]]
-if [[ "${CTX_FAKE_SIGN_FAILURE:-0}" == "1" ]]; then
-  exit 17
-fi
+env | LC_ALL=C sort >"${TMPDIR}/signer-environment.txt"
+printf '%s\n' sign >>"${TMPDIR}/tool-order.log"
+[[ ! -e "${TMPDIR}/fake-sign-failure" ]] || exit 17
 printf '%s\n' 'FAKE_DEVELOPER_ID_SIGNATURE' >>"${artifact}"
 SH
 
@@ -70,11 +99,18 @@ set -euo pipefail
 artifact="${!#}"
 grep -Fq 'FAKE_DEVELOPER_ID_SIGNATURE' "${artifact}" || exit 1
 if [[ "${1:-}" == "-d" ]]; then
-  cat >&2 <<'DETAILS'
+  if [[ -e "${TMPDIR}/fake-coherent-wrong-identity" ]]; then
+    authority='Developer ID Application: Other Corp (OTHERTEAM)'
+    team='OTHERTEAM'
+  else
+    authority='Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)'
+    team='SJSNARH4TG'
+  fi
+  cat >&2 <<DETAILS
 Executable=fake
 Identifier=rs.ctx.test
-Authority=Developer ID Application: ctx test (TESTTEAM)
-TeamIdentifier=TESTTEAM
+Authority=${authority}
+TeamIdentifier=${team}
 Timestamp=Jul 12, 2026 at 12:00:00 PM
 flags=0x10000(runtime) hashes=2+7 location=embedded
 DETAILS
@@ -86,8 +122,9 @@ cat >"${fake_bin}/ditto" <<'SH'
 set -euo pipefail
 source="${@: -2:1}"
 output="${@: -1}"
+printf '%s\n' zip >>"${TMPDIR}/tool-order.log"
 cp "${source}" "${output}"
-if [[ "${CTX_FAKE_MUTATE_AFTER_SIGN:-0}" == "1" ]]; then
+if [[ -e "${TMPDIR}/fake-mutate-after-sign" ]]; then
   printf '%s\n' mutation >>"${source}"
 fi
 SH
@@ -98,10 +135,18 @@ set -euo pipefail
 [[ "${1:-}" == "notarytool" ]]
 operation="${2:-}"
 case "${operation}" in
+  --version)
+    printf '%s\n' 'notarytool 1.test'
+    ;;
   submit)
+    printf '%s\n' "$*" >"${TMPDIR}/notarytool-argv.txt"
+    env | LC_ALL=C sort >"${TMPDIR}/notarytool-environment.txt"
     [[ " $* " == *' --wait '* ]]
     [[ " $* " == *" --timeout ${CTX_MACOS_NOTARY_TIMEOUT:-30m} "* ]]
-    case "${CTX_FAKE_NOTARY_RESULT:-accepted}" in
+    printf '%s\n' notary-submit >>"${TMPDIR}/tool-order.log"
+    result="accepted"
+    [[ ! -s "${TMPDIR}/fake-notary-result" ]] || result="$(cat "${TMPDIR}/fake-notary-result")"
+    case "${result}" in
       accepted)
         printf '%s\n' '{"id":"00000000-0000-0000-0000-000000000001","status":"Accepted"}'
         ;;
@@ -124,29 +169,101 @@ case "${operation}" in
 esac
 SH
 
+cat >"${fake_bin}/xcode-select" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "-p" ]]
+printf '%s\n' '/Applications/Xcode.app/Contents/Developer'
+SH
+
 cat >"${fake_bin}/spctl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 artifact="${!#}"
 grep -Fq 'FAKE_DEVELOPER_ID_SIGNATURE' "${artifact}" || exit 1
+printf '%s\n' gatekeeper >>"${TMPDIR}/tool-order.log"
 printf '%s\n' "${artifact}: accepted source=Notarized Developer ID"
+SH
+
+cat >"${fake_bin}/infisical" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf '%s\n' 'infisical 0.test'
+  exit 0
+fi
+[[ "${1:-}" == "secrets" && "${2:-}" == "get" ]]
+name="${3:-}"
+printf '%s|%s\n' "${name}" "$*" >>"${TMPDIR}/infisical.log"
+[[ ! -e "${TMPDIR}/fake-infisical-auth-failure" ]] || exit 1
+if [[ -s "${TMPDIR}/fake-infisical-missing-name" \
+  && "${name}" == "$(cat "${TMPDIR}/fake-infisical-missing-name")" ]]; then
+  exit 1
+fi
+case "${name}" in
+  APPLE_CODESIGN_CERT_P12_B64) printf '%s' 'cDEyLXNlY3JldC1zZW50aW5lbA==' ;;
+  APPLE_CODESIGN_CERT_PASSWORD) printf '%s' 'password-secret-sentinel' ;;
+  NOTARY_ISSUER) printf '%s' 'issuer-test-value' ;;
+  NOTARY_KEY_ID) printf '%s' 'key-id-test-value' ;;
+  NOTARY_KEY_P8_B64) printf '%s' 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCnA4LXNlY3JldC1zZW50aW5lbAotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==' ;;
+  *) exit 3 ;;
+esac
+SH
+
+cat >"${fake_bin}/git" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *' rev-parse --verify HEAD '*|*' rev-parse HEAD '*)
+    printf '%040d\n' 1
+    ;;
+  *' rev-parse --verify refs/remotes/origin/main '*)
+    printf '%040d\n' 1
+    ;;
+  *' diff '*)
+    ;;
+  *)
+    printf 'unexpected fake git invocation: %s\n' "$*" >&2
+    exit 2
+    ;;
+esac
 SH
 chmod +x "${fake_bin}"/*
 
-export PATH="${fake_bin}:${PATH}"
+fake_signer="${test_root}/fake-signer"
+cat >"${fake_signer}" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"${TMPDIR}/fake-signer-argv.txt"
+env | LC_ALL=C sort >"${TMPDIR}/fake-signer-environment.txt"
+secret_dir="${CTX_MACOS_SIGNING_SECRET_DIR:?}"
+[[ "$(stat -c '%a' "${secret_dir}")" == "700" ]]
+[[ "$(find "${secret_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "5" ]]
+while IFS= read -r path; do
+  [[ "$(stat -c '%a' "${path}")" == "600" ]]
+done < <(find "${secret_dir}" -mindepth 1 -maxdepth 1 -type f)
+SH
+chmod +x "${fake_signer}"
+
+unset BUILDKITE BUILDKITE_BRANCH BUILDKITE_COMMIT BUILDKITE_PULL_REQUEST
+unset BUILDKITE_REPO BUILDKITE_TAG CI GITHUB_ACTIONS
+export PATH="${fake_bin}:/usr/bin:/bin"
 export TMPDIR="${test_root}/tmp"
+export CTX_LOCAL_MACOS_SIGNING_LIVE_TEST=1
 export CTX_TEST_ONLY_MACOS_HOST=Darwin
-export CTX_MACOS_NOTARY_TIMEOUT=7m
+export CTX_MACOS_NOTARY_TIMEOUT=30m
+export CTX_MACOS_SIGNING_SECRET_SOURCE=injected
 export APPLE_CODESIGN_CERT_PASSWORD='password-secret-sentinel'
-export APPLE_CODESIGN_CERT_P12_B64
-APPLE_CODESIGN_CERT_P12_B64="$(printf '%s' 'p12-secret-sentinel' | base64 | tr -d '\n')"
+export APPLE_CODESIGN_CERT_P12_B64='cDEyLXNlY3JldC1zZW50aW5lbA=='
 export NOTARY_ISSUER='issuer-test-value'
 export NOTARY_KEY_ID='key-id-test-value'
-export NOTARY_KEY_P8_B64
-NOTARY_KEY_P8_B64="$(printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'p8-secret-sentinel' '-----END PRIVATE KEY-----' | base64 | tr -d '\n')"
+export NOTARY_KEY_P8_B64='LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCnA4LXNlY3JldC1zZW50aW5lbAotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='
+export UNRELATED_SECRET='must-not-reach-signer'
 
-sign_script="${repo_root}/scripts/sign-notarize-macos-release-artifact.sh"
+launcher="${repo_root}/scripts/run-macos-release-signing.sh"
+trust_gate="${repo_root}/scripts/check-macos-signing-trusted-ref.sh"
 check_script="${repo_root}/scripts/check-macos-release-signing.sh"
+attestation_check="${repo_root}/scripts/verify-macos-release-attestation.sh"
 evidence_tool="${repo_root}/scripts/macos-release-signing-evidence.py"
 
 new_artifact() {
@@ -170,85 +287,148 @@ expect_failure() {
   }
 }
 
+"${trust_gate}" >/dev/null
+expect_failure 'forbidden when CI is set' "${test_root}/local-ci-bypass.log" \
+  env CI=1 "${trust_gate}"
+expect_failure 'forbidden for Buildkite pull requests' "${test_root}/pr-gate.log" \
+  env -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
+    BUILDKITE=true BUILDKITE_PULL_REQUEST=42 BUILDKITE_BRANCH=main \
+    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
+expect_failure 'restricted to the Buildkite main branch' "${test_root}/branch-gate.log" \
+  env -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
+    BUILDKITE=true BUILDKITE_PULL_REQUEST=false BUILDKITE_BRANCH=feature \
+    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
+expect_failure 'BUILDKITE_COMMIT does not match' "${test_root}/commit-gate.log" \
+  env -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
+    BUILDKITE=true BUILDKITE_PULL_REQUEST=false BUILDKITE_BRANCH=main \
+    BUILDKITE_COMMIT=0000000000000000000000000000000000000000 \
+    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
+
+rm -f "${TMPDIR}/infisical.log"
+CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight \
+  >"${test_root}/preflight.log" 2>&1
+[[ "$(wc -l < "${TMPDIR}/infisical.log" | tr -d ' ')" == "5" ]] || \
+  fail "preflight did not fetch exactly five Infisical values"
+while IFS='|' read -r name args; do
+  case "${name}" in
+    APPLE_CODESIGN_CERT_P12_B64|APPLE_CODESIGN_CERT_PASSWORD|NOTARY_ISSUER|NOTARY_KEY_ID|NOTARY_KEY_P8_B64) ;;
+    *) fail "preflight fetched an unapproved Infisical value: ${name}" ;;
+  esac
+  [[ " ${args} " == *' --projectId 590927ab-758e-41b0-9e15-4cf070e87cf4 '* ]] || fail "missing pinned Infisical project"
+  [[ " ${args} " == *' --env prod '* && " ${args} " == *' --path / '* ]] || fail "missing pinned Infisical env/path"
+done <"${TMPDIR}/infisical.log"
+for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
+  grep -Fq "${secret}" "${test_root}/preflight.log" && fail "preflight exposed ${secret}"
+done
+
+touch "${TMPDIR}/fake-infisical-auth-failure"
+expect_failure 'Infisical lookup failed' "${test_root}/infisical-auth.log" \
+  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+rm -f "${TMPDIR}/fake-infisical-auth-failure"
+printf '%s' NOTARY_KEY_ID >"${TMPDIR}/fake-infisical-missing-name"
+expect_failure 'NOTARY_KEY_ID' "${test_root}/infisical-missing.log" \
+  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+rm -f "${TMPDIR}/fake-infisical-missing-name"
+mv "${fake_bin}/infisical" "${fake_bin}/infisical.off"
+expect_failure 'missing required macOS signing tool: infisical' "${test_root}/infisical-tool.log" \
+  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+mv "${fake_bin}/infisical.off" "${fake_bin}/infisical"
+mv "${fake_bin}/rcodesign" "${fake_bin}/rcodesign.off"
+expect_failure 'missing required macOS signing tool: rcodesign' "${test_root}/required-tool.log" \
+  "${launcher}" --preflight
+mv "${fake_bin}/rcodesign.off" "${fake_bin}/rcodesign"
+
+handoff_artifact="$(new_artifact handoff-cli)"
+CTX_TEST_ONLY_MACOS_SIGNER_PATH="${fake_signer}" \
+  "${launcher}" macos-arm64 cli "${handoff_artifact}" "${test_root}/handoff-evidence"
+for handoff_file in "${TMPDIR}/fake-signer-argv.txt" "${TMPDIR}/fake-signer-environment.txt"; do
+  for secret in \
+    cDEyLXNlY3JldC1zZW50aW5lbA== \
+    password-secret-sentinel \
+    issuer-test-value \
+    key-id-test-value \
+    LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCnA4LXNlY3JldC1zZW50aW5lbAotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==; do
+    grep -Fq "${secret}" "${handoff_file}" && fail "secret value reached fake signer argv/environment"
+  done
+  for secret_name in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY_ISSUER NOTARY_KEY_ID NOTARY_KEY_P8_B64; do
+    grep -Fq "${secret_name}=" "${handoff_file}" && fail "secret variable reached fake signer environment"
+  done
+done
+
 success_dir="${test_root}/success"
 mkdir -p "${success_dir}"
 success_artifact="$(new_artifact success-cli)"
-"${sign_script}" macos-arm64 cli "${success_artifact}" "${success_dir}" \
+rm -f "${TMPDIR}/tool-order.log"
+"${launcher}" macos-arm64 cli "${success_artifact}" "${success_dir}" \
   >"${test_root}/success.log" 2>&1
 sha256sum "${success_artifact}" | awk '{print $1}' >"${success_artifact}.sha256"
 "${check_script}" macos-arm64 cli "${success_artifact}" \
   "${success_dir}/ctx-macos-arm64.signing.json"
-python3 - "${success_artifact}" "${success_dir}/ctx-macos-arm64.signing.json" <<'PY'
-import hashlib
-import json
-import sys
-
-with open(sys.argv[1], "rb") as source:
-    digest = hashlib.file_digest(source, "sha256").hexdigest()
-with open(sys.argv[2], encoding="utf-8") as source:
-    evidence = json.load(source)
-assert evidence["artifact_sha256"] == digest
-assert evidence["notarization"]["status"] == "Accepted"
-assert evidence["codesign"]["hardened_runtime"] is True
-assert evidence["codesign"]["secure_timestamp"] is True
-assert evidence["gatekeeper"]["verified"] is True
-PY
-find "${test_root}/tmp" -maxdepth 1 -name 'ctx-macos-signing.*' -print -quit \
-  | grep -q . && fail "secret temporary directory was not removed"
+[[ "$(tr '\n' ' ' <"${TMPDIR}/tool-order.log")" == \
+  'sign zip notary-submit gatekeeper attest gatekeeper ' ]] || fail "sign/notary/attestation ordering changed"
+grep -Fq 'UNRELATED_SECRET=' "${TMPDIR}/signer-environment.txt" && fail "unrelated secret reached signer"
+grep -Fq 'INFISICAL_' "${TMPDIR}/signer-environment.txt" && fail "Infisical auth/config reached signer"
+grep -Fq 'CTX_MACOS_SIGNING_SECRET_DIR=' "${TMPDIR}/signer-environment.txt" || \
+  fail "signer did not receive the secure secret directory path"
+for forbidden in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY_ISSUER NOTARY_KEY_ID NOTARY_KEY_P8_B64; do
+  grep -Fq "${forbidden}=" "${TMPDIR}/signer-environment.txt" \
+    && fail "${forbidden} value reached signer environment"
+done
+grep -Fq -- '--p12-password-file ' "${TMPDIR}/rcodesign-argv.txt" || \
+  fail "rcodesign did not receive the P12 password as a file path"
+grep -Fq -- '--key ' "${TMPDIR}/notarytool-argv.txt" || \
+  fail "notarytool did not receive the P8 as a file path"
 for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
-  if grep -R -Fq "${secret}" "${success_dir}" "${test_root}/success.log"; then
-    fail "secret value appeared in signing output: ${secret}"
-  fi
+  grep -Fq "${secret}" "${TMPDIR}/signer-environment.txt" \
+    "${TMPDIR}/rcodesign-argv.txt" "${TMPDIR}/notarytool-argv.txt" \
+    "${TMPDIR}/notarytool-environment.txt" \
+    && fail "secret value reached signer/tool argv or environment: ${secret}"
 done
 
-for missing in \
-  APPLE_CODESIGN_CERT_P12_B64 \
-  APPLE_CODESIGN_CERT_PASSWORD \
-  NOTARY_ISSUER \
-  NOTARY_KEY_ID \
-  NOTARY_KEY_P8_B64; do
+for missing in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY_ISSUER NOTARY_KEY_ID NOTARY_KEY_P8_B64; do
   artifact="$(new_artifact "missing-${missing}")"
-  expect_failure "missing required env var: ${missing}" "${test_root}/missing-${missing}.log" \
-    env -u "${missing}" "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/missing-evidence"
+  expect_failure "missing required injected macOS signing value ${missing}" "${test_root}/missing-${missing}.log" \
+    env -u "${missing}" "${launcher}" macos-arm64 cli "${artifact}" "${test_root}/missing-evidence"
 done
 
+touch "${TMPDIR}/fake-coherent-wrong-identity"
 artifact="$(new_artifact wrong-identity)"
-expect_failure 'not a Developer ID Application identity' "${test_root}/wrong-identity.log" \
-  env CTX_FAKE_WRONG_IDENTITY=1 "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/wrong-identity-evidence"
+expect_failure 'not the pinned ctx Developer ID identity' "${test_root}/wrong-identity.log" \
+  "${launcher}" macos-arm64 cli "${artifact}" "${test_root}/wrong-identity-evidence"
+rm -f "${TMPDIR}/fake-coherent-wrong-identity"
 
-artifact="$(new_artifact wrong-team)"
-expect_failure 'TeamIdentifier does not match the supplied identity' "${test_root}/wrong-team.log" \
-  env CTX_FAKE_WRONG_TEAM=1 "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/wrong-team-evidence"
-
+touch "${TMPDIR}/fake-sign-failure"
 artifact="$(new_artifact sign-failure)"
 expect_failure 'Developer ID signing failed' "${test_root}/sign-failure.log" \
-  env CTX_FAKE_SIGN_FAILURE=1 "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/sign-failure-evidence"
+  "${launcher}" macos-arm64 cli "${artifact}" "${test_root}/sign-failure-evidence"
+rm -f "${TMPDIR}/fake-sign-failure"
 
+printf '%s' rejected >"${TMPDIR}/fake-notary-result"
 artifact="$(new_artifact rejected)"
 expect_failure 'status Invalid' "${test_root}/rejected.log" \
-  env CTX_FAKE_NOTARY_RESULT=rejected "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/rejected-evidence"
-[[ -s "${test_root}/rejected-evidence/ctx-macos-arm64.notary-submit.json" ]] || \
-  fail "notary rejection JSON was not preserved"
-[[ -s "${test_root}/rejected-evidence/ctx-macos-arm64.notary-submit.stderr" ]] || \
-  fail "notary rejection stderr was not preserved"
-[[ -s "${test_root}/rejected-evidence/ctx-macos-arm64.notary-log.json" ]] || \
-  fail "notary rejection log JSON was not preserved"
-
+  "${launcher}" macos-arm64 cli "${artifact}" "${test_root}/rejected-evidence"
+[[ -s "${test_root}/rejected-evidence/ctx-macos-arm64.notary-log.json" ]] || fail "rejection log missing"
+printf '%s' timeout >"${TMPDIR}/fake-notary-result"
+rm -f "${TMPDIR}/tool-order.log"
 artifact="$(new_artifact timeout)"
-expect_failure 'timed out after 7m' "${test_root}/timeout.log" \
-  env CTX_FAKE_NOTARY_RESULT=timeout "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/timeout-evidence"
-[[ -s "${test_root}/timeout-evidence/ctx-macos-arm64.notary-submit.stderr" ]] || \
-  fail "notary timeout stderr was not preserved"
+expect_failure 'timed out after 30m' "${test_root}/timeout.log" \
+  "${launcher}" macos-arm64 cli "${artifact}" "${test_root}/timeout-evidence"
+[[ -s "${test_root}/timeout-evidence/ctx-macos-arm64.notary-submit.stderr" ]] || fail "timeout stderr missing"
+[[ "$(tr '\n' ' ' <"${TMPDIR}/tool-order.log")" == 'sign zip notary-submit ' ]] || \
+  fail "timeout did not stop before Gatekeeper/attestation"
+rm -f "${TMPDIR}/fake-notary-result"
 
+touch "${TMPDIR}/fake-mutate-after-sign"
 artifact="$(new_artifact mutation)"
 expect_failure 'mutated after Developer ID signing' "${test_root}/mutation.log" \
-  env CTX_FAKE_MUTATE_AFTER_SIGN=1 "${sign_script}" macos-arm64 cli "${artifact}" "${test_root}/mutation-evidence"
+  "${launcher}" macos-arm64 cli "${artifact}" "${test_root}/mutation-evidence"
+rm -f "${TMPDIR}/fake-mutate-after-sign"
 
 ordering_dir="${test_root}/ordering"
 mkdir -p "${ordering_dir}"
 artifact="$(new_artifact ordering-cli)"
 sha256sum "${artifact}" | awk '{print $1}' >"${artifact}.sha256"
-"${sign_script}" macos-x64 cli "${artifact}" "${ordering_dir}" >/dev/null
+"${launcher}" macos-x64 cli "${artifact}" "${ordering_dir}" >/dev/null
 expect_failure 'signed artifact checksum mismatch' "${test_root}/ordering.log" \
   "${check_script}" macos-x64 cli "${artifact}" "${ordering_dir}/ctx-macos-x64.signing.json"
 sha256sum "${artifact}" | awk '{print $1}' >"${artifact}.sha256"
@@ -256,22 +436,68 @@ sha256sum "${artifact}" | awk '{print $1}' >"${artifact}.sha256"
 
 runtime_dir="${test_root}/runtime"
 mkdir -p "${runtime_dir}/package/lib"
-runtime="$(new_artifact runtime-dylib)"
-"${sign_script}" macos-x64 runtime "${runtime}" "${runtime_dir}" >/dev/null
+runtime="$(new_artifact libonnxruntime.dylib)"
+"${launcher}" macos-x64 runtime "${runtime}" "${runtime_dir}" >/dev/null
 cp "${runtime}" "${runtime_dir}/package/lib/libonnxruntime.dylib"
-tar -czf "${runtime_dir}/ctx-onnxruntime-macos-x64.tar.gz" \
-  -C "${runtime_dir}/package" lib/libonnxruntime.dylib
 runtime_archive="${runtime_dir}/ctx-onnxruntime-macos-x64.tar.gz"
+tar -czf "${runtime_archive}" -C "${runtime_dir}/package" lib/libonnxruntime.dylib
 sha256sum "${runtime_archive}" | awk '{print $1}' >"${runtime_archive}.sha256"
 runtime_evidence="${runtime_dir}/ctx-onnxruntime-macos-x64.signing.json"
 python3 "${evidence_tool}" bind-archive \
-  --evidence "${runtime_evidence}" \
-  --platform macos-x64 \
-  --archive "${runtime_archive}" \
-  --checksum "${runtime_archive}.sha256" \
-  --nested-artifact "${runtime}" \
-  --role release
+  --evidence "${runtime_evidence}" --platform macos-x64 \
+  --archive "${runtime_archive}" --checksum "${runtime_archive}.sha256" \
+  --nested-artifact "${runtime}" --role release
 "${check_script}" macos-x64 runtime "${runtime_archive}" "${runtime_evidence}"
+
+substitution_dir="${test_root}/substitution"
+mkdir -p "${substitution_dir}"
+substituted="${substitution_dir}/ctx-macos-arm64"
+cp "${success_artifact}" "${substituted}"
+cp "${success_dir}/ctx-macos-arm64."* "${substitution_dir}/"
+printf '%s\n' 'substituted executable bytes' >>"${substituted}"
+sha256sum "${substituted}" | awk '{print $1}' >"${substituted}.sha256"
+python3 - "${substitution_dir}/ctx-macos-arm64.signing.json" "${substituted}" <<'PY'
+import hashlib
+import json
+import sys
+evidence_path, artifact = sys.argv[1:]
+with open(evidence_path, encoding="utf-8") as source:
+    evidence = json.load(source)
+with open(artifact, "rb") as source:
+    evidence["artifact_sha256"] = hashlib.sha256(source.read()).hexdigest()
+with open(evidence_path, "w", encoding="utf-8") as output:
+    json.dump(evidence, output, sort_keys=True, separators=(",", ":"))
+    output.write("\n")
+PY
+python3 "${evidence_tool}" create-attestation \
+  --output "${substitution_dir}/ctx-macos-arm64.attestation.json" \
+  --platform macos-arm64 --kind cli --artifact "${substituted}" \
+  --source-commit "$(git -C "${repo_root}" rev-parse HEAD)"
+expect_failure 'CMS signature verification failed' "${test_root}/substitution.log" \
+  "${attestation_check}" macos-arm64 cli "${substituted}" \
+  "${substitution_dir}/ctx-macos-arm64.attestation.json" \
+  "${substitution_dir}/ctx-macos-arm64.attestation.cms"
+
+touch "${TMPDIR}/fake-coherent-wrong-identity"
+coherent_evidence="${test_root}/coherent-wrong.json"
+cp "${success_dir}/ctx-macos-arm64.signing.json" "${coherent_evidence}"
+python3 - "${coherent_evidence}" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    value = json.load(source)
+value["codesign"]["authority"] = "Developer ID Application: Other Corp (OTHERTEAM)"
+value["codesign"]["team_identifier"] = "OTHERTEAM"
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(value, output, sort_keys=True, separators=(",", ":"))
+    output.write("\n")
+PY
+expect_failure 'pinned ctx Apple authority' "${test_root}/coherent-wrong.log" \
+  python3 "${evidence_tool}" verify-artifact \
+    --evidence "${coherent_evidence}" --platform macos-arm64 --kind cli \
+    --artifact "${success_artifact}" --checksum "${success_artifact}.sha256"
+rm -f "${TMPDIR}/fake-coherent-wrong-identity"
 
 printf '%s\n' 'unsigned nested dylib' >"${runtime_dir}/package/lib/libonnxruntime.dylib"
 tar -czf "${runtime_archive}" -C "${runtime_dir}/package" lib/libonnxruntime.dylib
@@ -280,26 +506,52 @@ python3 - "${runtime_evidence}" "${runtime_archive}" "${runtime_dir}/package/lib
 import hashlib
 import json
 import sys
-
 evidence_path, archive, nested = sys.argv[1:]
 with open(evidence_path, encoding="utf-8") as source:
     evidence = json.load(source)
 with open(archive, "rb") as source:
-    archive_sha = hashlib.file_digest(source, "sha256").hexdigest()
+    archive_sha = hashlib.sha256(source.read()).hexdigest()
 with open(nested, "rb") as source:
-    nested_sha = hashlib.file_digest(source, "sha256").hexdigest()
+    nested_sha = hashlib.sha256(source.read()).hexdigest()
 evidence["artifact_sha256"] = nested_sha
-evidence["packages"] = [{
-    "archive_name": archive.rsplit("/", 1)[-1],
-    "archive_sha256": archive_sha,
-    "nested_artifact_sha256": nested_sha,
-    "role": "release",
-}]
+evidence["packages"] = [{"archive_name": archive.rsplit("/", 1)[-1], "archive_sha256": archive_sha, "nested_artifact_sha256": nested_sha, "role": "release"}]
 with open(evidence_path, "w", encoding="utf-8") as output:
     json.dump(evidence, output, sort_keys=True, separators=(",", ":"))
     output.write("\n")
 PY
-expect_failure 'strict codesign verification failed' "${test_root}/unsigned-nested.log" \
+expect_failure 'signed macOS attestation does not bind' "${test_root}/unsigned-nested.log" \
   "${check_script}" macos-x64 runtime "${runtime_archive}" "${runtime_evidence}"
+
+if [[ -x /usr/bin/openssl ]] && /usr/bin/openssl cms -help >/dev/null 2>&1; then
+  forged_root="${test_root}/self-signed-forgery"
+  mkdir -p "${forged_root}"
+  forged_artifact="${forged_root}/ctx-macos-arm64"
+  forged_statement="${forged_root}/ctx-macos-arm64.attestation.json"
+  forged_cms="${forged_root}/ctx-macos-arm64.attestation.cms"
+  printf '%s\n' 'self-signed coherent substitution' >"${forged_artifact}"
+  /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+    -subj '/CN=Developer ID Application: Other Corp (OTHERTEAM)/OU=OTHERTEAM' \
+    -keyout "${forged_root}/key.pem" -out "${forged_root}/cert.pem" \
+    >/dev/null 2>&1
+  python3 "${evidence_tool}" create-attestation \
+    --output "${forged_statement}" --platform macos-arm64 --kind cli \
+    --artifact "${forged_artifact}" \
+    --source-commit "$(git -C "${repo_root}" rev-parse HEAD)"
+  /usr/bin/openssl cms -sign -binary -in "${forged_statement}" \
+    -signer "${forged_root}/cert.pem" -inkey "${forged_root}/key.pem" \
+    -outform DER -out "${forged_cms}" -md sha256 -noattr >/dev/null 2>&1
+  expect_failure 'CMS signature verification failed' "${test_root}/self-signed-forgery.log" \
+    env PATH=/usr/bin:/bin TMPDIR="${TMPDIR}" \
+    "${attestation_check}" macos-arm64 cli "${forged_artifact}" \
+    "${forged_statement}" "${forged_cms}"
+fi
+
+find "${test_root}/tmp" -maxdepth 1 -name 'ctx-macos-signing-*' -print -quit \
+  | grep -q . && fail "secret temporary directory was not removed"
+for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
+  grep -R -Fq "${secret}" "${test_root}" \
+    --exclude='infisical' \
+    && fail "secret value appeared outside the scrubbed signer environment: ${secret}"
+done
 
 printf 'macOS release signing contract tests passed\n'
