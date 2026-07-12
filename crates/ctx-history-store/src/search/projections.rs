@@ -17,6 +17,9 @@ use crate::schema::ddl::{table_exists, table_has_column};
 use crate::search::analyzer::{
     lexical_query_terms, scriptgram_index_text, scriptgram_match_clauses,
 };
+use crate::search::event_query::{
+    event_search_hit_sql, event_search_score, lexical_event_search_query,
+};
 use crate::{Result, Store};
 
 const SEMANTIC_SEARCHABLE_ITEMS_STAT_KEY: &str = "semantic_searchable_lite_turn_items_v3";
@@ -141,6 +144,15 @@ impl Store {
             return Ok(Vec::new());
         }
 
+        if scriptgram_clauses.is_empty() {
+            return self.search_event_hits_page_lexical(
+                match_clauses,
+                limit,
+                offset,
+                prefer_conversation,
+            );
+        }
+
         let mut selects = Vec::new();
         let mut values = Vec::<Value>::new();
         for (term_index, clause) in match_clauses.into_iter().enumerate() {
@@ -191,6 +203,20 @@ impl Store {
                 "ORDER BY ranked.matched_terms DESC, search_score, e.occurred_at_ms DESC, e.seq DESC, event_search.event_id",
             )
         );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values), event_search_hit_from_row)?;
+        collect_rows(rows)
+    }
+
+    fn search_event_hits_page_lexical(
+        &self,
+        match_clauses: Vec<String>,
+        limit: usize,
+        offset: usize,
+        prefer_conversation: bool,
+    ) -> Result<Vec<EventSearchHit>> {
+        let (sql, values) =
+            lexical_event_search_query(match_clauses, limit, offset, prefer_conversation);
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(values), event_search_hit_from_row)?;
         collect_rows(rows)
@@ -514,56 +540,6 @@ impl Store {
             )?;
         Ok(())
     }
-}
-
-fn event_search_score(score_sql: &str, prefer_conversation: bool) -> String {
-    if prefer_conversation {
-        format!(
-            "CASE WHEN e.event_type IN ('message', 'summary') THEN ({score_sql}) - (ABS({score_sql}) * 0.15) ELSE ({score_sql}) END"
-        )
-    } else {
-        score_sql.to_owned()
-    }
-}
-
-fn event_search_hit_sql(from_sql: &str, score_sql: &str, tail_sql: &str) -> String {
-    format!(
-        r#"
-        SELECT event_search.event_id,
-               COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id),
-               COALESCE(e.session_id, event_search.session_id, s.id, rs.id),
-               e.run_id,
-               e.seq,
-               e.event_type,
-               e.role,
-               e.occurred_at_ms,
-               event_search.preview_text,
-               {score_sql} AS search_score,
-               COALESCE(s.provider, rs.provider, event_source.provider, session_source.provider, run_source.provider),
-               COALESCE(s.external_session_id, rs.external_session_id),
-               COALESCE(s.parent_session_id, rs.parent_session_id),
-               COALESCE(s.root_session_id, rs.root_session_id),
-               COALESCE(s.agent_type, rs.agent_type),
-               COALESCE(s.is_primary, rs.is_primary),
-               COALESCE(event_source.cwd, session_source.cwd, run_source.cwd),
-               COALESCE(event_source.raw_source_path, session_source.raw_source_path, run_source.raw_source_path),
-               e.payload_json,
-               COALESCE(event_source.metadata_json, session_source.metadata_json, run_source.metadata_json),
-               wr.title,
-               wr.kind,
-               wr.workspace
-        FROM {from_sql}
-        JOIN events e ON e.id = event_search.event_id
-        LEFT JOIN runs r ON r.id = e.run_id
-        LEFT JOIN sessions s ON s.id = COALESCE(e.session_id, event_search.session_id)
-        LEFT JOIN sessions rs ON rs.id = r.session_id
-        LEFT JOIN capture_sources event_source ON event_source.id = e.capture_source_id
-        LEFT JOIN capture_sources session_source ON session_source.id = COALESCE(s.capture_source_id, rs.capture_source_id)
-        LEFT JOIN capture_sources run_source ON run_source.id = r.source_id
-        LEFT JOIN history_records wr ON wr.id = COALESCE(e.history_record_id, event_search.history_record_id, s.history_record_id, rs.history_record_id, r.history_record_id)
-        {tail_sql}
-        "#
-    )
 }
 
 fn event_search_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventSearchHit> {
