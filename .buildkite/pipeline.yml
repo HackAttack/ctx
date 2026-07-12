@@ -131,6 +131,7 @@ steps:
       - "target/public-cli-artifacts/ctx.exe"
       - "target/public-cli-artifacts/ctx.exe.sha256"
       - "target/public-cli-artifacts/ctx.exe.version"
+      - "target/public-cli-artifacts/ctx.exe.expected-version"
       - "target/public-cli-artifacts/ctx.exe.build-info.json"
       - "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip"
       - "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip.sha256"
@@ -303,6 +304,7 @@ steps:
     command: |
       buildkite-agent artifact download "target/public-cli-artifacts/ctx.exe*" . --step public-cli-windows-x64
       buildkite-agent artifact download "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip*" . --step public-cli-windows-x64
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-native-candidate-smoke.ps1 -Binary target/public-cli-artifacts/ctx.exe -Fixture tests/fixtures/custom-history-jsonl/basic.jsonl -ExpectedVersionFile target/public-cli-artifacts/ctx.exe.expected-version -ResultPath target/public-cli-native-smoke/windows-x64/candidate-smoke.json
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-daemon-semantic-release.ps1 -Ctx target/public-cli-artifacts/ctx.exe -RuntimeArchive target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip -RuntimePlatform windows-x64 -DataRoot target/public-cli-native-smoke/windows-x64 -ProofOutput target/public-cli-artifacts/ctx-windows-x64.native-runtime-proof.txt -RequireAuthoritative -KeepRoot
     agents:
       queue: "windows-x64"
@@ -313,5 +315,6 @@ steps:
     timeout_in_minutes: 90
     artifact_paths:
       - "target/public-cli-artifacts/ctx-windows-x64.native-runtime-proof.txt"
+      - "target/public-cli-native-smoke/windows-x64/candidate-smoke.json"
       - "target/public-cli-native-smoke/windows-x64/**/packaged-runtime-proof.txt"
       - "target/public-cli-native-smoke/windows-x64/**/daemon-smoke.log"

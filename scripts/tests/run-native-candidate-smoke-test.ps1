@@ -18,7 +18,9 @@ if "%USERPROFILE%"=="" exit /b 95
 echo %* | findstr /c:"--backend semantic" >nul
 if not errorlevel 1 (
   if not "%CTX_SEARCH_SEMANTIC%"=="1" exit /b 96
-  1>&2 echo local semantic search is not supported on this platform yet
+  if not "%CTX_DAEMON_ENABLED%"=="1" exit /b 97
+  if not "%CTX_DISABLE_DAEMON%"=="0" exit /b 98
+  1>&2 echo semantic-only search will not initialize or download intfloat/multilingual-e5-small during search
   exit /b 1
 )
 if "%1"=="--version" (
@@ -35,7 +37,9 @@ if "%1"=="search" (
   exit /b 0
 )
 if "%1"=="status" (
-  echo {"read_only":true,"semantic":{"embed_policy":{"source":"unsupported"}}}
+  if not "%CTX_SEARCH_SEMANTIC%"=="" exit /b 89
+  if not "%CTX_DISABLE_DAEMON%"=="" exit /b 90
+  echo {"read_only":true,"semantic":{"config_source":"default","enabled":false,"reason":"semantic_disabled","embed_policy":{"source":"dynamic_quiet"}}}
   exit /b 0
 )
 exit /b 99
@@ -45,8 +49,10 @@ exit /b 99
     '{"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"}' |
         Set-Content -LiteralPath $fixture -Encoding Ascii
     $result = Join-Path $root "result.json"
+    $expectedVersionFile = Join-Path $root "expected-version"
+    "0.25.0`n" | Set-Content -LiteralPath $expectedVersionFile -NoNewline -Encoding Ascii
 
-    & $smoke -Binary $fake -Fixture $fixture -ExpectedVersion 0.25.0 -ResultPath $result | Out-Null
+    & $smoke -Binary $fake -Fixture $fixture -ExpectedVersionFile $expectedVersionFile -ResultPath $result | Out-Null
     $parsed = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
     if ($parsed.schema_version -ne 1 -or
         $parsed.kind -ne "ctx-native-candidate-smoke" -or
@@ -58,7 +64,7 @@ exit /b 99
         throw "candidate smoke result contains unexpected top-level keys"
     }
     $stepKeys = @($parsed.steps.PSObject.Properties.Name)
-    if (($stepKeys -join ",") -ne "version,setup,import,search,read_only,capability") {
+    if (($stepKeys -join ",") -ne "version,setup,import,search,read_only,semantic_offline_fail_closed") {
         throw "candidate smoke result contains unexpected step keys"
     }
     foreach ($key in $stepKeys) {

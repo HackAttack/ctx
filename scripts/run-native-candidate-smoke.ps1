@@ -3,8 +3,8 @@ param(
     [string]$Binary,
     [Parameter(Mandatory = $true)]
     [string]$Fixture,
-    [Parameter(Mandatory = $true)]
     [string]$ExpectedVersion,
+    [string]$ExpectedVersionFile,
     [Parameter(Mandatory = $true)]
     [string]$ResultPath
 )
@@ -19,6 +19,18 @@ function Fail([string]$Message) {
 $Binary = [System.IO.Path]::GetFullPath($Binary)
 $Fixture = [System.IO.Path]::GetFullPath($Fixture)
 $ResultPath = [System.IO.Path]::GetFullPath($ResultPath)
+
+if ([string]::IsNullOrWhiteSpace($ExpectedVersion) -eq
+    [string]::IsNullOrWhiteSpace($ExpectedVersionFile)) {
+    Fail "provide exactly one of ExpectedVersion or ExpectedVersionFile"
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpectedVersionFile)) {
+    $ExpectedVersionFile = [System.IO.Path]::GetFullPath($ExpectedVersionFile)
+    if (-not (Test-Path -LiteralPath $ExpectedVersionFile -PathType Leaf)) {
+        Fail "expected-version file is missing: $ExpectedVersionFile"
+    }
+    $ExpectedVersion = (Get-Content -LiteralPath $ExpectedVersionFile -Raw).Trim()
+}
 
 if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
     Fail "binary is missing: $Binary"
@@ -187,17 +199,27 @@ try {
         Fail "lexical search did not return the expected fixture result"
     }
 
-    $status = Invoke-Ctx @("status", "--json")
+    $env:CTX_SEARCH_SEMANTIC = $null
+    $env:CTX_DISABLE_DAEMON = $null
+    try {
+        $status = Invoke-Ctx @("status", "--json")
+    } finally {
+        $env:CTX_SEARCH_SEMANTIC = "0"
+        $env:CTX_DISABLE_DAEMON = "1"
+    }
     if ($status -notmatch '"read_only"\s*:\s*true') {
         Fail "read-only status command returned an unexpected payload"
     }
-    if ($status -notmatch '"source"\s*:\s*"unsupported"') {
-        Fail "native candidate does not report the unsupported semantic capability"
+    if ($status -notmatch '"config_source"\s*:\s*"default"' -or
+        $status -notmatch '"reason"\s*:\s*"semantic_disabled"') {
+        Fail "native candidate does not report semantic search as disabled by default"
+    }
+    if ($status -match '"source"\s*:\s*"unsupported"') {
+        Fail "native candidate unexpectedly reports semantic search as unsupported"
     }
 
-    # Windows intentionally has no semantic backend. An explicit semantic-only
-    # request must fail before any fallback, cache creation, daemon, or network
-    # path can run.
+    # Semantic search is supported but opt-in. Without a provisioned model, an
+    # explicit offline request must fail before fallback, state, or network.
     $env:CTX_SEARCH_SEMANTIC = "1"
     $env:CTX_DAEMON_ENABLED = "1"
     $env:CTX_DISABLE_DAEMON = "0"
@@ -220,7 +242,7 @@ try {
     if ($capabilityExit -eq 0) {
         Fail "semantic-only search unexpectedly succeeded"
     }
-    if ($capabilityText -notmatch 'local semantic search is not supported on this platform yet') {
+    if ($capabilityText -notmatch 'semantic-only search will not initialize or download') {
         Fail "semantic-only search did not report the fail-closed capability contract"
     }
     if ($capabilityText -match '"effective_mode"\s*:\s*"lexical"') {
@@ -256,7 +278,7 @@ try {
             import = "passed"
             search = "passed"
             read_only = "passed"
-            capability = "passed"
+            semantic_offline_fail_closed = "passed"
         }
     }
     $resultJson = $result | ConvertTo-Json -Compress -Depth 3
