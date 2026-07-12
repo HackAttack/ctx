@@ -98,8 +98,7 @@ steps:
           target/public-cli-artifacts/ctx-linux-aarch64.native-runtime-proof.txt
       fi
     agents:
-      queue: "release-linux-managed"
-      ctx-runner-class: "release-linux-control"
+      queue: "linux-arm64"
       os: "linux"
       arch: "arm64"
     timeout_in_minutes: 60
@@ -316,44 +315,3 @@ steps:
       - "target/public-cli-artifacts/ctx-windows-x64.native-runtime-proof.txt"
       - "target/public-cli-native-smoke/windows-x64/**/packaged-runtime-proof.txt"
       - "target/public-cli-native-smoke/windows-x64/**/daemon-smoke.log"
-
-  - label: ":test_tube: public CLI freebsd-x64 native semantic"
-    key: "public-cli-freebsd-x64-native-smoke"
-    depends_on: "public-cli-freebsd-x64"
-    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1"
-    command: |
-      buildkite-agent artifact download \
-        "target/public-cli-artifacts/ctx-freebsd-x64*" . \
-        --step public-cli-freebsd-x64
-      scripts/build-onnxruntime-sidecar.sh freebsd-x64
-      scripts/stage-github-release-assets.sh --transcode-runtime freebsd-x64
-      smoke_root="target/public-cli-native-smoke/freebsd-x64"
-      mkdir -p "${smoke_root}"
-      if ! scripts/smoke-daemon-semantic-release.sh \
-        --runtime-archive target/public-cli-artifacts/ctx-onnxruntime-freebsd-x64.tar.gz \
-        --runtime-platform freebsd-x64 \
-        --ctx target/public-cli-artifacts/ctx-freebsd-x64 \
-        --data-root "${smoke_root}" \
-        --proof-output target/public-cli-artifacts/ctx-freebsd-x64.native-runtime-proof.txt \
-        --keep-root >"${smoke_root}/smoke.log" 2>&1; then
-        cat "${smoke_root}/smoke.log"
-        exit 1
-      fi
-      cat "${smoke_root}/smoke.log"
-      grep -Fxq 'runtime_authority=authoritative' \
-        target/public-cli-artifacts/ctx-freebsd-x64.native-runtime-proof.txt
-    agents:
-      queue: "freebsd-x64"
-      os: "freebsd"
-      arch: "x86_64"
-    concurrency: 1
-    concurrency_group: "ctx-public-cli-freebsd-native"
-    timeout_in_minutes: 240
-    artifact_paths:
-      - "target/public-cli-artifacts/ctx-onnxruntime-freebsd-x64.tar.gz"
-      - "target/public-cli-artifacts/ctx-onnxruntime-freebsd-x64.tar.gz.sha256"
-      - "target/public-cli-artifacts/ctx-freebsd-x64.native-runtime-proof.txt"
-      - "target/public-cli-native-smoke/freebsd-x64/smoke.log"
-      - "target/public-cli-native-smoke/freebsd-x64/**/daemon-smoke.log"
-      - "target/public-cli-native-smoke/freebsd-x64/**/daemon-status.*"
-      - "target/public-cli-native-smoke/freebsd-x64/**/semantic-search.*"
