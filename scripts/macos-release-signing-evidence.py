@@ -61,6 +61,18 @@ def detail_value(details: str, name: str) -> str:
     return match.group(1).strip()
 
 
+def code_directory_flags(details: str) -> set[str]:
+    flags: set[str] = set()
+    for match in re.finditer(
+        r"^CodeDirectory\s+.*?\bflags=[^\s()]*(?:\(([^)]*)\))?",
+        details,
+        re.MULTILINE,
+    ):
+        if match.group(1):
+            flags.update(value.strip() for value in match.group(1).split(","))
+    return flags
+
+
 def require_base_document(
     document: dict[str, Any], platform: str, kind: str
 ) -> dict[str, Any]:
@@ -107,9 +119,10 @@ def command_write(args: argparse.Namespace) -> None:
         raise SystemExit(f"unexpected codesign authority: {authority}")
     if team_identifier != EXPECTED_TEAM_ID:
         raise SystemExit(f"unexpected codesign TeamIdentifier: {team_identifier}")
-    flags = detail_value(details, "flags")
-    if "runtime" not in flags.lower():
-        raise SystemExit("codesign details do not contain hardened runtime flags")
+    if "runtime" not in code_directory_flags(details):
+        raise SystemExit(
+            "codesign details do not contain runtime in CodeDirectory flags"
+        )
     if not re.search(r"^Timestamp=.+$", details, re.MULTILINE):
         raise SystemExit("codesign details do not contain a secure timestamp")
 

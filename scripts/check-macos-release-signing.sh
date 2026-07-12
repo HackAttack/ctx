@@ -23,6 +23,22 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+codesign_details_have_runtime() {
+  awk '
+    /^CodeDirectory[[:space:]]/ && match($0, /flags=[^[:space:]]*\([^)]*\)/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^flags=[^(]*\(/, "", value)
+      sub(/\)$/, "", value)
+      count = split(value, tokens, ",")
+      for (i = 1; i <= count; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", tokens[i])
+        if (tokens[i] == "runtime") found = 1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
 platform="${1:-}"
 kind="${2:-}"
 artifact="${3:-}"
@@ -77,7 +93,7 @@ verify_macho() {
     rm -f "${details}" "${gatekeeper}"
     die "artifact does not have the pinned ctx Apple Team ID: ${path}"
   }
-  grep -Eiq '^flags=.*runtime' "${details}" || {
+  codesign_details_have_runtime "${details}" || {
     rm -f "${details}" "${gatekeeper}"
     die "artifact is missing hardened runtime flags: ${path}"
   }

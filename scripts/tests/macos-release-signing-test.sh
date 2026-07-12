@@ -148,13 +148,18 @@ if [[ "${1:-}" == "-d" ]]; then
     authority='Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)'
     team='SJSNARH4TG'
   fi
+  if [[ -e "${TMPDIR}/fake-missing-runtime" ]]; then
+    code_directory_flags='flags=0x0(none)'
+  else
+    code_directory_flags='flags=0x10000(runtime)'
+  fi
   cat >&2 <<DETAILS
 Executable=fake
 Identifier=rs.ctx.test
 Authority=${authority}
 TeamIdentifier=${team}
 Timestamp=Jul 12, 2026 at 12:00:00 PM
-flags=0x10000(runtime) hashes=2+7 location=embedded
+CodeDirectory v=20500 size=47580 ${code_directory_flags} hashes=1475+7 location=embedded
 DETAILS
 fi
 SH
@@ -489,6 +494,27 @@ for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; d
     "${TMPDIR}/notarytool-environment.txt" \
     && fail "secret value reached signer/tool argv or environment: ${secret}"
 done
+
+touch "${TMPDIR}/fake-missing-runtime"
+expect_failure 'missing hardened runtime flags' "${test_root}/missing-runtime-signer.log" \
+  "${launcher}" macos-arm64 cli "$(new_artifact missing-runtime-signer)" \
+    "${test_root}/missing-runtime-signer-evidence"
+expect_failure 'artifact is missing hardened runtime flags' \
+  "${test_root}/missing-runtime-checker.log" \
+  "${check_script}" macos-arm64 cli "${success_artifact}" \
+    "${success_dir}/ctx-macos-arm64.signing.json"
+rm -f "${TMPDIR}/fake-missing-runtime"
+
+missing_runtime_details="${test_root}/missing-runtime.codesign.txt"
+sed 's/flags=0x10000(runtime)/flags=0x0(none)/' \
+  "${success_dir}/ctx-macos-arm64.codesign.txt" >"${missing_runtime_details}"
+expect_failure 'runtime in CodeDirectory flags' "${test_root}/missing-runtime-evidence.log" \
+  python3 "${evidence_tool}" write \
+    --output "${test_root}/missing-runtime.signing.json" \
+    --platform macos-arm64 --kind cli --artifact "${success_artifact}" \
+    --codesign-details "${missing_runtime_details}" \
+    --notary-submit "${success_dir}/ctx-macos-arm64.notary-submit.json" \
+    --gatekeeper-details "${success_dir}/ctx-macos-arm64.gatekeeper.txt"
 
 touch "${TMPDIR}/fake-wrong-eku"
 expect_failure 'certificate lacks the Code Signing EKU' "${test_root}/wrong-eku-signing.log" \

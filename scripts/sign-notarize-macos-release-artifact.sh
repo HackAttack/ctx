@@ -26,6 +26,22 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+codesign_details_have_runtime() {
+  awk '
+    /^CodeDirectory[[:space:]]/ && match($0, /flags=[^[:space:]]*\([^)]*\)/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^flags=[^(]*\(/, "", value)
+      sub(/\)$/, "", value)
+      count = split(value, tokens, ",")
+      for (i = 1; i <= count; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", tokens[i])
+        if (tokens[i] == "runtime") found = 1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
 decode_b64_file() {
   local label="$1"
   local input="$2"
@@ -305,7 +321,7 @@ grep -Fqx "Authority=${EXPECTED_AUTHORITY}" "${codesign_details}" || \
   die "signed ${platform} ${kind} does not have the pinned ctx Apple authority"
 grep -Fqx "TeamIdentifier=${EXPECTED_TEAM_ID}" "${codesign_details}" || \
   die "signed ${platform} ${kind} does not have the pinned ctx Apple Team ID"
-grep -Eiq '^flags=.*runtime' "${codesign_details}" || \
+codesign_details_have_runtime "${codesign_details}" || \
   die "signed ${platform} ${kind} is missing hardened runtime flags"
 grep -Eq '^Timestamp=.+$' "${codesign_details}" || \
   die "signed ${platform} ${kind} is missing a secure timestamp"
