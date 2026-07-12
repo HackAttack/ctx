@@ -129,7 +129,14 @@ subject=",${subject#subject=},"
 eku="$(openssl x509 -in "${cert_path}" -noout -ext extendedKeyUsage 2>/dev/null || true)"
 grep -Eq '(^|[ ,])(Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)(,|$)' <<<"${eku}" || \
   die "runtime archive attester certificate lacks the Code Signing EKU"
-openssl verify -purpose any -partial_chain -no-CApath -no-CAstore \
+key_usage="$(openssl x509 -in "${cert_path}" -noout -ext keyUsage 2>/dev/null || true)"
+[[ "${key_usage}" == *"X509v3 Key Usage: critical"* \
+  && "${key_usage}" == *"Digital Signature"* ]] || \
+  die "runtime archive attester certificate lacks critical Digital Signature key usage"
+certificate_profile="$(openssl x509 -in "${cert_path}" -noout -text 2>/dev/null || true)"
+[[ "${certificate_profile}" == *"1.2.840.113635.100.6.1.13: critical"* ]] || \
+  die "runtime archive attester certificate lacks Apple's critical Developer ID extension"
+openssl verify -purpose any -partial_chain -no-CApath -no-CAstore -ignore_critical \
   -CAfile "${root_dir}/scripts/apple-developer-id-g2-ca.pem" \
   "${cert_path}" >/dev/null 2>&1 || \
   die "runtime archive attester does not chain exclusively to the pinned Apple G2 CA"

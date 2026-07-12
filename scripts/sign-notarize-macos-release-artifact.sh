@@ -270,7 +270,15 @@ certificate_eku="$(openssl x509 \
 grep -Eq '(^|[ ,])(Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)(,|$)' \
   <<<"${certificate_eku}" || \
   die "APPLE_CODESIGN_CERT_P12_B64 certificate lacks the Code Signing EKU"
-openssl verify -purpose any -partial_chain -no-CApath -no-CAstore \
+certificate_key_usage="$(openssl x509 \
+  -in "${cert_pem_path}" -noout -ext keyUsage 2>/dev/null || true)"
+[[ "${certificate_key_usage}" == *"X509v3 Key Usage: critical"* \
+  && "${certificate_key_usage}" == *"Digital Signature"* ]] || \
+  die "APPLE_CODESIGN_CERT_P12_B64 certificate lacks critical Digital Signature key usage"
+certificate_profile="$(openssl x509 -in "${cert_pem_path}" -noout -text 2>/dev/null || true)"
+[[ "${certificate_profile}" == *"1.2.840.113635.100.6.1.13: critical"* ]] || \
+  die "APPLE_CODESIGN_CERT_P12_B64 certificate lacks Apple's critical Developer ID extension"
+openssl verify -purpose any -partial_chain -no-CApath -no-CAstore -ignore_critical \
   -CAfile "${root_dir}/scripts/apple-developer-id-g2-ca.pem" \
   "${cert_pem_path}" >/dev/null 2>&1 || \
   die "APPLE_CODESIGN_CERT_P12_B64 does not chain exclusively to Apple's pinned Developer ID G2 CA"

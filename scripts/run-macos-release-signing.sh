@@ -37,7 +37,7 @@ require_openssl3_exclusive_trust() {
     die "macOS signing requires OpenSSL 3"
   verify_help="$(openssl verify -help 2>&1 || true)"
   cms_help="$(openssl cms -help 2>&1 || true)"
-  for flag in -no-CApath -no-CAstore; do
+  for flag in -no-CApath -no-CAstore -ignore_critical; do
     [[ "${verify_help}" == *"${flag}"* && "${cms_help}" == *"${flag}"* ]] || \
       die "selected OpenSSL 3 lacks required exclusive-trust flag ${flag}"
   done

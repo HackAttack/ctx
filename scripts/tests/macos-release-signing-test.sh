@@ -37,6 +37,16 @@ case "${1:-}" in
       else
         printf '%s\n' 'X509v3 Extended Key Usage:' '    Code Signing'
       fi
+    elif [[ " $* " == *' -ext keyUsage '* ]]; then
+      if [[ -e "${TMPDIR}/fake-wrong-key-usage" ]]; then
+        printf '%s\n' 'X509v3 Key Usage: critical' '    Key Encipherment'
+      else
+        printf '%s\n' 'X509v3 Key Usage: critical' '    Digital Signature'
+      fi
+    elif [[ " $* " == *' -text '* ]]; then
+      if [[ ! -e "${TMPDIR}/fake-missing-apple-critical-extension" ]]; then
+        printf '%s\n' '1.2.840.113635.100.6.1.13: critical'
+      fi
     elif [[ -e "${TMPDIR}/fake-coherent-wrong-identity" ]]; then
       printf '%s\n' 'subject=CN=Developer ID Application: Other Corp (OTHERTEAM),OU=OTHERTEAM,O=Other Corp'
     else
@@ -47,17 +57,20 @@ case "${1:-}" in
   verify)
     if [[ "${2:-}" == "-help" ]]; then
       printf '%s\n' '-no-CApath' \
-        "$([[ ! -e "${TMPDIR}/fake-openssl-missing-exclusive-flags" ]] && printf '%s' '-no-CAstore')"
+        "$([[ ! -e "${TMPDIR}/fake-openssl-missing-exclusive-flags" ]] && printf '%s' '-no-CAstore')" \
+        '-ignore_critical'
       exit 0
     fi
-    [[ " $* " == *' -no-CApath '* && " $* " == *' -no-CAstore '* ]]
+    [[ " $* " == *' -no-CApath '* && " $* " == *' -no-CAstore '* \
+      && " $* " == *' -ignore_critical '* ]]
     [[ ! -e "${TMPDIR}/fake-host-trust-only-certificate" ]]
     ;;
   cms)
     operation="${2:-}"
     if [[ "${operation}" == "-help" ]]; then
       printf '%s\n' '-no-CApath' \
-        "$([[ ! -e "${TMPDIR}/fake-openssl-missing-exclusive-flags" ]] && printf '%s' '-no-CAstore')"
+        "$([[ ! -e "${TMPDIR}/fake-openssl-missing-exclusive-flags" ]] && printf '%s' '-no-CAstore')" \
+        '-ignore_critical'
       exit 0
     fi
     original_args="$*"
@@ -81,7 +94,8 @@ case "${1:-}" in
         ;;
       -verify)
         [[ " ${original_args} " == *' -no-CApath '* \
-          && " ${original_args} " == *' -no-CAstore '* ]]
+          && " ${original_args} " == *' -no-CAstore '* \
+          && " ${original_args} " == *' -ignore_critical '* ]]
         [[ ! -e "${TMPDIR}/fake-host-trust-only-certificate" ]]
         [[ "$(cat "${input}")" == "$(sha256sum "${content}" | awk '{print $1}')" ]] || exit 1
         printf '%s\n' \
@@ -713,7 +727,7 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID, ObjectIdentifier
 
 root = Path(sys.argv[1])
 now = datetime.datetime.now(datetime.timezone.utc)
@@ -749,7 +763,7 @@ ca_cert = (
 )
 
 
-def leaf(name, common_name, team):
+def leaf(name, common_name, team, eku=ExtendedKeyUsageOID.CODE_SIGNING, digital_signature=True):
     value_key = key()
     subject = x509.Name(
         [
@@ -766,8 +780,26 @@ def leaf(name, common_name, team):
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([eku]), critical=False)
         .add_extension(
-            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CODE_SIGNING]), critical=False
+            x509.KeyUsage(
+                digital_signature=digital_signature,
+                content_commitment=False,
+                key_encipherment=not digital_signature,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=None,
+                decipher_only=None,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.UnrecognizedExtension(
+                ObjectIdentifier("1.2.840.113635.100.6.1.13"), b"\x05\x00"
+            ),
+            critical=True,
         )
         .sign(ca_key, hashes.SHA256())
     )
@@ -785,10 +817,32 @@ leaf(
     "Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)",
     "SJSNARH4TG",
 )
+leaf(
+    "wrong-eku",
+    "Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)",
+    "SJSNARH4TG",
+    ExtendedKeyUsageOID.SERVER_AUTH,
+)
+leaf(
+    "wrong-key-usage",
+    "Developer ID Application: Legacy Publisher LLC (SJSNARH4TG)",
+    "SJSNARH4TG",
+    digital_signature=False,
+)
 PY
   decoy_ca_fingerprint="$(/usr/bin/openssl x509 \
     -in "${decoy_root}/scripts/apple-developer-id-g2-ca.pem" \
     -noout -fingerprint -sha256 | sed 's/^.*Fingerprint=//')"
+  if /usr/bin/openssl verify -purpose any -partial_chain -no-CApath -no-CAstore \
+    -CAfile "${decoy_root}/scripts/apple-developer-id-g2-ca.pem" \
+    "${decoy_root}/decoy.pem" >/dev/null 2>&1; then
+    fail "real Apple-shaped certificate unexpectedly verified without -ignore_critical"
+  fi
+  /usr/bin/openssl verify -purpose any -partial_chain -no-CApath -no-CAstore \
+    -ignore_critical \
+    -CAfile "${decoy_root}/scripts/apple-developer-id-g2-ca.pem" \
+    "${decoy_root}/decoy.pem" >/dev/null 2>&1 \
+    || fail "real Apple-shaped certificate did not verify with -ignore_critical"
   /usr/bin/python3 - \
     "${decoy_root}/scripts/verify-macos-release-attestation.sh" \
     "${decoy_ca_fingerprint}" <<'PY'
@@ -822,6 +876,14 @@ PY
   /usr/bin/python3 "${decoy_root}/scripts/macos-release-signing-evidence.py" \
     create-attestation --output "${decoy_cli_statement}" --platform macos-arm64 \
     --kind cli --artifact "${decoy_cli}" --source-commit "${decoy_commit}"
+  decoy_valid_cms="${decoy_root}/ctx-macos-arm64.valid-attestation.cms"
+  /usr/bin/openssl cms -sign -binary -in "${decoy_cli_statement}" \
+    -signer "${decoy_root}/decoy.pem" -inkey "${decoy_root}/decoy.key" \
+    -outform DER -out "${decoy_valid_cms}" -md sha256 -noattr >/dev/null 2>&1
+  env PATH=/usr/bin:/bin \
+    "${decoy_root}/scripts/verify-macos-release-attestation.sh" \
+      macos-arm64 cli "${decoy_cli}" "${decoy_cli_statement}" "${decoy_valid_cms}" \
+      >/dev/null
   /usr/bin/openssl cms -sign -binary -in "${decoy_cli_statement}" \
     -signer "${decoy_root}/wrong.pem" -inkey "${decoy_root}/wrong.key" \
     -certfile "${decoy_root}/decoy.pem" -outform DER -out "${decoy_cli_cms}" \
@@ -830,6 +892,23 @@ PY
     "${test_root}/real-decoy-cli.log" env PATH=/usr/bin:/bin \
     "${decoy_root}/scripts/verify-macos-release-attestation.sh" \
       macos-arm64 cli "${decoy_cli}" "${decoy_cli_statement}" "${decoy_cli_cms}"
+
+  for profile in wrong-eku wrong-key-usage; do
+    profile_cms="${decoy_root}/ctx-macos-arm64.${profile}.cms"
+    /usr/bin/openssl cms -sign -binary -in "${decoy_cli_statement}" \
+      -signer "${decoy_root}/${profile}.pem" \
+      -inkey "${decoy_root}/${profile}.key" \
+      -outform DER -out "${profile_cms}" -md sha256 -noattr >/dev/null 2>&1
+    if [[ "${profile}" == "wrong-eku" ]]; then
+      profile_failure='actual signer certificate lacks the Code Signing EKU'
+    else
+      profile_failure='actual signer lacks critical Digital Signature key usage'
+    fi
+    expect_failure "${profile_failure}" "${test_root}/real-${profile}.log" \
+      env PATH=/usr/bin:/bin \
+      "${decoy_root}/scripts/verify-macos-release-attestation.sh" \
+        macos-arm64 cli "${decoy_cli}" "${decoy_cli_statement}" "${profile_cms}"
+  done
 
   decoy_archive="${decoy_root}/ctx-onnxruntime-macos-arm64.tar.gz"
   decoy_nested="${decoy_root}/libonnxruntime.dylib"

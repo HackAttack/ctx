@@ -241,7 +241,10 @@ for required in \
   'SJSNARH4TG' \
   '-no-CApath' \
   '-no-CAstore' \
+  '-ignore_critical' \
   'Code Signing EKU' \
+  'Digital Signature key usage' \
+  '1.2.840.113635.100.6.1.13: critical' \
   'APPLE_CODESIGN_CERT_P12_B64' \
   'APPLE_CODESIGN_CERT_PASSWORD' \
   'NOTARY_ISSUER' \

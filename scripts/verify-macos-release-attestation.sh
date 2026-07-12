@@ -53,7 +53,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required to verify macOS a
 [[ "$(openssl version 2>/dev/null || true)" == OpenSSL\ 3.* ]] || \
   die "macOS attestation verification requires OpenSSL 3"
 cms_help="$(openssl cms -help 2>&1 || true)"
-for flag in -no-CApath -no-CAstore; do
+for flag in -no-CApath -no-CAstore -ignore_critical; do
   [[ "${cms_help}" == *"${flag}"* ]] || \
     die "selected OpenSSL 3 lacks required exclusive-trust flag ${flag}"
 done
@@ -76,6 +76,7 @@ if ! openssl cms -verify \
   -partial_chain \
   -no-CApath \
   -no-CAstore \
+  -ignore_critical \
   -CAfile "${ca_file}" \
   -signer "${signer_cert}" \
   -out /dev/null >/dev/null 2>&1; then
@@ -94,7 +95,14 @@ subject=",${subject#subject=},"
 eku="$(openssl x509 -in "${signer_cert}" -noout -ext extendedKeyUsage 2>/dev/null || true)"
 grep -Eq '(^|[ ,])(Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)(,|$)' <<<"${eku}" || \
   die "macOS attestation actual signer certificate lacks the Code Signing EKU"
-openssl verify -purpose any -partial_chain -no-CApath -no-CAstore \
+key_usage="$(openssl x509 -in "${signer_cert}" -noout -ext keyUsage 2>/dev/null || true)"
+[[ "${key_usage}" == *"X509v3 Key Usage: critical"* \
+  && "${key_usage}" == *"Digital Signature"* ]] || \
+  die "macOS attestation actual signer lacks critical Digital Signature key usage"
+certificate_profile="$(openssl x509 -in "${signer_cert}" -noout -text 2>/dev/null || true)"
+[[ "${certificate_profile}" == *"1.2.840.113635.100.6.1.13: critical"* ]] || \
+  die "macOS attestation actual signer lacks Apple's critical Developer ID extension"
+openssl verify -purpose any -partial_chain -no-CApath -no-CAstore -ignore_critical \
   -CAfile "${ca_file}" "${signer_cert}" >/dev/null 2>&1 || \
   die "macOS attestation actual signer does not chain exclusively to the pinned Apple G2 CA"
 
