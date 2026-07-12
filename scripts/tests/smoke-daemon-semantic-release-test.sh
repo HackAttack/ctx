@@ -205,4 +205,46 @@ if kill -0 "${daemon_pid}" >/dev/null 2>&1; then
   exit 1
 fi
 
+cpu_ctx="${tmp}/ctx-linux-cpu"
+sed \
+  -e 's/== "coreml"/== "cpu"/' \
+  -e '/CTX_SEMANTIC_COREML_NATIVE_COMPUTE/d' \
+  -e 's/"backend":"coreml","compute_mode":"all"/"backend":"cpu","preference":"cpu"/g' \
+  "${fake_ctx}" > "${cpu_ctx}"
+chmod 755 "${cpu_ctx}"
+
+runtime_payload="${tmp}/runtime-payload"
+mkdir -p "${runtime_payload}/lib"
+printf 'license\n' > "${runtime_payload}/LICENSE"
+printf 'notices\n' > "${runtime_payload}/ThirdPartyNotices.txt"
+printf '1.27.0\n' > "${runtime_payload}/VERSION_NUMBER"
+printf 'synthetic-commit\n' > "${runtime_payload}/GIT_COMMIT_ID"
+printf 'synthetic runtime\n' > "${runtime_payload}/lib/libonnxruntime.so"
+runtime_archive="${tmp}/ctx-onnxruntime-linux-x64.tar.gz"
+tar --no-recursion -C "${runtime_payload}" -czf "${runtime_archive}" \
+  LICENSE ThirdPartyNotices.txt VERSION_NUMBER GIT_COMMIT_ID lib lib/libonnxruntime.so
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "${runtime_archive}" | awk '{ print $1 }' > "${runtime_archive}.sha256"
+else
+  shasum -a 256 "${runtime_archive}" | awk '{ print $1 }' > "${runtime_archive}.sha256"
+fi
+
+onnx_proof="${tmp}/published/onnx-proof.txt"
+if ! "${smoke}" \
+  --runtime-archive "${runtime_archive}" \
+  --runtime-platform linux-x64 \
+  --ctx "${cpu_ctx}" \
+  --data-root "${tmp}/onnx-runs" \
+  --proof-output "${onnx_proof}" \
+  --timeout-seconds 30 \
+  > "${tmp}/onnx.out" 2> "${tmp}/onnx.err"; then
+  cat "${tmp}/onnx.out" >&2
+  cat "${tmp}/onnx.err" >&2
+  exit 1
+fi
+grep -Fxq 'runtime=onnxruntime' "${onnx_proof}"
+grep -Fxq 'embedding_backend=cpu' "${onnx_proof}"
+grep -Fxq 'runtime_authority=authoritative' "${onnx_proof}"
+grep -Fxq 'semantic_search=passed' "${onnx_proof}"
+
 printf 'daemon semantic release smoke contract tests passed\n'

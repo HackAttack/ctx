@@ -222,6 +222,7 @@ printf '%s\n' "${linux_runtime_sha}" > \
   "${mismatched_runtime_matrix}/ctx-onnxruntime-linux-x64.tar.gz.sha256"
 cat > "${mismatched_runtime_matrix}/ctx-linux-x64.native-runtime-proof.txt" <<EOF
 runtime=onnxruntime
+embedding_backend=cpu
 platform=linux-x64
 host_system=Linux
 host_arch=x86_64
@@ -323,5 +324,7 @@ grep -F '"${runtime_image_id}"' scripts/build-public-cli-artifact.sh >/dev/null
 grep -F '"${inspector_image_id}"' scripts/build-public-cli-artifact.sh >/dev/null
 grep -F 'timeout --signal=KILL 120s' scripts/build-public-cli-artifact.sh >/dev/null
 grep -F 'x86_64-unknown-freebsd:0.2.5@sha256:' Cross.toml >/dev/null
+grep -F '[System.IO.File]::WriteAllText(' scripts/smoke-daemon-semantic-release.ps1 >/dev/null
+grep -F '($runtimeProofLines -join "`n") + "`n"' scripts/smoke-daemon-semantic-release.ps1 >/dev/null
 
 printf 'Linux release construction self-test passed\n'

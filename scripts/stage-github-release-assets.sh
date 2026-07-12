@@ -278,6 +278,12 @@ validate_authoritative_runtime_proof() {
     printf 'runtime proof has wrong runtime: %s\n' "${proof_path}" >&2
     exit 1
   }
+  if [[ "${runtime}" == "onnxruntime" ]]; then
+    grep -Fxq 'embedding_backend=cpu' "${proof_path}" || {
+      printf 'runtime proof did not exercise the ONNX CPU backend: %s\n' "${proof_path}" >&2
+      exit 1
+    }
+  fi
   grep -Fxq "platform=${platform}" "${proof_path}" || {
     printf 'runtime proof has wrong platform: %s\n' "${proof_path}" >&2
     exit 1

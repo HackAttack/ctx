@@ -460,6 +460,8 @@ if [[ "${coreml_mode}" == "1" ]]; then
     CTX_INTERNAL_SEMANTIC_BACKEND=coreml
     CTX_SEMANTIC_COREML_NATIVE_COMPUTE=all
   )
+else
+  ctx_env+=(CTX_INTERNAL_SEMANTIC_BACKEND=cpu)
 fi
 
 run_ctx() {
@@ -527,14 +529,20 @@ if pid is not None and (isinstance(pid, bool) or not isinstance(pid, int) or pid
     raise SystemExit(2)
 if daemon.get("status") != "running" or daemon.get("running") is not True or pid != expected_pid:
     raise SystemExit(1)
-if coreml_mode != "1":
-    raise SystemExit(0)
-
 jobs = daemon.get("jobs")
 semantic = jobs.get("semantic_index") if isinstance(jobs, dict) else None
 runtime = semantic.get("embedding_runtime") if isinstance(semantic, dict) else None
 if not isinstance(runtime, dict):
     raise SystemExit(1)
+if coreml_mode != "1":
+    if runtime.get("backend") != "cpu" or runtime.get("preference") != "cpu":
+        print(f"ONNX smoke reported runtime {runtime!r}", file=sys.stderr)
+        raise SystemExit(2)
+    if runtime.get("model_id") != expected_model:
+        print(f"ONNX smoke reported model {runtime.get('model_id')!r}", file=sys.stderr)
+        raise SystemExit(2)
+    raise SystemExit(0)
+
 if runtime.get("backend") != "coreml":
     print(f"CoreML daemon status reported backend {runtime.get('backend')!r}", file=sys.stderr)
     raise SystemExit(2)
@@ -689,6 +697,7 @@ EOF
           cat > "${runtime_proof}" <<EOF
 runtime=onnxruntime
 version=${runtime_version}
+embedding_backend=cpu
 platform=${runtime_platform}
 host_system=${host_system}
 host_arch=${host_arch}
