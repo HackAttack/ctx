@@ -219,6 +219,7 @@ $environmentVariableNames = @(
     "CTX_DAEMON_AUTOSTART_OFF", "CTX_DAEMON_AUTOSTART_EXE", "CTX_DAEMON_BACKGROUND_CHILD",
     "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", "CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS",
     "CTX_SEARCH_SEMANTIC", "CTX_DISABLE_SEMANTIC_SEARCH", "CTX_SEMANTIC_WORKER_OFF",
+    "CTX_INTERNAL_SEMANTIC_BACKEND",
     "CTX_SEMANTIC_WORKER_MAX_CHUNKS", "CTX_SEMANTIC_WORKER_MAX_SECONDS",
     "CTX_SEMANTIC_THREADS", "CTX_SEMANTIC_EMBED_BATCH",
     "CTX_ANALYTICS_ENABLED", "CTX_ANALYTICS_OFF", "CTX_DISABLE_ANALYTICS",
@@ -434,6 +435,7 @@ try {
     Set-ProcessEnvironmentVariable -Name "CTX_UPGRADE_AUTO" -Value "off"
     Set-ProcessEnvironmentVariable -Name "CTX_DAEMON_ENABLED" -Value "1"
     Set-ProcessEnvironmentVariable -Name "CTX_SEARCH_SEMANTIC" -Value "1"
+    Set-ProcessEnvironmentVariable -Name "CTX_INTERNAL_SEMANTIC_BACKEND" -Value "cpu"
     Set-ProcessEnvironmentVariable -Name "CTX_RUNTIME_DIR" -Value $runtimeRoot
     Set-ProcessEnvironmentVariable -Name "PATH" -Value $savedEnvironment["PATH"]
 
@@ -455,6 +457,7 @@ try {
     $runtimeProofLines = @(
         "runtime=onnxruntime",
         "version=$runtimeVersion",
+        "embedding_backend=cpu",
         "platform=$RuntimePlatform",
         "host_system=Windows_NT",
         "host_arch=$hostArch",
@@ -608,9 +611,9 @@ try {
                                 "marker=$marker",
                                 "semantic_search=passed"
                             )
-                            [System.IO.File]::WriteAllLines(
+                            [System.IO.File]::WriteAllText(
                                 $runtimeProof,
-                                $runtimeProofLines,
+                                (($runtimeProofLines -join "`n") + "`n"),
                                 [System.Text.UTF8Encoding]::new($false)
                             )
                             if (-not [string]::IsNullOrWhiteSpace($ProofOutput)) {
