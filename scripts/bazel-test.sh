@@ -151,6 +151,9 @@ case "${mode}" in
   linux_release_construction_tests)
     run bash scripts/test-linux-release-construction.sh
     ;;
+  macos_release_signing_tests)
+    run bash scripts/tests/macos-release-signing-test.sh
+    ;;
   loc_check)
     run bash scripts/check-loc.sh
     ;;

@@ -236,6 +236,13 @@ sh_test(
 )
 
 sh_test(
+    name = "macos_release_signing_tests",
+    srcs = ["scripts/bazel-test.sh"],
+    args = ["macos_release_signing_tests"],
+    data = CTX_GATE_DATA,
+)
+
+sh_test(
     name = "loc_check",
     srcs = ["scripts/bazel-test.sh"],
     args = ["loc_check"],
@@ -372,6 +379,7 @@ test_suite(
         ":native_candidate_smoke_tests",
         ":linux_release_construction_tests",
         ":loc_check",
+        ":macos_release_signing_tests",
         ":native_rust_smoke",
         ":source_diff_check",
         ":package_audit_fast",

@@ -6,11 +6,15 @@ public_ci_script="scripts/buildkite-public-ci.sh"
 artifact_script="scripts/build-public-cli-artifact.sh"
 artifact_check_script="scripts/check-public-cli-artifact.sh"
 compat_check_script="scripts/check-release-binary-compat.sh"
+macos_sign_script="scripts/sign-notarize-macos-release-artifact.sh"
+macos_check_script="scripts/check-macos-release-signing.sh"
 test -f "${pipeline}"
 test -f "${public_ci_script}"
 test -f "${artifact_script}"
 test -f "${artifact_check_script}"
 test -f "${compat_check_script}"
+test -f "${macos_sign_script}"
+test -f "${macos_check_script}"
 
 if [[ -e ".github/workflows/public-ci.yml" ]]; then
   printf 'public GitHub Actions CI workflow should be migrated to Buildkite\n' >&2
@@ -61,6 +65,8 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must run on Apple Silicon" unless step.dig("agents", "arch") == "arm64"
       abort "#{key} must serialize native Mac construction" unless step["concurrency"] == 1 && step["concurrency_group"] == "ctx-public-cli-macos-native"
       command = step["command"].to_s
+      abort "#{key} must require macOS release signing" unless command.include?("CTX_MACOS_RELEASE_SIGNING=required")
+      abort "#{key} must obtain signing/notary credentials through Infisical" unless command.include?("infisical run --env=prod --path=/ --")
       abort "#{key} must gate native smoke explicitly" unless command.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
       abort "#{key} must force the CoreML smoke" unless command.include?("--coreml")
       abort "#{key} must preserve native smoke evidence" unless command.include?("--keep-root")
@@ -68,11 +74,15 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must upload native smoke proof" unless Array(step["artifact_paths"]).include?(proof)
       diagnostics = "target/public-cli-native-smoke/#{key.delete_prefix("public-cli-")}/**/daemon-smoke.log"
       abort "#{key} must upload native smoke failure diagnostics" unless Array(step["artifact_paths"]).include?(diagnostics)
+      evidence = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.signing.json"
+      abort "#{key} must upload CLI signing evidence" unless Array(step["artifact_paths"]).include?(evidence)
     end
     macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
     abort "macos-arm64 smoke must require authoritative evidence" unless macos_arm64["command"].to_s.include?("runtime_authority=authoritative")
     macos_x64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64" }
     abort "macos-x64 Rosetta smoke must remain explicitly non-authoritative" unless macos_x64["command"].to_s.include?("runtime_authority=non_authoritative")
+    macos_arm64_paths = Array(macos_arm64["artifact_paths"])
+    abort "macos-arm64 must upload runtime signing evidence" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json")
     inline_proofs = {
       "public-cli-linux-x64" => "ctx-linux-x64.native-runtime-proof.txt",
       "public-cli-linux-aarch64" => "ctx-linux-aarch64.native-runtime-proof.txt",
@@ -104,6 +114,14 @@ if command -v ruby >/dev/null 2>&1; then
       proof_path = "target/public-cli-artifacts/#{proof_name}"
       abort "#{key} must publish #{proof_name}" unless Array(step["artifact_paths"]).include?(proof_path)
     end
+    macos_x64_native = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64-native-smoke" }
+    native_command = macos_x64_native["command"].to_s
+    abort "macos-x64 native lane must verify the downloaded signed CLI" unless native_command.include?("scripts/check-macos-release-signing.sh") && native_command.include?("macos-x64 cli")
+    abort "macos-x64 native lane must rerun the exact signed default candidate smoke" unless native_command.include?("scripts/run-native-candidate-smoke.sh")
+    abort "macos-x64 native lane must sign the runtime with Infisical credentials" unless native_command.include?("infisical run --env=prod --path=/ --") && native_command.include?("scripts/build-onnxruntime-sidecar.sh macos-x64")
+    native_paths = Array(macos_x64_native["artifact_paths"])
+    abort "macos-x64 native lane must upload runtime signing evidence" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.signing.json")
+    abort "macos-x64 native lane must upload default smoke evidence" unless native_paths.include?("target/public-cli-native-smoke/macos-x64-native/candidate-smoke.json")
     runtime_builds = {
       "public-cli-linux-x64" => "linux-x64",
       "public-cli-linux-aarch64" => "linux-aarch64",
@@ -146,6 +164,7 @@ for required in \
   'bash scripts/buildkite-public-ci.sh -- test' \
   '//:cargo_check' \
   '//:linux_release_construction_tests' \
+  '//:macos_release_signing_tests' \
   '//:native_candidate_smoke_tests' \
   '//:release_binary_compat_tests' \
   'target/ctx-artifacts/check/**' \
@@ -176,6 +195,15 @@ for required in \
   'scripts/build-public-cli-artifact.sh freebsd-x64' \
   'scripts/build-public-cli-artifact.sh macos-arm64' \
   'scripts/build-public-cli-artifact.sh macos-x64' \
+  'infisical run --env=prod --path=/ --' \
+  'CTX_MACOS_RELEASE_SIGNING=required' \
+  'scripts/sign-notarize-macos-release-artifact.sh' \
+  'scripts/check-macos-release-signing.sh' \
+  'APPLE_CODESIGN_CERT_P12_B64' \
+  'APPLE_CODESIGN_CERT_PASSWORD' \
+  'NOTARY_ISSUER' \
+  'NOTARY_KEY_ID' \
+  'NOTARY_KEY_P8_B64' \
   'cargo zigbuild -p ctx --release --target "${build_target}" --locked' \
   'LINUX_GLIBC_BASELINE="2.35"' \
   'LINUX_RELEASE_IMAGE_UBUNTU="22.04"' \
@@ -194,7 +222,9 @@ for required in \
     "${public_ci_script}" \
     "${artifact_script}" \
     "${artifact_check_script}" \
-    "${compat_check_script}"; do
+    "${compat_check_script}" \
+    "${macos_sign_script}" \
+    "${macos_check_script}"; do
     if grep -F -q "${required}" "${checked_file}"; then
       found=1
       break
@@ -205,6 +235,56 @@ for required in \
     exit 1
   fi
 done
+
+python3 - \
+  "${artifact_script}" \
+  "scripts/build-onnxruntime-sidecar.sh" \
+  "scripts/stage-github-release-assets.sh" <<'PY'
+import sys
+
+cli, runtime, staging = [open(path, encoding="utf-8").read() for path in sys.argv[1:]]
+
+
+def require_order(label, source, *needles):
+    cursor = 0
+    for needle in needles:
+        position = source.find(needle, cursor)
+        if position < 0:
+            raise SystemExit(
+                f"{label} ordering contract is missing or out of order: {needles}"
+            )
+        cursor = position + len(needle)
+
+
+require_order(
+    "macOS CLI signing/hash/build-info",
+    cli,
+    'scripts/sign-notarize-macos-release-artifact.sh',
+    'sha_file="${staged}.sha256"',
+    'scripts/run-native-candidate-smoke.sh',
+    'python3 scripts/write-public-cli-build-info.py',
+    'scripts/check-macos-release-signing.sh',
+)
+require_order(
+    "macOS runtime signing/archive/checksum evidence",
+    runtime,
+    'scripts/sign-notarize-macos-release-artifact.sh',
+    'create_archive "${stage_dir}" "${package_path}"',
+    'sha256_file "${output_dir%/}/${asset_name}"',
+    'python3 scripts/macos-release-signing-evidence.py bind-archive',
+    'scripts/check-macos-release-signing.sh',
+)
+require_order(
+    "macOS release transport checksum evidence",
+    staging,
+    'sha256_file "${dest_path}" > "${dest_path}.sha256"',
+    'python3 scripts/macos-release-signing-evidence.py bind-archive',
+    'scripts/check-macos-release-signing.sh',
+)
+for source, label in ((cli, "CLI"), (runtime, "runtime")):
+    if 'CTX_PUBLIC_CLI_ARTIFACT_MATRIX:-0' not in source:
+        raise SystemExit(f"macOS {label} release matrix must fail closed into required signing")
+PY
 
 if grep -F -q 'golang-go' "${public_ci_script}"; then
   printf 'Buildkite hosted public CI must install pinned Go instead of Ubuntu golang-go\n' >&2
