@@ -26,7 +26,6 @@ const ALL_FTS_TABLES: [&str; 5] = [
 const BULK_MODE_MARKER_KEY: &str = "event_search_bulk_mode_v1";
 const BULK_MODE_AUTOMERGE_KEY_PREFIX: &str = "event_search_bulk_mode_v1:automerge:";
 const BULK_MODE_CRISISMERGE_KEY_PREFIX: &str = "event_search_bulk_mode_v1:crisismerge:";
-const BULK_MODE_MERGE_STARTED_KEY_PREFIX: &str = "event_search_bulk_mode_v1:merge_started:";
 const FTS_AUTOMERGE_DEFAULT: i64 = 4;
 const FTS_CRISISMERGE_DEFAULT: i64 = 16;
 const FTS_BULK_CRISISMERGE: i64 = 1_000_000;
@@ -88,20 +87,19 @@ impl Store {
         Ok(guard)
     }
 
-    /// Compact all bulk segments in bounded steps, then restore saved settings.
+    /// Compact pending bulk segments in bounded steps, then restore saved settings.
+    ///
+    /// Bulk finalization deliberately uses positive FTS5 merge commands. Starting
+    /// a full merge with a negative command would assign every pre-existing
+    /// segment to the same level and rewrite the entire shared event index. That
+    /// is appropriate for an explicit optimize, but not for finishing one
+    /// provider import in an already-populated multi-source index.
     pub fn finish_event_search_bulk_mode(&self, guard: &EventSearchBulkGuard) -> Result<()> {
         if guard.store_path != self.path {
             return Err(StoreError::InvalidBulkSearchGuard);
         }
         if !bulk_mode_pending(self)? {
             return Ok(());
-        }
-        for table in EVENT_SEARCH_FTS_TABLES {
-            let progress_key = format!("{BULK_MODE_MERGE_STARTED_KEY_PREFIX}{table}");
-            let start_full_merge = bulk_mode_config(self, &progress_key)?.is_none();
-            if start_full_merge && table_exists(&self.conn, table)? {
-                self.merge_fts_table_step(table, -FTS_MERGE_PAGE_BUDGET, Some(&progress_key))?;
-            }
         }
         loop {
             if self.finish_event_search_bulk_mode_step()? {
@@ -154,7 +152,7 @@ impl Store {
             self.finish_event_search_bulk_mode(&guard)?;
         }
         for table in ALL_FTS_TABLES {
-            self.merge_fts_table_bounded(table, true, None)?;
+            self.merge_fts_table_bounded(table, true)?;
         }
         Ok(())
     }
@@ -163,7 +161,6 @@ impl Store {
         &self,
         table: &'static str,
         mut start_full_merge: bool,
-        progress_key: Option<&str>,
     ) -> Result<()> {
         if !table_exists(&self.conn, table)? {
             return Ok(());
@@ -174,11 +171,7 @@ impl Store {
             } else {
                 FTS_MERGE_PAGE_BUDGET
             };
-            let changed = self.merge_fts_table_step(
-                table,
-                page_budget,
-                start_full_merge.then_some(progress_key).flatten(),
-            )?;
+            let changed = self.merge_fts_table_step(table, page_budget)?;
             start_full_merge = false;
             if !changed {
                 return Ok(());
@@ -186,20 +179,9 @@ impl Store {
         }
     }
 
-    fn merge_fts_table_step(
-        &self,
-        table: &'static str,
-        page_budget: i64,
-        progress_key: Option<&str>,
-    ) -> Result<bool> {
+    fn merge_fts_table_step(&self, table: &'static str, page_budget: i64) -> Result<bool> {
         self.begin_immediate_batch()?;
-        let result = (|| {
-            let changed = merge_fts_table_in_transaction(self, table, page_budget)?;
-            if let Some(progress_key) = progress_key {
-                save_bulk_mode_config(self, progress_key, 1)?;
-            }
-            Ok(changed)
-        })();
+        let result = merge_fts_table_in_transaction(self, table, page_budget);
         let changed = match result {
             Ok(changed) => changed,
             Err(err) => {
