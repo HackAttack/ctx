@@ -219,7 +219,7 @@ fn large_agent_history_search_returns_event_hits() {
             Uuid::from_bytes(bytes)
         };
         let text = if event_id == target_event_id {
-            "large-fast-event-needle from one transcript"
+            "large-fast-event-needle ordinary result from one transcript"
         } else {
             "ordinary large history event"
         };
@@ -248,16 +248,20 @@ fn large_agent_history_search_returns_event_hits() {
 
     let packet = search_packet(
         &store,
-        "large-fast-event-needle",
+        "large-fast-event-needle ordinary",
         &PacketOptions {
             limit: 5,
             snippet_chars: 200,
+            filters: SearchFilters {
+                repo: Some("ctx".into()),
+                ..SearchFilters::default()
+            },
             ..PacketOptions::default()
         },
     )
     .unwrap();
 
-    assert_eq!(packet.results.len(), 1);
+    assert_eq!(packet.results.len(), 2);
     let result = &packet.results[0];
     assert_eq!(result.result_scope, SearchResultScope::Session);
     assert_eq!(result.record_id, target_event_id);
@@ -266,7 +270,7 @@ fn large_agent_history_search_returns_event_hits() {
     assert_eq!(result.provider, Some(CaptureProvider::Codex));
     assert_eq!(
         result.snippet,
-        "large-fast-event-needle from one transcript"
+        "large-fast-event-needle ordinary result from one transcript"
     );
     assert_eq!(result.why_matched, vec!["message"]);
     assert!(result.citations.iter().any(|citation| {
@@ -277,7 +281,7 @@ fn large_agent_history_search_returns_event_hits() {
 
     let event_packet = search_packet(
         &store,
-        "large-fast-event-needle",
+        "large-fast-event-needle ordinary",
         &PacketOptions {
             limit: 5,
             snippet_chars: 200,
@@ -286,7 +290,7 @@ fn large_agent_history_search_returns_event_hits() {
         },
     )
     .unwrap();
-    assert_eq!(event_packet.results.len(), 1);
+    assert_eq!(event_packet.results.len(), 5);
     assert_eq!(
         event_packet.results[0].result_scope,
         SearchResultScope::Event

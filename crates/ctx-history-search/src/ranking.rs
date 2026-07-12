@@ -18,7 +18,7 @@ use crate::query::{
     query_terms, PacketOptions, Result, SearchFilters, FILTERED_SEARCH_MAX_PAGES,
     FILTERED_SEARCH_PAGE_SIZE,
 };
-use crate::snippets::{event_text, event_weight, joined, matches_terms};
+use crate::snippets::{event_text, event_weight, joined, matching_term_count};
 use crate::source::{
     artifact_hit, citation, empty_hit, event_hit, file_hit, file_touched_search_text,
     record_context_display_hit, run_hit, session_hit, source_hit,
@@ -176,6 +176,7 @@ pub(crate) fn candidate_for_record(
             record,
             context,
             score: analysis.score,
+            matched_term_count: analysis.matched_term_count,
             why_matched: analysis.why_matched,
             citations: analysis.citations,
             primary_hit: analysis.primary_hit,
@@ -258,6 +259,7 @@ pub(crate) fn hydrate_record_context(
 
 struct MatchAnalysis {
     score: f32,
+    matched_term_count: usize,
     why_matched: Vec<String>,
     citations: Vec<ContextCitation>,
     primary_hit: Option<HitMetadata>,
@@ -295,6 +297,7 @@ fn analyze_record(
             if !why.is_empty() {
                 return MatchAnalysis {
                     score,
+                    matched_term_count: 0,
                     why_matched: why,
                     citations,
                     primary_hit,
@@ -321,6 +324,7 @@ fn analyze_record(
         );
         return MatchAnalysis {
             score: 1.0,
+            matched_term_count: 0,
             why_matched: why,
             citations,
             primary_hit: None,
@@ -328,15 +332,23 @@ fn analyze_record(
     }
 
     let mut primary_hit = None;
-    let mut primary_weight = f32::MIN;
+    let mut primary_match = (0_usize, f32::MIN);
+    let mut matched_terms = BTreeSet::new();
     for section in search_sections(record, context, filters) {
         if hit_matches_excluded_provider_session(&section.hit, filters) {
             continue;
         }
-        if matches_terms(&section.text, terms) {
-            score += section.weight;
-            if section.weight > primary_weight {
-                primary_weight = section.weight;
+        let section_match_count = matching_term_count(&section.text, terms);
+        if section_match_count > 0 {
+            let haystack = section.text.to_lowercase();
+            for (index, term) in terms.iter().enumerate() {
+                if haystack.contains(term) {
+                    matched_terms.insert(index);
+                }
+            }
+            score += section.weight * section_match_count as f32;
+            if (section_match_count, section.weight) > primary_match {
+                primary_match = (section_match_count, section.weight);
                 primary_hit = Some(section.hit.clone());
             }
             add_match(
@@ -351,6 +363,7 @@ fn analyze_record(
 
     MatchAnalysis {
         score,
+        matched_term_count: matched_terms.len(),
         why_matched: why,
         citations,
         primary_hit,
@@ -654,6 +667,14 @@ pub(crate) fn search_sections(
 }
 
 pub(crate) fn normalize_scores(candidates: &mut [Candidate]) {
+    let max_relevance_score = candidates
+        .iter()
+        .map(|candidate| candidate.score)
+        .fold(0.0_f32, f32::max);
+    let coverage_stride = max_relevance_score + 1.0;
+    for candidate in candidates.iter_mut() {
+        candidate.score += candidate.matched_term_count as f32 * coverage_stride;
+    }
     let max_score = candidates
         .iter()
         .map(|candidate| candidate.score)

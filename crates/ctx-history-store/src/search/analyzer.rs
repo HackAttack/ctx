@@ -6,18 +6,46 @@ pub(crate) fn scriptgram_index_text(text: &str) -> String {
 }
 
 pub(crate) fn scriptgram_match_query(query: &str) -> Option<String> {
-    if !contains_grammed_script(query) {
-        return None;
-    }
-    let clauses = query
-        .split_whitespace()
-        .filter_map(query_term_clause)
-        .collect::<Vec<_>>();
+    let clauses = scriptgram_match_clauses(query);
     if clauses.is_empty() {
         None
     } else {
-        Some(clauses.join(" AND "))
+        Some(
+            clauses
+                .into_iter()
+                .map(|(_, clause)| clause)
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        )
     }
+}
+
+pub(crate) fn scriptgram_match_clauses(query: &str) -> Vec<(usize, String)> {
+    if !contains_grammed_script(query) {
+        return Vec::new();
+    }
+    lexical_query_terms(query)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(term_index, term)| query_term_clause(term).map(|clause| (term_index, clause)))
+        .collect()
+}
+
+pub(crate) fn lexical_query_terms(query: &str) -> Vec<&str> {
+    let mut seen = Vec::<String>::new();
+    let mut terms = Vec::new();
+    for term in query.split_whitespace().map(trim_fts_term) {
+        if !term.chars().any(char::is_alphanumeric) {
+            continue;
+        }
+        let normalized = term.to_lowercase();
+        if seen.iter().any(|existing| existing == &normalized) {
+            continue;
+        }
+        seen.push(normalized);
+        terms.push(term);
+    }
+    terms
 }
 
 fn query_term_clause(term: &str) -> Option<String> {
@@ -777,7 +805,7 @@ mod tests {
         }
         assert_eq!(
             scriptgram_match_query("状態 管理"),
-            Some("\"状態\" AND \"管理\"".to_owned())
+            Some("\"状態\" OR \"管理\"".to_owned())
         );
         assert_eq!(
             scriptgram_match_query("状態管理"),
@@ -811,6 +839,18 @@ mod tests {
         assert_eq!(
             scriptgram_match_query("API/parser認証"),
             Some("\"API\" AND \"parser\" AND \"認証\"".to_owned())
+        );
+    }
+
+    #[test]
+    fn logical_query_terms_are_deduplicated_and_keep_scriptgram_indexes() {
+        assert_eq!(
+            lexical_query_terms("OAuth oauth 認証 OAUTH"),
+            vec!["OAuth", "認証"]
+        );
+        assert_eq!(
+            scriptgram_match_clauses("OAuth oauth 認証 OAUTH"),
+            vec![(0, "\"OAuth\"".to_owned()), (1, "\"認証\"".to_owned())]
         );
     }
 

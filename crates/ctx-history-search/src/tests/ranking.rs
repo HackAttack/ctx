@@ -176,9 +176,14 @@ fn filtered_search_scores_full_fetched_page_before_limiting() {
 }
 
 #[test]
-fn search_packet_terms_merges_broad_queries_without_requiring_all_terms() {
+fn ordinary_multi_word_search_returns_partial_matches_with_full_coverage_first() {
     let (_temp, store) = test_store();
     for (id, title, body) in [
+        (
+            "018f45d0-0000-7000-8000-000000020000",
+            "Signed metadata Buildkite release",
+            "signed metadata verification in the buildkite release pipeline",
+        ),
         (
             "018f45d0-0000-7000-8000-000000020001",
             "Signed metadata release",
@@ -202,8 +207,33 @@ fn search_packet_terms_merges_broad_queries_without_requiring_all_terms() {
         ..PacketOptions::default()
     };
 
-    let exact = search_packet(&store, "signed metadata buildkite", &options).unwrap();
-    assert_eq!(exact.results.len(), 0);
+    let ordinary = search_packet(&store, "signed metadata buildkite", &options).unwrap();
+    let ordinary_titles = ordinary
+        .results
+        .iter()
+        .map(|result| result.title.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ordinary_titles.first().map(String::as_str),
+        Some("Signed metadata Buildkite release")
+    );
+    assert!(ordinary_titles
+        .iter()
+        .any(|title| title == "Signed metadata release"));
+    assert!(ordinary_titles
+        .iter()
+        .any(|title| title == "Buildkite worker setup"));
+    let duplicate_titles = search_packet(
+        &store,
+        "signed SIGNED metadata buildkite BUILDKITE",
+        &options,
+    )
+    .unwrap()
+    .results
+    .into_iter()
+    .map(|result| result.title)
+    .collect::<Vec<_>>();
+    assert_eq!(duplicate_titles, ordinary_titles);
 
     let broad = search_packet_terms(
         &store,

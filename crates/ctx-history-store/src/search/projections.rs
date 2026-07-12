@@ -5,7 +5,7 @@ use ctx_history_core::{
     utc_now, AgentType, CaptureProvider, Event, EventRole, EventType, HistoryRecord,
     RedactionState, SyncState, Visibility,
 };
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::connection::{
@@ -14,7 +14,9 @@ use crate::connection::{
 };
 use crate::records::{record_from_row, record_select_sql};
 use crate::schema::ddl::{table_exists, table_has_column};
-use crate::search::analyzer::{scriptgram_index_text, scriptgram_match_query};
+use crate::search::analyzer::{
+    lexical_query_terms, scriptgram_index_text, scriptgram_match_clauses,
+};
 use crate::{Result, Store};
 
 const SEMANTIC_SEARCHABLE_ITEMS_STAT_KEY: &str = "semantic_searchable_lite_turn_items_v2";
@@ -129,88 +131,69 @@ impl Store {
         if !table_exists(&self.conn, "event_search")? {
             return Ok(Vec::new());
         }
-        let match_query = fts_match_query(query);
-        let scriptgram_query = if event_scriptgram_table_ready(&self.conn)? {
-            scriptgram_match_query(query)
+        let match_clauses = fts_match_clauses(query);
+        let scriptgram_clauses = if event_scriptgram_table_ready(&self.conn)? {
+            scriptgram_match_clauses(query)
         } else {
-            None
+            Vec::new()
         };
-        match (match_query, scriptgram_query) {
-            (Some(match_query), Some(scriptgram_query)) => {
-                let sql = format!(
-                    r#"
-                    WITH matches(event_id, score) AS (
-                        SELECT event_search.event_id, bm25(event_search)
-                        FROM event_search
-                        WHERE event_search MATCH ?1
-                        UNION ALL
-                        SELECT event_search_scriptgram.event_id, bm25(event_search_scriptgram) + 0.35
-                        FROM event_search_scriptgram
-                        WHERE event_search_scriptgram MATCH ?2
-                    ),
-                    ranked(event_id, score) AS (
-                        SELECT event_id, MIN(score)
-                        FROM matches
-                        GROUP BY event_id
-                    )
-                    {}
-                    LIMIT ?3 OFFSET ?4
-                    "#,
-                    event_search_hit_sql(
-                        "ranked JOIN event_search ON event_search.event_id = ranked.event_id",
-                        &event_search_score("ranked.score", prefer_conversation),
-                        "ORDER BY search_score, e.occurred_at_ms DESC, e.seq DESC, event_search.event_id",
-                    )
-                );
-                let mut stmt = self.conn.prepare(&sql)?;
-                let rows = stmt.query_map(
-                    params![
-                        match_query,
-                        scriptgram_query,
-                        limit.max(1) as i64,
-                        offset as i64
-                    ],
-                    event_search_hit_from_row,
-                )?;
-                collect_rows(rows)
-            }
-            (Some(match_query), None) => {
-                let sql = format!(
-                    "{} LIMIT ?2 OFFSET ?3",
-                    event_search_hit_sql(
-                        "event_search",
-                        &event_search_score("bm25(event_search)", prefer_conversation),
-                        "WHERE event_search MATCH ?1 ORDER BY search_score, e.occurred_at_ms DESC, e.seq DESC, event_search.event_id",
-                    )
-                );
-                let mut stmt = self.conn.prepare(&sql)?;
-                let rows = stmt.query_map(
-                    params![match_query, limit.max(1) as i64, offset as i64],
-                    event_search_hit_from_row,
-                )?;
-                collect_rows(rows)
-            }
-            (None, Some(scriptgram_query)) => {
-                let sql = format!(
-                    "{} LIMIT ?2 OFFSET ?3",
-                    event_search_hit_sql(
-                        "event_search_scriptgram JOIN event_search ON event_search.event_id = event_search_scriptgram.event_id",
-                        &event_search_score(
-                            "bm25(event_search_scriptgram) + 0.35",
-                            prefer_conversation,
-                        ),
-                        "WHERE event_search_scriptgram MATCH ?1 ORDER BY search_score, e.occurred_at_ms DESC, e.seq DESC, event_search.event_id",
-                    )
-                );
-                let mut stmt = self.conn.prepare(&sql)?;
-                let rows = stmt.query_map(
-                    params![scriptgram_query, limit.max(1) as i64, offset as i64],
-                    event_search_hit_from_row,
-                )?;
-                collect_rows(rows)
-            }
-            (None, None) => Ok(Vec::new()),
+        if match_clauses.is_empty() && scriptgram_clauses.is_empty() {
+            return Ok(Vec::new());
         }
+
+        let mut selects = Vec::new();
+        let mut values = Vec::<Value>::new();
+        for (term_index, clause) in match_clauses.into_iter().enumerate() {
+            values.push(Value::Text(clause));
+            selects.push(format!(
+                r#"SELECT event_search.event_id, {term_index}, bm25(event_search)
+                   FROM event_search
+                   WHERE event_search MATCH ?{}"#,
+                values.len()
+            ));
+        }
+        for (term_index, clause) in scriptgram_clauses {
+            values.push(Value::Text(clause));
+            selects.push(format!(
+                r#"SELECT event_search_scriptgram.event_id, {term_index},
+                          bm25(event_search_scriptgram) + 0.35
+                   FROM event_search_scriptgram
+                   WHERE event_search_scriptgram MATCH ?{}"#,
+                values.len()
+            ));
+        }
+        values.push(Value::Integer(limit.max(1) as i64));
+        let limit_parameter = values.len();
+        values.push(Value::Integer(offset as i64));
+        let offset_parameter = values.len();
+        let sql = format!(
+            r#"
+            WITH matches(event_id, term_index, score) AS MATERIALIZED (
+                {}
+            ),
+            term_matches(event_id, term_index, score) AS (
+                SELECT event_id, term_index, MIN(score)
+                FROM matches
+                GROUP BY event_id, term_index
+            ),
+            ranked(event_id, matched_terms, score) AS (
+                SELECT event_id, COUNT(*), SUM(score)
+                FROM term_matches
+                GROUP BY event_id
+            )
+            {}
+            LIMIT ?{limit_parameter} OFFSET ?{offset_parameter}
+            "#,
+            selects.join(" UNION ALL "),
+            event_search_hit_sql(
+                "ranked JOIN event_search ON event_search.event_id = ranked.event_id",
+                &event_search_score("ranked.score", prefer_conversation),
+                "ORDER BY ranked.matched_terms DESC, search_score, e.occurred_at_ms DESC, e.seq DESC, event_search.event_id",
+            )
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values), event_search_hit_from_row)?;
+        collect_rows(rows)
     }
 
     pub fn semantic_event_hits_by_id(
@@ -1819,17 +1802,19 @@ fn non_blank(value: &str) -> Option<String> {
 }
 
 pub(crate) fn fts_match_query(query: &str) -> Option<String> {
-    let terms = query
-        .split_whitespace()
-        .map(|term| term.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-'))
-        .filter(|term| term.chars().any(char::is_alphanumeric))
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-        .collect::<Vec<_>>();
+    let terms = fts_match_clauses(query);
     if terms.is_empty() {
         None
     } else {
-        Some(terms.join(" AND "))
+        Some(terms.join(" OR "))
     }
+}
+
+pub(crate) fn fts_match_clauses(query: &str) -> Vec<String> {
+    lexical_query_terms(query)
+        .into_iter()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect()
 }
 
 fn event_search_cursor(

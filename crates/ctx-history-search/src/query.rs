@@ -125,15 +125,16 @@ pub(crate) fn composed_search_terms(query: &str, terms: &[String]) -> Vec<String
 }
 
 pub(crate) fn query_terms(query: &str) -> Vec<String> {
-    query
-        .split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-')
-        .filter_map(|term| {
-            let term = term.trim().to_lowercase();
-            if term.is_empty() || !term.chars().any(char::is_alphanumeric) {
-                None
-            } else {
-                Some(term)
-            }
-        })
-        .collect()
+    let mut terms = Vec::new();
+    for term in query.split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-') {
+        let term = term.trim().to_lowercase();
+        if term.is_empty()
+            || !term.chars().any(char::is_alphanumeric)
+            || terms.iter().any(|existing| existing == &term)
+        {
+            continue;
+        }
+        terms.push(term);
+    }
+    terms
 }

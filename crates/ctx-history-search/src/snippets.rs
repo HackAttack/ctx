@@ -112,12 +112,12 @@ pub(crate) fn non_blank(value: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn matches_terms(value: &str, terms: &[String]) -> bool {
-    if terms.is_empty() {
-        return false;
-    }
+pub(crate) fn matching_term_count(value: &str, terms: &[String]) -> usize {
     let haystack = value.to_lowercase();
-    terms.iter().all(|term| haystack.contains(term))
+    terms
+        .iter()
+        .filter(|term| haystack.contains(term.as_str()))
+        .count()
 }
 
 pub(crate) fn search_snippet(
@@ -128,13 +128,20 @@ pub(crate) fn search_snippet(
     filters: &SearchFilters,
 ) -> String {
     let terms = query_terms(query);
+    let mut best_section = None;
+    let mut best_match_count = 0;
     for section in search_sections(record, context, filters) {
         if hit_matches_excluded_provider_session(&section.hit, filters) {
             continue;
         }
-        if matches_terms(&section.text, &terms) {
-            return matched_snippet(&section.text, &terms, max_chars);
+        let match_count = matching_term_count(&section.text, &terms);
+        if match_count > best_match_count {
+            best_match_count = match_count;
+            best_section = Some(section);
         }
+    }
+    if let Some(section) = best_section {
+        return matched_snippet(&section.text, &terms, max_chars);
     }
     if !record.body.trim().is_empty()
         && !is_agent_history_bookkeeping_record(record)
