@@ -201,7 +201,8 @@ grep -Eq '"effective_mode"[[:space:]]*:[[:space:]]*"lexical"' "${root}/search.js
 grep -Fq 'Add a parser test.' "${root}/search.json" \
   || { printf 'candidate search did not return the fixture event\n' >&2; exit 1; }
 
-run_bounded "${root}/status.json" "${root}/status.err" ctx status --json || {
+run_bounded "${root}/status.json" "${root}/status.err" \
+  clean_env "${binary}" status --json || {
   cat "${root}/status.err" >&2
   exit 1
 }
@@ -210,13 +211,18 @@ grep -Eq '"read_only"[[:space:]]*:[[:space:]]*true' "${root}/status.json" || {
   exit 1
 }
 
-# Every public release target is intentionally lexical-only. Prove that an
-# explicit semantic-only request fails closed without lexical fallback, model
-# cache, vector index, daemon, or download.
-grep -Eq '"source"[[:space:]]*:[[:space:]]*"unsupported"' "${root}/status.json" || {
-  printf 'native candidate does not report the unsupported semantic capability\n' >&2
+# Semantic search is supported but opt-in on every public release target. Prove
+# that the default remains disabled, then that an explicit offline request with
+# no provisioned model fails closed without fallback, state, or download.
+if ! grep -Eq '"config_source"[[:space:]]*:[[:space:]]*"default"' "${root}/status.json" \
+  || ! grep -Eq '"reason"[[:space:]]*:[[:space:]]*"semantic_disabled"' "${root}/status.json"; then
+  printf 'native candidate does not report semantic search as disabled by default\n' >&2
   exit 1
-}
+fi
+if grep -Eq '"source"[[:space:]]*:[[:space:]]*"unsupported"' "${root}/status.json"; then
+  printf 'native candidate unexpectedly reports semantic search as unsupported\n' >&2
+  exit 1
+fi
 if run_bounded "${root}/semantic.out" "${root}/semantic.err" clean_env \
   CTX_DAEMON_ENABLED=1 \
   CTX_SEARCH_SEMANTIC=1 \
@@ -224,8 +230,7 @@ if run_bounded "${root}/semantic.out" "${root}/semantic.err" clean_env \
   printf 'semantic-only search unexpectedly succeeded\n' >&2
   exit 1
 fi
-if ! grep -Eq \
-  'semantic-only search will not initialize or download|local semantic search is not supported on this platform yet' \
+if ! grep -Fq 'semantic-only search will not initialize or download' \
   "${root}/semantic.err"; then
   printf 'semantic-only search did not report the fail-closed capability contract\n' >&2
   exit 1
@@ -252,7 +257,7 @@ if [ -e "${data_root}/daemon/daemon.lock" ]; then
   exit 1
 fi
 
-printf '%s\n' '{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","capability":"passed"}}' \
+printf '%s\n' '{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","semantic_offline_fail_closed":"passed"}}' \
   > "${result_tmp}"
 mv "${result_tmp}" "${result_path}"
 printf 'native candidate smoke passed: %s %s\n' "$(uname -s)" "$(uname -m)"

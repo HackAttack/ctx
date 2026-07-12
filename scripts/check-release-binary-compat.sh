@@ -126,8 +126,8 @@ check_linux() {
   if [[ "${platform}" == "linux-x64" ]]; then
     expected_machine="EM_X86_64"
     expected_interpreter="/lib64/ld-linux-x86-64.so.2"
-    # The reviewed lexical-only x64 artifact names the loader in DT_NEEDED as
-    # well as PT_INTERP; keep that fact explicit instead of normalizing it away.
+    # The reviewed baseline-compatible x64 artifact names the loader in
+    # DT_NEEDED as well as PT_INTERP; keep that fact explicit.
     expected_needed="ld-linux-x86-64.so.2
 libc.so.6
 libgcc_s.so.1
@@ -162,7 +162,7 @@ libm.so.6"
   check_symbol_ceiling GCC 4.2.0
   if [[ "${platform}" == "linux-x64" ]]; then
     if grep -Eq 'GLIBCXX_[0-9]|CXXABI_[0-9]' <<<"${readobj_output}"; then
-      fail "GLIBCXX and CXXABI requirements are forbidden on lexical-only Linux x64"
+      fail "GLIBCXX and CXXABI requirements are forbidden on Linux x64"
     fi
     if grep -Eqi 'x86-64-v[234]|x86-64-v1[^[:alnum:]].*(x86-64-v[234])|ISA_1_(NEEDED|USED).*(AVX|AVX2|AVX512|SSE3|SSE4)' <<<"${readobj_output}"; then
       fail "advertises an x86 ISA requirement above x86-64-v1"

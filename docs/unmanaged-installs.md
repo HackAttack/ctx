@@ -47,9 +47,9 @@ release metadata, but it is not OS-native application signing.
 
 Official Linux release binaries are checked to require no newer than glibc
 2.35 and are built from pinned Ubuntu 22.04 container inputs rather than the
-runner's host libraries. The public release matrix is currently lexical-only on
-every platform; a future semantic build must not raise the baseline CPU or ABI
-contract without an explicit compatibility decision. The macOS binaries
+runner's host libraries. Local semantic search is opt-in and supported on every
+public release platform through a separately installed ONNX Runtime sidecar, so
+the CLI binary keeps its baseline CPU and ABI contract. The macOS binaries
 currently target macOS 13 or newer.
 
 For pinned installs, GitHub release asset URLs use this pattern:

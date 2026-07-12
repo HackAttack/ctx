@@ -24,8 +24,12 @@ case " $* " in
   *" --backend semantic "*)
     test "${CTX_SEARCH_SEMANTIC:-}" = 1
     test "${CTX_DAEMON_ENABLED:-}" = 1
-    printf '%s\n' 'local semantic search is not supported on this platform yet' >&2
+    printf '%s\n' 'semantic-only search will not initialize or download intfloat/multilingual-e5-small during search' >&2
     exit 1
+    ;;
+  *" status --json "*)
+    test -z "${CTX_SEARCH_SEMANTIC:-}"
+    test -z "${CTX_DISABLE_DAEMON:-}"
     ;;
   *)
     test "${CTX_DISABLE_DAEMON:-}" = 1
@@ -48,7 +52,7 @@ case "${1:-}" in
     printf '%s\n' '{"retrieval":{"requested_mode":"lexical","effective_mode":"lexical"},"results":[{"text":"Add a parser test."}]}'
     ;;
   status)
-    printf '%s\n' '{"read_only":true,"semantic":{"embed_policy":{"source":"unsupported"}}}'
+    printf '%s\n' '{"read_only":true,"semantic":{"config_source":"default","enabled":false,"reason":"semantic_disabled","embed_policy":{"source":"dynamic_quiet"}}}'
     ;;
   *)
     printf 'unexpected fake ctx arguments: %s\n' "$*" >&2
@@ -61,30 +65,12 @@ printf '%s\n' '{"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"
 
 result="${tmp}/result.json"
 "${smoke}" "${fake}" "${tmp}/fixture.jsonl" 0.25.0 "${result}" >/dev/null
-expected='{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","capability":"passed"}}'
+expected='{"schema_version":1,"kind":"ctx-native-candidate-smoke","status":"passed","steps":{"version":"passed","setup":"passed","import":"passed","search":"passed","read_only":"passed","semantic_offline_fail_closed":"passed"}}'
 [[ "$(tr -d '\r\n' < "${result}")" == "${expected}" ]] || {
   printf 'candidate smoke result schema changed\n' >&2
   cat "${result}" >&2
   exit 1
 }
-
-# Exercise the non-FastEmbed policy branch deterministically. The private proof
-# still derives the real guest OS independently; this fake uname exists only in
-# this focused helper test.
-mkdir -p "${tmp}/fake-path"
-cat > "${tmp}/fake-path/uname" <<'EOF'
-#!/bin/sh
-case "${1:-}" in
-  -s) printf 'FreeBSD\n' ;;
-  -m) printf 'amd64\n' ;;
-  *) exec /usr/bin/uname "$@" ;;
-esac
-EOF
-chmod +x "${tmp}/fake-path/uname"
-capability_result="${tmp}/capability-result.json"
-PATH="${tmp}/fake-path:${PATH}" "${smoke}" \
-  "${fake}" "${tmp}/fixture.jsonl" 0.25.0 "${capability_result}" >/dev/null
-[[ "$(tr -d '\r\n' < "${capability_result}")" == "${expected}" ]]
 
 failed_result="${tmp}/failed-result.json"
 cp "${fake}" "${tmp}/ctx-bad-version"

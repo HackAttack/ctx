@@ -316,6 +316,7 @@ run_linux_container_build() {
     "${out_dir}/${binary_name}" \
     "${out_dir}/${binary_name}.sha256" \
     "${out_dir}/${binary_name}.version" \
+    "${out_dir}/${binary_name}.expected-version" \
     "${out_dir}/${binary_name}.build-info.json"
 
   docker pull --platform "${docker_platform}" "${base_image}" >/dev/null
@@ -615,6 +616,9 @@ fi
 staged="${out_dir}/${binary_name}"
 cp "${target_binary}" "${staged}"
 chmod 755 "${staged}"
+if [[ "${platform}" == "windows-x64" ]]; then
+  printf '%s\n' "${version}" > "${staged}.expected-version"
+fi
 
 if command -v file >/dev/null 2>&1; then
   file "${staged}"
@@ -669,6 +673,15 @@ if [[ "${platform}" != linux-* ]]; then
   local_runtime_status=not_run
   if [[ "$(tr -d '\r' < "${staged}.version" | tail -n 1)" == "ctx ${version}" ]]; then
     local_runtime_status=passed
+  fi
+  if [[ "${local_runtime_status}" == passed && "${platform}" == macos-* ]]; then
+    native_smoke_result="$(mktemp "${TMPDIR:-/tmp}/ctx-native-smoke.XXXXXX")"
+    rm -f "${native_smoke_result}"
+    scripts/run-native-candidate-smoke.sh \
+      "${staged}" tests/fixtures/custom-history-jsonl/basic.jsonl \
+      "${version}" "${native_smoke_result}"
+    grep -Fq '"status":"passed"' "${native_smoke_result}"
+    rm -f "${native_smoke_result}"
   fi
   IFS=$'\t' read -r \
     host_system host_arch host_native_arch process_translated _native_arch_probe \
