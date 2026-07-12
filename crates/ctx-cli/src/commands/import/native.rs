@@ -60,6 +60,35 @@ pub(crate) fn import_one_source_without_search_refresh(
     )
 }
 
+pub(crate) fn import_one_source_for_search_refresh(
+    store: &mut Store,
+    source: &SourceInfo,
+    progress: Option<CodexSessionImportProgressCallback>,
+    allow_partial_failures: bool,
+    preinventory: &SourcePreinventory,
+) -> Result<ProviderImportSummary> {
+    if !source_uses_import_file_manifest(source)
+        && preinventory.source_root_file().is_some()
+        && store
+            .list_pending_source_import_files(source.provider, &source.path.display().to_string())?
+            .is_empty()
+    {
+        store.upsert_record(&import_record_for_source(source))?;
+        if store.event_search_projection_needs_backfill()? {
+            store.refresh_search_index()?;
+        }
+        return Ok(ProviderImportSummary::default());
+    }
+    import_one_source_without_search_refresh(
+        store,
+        source,
+        progress,
+        false,
+        allow_partial_failures,
+        preinventory,
+    )
+}
+
 pub(crate) fn import_one_source_inner(
     store: &mut Store,
     source: &SourceInfo,
@@ -856,3 +885,7 @@ pub(crate) fn merge_provider_import_summary(
     summary.skipped_edges += other.skipped_edges;
     summary.failures.extend(other.failures);
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;

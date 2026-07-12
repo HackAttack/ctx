@@ -882,6 +882,79 @@ fn search_refresh_auto_imports_discovered_top_provider_sources() {
 }
 
 #[test]
+fn search_refresh_hermes_root_inventory_skips_unchanged_and_detects_wal_only_append() {
+    let temp = tempdir();
+    let initial = "hermes-root-inventory-initial-oracle";
+    let appended = "hermes-root-inventory-appended-oracle";
+    install_default_hermes_fixture(&temp, initial);
+    let source = temp.path().join(".hermes/state.db");
+    let writer = Connection::open(&source).unwrap();
+    let journal_mode: String = writer
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "wal");
+    writer
+        .execute_batch("PRAGMA wal_autocheckpoint = 0")
+        .unwrap();
+
+    let first = json_output(ctx(&temp).args([
+        "search",
+        initial,
+        "--provider",
+        "hermes",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_search_provider_oracle(&first, "hermes", initial, 1, "message");
+
+    let unchanged = json_output(ctx(&temp).args([
+        "search",
+        initial,
+        "--provider",
+        "hermes",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_eq!(unchanged["freshness"]["totals"]["imported_events"], 0);
+
+    let main_before = fs::metadata(&source).unwrap();
+    writer
+        .execute(
+            "INSERT INTO messages (session_id, role, content, timestamp)
+             VALUES (?1, 'user', ?2, 1782259203.0)",
+            ["hermes-cli-native", appended],
+        )
+        .unwrap();
+    assert!(source.with_extension("db-wal").is_file());
+    let main_after = fs::metadata(&source).unwrap();
+    assert_eq!(main_after.len(), main_before.len());
+    assert_eq!(
+        main_after.modified().unwrap(),
+        main_before.modified().unwrap()
+    );
+
+    let refreshed = json_output(ctx(&temp).args([
+        "search",
+        appended,
+        "--provider",
+        "hermes",
+        "--refresh",
+        "wait",
+        "--json",
+    ]));
+    assert_search_provider_oracle(&refreshed, "hermes", appended, 1, "message");
+    assert!(
+        refreshed["freshness"]["totals"]["imported_events"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    drop(writer);
+}
+
+#[test]
 fn search_refresh_wait_json_emits_progress_on_stderr() {
     let temp = tempdir();
     let fixture = PathBuf::from(provider_history_fixture("codex-sessions"));

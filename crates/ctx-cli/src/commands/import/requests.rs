@@ -215,6 +215,7 @@ pub(crate) fn import_history_source_plugin(
     let stats = SourceStats {
         files: 1,
         bytes: stdout.len() as u64,
+        change_token: None,
     };
     store.upsert_record(&record)?;
     let summary = import_custom_history_jsonl_v1_reader(

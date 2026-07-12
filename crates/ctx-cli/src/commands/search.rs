@@ -18,7 +18,7 @@ use ctx_history_store::Store;
 
 use crate::analytics::AnalyticsProperties;
 use crate::commands::import::{
-    error_summary, import_history_source_plugin, import_one_source_without_search_refresh,
+    error_summary, import_history_source_plugin, import_one_source_for_search_refresh,
     import_totals_json, inventory_import_sources, one_line_error, should_parallelize_import,
     ImportSourceOutcome, ImportTotals, SourceStats,
 };
@@ -568,11 +568,10 @@ pub(crate) fn refresh_sources_for_search(
                 );
                 thread::spawn(move || -> Result<ImportSourceOutcome> {
                     let mut store = Store::open(&db_path)?;
-                    let summary = import_one_source_without_search_refresh(
+                    let summary = import_one_source_for_search_refresh(
                         &mut store,
                         &plan.source,
                         progress_callback,
-                        false,
                         allow_partial_failures,
                         &plan.preinventory,
                     )?;
@@ -621,11 +620,10 @@ pub(crate) fn refresh_sources_for_search(
             let source_progress =
                 progress.codex_import_callback(&plan.source, completed_source_bytes);
             completed_source_bytes = completed_source_bytes.saturating_add(plan.stats.bytes);
-            let import_result = import_one_source_without_search_refresh(
+            let import_result = import_one_source_for_search_refresh(
                 &mut store,
                 &plan.source,
                 source_progress,
-                false,
                 allow_partial_failures,
                 &plan.preinventory,
             );

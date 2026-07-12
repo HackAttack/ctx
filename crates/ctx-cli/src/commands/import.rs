@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use ctx_history_capture::{
@@ -92,8 +91,10 @@ use explicit::run_explicit_format_import;
 pub(crate) use inventory::{
     inventory_available_sources, inventory_import_sources, ImportInventory,
 };
-pub(crate) use native::import_one_source_without_search_refresh;
 use native::{import_one_source, validate_source_import_supported};
+pub(crate) use native::{
+    import_one_source_for_search_refresh, import_one_source_without_search_refresh,
+};
 use report::{
     custom_format_import_json, history_source_plugin_failure_json,
     history_source_plugin_import_json, import_error_is_systemic, low_disk_space_warning,
@@ -255,6 +256,7 @@ impl SourcePreinventory {
 pub(crate) struct SourceStats {
     pub(crate) files: usize,
     pub(crate) bytes: u64,
+    pub(crate) change_token: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone)]
