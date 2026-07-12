@@ -8,9 +8,9 @@ die() {
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Buildkite scheduling and access to the tagged Mac queues are the primary
-# trust boundary. This gate is defense in depth inside every secrets-capable
-# command and verifies the checked-out bytes, not just mutable build metadata.
+# The infrastructure trust boundary is that Buildkite and Infisical restrict
+# privileged host authentication to trusted jobs. This defense-in-depth gate
+# verifies the checked-out bytes inside every secrets-capable command.
 
 if [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]]; then
   for ci_name in BUILDKITE CI GITHUB_ACTIONS; do

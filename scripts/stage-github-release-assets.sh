@@ -110,8 +110,9 @@ PY
   fi
   if [[ "${platform}" == macos-* && "${macos_signing_mode}" == required ]]; then
     signing_evidence="${artifact_dir%/}/ctx-onnxruntime-${platform}.signing.json"
-    nested_runtime="$(mktemp "${TMPDIR:-/tmp}/ctx-transcoded-runtime.XXXXXX")"
-    trap 'rm -f "${nested_runtime:-}"' EXIT
+    transcode_work="$(mktemp -d "${TMPDIR:-/tmp}/ctx-transcoded-runtime.XXXXXX")"
+    nested_runtime="${transcode_work}/libonnxruntime.dylib"
+    trap 'rm -rf "${transcode_work:-}"' EXIT
     python3 - "${dest_path}" "${nested_runtime}" <<'PY'
 import shutil
 import sys
@@ -139,7 +140,9 @@ PY
       "${platform}" runtime "${dest_path}" "${signing_evidence}"
     scripts/check-macos-release-signing.sh \
       "${platform}" cli "${artifact_dir%/}/ctx-${platform}"
-    rm -f "${nested_runtime}"
+    scripts/run-macos-release-signing.sh --attest-runtime-archive \
+      "${platform}" "${dest_path}" "${nested_runtime}" "${artifact_dir}"
+    rm -rf "${transcode_work}"
     trap - EXIT
   fi
   rm -f "${source_path}" "${source_path}.sha256"
@@ -394,6 +397,8 @@ validate_macos_signing_evidence() (
   local cli_attestation_cms="${artifact_dir%/}/ctx-${platform}.attestation.cms"
   local runtime_attestation="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.json"
   local runtime_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.cms"
+  local release_attestation="${artifact_dir%/}/ctx-onnxruntime-${platform}.release-attestation.json"
+  local release_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.release-attestation.cms"
   local work nested
 
   # JSON records diagnostics and archive bindings. The Developer ID CMS
@@ -444,6 +449,9 @@ PY
   scripts/verify-macos-release-attestation.sh \
     "${platform}" runtime "${nested}" \
     "${runtime_attestation}" "${runtime_attestation_cms}"
+  scripts/verify-macos-release-attestation.sh --runtime-archive \
+    "${platform}" "${runtime}" "${nested}" \
+    "${release_attestation}" "${release_attestation_cms}"
 )
 
 validate_authoritative_runtime_proof \

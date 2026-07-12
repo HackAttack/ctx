@@ -7,10 +7,12 @@ EXPECTED_CA_SHA256="F1:6C:D3:C5:4C:7F:83:CE:A4:BF:1A:3E:6A:08:19:C8:AA:A8:E4:A1:
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/verify-macos-release-attestation.sh PLATFORM KIND ARTIFACT ATTESTATION CMS
+Usage:
+  scripts/verify-macos-release-attestation.sh PLATFORM KIND ARTIFACT ATTESTATION CMS
+  scripts/verify-macos-release-attestation.sh --runtime-archive PLATFORM ARCHIVE NESTED_DYLIB ATTESTATION CMS
 
-Cryptographically verifies the detached Developer ID CMS attestation and its
-binding to one exact macOS CLI or runtime dylib.
+Verifies a detached Developer ID CMS statement against only the pinned Apple
+Developer ID G2 CA, then checks its exact executable or final-archive binding.
 USAGE
 }
 
@@ -19,19 +21,42 @@ die() {
   exit 1
 }
 
-[[ $# -eq 5 ]] || { usage; exit 2; }
-platform="$1"
-kind="$2"
-artifact="$3"
-attestation="$4"
-cms="$5"
+mode=artifact
+if [[ "${1:-}" == "--runtime-archive" ]]; then
+  [[ $# -eq 6 ]] || { usage; exit 2; }
+  mode=runtime_archive
+  platform="$2"
+  artifact="$3"
+  nested_artifact="$4"
+  attestation="$5"
+  cms="$6"
+else
+  [[ $# -eq 5 ]] || { usage; exit 2; }
+  platform="$1"
+  kind="$2"
+  artifact="$3"
+  attestation="$4"
+  cms="$5"
+  case "${kind}" in cli|runtime) ;; *) usage; exit 2 ;; esac
+fi
 case "${platform}" in macos-arm64|macos-x64) ;; *) usage; exit 2 ;; esac
-case "${kind}" in cli|runtime) ;; *) usage; exit 2 ;; esac
 [[ -f "${artifact}" ]] || die "attested macOS artifact missing: ${artifact}"
+if [[ "${mode}" == "runtime_archive" ]]; then
+  [[ -f "${nested_artifact}" ]] || die "attested macOS nested dylib missing: ${nested_artifact}"
+  [[ "$(basename "${nested_artifact}")" == "libonnxruntime.dylib" ]] || \
+    die "runtime archive attestation requires libonnxruntime.dylib"
+fi
 [[ -s "${attestation}" ]] || die "macOS attestation statement missing: ${attestation}"
 [[ -s "${cms}" ]] || die "macOS attestation signature missing: ${cms}"
 command -v openssl >/dev/null 2>&1 || die "openssl is required to verify macOS attestation"
 command -v python3 >/dev/null 2>&1 || die "python3 is required to verify macOS attestation"
+[[ "$(openssl version 2>/dev/null || true)" == OpenSSL\ 3.* ]] || \
+  die "macOS attestation verification requires OpenSSL 3"
+cms_help="$(openssl cms -help 2>&1 || true)"
+for flag in -no-CApath -no-CAstore; do
+  [[ "${cms_help}" == *"${flag}"* ]] || \
+    die "selected OpenSSL 3 lacks required exclusive-trust flag ${flag}"
+done
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ca_file="${root_dir}/scripts/apple-developer-id-g2-ca.pem"
@@ -49,6 +74,8 @@ if ! openssl cms -verify \
   -content "${attestation}" \
   -purpose any \
   -partial_chain \
+  -no-CApath \
+  -no-CAstore \
   -CAfile "${ca_file}" \
   -certsout "${signer_cert}" \
   -out /dev/null >/dev/null 2>&1; then
@@ -61,11 +88,26 @@ subject=",${subject#subject=},"
   die "macOS attestation signer does not have the pinned ctx Apple authority"
 [[ "${subject}" == *",OU=${EXPECTED_TEAM_ID},"* ]] || \
   die "macOS attestation signer does not have the pinned ctx Apple Team ID"
+eku="$(openssl x509 -in "${signer_cert}" -noout -ext extendedKeyUsage 2>/dev/null || true)"
+grep -Eq '(^|[ ,])(Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)(,|$)' <<<"${eku}" || \
+  die "macOS attestation signer certificate lacks the Code Signing EKU"
 
-python3 "${root_dir}/scripts/macos-release-signing-evidence.py" verify-attestation \
-  --attestation "${attestation}" \
-  --platform "${platform}" \
-  --kind "${kind}" \
-  --artifact "${artifact}" \
-  --source-commit "$(git -C "${root_dir}" rev-parse --verify HEAD)"
-printf 'macOS release attestation ok: %s %s\n' "${platform}" "${kind}"
+source_commit="$(git -C "${root_dir}" rev-parse --verify HEAD)"
+if [[ "${mode}" == "runtime_archive" ]]; then
+  python3 "${root_dir}/scripts/macos-release-signing-evidence.py" \
+    verify-runtime-archive-attestation \
+    --attestation "${attestation}" \
+    --platform "${platform}" \
+    --archive "${artifact}" \
+    --nested-artifact "${nested_artifact}" \
+    --source-commit "${source_commit}"
+  printf 'macOS release attestation ok: %s runtime release archive\n' "${platform}"
+else
+  python3 "${root_dir}/scripts/macos-release-signing-evidence.py" verify-attestation \
+    --attestation "${attestation}" \
+    --platform "${platform}" \
+    --kind "${kind}" \
+    --artifact "${artifact}" \
+    --source-commit "${source_commit}"
+  printf 'macOS release attestation ok: %s %s\n' "${platform}" "${kind}"
+fi

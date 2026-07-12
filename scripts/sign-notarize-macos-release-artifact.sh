@@ -265,10 +265,15 @@ certificate_subject=",${certificate_subject#subject=},"
   die "APPLE_CODESIGN_CERT_P12_B64 is not the pinned ctx Developer ID identity"
 [[ "${certificate_subject}" == *",OU=${EXPECTED_TEAM_ID},"* ]] || \
   die "APPLE_CODESIGN_CERT_P12_B64 does not have the pinned ctx Apple Team ID"
-openssl verify -purpose any -partial_chain \
+certificate_eku="$(openssl x509 \
+  -in "${cert_pem_path}" -noout -ext extendedKeyUsage 2>/dev/null || true)"
+grep -Eq '(^|[ ,])(Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)(,|$)' \
+  <<<"${certificate_eku}" || \
+  die "APPLE_CODESIGN_CERT_P12_B64 certificate lacks the Code Signing EKU"
+openssl verify -purpose any -partial_chain -no-CApath -no-CAstore \
   -CAfile "${root_dir}/scripts/apple-developer-id-g2-ca.pem" \
   "${cert_pem_path}" >/dev/null 2>&1 || \
-  die "APPLE_CODESIGN_CERT_P12_B64 does not chain to Apple's pinned Developer ID G2 CA"
+  die "APPLE_CODESIGN_CERT_P12_B64 does not chain exclusively to Apple's pinned Developer ID G2 CA"
 
 decode_b64_file NOTARY_KEY_P8_B64 "${notary_key_b64_path}" "${notary_key_path}"
 grep -Fq 'BEGIN PRIVATE KEY' "${notary_key_path}" || \

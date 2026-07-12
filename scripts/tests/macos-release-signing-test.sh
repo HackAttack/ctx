@@ -16,6 +16,9 @@ cat >"${fake_bin}/openssl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
+  version)
+    printf '%s\n' 'OpenSSL 3.3.0 fake'
+    ;;
   pkcs12)
     output=""
     while [[ $# -gt 0 ]]; do
@@ -28,6 +31,12 @@ case "${1:-}" in
   x509)
     if [[ " $* " == *' -fingerprint '* ]]; then
       printf '%s\n' 'sha256 Fingerprint=F1:6C:D3:C5:4C:7F:83:CE:A4:BF:1A:3E:6A:08:19:C8:AA:A8:E4:A1:52:8F:D1:44:71:5F:35:06:43:D2:DF:3A'
+    elif [[ " $* " == *' -ext extendedKeyUsage '* ]]; then
+      if [[ -e "${TMPDIR}/fake-wrong-eku" ]]; then
+        printf '%s\n' 'X509v3 Extended Key Usage:' '    TLS Web Server Authentication'
+      else
+        printf '%s\n' 'X509v3 Extended Key Usage:' '    Code Signing'
+      fi
     elif [[ -e "${TMPDIR}/fake-coherent-wrong-identity" ]]; then
       printf '%s\n' 'subject=CN=Developer ID Application: Other Corp (OTHERTEAM),OU=OTHERTEAM,O=Other Corp'
     else
@@ -35,10 +44,23 @@ case "${1:-}" in
     fi
     ;;
   pkey) ;;
-  verify) ;;
+  verify)
+    if [[ "${2:-}" == "-help" ]]; then
+      printf '%s\n' '-no-CApath' \
+        "$([[ ! -e "${TMPDIR}/fake-openssl-missing-exclusive-flags" ]] && printf '%s' '-no-CAstore')"
+      exit 0
+    fi
+    [[ " $* " == *' -no-CApath '* && " $* " == *' -no-CAstore '* ]]
+    [[ ! -e "${TMPDIR}/fake-host-trust-only-certificate" ]]
+    ;;
   cms)
     operation="${2:-}"
-    [[ "${operation}" != "-help" ]] || exit 0
+    if [[ "${operation}" == "-help" ]]; then
+      printf '%s\n' '-no-CApath' \
+        "$([[ ! -e "${TMPDIR}/fake-openssl-missing-exclusive-flags" ]] && printf '%s' '-no-CAstore')"
+      exit 0
+    fi
+    original_args="$*"
     input=""
     output=""
     content=""
@@ -58,6 +80,9 @@ case "${1:-}" in
         printf '%s\n' attest >>"${TMPDIR}/tool-order.log"
         ;;
       -verify)
+        [[ " ${original_args} " == *' -no-CApath '* \
+          && " ${original_args} " == *' -no-CAstore '* ]]
+        [[ ! -e "${TMPDIR}/fake-host-trust-only-certificate" ]]
         [[ "$(cat "${input}")" == "$(sha256sum "${content}" | awk '{print $1}')" ]] || exit 1
         printf '%s\n' 'fake signer certificate' >"${certsout}"
         ;;
@@ -228,6 +253,21 @@ case " $* " in
     ;;
 esac
 SH
+
+cat >"${fake_bin}/uname" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' Darwin
+SH
+
+cat >"${fake_bin}/stat" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-f" && "${2:-}" == "%Lp" ]]; then
+  exec /usr/bin/stat -c '%a' "$3"
+fi
+exec /usr/bin/stat "$@"
+SH
 chmod +x "${fake_bin}"/*
 
 fake_signer="${test_root}/fake-signer"
@@ -244,6 +284,21 @@ while IFS= read -r path; do
 done < <(find "${secret_dir}" -mindepth 1 -maxdepth 1 -type f)
 SH
 chmod +x "${fake_signer}"
+
+fake_attester="${test_root}/fake-attester"
+cat >"${fake_attester}" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"${TMPDIR}/fake-attester-argv.txt"
+env | LC_ALL=C sort >"${TMPDIR}/fake-attester-environment.txt"
+secret_dir="${CTX_MACOS_SIGNING_SECRET_DIR:?}"
+[[ "$(stat -c '%a' "${secret_dir}")" == "700" ]]
+[[ "$(find "${secret_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "2" ]]
+for name in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD; do
+  [[ "$(stat -c '%a' "${secret_dir}/${name}")" == "600" ]]
+done
+SH
+chmod +x "${fake_attester}"
 
 unset BUILDKITE BUILDKITE_BRANCH BUILDKITE_COMMIT BUILDKITE_PULL_REQUEST
 unset BUILDKITE_REPO BUILDKITE_TAG CI GITHUB_ACTIONS
@@ -287,6 +342,21 @@ expect_failure() {
   }
 }
 
+trusted_infisical() {
+  env \
+    -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
+    -u CTX_TEST_ONLY_MACOS_HOST \
+    -u CI \
+    -u GITHUB_ACTIONS \
+    BUILDKITE=true \
+    BUILDKITE_PULL_REQUEST=false \
+    BUILDKITE_BRANCH=main \
+    BUILDKITE_COMMIT=0000000000000000000000000000000000000001 \
+    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git \
+    CTX_MACOS_SIGNING_SECRET_SOURCE=infisical \
+    "$@"
+}
+
 "${trust_gate}" >/dev/null
 expect_failure 'forbidden when CI is set' "${test_root}/local-ci-bypass.log" \
   env CI=1 "${trust_gate}"
@@ -304,11 +374,26 @@ expect_failure 'BUILDKITE_COMMIT does not match' "${test_root}/commit-gate.log" 
     BUILDKITE_COMMIT=0000000000000000000000000000000000000000 \
     BUILDKITE_REPO=https://github.com/ctxrs/ctx.git "${trust_gate}"
 
+expect_failure 'categorically forbid Infisical' "${test_root}/local-infisical-source.log" \
+  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+expect_failure 'forbid ambient Infisical authentication' "${test_root}/local-infisical-ambient.log" \
+  env INFISICAL_TOKEN=ambient-auth-must-not-be-used "${launcher}" --preflight
+grep -Fq 'ambient-auth-must-not-be-used' "${test_root}/local-infisical-ambient.log" \
+  && fail "local Infisical rejection exposed ambient auth"
+
 rm -f "${TMPDIR}/infisical.log"
-CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight \
-  >"${test_root}/preflight.log" 2>&1
+"${launcher}" --preflight >"${test_root}/preflight.log" 2>&1
+[[ ! -e "${TMPDIR}/infisical.log" ]] || fail "tool-only preflight accessed Infisical"
+touch "${TMPDIR}/fake-openssl-missing-exclusive-flags"
+expect_failure 'lacks required exclusive-trust flag -no-CAstore' \
+  "${test_root}/openssl-exclusive-flags.log" "${launcher}" --preflight
+rm -f "${TMPDIR}/fake-openssl-missing-exclusive-flags"
+
+infisical_artifact="$(new_artifact infisical-cli)"
+trusted_infisical "${launcher}" macos-arm64 cli "${infisical_artifact}" \
+  "${test_root}/infisical-evidence" >/dev/null
 [[ "$(wc -l < "${TMPDIR}/infisical.log" | tr -d ' ')" == "5" ]] || \
-  fail "preflight did not fetch exactly five Infisical values"
+  fail "signing point did not fetch exactly five Infisical values"
 while IFS='|' read -r name args; do
   case "${name}" in
     APPLE_CODESIGN_CERT_P12_B64|APPLE_CODESIGN_CERT_PASSWORD|NOTARY_ISSUER|NOTARY_KEY_ID|NOTARY_KEY_P8_B64) ;;
@@ -323,15 +408,18 @@ done
 
 touch "${TMPDIR}/fake-infisical-auth-failure"
 expect_failure 'Infisical lookup failed' "${test_root}/infisical-auth.log" \
-  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+  trusted_infisical "${launcher}" macos-arm64 cli \
+    "$(new_artifact infisical-auth-failure)" "${test_root}/infisical-auth-evidence"
 rm -f "${TMPDIR}/fake-infisical-auth-failure"
 printf '%s' NOTARY_KEY_ID >"${TMPDIR}/fake-infisical-missing-name"
 expect_failure 'NOTARY_KEY_ID' "${test_root}/infisical-missing.log" \
-  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+  trusted_infisical "${launcher}" macos-arm64 cli \
+    "$(new_artifact infisical-missing)" "${test_root}/infisical-missing-evidence"
 rm -f "${TMPDIR}/fake-infisical-missing-name"
 mv "${fake_bin}/infisical" "${fake_bin}/infisical.off"
 expect_failure 'missing required macOS signing tool: infisical' "${test_root}/infisical-tool.log" \
-  env CTX_MACOS_SIGNING_SECRET_SOURCE=infisical "${launcher}" --preflight
+  trusted_infisical "${launcher}" macos-arm64 cli \
+    "$(new_artifact infisical-tool)" "${test_root}/infisical-tool-evidence"
 mv "${fake_bin}/infisical.off" "${fake_bin}/infisical"
 mv "${fake_bin}/rcodesign" "${fake_bin}/rcodesign.off"
 expect_failure 'missing required macOS signing tool: rcodesign' "${test_root}/required-tool.log" \
@@ -384,6 +472,25 @@ for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; d
     "${TMPDIR}/notarytool-environment.txt" \
     && fail "secret value reached signer/tool argv or environment: ${secret}"
 done
+
+touch "${TMPDIR}/fake-wrong-eku"
+expect_failure 'certificate lacks the Code Signing EKU' "${test_root}/wrong-eku-signing.log" \
+  "${launcher}" macos-arm64 cli "$(new_artifact wrong-eku)" "${test_root}/wrong-eku-evidence"
+expect_failure 'signer certificate lacks the Code Signing EKU' "${test_root}/wrong-eku-cms.log" \
+  "${attestation_check}" macos-arm64 cli "${success_artifact}" \
+    "${success_dir}/ctx-macos-arm64.attestation.json" \
+    "${success_dir}/ctx-macos-arm64.attestation.cms"
+rm -f "${TMPDIR}/fake-wrong-eku"
+
+touch "${TMPDIR}/fake-host-trust-only-certificate"
+expect_failure 'chain exclusively' "${test_root}/host-store-leaf-bypass.log" \
+  "${launcher}" macos-arm64 cli "$(new_artifact host-store-leaf)" \
+    "${test_root}/host-store-leaf-evidence"
+expect_failure 'CMS signature verification failed' "${test_root}/host-store-cms-bypass.log" \
+  "${attestation_check}" macos-arm64 cli "${success_artifact}" \
+    "${success_dir}/ctx-macos-arm64.attestation.json" \
+    "${success_dir}/ctx-macos-arm64.attestation.cms"
+rm -f "${TMPDIR}/fake-host-trust-only-certificate"
 
 for missing in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY_ISSUER NOTARY_KEY_ID NOTARY_KEY_P8_B64; do
   artifact="$(new_artifact "missing-${missing}")"
@@ -448,6 +555,72 @@ python3 "${evidence_tool}" bind-archive \
   --archive "${runtime_archive}" --checksum "${runtime_archive}.sha256" \
   --nested-artifact "${runtime}" --role release
 "${check_script}" macos-x64 runtime "${runtime_archive}" "${runtime_evidence}"
+
+CTX_TEST_ONLY_MACOS_ATTESTER_PATH="${fake_attester}" \
+  "${launcher}" --attest-runtime-archive macos-x64 "${runtime_archive}" \
+    "${runtime_dir}/package/lib/libonnxruntime.dylib" "${runtime_dir}"
+for handoff_file in "${TMPDIR}/fake-attester-argv.txt" "${TMPDIR}/fake-attester-environment.txt"; do
+  for secret in \
+    cDEyLXNlY3JldC1zZW50aW5lbA== \
+    password-secret-sentinel \
+    issuer-test-value \
+    key-id-test-value \
+    LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCnA4LXNlY3JldC1zZW50aW5lbAotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==; do
+    grep -Fq "${secret}" "${handoff_file}" \
+      && fail "secret value reached final-archive attester argv/environment"
+  done
+  for secret_name in APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD NOTARY_ISSUER NOTARY_KEY_ID NOTARY_KEY_P8_B64; do
+    grep -Fq "${secret_name}=" "${handoff_file}" \
+      && fail "secret variable reached final-archive attester environment"
+  done
+done
+
+rm -f "${TMPDIR}/infisical.log"
+trusted_infisical "${launcher}" --attest-runtime-archive macos-x64 \
+  "${runtime_archive}" "${runtime_dir}/package/lib/libonnxruntime.dylib" \
+  "${runtime_dir}" >/dev/null
+[[ "$(wc -l < "${TMPDIR}/infisical.log" | tr -d ' ')" == "2" ]] || \
+  fail "final archive attestation did not fetch exactly two Infisical values"
+cut -d '|' -f 1 "${TMPDIR}/infisical.log" \
+  | cmp - <(printf '%s\n' APPLE_CODESIGN_CERT_P12_B64 APPLE_CODESIGN_CERT_PASSWORD) \
+  || fail "final archive attestation fetched non-P12 credentials"
+release_statement="${runtime_dir}/ctx-onnxruntime-macos-x64.release-attestation.json"
+release_cms="${runtime_dir}/ctx-onnxruntime-macos-x64.release-attestation.cms"
+"${attestation_check}" --runtime-archive macos-x64 "${runtime_archive}" \
+  "${runtime_dir}/package/lib/libonnxruntime.dylib" "${release_statement}" "${release_cms}"
+
+cp "${runtime_archive}" "${runtime_archive}.authorized"
+printf '%s\n' repackaged >>"${runtime_archive}"
+expect_failure 'does not bind the exact release archive' "${test_root}/archive-repack.log" \
+  "${attestation_check}" --runtime-archive macos-x64 "${runtime_archive}" \
+    "${runtime_dir}/package/lib/libonnxruntime.dylib" "${release_statement}" "${release_cms}"
+mv "${runtime_archive}.authorized" "${runtime_archive}"
+
+for field in role provenance source_commit; do
+  altered_statement="${runtime_dir}/altered-${field}.json"
+  altered_cms="${runtime_dir}/altered-${field}.cms"
+  python3 - "${release_statement}" "${altered_statement}" "${field}" <<'PY'
+import json
+import sys
+source, output, field = sys.argv[1:]
+with open(source, encoding="utf-8") as stream:
+    value = json.load(stream)
+value[field] = {
+    "role": "builder",
+    "provenance": "non-native-repack",
+    "source_commit": "f" * 40,
+}[field]
+with open(output, "w", encoding="utf-8") as stream:
+    json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+  openssl cms -sign -binary -in "${altered_statement}" \
+    -signer ignored -inkey ignored -outform DER -out "${altered_cms}" -noattr
+  expect_failure 'does not bind the exact release archive' \
+    "${test_root}/archive-${field}.log" \
+    "${attestation_check}" --runtime-archive macos-x64 "${runtime_archive}" \
+      "${runtime_dir}/package/lib/libonnxruntime.dylib" "${altered_statement}" "${altered_cms}"
+done
 
 substitution_dir="${test_root}/substitution"
 mkdir -p "${substitution_dir}"
@@ -546,7 +719,9 @@ if [[ -x /usr/bin/openssl ]] && /usr/bin/openssl cms -help >/dev/null 2>&1; then
     "${forged_statement}" "${forged_cms}"
 fi
 
-find "${test_root}/tmp" -maxdepth 1 -name 'ctx-macos-signing-*' -print -quit \
+find "${test_root}/tmp" -maxdepth 1 \
+  \( -name 'ctx-macos-signing-*' -o -name 'ctx-macos-runtime-attestation.*' \) \
+  -print -quit \
   | grep -q . && fail "secret temporary directory was not removed"
 for secret in password-secret-sentinel p12-secret-sentinel p8-secret-sentinel; do
   grep -R -Fq "${secret}" "${test_root}" \

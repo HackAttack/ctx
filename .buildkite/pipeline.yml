@@ -160,7 +160,8 @@ steps:
     command: |
       export CTX_MACOS_RELEASE_SIGNING=required
       export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
-      scripts/run-macos-release-signing.sh --preflight
+      # Build and smoke processes never receive signing values; only narrow
+      # launcher calls inside construction/transcode scripts fetch them.
       scripts/build-public-cli-artifact.sh macos-arm64
       scripts/build-onnxruntime-sidecar.sh macos-arm64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-arm64
@@ -221,6 +222,8 @@ steps:
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.json"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.cms"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.release-attestation.json"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.release-attestation.cms"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.codesign.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.gatekeeper.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.notary-*"
@@ -238,7 +241,7 @@ steps:
     command: |
       export CTX_MACOS_RELEASE_SIGNING=required
       export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
-      scripts/run-macos-release-signing.sh --preflight
+      # Rosetta construction receives no signing values; its signer fetches at use.
       scripts/build-public-cli-artifact.sh macos-x64
       if [[ "${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_root="target/public-cli-native-smoke/macos-x64"
@@ -291,7 +294,7 @@ steps:
         --step public-cli-macos-x64
       export CTX_MACOS_RELEASE_SIGNING=required
       export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
-      scripts/run-macos-release-signing.sh --preflight
+      # Native verification/build/smokes are not children of a secret-bearing process.
       scripts/check-macos-release-signing.sh \
         macos-x64 cli target/public-cli-artifacts/ctx-macos-x64
       expected_version="$(sed -n 's/^ctx //p' \
@@ -332,6 +335,8 @@ steps:
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.signing.json"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.json"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.cms"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.release-attestation.json"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.release-attestation.cms"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.codesign.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.gatekeeper.txt"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.notary-*"

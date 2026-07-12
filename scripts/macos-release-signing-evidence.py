@@ -250,6 +250,39 @@ def command_verify_attestation(args: argparse.Namespace) -> None:
         raise SystemExit("signed macOS attestation does not bind the exact pinned artifact")
 
 
+def runtime_archive_attestation_document(args: argparse.Namespace) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
+        raise SystemExit("attestation source commit must be a lowercase 40-character git SHA")
+    return {
+        "archive_name": args.archive.name,
+        "archive_sha256": sha256(args.archive),
+        "artifact_kind": "runtime-release-archive",
+        "codesign_authority": EXPECTED_AUTHORITY,
+        "nested_artifact_name": "libonnxruntime.dylib",
+        "nested_artifact_sha256": sha256(args.nested_artifact),
+        "platform": args.platform,
+        "provenance": "native-post-transcode",
+        "role": "release",
+        "schema_version": 1,
+        "source_commit": args.source_commit,
+        "team_identifier": EXPECTED_TEAM_ID,
+    }
+
+
+def command_create_runtime_archive_attestation(args: argparse.Namespace) -> None:
+    if args.nested_artifact.name != "libonnxruntime.dylib":
+        raise SystemExit("runtime archive attestation requires libonnxruntime.dylib")
+    write_json(args.output, runtime_archive_attestation_document(args))
+
+
+def command_verify_runtime_archive_attestation(args: argparse.Namespace) -> None:
+    expected = runtime_archive_attestation_document(args)
+    if read_json(args.attestation) != expected:
+        raise SystemExit(
+            "signed macOS runtime archive attestation does not bind the exact release archive"
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -311,6 +344,36 @@ def build_parser() -> argparse.ArgumentParser:
     verify_attestation.add_argument("--artifact", required=True, type=Path)
     verify_attestation.add_argument("--source-commit", required=True)
     verify_attestation.set_defaults(handler=command_verify_attestation)
+
+    create_archive_attestation = subparsers.add_parser(
+        "create-runtime-archive-attestation"
+    )
+    create_archive_attestation.add_argument("--output", required=True, type=Path)
+    create_archive_attestation.add_argument("--platform", required=True)
+    create_archive_attestation.add_argument("--archive", required=True, type=Path)
+    create_archive_attestation.add_argument(
+        "--nested-artifact", required=True, type=Path
+    )
+    create_archive_attestation.add_argument("--source-commit", required=True)
+    create_archive_attestation.set_defaults(
+        handler=command_create_runtime_archive_attestation
+    )
+
+    verify_archive_attestation = subparsers.add_parser(
+        "verify-runtime-archive-attestation"
+    )
+    verify_archive_attestation.add_argument(
+        "--attestation", required=True, type=Path
+    )
+    verify_archive_attestation.add_argument("--platform", required=True)
+    verify_archive_attestation.add_argument("--archive", required=True, type=Path)
+    verify_archive_attestation.add_argument(
+        "--nested-artifact", required=True, type=Path
+    )
+    verify_archive_attestation.add_argument("--source-commit", required=True)
+    verify_archive_attestation.set_defaults(
+        handler=command_verify_runtime_archive_attestation
+    )
     return parser
 
 
