@@ -109,26 +109,6 @@ and private relevance evals justify flipping the default.
 - Daemon model acquisition shields fastembed's `HF_HOME` override while filling
   the ctx-selected cache root, preserving ctx cache precedence during download
   as well as during normal model loading.
-- Release plumbing now has a stable ONNX Runtime sidecar naming convention:
-  `ctx-onnxruntime-linux-x64.tar.gz`,
-  `ctx-onnxruntime-linux-aarch64.tar.gz`,
-  `ctx-onnxruntime-macos-arm64.tar.gz`,
-  `ctx-onnxruntime-macos-x64.tar.gz`,
-  `ctx-onnxruntime-windows-x64.zip`, and
-  `ctx-onnxruntime-freebsd-x64.tar.gz`. Runtime producer jobs may use validated
-  `.tar.zst` intermediates, but release metadata and end-user installers only
-  consume the checksum-verified `.tar.gz` transport and do not require zstd.
-- Release metadata can describe those sidecars with
-  `CTX_RELEASE_ONNXRUNTIME_ARTIFACT_<platform_key>`,
-  `CTX_RELEASE_ONNXRUNTIME_SHA256_<platform_key>`, and
-  `CTX_RELEASE_ONNXRUNTIME_VERSION`. The development installers place runtime
-  assets under the selected runtime root at
-  `onnxruntime/<version>/<platform>`.
-- The public Buildkite pipeline has an opt-in runtime smoke matrix gated by
-  `CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX=1`. Each smoke installs and runs the exact
-  CLI artifact and sidecar in an isolated data root, then publishes an
-  exact-binary, exact-runtime proof. Cross-build and translated smoke evidence
-  cannot satisfy a native release gate.
 
 ## Ship Goals
 
@@ -372,31 +352,6 @@ and private relevance evals justify flipping the default.
     startup or per-command sqlite opening becomes the bottleneck;
   - add a refill loop for post-vector filters so candidate count can drop below
     the conservative 1,000 soft-filter window without under-filling results.
-
-### 8. Equal Platform Runtime And Release Plumbing
-
-- Target architecture: one embedding model and ONNX Runtime index format on
-  every public platform. Core ML is an accelerator backend, not a second
-  semantic corpus.
-- Keep CLI artifact names stable. Runtime sidecars are additive assets named
-  `ctx-onnxruntime-<platform>.<archive>` and preserve license and notice files.
-- Release metadata may omit runtime keys entirely, but a published runtime must
-  include artifact name, SHA-256, and version metadata as one complete set.
-- Managed runners produce and natively smoke Linux x64, Linux arm64, and macOS
-  arm64 when the native smoke matrix is enabled.
-- Native Intel macOS x64, Windows x64, and FreeBSD x64 use gated
-  `release-*-native` Buildkite queues. Release staging fails closed until all
-  six canonical sidecars and native proofs are present.
-- Windows native proof uses
-  `scripts/smoke-daemon-semantic-release.ps1 -ProofOutput <path>`. Unix-like
-  native hosts use
-  `scripts/smoke-daemon-semantic-release.sh --proof-output <path>`.
-- Fast-fail review criteria:
-  - no semantic success claim without native exact-artifact smoke;
-  - no fallback to a different embedding model without an index compatibility
-    decision;
-  - no foreground search model downloads;
-  - no default config writes for daemon or semantic opt-in.
 
 ## Parallel Implementation And Review Plan
 
