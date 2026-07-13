@@ -465,7 +465,8 @@ validate_macos_signing_evidence() (
   local runtime_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.attestation.cms"
   local release_attestation="${artifact_dir%/}/ctx-onnxruntime-${platform}.release-attestation.json"
   local release_attestation_cms="${artifact_dir%/}/ctx-onnxruntime-${platform}.release-attestation.cms"
-  local work nested
+  local build_info="${artifact_dir%/}/ctx-${platform}.build-info.json"
+  local source_commit work nested
 
   # JSON records diagnostics and archive bindings. The Developer ID CMS
   # checks below are the cross-platform authorization for executable bytes.
@@ -477,13 +478,34 @@ validate_macos_signing_evidence() (
     printf 'required macOS runtime signing evidence missing: %s\n' "${runtime_evidence}" >&2
     exit 1
   }
+  source_commit="$(python3 - "${build_info}" "${platform}" <<'PY'
+import json
+import re
+import sys
+
+path, platform = sys.argv[1:]
+with open(path, encoding="utf-8") as source:
+    payload = json.load(source)
+commit = payload.get("source", {}).get("commit", "")
+if (
+    payload.get("schema_version") != 1
+    or payload.get("platform") != platform
+    or payload.get("source", {}).get("clean") is not True
+    or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+    or commit == "0" * 40
+):
+    raise SystemExit("macOS release build info has invalid source provenance")
+print(commit)
+PY
+)"
   python3 scripts/macos-release-signing-evidence.py verify-artifact \
     --evidence "${cli_evidence}" \
     --platform "${platform}" \
     --kind cli \
     --artifact "${binary}" \
     --checksum "${binary}.sha256"
-  scripts/verify-macos-release-attestation.sh \
+  CTX_MACOS_RELEASE_SOURCE_COMMIT="${source_commit}" \
+    scripts/verify-macos-release-attestation.sh \
     "${platform}" cli "${binary}" "${cli_attestation}" "${cli_attestation_cms}"
 
   work="$(mktemp -d "${TMPDIR:-/tmp}/ctx-stage-macos-signing.XXXXXX")"
@@ -512,10 +534,12 @@ PY
     --checksum "${runtime}.sha256" \
     --nested-artifact "${nested}" \
     --role release
-  scripts/verify-macos-release-attestation.sh \
+  CTX_MACOS_RELEASE_SOURCE_COMMIT="${source_commit}" \
+    scripts/verify-macos-release-attestation.sh \
     "${platform}" runtime "${nested}" \
     "${runtime_attestation}" "${runtime_attestation_cms}"
-  scripts/verify-macos-release-attestation.sh --runtime-archive \
+  CTX_MACOS_RELEASE_SOURCE_COMMIT="${source_commit}" \
+    scripts/verify-macos-release-attestation.sh --runtime-archive \
     "${platform}" "${runtime}" "${nested}" \
     "${release_attestation}" "${release_attestation_cms}"
 )
