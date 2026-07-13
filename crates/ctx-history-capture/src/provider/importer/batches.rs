@@ -5,6 +5,7 @@ use serde::Serialize;
 use super::*;
 
 const PROVIDER_IMPORT_TRANSACTION_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const PARTIAL_PROVIDER_IMPORT_TRANSACTION_BATCH_UNITS: usize = 64;
 
 pub(super) fn import_normalized_provider_captures(
     store: &mut Store,
@@ -12,6 +13,7 @@ pub(super) fn import_normalized_provider_captures(
     options: NormalizedProviderImportOptions,
     suppress_search_merges: bool,
 ) -> Result<ProviderImportSummary> {
+    let transaction_batch_size = partial_transaction_batch_size(options.allow_partial_failures);
     let ProviderNormalizationResult {
         summary,
         captures,
@@ -23,11 +25,12 @@ pub(super) fn import_normalized_provider_captures(
         summary,
         captures,
         files_touched,
-        None,
+        transaction_batch_size,
         suppress_search_merges,
     )
 }
 
+#[cfg(test)]
 pub(super) fn import_normalized_provider_captures_in_batches(
     store: &mut Store,
     normalization: ProviderNormalizationResult,
@@ -81,6 +84,12 @@ pub(super) fn import_provider_capture_lines(
         None,
         false,
     )
+}
+
+fn partial_transaction_batch_size(allow_partial_failures: bool) -> Option<NonZeroUsize> {
+    allow_partial_failures
+        .then(|| NonZeroUsize::new(PARTIAL_PROVIDER_IMPORT_TRANSACTION_BATCH_UNITS))
+        .flatten()
 }
 
 fn import_provider_capture_lines_with_batch_size(

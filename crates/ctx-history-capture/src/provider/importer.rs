@@ -105,14 +105,7 @@ pub fn import_normalized_provider_captures(
     batches::import_normalized_provider_captures(store, normalization, options, false)
 }
 
-pub(crate) fn import_normalized_provider_captures_with_bulk_search(
-    store: &mut Store,
-    normalization: ProviderNormalizationResult,
-    options: NormalizedProviderImportOptions,
-) -> Result<ProviderImportSummary> {
-    batches::import_normalized_provider_captures(store, normalization, options, true)
-}
-
+#[cfg(test)]
 pub(crate) fn import_normalized_provider_captures_in_batches(
     store: &mut Store,
     normalization: ProviderNormalizationResult,
