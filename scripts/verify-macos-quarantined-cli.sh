@@ -34,7 +34,8 @@ fi
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v xattr >/dev/null 2>&1 || die "xattr is required"
 
-timeout_seconds="${CTX_MACOS_CLI_EXEC_TIMEOUT_SECONDS:-30}"
+# A cold Gatekeeper assessment can spend more than 30 seconds online.
+timeout_seconds="${CTX_MACOS_CLI_EXEC_TIMEOUT_SECONDS:-120}"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] || \
   die "CTX_MACOS_CLI_EXEC_TIMEOUT_SECONDS must be a positive integer"
 artifact="$(cd "$(dirname "${artifact}")" && pwd)/$(basename "${artifact}")"
