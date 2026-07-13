@@ -226,6 +226,48 @@ fn partial_provider_import_uses_shared_bounded_batches() {
 }
 
 #[test]
+fn partial_provider_import_uses_shared_bulk_search_guard() {
+    let temp = tempdir();
+    let db_path = temp.path().join("work.sqlite");
+    let mut store =
+        Store::open_with_busy_timeout(&db_path, std::time::Duration::from_millis(10)).unwrap();
+    let occurred_at = DateTime::parse_from_rfc3339("2026-07-11T12:20:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let source_path = temp.path().join("shared-bulk-provider.jsonl");
+    let source_path = source_path.display().to_string();
+    let guard = store.begin_event_search_bulk_mode().unwrap();
+
+    let error = import_normalized_provider_captures(
+        &mut store,
+        ProviderNormalizationResult {
+            summary: ProviderImportSummary::default(),
+            captures: vec![(
+                1,
+                provider_collision_capture(
+                    CaptureProvider::Claude,
+                    "shared-bulk",
+                    "claude_projects_jsonl",
+                    &source_path,
+                    occurred_at,
+                ),
+            )],
+            files_touched: Vec::new(),
+        },
+        NormalizedProviderImportOptions {
+            allow_partial_failures: true,
+            ..NormalizedProviderImportOptions::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("another bulk search import is active"));
+    store.finish_event_search_bulk_mode(&guard).unwrap();
+}
+
+#[test]
 fn batched_provider_import_rotates_on_serialized_byte_budget() {
     let temp = tempdir();
     let db_path = temp.path().join("work.sqlite");

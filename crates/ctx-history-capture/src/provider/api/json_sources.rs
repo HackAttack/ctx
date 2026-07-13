@@ -9,7 +9,8 @@ use crate::provider::adapter::{
     ProviderCaptureAdapter, RooTaskJsonAdapter,
 };
 use crate::provider::importer::{
-    import_native_jsonl_tree, import_normalized_provider_captures, NativeJsonlTreeImport,
+    import_native_jsonl_tree, import_normalized_provider_captures,
+    import_normalized_provider_captures_with_bulk_search, NativeJsonlTreeImport,
 };
 use crate::provider::providers::trae::normalize_trae_history;
 use crate::{
@@ -330,7 +331,11 @@ pub fn import_hermes_sqlite(
         wrap_transaction: true,
         fast_event_inserts: true,
     };
-    import_normalized_provider_captures(store, normalization, import_options)
+    if options.allow_partial_failures {
+        import_normalized_provider_captures(store, normalization, import_options)
+    } else {
+        import_normalized_provider_captures_with_bulk_search(store, normalization, import_options)
+    }
 }
 
 pub fn import_auggie_history(

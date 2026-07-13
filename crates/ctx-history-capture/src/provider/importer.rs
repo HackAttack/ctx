@@ -102,7 +102,23 @@ pub fn import_normalized_provider_captures(
     normalization: ProviderNormalizationResult,
     options: NormalizedProviderImportOptions,
 ) -> Result<ProviderImportSummary> {
-    batches::import_normalized_provider_captures(store, normalization, options, false)
+    // Partial imports commit and checkpoint in bounded batches. Suppress FTS
+    // automatic merges for the same path so a merge cannot undo that bound.
+    let suppress_search_merges = options.allow_partial_failures;
+    batches::import_normalized_provider_captures(
+        store,
+        normalization,
+        options,
+        suppress_search_merges,
+    )
+}
+
+pub(crate) fn import_normalized_provider_captures_with_bulk_search(
+    store: &mut Store,
+    normalization: ProviderNormalizationResult,
+    options: NormalizedProviderImportOptions,
+) -> Result<ProviderImportSummary> {
+    batches::import_normalized_provider_captures(store, normalization, options, true)
 }
 
 #[cfg(test)]
