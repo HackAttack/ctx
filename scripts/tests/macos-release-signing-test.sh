@@ -232,23 +232,6 @@ printf '%s\n' 'code is valid but does not seem to be an app' >&2
 exit 3
 SH
 
-cat >"${fake_bin}/xattr" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ "${1:-}" == "-w" && "${2:-}" == "com.apple.quarantine" ]]
-candidate="${!#}"
-if [[ -s "${TMPDIR}/last-signing-secret-dir.txt" ]]; then
-  secret_dir="$(cat "${TMPDIR}/last-signing-secret-dir.txt")"
-  [[ ! -e "${secret_dir}" ]] || {
-    printf '%s\n' 'signing secret directory still exists during quarantine verification' >&2
-    exit 9
-  }
-fi
-if [[ -e "${TMPDIR}/fake-quarantine-mutate" ]]; then
-  printf '%s\n' '# quarantine mutation' >>"${candidate}"
-fi
-SH
-
 cat >"${fake_bin}/infisical" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -359,7 +342,7 @@ trust_gate="${repo_root}/scripts/check-macos-signing-trusted-ref.sh"
 check_script="${repo_root}/scripts/check-macos-release-signing.sh"
 attestation_check="${repo_root}/scripts/verify-macos-release-attestation.sh"
 evidence_tool="${repo_root}/scripts/macos-release-signing-evidence.py"
-quarantine_check="${repo_root}/scripts/verify-macos-quarantined-cli.sh"
+execution_check="${repo_root}/scripts/verify-macos-signed-cli.sh"
 
 new_artifact() {
   local name="$1"
@@ -496,7 +479,11 @@ success_artifact="$(new_artifact success-cli)"
 rm -f "${TMPDIR}/tool-order.log"
 "${launcher}" macos-arm64 cli "${success_artifact}" "${success_dir}" \
   >"${test_root}/success.log" 2>&1
-"${quarantine_check}" macos-arm64 "${success_artifact}" 0.25.0 \
+if [[ -s "${TMPDIR}/last-signing-secret-dir.txt" ]]; then
+  secret_dir="$(cat "${TMPDIR}/last-signing-secret-dir.txt")"
+  [[ ! -e "${secret_dir}" ]] || fail "signing secret directory survived signing"
+fi
+"${execution_check}" macos-arm64 "${success_artifact}" 0.25.0 \
   "${success_dir}/ctx-macos-arm64.signing.json" >/dev/null
 sha256sum "${success_artifact}" | awk '{print $1}' >"${success_artifact}.sha256"
 "${check_script}" macos-arm64 cli "${success_artifact}" \
@@ -506,27 +493,15 @@ sha256sum "${success_artifact}" | awk '{print $1}' >"${success_artifact}.sha256"
 [[ ! -e "${TMPDIR}/spctl-was-invoked" ]] || \
   fail "spctl valid-but-not-app classification was treated as authoritative"
 
-failed_quarantine_dir="${test_root}/failed-quarantine"
-mkdir -p "${failed_quarantine_dir}"
-failed_quarantine_artifact="$(new_artifact failed-quarantine-cli)"
-sed -i 's/exit 0/exit 42/' "${failed_quarantine_artifact}"
-"${launcher}" macos-arm64 cli "${failed_quarantine_artifact}" \
-  "${failed_quarantine_dir}" >/dev/null
-expect_failure 'exited with status 42' "${test_root}/failed-quarantine.log" \
-  "${quarantine_check}" macos-arm64 "${failed_quarantine_artifact}" 0.25.0 \
-    "${failed_quarantine_dir}/ctx-macos-arm64.signing.json"
-
-mutated_quarantine_dir="${test_root}/mutated-quarantine"
-mkdir -p "${mutated_quarantine_dir}"
-mutated_quarantine_artifact="$(new_artifact mutated-quarantine-cli)"
-"${launcher}" macos-arm64 cli "${mutated_quarantine_artifact}" \
-  "${mutated_quarantine_dir}" >/dev/null
-touch "${TMPDIR}/fake-quarantine-mutate"
-expect_failure 'quarantine metadata application mutated CLI bytes' \
-  "${test_root}/mutated-quarantine.log" \
-  "${quarantine_check}" macos-arm64 "${mutated_quarantine_artifact}" 0.25.0 \
-    "${mutated_quarantine_dir}/ctx-macos-arm64.signing.json"
-rm -f "${TMPDIR}/fake-quarantine-mutate"
+failed_execution_dir="${test_root}/failed-execution"
+mkdir -p "${failed_execution_dir}"
+failed_execution_artifact="$(new_artifact failed-execution-cli)"
+sed -i 's/exit 0/exit 42/' "${failed_execution_artifact}"
+"${launcher}" macos-arm64 cli "${failed_execution_artifact}" \
+  "${failed_execution_dir}" >/dev/null
+expect_failure 'exited with status 42' "${test_root}/failed-execution.log" \
+  "${execution_check}" macos-arm64 "${failed_execution_artifact}" 0.25.0 \
+    "${failed_execution_dir}/ctx-macos-arm64.signing.json"
 grep -Fq 'UNRELATED_SECRET=' "${TMPDIR}/signer-environment.txt" && fail "unrelated secret reached signer"
 grep -Fq 'INFISICAL_' "${TMPDIR}/signer-environment.txt" && fail "Infisical auth/config reached signer"
 grep -Fq 'CTX_MACOS_SIGNING_SECRET_DIR=' "${TMPDIR}/signer-environment.txt" || \
@@ -629,7 +604,7 @@ mkdir -p "${ordering_dir}"
 artifact="$(new_artifact ordering-cli)"
 sha256sum "${artifact}" | awk '{print $1}' >"${artifact}.sha256"
 "${launcher}" macos-x64 cli "${artifact}" "${ordering_dir}" >/dev/null
-"${quarantine_check}" macos-x64 "${artifact}" 0.25.0 \
+"${execution_check}" macos-x64 "${artifact}" 0.25.0 \
   "${ordering_dir}/ctx-macos-x64.signing.json" >/dev/null
 expect_failure 'signed artifact checksum mismatch' "${test_root}/ordering.log" \
   "${check_script}" macos-x64 cli "${artifact}" "${ordering_dir}/ctx-macos-x64.signing.json"

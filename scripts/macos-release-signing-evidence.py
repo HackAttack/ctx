@@ -112,12 +112,12 @@ def require_base_document(
     if not re.fullmatch(r"[0-9a-f]{64}", str(notarization.get("submit_sha256", ""))):
         raise SystemExit("signing evidence is missing the exact notary response hash")
     expected_method = {
-        "cli": "quarantined-exact-byte-version-execution",
+        "cli": "signed-exact-byte-version-execution",
         "runtime": "accepted-notary-strict-codesign-attestation",
     }[kind]
     if allow_pending_cli and kind == "cli":
         if verification != {
-            "method": "quarantined-exact-byte-version-execution",
+            "method": "signed-exact-byte-version-execution",
             "status": "pending",
         }:
             raise SystemExit("CLI signing evidence has invalid pending verification state")
@@ -179,7 +179,7 @@ def command_write(args: argparse.Namespace) -> None:
         },
         "artifact_verification": {
             "method": (
-                "quarantined-exact-byte-version-execution"
+                "signed-exact-byte-version-execution"
                 if args.kind == "cli"
                 else "accepted-notary-strict-codesign-attestation"
             ),
@@ -197,16 +197,16 @@ def command_write(args: argparse.Namespace) -> None:
     write_json(args.output, document)
 
 
-def command_record_cli_quarantine_verification(args: argparse.Namespace) -> None:
+def command_record_cli_execution_verification(args: argparse.Namespace) -> None:
     document = require_base_document(
         read_json(args.evidence), args.platform, "cli", allow_pending_cli=True
     )
     if document.get("artifact_sha256") != sha256(args.artifact):
-        raise SystemExit("quarantined CLI bytes do not match signing evidence")
+        raise SystemExit("executed CLI bytes do not match signing evidence")
     if not re.fullmatch(r"ctx [^\r\n]+", args.version_output):
-        raise SystemExit("quarantined CLI version output is invalid")
+        raise SystemExit("executed CLI version output is invalid")
     document["artifact_verification"] = {
-        "method": "quarantined-exact-byte-version-execution",
+        "method": "signed-exact-byte-version-execution",
         "status": "passed",
     }
     write_json(args.evidence, document)
@@ -367,12 +367,12 @@ def build_parser() -> argparse.ArgumentParser:
     write.add_argument("--notary-submit", required=True, type=Path)
     write.set_defaults(handler=command_write)
 
-    record_cli = subparsers.add_parser("record-cli-quarantine-verification")
+    record_cli = subparsers.add_parser("record-cli-execution-verification")
     record_cli.add_argument("--evidence", required=True, type=Path)
     record_cli.add_argument("--platform", required=True)
     record_cli.add_argument("--artifact", required=True, type=Path)
     record_cli.add_argument("--version-output", required=True)
-    record_cli.set_defaults(handler=command_record_cli_quarantine_verification)
+    record_cli.set_defaults(handler=command_record_cli_execution_verification)
 
     verify = subparsers.add_parser("verify-artifact")
     verify.add_argument("--evidence", required=True, type=Path)
