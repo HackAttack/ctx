@@ -1,13 +1,15 @@
 use std::{
     collections::{HashMap, HashSet},
     env, fmt, fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant, SystemTime},
 };
 
+#[cfg(unix)]
+use std::io::Read;
 #[cfg(unix)]
 use std::net::Shutdown;
 #[cfg(unix)]
