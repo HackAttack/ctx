@@ -46,9 +46,10 @@ executable code in their ONNX Runtime sidecars are Developer ID signed with
 hardened runtime compatibility and notarized by Apple. Release construction
 also verifies those exact signed bytes with strict `codesign`, a Developer ID
 cryptographic attestation, and the published checksums. Each standalone CLI is
-executed from an exact-byte copy carrying Safari-style quarantine metadata;
-`spctl` app-bundle classification is not used for standalone Mach-O files. The
-runtime dylib requires Accepted notarization and pinned signature/attestation,
+executed from an exact-byte copy on native macOS. Headless release jobs do not
+simulate Finder's interactive first-open quarantine prompt, and `spctl`
+app-bundle classification is not used for standalone Mach-O files. The runtime
+dylib requires Accepted notarization and pinned signature/attestation,
 then a native packaged semantic smoke proves dyld loading. The final macOS
 runtime `tar.gz` is separately authorized by a Developer ID statement binding
 the archive, nested dylib, release role, native provenance, and source commit.

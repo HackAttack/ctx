@@ -12,7 +12,7 @@ macos_launcher_script="scripts/run-macos-release-signing.sh"
 macos_trust_script="scripts/check-macos-signing-trusted-ref.sh"
 macos_attestation_script="scripts/verify-macos-release-attestation.sh"
 macos_archive_attester_script="scripts/attest-macos-runtime-release-archive.sh"
-macos_quarantine_script="scripts/verify-macos-quarantined-cli.sh"
+macos_execution_script="scripts/verify-macos-signed-cli.sh"
 macos_evidence_script="scripts/macos-release-signing-evidence.py"
 macos_precommand_script="scripts/buildkite/macos_agent_pre_command.sh"
 macos_ca_file="scripts/apple-developer-id-g2-ca.pem"
@@ -27,7 +27,7 @@ test -f "${macos_launcher_script}"
 test -f "${macos_trust_script}"
 test -f "${macos_attestation_script}"
 test -f "${macos_archive_attester_script}"
-test -f "${macos_quarantine_script}"
+test -f "${macos_execution_script}"
 test -f "${macos_evidence_script}"
 test -f "${macos_precommand_script}"
 test -f "${macos_ca_file}"
@@ -98,8 +98,8 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must upload CLI signing evidence" unless Array(step["artifact_paths"]).include?(evidence)
       attestation = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.attestation.cms"
       abort "#{key} must upload the CLI cryptographic attestation" unless Array(step["artifact_paths"]).include?(attestation)
-      quarantine = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.quarantine.txt"
-      abort "#{key} must upload quarantined CLI execution evidence" unless Array(step["artifact_paths"]).include?(quarantine)
+      execution = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.execution.txt"
+      abort "#{key} must upload signed CLI execution evidence" unless Array(step["artifact_paths"]).include?(execution)
     end
     macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
     abort "macos-arm64 smoke must require authoritative evidence" unless macos_arm64["command"].to_s.include?("runtime_authority=authoritative")
@@ -248,8 +248,8 @@ for required in \
   'scripts/check-macos-signing-trusted-ref.sh' \
   'scripts/verify-macos-release-attestation.sh' \
   'scripts/attest-macos-runtime-release-archive.sh' \
-  'scripts/verify-macos-quarantined-cli.sh' \
-  'quarantined-exact-byte-version-execution' \
+  'scripts/verify-macos-signed-cli.sh' \
+  'signed-exact-byte-version-execution' \
   'accepted-notary-strict-codesign-attestation' \
   'refs/remotes/origin/main' \
   'BUILDKITE_PULL_REQUEST' \
@@ -293,7 +293,7 @@ for required in \
     "${macos_trust_script}" \
     "${macos_attestation_script}" \
     "${macos_archive_attester_script}" \
-    "${macos_quarantine_script}" \
+    "${macos_execution_script}" \
     "${macos_evidence_script}" \
     "${macos_precommand_script}"; do
     if grep -F -q -- "${required}" "${checked_file}"; then
@@ -331,7 +331,7 @@ require_order(
     "macOS CLI signing/hash/build-info",
     cli,
     'scripts/run-macos-release-signing.sh',
-    'scripts/verify-macos-quarantined-cli.sh',
+    'scripts/verify-macos-signed-cli.sh',
     'sha_file="${staged}.sha256"',
     'scripts/run-native-candidate-smoke.sh',
     'python3 scripts/write-public-cli-build-info.py',

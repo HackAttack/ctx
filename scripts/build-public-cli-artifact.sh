@@ -630,7 +630,7 @@ if [[ "${platform}" == macos-* ]]; then
     required)
       scripts/run-macos-release-signing.sh \
         "${platform}" cli "${staged}" "${out_dir}"
-      scripts/verify-macos-quarantined-cli.sh \
+      scripts/verify-macos-signed-cli.sh \
         "${platform}" "${staged}" "${version}" \
         "${out_dir}/ctx-${platform}.signing.json"
       ;;
