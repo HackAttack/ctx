@@ -3,8 +3,6 @@ pub(crate) mod fts;
 pub(crate) mod indexes;
 pub(crate) mod migrations;
 pub(crate) mod provider_session_identity;
-#[cfg(test)]
-mod provider_session_identity_tests;
 pub(crate) mod rebuild;
 pub(crate) mod scriptgram;
 #[cfg(test)]

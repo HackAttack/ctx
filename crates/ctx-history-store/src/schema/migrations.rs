@@ -1,5 +1,9 @@
 use rusqlite::Connection;
 
+mod v47_provider_session_repair;
+#[cfg(test)]
+mod v47_provider_session_repair_tests;
+
 use crate::schema::ddl::{
     ensure_columns, table_exists, table_has_column, CAPTURE_SOURCE_IDENTITY_COLUMNS,
     CATALOG_SESSION_IMPORT_STATE_COLUMNS, CREATE_TABLES_SQL, HISTORY_RECORD_COLUMNS,
@@ -7,7 +11,7 @@ use crate::schema::ddl::{
 use crate::schema::fts::{create_fts_tables_if_supported, drop_fts_table_if_exists};
 use crate::schema::indexes::INDEXES_SQL;
 use crate::schema::provider_session_identity::{
-    backfill_capture_source_identity_columns, migrate_to_v47, prepare_provider_session_migrations,
+    backfill_capture_source_identity_columns, prepare_provider_session_migrations,
     restore_invariants_after_capture_source_rebuild, suspend_invariants_for_capture_source_rebuild,
 };
 use crate::schema::rebuild::rebuild_v44_current_schema_tables;
@@ -17,6 +21,8 @@ use crate::schema::views::{
 };
 use crate::search::projections::rebuild_search_projection;
 use crate::{Result, StoreError};
+
+use self::v47_provider_session_repair::migrate_to_v47;
 
 pub(crate) fn run_migrations(conn: &Connection, user_version: i64) -> Result<()> {
     prepare_provider_session_migrations(conn, user_version)?;

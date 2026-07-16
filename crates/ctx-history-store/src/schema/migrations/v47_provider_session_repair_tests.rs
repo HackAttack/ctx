@@ -1,3 +1,4 @@
+// Companion end-to-end coverage for the disposable v47 repair module.
 use std::fs;
 
 use ctx_history_core::{new_id, CaptureProvider};
