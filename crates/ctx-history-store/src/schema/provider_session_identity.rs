@@ -174,9 +174,11 @@ pub(crate) fn migrate_to_v47(conn: &Connection) -> Result<()> {
 struct SessionCandidate {
     id: String,
     source_id: String,
+    raw_source_path: Option<String>,
     source_format: Option<String>,
     source_identity: Option<String>,
     created_at_ms: i64,
+    updated_at_ms: i64,
 }
 
 struct EventCandidate {
@@ -188,7 +190,7 @@ struct EventCandidate {
 }
 
 fn repair_duplicate_provider_sessions(conn: &Connection) -> Result<bool> {
-    let mut groups = BTreeMap::<(String, String, String), Vec<SessionCandidate>>::new();
+    let mut groups = BTreeMap::<(String, String), Vec<SessionCandidate>>::new();
     {
         let mut stmt = conn.prepare(
             r#"
@@ -203,14 +205,17 @@ fn repair_duplicate_provider_sessions(conn: &Connection) -> Result<bool> {
                     cs.source_format,
                     json_extract(cs.metadata_json, '$.source_format')
                 ),
-                cs.source_identity
+                cs.source_identity,
+                s.updated_at_ms
             FROM sessions s
             JOIN capture_sources cs ON cs.id = s.capture_source_id
             WHERE s.external_session_id IS NOT NULL
               AND s.deleted_at_ms IS NULL
               AND cs.kind = 'provider_import'
-              AND cs.raw_source_path IS NOT NULL
-              AND cs.raw_source_path <> ''
+              AND (
+                  (cs.source_identity IS NOT NULL AND cs.source_identity <> '')
+                  OR (cs.raw_source_path IS NOT NULL AND cs.raw_source_path <> '')
+              )
             ORDER BY s.created_at_ms, s.id
             "#,
         )?;
@@ -218,34 +223,87 @@ fn repair_duplicate_provider_sessions(conn: &Connection) -> Result<bool> {
             Ok((
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, String>(5)?,
                 SessionCandidate {
                     id: row.get(0)?,
                     source_id: row.get(4)?,
+                    raw_source_path: row.get(5)?,
                     source_format: row.get(6)?,
                     source_identity: row.get(7)?,
                     created_at_ms: row.get(3)?,
+                    updated_at_ms: row.get(8)?,
                 },
             ))
         })?;
         for row in rows {
-            let (provider, external_session_id, path, candidate) = row?;
+            let (provider, external_session_id, candidate) = row?;
             groups
-                .entry((provider, external_session_id, path))
+                .entry((provider, external_session_id))
                 .or_default()
                 .push(candidate);
         }
     }
 
     let mut repaired = false;
-    for ((provider, external_session_id, _), candidates) in groups {
-        if candidates.len() < 2 || !source_formats_are_compatible(&candidates) {
-            continue;
+    for ((provider, external_session_id), candidates) in groups {
+        for component in equivalent_session_components(&candidates) {
+            if component.len() < 2 || !source_formats_are_compatible(&component) {
+                continue;
+            }
+            merge_session_group(conn, &provider, &external_session_id, &component)?;
+            repaired = true;
         }
-        merge_session_group(conn, &provider, &external_session_id, &candidates)?;
-        repaired = true;
     }
     Ok(repaired)
+}
+
+fn equivalent_session_components(candidates: &[SessionCandidate]) -> Vec<Vec<SessionCandidate>> {
+    let mut components = Vec::new();
+    let mut visited = vec![false; candidates.len()];
+
+    for start in 0..candidates.len() {
+        if visited[start] {
+            continue;
+        }
+
+        visited[start] = true;
+        let mut component_indexes = vec![start];
+        let mut cursor = 0;
+        while cursor < component_indexes.len() {
+            let current = component_indexes[cursor];
+            for candidate in 0..candidates.len() {
+                if !visited[candidate]
+                    && sessions_share_source(&candidates[current], &candidates[candidate])
+                {
+                    visited[candidate] = true;
+                    component_indexes.push(candidate);
+                }
+            }
+            cursor += 1;
+        }
+
+        components.push(
+            component_indexes
+                .into_iter()
+                .map(|index| candidates[index].clone())
+                .collect(),
+        );
+    }
+
+    components
+}
+
+fn sessions_share_source(left: &SessionCandidate, right: &SessionCandidate) -> bool {
+    same_nonempty_value(
+        left.source_identity.as_deref(),
+        right.source_identity.as_deref(),
+    ) || same_nonempty_value(
+        left.raw_source_path.as_deref(),
+        right.raw_source_path.as_deref(),
+    )
+}
+
+fn same_nonempty_value(left: Option<&str>, right: Option<&str>) -> bool {
+    matches!((left, right), (Some(left), Some(right)) if !left.is_empty() && left == right)
 }
 
 fn source_formats_are_compatible(candidates: &[SessionCandidate]) -> bool {
@@ -273,10 +331,13 @@ fn merge_session_group(
             (
                 candidate.source_identity.is_some(),
                 candidate.source_format.is_some(),
+                candidate.updated_at_ms,
                 candidate.created_at_ms,
             )
         })
         .expect("duplicate session group is nonempty");
+
+    merge_canonical_session_state(conn, &canonical.id, &preferred_source.id)?;
 
     merge_group_events(
         conn,
@@ -330,6 +391,65 @@ fn merge_session_group(
     conn.execute(
         "UPDATE sessions SET capture_source_id = ?1 WHERE id = ?2",
         params![preferred_source.source_id, canonical.id],
+    )?;
+    Ok(())
+}
+
+fn merge_canonical_session_state(
+    conn: &Connection,
+    canonical_id: &str,
+    preferred_id: &str,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        UPDATE sessions
+        SET (
+            history_record_id,
+            parent_session_id,
+            root_session_id,
+            external_agent_id,
+            agent_type,
+            role_hint,
+            is_primary,
+            status,
+            fidelity,
+            transcript_blob_id,
+            started_at_ms,
+            ended_at_ms,
+            updated_at_ms,
+            visibility,
+            sync_state,
+            sync_version,
+            metadata_json
+        ) = (
+            SELECT
+                COALESCE(preferred.history_record_id, sessions.history_record_id),
+                COALESCE(preferred.parent_session_id, sessions.parent_session_id),
+                COALESCE(preferred.root_session_id, sessions.root_session_id),
+                COALESCE(preferred.external_agent_id, sessions.external_agent_id),
+                preferred.agent_type,
+                COALESCE(preferred.role_hint, sessions.role_hint),
+                preferred.is_primary,
+                preferred.status,
+                preferred.fidelity,
+                COALESCE(preferred.transcript_blob_id, sessions.transcript_blob_id),
+                MIN(sessions.started_at_ms, preferred.started_at_ms),
+                COALESCE(
+                    MAX(sessions.ended_at_ms, preferred.ended_at_ms),
+                    sessions.ended_at_ms,
+                    preferred.ended_at_ms
+                ),
+                MAX(sessions.updated_at_ms, preferred.updated_at_ms),
+                preferred.visibility,
+                preferred.sync_state,
+                MAX(sessions.sync_version, preferred.sync_version),
+                preferred.metadata_json
+            FROM sessions preferred
+            WHERE preferred.id = ?2
+        )
+        WHERE id = ?1
+        "#,
+        params![canonical_id, preferred_id],
     )?;
     Ok(())
 }
@@ -498,9 +618,11 @@ mod tests {
         let candidate = |source_format: Option<&str>| SessionCandidate {
             id: "session".to_owned(),
             source_id: "source".to_owned(),
+            raw_source_path: Some("/tmp/session.jsonl".to_owned()),
             source_format: source_format.map(str::to_owned),
             source_identity: None,
             created_at_ms: 0,
+            updated_at_ms: 0,
         };
         assert!(source_formats_are_compatible(&[
             candidate(None),
@@ -510,5 +632,28 @@ mod tests {
             candidate(Some("claude_projects_jsonl_tree")),
             candidate(Some("claude_projects_jsonl_flat")),
         ]));
+    }
+
+    #[test]
+    fn source_equivalence_uses_identity_or_exact_path_without_overmerging() {
+        let candidate = |path: &str, identity: Option<&str>| SessionCandidate {
+            id: format!("{path}:{identity:?}"),
+            source_id: "source".to_owned(),
+            raw_source_path: Some(path.to_owned()),
+            source_format: Some("codex_session_jsonl_tree".to_owned()),
+            source_identity: identity.map(str::to_owned),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let components = equivalent_session_components(&[
+            candidate("/tmp/original.jsonl", None),
+            candidate("/tmp/original.jsonl", Some("source-a")),
+            candidate("/tmp/moved.jsonl", Some("source-a")),
+            candidate("/tmp/copied.jsonl", Some("source-b")),
+        ]);
+
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].len(), 3);
+        assert_eq!(components[1].len(), 1);
     }
 }

@@ -237,12 +237,15 @@ files were deleted or moved, ctx can still return indexed text from SQLite but
 cannot reconstruct text that was already stored as a placeholder.
 
 Writable opens also repair a historical provider-identity transition that
-could leave two physical session rows for the same provider session and exact
-raw source path after new content was appended. The repair keeps the oldest
-session and event IDs canonical, moves genuinely new events onto that session,
-and retains removed duplicate IDs as compatibility aliases. Sessions from
-different raw source paths are not merged. The store also rejects future
-same-source duplicates at write time.
+could leave multiple physical rows for one provider session. Rows are treated
+as the same source when they share either a nonempty source identity or the
+same nonempty raw source path, provided their known source formats are
+compatible. The repair keeps the oldest session and event IDs canonical, moves
+genuinely new events onto that session, retains the newer duplicate row's
+session relationships and state, and keeps removed duplicate IDs as
+compatibility aliases. Different raw paths with different source identities
+remain distinct. The store also rejects future same-source duplicates at write
+time.
 
 Remove a source from future imports:
 

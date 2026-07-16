@@ -47,3 +47,7 @@ sessions remain distinct.
 Keep these upgrade fixtures sanitized and hermetic. When a release changes a
 stored identity input, add the compatibility test in the same change; a
 fresh-home idempotency test alone cannot prove migration safety.
+
+When identity code is shared across providers, cover each distinct historical
+storage shape established by the compatibility audit rather than duplicating
+the same test for every provider label.

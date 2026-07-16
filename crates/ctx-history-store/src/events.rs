@@ -199,6 +199,17 @@ impl Store {
             .ok_or(StoreError::NotFound(id))
     }
 
+    pub fn event_alias_target_id(&self, alias_id: Uuid) -> Result<Option<Uuid>> {
+        self.conn
+            .query_row(
+                "SELECT event_id FROM event_aliases WHERE alias_id = ?1",
+                params![alias_id.to_string()],
+                |row| parse_uuid(row.get::<_, String>(0)?),
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
     pub fn events_by_id_prefix(&self, prefix: &str) -> Result<Vec<Event>> {
         let mut stmt = self.conn.prepare(
             event_select_sql(
