@@ -816,7 +816,7 @@ fn table_row_count(conn: &Connection, table: &str) -> Result<i64> {
     Ok(conn.query_row(&sql, [], |row| row.get(0))?)
 }
 
-fn event_search_lookup_table_ready(conn: &Connection) -> Result<bool> {
+pub(crate) fn event_search_lookup_table_ready(conn: &Connection) -> Result<bool> {
     Ok(table_exists(conn, "event_search_lookup")?
         && table_has_column(conn, "event_search_lookup", "history_record_id")?
         && table_has_column(conn, "event_search_lookup", "preview_text")?)
@@ -905,7 +905,7 @@ fn ensure_search_projection_stats_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn refresh_semantic_searchable_item_stats(conn: &Connection) -> Result<usize> {
+pub(crate) fn refresh_semantic_searchable_item_stats(conn: &Connection) -> Result<usize> {
     ensure_search_projection_stats_table(conn)?;
     let count = semantic_searchable_item_count_exact(conn)?;
     conn.execute(
@@ -1220,7 +1220,8 @@ fn populate_event_search_projection(
     include_event_lookup: bool,
     include_event_scriptgram: bool,
 ) -> Result<()> {
-    let mut stmt = conn.prepare(
+    populate_event_search_projection_from_query(
+        conn,
         r#"
         SELECT e.id,
                COALESCE(e.history_record_id, r.history_record_id, s.history_record_id, rs.history_record_id),
@@ -1235,7 +1236,20 @@ fn populate_event_search_projection(
         LEFT JOIN sessions rs ON rs.id = r.session_id
         ORDER BY e.occurred_at_ms, e.seq, e.id
         "#,
-    )?;
+        include_event_search,
+        include_event_lookup,
+        include_event_scriptgram,
+    )
+}
+
+pub(crate) fn populate_event_search_projection_from_query(
+    conn: &Connection,
+    query: &str,
+    include_event_search: bool,
+    include_event_lookup: bool,
+    include_event_scriptgram: bool,
+) -> Result<()> {
+    let mut stmt = conn.prepare(query)?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,

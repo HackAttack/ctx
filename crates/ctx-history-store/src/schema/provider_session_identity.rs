@@ -5,7 +5,10 @@ use rusqlite::{params, Connection};
 use crate::events::parse_provider_event_dedupe_key;
 use crate::schema::ddl::{table_exists, CREATE_TABLES_SQL};
 use crate::schema::indexes::INDEXES_SQL;
-use crate::search::projections::rebuild_search_projection;
+use crate::search::projections::{
+    event_scriptgram_table_ready, event_search_lookup_table_ready,
+    populate_event_search_projection_from_query, refresh_semantic_searchable_item_stats,
+};
 use crate::{Result, StoreError};
 
 pub(crate) const PROVIDER_SESSION_INVARIANTS_SQL: &str = r#"
@@ -147,8 +150,9 @@ pub(crate) fn migrate_to_v47(conn: &Connection) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE;")?;
     let migration = (|| -> Result<()> {
         conn.execute_batch(CREATE_TABLES_SQL)?;
-        if repair_duplicate_provider_sessions(conn)? {
-            rebuild_search_projection(conn)?;
+        let affected_event_ids = repair_duplicate_provider_sessions(conn)?;
+        if !affected_event_ids.is_empty() {
+            refresh_event_search_projection_for_event_ids(conn, &affected_event_ids)?;
         }
         conn.execute_batch(INDEXES_SQL)?;
         conn.execute_batch(PROVIDER_SESSION_INVARIANTS_SQL)?;
@@ -189,7 +193,7 @@ struct EventCandidate {
     provider_hash: Option<String>,
 }
 
-fn repair_duplicate_provider_sessions(conn: &Connection) -> Result<bool> {
+fn repair_duplicate_provider_sessions(conn: &Connection) -> Result<BTreeSet<String>> {
     let mut groups = BTreeMap::<(String, String), Vec<SessionCandidate>>::new();
     {
         let mut stmt = conn.prepare(
@@ -243,17 +247,124 @@ fn repair_duplicate_provider_sessions(conn: &Connection) -> Result<bool> {
         }
     }
 
-    let mut repaired = false;
+    let mut affected_event_ids = BTreeSet::new();
     for ((provider, external_session_id), candidates) in groups {
         for component in equivalent_session_components(&candidates) {
             if component.len() < 2 || !source_formats_are_compatible(&component) {
                 continue;
             }
-            merge_session_group(conn, &provider, &external_session_id, &component)?;
-            repaired = true;
+            merge_session_group(
+                conn,
+                &provider,
+                &external_session_id,
+                &component,
+                &mut affected_event_ids,
+            )?;
         }
     }
-    Ok(repaired)
+    Ok(affected_event_ids)
+}
+
+fn refresh_event_search_projection_for_event_ids(
+    conn: &Connection,
+    event_ids: &BTreeSet<String>,
+) -> Result<()> {
+    let has_event_search = table_exists(conn, "event_search")?;
+    let has_event_lookup = event_search_lookup_table_ready(conn)?;
+    let has_event_scriptgram = event_scriptgram_table_ready(conn)?;
+    if !has_event_search && !has_event_lookup && !has_event_scriptgram {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        CREATE TEMP TABLE ctx_v47_affected_event_ids (
+            event_id TEXT PRIMARY KEY NOT NULL
+        ) WITHOUT ROWID;
+        "#,
+    )?;
+    {
+        let mut insert = conn
+            .prepare_cached("INSERT INTO temp.ctx_v47_affected_event_ids (event_id) VALUES (?1)")?;
+        for event_id in event_ids {
+            insert.execute([event_id])?;
+        }
+    }
+
+    if has_event_search {
+        delete_affected_fts_rows(conn, "event_search", event_ids)?;
+    }
+    if has_event_scriptgram {
+        delete_affected_fts_rows(conn, "event_search_scriptgram", event_ids)?;
+    }
+    if has_event_lookup {
+        let mut delete =
+            conn.prepare_cached("DELETE FROM event_search_lookup WHERE event_id = ?1")?;
+        for event_id in event_ids {
+            delete.execute([event_id])?;
+        }
+    }
+
+    populate_event_search_projection_from_query(
+        conn,
+        r#"
+        SELECT e.id,
+               COALESCE(e.history_record_id, r.history_record_id, s.history_record_id, rs.history_record_id),
+               e.session_id,
+               e.role,
+               e.event_type,
+               e.payload_json,
+               'safe_preview'
+        FROM temp.ctx_v47_affected_event_ids AS affected
+        CROSS JOIN events AS e ON e.id = affected.event_id
+        LEFT JOIN runs r ON r.id = e.run_id
+        LEFT JOIN sessions s ON s.id = e.session_id
+        LEFT JOIN sessions rs ON rs.id = r.session_id
+        "#,
+        has_event_search,
+        has_event_lookup,
+        has_event_scriptgram,
+    )?;
+    conn.execute_batch("DROP TABLE temp.ctx_v47_affected_event_ids;")?;
+    refresh_semantic_searchable_item_stats(conn)?;
+    Ok(())
+}
+
+fn delete_affected_fts_rows(
+    conn: &Connection,
+    table: &str,
+    event_ids: &BTreeSet<String>,
+) -> Result<()> {
+    let (select_sql, delete_sql) = match table {
+        "event_search" => (
+            "SELECT rowid, event_id FROM event_search",
+            "DELETE FROM event_search WHERE rowid = ?1",
+        ),
+        "event_search_scriptgram" => (
+            "SELECT rowid, event_id FROM event_search_scriptgram",
+            "DELETE FROM event_search_scriptgram WHERE rowid = ?1",
+        ),
+        _ => unreachable!("invalid FTS table {table}"),
+    };
+    let rowids = {
+        let mut stmt = conn.prepare(select_sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut rowids = Vec::new();
+        for row in rows {
+            let (rowid, event_id) = row?;
+            if event_ids.contains(&event_id) {
+                rowids.push(rowid);
+            }
+        }
+        rowids
+    };
+    let mut delete = conn.prepare_cached(delete_sql)?;
+    for rowid in rowids {
+        delete.execute([rowid])?;
+    }
+    Ok(())
 }
 
 fn equivalent_session_components(candidates: &[SessionCandidate]) -> Vec<Vec<SessionCandidate>> {
@@ -320,6 +431,7 @@ fn merge_session_group(
     provider: &str,
     external_session_id: &str,
     candidates: &[SessionCandidate],
+    affected_event_ids: &mut BTreeSet<String>,
 ) -> Result<()> {
     let canonical = candidates
         .iter()
@@ -345,6 +457,7 @@ fn merge_session_group(
         external_session_id,
         &canonical.id,
         candidates,
+        affected_event_ids,
     )?;
 
     for duplicate in candidates
@@ -460,6 +573,7 @@ fn merge_group_events(
     _external_session_id: &str,
     canonical_session_id: &str,
     sessions: &[SessionCandidate],
+    affected_event_ids: &mut BTreeSet<String>,
 ) -> Result<()> {
     let mut events = Vec::new();
     for session in sessions {
@@ -492,6 +606,7 @@ fn merge_group_events(
             events.push(row?);
         }
     }
+    affected_event_ids.extend(events.iter().map(|event| event.id.clone()));
     events.sort_by(|left, right| (left.seq, &left.id).cmp(&(right.seq, &right.id)));
 
     let mut canonical_events = BTreeMap::<(u64, String), String>::new();

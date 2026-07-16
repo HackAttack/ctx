@@ -36,8 +36,9 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
     let duplicate_event_id = new_id();
     let moved_event_id = new_id();
     let appended_event_id = new_id();
+    let other_event_id = new_id();
     let file_touch_id = new_id();
-    {
+    let (other_event_search_rowid, other_event_scriptgram_rowid) = {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(CREATE_TABLES_SQL).unwrap();
         conn.execute_batch(FTS_TABLES_SQL).unwrap();
@@ -161,7 +162,16 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
             )
             .unwrap();
         }
-        for (id, seq, session_id, source_id, provider_index, provider_hash, dedupe_key) in [
+        for (
+            id,
+            seq,
+            session_id,
+            source_id,
+            provider_index,
+            provider_hash,
+            dedupe_key,
+            search_text,
+        ) in [
             (
                 old_event_id,
                 1,
@@ -170,6 +180,7 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
                 0,
                 "event-0",
                 "provider:codex:shared-provider-id:0:event-0",
+                "canonical event searchable text",
             ),
             (
                 duplicate_event_id,
@@ -179,6 +190,7 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
                 0,
                 "event-0",
                 "provider-source:new-source:0:event-0",
+                "duplicate event searchable text",
             ),
             (
                 appended_event_id,
@@ -188,6 +200,7 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
                 1,
                 "event-1",
                 "provider-source:new-source:1:event-1",
+                "appended event searchable text",
             ),
             (
                 moved_event_id,
@@ -197,6 +210,17 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
                 0,
                 "event-0",
                 "provider-source:moved-source:0:event-0",
+                "moved event searchable text",
+            ),
+            (
+                other_event_id,
+                5,
+                other_session_id,
+                other_source_id,
+                0,
+                "other-event-0",
+                "provider-source:other-source:0:other-event-0",
+                "unrelated stored payload",
             ),
         ] {
             conn.execute(
@@ -204,7 +228,8 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
                 INSERT INTO events
                 (id, seq, session_id, event_type, role, occurred_at_ms,
                  capture_source_id, payload_json, dedupe_key, fidelity, metadata_json)
-                VALUES (?1, ?2, ?3, 'message', 'assistant', ?2, ?4, '{}', ?7,
+                VALUES (?1, ?2, ?3, 'message', 'assistant', ?2, ?4,
+                        json_object('text', ?8), ?7,
                         'imported', json_object(
                             'provider_event_index', ?5,
                             'provider_event_hash', ?6
@@ -218,7 +243,55 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
                     provider_index,
                     provider_hash,
                     dedupe_key,
+                    search_text,
                 ],
+            )
+            .unwrap();
+        }
+        for (event_id, session_id, preview) in [
+            (old_event_id, old_session_id, "stale canonical projection"),
+            (
+                duplicate_event_id,
+                duplicate_session_id,
+                "stale duplicate projection",
+            ),
+            (
+                appended_event_id,
+                duplicate_session_id,
+                "stale appended projection",
+            ),
+            (moved_event_id, moved_session_id, "stale moved projection"),
+            (
+                other_event_id,
+                other_session_id,
+                "unrelated projection must remain untouched",
+            ),
+        ] {
+            conn.execute(
+                r#"
+                INSERT INTO event_search
+                (event_id, session_id, role, preview_text, rank_bucket)
+                VALUES (?1, ?2, 'assistant', ?3, 'message')
+                "#,
+                params![event_id.to_string(), session_id.to_string(), preview],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO event_search_scriptgram
+                (event_id, session_id, role, token_text, rank_bucket)
+                VALUES (?1, ?2, 'assistant', ?3, 'message')
+                "#,
+                params![event_id.to_string(), session_id.to_string(), preview],
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO event_search_lookup
+                (event_id, session_id, role, preview_text, rank_bucket)
+                VALUES (?1, ?2, 'assistant', ?3, 'message')
+                "#,
+                params![event_id.to_string(), session_id.to_string(), preview],
             )
             .unwrap();
         }
@@ -232,7 +305,21 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
         )
         .unwrap();
         conn.execute_batch("PRAGMA user_version = 46;").unwrap();
-    }
+        (
+            conn.query_row(
+                "SELECT rowid FROM event_search WHERE event_id = ?1",
+                [other_event_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            conn.query_row(
+                "SELECT rowid FROM event_search_scriptgram WHERE event_id = ?1",
+                [other_event_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        )
+    };
 
     let store = Store::open(&path).unwrap();
     let sessions = store.list_sessions().unwrap();
@@ -263,6 +350,98 @@ fn schema_v47_repairs_provider_sessions_and_preserves_newer_state_and_id_aliases
         Some(old_session_id)
     );
     assert_eq!(store.events_for_session(old_session_id).unwrap().len(), 2);
+    for projection_table in [
+        "event_search",
+        "event_search_scriptgram",
+        "event_search_lookup",
+    ] {
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {projection_table} WHERE event_id IN (?1, ?2)"),
+                    params![duplicate_event_id.to_string(), moved_event_id.to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "obsolete aliases remained in {projection_table}"
+        );
+    }
+    for (event_id, expected_session_id, expected_preview) in [
+        (
+            old_event_id,
+            old_session_id,
+            "canonical event searchable text",
+        ),
+        (
+            appended_event_id,
+            old_session_id,
+            "appended event searchable text",
+        ),
+    ] {
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT session_id, preview_text FROM event_search WHERE event_id = ?1",
+                    [event_id.to_string()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            (expected_session_id.to_string(), expected_preview.to_owned())
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT session_id, preview_text FROM event_search_lookup WHERE event_id = ?1",
+                    [event_id.to_string()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            (expected_session_id.to_string(), expected_preview.to_owned())
+        );
+    }
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT rowid, preview_text FROM event_search WHERE event_id = ?1",
+                [other_event_id.to_string()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap(),
+        (
+            other_event_search_rowid,
+            "unrelated projection must remain untouched".to_owned(),
+        )
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT rowid, token_text FROM event_search_scriptgram WHERE event_id = ?1",
+                [other_event_id.to_string()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap(),
+        (
+            other_event_scriptgram_rowid,
+            "unrelated projection must remain untouched".to_owned(),
+        )
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT preview_text FROM event_search_lookup WHERE event_id = ?1",
+                [other_event_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "unrelated projection must remain untouched"
+    );
     assert_eq!(
         store
             .conn
