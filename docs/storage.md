@@ -236,6 +236,14 @@ replaces those old rows with current local/private transcript text. If source
 files were deleted or moved, ctx can still return indexed text from SQLite but
 cannot reconstruct text that was already stored as a placeholder.
 
+Writable opens also repair a historical provider-identity transition that
+could leave two physical session rows for the same provider session and exact
+raw source path after new content was appended. The repair keeps the oldest
+session and event IDs canonical, moves genuinely new events onto that session,
+and retains removed duplicate IDs as compatibility aliases. Sessions from
+different raw source paths are not merged. The store also rejects future
+same-source duplicates at write time.
+
 Remove a source from future imports:
 
 ```bash

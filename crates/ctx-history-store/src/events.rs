@@ -185,7 +185,13 @@ impl Store {
     pub fn get_event(&self, id: Uuid) -> Result<Event> {
         self.conn
             .query_row(
-                event_select_sql("WHERE id = ?1").as_str(),
+                event_select_sql(
+                    "WHERE id = COALESCE(
+                        (SELECT event_id FROM event_aliases WHERE alias_id = ?1),
+                        ?1
+                    )",
+                )
+                .as_str(),
                 params![id.to_string()],
                 event_from_row,
             )
@@ -194,9 +200,16 @@ impl Store {
     }
 
     pub fn events_by_id_prefix(&self, prefix: &str) -> Result<Vec<Event>> {
-        let mut stmt = self
-            .conn
-            .prepare(event_select_sql("WHERE id LIKE ?1 ORDER BY id LIMIT 2").as_str())?;
+        let mut stmt = self.conn.prepare(
+            event_select_sql(
+                "WHERE id IN (
+                    SELECT id FROM events WHERE id LIKE ?1
+                    UNION
+                    SELECT event_id FROM event_aliases WHERE alias_id LIKE ?1
+                ) ORDER BY id LIMIT 2",
+            )
+            .as_str(),
+        )?;
         let rows = stmt.query_map(params![format!("{prefix}%")], event_from_row)?;
         collect_rows(rows)
     }

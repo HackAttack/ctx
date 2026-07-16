@@ -30,6 +30,7 @@ mod commands;
 mod cursors;
 mod identity;
 mod ids;
+mod legacy_identity;
 
 #[cfg(test)]
 pub(crate) use batches::import_normalized_provider_captures_in_batches;
@@ -53,6 +54,7 @@ pub(crate) use ids::{
     provider_session_uuid, provider_source_edge_uuid, provider_source_identity,
     provider_source_root, provider_source_session_uuid, provider_sync_metadata, timestamps,
 };
+use legacy_identity::legacy_session_matches_source;
 
 #[cfg(test)]
 pub(crate) use identity::provider_source_event_import_identity;
@@ -436,53 +438,6 @@ pub(crate) fn provider_import_session_uuid(
     }
 }
 
-fn legacy_session_matches_source(
-    store: &Store,
-    session: &Session,
-    source_id: Uuid,
-    source_identity: &str,
-) -> Result<bool> {
-    let Some(existing_source_id) = session.capture_source_id else {
-        return Ok(false);
-    };
-    if existing_source_id == source_id {
-        return Ok(true);
-    }
-    match store.get_capture_source(existing_source_id) {
-        Ok(source) => {
-            if source.descriptor.source_identity.as_deref() == Some(source_identity) {
-                return Ok(true);
-            }
-            let existing_source_format = source
-                .descriptor
-                .source_format
-                .as_deref()
-                .or_else(|| source.sync.metadata["source_format"].as_str());
-            let Some(existing_source_format) = existing_source_format else {
-                return Ok(false);
-            };
-            let source_metadata = source
-                .sync
-                .metadata
-                .get("source_metadata")
-                .unwrap_or(&source.sync.metadata);
-            let source_idempotency_key = source.sync.metadata["source_idempotency_key"].as_str();
-            Ok(provider_source_identity(
-                source.descriptor.provider,
-                existing_source_format,
-                source.descriptor.source_root.as_deref(),
-                source.descriptor.raw_source_path.as_deref(),
-                source_idempotency_key,
-                source_metadata,
-            )
-            .as_deref()
-                == Some(source_identity))
-        }
-        Err(StoreError::NotFound(_)) => Ok(false),
-        Err(err) => Err(CaptureError::Store(err)),
-    }
-}
-
 fn provider_import_edge_uuid(
     provider: CaptureProvider,
     provider_session_id: &str,
@@ -544,49 +499,9 @@ pub(crate) fn import_provider_capture_line(
         source.idempotency_key.as_deref(),
         &source.metadata,
     );
-    let session_id = provider_import_session_uuid(
-        store,
-        provider,
-        &session.provider_session_id,
-        source_id,
-        source_identity.as_deref(),
-    )?;
     let source_cursor = provider_source_cursor_range(capture);
-    let requested_parent_session_id = session
-        .parent_provider_session_id
-        .as_ref()
-        .map(|id| {
-            provider_import_session_uuid(store, provider, id, source_id, source_identity.as_deref())
-        })
-        .transpose()?;
-    let parent_session_id = match requested_parent_session_id {
-        Some(parent_id)
-            if provider_session_exists_cached(store, parent_id, &mut caches.session_exists)? =>
-        {
-            Some(parent_id)
-        }
-        _ => None,
-    };
-    let requested_root_session_id = session
-        .root_provider_session_id
-        .as_ref()
-        .map(|id| {
-            provider_import_session_uuid(store, provider, id, source_id, source_identity.as_deref())
-        })
-        .transpose()?
-        .or_else(|| requested_parent_session_id.map(|_| session_id));
-    let root_session_id = match requested_root_session_id {
-        Some(root_id)
-            if root_id == session_id
-                || provider_session_exists_cached(store, root_id, &mut caches.session_exists)? =>
-        {
-            Some(root_id)
-        }
-        _ => None,
-    };
     let source_metadata = source.metadata.clone();
     let session_metadata = session.metadata.clone();
-
     let source_record = CaptureSource {
         id: source_id,
         descriptor: CaptureSourceDescriptor {
@@ -625,6 +540,45 @@ pub(crate) fn import_provider_capture_line(
         store.upsert_capture_source(&source_record)?;
     }
 
+    let session_id = provider_import_session_uuid(
+        store,
+        provider,
+        &session.provider_session_id,
+        source_id,
+        source_identity.as_deref(),
+    )?;
+    let requested_parent_session_id = session
+        .parent_provider_session_id
+        .as_ref()
+        .map(|id| {
+            provider_import_session_uuid(store, provider, id, source_id, source_identity.as_deref())
+        })
+        .transpose()?;
+    let parent_session_id = match requested_parent_session_id {
+        Some(parent_id)
+            if provider_session_exists_cached(store, parent_id, &mut caches.session_exists)? =>
+        {
+            Some(parent_id)
+        }
+        _ => None,
+    };
+    let requested_root_session_id = session
+        .root_provider_session_id
+        .as_ref()
+        .map(|id| {
+            provider_import_session_uuid(store, provider, id, source_id, source_identity.as_deref())
+        })
+        .transpose()?
+        .or_else(|| requested_parent_session_id.map(|_| session_id));
+    let root_session_id = match requested_root_session_id {
+        Some(root_id)
+            if root_id == session_id
+                || provider_session_exists_cached(store, root_id, &mut caches.session_exists)? =>
+        {
+            Some(root_id)
+        }
+        _ => None,
+    };
     let process_session = caches.processed_sessions.insert(session_id);
     let is_new_session = if process_session {
         !provider_session_exists_cached(store, session_id, &mut caches.session_exists)?
