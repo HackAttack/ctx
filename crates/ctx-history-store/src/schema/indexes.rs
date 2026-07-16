@@ -21,6 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent_session_id ON sessions(parent_ses
 CREATE INDEX IF NOT EXISTS idx_sessions_root_session_id ON sessions(root_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_capture_source_id ON sessions(capture_source_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_transcript_blob_id ON sessions(transcript_blob_id);
+CREATE INDEX IF NOT EXISTS idx_session_aliases_session_id ON session_aliases(session_id);
 
 CREATE INDEX IF NOT EXISTS idx_session_edges_from_session_id ON session_edges(from_session_id);
 CREATE INDEX IF NOT EXISTS idx_session_edges_to_session_id ON session_edges(to_session_id);
@@ -45,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_events_session_run_role_occurred_seq ON events(se
 CREATE INDEX IF NOT EXISTS idx_events_capture_source_id ON events(capture_source_id);
 CREATE INDEX IF NOT EXISTS idx_events_payload_blob_id ON events(payload_blob_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedupe_key ON events(dedupe_key) WHERE dedupe_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_event_aliases_event_id ON event_aliases(event_id);
 
 CREATE INDEX IF NOT EXISTS idx_vcs_workspaces_kind_repo_fingerprint ON vcs_workspaces(kind, repo_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_vcs_workspaces_source_id ON vcs_workspaces(source_id);

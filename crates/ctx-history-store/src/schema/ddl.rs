@@ -307,6 +307,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS session_aliases (
+    alias_id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    reason TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS session_edges (
     id TEXT PRIMARY KEY NOT NULL,
     from_session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -367,6 +374,13 @@ CREATE TABLE IF NOT EXISTS events (
     sync_version INTEGER NOT NULL DEFAULT 0,
     deleted_at_ms INTEGER,
     metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS event_aliases (
+    alias_id TEXT PRIMARY KEY NOT NULL,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    reason TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS event_search_lookup (

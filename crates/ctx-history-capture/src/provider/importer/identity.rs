@@ -21,6 +21,40 @@ pub(crate) fn provider_event_exists(store: &Store, dedupe_key: &str) -> Result<b
     }
 }
 
+fn provider_event_by_id(store: &Store, id: Uuid) -> Result<Option<Event>> {
+    match store.get_event(id) {
+        Ok(event) => Ok(Some(event)),
+        Err(StoreError::NotFound(_)) => Ok(None),
+        Err(err) => Err(CaptureError::Store(err)),
+    }
+}
+
+fn provider_event_identity_by_id(
+    store: &Store,
+    id: Uuid,
+) -> Result<Option<ProviderEventImportIdentity>> {
+    Ok(provider_event_by_id(store, id)?.and_then(|event| {
+        event
+            .dedupe_key
+            .map(|dedupe_key| ProviderEventImportIdentity {
+                id: event.id,
+                seq: event.seq,
+                dedupe_key,
+                run_source_id: event.capture_source_id,
+            })
+    }))
+}
+
+fn provider_event_identity_by_alias(
+    store: &Store,
+    alias_id: Uuid,
+) -> Result<Option<ProviderEventImportIdentity>> {
+    let Some(event_id) = store.event_alias_target_id(alias_id)? else {
+        return Ok(None);
+    };
+    provider_event_identity_by_id(store, event_id)
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderEventImportIdentity {
     pub(crate) id: Uuid,
@@ -115,9 +149,13 @@ pub(crate) fn provider_event_import_identity(
         provider_event_index,
         provider_event_sequence_index,
     )?;
-    if provider_event_exists(store, &source_identity.dedupe_key)?
-        || provider_event_id_exists(store, source_identity.id)?
-    {
+    if provider_event_exists(store, &source_identity.dedupe_key)? {
+        return Ok(source_identity);
+    }
+    if let Some(existing) = provider_event_identity_by_alias(store, source_identity.id)? {
+        return Ok(existing);
+    }
+    if provider_event_id_exists(store, source_identity.id)? {
         return Ok(source_identity);
     }
 
@@ -125,9 +163,15 @@ pub(crate) fn provider_event_import_identity(
         if let Some(legacy_index) = legacy_provider_event_index {
             let legacy_source_identity =
                 provider_source_event_import_identity(source_id, legacy_index, event_hash);
-            if provider_event_exists(store, &legacy_source_identity.dedupe_key)?
-                || provider_event_id_exists(store, legacy_source_identity.id)?
+            if provider_event_exists(store, &legacy_source_identity.dedupe_key)? {
+                return Ok(legacy_source_identity);
+            }
+            if let Some(existing) =
+                provider_event_identity_by_alias(store, legacy_source_identity.id)?
             {
+                return Ok(existing);
+            }
+            if provider_event_id_exists(store, legacy_source_identity.id)? {
                 return Ok(legacy_source_identity);
             }
 
@@ -137,9 +181,15 @@ pub(crate) fn provider_event_import_identity(
                 legacy_index,
                 event_hash,
             );
-            if provider_event_exists(store, &legacy_provider_identity.dedupe_key)?
-                || provider_event_id_exists(store, legacy_provider_identity.id)?
+            if provider_event_exists(store, &legacy_provider_identity.dedupe_key)? {
+                return Ok(legacy_provider_identity);
+            }
+            if let Some(existing) =
+                provider_event_identity_by_alias(store, legacy_provider_identity.id)?
             {
+                return Ok(existing);
+            }
+            if provider_event_id_exists(store, legacy_provider_identity.id)? {
                 return Ok(legacy_provider_identity);
             }
         }
@@ -152,9 +202,13 @@ pub(crate) fn provider_event_import_identity(
             provider_event_index,
             event_hash,
         );
-        if provider_event_exists(store, &legacy_identity.dedupe_key)?
-            || provider_event_id_exists(store, legacy_identity.id)?
-        {
+        if provider_event_exists(store, &legacy_identity.dedupe_key)? {
+            return Ok(legacy_identity);
+        }
+        if let Some(existing) = provider_event_identity_by_alias(store, legacy_identity.id)? {
+            return Ok(existing);
+        }
+        if provider_event_id_exists(store, legacy_identity.id)? {
             return Ok(legacy_identity);
         }
     }
@@ -268,16 +322,16 @@ pub(crate) fn provider_file_touch_event_id(
     allow_legacy_provider_identity: bool,
 ) -> Result<Option<Uuid>> {
     let source_event_id = provider_source_event_uuid(source_id, provider_event_index);
-    if provider_event_id_exists(store, source_event_id)? {
-        return Ok(Some(source_event_id));
+    if let Some(existing) = provider_event_by_id(store, source_event_id)? {
+        return Ok(Some(existing.id));
     }
 
     if !allow_legacy_provider_identity {
         return Ok(None);
     }
     let legacy_event_id = provider_event_uuid(provider, provider_session_id, provider_event_index);
-    if provider_event_id_exists(store, legacy_event_id)? {
-        Ok(Some(legacy_event_id))
+    if let Some(existing) = provider_event_by_id(store, legacy_event_id)? {
+        Ok(Some(existing.id))
     } else {
         Ok(None)
     }
@@ -309,11 +363,7 @@ pub(crate) fn provider_file_touch_import_id(
 }
 
 pub(crate) fn provider_event_id_exists(store: &Store, id: Uuid) -> Result<bool> {
-    match store.get_event(id) {
-        Ok(_) => Ok(true),
-        Err(StoreError::NotFound(_)) => Ok(false),
-        Err(err) => Err(CaptureError::Store(err)),
-    }
+    Ok(provider_event_by_id(store, id)?.is_some())
 }
 
 pub(crate) fn provider_session_exists(store: &Store, session_id: Uuid) -> Result<bool> {

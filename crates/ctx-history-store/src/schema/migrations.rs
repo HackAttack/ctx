@@ -1,11 +1,19 @@
 use rusqlite::Connection;
 
+mod v47_provider_session_repair;
+#[cfg(test)]
+mod v47_provider_session_repair_tests;
+
 use crate::schema::ddl::{
     ensure_columns, table_exists, table_has_column, CAPTURE_SOURCE_IDENTITY_COLUMNS,
     CATALOG_SESSION_IMPORT_STATE_COLUMNS, CREATE_TABLES_SQL, HISTORY_RECORD_COLUMNS,
 };
 use crate::schema::fts::{create_fts_tables_if_supported, drop_fts_table_if_exists};
 use crate::schema::indexes::INDEXES_SQL;
+use crate::schema::provider_session_identity::{
+    backfill_capture_source_identity_columns, prepare_provider_session_migrations,
+    restore_invariants_after_capture_source_rebuild, suspend_invariants_for_capture_source_rebuild,
+};
 use crate::schema::rebuild::rebuild_v44_current_schema_tables;
 use crate::schema::scriptgram::migrate_to_v45;
 use crate::schema::views::{
@@ -14,7 +22,10 @@ use crate::schema::views::{
 use crate::search::projections::rebuild_search_projection;
 use crate::{Result, StoreError};
 
+use self::v47_provider_session_repair::migrate_to_v47;
+
 pub(crate) fn run_migrations(conn: &Connection, user_version: i64) -> Result<()> {
+    prepare_provider_session_migrations(conn, user_version)?;
     if user_version < 1 {
         migrate_to_v1(conn)?;
     }
@@ -77,6 +88,9 @@ pub(crate) fn run_migrations(conn: &Connection, user_version: i64) -> Result<()>
     }
     if user_version < 46 {
         migrate_to_v46(conn)?;
+    }
+    if user_version < 47 {
+        migrate_to_v47(conn)?;
     }
     Ok(())
 }
@@ -702,22 +716,6 @@ fn migrate_to_v46(conn: &Connection) -> Result<()> {
     }
 }
 
-fn backfill_capture_source_identity_columns(conn: &Connection) -> Result<()> {
-    if !table_exists(conn, "capture_sources")? {
-        return Ok(());
-    }
-    conn.execute(
-        r#"
-        UPDATE capture_sources
-        SET source_root = raw_source_path
-        WHERE source_root IS NULL
-          AND raw_source_path IS NOT NULL
-        "#,
-        [],
-    )?;
-    Ok(())
-}
-
 fn invalidate_provider_import_indexes(conn: &Connection) -> Result<()> {
     if table_exists(conn, "catalog_sessions")? {
         conn.execute(
@@ -846,6 +844,7 @@ pub(crate) fn rebuild_capture_sources_provider_check(conn: &Connection) -> Resul
         return Ok(());
     }
 
+    let recreate_invariants = suspend_invariants_for_capture_source_rebuild(conn)?;
     let recreate_views = stable_sql_views_exist(conn)?;
     if recreate_views {
         drop_stable_sql_views(conn)?;
@@ -887,6 +886,7 @@ pub(crate) fn rebuild_capture_sources_provider_check(conn: &Connection) -> Resul
     if recreate_views {
         create_stable_sql_views(conn)?;
     }
+    restore_invariants_after_capture_source_rebuild(conn, recreate_invariants)?;
     Ok(())
 }
 

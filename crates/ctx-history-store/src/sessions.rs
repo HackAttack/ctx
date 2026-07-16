@@ -79,7 +79,13 @@ impl Store {
     pub fn get_session(&self, id: Uuid) -> Result<Session> {
         self.conn
             .query_row(
-                session_select_sql("WHERE id = ?1").as_str(),
+                session_select_sql(
+                    "WHERE id = COALESCE(
+                        (SELECT session_id FROM session_aliases WHERE alias_id = ?1),
+                        ?1
+                    )",
+                )
+                .as_str(),
                 params![id.to_string()],
                 session_from_row,
             )
@@ -88,9 +94,16 @@ impl Store {
     }
 
     pub fn sessions_by_id_prefix(&self, prefix: &str) -> Result<Vec<Session>> {
-        let mut stmt = self
-            .conn
-            .prepare(session_select_sql("WHERE id LIKE ?1 ORDER BY id LIMIT 2").as_str())?;
+        let mut stmt = self.conn.prepare(
+            session_select_sql(
+                "WHERE id IN (
+                    SELECT id FROM sessions WHERE id LIKE ?1
+                    UNION
+                    SELECT session_id FROM session_aliases WHERE alias_id LIKE ?1
+                ) ORDER BY id LIMIT 2",
+            )
+            .as_str(),
+        )?;
         let rows = stmt.query_map(params![format!("{prefix}%")], session_from_row)?;
         collect_rows(rows)
     }

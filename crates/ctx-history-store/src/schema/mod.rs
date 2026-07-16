@@ -2,6 +2,7 @@ pub(crate) mod ddl;
 pub(crate) mod fts;
 pub(crate) mod indexes;
 pub(crate) mod migrations;
+pub(crate) mod provider_session_identity;
 pub(crate) mod rebuild;
 pub(crate) mod scriptgram;
 #[cfg(test)]
@@ -22,6 +23,7 @@ pub(crate) fn migrate_to_latest(conn: &Connection) -> Result<()> {
         return Err(StoreError::UnsupportedSchemaVersion(user_version));
     }
     migrations::run_migrations(conn, user_version)?;
+    conn.execute_batch(provider_session_identity::PROVIDER_SESSION_INVARIANTS_SQL)?;
     create_fts_tables_if_supported(conn)?;
     conn.execute_batch(INDEXES_SQL)?;
     Ok(())
