@@ -6,7 +6,12 @@ checker="${repo_root}/scripts/check-release-binary-compat.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ctx-binary-compat-test.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT
 
-printf '#!/bin/sh\ncat "$FAKE_READOBJ_OUTPUT"\n' > "${tmp}/llvm-readobj"
+cat > "${tmp}/llvm-readobj" <<'EOF'
+#!/bin/sh
+case " $* " in *' --sections '*) ;; *) exit 64 ;; esac
+case " $* " in *' --symbols '*) ;; *) exit 64 ;; esac
+cat "$FAKE_READOBJ_OUTPUT"
+EOF
 printf '#!/bin/sh\ncat "$FAKE_OBJDUMP_OUTPUT"\n' > "${tmp}/llvm-objdump"
 chmod +x "${tmp}/llvm-readobj" "${tmp}/llvm-objdump"
 printf 'not a real binary\n' > "${tmp}/candidate"
@@ -65,6 +70,13 @@ NeededLibraries [
 Name: GLIBC_2.35
 Name: GCC_4.2.0
 GNU_PROPERTY_X86_ISA_1_NEEDED: x86-64-baseline
+Sections [
+Section {
+  Name: .dynsym (1)
+}
+]
+Symbols [
+]
 EOF
 
 linux_arm64="${tmp}/linux-arm64.txt"
@@ -84,6 +96,10 @@ NeededLibraries [
 ]
 Name: GLIBC_2.35
 Name: GCC_4.2.0
+Sections [
+]
+Symbols [
+]
 EOF
 
 mac_arm_readobj="${tmp}/mac-arm-readobj.txt"
@@ -92,6 +108,15 @@ Format: Mach-O arm64
 Arch: aarch64
 AddressSize: 64bit
 FileType: Executable (0x2)
+Sections [
+]
+Symbols [
+  Symbol {
+    Name: _abort (1)
+    Extern
+    Type: Undef (0x0)
+  }
+]
 EOF
 mac_x64_readobj="${tmp}/mac-x64-readobj.txt"
 cat > "${mac_x64_readobj}" <<'EOF'
@@ -99,6 +124,10 @@ Format: Mach-O 64-bit x86-64
 Arch: x86_64
 AddressSize: 64bit
 FileType: Executable (0x2)
+Sections [
+]
+Symbols [
+]
 EOF
 mac_objdump="${tmp}/mac-objdump.txt"
 cat > "${mac_objdump}" <<'EOF'
@@ -152,6 +181,10 @@ MinorOperatingSystemVersion: 0
 MajorSubsystemVersion: 6
 MinorSubsystemVersion: 2
 Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI (0x3)
+Sections [
+]
+Symbols [
+]
 Import {
   Name: ADVAPI32.dll
 }
@@ -202,6 +235,10 @@ NeededLibraries [
   libm.so.5
   libthr.so.3
 ]
+Sections [
+]
+Symbols [
+]
 EOF
 
 expect_pass linux_x64 run_check linux-x64 "${linux_x64}"
@@ -211,6 +248,20 @@ expect_pass mac_x64 run_check macos-x64 "${mac_x64_readobj}" "${mac_objdump}"
 expect_pass windows run_check windows-x64 "${windows}"
 expect_pass freebsd run_check freebsd-x64 "${freebsd}"
 expect_fail malformed run_check linux-x64 "${tmp}/empty"
+
+missing_symbols="${tmp}/missing-symbols.txt"
+sed '/^Symbols \[$/,/^\]$/d' "${linux_x64}" > "${missing_symbols}"
+expect_fail missing_symbols run_check linux-x64 "${missing_symbols}"
+truncated_symbols="${tmp}/truncated-symbols.txt"
+sed '$d' "${linux_x64}" > "${truncated_symbols}"
+expect_fail truncated_symbols run_check linux-x64 "${truncated_symbols}"
+truncated_sections="${tmp}/truncated-sections.txt"
+awk '
+  /^Sections \[$/ { in_sections=1 }
+  in_sections && /^\]$/ { in_sections=0; next }
+  { print }
+' "${linux_x64}" > "${truncated_sections}"
+expect_fail truncated_sections run_check linux-x64 "${truncated_sections}"
 
 mutate_and_fail() {
   local name="$1"
@@ -235,6 +286,8 @@ mutate_and_fail linux_rpath linux-x64 "${linux_x64}" 's/Name: GLIBC_2.35/RUNPATH
 mutate_and_fail linux_isa linux-x64 "${linux_x64}" 's/x86-64-baseline/x86-64-v3/'
 mutate_and_fail linux_avx linux-x64 "${linux_x64}" 's/GNU_PROPERTY_X86_ISA_1_NEEDED: x86-64-baseline/GNU_PROPERTY_X86_ISA_1_NEEDED: x86-64-baseline AVX/'
 mutate_and_fail arm_glibcxx linux-aarch64 "${linux_arm64}" 's/Name: GLIBC_2.35/Name: GLIBC_2.35\nName: GLIBCXX_3.4.30/'
+mutate_and_fail linux_static_symbols linux-x64 "${linux_x64}" 's/Section {/Symbols [\n  Symbol {\n    Name: main (1)\n  }\n]\nSection {/'
+mutate_and_fail linux_debug_section linux-x64 "${linux_x64}" 's/Name: .dynsym/Name: .debug_info/'
 
 bad_mac_dylib="${tmp}/bad-mac-dylib.txt"
 sed 's#/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML#/opt/local/libCoreML.dylib#' "${mac_objdump}" > "${bad_mac_dylib}"
@@ -251,6 +304,16 @@ expect_fail mac_arch run_check macos-arm64 "${bad_mac_arch}" "${mac_objdump}"
 bad_mac_type="${tmp}/bad-mac-type.txt"
 sed 's/FileType: Executable/FileType: Dylib/' "${mac_arm_readobj}" > "${bad_mac_type}"
 expect_fail mac_type run_check macos-arm64 "${bad_mac_type}" "${mac_objdump}"
+bad_mac_local_symbol="${tmp}/bad-mac-local-symbol.txt"
+sed '/^[[:space:]]*Extern$/d' "${mac_arm_readobj}" > "${bad_mac_local_symbol}"
+expect_fail mac_local_symbol run_check macos-arm64 "${bad_mac_local_symbol}" "${mac_objdump}"
+bad_mac_truncated_symbol="${tmp}/bad-mac-truncated-symbol.txt"
+sed '/^  }$/d' "${mac_arm_readobj}" > "${bad_mac_truncated_symbol}"
+expect_fail mac_truncated_symbol run_check macos-arm64 "${bad_mac_truncated_symbol}" "${mac_objdump}"
+bad_mac_debug_section="${tmp}/bad-mac-debug-section.txt"
+sed 's/AddressSize: 64bit/AddressSize: 64bit\nSection {\n  Name: __debug_info (1)\n}/' \
+  "${mac_arm_readobj}" > "${bad_mac_debug_section}"
+expect_fail mac_debug_section run_check macos-arm64 "${bad_mac_debug_section}" "${mac_objdump}"
 
 mutate_and_fail windows_machine windows-x64 "${windows}" 's/IMAGE_FILE_MACHINE_AMD64/IMAGE_FILE_MACHINE_ARM64/'
 mutate_and_fail windows_magic windows-x64 "${windows}" 's/Magic: 0x20B/Magic: 0x10B/'
@@ -259,6 +322,7 @@ mutate_and_fail windows_subsystem windows-x64 "${windows}" 's/IMAGE_SUBSYSTEM_WI
 mutate_and_fail windows_version windows-x64 "${windows}" 's/MajorOperatingSystemVersion: 10/MajorOperatingSystemVersion: 11/'
 mutate_and_fail windows_subsystem_version windows-x64 "${windows}" 's/MajorSubsystemVersion: 6/MajorSubsystemVersion: 11/'
 mutate_and_fail windows_dll windows-x64 "${windows}" 's/ws2_32.dll/winhttp.dll/'
+mutate_and_fail windows_static_symbols windows-x64 "${windows}" 's/Import {/Symbols [\n  Symbol {\n    Name: main (1)\n  }\n]\nImport {/'
 mutate_and_fail freebsd_abi freebsd-x64 "${freebsd}" 's/OS\/ABI: FreeBSD/OS\/ABI: UNIX - System V/'
 mutate_and_fail freebsd_arch freebsd-x64 "${freebsd}" 's/EM_X86_64/EM_AARCH64/'
 mutate_and_fail freebsd_type freebsd-x64 "${freebsd}" 's/Type: SharedObject/Type: Relocatable/'

@@ -10,8 +10,8 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/check-release-binary-compat.sh PLATFORM BINARY
 
-Checks the executable format, architecture, loader, shared-library, ABI, and
-minimum-OS contract for one public ctx release binary.
+Checks the executable format, architecture, loader, shared-library, ABI,
+minimum-OS, and stripped-symbol contract for one public ctx release binary.
 Platforms: linux-x64, linux-aarch64, macos-arm64, macos-x64, windows-x64,
 freebsd-x64.
 USAGE
@@ -110,6 +110,67 @@ elf_needed_libraries() {
 check_no_elf_search_path() {
   if printf '%s\n' "${readobj_output}" | grep -Eq '(^|[^[:alnum:]_])(RPATH|RUNPATH)([^[:alnum:]_]|$)'; then
     fail "RPATH or RUNPATH is forbidden"
+  fi
+}
+
+check_stripped_symbols() {
+  for inventory in Sections Symbols; do
+    if ! awk -v header="${inventory} [" '
+      $0 == header {
+        opened++
+        if (in_inventory) malformed=1
+        in_inventory=1
+        next
+      }
+      in_inventory && ($0 == "Sections [" || $0 == "Symbols [") {
+        malformed=1
+        next
+      }
+      in_inventory && $0 == "]" { closed=1; in_inventory=0 }
+      END {
+        exit(opened == 1 && closed && !in_inventory && !malformed ? 0 : 1)
+      }
+    ' <<<"${readobj_output}"; then
+      fail "${inventory} inspection output is missing or truncated"
+    fi
+  done
+
+  if grep -Eq \
+    '^[[:space:]]*Name:[[:space:]]+(\.symtab|\.debug[^[:space:] (]*|\.zdebug[^[:space:] (]*|__debug[^[:space:] (]*)([[:space:] (]|$)' \
+    <<<"${readobj_output}"; then
+    fail "debug or static symbol section is present"
+  fi
+
+  if [[ "${platform}" == macos-* ]]; then
+    if awk '
+      /^Symbols \[$/ { in_table=1; next }
+      in_table && /^\]$/ {
+        if (in_symbol) malformed=1
+        in_table=0
+        next
+      }
+      in_table && /^[[:space:]]*Symbol[[:space:]]*\{/ {
+        if (in_symbol) malformed=1
+        in_symbol=1
+        external=0
+        next
+      }
+      in_table && in_symbol && /^[[:space:]]*Extern([[:space:]]|$)/ { external=1; next }
+      in_table && in_symbol && /^[[:space:]]*\}[[:space:]]*$/ {
+        if (!external) local_symbol=1
+        in_symbol=0
+      }
+      END { exit(local_symbol || malformed || in_symbol ? 0 : 1) }
+    ' <<<"${readobj_output}"; then
+      fail "local symbol table entry is present"
+    fi
+  elif awk '
+    /^Symbols \[$/ { in_table=1; next }
+    in_table && /^\]$/ { in_table=0; next }
+    in_table && /^[[:space:]]*Symbol[[:space:]]*\{/ { symbol=1 }
+    END { exit(symbol ? 0 : 1) }
+  ' <<<"${readobj_output}"; then
+    fail "static symbol table is present"
   fi
 }
 
@@ -316,17 +377,21 @@ case "${platform}" in
       --version-info \
       --notes \
       --string-dump=.interp \
+      --sections \
+      --symbols \
       "${binary}")" || fail "llvm-readobj could not inspect the binary"
     ;;
   macos-arm64|macos-x64)
-    readobj_output="$("${LLVM_READOBJ}" --file-headers "${binary}")" \
+    readobj_output="$("${LLVM_READOBJ}" --file-headers --sections --symbols "${binary}")" \
       || fail "llvm-readobj could not inspect the binary"
     ;;
   windows-x64)
-    readobj_output="$("${LLVM_READOBJ}" --file-headers --coff-imports "${binary}")" \
+    readobj_output="$("${LLVM_READOBJ}" --file-headers --coff-imports --sections --symbols "${binary}")" \
       || fail "llvm-readobj could not inspect the binary"
     ;;
 esac
+
+check_stripped_symbols
 
 objdump_output=""
 if [[ "${platform}" == macos-* ]]; then

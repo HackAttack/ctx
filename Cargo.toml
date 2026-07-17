@@ -54,3 +54,9 @@ ort = { git = "https://github.com/ctxrs/ort.git", rev = "f7994dc91b8f48c78afc506
 # FreeBSD headers. This fork is the stable crate plus the upstream three-typedef
 # removal from asg017/sqlite-vec#219. Drop it once a stable release includes it.
 sqlite-vec = { git = "https://github.com/ctxrs/sqlite-vec.git", rev = "c1762b6065bccdedf1f68a904096d46f91d3a486" }
+
+[profile.release]
+# Distributed binaries must omit local/static symbols and debug symbol data.
+# The artifact compatibility gate enforces the resulting binary contract
+# independently of the implementation language used to build the CLI.
+strip = "symbols"
