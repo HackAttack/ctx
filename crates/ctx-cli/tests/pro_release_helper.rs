@@ -1,4 +1,4 @@
-#![cfg(all(unix, not(debug_assertions)))]
+#![cfg(unix)]
 
 use std::{fs, os::unix::fs::PermissionsExt};
 
@@ -6,7 +6,7 @@ use assert_cmd::Command;
 use tempfile::tempdir;
 
 #[test]
-fn release_binary_ignores_untrusted_helper_override() {
+fn release_binary_ignores_all_untrusted_helper_overrides() {
     let root = tempdir().unwrap();
     let helper = root.path().join("untrusted-ctx-pro");
     let executed = root.path().join("executed");
@@ -21,6 +21,12 @@ fn release_binary_ignores_untrusted_helper_override() {
         .unwrap()
         .env("CTX_PRO_CHANNEL", "staging")
         .env("CTX_PRO_HELPER", &helper)
+        .env("CTX_PRO_QUALIFICATION_HELPER_PATH", &helper)
+        .env(
+            "CTX_PRO_QUALIFICATION_HELPER_SHA256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .env("CTX_PRO_QUALIFICATION_HELPER_CHANNEL", "staging")
         .args([
             "--data-root",
             root.path().to_str().unwrap(),
