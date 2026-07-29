@@ -522,6 +522,7 @@ version = "0.25.0"
 dependencies = [
  "chrono",
  "ctx-history-core",
+ "ctx-history-index",
  "ctx-history-store",
  "regex",
  "serde",
