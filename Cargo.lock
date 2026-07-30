@@ -466,6 +466,7 @@ dependencies = [
  "ort",
  "predicates",
  "proptest",
+ "quick-xml",
  "ring",
  "rusqlite",
  "serde",
