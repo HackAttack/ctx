@@ -160,6 +160,19 @@ sh_test(
     data = REAL_HARNESS_DATA,
 )
 
+py_test(
+    name = "cli_ux_observer_tests",
+    srcs = [
+        "scripts/cli-ux/_observe_processes.py",
+        "scripts/cli-ux/observe.py",
+        "scripts/cli-ux/observe_test.py",
+    ],
+    data = ["scripts/cli-ux/fixtures/observer_fixture.py"],
+    main = "scripts/cli-ux/observe_test.py",
+    size = "small",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 sh_test(
     name = "real_harness_qwen_mcp_e2e",
     srcs = ["scripts/bazel-test.sh"],
