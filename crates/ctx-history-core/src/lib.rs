@@ -125,13 +125,12 @@ pub mod sync;
 pub use archive::SessionHistoryArchive;
 pub use content_ref::ContentRef;
 pub use dtos::{
-    AgentType, Artifact, ArtifactKind, CitationReference, Confidence, ContextCitation,
-    ContextCitationType, ContextLinks, ContextPagination, ContextTruncation, Event, EventRole,
-    EventType, FileChangeKind, FileTouched, HistoryRecord, HistoryRecordLink,
-    HistoryRecordLinkTargetType, HistoryRecordLinkType, HistoryRecordMetadata, HistoryRecordStatus,
-    HistoryRecordTag, RecordEdge, RecordEdgeType, Run, RunStatus, RunType, Session, SessionEdge,
-    SessionEdgeType, SessionStatus, Summary, SummaryKind, Tag, TagKind, VcsChange, VcsChangeKind,
-    VcsHost, VcsKind, VcsWorkspace,
+    AgentType, Artifact, ArtifactKind, CitationReference, Confidence, Event, EventRole, EventType,
+    FileChangeKind, FileTouched, HistoryRecord, HistoryRecordLink, HistoryRecordLinkTargetType,
+    HistoryRecordLinkType, HistoryRecordMetadata, HistoryRecordStatus, HistoryRecordTag,
+    RecordEdge, RecordEdgeType, Run, RunStatus, RunType, Session, SessionEdge, SessionEdgeType,
+    SessionStatus, Summary, SummaryKind, Tag, TagKind, VcsChange, VcsChangeKind, VcsHost, VcsKind,
+    VcsWorkspace,
 };
 pub use history_jsonl::{
     CtxHistoryJsonlEdgeRecord, CtxHistoryJsonlEventRecord, CtxHistoryJsonlFileTouchRecord,
