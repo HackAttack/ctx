@@ -4,7 +4,7 @@ use ctx_history_core::ContentRef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::source::ClaudeSessionKey;
+use super::{invocation_evidence::ClaudeExactFileInvocations, source::ClaudeSessionKey};
 
 pub(crate) const CLAUDE_MAX_RECORD_ROWS: usize = 64;
 pub(crate) const CLAUDE_MAX_FILE_TOUCHES_PER_RECORD: usize = 64;
@@ -56,6 +56,11 @@ pub(crate) struct ToolCallRequest {
     pub(crate) call_id: Option<String>,
     pub(crate) tool_name: Option<String>,
     pub(crate) file_touches: Vec<ClaudeFileTouch>,
+    // Projection-only cache. Fallback event identity predates exact invocation
+    // evidence and serializes ToolCallRequest, so this must never enter that
+    // compatibility digest.
+    #[serde(skip)]
+    pub(crate) exact_file_invocations: ClaudeExactFileInvocations,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
