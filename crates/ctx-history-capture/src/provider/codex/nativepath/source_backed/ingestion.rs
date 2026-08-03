@@ -169,6 +169,7 @@ fn ingest_codex_sources_with_options_v0(
     sources.sort_by_key(|(_, source_key, _)| source_key.identity().digest());
     let mut changed_sources = Vec::new();
     for (source, source_key, native_session_id) in sources {
+        let lineage_dependency_sha256 = outcome_lineage.dependency_digest(&native_session_id);
         let base = base_sources.get(&source_key).cloned();
         if base
             .as_ref()
@@ -181,7 +182,10 @@ fn ingest_codex_sources_with_options_v0(
         let proof = base
             .as_ref()
             .filter(|base| base.parser_revision() == CODEX_PARSER_REVISION)
-            .and_then(|base| decode_append_proof(&source, &source_key, base).ok());
+            .and_then(|base| decode_append_proof(&source, &source_key, base).ok())
+            .filter(|proof| {
+                proof.checkpoint.lineage_dependency_sha256 == lineage_dependency_sha256
+            });
         if replay_unchanged_source_v0(
             &source,
             &source_key,
@@ -200,6 +204,7 @@ fn ingest_codex_sources_with_options_v0(
             native_session_id,
             base,
             proof,
+            lineage_dependency_sha256,
         });
     }
     if changed_sources.is_empty() {
@@ -232,6 +237,7 @@ pub(crate) fn ingest_codex_sources_serial_v0(
     counters: &mut CodexSourceBackedCountersV0,
 ) -> CodexSourceBackedResultV0<()> {
     for (source, source_key, native_session_id) in sources {
+        let lineage_dependency_sha256 = outcome_lineage.dependency_digest(&native_session_id);
         let base = base_sources.get(&source_key).cloned();
         if base
             .as_ref()
@@ -244,7 +250,10 @@ pub(crate) fn ingest_codex_sources_serial_v0(
         let proof = base
             .as_ref()
             .filter(|base| base.parser_revision() == CODEX_PARSER_REVISION)
-            .and_then(|base| decode_append_proof(&source, &source_key, base).ok());
+            .and_then(|base| decode_append_proof(&source, &source_key, base).ok())
+            .filter(|proof| {
+                proof.checkpoint.lineage_dependency_sha256 == lineage_dependency_sha256
+            });
 
         if replay_unchanged_source_v0(
             &source,
@@ -345,8 +354,14 @@ pub(crate) fn ingest_codex_sources_serial_v0(
         let certification_started = Instant::now();
         match (append_base, scan.disposition) {
             (None, CodexParseDisposition::FullGeneration) => {
-                let current =
-                    certify_scan(&source_key, &scan, None, staged_for_source, scan_counters)?;
+                let current = certify_scan(
+                    &source_key,
+                    &scan,
+                    None,
+                    staged_for_source,
+                    scan_counters,
+                    lineage_dependency_sha256,
+                )?;
                 writer.certify_source(current)?;
                 if base.is_some() {
                     counters.replaced_sources = counters.replaced_sources.saturating_add(1);
@@ -361,6 +376,7 @@ pub(crate) fn ingest_codex_sources_serial_v0(
                     Some(base),
                     staged_for_source,
                     scan_counters,
+                    lineage_dependency_sha256,
                 )?;
                 let base_frontier = base
                     .frontier()
