@@ -316,6 +316,7 @@ fn multisegment_fixture(
     (temp, sources)
 }
 
+mod integrity_certification;
 mod pinned_generation;
 mod query;
 mod recovery;
