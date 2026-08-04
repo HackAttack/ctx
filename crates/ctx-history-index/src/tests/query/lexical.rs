@@ -106,7 +106,10 @@ fn lexical_result_limits_reject_oversized_and_usize_max_before_query_work() {
             .unwrap_err();
         assert!(matches!(
             error,
-            IndexError::InvalidLexicalResultLimit { requested: actual, maximum }
+            IndexError::InvalidLexicalResultLimit {
+                requested: actual,
+                maximum
+            }
                 if actual == requested && maximum == MAX_LEXICAL_QUERY_RESULTS
         ));
         assert_no_lexical_query_was_constructed_or_executed();
@@ -117,7 +120,10 @@ fn lexical_result_limits_reject_oversized_and_usize_max_before_query_work() {
             .unwrap_err();
         assert!(matches!(
             error,
-            IndexError::InvalidLexicalResultLimit { requested: actual, maximum }
+            IndexError::InvalidLexicalResultLimit {
+                requested: actual,
+                maximum
+            }
                 if actual == requested && maximum == MAX_LEXICAL_QUERY_RESULTS
         ));
         assert_no_lexical_query_was_constructed_or_executed();
@@ -155,7 +161,10 @@ fn repeated_terms_are_rejected_before_query_construction() {
 
     assert!(matches!(
         error,
-        IndexError::LexicalQueryAlternativesTooMany { observed, maximum }
+        IndexError::LexicalQueryAlternativesTooMany {
+            observed,
+            maximum
+        }
             if observed == LEXICAL_QUERY_LIMITS.maximum_alternatives + 1
                 && maximum == LEXICAL_QUERY_LIMITS.maximum_alternatives
     ));
@@ -175,7 +184,10 @@ fn analyzed_unique_tokens_are_rejected_before_query_construction() {
 
     assert!(matches!(
         error,
-        IndexError::LexicalQueryTokensTooMany { observed, maximum }
+        IndexError::LexicalQueryTokensTooMany {
+            observed,
+            maximum
+        }
             if observed == LEXICAL_QUERY_LIMITS.maximum_unique_tokens + 1
                 && maximum == LEXICAL_QUERY_LIMITS.maximum_unique_tokens
     ));
