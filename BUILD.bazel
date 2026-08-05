@@ -283,6 +283,23 @@ sh_test(
     data = CTX_GATE_DATA,
 )
 
+py_test(
+    name = "linux_bazel_controller_receipt_tests",
+    srcs = [
+        "scripts/release/completed_candidate_io.py",
+        "scripts/release/publish-linux-bazel-release.py",
+        "scripts/release/write-linux-bazel-controller-receipt.py",
+        "scripts/tests/linux-bazel-controller-receipt-test.py",
+    ],
+    data = ["scripts/release/linux-bazel-release-controller.Dockerfile"],
+    main = "scripts/tests/linux-bazel-controller-receipt-test.py",
+    tags = [
+        "release-gate",
+        "security",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 sh_test(
     name = "sdk_package_dry_run",
     srcs = ["scripts/bazel-test.sh"],
