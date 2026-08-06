@@ -135,7 +135,8 @@ pub use dtos::{
     VcsHost, VcsKind, VcsWorkspace,
 };
 pub use history_jsonl::{
-    CtxHistoryJsonlEdgeRecord, CtxHistoryJsonlEventRecord, CtxHistoryJsonlFileTouchRecord,
+    CtxHistoryJsonlCopiedFromSelector, CtxHistoryJsonlCopyProofKind, CtxHistoryJsonlEdgeRecord,
+    CtxHistoryJsonlEventRecord, CtxHistoryJsonlFileTouchRecord, CtxHistoryJsonlLineageContract,
     CtxHistoryJsonlManifestRecord, CtxHistoryJsonlRecord, CtxHistoryJsonlSessionRecord,
     CtxHistoryJsonlSourceRecord, CTX_HISTORY_JSONL_V1_SCHEMA_VERSION,
 };
