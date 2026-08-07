@@ -113,6 +113,11 @@ rust_test(
         proc_macro_dev = True,
     ),
     rustc_env = COMMON_RUSTC_ENV,
-    rustc_env_files = [":cargo_toml_env_vars"],
+    # Optimized unit tests still need the compile-time-only upgrade harness so
+    # daemon tests can bind installation coordination to owner-safe fixtures.
+    rustc_env_files = [
+        ":cargo_toml_env_vars",
+        "src/upgrade/test-harness.env",
+    ],
     rustc_flags = CTX_CLI_RUSTC_FLAGS,
 )
