@@ -347,6 +347,7 @@ pub(super) fn ingest_codex_cold_parallel_v0(
             &cancellation,
             &mut lane_states,
             &plans,
+            &outcome_lineage,
             writer,
             revalidation,
             timings,
@@ -590,6 +591,7 @@ fn consume_cold_lanes_v0(
     cancellation: &AtomicBool,
     lane_states: &mut [ColdLaneStateV0],
     plans: &[ColdSourcePlanV0],
+    outcome_lineage: &CodexOutcomeLineageAuthorityV0,
     writer: &mut GenerationWriter,
     revalidation: &mut HashMap<SourceKey, CodexTerminalSourceEvidenceV0>,
     timings: &mut CodexSourceBackedPhaseTimingsV0,
@@ -748,6 +750,8 @@ fn consume_cold_lanes_v0(
                     ));
                 }
                 let scan_counters = complete.scan.counters;
+                let certified_lineage_facts =
+                    outcome_lineage.certified_authority(&plan.native_session_id)?;
                 let certification_started = Instant::now();
                 match mode {
                     ChangedSourceModeV0::FullGeneration => {
@@ -758,6 +762,7 @@ fn consume_cold_lanes_v0(
                             complete.staged_documents,
                             scan_counters,
                             plan.lineage_dependency_sha256,
+                            certified_lineage_facts.clone(),
                         )?;
                         writer.certify_source(current)?;
                         if plan.base.is_some() {
@@ -779,6 +784,7 @@ fn consume_cold_lanes_v0(
                             complete.staged_documents,
                             scan_counters,
                             plan.lineage_dependency_sha256,
+                            certified_lineage_facts,
                         )?;
                         let base_frontier = base
                             .frontier()
