@@ -897,6 +897,19 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             });
         }
 
+        report_progress(source_level_progress(SourceBackedRefreshProgress {
+            phase: "committing",
+            completed_sources: scanned_routes,
+            total_sources: scanned_routes,
+            current_source: None,
+            completed_records: None,
+            completed_bytes: None,
+            stage_duration: scan_started.elapsed(),
+            elapsed: discovery_duration.saturating_add(refresh_started.elapsed()),
+            certified_source_count: None,
+            certified_source_bytes: None,
+        }))
+        .map_err(SourceBackedCoordinatorError::Progress)?;
         let commit_started = Instant::now();
         run_before_source_backed_commit_hook();
         let mut revalidate_source = |target: RevalidationTarget<'_>| {

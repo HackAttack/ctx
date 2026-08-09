@@ -1671,6 +1671,37 @@ fn terminal_history_is_trimmed_independently_from_inflight_capacity() {
 }
 
 #[test]
+fn production_run_persists_discovering_before_executor_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let observed = Arc::new(AtomicBool::new(false));
+    let observed_from_executor = Arc::clone(&observed);
+    let coordinator = CoreRefreshEngine::with_executor(Arc::new(
+        move |execution: SourceBackedRefreshExecution<'_>| {
+            let job =
+                read_daemon_job_status(&daemon_source_backed_refresh_job_path(execution.data_root))
+                    .expect("running source refresh status");
+            assert_eq!(job["request_state"], "running");
+            assert_eq!(job["progress"]["phase"], "discovering");
+            assert_eq!(job["progress"]["total_sources_known"], false);
+            assert!(job["progress"]["current_source"].is_null());
+            assert!(job["progress"]["completed_records"].is_null());
+            assert!(job["progress"]["completed_bytes"].is_null());
+            assert!(job["progress"]["current_source_progress"].is_null());
+            observed_from_executor.store(true, Ordering::SeqCst);
+            Err(anyhow!("stop after observing persisted discovery phase"))
+        },
+    ));
+    let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
+    let _request = manual_all_request(&coordinator, &data_root, &authority);
+
+    let run = coordinator.run_next(&data_root).expect("queued refresh");
+    assert!(run.failed);
+    assert!(observed.load(Ordering::SeqCst));
+}
+
+#[test]
 fn default_executor_without_overlay_keeps_automatic_discovery_and_maps_progress() {
     let coordinator = CoreRefreshEngine::new();
     assert_eq!(

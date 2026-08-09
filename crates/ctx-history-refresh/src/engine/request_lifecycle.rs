@@ -637,7 +637,10 @@ impl CoreRefreshEngine {
             attempt.state = SourceBackedRefreshState::Running;
             attempt.physical_attempt_id = Some(request_id.clone());
             attempt.started_at_ms = Some(utc_now().timestamp_millis());
-            attempt.progress.phase = "starting".to_owned();
+            // The executor owns provider discovery. Persist the truthful live
+            // phase before entering it so a long discovery cannot leave an
+            // attached request apparently idle at `starting`.
+            attempt.progress.phase = "discovering".to_owned();
             (
                 request_id,
                 attempt.previous_generation.clone(),

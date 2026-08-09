@@ -80,6 +80,76 @@ fn committed_progress_failure_does_not_hide_visible_publication() {
 }
 
 #[test]
+fn committing_progress_precedes_generation_commit() {
+    let (route, _) = revisioned_receipt_route(8);
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(route);
+    let temp = tempdir().unwrap();
+    let phases = Arc::new(Mutex::new(Vec::<String>::new()));
+    let phases_from_hook = Arc::clone(&phases);
+    install_before_source_backed_commit_hook_for_test(move || {
+        assert_eq!(
+            phases_from_hook.lock().unwrap().last().map(String::as_str),
+            Some("committing")
+        );
+    });
+
+    refresh_source_backed_generation_with_progress(
+        temp.path(),
+        &registry,
+        WriterOptions::default(),
+        |progress| {
+            phases.lock().unwrap().push(progress.phase.to_owned());
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let phases = phases.lock().unwrap();
+    let committing = phases
+        .iter()
+        .position(|phase| phase == "committing")
+        .expect("committing progress");
+    let committed = phases
+        .iter()
+        .position(|phase| phase == "committed")
+        .expect("committed progress");
+    assert!(committing < committed);
+}
+
+#[test]
+fn committing_progress_failure_prevents_publication() {
+    let (route, _) = revisioned_receipt_route(9);
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(route);
+    let temp = tempdir().unwrap();
+
+    let error = refresh_source_backed_generation_with_progress(
+        temp.path(),
+        &registry,
+        WriterOptions::default(),
+        |progress| {
+            if progress.phase == "committing" {
+                Err(SourceBackedRouteError::new(
+                    SourceBackedRouteErrorKind::Internal,
+                    "injected committing status failure",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SourceBackedCoordinatorError::Progress(SourceBackedRouteError { detail, .. })
+            if detail == "injected committing status failure"
+    ));
+    assert!(VerifiedIndex::open(temp.path()).is_err());
+}
+
+#[test]
 fn source_record_progress_resets_per_route_and_is_absent_outside_scans() {
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(fixture_route(
