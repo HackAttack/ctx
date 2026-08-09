@@ -156,6 +156,16 @@ mod unix {
         mode: u32,
     }
 
+    #[cfg(target_os = "linux")]
+    const fn normalized_stat_device(device: libc::dev_t) -> u64 {
+        device
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn normalized_stat_device(device: libc::dev_t) -> u64 {
+        device as u64
+    }
+
     impl FileIdentity {
         fn from_metadata(metadata: &fs::Metadata) -> Self {
             Self {
@@ -168,7 +178,7 @@ mod unix {
 
         fn from_stat(stat: &libc::stat) -> Self {
             Self {
-                device: u64::try_from(stat.st_dev).unwrap_or(u64::MAX),
+                device: normalized_stat_device(stat.st_dev),
                 inode: stat.st_ino,
                 bytes: u64::try_from(stat.st_size).unwrap_or(u64::MAX),
                 mode: u32::from(stat.st_mode),
@@ -186,9 +196,14 @@ mod unix {
         fn is_same_object(self, other: Self) -> bool {
             self.device == other.device
                 && self.inode == other.inode
-                && (self.mode & u32::from(libc::S_IFMT))
-                    == (other.mode & u32::from(libc::S_IFMT))
+                && (self.mode & u32::from(libc::S_IFMT)) == (other.mode & u32::from(libc::S_IFMT))
         }
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    #[test]
+    fn signed_darwin_device_id_normalization_preserves_distinct_values() {
+        assert_ne!(normalized_stat_device(-1), normalized_stat_device(-2));
     }
 
     #[derive(Debug, Clone)]
