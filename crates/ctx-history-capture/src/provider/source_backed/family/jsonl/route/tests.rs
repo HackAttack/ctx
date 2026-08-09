@@ -104,6 +104,64 @@ impl JsonlFamilyAdapter for TestAdapter {
     }
 }
 
+#[cfg(unix)]
+struct TerminalLeafSwapTestAdapter {
+    selected: PathBuf,
+    outside: PathBuf,
+    enabled: AtomicBool,
+    swapped: AtomicBool,
+}
+
+#[cfg(unix)]
+impl JsonlFamilyAdapter for TerminalLeafSwapTestAdapter {
+    fn provider(&self) -> CaptureProvider {
+        TestAdapter.provider()
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "terminal-leaf-swap-test-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        TestAdapter.discover(root)
+    }
+
+    fn observe_terminal_membership(
+        &self,
+        root: &Path,
+        opening: &JsonlFamilyInventory,
+    ) -> Result<JsonlFamilyMembershipObservation> {
+        if self.enabled.load(Ordering::SeqCst) && !self.swapped.swap(true, Ordering::SeqCst) {
+            fs::remove_file(&self.selected)?;
+            std::os::unix::fs::symlink(&self.outside, &self.selected)?;
+        }
+        JsonlFamilyMembershipObservation::observe(root, opening)
+    }
+
+    fn projector(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        Err(CaptureError::SystemInvariant(
+            "terminal leaf swap tests never project",
+        ))
+    }
+}
+
 fn expected_state(
     adapter: &dyn JsonlFamilyAdapter,
     root: &Path,
@@ -2387,6 +2445,34 @@ fn active_source_family_contract_jsonl_terminal_inventory_observes_live_tree() {
     assert!(
         !revalidate_complete_inventory(&adapter, &root, &resident, &inventory).unwrap_or(false)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn active_source_family_contract_jsonl_terminal_inventory_rejects_admitted_leaf_symlink_race() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    let selected = root.join("first.jsonl");
+    fs::write(&selected, TEST_RECORD).unwrap();
+    let outside = temp.path().join("outside.jsonl");
+    fs::write(&outside, b"{\"message\":\"outside must not be read\"}\n").unwrap();
+    let adapter = TerminalLeafSwapTestAdapter {
+        selected,
+        outside,
+        enabled: AtomicBool::new(false),
+        swapped: AtomicBool::new(false),
+    };
+    let (resident, inventory) = expected_state(&adapter, &root);
+    let resident = Mutex::new(resident);
+    adapter.enabled.store(true, Ordering::SeqCst);
+
+    assert_eq!(
+        revalidate_complete_inventory(&adapter, &root, &resident, &inventory).unwrap(),
+        false,
+        "an admitted transcript that becomes a symlink must fail terminal membership"
+    );
+    assert!(adapter.swapped.load(Ordering::SeqCst));
 }
 
 #[test]
