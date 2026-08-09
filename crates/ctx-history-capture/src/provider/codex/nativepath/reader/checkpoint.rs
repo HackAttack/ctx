@@ -58,6 +58,58 @@ pub(super) struct BoundedRecordRead {
     pub(super) sha256: [u8; 32],
 }
 
+// Static dispatch gives the authority preflight a SHA-free specialization
+// without adding a per-chunk branch to checkpoint, lineage, or main scans.
+trait BoundedRecordDigest {
+    fn update(&mut self, chunk: &[u8]);
+    fn finish(self) -> [u8; 32];
+    fn finish_incomplete(self) -> [u8; 32];
+}
+
+struct Sha256BoundedRecordDigest<'a> {
+    full_hasher: &'a mut Sha256,
+    complete_hasher: &'a mut Sha256,
+    complete_before_record: Sha256,
+    record_hasher: Sha256,
+}
+
+impl BoundedRecordDigest for Sha256BoundedRecordDigest<'_> {
+    #[inline(always)]
+    fn update(&mut self, chunk: &[u8]) {
+        self.full_hasher.update(chunk);
+        self.complete_hasher.update(chunk);
+        self.record_hasher.update(chunk);
+    }
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        self.record_hasher.finalize().into()
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        *self.complete_hasher = self.complete_before_record;
+        self.record_hasher.finalize().into()
+    }
+}
+
+struct UnhashedBoundedRecordDigest;
+
+impl BoundedRecordDigest for UnhashedBoundedRecordDigest {
+    #[inline(always)]
+    fn update(&mut self, _chunk: &[u8]) {}
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        [0; 32]
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
 pub(super) fn read_bounded_record(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,
@@ -68,9 +120,33 @@ pub(super) fn read_bounded_record(
     if maximum_bytes == 0 {
         return Ok(None);
     }
+    let digest = Sha256BoundedRecordDigest {
+        full_hasher,
+        complete_before_record: complete_hasher.clone(),
+        complete_hasher,
+        record_hasher: Sha256::new(),
+    };
+    read_bounded_record_with_digest(reader, storage, maximum_bytes, digest)
+}
+
+pub(super) fn read_bounded_record_unhashed(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    maximum_bytes: u64,
+) -> Result<Option<BoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    read_bounded_record_with_digest(reader, storage, maximum_bytes, UnhashedBoundedRecordDigest)
+}
+
+fn read_bounded_record_with_digest<D: BoundedRecordDigest>(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    maximum_bytes: u64,
+    mut digest: D,
+) -> Result<Option<BoundedRecordRead>> {
     storage.clear();
-    let complete_before_record = complete_hasher.clone();
-    let mut record_hasher = Sha256::new();
     let mut byte_len = 0_u64;
     let mut oversized = false;
     let mut all_nul = true;
@@ -92,14 +168,13 @@ pub(super) fn read_bounded_record(
                         sha256: [0; 32],
                     }));
                 }
-                *complete_hasher = complete_before_record;
                 return Ok(Some(BoundedRecordRead {
                     complete: false,
                     terminal_nul_padding: false,
                     oversized,
                     stored_len: storage.len(),
                     byte_len,
-                    sha256: record_hasher.finalize().into(),
+                    sha256: digest.finish_incomplete(),
                 }));
             }
 
@@ -109,9 +184,7 @@ pub(super) fn read_bounded_record(
             let newline = available[..bounded].iter().position(|byte| *byte == b'\n');
             let consumed = newline.map_or(bounded, |index| index + 1);
             let chunk = &available[..consumed];
-            full_hasher.update(chunk);
-            complete_hasher.update(chunk);
-            record_hasher.update(chunk);
+            digest.update(chunk);
             all_nul &= chunk.iter().all(|byte| *byte == 0);
             byte_len =
                 byte_len
@@ -144,14 +217,13 @@ pub(super) fn read_bounded_record(
                         sha256: [0; 32],
                     }));
                 }
-                *complete_hasher = complete_before_record;
                 return Ok(Some(BoundedRecordRead {
                     complete: false,
                     terminal_nul_padding: false,
                     oversized,
                     stored_len: storage.len(),
                     byte_len,
-                    sha256: record_hasher.finalize().into(),
+                    sha256: digest.finish_incomplete(),
                 }));
             }
             (consumed, newline.is_some())
@@ -164,9 +236,142 @@ pub(super) fn read_bounded_record(
                 oversized,
                 stored_len: storage.len(),
                 byte_len,
-                sha256: record_hasher.finalize().into(),
+                sha256: digest.finish(),
             }));
         }
+    }
+}
+
+#[cfg(test)]
+mod bounded_record_tests {
+    use super::*;
+
+    fn assert_hashed_and_unhashed_match(contents: &[u8], frozen_len: u64) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bounded-record.jsonl");
+        std::fs::write(&path, contents).unwrap();
+        let mut hashed_reader = BufReader::with_capacity(8 * 1024, File::open(&path).unwrap());
+        let mut unhashed_reader = BufReader::with_capacity(64 * 1024, File::open(&path).unwrap());
+        let mut hashed_storage = Vec::new();
+        let mut unhashed_storage = Vec::new();
+        let mut full_hasher = Sha256::new();
+        let mut complete_hasher = Sha256::new();
+        let mut offset = 0_u64;
+        let mut complete_end = 0_u64;
+
+        while offset < frozen_len {
+            let hashed = read_bounded_record(
+                &mut hashed_reader,
+                &mut hashed_storage,
+                &mut full_hasher,
+                &mut complete_hasher,
+                frozen_len.saturating_sub(offset),
+            )
+            .unwrap()
+            .unwrap();
+            let unhashed = read_bounded_record_unhashed(
+                &mut unhashed_reader,
+                &mut unhashed_storage,
+                frozen_len.saturating_sub(offset),
+            )
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(unhashed.complete, hashed.complete);
+            assert_eq!(unhashed.terminal_nul_padding, hashed.terminal_nul_padding);
+            assert_eq!(unhashed.oversized, hashed.oversized);
+            assert_eq!(unhashed.stored_len, hashed.stored_len);
+            assert_eq!(unhashed.byte_len, hashed.byte_len);
+            assert_eq!(unhashed.sha256, [0; 32]);
+            assert_eq!(unhashed_storage, hashed_storage);
+
+            let record_end = offset.saturating_add(hashed.byte_len);
+            if hashed.terminal_nul_padding {
+                assert_eq!(hashed.sha256, [0; 32]);
+            } else {
+                let start = usize::try_from(offset).unwrap();
+                let end = usize::try_from(record_end).unwrap();
+                assert_eq!(
+                    hashed.sha256,
+                    <[u8; 32]>::from(Sha256::digest(&contents[start..end]))
+                );
+            }
+            if hashed.complete {
+                complete_end = record_end;
+            }
+            offset = record_end;
+        }
+
+        let frozen_end = usize::try_from(frozen_len).unwrap();
+        assert_eq!(offset, frozen_len);
+        assert_eq!(
+            <[u8; 32]>::from(full_hasher.finalize()),
+            <[u8; 32]>::from(Sha256::digest(&contents[..frozen_end]))
+        );
+        assert_eq!(
+            <[u8; 32]>::from(complete_hasher.finalize()),
+            <[u8; 32]>::from(Sha256::digest(
+                &contents[..usize::try_from(complete_end).unwrap()]
+            ))
+        );
+    }
+
+    #[test]
+    fn unhashed_reader_preserves_framing_bounds_and_incomplete_tails() {
+        let mut records = b"alpha\r\n".to_vec();
+        records.resize(records.len() + MAX_CODEX_RECORD_BYTES + 17, b'x');
+        records.push(b'\n');
+        records.extend_from_slice(b"incomplete tail");
+        assert_hashed_and_unhashed_match(&records, records.len() as u64);
+
+        let terminal_nul = vec![0; 64 * 1024 + 17];
+        assert_hashed_and_unhashed_match(&terminal_nul, terminal_nul.len() as u64);
+
+        let frozen = b"first\nsecond\nnot admitted";
+        assert_hashed_and_unhashed_match(frozen, b"first\nsec".len() as u64);
+    }
+
+    #[test]
+    fn unhashed_reader_fails_closed_when_frozen_bytes_are_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("truncated.jsonl");
+        std::fs::write(&path, b"complete\n").unwrap();
+        let mut hashed_reader = BufReader::new(File::open(&path).unwrap());
+        let mut unhashed_reader = BufReader::new(File::open(&path).unwrap());
+        let mut hashed_storage = Vec::new();
+        let mut unhashed_storage = Vec::new();
+        let mut full_hasher = Sha256::new();
+        let mut complete_hasher = Sha256::new();
+
+        read_bounded_record(
+            &mut hashed_reader,
+            &mut hashed_storage,
+            &mut full_hasher,
+            &mut complete_hasher,
+            10,
+        )
+        .unwrap();
+        read_bounded_record_unhashed(&mut unhashed_reader, &mut unhashed_storage, 10).unwrap();
+        let hashed_error = match read_bounded_record(
+            &mut hashed_reader,
+            &mut hashed_storage,
+            &mut full_hasher,
+            &mut complete_hasher,
+            1,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("hashed reader accepted missing frozen bytes"),
+        };
+        let unhashed_error =
+            match read_bounded_record_unhashed(&mut unhashed_reader, &mut unhashed_storage, 1) {
+                Err(error) => error,
+                Ok(_) => panic!("unhashed reader accepted missing frozen bytes"),
+            };
+
+        assert_eq!(unhashed_error.to_string(), hashed_error.to_string());
+        assert!(unhashed_error
+            .to_string()
+            .contains("source changed while NativePath was reading it"));
     }
 }
 
