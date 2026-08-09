@@ -761,6 +761,32 @@ pub(crate) fn is_non_regular_source_rejection(error: &CaptureError) -> bool {
     )
 }
 
+/// Reason recorded when a provider source path component is a symlink (Unix)
+/// or a reparse, offline, or cloud-placeholder entry (Windows). Provider
+/// layouts that store non-transcript working files beside transcripts (for
+/// example Copilot CLI `session-state/<id>/files/` checkouts containing
+/// `CLAUDE.md -> AGENTS.md` links) can skip such entries safely: the link is
+/// never followed, so the no-follow security boundary is preserved.
+pub(crate) const SYMLINK_PROVIDER_SOURCE_REASON: &str =
+    "symlinked provider source path components are rejected";
+
+/// Windows counterpart of [`SYMLINK_PROVIDER_SOURCE_REASON`].
+pub(crate) const REPARSE_PROVIDER_SOURCE_REASON: &str =
+    "reparse, offline, and cloud-placeholder provider sources are rejected";
+
+/// True when `error` is the safe rejection of a link-like entry that a
+/// traversal can skip without following it. The entry itself is never opened,
+/// so skipping it does not weaken the symlink boundary; transcript-shaped
+/// selections must still treat this rejection as fatal.
+pub(crate) fn is_symlink_source_rejection(error: &CaptureError) -> bool {
+    matches!(
+        error,
+        CaptureError::InvalidProviderTranscriptPath { reason, .. }
+            if *reason == SYMLINK_PROVIDER_SOURCE_REASON
+                || *reason == REPARSE_PROVIDER_SOURCE_REASON
+    )
+}
+
 fn invalid_path(path: &Path, reason: &'static str) -> CaptureError {
     CaptureError::InvalidProviderTranscriptPath {
         path: path.to_path_buf(),

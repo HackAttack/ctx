@@ -356,6 +356,148 @@ fn windsurf_default_discovery_is_native_and_search_refresh_imports() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn copilot_cli_import_skips_symlinked_session_files_checkout() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let query = "copilot-cli-symlinked-files-oracle";
+    let path = write_native_copilot_fixture(&temp, query);
+    // Copilot CLI stores the session working copy under
+    // `<session>/files/`, and checked-out repositories legitimately contain
+    // symlinks (for example `CLAUDE.md -> AGENTS.md`). The link can never
+    // hold an `events.jsonl` transcript, so it must be skipped without
+    // failing the whole copilot_cli source.
+    let checkout = Path::new(&path).join("copilot-cli-native/files/checkout");
+    fs::create_dir_all(&checkout).unwrap();
+    fs::write(checkout.join("AGENTS.md"), b"agents\n").unwrap();
+    symlink("AGENTS.md", checkout.join("CLAUDE.md")).unwrap();
+    let _daemon = start_isolated_provider_daemon(&temp);
+
+    let first = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "copilot-cli",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&first, "copilot_cli", "copilot_cli_session_events_jsonl");
+    wait_for_imported_core(&temp, &first);
+    assert_eq!(first["totals"]["current_rejected_records"], 0, "{first:#}");
+    let (session_count, event_count) = provider_core_counts(&data_root(&temp), "copilot_cli");
+    assert!(session_count >= 1);
+    assert!(event_count >= 1);
+
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "copilot-cli",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&search, "copilot_cli", query, 1, "message");
+
+    // A second import exercises the membership fence walk against the same
+    // symlinked checkout and must republish cleanly.
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "copilot-cli",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&second, "copilot_cli", "copilot_cli_session_events_jsonl");
+    assert_eq!(
+        second["totals"]["current_rejected_records"], 0,
+        "{second:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn copilot_cli_reimport_fails_when_transcript_turns_into_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let query = "copilot-cli-transcript-to-symlink-oracle";
+    let path = write_native_copilot_fixture(&temp, query);
+    let _daemon = start_isolated_provider_daemon(&temp);
+
+    let first = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "copilot-cli",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_explicit_source_publication(&first, "copilot_cli", "copilot_cli_session_events_jsonl");
+    wait_for_imported_core(&temp, &first);
+
+    // A transcript route that turns into a link after admission drops out of
+    // the observed membership route set, so the re-import must fail closed
+    // instead of silently keeping stale content.
+    let session = Path::new(&path).join("copilot-cli-native");
+    let real_transcript = session.join("events.real.jsonl");
+    fs::rename(session.join("events.jsonl"), &real_transcript).unwrap();
+    symlink("events.real.jsonl", session.join("events.jsonl")).unwrap();
+
+    let second = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "copilot-cli",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert_eq!(second["failure_type"], "source_failure", "{second:#}");
+    assert_eq!(
+        second["outcome"], "completed_with_source_failures",
+        "{second:#}"
+    );
+    assert_eq!(second["sources"][0]["carried_forward"], true, "{second:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn copilot_cli_import_still_rejects_symlinked_transcript() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let query = "copilot-cli-symlinked-transcript-oracle";
+    let path = write_native_copilot_fixture(&temp, query);
+    // A symlink where the transcript itself should be stays fail-closed:
+    // skipping is only safe for entries that can never hold a transcript.
+    let session = Path::new(&path).join("copilot-cli-native");
+    let real_transcript = session.join("events.real.jsonl");
+    fs::rename(session.join("events.jsonl"), &real_transcript).unwrap();
+    symlink("events.real.jsonl", session.join("events.jsonl")).unwrap();
+    let _daemon = start_isolated_provider_daemon(&temp);
+
+    let stderr = failure_stderr(ctx(&temp).args([
+        "import",
+        "--provider",
+        "copilot-cli",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    assert!(
+        stderr.contains("symlinked provider source path components are rejected"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn unknown_native_providers_are_rejected_by_public_cli() {
     let temp = tempdir();

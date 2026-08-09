@@ -231,34 +231,32 @@ fn regular_provider_inventory_applies_file_and_metadata_limits_to_non_jsonl_sour
 
 #[cfg(unix)]
 #[test]
-fn provider_inventory_rejects_symlinked_tree_entries_without_following_them() {
+fn provider_inventory_skips_symlinked_tree_entries_without_following_them() {
     use std::os::unix::fs::symlink;
 
     let temp = crate::test_support_paths::tempdir().unwrap();
     let outside = crate::test_support_paths::tempdir().unwrap();
     fs::write(outside.path().join("session.jsonl"), b"{}\n").unwrap();
     symlink(outside.path(), temp.path().join("linked")).unwrap();
+    fs::write(temp.path().join("local.jsonl"), b"{}\n").unwrap();
 
-    let error =
+    // The symlinked directory is skipped, never followed: the outside
+    // `session.jsonl` must not leak into the inventory, while the regular
+    // sibling is still admitted.
+    let inventory =
         inventory_provider_jsonl_paths(temp.path(), ProviderJsonlInventoryLimits::default())
-            .unwrap_err();
-    assert!(matches!(
-        error,
-        CaptureError::InvalidProviderTranscriptPath { .. }
-    ));
+            .unwrap();
+    assert_eq!(inventory.paths(), &[temp.path().join("local.jsonl")]);
 
-    let error =
+    let inventory =
         inventory_provider_regular_paths(temp.path(), ProviderJsonlInventoryLimits::default())
-            .unwrap_err();
-    assert!(matches!(
-        error,
-        CaptureError::InvalidProviderTranscriptPath { .. }
-    ));
+            .unwrap();
+    assert_eq!(inventory.paths(), &[temp.path().join("local.jsonl")]);
 }
 
 #[cfg(unix)]
 #[test]
-fn provider_inventory_rejects_nonregular_jsonl_entries() {
+fn provider_inventory_skips_nonregular_jsonl_entries() {
     use std::os::unix::net::UnixListener;
 
     let temp = tempfile::Builder::new()
@@ -267,14 +265,12 @@ fn provider_inventory_rejects_nonregular_jsonl_entries() {
         .unwrap();
     let root = fs::canonicalize(temp.path()).unwrap();
     let _listener = UnixListener::bind(root.join("socket.jsonl")).unwrap();
+    fs::write(root.join("session.jsonl"), b"{}\n").unwrap();
 
-    let error =
-        inventory_provider_jsonl_paths(&root, ProviderJsonlInventoryLimits::default()).unwrap_err();
+    let inventory =
+        inventory_provider_jsonl_paths(&root, ProviderJsonlInventoryLimits::default()).unwrap();
 
-    assert!(matches!(
-        error,
-        CaptureError::InvalidProviderTranscriptPath { .. }
-    ));
+    assert_eq!(inventory.paths(), &[root.join("session.jsonl")]);
 }
 
 #[test]

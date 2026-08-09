@@ -292,15 +292,13 @@ fn classify_open_component_error(
     cause: io::Error,
 ) -> AuthorityOpenError {
     match cause.raw_os_error() {
-        Some(libc::ELOOP) => {
-            AuthorityOpenError::Rejected("symlinked provider source path components are rejected")
-        }
+        Some(libc::ELOOP) => AuthorityOpenError::Rejected(super::SYMLINK_PROVIDER_SOURCE_REASON),
         // BSD kernels also use ENOTDIR for O_NOFOLLOW | O_DIRECTORY against a
         // symlink. Reclassify only when no-follow metadata confirms that case.
         Some(libc::ENOTDIR)
             if expected == Some(ExpectedType::Directory) && component_is_symlink(parent, name) =>
         {
-            AuthorityOpenError::Rejected("symlinked provider source path components are rejected")
+            AuthorityOpenError::Rejected(super::SYMLINK_PROVIDER_SOURCE_REASON)
         }
         Some(libc::ENXIO) | Some(libc::ENODEV) | Some(libc::EOPNOTSUPP) => {
             AuthorityOpenError::Rejected(super::NON_REGULAR_PROVIDER_SOURCE_REASON)
