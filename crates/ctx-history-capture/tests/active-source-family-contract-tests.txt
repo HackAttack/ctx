@@ -17,6 +17,7 @@ provider::source_backed::family::jsonl::route::tests::active_source_family_contr
 provider::source_backed::family::jsonl::route::tests::active_source_family_contract_jsonl_optimized_proof_rejects_mismatched_certificate
 provider::source_backed::family::jsonl::route::tests::active_source_family_contract_jsonl_terminal_inventory_accepts_proven_append
 provider::source_backed::family::jsonl::route::tests::active_source_family_contract_jsonl_terminal_inventory_observes_live_tree
+provider::source_backed::family::jsonl::route::tests::active_source_family_contract_jsonl_terminal_inventory_rejects_admitted_leaf_symlink_race
 provider::source_backed::family::jsonl::route::tests::active_source_family_contract_jsonl_terminal_inventory_rejects_reappearance
 provider::source_backed::family::jsonl::route::tests::active_source_family_contract_jsonl_terminal_noop_is_metadata_only_without_recataloging
 provider::source_backed::family::tests::active_source_family_contract_documented_storage_families_cover_routed_provider_formats
