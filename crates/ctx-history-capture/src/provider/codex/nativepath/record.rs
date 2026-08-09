@@ -718,7 +718,10 @@ pub(super) fn malformed_codex_lineage_record_evidence(
     let mut envelopes = 0_usize;
     while let Some(next) = stream.next() {
         let Ok(envelope) = next else {
-            return literal_malformed_call_id_evidence(record);
+            if envelopes != 0 {
+                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+            }
+            return interrupted_duplicate_call_evidence(record);
         };
         envelopes = envelopes.saturating_add(1);
 
@@ -788,99 +791,136 @@ pub(super) fn malformed_codex_lineage_record_evidence(
     }
 }
 
-fn literal_malformed_call_id_evidence(record: &[u8]) -> CodexMalformedLineageRecordEvidence {
-    let Some(call_ids) = recover_literal_malformed_call_ids(record) else {
+/// Recovers the one malformed-row shape observed from interrupted Codex file
+/// writes: a truncated function-call envelope immediately followed by a full
+/// retry of the same provider response item. The provider response `id` must
+/// occur exactly once in each fragment and match byte-for-byte; the complete
+/// retry must independently classify as one exact tool call. Everything else
+/// retains source-wide ambiguity because a truncated producer might have no
+/// recoverable `call_id` at all.
+fn interrupted_duplicate_call_evidence(record: &[u8]) -> CodexMalformedLineageRecordEvidence {
+    const ENVELOPE_START: &[u8] = br#"{"timestamp""#;
+    let mut starts = record
+        .windows(ENVELOPE_START.len())
+        .enumerate()
+        .filter(|(_, window)| *window == ENVELOPE_START)
+        .map(|(start, _)| start);
+    if starts.next() != Some(0) {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    let Some(retry_start) = starts.next() else {
         return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
     };
+    if starts.next().is_some() {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+
+    let Some(prefix) = record.get(..retry_start) else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    let Some(suffix) = record.get(retry_start..) else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    let Some((prefix_item_id, interrupted_arguments)) = canonical_function_call_prefix(prefix)
+    else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    if !is_unterminated_json_string_fragment(interrupted_arguments) {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    let Some((suffix_item_id, _)) = canonical_function_call_prefix(suffix) else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    if prefix_item_id != suffix_item_id
+        || count_bytes(suffix, br#""id""#) != 1
+        || suffix.windows(2).any(|window| window == br#"\u"#)
+    {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    let Ok(probe) = classify_codex_record(suffix) else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    if probe.lineage_malformed
+        || probe.relationship_escaped
+        || !matches!(
+            probe.class,
+            CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
+        )
+    {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    let Some(call_id) = probe.call_id.as_deref() else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    if call_id.is_empty() || call_id.len() > super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    let mut call_ids = CodexLineageCallIds::default();
+    call_ids.remember(call_id);
     CodexMalformedLineageRecordEvidence::AmbiguousDigests(call_ids)
 }
 
-/// Returns a conservative superset of every literal `call_id` in a corrupted
-/// row, or declines to scope the ambiguity.
-///
-/// A malformed outer string can contain either ordinary JSON fields or an
-/// escaped serialized JSON fragment. Both forms are admitted only when every
-/// `call_id` substring has the exact key/colon/plain-string shape and every
-/// value is bounded. Any Unicode escape could encode a hidden key, while any
-/// unrecognized occurrence could be a key whose value this scanner failed to
-/// recover, so either condition preserves global ambiguity.
-fn recover_literal_malformed_call_ids(record: &[u8]) -> Option<CodexLineageCallIds> {
-    if record.windows(2).any(|window| window == br#"\u"#) {
-        return None;
-    }
+fn canonical_function_call_prefix(record: &[u8]) -> Option<(&str, &[u8])> {
+    let mut remaining = record.strip_prefix(br#"{"timestamp":""#)?;
+    let (_, after_timestamp) = plain_json_string_prefix(remaining)?;
+    remaining = after_timestamp
+        .strip_prefix(br#","type":"response_item","payload":{"type":"function_call","id":""#)?;
+    let (item_id, after_item_id) = plain_json_string_prefix(remaining)?;
+    remaining = after_item_id.strip_prefix(br#","name":""#)?;
+    let (_, after_name) = plain_json_string_prefix(remaining)?;
+    let arguments = after_name.strip_prefix(br#","arguments":""#)?;
+    Some((item_id, arguments))
+}
 
-    let needle = b"call_id";
-    let mut search_from = 0_usize;
-    let mut call_ids = CodexLineageCallIds::default();
-    let mut occurrences = 0_usize;
-    while let Some(relative) = record
-        .get(search_from..)?
-        .windows(needle.len())
-        .position(|window| window == needle)
-    {
-        let start = search_from.checked_add(relative)?;
-        occurrences = occurrences.checked_add(1)?;
-        let mut cursor = start.checked_add(needle.len())?;
+fn plain_json_string_prefix(record: &[u8]) -> Option<(&str, &[u8])> {
+    let end = record
+        .iter()
+        .position(|byte| *byte == b'"' || *byte == b'\\')?;
+    (record.get(end) == Some(&b'"')).then_some(())?;
+    let value = std::str::from_utf8(record.get(..end)?).ok()?;
+    (!value.is_empty() && value.bytes().all(|byte| byte >= 0x20)).then_some(())?;
+    Some((value, record.get(end.checked_add(1)?..)?))
+}
 
-        let escaped_key = match (
-            record.get(start.checked_sub(2)?..start),
-            record.get(start.checked_sub(1)?),
-        ) {
-            (Some(br#"\""#), _) => true,
-            (_, Some(b'"')) => false,
-            _ => return None,
+fn is_unterminated_json_string_fragment(fragment: &[u8]) -> bool {
+    let mut cursor = 0_usize;
+    while let Some(byte) = fragment.get(cursor).copied() {
+        if byte == b'"' || byte < 0x20 {
+            return false;
+        }
+        if byte != b'\\' {
+            cursor = cursor.saturating_add(1);
+            continue;
+        }
+        cursor = cursor.saturating_add(1);
+        let Some(escape) = fragment.get(cursor).copied() else {
+            return false;
         };
-        if escaped_key {
-            (record.get(cursor..cursor.checked_add(2)?)? == br#"\""#).then_some(())?;
-            cursor = cursor.checked_add(2)?;
-        } else {
-            (record.get(cursor) == Some(&b'"')).then_some(())?;
-            cursor = cursor.checked_add(1)?;
-        }
-        while record
-            .get(cursor)
-            .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            cursor = cursor.checked_add(1)?;
-        }
-        (record.get(cursor) == Some(&b':')).then_some(())?;
-        cursor = cursor.checked_add(1)?;
-        while record
-            .get(cursor)
-            .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            cursor = cursor.checked_add(1)?;
-        }
-
-        let escaped_value = record.get(cursor..cursor.checked_add(2)?)? == br#"\""#;
-        if escaped_value {
-            cursor = cursor.checked_add(2)?;
-        } else {
-            (record.get(cursor) == Some(&b'"')).then_some(())?;
-            cursor = cursor.checked_add(1)?;
-        }
-        let value_start = cursor;
-        let value_end = loop {
-            if escaped_value {
-                if record.get(cursor..cursor.checked_add(2)?)? == br#"\""# {
-                    break cursor;
-                }
-            } else if record.get(cursor) == Some(&b'"') {
-                break cursor;
+        match escape {
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                cursor = cursor.saturating_add(1);
             }
-            // Call IDs are provider identifiers. Escapes make the exact value
-            // non-literal and therefore retain global ambiguity.
-            (record.get(cursor) != Some(&b'\\')).then_some(())?;
-            cursor = cursor.checked_add(1)?;
-        };
-        let value = std::str::from_utf8(record.get(value_start..value_end)?).ok()?;
-        (!value.is_empty() && value.len() <= super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES)
-            .then_some(())?;
-        call_ids.remember(value);
-        (!call_ids.overflowed).then_some(())?;
-        search_from = start.checked_add(needle.len())?;
+            b'u' => {
+                let Some(hex) = fragment.get(cursor.saturating_add(1)..cursor.saturating_add(5))
+                else {
+                    return false;
+                };
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return false;
+                }
+                cursor = cursor.saturating_add(5);
+            }
+            _ => return false,
+        }
     }
-    (occurrences > 0 && !call_ids.as_slice().is_empty()).then_some(call_ids)
+    std::str::from_utf8(fragment).is_ok()
+}
+
+fn count_bytes(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
 }
 
 /// Recovers only the canonical MCP terminal shape when the strict selector
@@ -1256,8 +1296,8 @@ mod lineage_tests {
     }
 
     #[test]
-    fn corrupted_outer_call_recovers_its_exact_trailing_call_id() {
-        let record = br#"{"type":"response_item","payload":{"type":"function_call","arguments":"prefix {"type":"response_item","payload":{"type":"function_call"}","call_id":"outer-call","name":"exec"}}"#;
+    fn interrupted_duplicate_call_recovers_its_exact_retry_call_id() {
+        let record = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"outer-call"}}"#;
         assert!(classify_codex_record(record).is_err());
         let evidence = malformed_codex_lineage_record_evidence(record);
         assert!(
@@ -1268,6 +1308,30 @@ mod lineage_tests {
             "outer corruption was not scoped: {evidence:?}"
         );
         assert_ambiguous_call_ids(evidence.as_record_evidence(), &["outer-call"]);
+    }
+
+    #[test]
+    fn interrupted_duplicate_recovery_rejects_noncanonical_or_ambiguous_fragments() {
+        let decoy_then_unidentified = br#"{"timestamp":"2026-07-23T21:34:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"decoy"}}{"type":"response_item","payload":{"type":"function_call"{"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
+        let mismatched_retry = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_first","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_second","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
+        let escaped_duplicate_id = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","\u0069\u0064":"fc_same","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
+        let extra_fragment = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:10Z","type":"event_msg","payload":{"type":"sub_agent_activity"}}{"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
+        let escaped_call_id = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"call\/id"}}"#;
+        let control_in_prefix = b"{\"timestamp\":\"2026-07-23\x01\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"id\":\"fc_same\",\"name\":\"exec_command\",\"arguments\":\"prefix {\"timestamp\":\"2026-07-23T21:34:22Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"id\":\"fc_same\",\"name\":\"exec_command\",\"arguments\":\"{}\",\"call_id\":\"target\"}}";
+
+        for record in [
+            decoy_then_unidentified.as_slice(),
+            mismatched_retry.as_slice(),
+            escaped_duplicate_id.as_slice(),
+            extra_fragment.as_slice(),
+            escaped_call_id.as_slice(),
+            control_in_prefix.as_slice(),
+        ] {
+            assert!(matches!(
+                malformed_codex_lineage_record_evidence(record),
+                CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
+            ));
+        }
     }
 
     #[test]
@@ -1287,10 +1351,18 @@ mod lineage_tests {
     }
 
     #[test]
-    fn malformed_rows_scope_all_exact_ids_but_not_descendant_authority() {
+    fn truncated_rows_retain_global_ambiguity_even_when_literal_ids_are_visible() {
         let exact_ids = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first"}}{"type":"response_item","payload":{"type":"function_call","call_id":"hidden""#;
-        let evidence = malformed_codex_lineage_record_evidence(exact_ids);
-        assert_ambiguous_call_ids(evidence.as_record_evidence(), &["first", "hidden"]);
+        assert!(matches!(
+            malformed_codex_lineage_record_evidence(exact_ids),
+            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
+        ));
+
+        let unidentified_producer = br#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"decoy"}}{"type":"response_item","payload":{"type":"function_call"#;
+        assert!(matches!(
+            malformed_codex_lineage_record_evidence(unidentified_producer),
+            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
+        ));
 
         let descendant = br#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started","agent_thread_id":"019f8d80-ba23-73f3-a02a-9400f9e7b9ec"}} trailing"#;
         assert!(matches!(
