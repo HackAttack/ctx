@@ -153,7 +153,7 @@ mod unix {
         device: u64,
         inode: u64,
         bytes: u64,
-        mode: u32,
+        mode: u64,
     }
 
     #[cfg(target_os = "linux")]
@@ -172,7 +172,7 @@ mod unix {
                 device: metadata.dev(),
                 inode: metadata.ino(),
                 bytes: metadata.len(),
-                mode: metadata.mode(),
+                mode: u64::from(metadata.mode()),
             }
         }
 
@@ -181,22 +181,22 @@ mod unix {
                 device: normalized_stat_device(stat.st_dev),
                 inode: stat.st_ino,
                 bytes: u64::try_from(stat.st_size).unwrap_or(u64::MAX),
-                mode: u32::from(stat.st_mode),
+                mode: u64::from(stat.st_mode),
             }
         }
 
         fn is_regular(self) -> bool {
-            self.mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFREG)
+            self.mode & u64::from(libc::S_IFMT) == u64::from(libc::S_IFREG)
         }
 
         fn is_directory(self) -> bool {
-            self.mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFDIR)
+            self.mode & u64::from(libc::S_IFMT) == u64::from(libc::S_IFDIR)
         }
 
         fn is_same_object(self, other: Self) -> bool {
             self.device == other.device
                 && self.inode == other.inode
-                && (self.mode & u32::from(libc::S_IFMT)) == (other.mode & u32::from(libc::S_IFMT))
+                && (self.mode & u64::from(libc::S_IFMT)) == (other.mode & u64::from(libc::S_IFMT))
         }
     }
 
