@@ -333,10 +333,10 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         normalized
             .authority
             .initialize_generation_spill(&component_owner_counts)?;
-        let lineage_fact_source_scans =
+        let lineage_fact_scan_metrics =
             prepare_generation_lineage_v0(&normalized.sources, &mut normalized.authority)?;
         #[cfg(not(test))]
-        let _ = lineage_fact_source_scans;
+        let _ = lineage_fact_scan_metrics;
         // Preparation may have consumed an explicit route's retained opening
         // capability. Route discovery must reopen and bind the current path
         // entry after the generation-wide replacement fence below. That fence
@@ -424,7 +424,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
             valid_sources,
             rejected_sources,
             worker_start_latch,
-            lineage_fact_source_scans,
+            lineage_fact_scan_metrics,
         );
         Ok(())
     }
@@ -509,6 +509,9 @@ pub(crate) struct CodexLineageNormalizationObservationV0 {
     pub(crate) worker_starts_at_normalization: u64,
     pub(crate) worker_start_latch: CodexWorkerStartLatchV0,
     pub(crate) lineage_fact_source_scans: u64,
+    pub(crate) lineage_fact_source_bytes: u64,
+    pub(crate) lineage_fact_body_bytes_read: u64,
+    pub(crate) lineage_fact_mcp_terminal_preflight_bytes_read: u64,
 }
 
 #[cfg(test)]
@@ -536,7 +539,7 @@ fn run_after_codex_lineage_normalization_hook_v0(
     valid_sources: usize,
     rejected_sources: usize,
     worker_start_latch: CodexWorkerStartLatchV0,
-    lineage_fact_source_scans: u64,
+    lineage_fact_scan_metrics: super::ingestion::CodexGenerationLineageScanMetricsV0,
 ) {
     AFTER_CODEX_LINEAGE_NORMALIZATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -545,7 +548,11 @@ fn run_after_codex_lineage_normalization_hook_v0(
                 rejected_sources,
                 worker_starts_at_normalization: worker_start_latch.starts(),
                 worker_start_latch,
-                lineage_fact_source_scans,
+                lineage_fact_source_scans: lineage_fact_scan_metrics.source_scans,
+                lineage_fact_source_bytes: lineage_fact_scan_metrics.source_bytes,
+                lineage_fact_body_bytes_read: lineage_fact_scan_metrics.body_bytes_read,
+                lineage_fact_mcp_terminal_preflight_bytes_read: lineage_fact_scan_metrics
+                    .mcp_terminal_preflight_bytes_read,
             });
         }
     });

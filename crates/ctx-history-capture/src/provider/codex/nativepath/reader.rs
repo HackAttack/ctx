@@ -322,6 +322,7 @@ enum CodexContextMutation {
 mod checkpoint;
 mod identity;
 mod lineage;
+pub(crate) use lineage::scan_codex_lineage_source_v0;
 mod page_builder;
 mod project;
 mod scanner;
