@@ -1424,6 +1424,15 @@ fn codex_many_explicit_routes_share_one_linear_generation_fact_pass_and_lease() 
         observation.lineage_fact_source_scans,
         ROUTES.saturating_sub(1) as u64
     );
+    assert!(observation.lineage_fact_source_bytes > 0);
+    assert_eq!(
+        observation.lineage_fact_body_bytes_read, observation.lineage_fact_source_bytes,
+        "generation lineage must read each selected ancestor body exactly once"
+    );
+    assert_eq!(
+        observation.lineage_fact_mcp_terminal_preflight_bytes_read, 0,
+        "generation lineage must not construct discarded MCP terminal authority"
+    );
     assert_eq!(observation.worker_start_latch.starts(), ROUTES as u64);
     let (active, peak, current_bytes, _peak_bytes, component_loads) = registry
         .codex_generation

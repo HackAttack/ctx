@@ -401,7 +401,7 @@ pub(super) fn validate_checkpoint_source(
                     }
                 }
                 if let Some(facts) = lineage_facts.as_deref_mut() {
-                    record_checkpoint_lineage(
+                    let _ = record_checkpoint_lineage(
                         facts,
                         &lineage_record,
                         lineage_record_oversized,
@@ -561,32 +561,34 @@ pub(super) fn validate_checkpoint_source(
     })
 }
 
-fn record_checkpoint_lineage(
+pub(super) fn record_checkpoint_lineage(
     facts: &mut CodexLineageFactsV0,
     record: &[u8],
     oversized: bool,
     raw_ordinal: u64,
-) -> Result<()> {
+) -> Result<Option<CodexSessionRow>> {
+    if oversized {
+        facts.record_at(
+            CodexLineageRecordEvidence::UnattributedAmbiguity,
+            raw_ordinal,
+        )?;
+        return Ok(None);
+    }
     if record
         .iter()
         .all(|byte| *byte == 0 || byte.is_ascii_whitespace())
     {
-        return Ok(());
-    }
-    if oversized {
-        return facts.record_at(
-            CodexLineageRecordEvidence::UnattributedAmbiguity,
-            raw_ordinal,
-        );
+        return Ok(None);
     }
     let record = trim_jsonl_terminator(record);
-    match classify_codex_record(record) {
-        Ok(probe) => facts.record_at(codex_lineage_record_evidence(&probe), raw_ordinal),
-        Err(_) => {
-            let evidence = malformed_codex_lineage_record_evidence(record);
-            facts.record_at(evidence.as_record_evidence(), raw_ordinal)
-        }
-    }
+    let Some(probe) =
+        super::project::classify_and_record_codex_lineage(record, raw_ordinal, Some(facts))?
+    else {
+        return Ok(None);
+    };
+    Ok(matches!(probe.class, CodexRecordClass::SessionMeta)
+        .then(|| parse_session_meta(record))
+        .flatten())
 }
 
 pub(super) fn invalid_checkpoint_proof(reason: &str) -> CaptureError {

@@ -8,6 +8,10 @@ use std::{
     },
 };
 
+use super::checkpoint::{
+    observed_opened_file, open_codex_source_capability, read_bounded_record,
+    record_checkpoint_lineage, revalidate_opened_prefix, validate_catalog_owner,
+};
 use super::*;
 use crate::provider::codex::nativepath::checkpoint::{
     CodexCertifiedLineageFactKindV0, CodexCertifiedLineageFactV0, CodexCertifiedLineageFactsV0,
@@ -29,6 +33,100 @@ const LINEAGE_FACT_GROWTH: usize = 64;
 const LINEAGE_CONTAINER_CHARGE: usize = 128;
 const LINEAGE_SPILL_DOMAIN: &[u8] = b"ctx/codex-lineage-facts-spill/v1\0";
 const DESCENDANT_SESSION_DOMAIN: &[u8] = b"ctx/codex-lineage-descendant-session/v1\0";
+
+#[derive(Debug)]
+pub(crate) struct CodexLineageSourceScanV0 {
+    pub(crate) facts: CodexLineageFactsV0,
+    pub(crate) body_bytes_read: u64,
+    pub(crate) mcp_terminal_preflight_bytes_read: u64,
+}
+
+/// Reads one stable frozen Codex source body exactly once for
+/// generation-wide lineage. Append races may require a separate prefix proof
+/// before failing closed; those authority reads are intentionally not reported
+/// as body bytes.
+///
+/// This deliberately does not construct MCP terminal authority: the caller
+/// discards projected rows and retains only lineage facts. Normal publication
+/// continues to use `CodexNativeScanner`, including its independent MCP
+/// preflight and terminal proofs.
+pub(crate) fn scan_codex_lineage_source_v0(
+    source: CodexCatalogSource,
+    mut facts: CodexLineageFactsV0,
+) -> Result<CodexLineageSourceScanV0> {
+    let opened = open_codex_source_capability(&source)?;
+    let before = observed_opened_file(&source, &opened)?;
+    let mut reader = BufReader::new(opened.file().try_clone()?);
+    reader.seek(SeekFrom::Start(0))?;
+
+    let mut offset = 0_u64;
+    let mut raw_ordinal = 0_u64;
+    let mut record_buffer = Vec::new();
+    let mut full_hasher = Sha256::new();
+    let mut complete_hasher = Sha256::new();
+    let mut owner = None;
+
+    while offset < before.len {
+        let Some(record) = read_bounded_record(
+            &mut reader,
+            &mut record_buffer,
+            &mut full_hasher,
+            &mut complete_hasher,
+            before.len.saturating_sub(offset),
+        )?
+        else {
+            break;
+        };
+        offset = offset
+            .checked_add(record.byte_len)
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex lineage scan offset exceeds u64",
+            ))?;
+
+        if !record.complete {
+            facts.record_at(
+                CodexLineageRecordEvidence::UnattributedAmbiguity,
+                raw_ordinal,
+            )?;
+            break;
+        }
+
+        // Match the publication scanner's established contract: a terminal
+        // all-NUL record is padding, even when it exceeds the ordinary record
+        // bound, and therefore contributes no lineage ambiguity.
+        if !record.terminal_nul_padding {
+            if let Some(scanned_owner) = record_checkpoint_lineage(
+                &mut facts,
+                &record_buffer[..record.stored_len],
+                record.oversized,
+                raw_ordinal,
+            )? {
+                if owner.is_none() {
+                    owner = Some(validate_catalog_owner(&source, scanned_owner)?);
+                }
+            }
+        }
+        raw_ordinal = raw_ordinal.saturating_add(1);
+    }
+
+    let full_revision_sha256: [u8; 32] = full_hasher.finalize().into();
+    let current = super::checkpoint::opened_file_observation(&source.source_path, opened.file())?;
+    opened.revalidate_same_object()?;
+    if current != before {
+        revalidate_opened_prefix(opened.file(), before.len, full_revision_sha256)?;
+        opened.revalidate_same_object()?;
+    }
+    if let Some(owner) = owner {
+        validate_catalog_owner(&source, owner)?;
+    }
+    facts.seal();
+
+    Ok(CodexLineageSourceScanV0 {
+        facts,
+        body_bytes_read: offset,
+        mcp_terminal_preflight_bytes_read: 0,
+    })
+}
 
 fn codex_lineage_descendant_session_digest(native_session_id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -761,6 +859,87 @@ mod tests {
         assert_eq!(facts.facts.capacity(), 0);
         assert_eq!(facts.charged, 0);
         assert_eq!(facts.charged_facts, 0);
+    }
+
+    #[test]
+    fn dedicated_lineage_scan_matches_full_scanner_without_mcp_preflight() {
+        let owner = "019fa300-0000-7000-8000-000000000001";
+        let descendant = "019fa300-0000-7000-8000-000000000002";
+        let mut contents = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n",
+            session_meta(owner),
+            serde_json::json!({
+                "timestamp": "2026-01-01T00:00:01Z",
+                "type": "response_item",
+                "payload": {"type": "function_call", "call_id": "lineage-call"}
+            }),
+            serde_json::json!({
+                "timestamp": "2026-01-01T00:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "lineage-call",
+                    "output": "complete"
+                }
+            }),
+            serde_json::json!({
+                "timestamp": "2026-01-01T00:00:03Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "sub_agent_activity",
+                    "kind": "started",
+                    "agent_thread_id": descendant
+                }
+            }),
+            r#"{"timestamp":"2026-01-01T00:00:04Z","timestamp":"2026-01-01T00:00:05Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","result":{"Ok":{"content":[{"type":"text","text":"ambiguous result"}]}}}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","call_id":"ambiguous"},"payload":{"type":"function_call_output","call_id":"ambiguous"}}"#,
+        );
+        contents.push_str(&"\0".repeat(MAX_CODEX_RECORD_BYTES.saturating_add(64 * 1024)));
+        let (_temp, path) = write_source(&contents);
+        let source = discover_one(&path, owner);
+        let source_bytes = source.catalog_observation.len;
+
+        let full_facts =
+            CodexLineageFactsV0::new(Arc::new(CodexLineageFactBudgetV0::default())).unwrap();
+        let mut full =
+            CodexNativeScanner::new_source_backed_with_lineage_v0(source.clone(), None, full_facts)
+                .unwrap();
+        while full.next_page().unwrap().is_some() {}
+        let mut full = full.finish().unwrap();
+        let full_facts = full.lineage_facts.take().unwrap();
+
+        let dedicated_facts =
+            CodexLineageFactsV0::new(Arc::new(CodexLineageFactBudgetV0::default())).unwrap();
+        let dedicated = scan_codex_lineage_source_v0(source, dedicated_facts).unwrap();
+
+        assert_eq!(dedicated.facts.facts, full_facts.facts);
+        assert_eq!(
+            dedicated.facts.has_unattributed_ambiguity,
+            full_facts.has_unattributed_ambiguity
+        );
+        assert_eq!(
+            dedicated.facts.earliest_unattributed_ambiguity_raw_ordinal,
+            full_facts.earliest_unattributed_ambiguity_raw_ordinal
+        );
+        assert_eq!(dedicated.facts.conservative, full_facts.conservative);
+        assert_eq!(dedicated.body_bytes_read, source_bytes);
+        assert_eq!(dedicated.mcp_terminal_preflight_bytes_read, 0);
+        assert_eq!(full.counters.bytes_read, source_bytes);
+        assert_eq!(
+            full.counters.mcp_terminal_authority_bytes_read,
+            source_bytes
+        );
+    }
+
+    #[test]
+    fn oversized_whitespace_prefix_is_lineage_ambiguity() {
+        let budget = Arc::new(CodexLineageFactBudgetV0::default());
+        let mut facts = CodexLineageFactsV0::new(budget).unwrap();
+        record_checkpoint_lineage(&mut facts, b"   ", true, 7).unwrap();
+        facts.seal();
+
+        assert!(facts.has_unattributed_ambiguity);
+        assert_eq!(facts.earliest_unattributed_ambiguity_raw_ordinal, Some(7));
     }
 
     #[test]
