@@ -282,6 +282,74 @@ fn register_codex_trees(roots: &[(&Path, ProviderImportSupport)]) -> SourceBacke
     registry
 }
 
+#[test]
+fn codex_parallel_scan_reports_monotonic_certified_source_bytes_without_records() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let mut expected_bytes = 0_u64;
+    for source in 0..2 {
+        let native_session_id = format!("019fb100-0000-7000-8000-{source:012x}");
+        let bytes = codex_lineage_rollout_with_events(
+            &native_session_id,
+            None,
+            SessionRelationshipKind::Root,
+            None,
+            &[],
+        );
+        expected_bytes = expected_bytes.saturating_add(bytes.len() as u64);
+        fs::write(
+            sessions.join(format!("rollout-{native_session_id}.jsonl")),
+            bytes,
+        )
+        .unwrap();
+    }
+    let registry = register_codex_tree(&sessions);
+    let mut active_progress = Vec::new();
+
+    let refreshed = super::super::family::jsonl::with_family_scanner_workers(2, || {
+        refresh_source_backed_generation_with_progress(
+            &index,
+            &registry,
+            WriterOptions {
+                indexer_threads: 1,
+                ..WriterOptions::default()
+            },
+            |progress| {
+                if progress.phase == "refreshing" && progress.current_source.is_some() {
+                    active_progress.push((progress.completed_records, progress.completed_bytes));
+                }
+                Ok(())
+            },
+        )
+    })
+    .unwrap();
+
+    assert_eq!(refreshed.commit.indexed_documents, 0);
+    assert_eq!(refreshed.certified_source_bytes, expected_bytes);
+    assert!(active_progress
+        .iter()
+        .all(|(records, _)| *records == Some(0)));
+    let completed_bytes = active_progress
+        .iter()
+        .filter_map(|(_, completed_bytes)| *completed_bytes)
+        .collect::<Vec<_>>();
+    assert!(
+        completed_bytes
+            .windows(2)
+            .all(|window| window[0] <= window[1]),
+        "Codex completed bytes were not monotonic: {completed_bytes:?}"
+    );
+    assert!(
+        completed_bytes
+            .iter()
+            .any(|bytes| *bytes > 0 && *bytes < expected_bytes),
+        "Codex byte progress did not advance before route completion: {completed_bytes:?}"
+    );
+    assert_eq!(completed_bytes.last().copied(), Some(expected_bytes));
+}
+
 #[cfg(target_os = "linux")]
 fn set_soft_nofile_limit(limit: libc::rlim_t) {
     let mut current = libc::rlimit {
