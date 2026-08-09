@@ -277,21 +277,44 @@ impl SourceBackedGenerationSink<'_> {
         &mut self,
         emission: CoreRecordEmission,
     ) -> SourceBackedCoordinatorResult<()> {
+        self.accept_core_record_emission(emission)?;
+        self.report_record_progress(1, 0)
+    }
+
+    fn accept_core_record_emission(
+        &mut self,
+        emission: CoreRecordEmission,
+    ) -> SourceBackedCoordinatorResult<()> {
         let (prepared, reservation) = emission.into_prepared();
         self.writer.add_prepared_core_record(prepared)?;
         drop(reservation);
-        if let Some(report_progress) = self.record_progress.as_mut() {
-            report_progress(SourceBackedRecordProgressDelta {
-                accepted_records: 1,
-                completed_bytes: 0,
-            })?;
-        }
         Ok(())
+    }
+
+    pub(crate) fn add_core_records_with_completed_bytes(
+        &mut self,
+        records: Vec<CoreRecord>,
+        completed_bytes: u64,
+    ) -> SourceBackedCoordinatorResult<()> {
+        let accepted_records = u64::try_from(records.len()).map_err(|_| {
+            SourceBackedCoordinatorError::CoreEmission(SourceBackedRouteError::new(
+                SourceBackedRouteErrorKind::Internal,
+                "Core-record page count overflowed",
+            ))
+        })?;
+        for record in records {
+            let emission =
+                CoreRecordEmission::new(record, &self.resources, &self.core_record_preparer)
+                    .map_err(SourceBackedCoordinatorError::CoreEmission)?;
+            self.accept_core_record_emission(emission)?;
+        }
+        self.report_record_progress(accepted_records, completed_bytes)
     }
 
     pub(crate) fn add_core_record_emission_batch(
         &mut self,
         batch: CoreRecordEmissionBatch,
+        completed_bytes: u64,
     ) -> SourceBackedCoordinatorResult<()> {
         let accepted_records = u64::try_from(batch.len()).map_err(|_| {
             SourceBackedCoordinatorError::CoreEmission(SourceBackedRouteError::new(
@@ -304,15 +327,7 @@ impl SourceBackedGenerationSink<'_> {
             self.writer.add_prepared_core_record(prepared)?;
         }
         drop(reservation);
-        if accepted_records != 0 {
-            if let Some(report_progress) = self.record_progress.as_mut() {
-                report_progress(SourceBackedRecordProgressDelta {
-                    accepted_records,
-                    completed_bytes: 0,
-                })?;
-            }
-        }
-        Ok(())
+        self.report_record_progress(accepted_records, completed_bytes)
     }
 
     pub(crate) fn record_logical_source_failure(
@@ -384,10 +399,18 @@ impl SourceBackedGenerationSink<'_> {
     }
 
     pub fn report_completed_bytes(&mut self, bytes: u64) -> SourceBackedCoordinatorResult<()> {
+        self.report_record_progress(0, bytes)
+    }
+
+    fn report_record_progress(
+        &mut self,
+        accepted_records: u64,
+        completed_bytes: u64,
+    ) -> SourceBackedCoordinatorResult<()> {
         if let Some(report_progress) = self.record_progress.as_mut() {
             report_progress(SourceBackedRecordProgressDelta {
-                accepted_records: 0,
-                completed_bytes: bytes,
+                accepted_records,
+                completed_bytes,
             })?;
         }
         Ok(())

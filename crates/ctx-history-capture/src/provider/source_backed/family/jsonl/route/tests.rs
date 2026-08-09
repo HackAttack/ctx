@@ -207,6 +207,7 @@ fn expected_state(
                 TerminalSourceEvidence {
                     certificate,
                     terminal_proof,
+                    emitted_bytes: 0,
                 },
             )
         })
@@ -1041,7 +1042,7 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
         _base: Option<&CertifiedSource>,
         _base_event_lookup: &BaseEventIdentityLookup,
         _worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> Result<()>,
+        emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
         self.scans.fetch_add(1, Ordering::SeqCst);
         drop(leaf.open_verified()?);
@@ -1062,7 +1063,7 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
         } else {
             Vec::new()
         };
-        emit_page(JsonlFamilyPublication::Replace, records)?;
+        emit_page(JsonlFamilyPublication::Replace, 0, records)?;
         let observation = leaf::source_observation(leaf.source(), leaf.observation())?;
         let certificate = CertifiedSource::certify(
             observation.clone(),
@@ -1411,7 +1412,10 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
     let mut publications = Vec::new();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |event| {
-        if let JsonlLeafOutputEvent::Page { append, records } = event {
+        if let JsonlLeafOutputEvent::Page {
+            append, records, ..
+        } = event
+        {
             publications.push((append, records.len()));
         }
         Ok(())

@@ -74,6 +74,7 @@ impl JsonlFamilyWorkerContexts {
 pub(super) enum JsonlLeafOutputEvent {
     Page {
         append: bool,
+        completed_bytes: u64,
         records: Vec<CoreRecord>,
     },
     Record {
@@ -92,8 +93,17 @@ impl<'emit> JsonlLeafOutput<'emit> {
         Self { emit }
     }
 
-    fn emit_page(&mut self, append: bool, records: Vec<CoreRecord>) -> Result<()> {
-        (self.emit)(JsonlLeafOutputEvent::Page { append, records })
+    fn emit_page(
+        &mut self,
+        append: bool,
+        completed_bytes: u64,
+        records: Vec<CoreRecord>,
+    ) -> Result<()> {
+        (self.emit)(JsonlLeafOutputEvent::Page {
+            append,
+            completed_bytes,
+            records,
+        })
     }
 
     fn emit_record(&mut self, append: bool, record: CoreRecord) -> Result<()> {
@@ -116,6 +126,7 @@ fn scan_leaf_serial(
     let mut staging_started = false;
     let mut append_staging = false;
     let mut sink_failure = None;
+    let mut emitted_bytes = 0_u64;
     let mut emit = |event| {
         let append = match &event {
             JsonlLeafOutputEvent::Page { append, .. }
@@ -147,11 +158,16 @@ fn scan_leaf_serial(
             ));
         }
         match event {
-            JsonlLeafOutputEvent::Page { records, .. } => {
-                for record in records {
-                    sink.add_core_record(record)
-                        .map_err(|error| preserve_coordinator_error(&mut sink_failure, error))?;
-                }
+            JsonlLeafOutputEvent::Page {
+                completed_bytes,
+                records,
+                ..
+            } => {
+                sink.add_core_records_with_completed_bytes(records, completed_bytes)
+                    .map_err(|error| preserve_coordinator_error(&mut sink_failure, error))?;
+                emitted_bytes = emitted_bytes.checked_add(completed_bytes).ok_or(
+                    CaptureError::SystemInvariant("JSONL emitted source-byte progress overflowed"),
+                )?;
             }
             JsonlLeafOutputEvent::Record { record, .. } => {
                 sink.add_core_record(record)
@@ -189,11 +205,12 @@ fn scan_leaf_serial(
                 }
             }
             sink.certify_source_append(append).map_err(route_internal)?;
-            sink.report_completed_bytes(certificate.counts().certified_bytes)
+            sink.report_completed_bytes(terminal_byte_remainder(&certificate, emitted_bytes)?)
                 .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
                 terminal_proof,
+                emitted_bytes,
             })
         }
         None => {
@@ -208,11 +225,12 @@ fn scan_leaf_serial(
             }
             sink.certify_source(certificate.clone())
                 .map_err(route_internal)?;
-            sink.report_completed_bytes(certificate.counts().certified_bytes)
+            sink.report_completed_bytes(terminal_byte_remainder(&certificate, emitted_bytes)?)
                 .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
                 terminal_proof,
+                emitted_bytes,
             })
         }
     }
@@ -238,6 +256,7 @@ fn run_parallel_leaf_job_batch(
             let mut append_staging = false;
             let mut emission_failure = None;
             let mut pending_emissions = CoreRecordEmissionBatchBuilder::default();
+            let mut emitted_bytes = 0_u64;
             let mut emit = |event| {
                 let flush = matches!(
                     &event,
@@ -247,6 +266,12 @@ fn run_parallel_leaf_job_batch(
                     JsonlLeafOutputEvent::Page { append, .. }
                     | JsonlLeafOutputEvent::Record { append, .. } => Some(*append),
                     JsonlLeafOutputEvent::Flush => None,
+                };
+                let completed_bytes = match &event {
+                    JsonlLeafOutputEvent::Page {
+                        completed_bytes, ..
+                    } => *completed_bytes,
+                    JsonlLeafOutputEvent::Record { .. } | JsonlLeafOutputEvent::Flush => 0,
                 };
                 if let Some(append) = append {
                     if !staging_started {
@@ -274,13 +299,15 @@ fn run_parallel_leaf_job_batch(
                     }
                     match event {
                         JsonlLeafOutputEvent::Page { records, .. } => {
-                            for record in records {
-                                emitter
-                                    .emit_core_record_batched(&mut pending_emissions, record)
-                                    .map_err(|error| {
-                                        preserve_parallel_emit_error(&mut emission_failure, error)
-                                    })?;
-                            }
+                            emitter
+                                .emit_core_records_with_completed_bytes(
+                                    &mut pending_emissions,
+                                    records,
+                                    completed_bytes,
+                                )
+                                .map_err(|error| {
+                                    preserve_parallel_emit_error(&mut emission_failure, error)
+                                })?;
                         }
                         JsonlLeafOutputEvent::Record { record, .. } => {
                             emitter
@@ -294,12 +321,19 @@ fn run_parallel_leaf_job_batch(
                         }
                     }
                 }
-                if flush {
+                if flush && append.is_none() {
                     emitter
                         .emit_core_record_batch(&mut pending_emissions)
                         .map_err(|error| {
                             preserve_parallel_emit_error(&mut emission_failure, error)
                         })?;
+                }
+                if completed_bytes != 0 {
+                    emitted_bytes = emitted_bytes.checked_add(completed_bytes).ok_or(
+                        CaptureError::SystemInvariant(
+                            "parallel JSONL emitted source-byte progress overflowed",
+                        ),
+                    )?;
                 }
                 Ok(())
             };
@@ -345,6 +379,7 @@ fn run_parallel_leaf_job_batch(
                             TerminalSourceEvidence {
                                 certificate,
                                 terminal_proof,
+                                emitted_bytes,
                             },
                         ))
                         .map_err(ParallelLeafScanWorkerError::from)?;
@@ -363,6 +398,7 @@ fn run_parallel_leaf_job_batch(
                     let evidence = TerminalSourceEvidence {
                         certificate: certificate.clone(),
                         terminal_proof,
+                        emitted_bytes,
                     };
                     emitter
                         .complete(ParallelLeafScanComplete::replace(certificate, evidence))
@@ -374,10 +410,26 @@ fn run_parallel_leaf_job_batch(
     );
     let evidences = result.map_err(map_parallel_leaf_error)?;
     for evidence in &evidences {
-        sink.report_completed_bytes(evidence.certificate.counts().certified_bytes)
-            .map_err(route_internal)?;
+        sink.report_completed_bytes(terminal_byte_remainder(
+            &evidence.certificate,
+            evidence.emitted_bytes,
+        )?)
+        .map_err(route_internal)?;
     }
     Ok(evidences)
+}
+
+fn terminal_byte_remainder(
+    certificate: &CertifiedSource,
+    emitted_bytes: u64,
+) -> SourceBackedRouteResult<u64> {
+    certificate
+        .counts()
+        .certified_bytes
+        .checked_sub(emitted_bytes)
+        .ok_or_else(|| {
+            route_invalid("JSONL page byte progress exceeded terminal certified source bytes")
+        })
 }
 
 pub(super) fn scan_leaves(
@@ -680,7 +732,7 @@ pub(super) fn prepare_leaf(
         base,
         base_event_lookup,
         worker,
-        &mut |publication, records| {
+        &mut |publication, completed_bytes, records| {
             if records
                 .iter()
                 .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
@@ -689,7 +741,11 @@ pub(super) fn prepare_leaf(
                     "optimized JSONL leaf emitted a record for another source".to_owned(),
                 ));
             }
-            output.emit_page(publication == JsonlFamilyPublication::Append, records)
+            output.emit_page(
+                publication == JsonlFamilyPublication::Append,
+                completed_bytes,
+                records,
+            )
         },
     )? {
         return validate_optimized_outcome(adapter, leaf, base, outcome);

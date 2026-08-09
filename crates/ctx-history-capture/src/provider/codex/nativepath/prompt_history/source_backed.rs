@@ -383,7 +383,11 @@ impl CodexPromptHistoryJsonlFamilyAdapterV0 {
         &self,
         leaf: &JsonlFamilyLeaf,
         base: Option<&CertifiedSource>,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> crate::Result<()>,
+        emit_page: &mut dyn FnMut(
+            JsonlFamilyPublication,
+            u64,
+            Vec<CoreRecord>,
+        ) -> crate::Result<()>,
     ) -> crate::Result<JsonlFamilyOptimizedLeafOutcome> {
         let source = self
             .state
@@ -417,7 +421,7 @@ impl CodexPromptHistoryJsonlFamilyAdapterV0 {
                         return Err(CodexPromptHistorySourceBackedErrorV0::CountMismatch);
                     }
                 };
-                emit_page(publication, page.records)
+                emit_page(publication, 0, page.records)
                     .map_err(CodexPromptHistorySourceBackedErrorV0::Capture)
             })
             .map_err(prompt_family_capture_error)?;
@@ -543,7 +547,11 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
         base: Option<&CertifiedSource>,
         _base_event_lookup: &BaseEventIdentityLookup,
         _worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> crate::Result<()>,
+        emit_page: &mut dyn FnMut(
+            JsonlFamilyPublication,
+            u64,
+            Vec<CoreRecord>,
+        ) -> crate::Result<()>,
     ) -> crate::Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
         self.scan_leaf(leaf, base, emit_page).map(Some)
     }

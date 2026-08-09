@@ -289,7 +289,11 @@ impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
         base: Option<&CertifiedSource>,
         _base_event_lookup: &BaseEventIdentityLookup,
         _worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> crate::Result<()>,
+        emit_page: &mut dyn FnMut(
+            JsonlFamilyPublication,
+            u64,
+            Vec<CoreRecord>,
+        ) -> crate::Result<()>,
     ) -> crate::Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
         self.source
             .validate_exact_descriptor(leaf.source())
@@ -306,7 +310,8 @@ impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
                         JsonlFamilyPublication::Replace
                     }
                 };
-                emit_page(publication, page.records).map_err(CustomHistorySourceBackedError::from)
+                emit_page(publication, 0, page.records)
+                    .map_err(CustomHistorySourceBackedError::from)
             })
             .map_err(custom_history_family_capture_error)?;
         let receipt = match outcome {

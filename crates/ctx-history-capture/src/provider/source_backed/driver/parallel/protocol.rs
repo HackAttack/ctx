@@ -409,7 +409,10 @@ pub(super) enum ParallelLeafProtocolMessage<R> {
         begin: Box<ParallelLeafScanBegin>,
         acknowledgement: ParallelLeafBeginAcknowledgement,
     },
-    CoreRecordBatch(Box<CoreRecordEmissionBatch>),
+    CoreRecordBatch {
+        batch: Option<Box<CoreRecordEmissionBatch>>,
+        completed_bytes: u64,
+    },
     Complete(Box<ParallelLeafScanComplete<R>>),
 }
 
@@ -495,10 +498,44 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         Ok(())
     }
 
+    pub(crate) fn emit_core_records_with_completed_bytes(
+        &mut self,
+        emissions: &mut CoreRecordEmissionBatchBuilder,
+        records: Vec<CoreRecord>,
+        completed_bytes: u64,
+    ) -> Result<(), ParallelLeafScanEmitError> {
+        let record_count = records.len();
+        for (record_index, record) in records.into_iter().enumerate() {
+            if record_index.saturating_add(1) == record_count {
+                self.emit_final_core_record_batched(emissions, record)?;
+            } else {
+                self.emit_core_record_batched(emissions, record)?;
+            }
+        }
+        self.emit_core_record_batch_with_completed_bytes(emissions, completed_bytes)
+    }
+
     pub(crate) fn emit_core_record_batched(
         &mut self,
         emissions: &mut CoreRecordEmissionBatchBuilder,
         record: CoreRecord,
+    ) -> Result<(), ParallelLeafScanEmitError> {
+        self.emit_core_record_batched_inner(emissions, record, true)
+    }
+
+    fn emit_final_core_record_batched(
+        &mut self,
+        emissions: &mut CoreRecordEmissionBatchBuilder,
+        record: CoreRecord,
+    ) -> Result<(), ParallelLeafScanEmitError> {
+        self.emit_core_record_batched_inner(emissions, record, false)
+    }
+
+    fn emit_core_record_batched_inner(
+        &mut self,
+        emissions: &mut CoreRecordEmissionBatchBuilder,
+        record: CoreRecord,
+        flush_full_batch: bool,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.require_not_cancelled()?;
         let mut draft = CoreRecordEmission::prepare_draft(record, &self.core_record_preparer)?;
@@ -532,7 +569,9 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
             match CoreRecordEmission::materialize_draft(draft, materialization_limit)? {
                 PreparedCoreRecordMaterialization::Prepared(prepared) => {
                     emissions.push(prepared)?;
-                    if emissions.len() == SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS {
+                    if flush_full_batch
+                        && emissions.len() == SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS
+                    {
                         self.emit_core_record_batch(emissions)?;
                     }
                     return Ok(());
@@ -580,10 +619,20 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         &mut self,
         emissions: &mut CoreRecordEmissionBatchBuilder,
     ) -> Result<(), ParallelLeafScanEmitError> {
-        if let Some(batch) = emissions.take_batch()? {
-            self.send(ParallelLeafProtocolMessage::CoreRecordBatch(Box::new(
+        self.emit_core_record_batch_with_completed_bytes(emissions, 0)
+    }
+
+    pub(crate) fn emit_core_record_batch_with_completed_bytes(
+        &mut self,
+        emissions: &mut CoreRecordEmissionBatchBuilder,
+        completed_bytes: u64,
+    ) -> Result<(), ParallelLeafScanEmitError> {
+        let batch = emissions.take_batch()?.map(Box::new);
+        if batch.is_some() || completed_bytes != 0 {
+            self.send(ParallelLeafProtocolMessage::CoreRecordBatch {
                 batch,
-            )))?;
+                completed_bytes,
+            })?;
         }
         Ok(())
     }

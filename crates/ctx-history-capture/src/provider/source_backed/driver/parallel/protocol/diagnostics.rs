@@ -99,9 +99,16 @@ where
             acknowledgement.acknowledge(job_index)?;
             Ok(())
         }
-        ParallelLeafProtocolMessage::CoreRecordBatch(batch) => {
-            apply_core_record_batch(sink, job_index, state, *batch)
-        }
+        ParallelLeafProtocolMessage::CoreRecordBatch {
+            batch,
+            completed_bytes,
+        } => apply_core_record_batch(
+            sink,
+            job_index,
+            state,
+            batch.map(|batch| *batch),
+            completed_bytes,
+        ),
         ParallelLeafProtocolMessage::Complete(completion) => {
             let result = apply_completion(sink, job_index, state, *completion)?;
             let slot = results.get_mut(job_index).ok_or({
@@ -184,7 +191,8 @@ fn apply_core_record_batch<E>(
     sink: &mut SourceBackedGenerationSink<'_>,
     job_index: usize,
     state: &mut ParallelLeafJobState,
-    batch: CoreRecordEmissionBatch,
+    batch: Option<CoreRecordEmissionBatch>,
+    completed_bytes: u64,
 ) -> Result<(), ParallelLeafScanError<E>>
 where
     E: StdError + 'static,
@@ -200,15 +208,21 @@ where
         ParallelLeafScanMessageKind::CoreRecordBatch,
         state,
     )?;
-    for emission in batch.iter() {
-        validate_source(
-            job_index,
-            ParallelLeafScanMessageKind::CoreRecordBatch,
-            source,
-            emission.source(),
-        )?;
+    if let Some(batch) = batch.as_ref() {
+        for emission in batch.iter() {
+            validate_source(
+                job_index,
+                ParallelLeafScanMessageKind::CoreRecordBatch,
+                source,
+                emission.source(),
+            )?;
+        }
     }
-    sink.add_core_record_emission_batch(batch).map_err(|error| {
+    let result = match batch {
+        Some(batch) => sink.add_core_record_emission_batch(batch, completed_bytes),
+        None => sink.report_completed_bytes(completed_bytes),
+    };
+    result.map_err(|error| {
         sink_error(
             job_index,
             source,

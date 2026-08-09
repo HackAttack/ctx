@@ -84,7 +84,7 @@ fn scan_codex_session_jsonl_leaf_v0(
     collect_lineage_facts: bool,
     base_event_lookup: &BaseEventIdentityLookup,
     worker: &mut JsonlFamilyWorkerContext,
-    emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> Result<()>,
+    emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
 ) -> Result<JsonlFamilyOptimizedLeafOutcome> {
     let (mut plan, outcome_lineage) = {
         let state = state.lock().map_err(|_| codex_family_state_error())?;
@@ -118,12 +118,13 @@ fn scan_codex_session_jsonl_leaf_v0(
         base,
         collect_lineage_facts,
         &mut scan_context,
-        |publication, records| {
+        |publication, completed_bytes, records| {
             let publication = match publication {
                 CodexJsonlFamilyPublicationV0::Append => JsonlFamilyPublication::Append,
                 CodexJsonlFamilyPublicationV0::Replace => JsonlFamilyPublication::Replace,
             };
-            emit_page(publication, records).map_err(CodexSourceBackedErrorV0::Capture)
+            emit_page(publication, completed_bytes, records)
+                .map_err(CodexSourceBackedErrorV0::Capture)
         },
     )
     .map_err(codex_family_capture_error)?;
@@ -780,7 +781,7 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         base: Option<&CertifiedSource>,
         base_event_lookup: &BaseEventIdentityLookup,
         worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> Result<()>,
+        emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
         #[cfg(test)]
         if let Some(generation) = self.generation.as_ref() {
@@ -1079,7 +1080,7 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         base: Option<&CertifiedSource>,
         base_event_lookup: &BaseEventIdentityLookup,
         worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> Result<()>,
+        emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
         #[cfg(test)]
         if let Some(generation) = self.generation.as_ref() {
