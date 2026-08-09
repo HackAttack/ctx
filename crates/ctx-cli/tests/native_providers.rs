@@ -373,6 +373,15 @@ fn copilot_cli_import_skips_symlinked_session_files_checkout() {
     fs::create_dir_all(&checkout).unwrap();
     fs::write(checkout.join("AGENTS.md"), b"agents\n").unwrap();
     symlink("AGENTS.md", checkout.join("CLAUDE.md")).unwrap();
+    let outside_query = "outsidesymlinktargetoracle9f27c4";
+    let outside_session = temp.path().join("outside-copilot-session");
+    fs::create_dir_all(&outside_session).unwrap();
+    let selected_transcript = Path::new(&path).join("copilot-cli-native/events.jsonl");
+    let outside_transcript = fs::read_to_string(&selected_transcript)
+        .unwrap()
+        .replace(query, outside_query);
+    fs::write(outside_session.join("events.jsonl"), outside_transcript).unwrap();
+    symlink(&outside_session, checkout.join("linked-session")).unwrap();
     let _daemon = start_isolated_provider_daemon(&temp);
 
     let first = json_output(ctx(&temp).args([
@@ -401,6 +410,19 @@ fn copilot_cli_import_skips_symlinked_session_files_checkout() {
         "--format=json",
     ]));
     assert_search_provider_oracle(&search, "copilot_cli", query, 1, "message");
+    let outside_search = json_output(ctx(&temp).args([
+        "search",
+        outside_query,
+        "--provider",
+        "copilot-cli",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert!(
+        outside_search["results"].as_array().unwrap().is_empty(),
+        "outside symlink target leaked into Copilot inventory: {outside_search:#}"
+    );
 
     // A second import exercises the membership fence walk against the same
     // symlinked checkout and must republish cleanly.
