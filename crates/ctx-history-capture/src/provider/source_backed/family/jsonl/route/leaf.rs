@@ -189,6 +189,8 @@ fn scan_leaf_serial(
                 }
             }
             sink.certify_source_append(append).map_err(route_internal)?;
+            sink.report_completed_bytes(certificate.counts().certified_bytes)
+                .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
                 terminal_proof,
@@ -206,6 +208,8 @@ fn scan_leaf_serial(
             }
             sink.certify_source(certificate.clone())
                 .map_err(route_internal)?;
+            sink.report_completed_bytes(certificate.counts().certified_bytes)
+                .map_err(route_internal)?;
             Ok(TerminalSourceEvidence {
                 certificate,
                 terminal_proof,
@@ -222,7 +226,7 @@ fn run_parallel_leaf_job_batch(
     sink: &mut SourceBackedGenerationSink<'_>,
     #[cfg(test)] scanner_probe: Option<&JsonlFamilyScannerProbe>,
 ) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence>> {
-    sink.run_parallel_leaf_scans_with_worker_states(
+    let result = sink.run_parallel_leaf_scans_with_worker_states(
         jobs,
         worker_states,
         |contexts, job, emitter| {
@@ -367,8 +371,13 @@ fn run_parallel_leaf_job_batch(
             }
             Ok(())
         },
-    )
-    .map_err(map_parallel_leaf_error)
+    );
+    let evidences = result.map_err(map_parallel_leaf_error)?;
+    for evidence in &evidences {
+        sink.report_completed_bytes(evidence.certificate.counts().certified_bytes)
+            .map_err(route_internal)?;
+    }
+    Ok(evidences)
 }
 
 pub(super) fn scan_leaves(
