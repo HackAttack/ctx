@@ -10,8 +10,9 @@ use super::{
 };
 use crate::{
     common::io::{
-        open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
-        ProviderSourceDirectory, ProviderSourceRoot,
+        is_non_regular_source_rejection, is_symlink_source_rejection, open_provider_source_path,
+        OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
+        ProviderSourceRoot,
     },
     provider::source_backed::{
         source_backed_base_sources, SourceBackedGenerationSink, SourceBackedRevalidationTarget,
@@ -502,7 +503,23 @@ fn observe_membership_directory(
         let authority = directory.authority_root();
         let source_path = authority.named_path().join(&authority_path);
         check_membership_path(&source_path)?;
-        match directory.open_child(&name)? {
+        let opened = match directory.open_child(&name) {
+            Ok(opened) => opened,
+            // Admission never admits a link-like or non-regular route (a
+            // selected transcript that is a link fails admission), so
+            // skipping here only ever drops non-route entries or a route that
+            // changed into a link after admission; that change drops out of
+            // the observed route set and fails the membership comparison as a
+            // source change.
+            Err(error)
+                if is_symlink_source_rejection(&error)
+                    || is_non_regular_source_rejection(&error) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match opened {
             OpenedProviderSourcePath::Directory(child) => {
                 observe_membership_directory(&child, depth.saturating_add(1), state)?;
             }

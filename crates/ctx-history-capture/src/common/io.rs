@@ -14,9 +14,9 @@ mod root_handle;
     reason = "provider adapters migrate to these capability types in follow-up slices"
 )]
 pub(crate) use root_handle::{
-    is_non_regular_source_rejection, open_provider_source_file, open_provider_source_path,
-    OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
-    ProviderSourceRoot,
+    is_non_regular_source_rejection, is_symlink_source_rejection, open_provider_source_file,
+    open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
+    ProviderSourceDirectory, ProviderSourceRoot,
 };
 
 /// Maximum directories admitted by one provider JSONL inventory.
@@ -193,7 +193,9 @@ fn ensure_inventory_path_bound(path: &Path) -> Result<()> {
 ///
 /// The result is lexically sorted and contains only admitted regular `.jsonl`
 /// files. Every encountered child, including non-JSONL and non-regular
-/// entries, consumes the metadata-entry budget. Links are never followed.
+/// entries, consumes the metadata-entry budget. Links are never followed:
+/// link-like and non-regular entries are skipped rather than failing the
+/// inventory.
 pub fn inventory_provider_jsonl_paths(
     root: &Path,
     limits: ProviderJsonlInventoryLimits,
@@ -251,7 +253,20 @@ fn inventory_provider_paths(
             let relative_path = pending.relative_path.join(&name);
             let path = root.join(&relative_path);
             ensure_inventory_path_bound(&path)?;
-            match directory.open_child(&name)? {
+            let opened = match directory.open_child(&name) {
+                Ok(opened) => opened,
+                // Link-like and non-regular entries (sockets, FIFOs, device
+                // nodes) are never followed and hold no provider content, so
+                // they are skipped instead of failing the whole inventory.
+                Err(error)
+                    if is_symlink_source_rejection(&error)
+                        || is_non_regular_source_rejection(&error) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match opened {
                 OpenedProviderSourcePath::Directory(_) => {
                     state.admit_directory(child_depth)?;
                     child_directories.push(PendingJsonlDirectory {

@@ -521,7 +521,7 @@ fn ensure_handle_is_ordinary(
         != 0
     {
         return Err(AuthorityOpenError::Rejected(
-            "reparse, offline, and cloud-placeholder provider sources are rejected",
+            super::REPARSE_PROVIDER_SOURCE_REASON,
         ));
     }
     Ok(())

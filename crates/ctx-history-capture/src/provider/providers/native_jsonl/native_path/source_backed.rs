@@ -370,6 +370,20 @@ impl DirectJsonlDirectoryTraversal<'_> {
                 Err(error) if selected && self.adapter.provider == CaptureProvider::Tabnine => {
                     return Err(tabnine_unavailable_source(&child_path, error));
                 }
+                // A link-like or non-regular entry that can never hold a
+                // transcript (for example a `CLAUDE.md -> AGENTS.md` symlink
+                // inside a Copilot CLI `files/` checkout, or a socket beside
+                // transcripts) must not mark the whole source unreadable. The
+                // entry is never followed, so skipping it preserves the
+                // no-follow boundary; a selected transcript path stays
+                // fail-closed below.
+                Err(error)
+                    if !selected
+                        && (crate::common::io::is_symlink_source_rejection(&error)
+                            || crate::common::io::is_non_regular_source_rejection(&error)) =>
+                {
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             match opened {
