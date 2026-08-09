@@ -139,7 +139,15 @@ fn duplicate_concurrent_requests_launch_one_writer() {
                         current_source: Some("source-a".to_owned()),
                         completed_records: Some(1),
                         completed_bytes: Some(128),
-                        current_source_progress: None,
+                        current_source_progress: Some(SourceBackedCurrentSourceProgress {
+                            stage: SourceBackedCurrentSourceProgressStage::LogicalScan,
+                            snapshot_pages_completed: None,
+                            snapshot_pages_total: None,
+                            snapshot_bytes_completed: None,
+                            snapshot_bytes_total: None,
+                            logical_rows_scanned: Some(1),
+                            logical_certified_bytes: Some(128),
+                        }),
                     },
                 );
                 Ok(test_publication("generation-2"))
@@ -157,8 +165,10 @@ fn duplicate_concurrent_requests_launch_one_writer() {
         .status(&expected_request_id)
         .expect("published request status");
     assert_eq!(status["request_state"], "published");
+    assert!(status["progress"].get("current_source").is_none());
     assert!(status["progress"].get("completed_records").is_none());
     assert!(status["progress"].get("completed_bytes").is_none());
+    assert!(status["progress"].get("current_source_progress").is_none());
     assert_eq!(status["published_generation"], "generation-2");
     assert_eq!(status["generation_changed"], true);
     assert_eq!(status["receipt"]["previous_generation"], "generation-1");
@@ -649,7 +659,7 @@ fn manual_all_fresh_after_running_startup_scan_queues_one_successor() {
 }
 
 #[test]
-fn attached_logical_status_projects_one_physical_progress_owner_and_replays_stably() {
+fn attached_logical_status_projects_coherent_physical_progress_and_replays_stably() {
     let temp = tempfile::tempdir().unwrap();
     let coordinator = Arc::new(CoreRefreshEngine::new());
     let predecessor = coordinator.enqueue_periodic(temp.path()).unwrap();
@@ -677,6 +687,59 @@ fn attached_logical_status_projects_one_physical_progress_owner_and_replays_stab
                                 current_source_progress: None,
                             },
                         );
+                        let physical = engine
+                            .set_progress(
+                                request_id,
+                                SourceBackedRefreshProgressUpdate {
+                                    phase: "parsing".to_owned(),
+                                    completed_sources: 2,
+                                    total_sources: 5,
+                                    total_sources_known: true,
+                                    current_source: Some("codex".to_owned()),
+                                    completed_records: None,
+                                    completed_bytes: None,
+                                    current_source_progress: Some(
+                                        SourceBackedCurrentSourceProgress {
+                                            stage:
+                                                SourceBackedCurrentSourceProgressStage::LogicalScan,
+                                            snapshot_pages_completed: None,
+                                            snapshot_pages_total: None,
+                                            snapshot_bytes_completed: None,
+                                            snapshot_bytes_total: None,
+                                            logical_rows_scanned: Some(73),
+                                            logical_certified_bytes: Some(3_072),
+                                        },
+                                    ),
+                                },
+                            )
+                            .expect("physical detailed progress");
+                        assert_eq!(physical["progress"]["completed_records"], 89);
+                        assert_eq!(physical["progress"]["completed_bytes"], 4_096);
+                        assert_eq!(
+                            physical["progress"]["current_source_progress"]["stage"],
+                            "logical_scan"
+                        );
+                        let physical = engine
+                            .set_progress(
+                                request_id,
+                                SourceBackedRefreshProgressUpdate {
+                                    phase: "parsing".to_owned(),
+                                    completed_sources: 2,
+                                    total_sources: 5,
+                                    total_sources_known: true,
+                                    current_source: Some("codex".to_owned()),
+                                    completed_records: Some(144),
+                                    completed_bytes: Some(6_144),
+                                    current_source_progress: None,
+                                },
+                            )
+                            .expect("physical counter progress");
+                        assert_eq!(physical["progress"]["completed_records"], 144);
+                        assert_eq!(physical["progress"]["completed_bytes"], 6_144);
+                        assert_eq!(
+                            physical["progress"]["current_source_progress"]["stage"],
+                            "logical_scan"
+                        );
                         runner_started.send(()).expect("signal physical progress");
                         let _ = runner_release.recv();
                         Ok(test_publication("attached-generation"))
@@ -701,13 +764,122 @@ fn attached_logical_status_projects_one_physical_progress_owner_and_replays_stab
         assert_eq!(attached["progress"]["phase"], "parsing");
         assert_eq!(attached["progress"]["completed_sources"], 2);
         assert_eq!(attached["progress"]["total_sources"], 5);
-        assert_eq!(attached["progress"]["completed_records"], 89);
-        assert_eq!(attached["progress"]["completed_bytes"], 4_096);
+        assert_eq!(attached["progress"]["completed_records"], 144);
+        assert_eq!(attached["progress"]["completed_bytes"], 6_144);
+        assert_eq!(
+            attached["progress"]["current_source_progress"]["stage"],
+            "logical_scan"
+        );
+        assert_eq!(
+            attached["progress"]["current_source_progress"]["logical_rows_scanned"],
+            73
+        );
 
         let replay = coordinator
-            .enqueue_fresh_demand_for_test(None, demand_id, BTreeMap::new())
+            .enqueue_fresh_demand_for_test(None, demand_id.clone(), BTreeMap::new())
             .unwrap();
         assert_eq!(replay, attached);
+
+        let duplicate_path = coordinator
+            .set_progress(
+                &predecessor_id,
+                SourceBackedRefreshProgressUpdate {
+                    phase: "parsing".to_owned(),
+                    completed_sources: 3,
+                    total_sources: 5,
+                    total_sources_known: true,
+                    current_source: Some("codex".to_owned()),
+                    completed_records: None,
+                    completed_bytes: None,
+                    current_source_progress: Some(SourceBackedCurrentSourceProgress {
+                        stage: SourceBackedCurrentSourceProgressStage::SourceFamilyCopy,
+                        snapshot_pages_completed: Some(1),
+                        snapshot_pages_total: Some(4),
+                        snapshot_bytes_completed: None,
+                        snapshot_bytes_total: None,
+                        logical_rows_scanned: None,
+                        logical_certified_bytes: None,
+                    }),
+                },
+            )
+            .expect("duplicate-path source boundary");
+        assert_eq!(duplicate_path["progress"]["completed_sources"], 3);
+        assert!(duplicate_path["progress"]
+            .get("completed_records")
+            .is_none());
+        assert!(duplicate_path["progress"].get("completed_bytes").is_none());
+        assert_eq!(
+            duplicate_path["progress"]["current_source_progress"]["stage"],
+            "source_family_copy"
+        );
+
+        let duplicate_counters = coordinator
+            .set_progress(
+                &predecessor_id,
+                SourceBackedRefreshProgressUpdate {
+                    phase: "parsing".to_owned(),
+                    completed_sources: 3,
+                    total_sources: 5,
+                    total_sources_known: true,
+                    current_source: Some("codex".to_owned()),
+                    completed_records: Some(5),
+                    completed_bytes: Some(512),
+                    current_source_progress: None,
+                },
+            )
+            .expect("duplicate-path counter fragment");
+        assert_eq!(duplicate_counters["progress"]["completed_records"], 5);
+        assert_eq!(duplicate_counters["progress"]["completed_bytes"], 512);
+        assert_eq!(
+            duplicate_counters["progress"]["current_source_progress"]["stage"],
+            "source_family_copy"
+        );
+
+        coordinator
+            .set_progress(
+                &predecessor_id,
+                SourceBackedRefreshProgressUpdate {
+                    phase: "parsing".to_owned(),
+                    completed_sources: 3,
+                    total_sources: 5,
+                    total_sources_known: true,
+                    current_source: Some("codex".to_owned()),
+                    completed_records: None,
+                    completed_bytes: None,
+                    current_source_progress: None,
+                },
+            )
+            .expect("clear duplicate-path fragments");
+        let cleared = coordinator
+            .status(&demand_id)
+            .expect("attached cleared status");
+        assert_eq!(cleared["progress"]["current_source"], "codex");
+        assert!(cleared["progress"].get("completed_records").is_none());
+        assert!(cleared["progress"].get("completed_bytes").is_none());
+        assert!(cleared["progress"].get("current_source_progress").is_none());
+
+        coordinator
+            .set_progress(
+                &predecessor_id,
+                SourceBackedRefreshProgressUpdate {
+                    phase: "verifying".to_owned(),
+                    completed_sources: 2,
+                    total_sources: 5,
+                    total_sources_known: true,
+                    current_source: None,
+                    completed_records: None,
+                    completed_bytes: None,
+                    current_source_progress: None,
+                },
+            )
+            .expect("physical verification boundary");
+        let verifying = coordinator.status(&demand_id).expect("attached status");
+        assert_eq!(verifying["progress"]["phase"], "verifying");
+        assert!(verifying["progress"].get("completed_records").is_none());
+        assert!(verifying["progress"].get("completed_bytes").is_none());
+        assert!(verifying["progress"]
+            .get("current_source_progress")
+            .is_none());
         gate.release();
     });
 }

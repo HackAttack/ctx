@@ -197,14 +197,36 @@ fn update_progress(
     if attempt.state != SourceBackedRefreshState::Running {
         return None;
     }
+    // Capture reports record/byte counters and detailed source stages through
+    // independent callbacks. Compose nonempty fragments only while they still
+    // describe the same active source. The completed count distinguishes
+    // duplicate display paths, and an empty fragment explicitly clears the
+    // active source's optional progress fields.
+    let same_active_source = update.current_source.is_some()
+        && attempt.progress.phase == update.phase
+        && attempt.progress.completed_sources == update.completed_sources
+        && attempt.progress.current_source.as_deref() == update.current_source.as_deref();
+    let has_source_fragment = update.completed_records.is_some()
+        || update.completed_bytes.is_some()
+        || update.current_source_progress.is_some();
+    let (previous_records, previous_bytes, previous_detail) =
+        if same_active_source && has_source_fragment {
+            (
+                attempt.progress.completed_records,
+                attempt.progress.completed_bytes,
+                attempt.progress.current_source_progress,
+            )
+        } else {
+            (None, None, None)
+        };
     attempt.progress = SourceBackedRefreshProgress {
         phase: update.phase,
         completed_sources: update.completed_sources,
         total_sources: update.total_sources,
         current_source: update.current_source,
-        completed_records: update.completed_records,
-        completed_bytes: update.completed_bytes,
-        current_source_progress: update.current_source_progress,
+        completed_records: update.completed_records.or(previous_records),
+        completed_bytes: update.completed_bytes.or(previous_bytes),
+        current_source_progress: update.current_source_progress.or(previous_detail),
     };
     attempt.progress_total_sources_known = update.total_sources_known;
     durable_job_json(state, request_id)

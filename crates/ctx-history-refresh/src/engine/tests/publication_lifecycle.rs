@@ -20,7 +20,15 @@ fn failed_refresh_retains_the_previous_published_generation() {
                         current_source: Some("source-a".to_owned()),
                         completed_records: Some(3),
                         completed_bytes: Some(384),
-                        current_source_progress: None,
+                        current_source_progress: Some(SourceBackedCurrentSourceProgress {
+                            stage: SourceBackedCurrentSourceProgressStage::LogicalScan,
+                            snapshot_pages_completed: None,
+                            snapshot_pages_total: None,
+                            snapshot_bytes_completed: None,
+                            snapshot_bytes_total: None,
+                            logical_rows_scanned: Some(3),
+                            logical_certified_bytes: Some(384),
+                        }),
                     },
                 );
                 Err(anyhow!("injected writer failure before publication"))
@@ -41,14 +49,18 @@ fn failed_refresh_retains_the_previous_published_generation() {
     assert_eq!(status["published_generation"], "generation-1");
     assert!(status.get("generation_changed").is_none());
     assert!(status.get("receipt").is_none());
+    assert!(status["progress"].get("current_source").is_none());
+    assert!(status["progress"].get("current_source_progress").is_none());
     assert!(status["last_error"]
         .as_str()
         .is_some_and(|error| error.contains("injected writer failure")));
     assert_eq!(run.job["status"], "failed");
     assert_eq!(run.job["published_generation"], "generation-1");
     assert_eq!(run.job["progress"]["phase"], "failed");
+    assert!(run.job["progress"].get("current_source").is_none());
     assert!(run.job["progress"].get("completed_records").is_none());
     assert!(run.job["progress"].get("completed_bytes").is_none());
+    assert!(run.job["progress"].get("current_source_progress").is_none());
 }
 
 #[test]
