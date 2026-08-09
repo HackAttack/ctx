@@ -37,7 +37,7 @@ _route_transition = transition(
 def _launcher_content(target_id):
     llvm_readobj_argument = ""
     if target_id == "windows-x64":
-        llvm_readobj_argument = """  --declared-llvm-readobj-runfile "${{route_root}}/llvm-readobj.exe" \\
+        llvm_readobj_argument = """  --declared-llvm-readobj-runfile "${route_root}/llvm-readobj.exe" \\
 """
     return """#!/usr/bin/env bash
 set -euo pipefail

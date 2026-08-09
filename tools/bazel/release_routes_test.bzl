@@ -91,6 +91,39 @@ _runfiles_probe_packager = rule(
     executable = True,
 )
 
+def _windows_runfiles_probe_packager_impl(ctx):
+    output = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(
+        output,
+        """#!/usr/bin/env bash
+set -euo pipefail
+: "${RUNFILES_DIR:?release route did not forward its derived runfiles root}"
+workspace="${TEST_WORKSPACE:-_main}"
+expected="ctx_release_routes/windows-x64/llvm-readobj.exe"
+observed=""
+while (($#)); do
+  case "$1" in
+    --declared-llvm-readobj-runfile)
+      observed="${2:?missing declared llvm-readobj runfile}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+test "${observed}" = "${expected}"
+test -e "${RUNFILES_DIR}/${workspace}/${observed}"
+""",
+        is_executable = True,
+    )
+    return [DefaultInfo(executable = output)]
+
+_windows_runfiles_probe_packager = rule(
+    implementation = _windows_runfiles_probe_packager_impl,
+    executable = True,
+)
+
 def _route_analysis_test_impl(ctx):
     info = ctx.attr.route[ReleaseRouteInfo]
     if info.target_id != ctx.attr.target_id:
@@ -236,10 +269,29 @@ def release_route_analysis_test_suite(name):
         sbom_tool = ":_release_route_test_packager",
         target_id = "linux-x64",
     )
+    _windows_runfiles_probe_packager(
+        name = "_release_route_windows_runfiles_probe_packager",
+        tags = ["manual", "release-gate"],
+    )
+    public_cli_release_route(
+        name = "_release_route_windows_runfiles_probe",
+        advisory_gate = ":_release_route_test_packager",
+        artifact = ":_release_route_probe_windows_x64",
+        license_materials = ":_release_route_test_license_materials",
+        packager = ":_release_route_windows_runfiles_probe_packager",
+        rustc = ":_release_route_probe_windows_x64",
+        rust_objcopy = ":_release_route_probe_windows_x64",
+        sbom_inventory = ":_release_route_test_inventory",
+        sbom_tool = ":_release_route_test_packager",
+        target_id = "windows-x64",
+    )
     sh_test(
         name = "_release_route_runfiles_runtime_test",
         srcs = ["release_route_runfiles_test.sh"],
-        data = [":_release_route_runfiles_probe"],
+        data = [
+            ":_release_route_runfiles_probe",
+            ":_release_route_windows_runfiles_probe",
+        ],
         tags = ["release-gate"],
     )
     tests.append("_release_route_runfiles_runtime_test")
