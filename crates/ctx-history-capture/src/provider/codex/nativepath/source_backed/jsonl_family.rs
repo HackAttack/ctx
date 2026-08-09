@@ -1175,7 +1175,7 @@ pub(crate) fn codex_session_root_rank(root: &Path) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, io::Write};
 
     use super::*;
 
@@ -1231,8 +1231,74 @@ mod tests {
         assert_eq!(inventory.sources.len(), 2);
         assert_eq!(inventory.work.inventory_walks, 2);
         assert_eq!(inventory.work.source_observations, 2);
+        let expected_hash_reads = if cfg!(any(unix, target_os = "windows")) {
+            2
+        } else {
+            4
+        };
+        assert_eq!(inventory.work.source_hash_reads, expected_hash_reads);
         assert_eq!(inventory.work.source_body_reads, 2);
         assert_eq!(inventory.work.session_meta_parses, 2);
+    }
+
+    #[test]
+    #[cfg(any(unix, target_os = "windows"))]
+    fn adapter_rehashes_the_frozen_prefix_only_after_observed_growth() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let native_session_id = "019facf0-4000-7777-8888-000000000020";
+        write_session(&sessions, native_session_id);
+        let source = sessions.join(format!("rollout-{native_session_id}.jsonl"));
+
+        crate::provider::codex::nativepath::install_after_codex_metadata_inventory_hook(
+            move || {
+                let mut file = fs::OpenOptions::new().append(true).open(source).unwrap();
+                file.write_all(b"\n").unwrap();
+                file.sync_all().unwrap();
+            },
+        );
+
+        let inventory = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![sessions])
+            .unwrap()
+            .discover()
+            .unwrap();
+        assert_eq!(inventory.sources.len(), 1);
+        assert_eq!(inventory.work.source_hash_reads, 2);
+    }
+
+    #[test]
+    #[cfg(any(unix, target_os = "windows"))]
+    fn adapter_rejects_rewrite_plus_growth_after_metadata_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let native_session_id = "019facf0-4000-7777-8888-000000000021";
+        write_session(&sessions, native_session_id);
+        let source = sessions.join(format!("rollout-{native_session_id}.jsonl"));
+
+        crate::provider::codex::nativepath::install_after_codex_metadata_inventory_hook(
+            move || {
+                let mut bytes = fs::read(&source).unwrap();
+                let marker = b"codex_cli_rs";
+                let offset = bytes
+                    .windows(marker.len())
+                    .position(|window| window == marker)
+                    .unwrap();
+                bytes[offset + marker.len() - 1] = b'x';
+                bytes.push(b'\n');
+                fs::write(source, bytes).unwrap();
+            },
+        );
+
+        let error = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![sessions])
+            .unwrap()
+            .discover()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CodexSourceBackedErrorV0::Capture(CaptureError::SourceChangedDuringCapture)
+        ));
     }
 
     #[test]
