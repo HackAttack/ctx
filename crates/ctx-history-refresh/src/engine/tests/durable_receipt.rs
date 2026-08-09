@@ -151,6 +151,16 @@ fn exact_no_op_restart_migrates_pre_fix_source_count_and_reuses_durable_receipt(
     assert_eq!(pre_fix_job["certified_source_count"], 1);
     // Pre-fix schema v1 projected this global count as `source_count`.
     pre_fix_job["source_count"] = pre_fix_job["certified_source_count"].clone();
+    pre_fix_job["progress"]["current_source_progress"] = SourceBackedCurrentSourceProgress {
+        stage: SourceBackedCurrentSourceProgressStage::LogicalScan,
+        snapshot_pages_completed: None,
+        snapshot_pages_total: None,
+        snapshot_bytes_completed: None,
+        snapshot_bytes_total: None,
+        logical_rows_scanned: Some(1),
+        logical_certified_bytes: Some(128),
+    }
+    .to_json();
     write_daemon_job_status(&status_path, &pre_fix_job).unwrap();
 
     let restarted = CoreRefreshEngine::new();
@@ -175,6 +185,9 @@ fn exact_no_op_restart_migrates_pre_fix_source_count_and_reuses_durable_receipt(
     assert_eq!(recovered["request_id"], no_op_request_id);
     assert_eq!(recovered["source_count"], 0);
     assert_eq!(recovered["certified_source_count"], 1);
+    assert!(recovered["progress"]
+        .get("current_source_progress")
+        .is_none());
 }
 
 #[test]
@@ -187,7 +200,30 @@ fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
     let request_id = request_id(&request);
     let failed = first
         .run_next_with(
-            |_, _| Err(anyhow!("exact lone terminal failure")),
+            |request_id, engine| {
+                let _ = engine.set_progress(
+                    request_id,
+                    SourceBackedRefreshProgressUpdate {
+                        phase: "refreshing".to_owned(),
+                        completed_sources: 0,
+                        total_sources: 1,
+                        total_sources_known: true,
+                        current_source: Some("source-a".to_owned()),
+                        completed_records: Some(3),
+                        completed_bytes: Some(384),
+                        current_source_progress: Some(SourceBackedCurrentSourceProgress {
+                            stage: SourceBackedCurrentSourceProgressStage::LogicalScan,
+                            snapshot_pages_completed: None,
+                            snapshot_pages_total: None,
+                            snapshot_bytes_completed: None,
+                            snapshot_bytes_total: None,
+                            logical_rows_scanned: Some(3),
+                            logical_certified_bytes: Some(384),
+                        }),
+                    },
+                );
+                Err(anyhow!("exact lone terminal failure"))
+            },
             || Ok(None),
             |job| write_daemon_job_status(&daemon_source_backed_refresh_job_path(&data_root), job),
             |_| Ok(()),
@@ -207,7 +243,25 @@ fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
         exact_failure["structured_outcome"]["code"],
         "source_refresh_failed"
     );
+    assert!(exact_failure["progress"].get("current_source").is_none());
+    assert!(exact_failure["progress"]
+        .get("current_source_progress")
+        .is_none());
     assert_eq!(exact_failure["last_error"], "exact lone terminal failure");
+
+    let status_path = daemon_source_backed_refresh_job_path(&data_root);
+    let mut pre_fix_failure = read_daemon_job_status(&status_path).unwrap();
+    pre_fix_failure["progress"]["current_source_progress"] = SourceBackedCurrentSourceProgress {
+        stage: SourceBackedCurrentSourceProgressStage::LogicalScan,
+        snapshot_pages_completed: None,
+        snapshot_pages_total: None,
+        snapshot_bytes_completed: None,
+        snapshot_bytes_total: None,
+        logical_rows_scanned: Some(3),
+        logical_certified_bytes: Some(384),
+    }
+    .to_json();
+    write_daemon_job_status(&status_path, &pre_fix_failure).unwrap();
     drop(first);
 
     let restarted = CoreRefreshEngine::new();
@@ -216,6 +270,11 @@ fn lone_failed_terminal_recovers_exact_status_without_reenqueue() {
         .unwrap());
     assert!(!restarted.has_pending_request());
     assert_eq!(restarted.status(&request_id).unwrap(), exact_failure);
+    let migrated_failure = read_daemon_job_status(&status_path).unwrap();
+    assert_eq!(migrated_failure["request_id"], request_id);
+    assert!(migrated_failure["progress"]
+        .get("current_source_progress")
+        .is_none());
 }
 
 #[test]

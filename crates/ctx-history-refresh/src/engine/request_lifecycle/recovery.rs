@@ -128,6 +128,10 @@ impl CoreRefreshEngine {
         }
 
         if request_state == "failed" {
+            let terminal_progress_needs_normalization = job
+                .get("progress")
+                .and_then(Value::as_object)
+                .is_some_and(|progress| progress.contains_key("current_source_progress"));
             let failed = recover_failed_attempt(&job)?;
             let failed_request_id = failed.request_id.clone();
             let failure_route_dispositions = failed.failure_outcome.as_ref().map(|outcome| {
@@ -160,7 +164,10 @@ impl CoreRefreshEngine {
                 let state = self.lock_state();
                 state.active_request_id.is_some() || !state.pending_request_ids.is_empty()
             };
-            if finish.durable_request_id != failed_request_id || has_successors {
+            if finish.durable_request_id != failed_request_id
+                || has_successors
+                || terminal_progress_needs_normalization
+            {
                 self.persist_job_status(data_root, &finish.durable_request_id)?;
             }
             return Ok(has_successors);
@@ -425,6 +432,11 @@ fn recover_terminal_attempt(
         optional_u64(job, "coalesced_logical_demands")?.unwrap_or_default();
     attempt.coalesced_requests = optional_u64(job, "coalesced_requests")?.unwrap_or_default();
     attempt.progress = SourceBackedRefreshProgress::from_status_json(job)?;
+    // Pre-fix schema-v1 terminal snapshots could retain an active-source
+    // detail fragment after publication or failure. Terminal state is the
+    // authority boundary: retain cumulative counters, but never recover an
+    // active source substep that can no longer make progress.
+    attempt.progress.current_source_progress = None;
     attempt.progress_total_sources_known = status_progress_total_sources_known(job);
     attempt.scanned_routes = optional_usize(job, "scanned_routes")?;
     attempt.unsupported_routes = optional_usize(job, "unsupported_routes")?;
