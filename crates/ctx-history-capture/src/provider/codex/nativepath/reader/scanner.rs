@@ -73,16 +73,12 @@ fn preflight_mcp_terminal_authority(
     reader.seek(SeekFrom::Start(0))?;
     let mut offset = 0_u64;
     let mut record_buffer = Vec::new();
-    let mut full_hasher = Sha256::new();
-    let mut complete_hasher = Sha256::new();
     let mut authority = CodexMcpTerminalAuthority::default();
     let mut peak_record_bytes = 0_usize;
     while offset < frozen_len {
-        let Some(record_read) = read_bounded_record(
+        let Some(record_read) = read_bounded_record_unhashed(
             &mut reader,
             &mut record_buffer,
-            &mut full_hasher,
-            &mut complete_hasher,
             frozen_len.saturating_sub(offset),
         )?
         else {
