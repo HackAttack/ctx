@@ -301,6 +301,10 @@ where
     A: ReplacementDocumentTree,
 {
     let adapter = Arc::new(adapter);
+    let uses_parallel_leaf_workers = !matches!(
+        adapter.leaf_execution_policy(),
+        DocumentLeafExecutionPolicy::Serial
+    );
     let state = Arc::new(Mutex::new(
         DocumentCommitState::<A::Leaf, A::TreeAuthority>::default(),
     ));
@@ -317,7 +321,7 @@ where
     let publication_state = Arc::clone(&state);
     let has_successful_publication_work = publication_adapter.has_successful_publication_work();
 
-    let driver = SourceBackedRouteDriver::new(
+    let mut driver = SourceBackedRouteDriver::new(
         move |sink| {
             {
                 let mut state = scan_state
@@ -338,6 +342,9 @@ where
     .with_complete_inventory_revalidation(move |inventory| {
         revalidate_document_inventory(inventory_adapter.as_ref(), &inventory_state, inventory)
     });
+    if uses_parallel_leaf_workers {
+        driver = driver.with_parallel_leaf_workers();
+    }
     if !has_successful_publication_work {
         return driver;
     }

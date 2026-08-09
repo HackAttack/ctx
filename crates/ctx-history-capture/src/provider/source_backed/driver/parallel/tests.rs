@@ -618,11 +618,29 @@ fn unguarded_worker_panic_is_reported_from_mandatory_join() {
 }
 
 #[test]
-fn worker_budget_reserves_indexers_runtime_and_caps_scanners() {
+fn worker_budget_coordinates_indexers_runtime_and_scanners() {
     assert_eq!(leaf_worker_budget_for_parallelism(8, 32), 16);
     assert_eq!(leaf_worker_budget_for_parallelism(usize::MAX, 32), 16);
-    assert_eq!(leaf_worker_budget_for_parallelism(4, 10), 4);
+    assert_eq!(leaf_worker_budget_for_parallelism(4, 10), 5);
     assert_eq!(leaf_worker_budget_for_parallelism(8, 4), 1);
+
+    let allocations = [1_usize, 2, 4, 8, 16, 32].map(|parallelism| {
+        let indexers =
+            source_backed_refresh_writer_options_for_parallelism(parallelism).indexer_threads;
+        let scanners = leaf_worker_budget_for_parallelism(indexers, parallelism);
+        (parallelism, indexers, scanners)
+    });
+    assert_eq!(
+        allocations,
+        [
+            (1, 1, 1),
+            (2, 2, 1),
+            (4, 1, 2),
+            (8, 3, 4),
+            (16, 7, 8),
+            (32, 8, 16),
+        ]
+    );
 
     let temp = crate::test_support_paths::tempdir().unwrap();
     let mut harness = SinkHarness::open(&temp.path().join("index"));

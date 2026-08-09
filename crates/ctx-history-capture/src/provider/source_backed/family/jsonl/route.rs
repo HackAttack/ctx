@@ -1214,6 +1214,7 @@ pub(crate) fn jsonl_family_driver(
         },
         move |target| revalidate_target(&revalidation_resident, target),
     )
+    .with_parallel_leaf_workers()
     .with_fallible_complete_inventory_revalidation(move |expected| {
         match revalidate_complete_inventory(
             terminal_adapter.as_ref(),

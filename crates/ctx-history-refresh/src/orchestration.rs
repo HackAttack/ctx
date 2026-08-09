@@ -127,7 +127,8 @@ where
     ) -> Result<SourceBackedRefreshPublication>,
 {
     let discovery = discovery.clone().with_data_root(execution.data_root);
-    let work_budget = source_backed_refresh_work_budget(WriterOptions::default().indexer_threads);
+    let work_budget =
+        source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
     let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
     let discovery_duration = discovery_started.elapsed();
@@ -325,7 +326,15 @@ pub(super) fn refresh_all_provider_sources_route_local(
     // generation and make restart skip them. A pre-scan token is either bound
     // to the captured state or conservatively forces the next warm refresh.
     let admitted_route_observations = admitted_route_observations(&build.registry, &physical_scope);
-    let (executor, _issues) = build.into_refresh_executor(WriterOptions::default());
+    let writer_options = if build
+        .registry
+        .selected_routes_use_parallel_leaf_workers(&physical_scope)
+    {
+        source_backed_refresh_writer_options()
+    } else {
+        WriterOptions::default()
+    };
+    let (executor, _issues) = build.into_refresh_executor(writer_options);
     let mut terminal_coverage_error = None;
     let refresh_result = executor.refresh_scope_with_detailed_progress_and_publication_metadata(
         index_root,
@@ -949,7 +958,8 @@ pub fn source_backed_watch_catalog(
     discovery: &DiscoveryContext,
 ) -> Result<SourceBackedWatchCatalog> {
     let discovery = discovery.clone().with_data_root(data_root);
-    let work_budget = source_backed_refresh_work_budget(WriterOptions::default().indexer_threads);
+    let work_budget =
+        source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
     let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
     let discovery_duration = discovery_started.elapsed();
@@ -1006,7 +1016,8 @@ fn source_backed_route_observation_fence(
     requested_routes: Option<&BTreeSet<SourceRouteIdentity>>,
 ) -> Result<BTreeMap<SourceRouteIdentity, Option<String>>> {
     let discovery = discovery.clone().with_data_root(data_root);
-    let work_budget = source_backed_refresh_work_budget(WriterOptions::default().indexer_threads);
+    let work_budget =
+        source_backed_refresh_work_budget(source_backed_refresh_writer_options().indexer_threads);
     let discovery_started = StdInstant::now();
     let report = discover_provider_sources_with_context_and_work_budget(&discovery, work_budget);
     let discovery_duration = discovery_started.elapsed();
