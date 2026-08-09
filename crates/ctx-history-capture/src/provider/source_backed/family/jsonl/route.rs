@@ -297,7 +297,7 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         _base: Option<&CertifiedSource>,
         _base_event_lookup: &BaseEventIdentityLookup,
         _worker: &mut JsonlFamilyWorkerContext,
-        _emit_page: &mut dyn FnMut(JsonlFamilyPublication, Vec<CoreRecord>) -> Result<()>,
+        _emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
         Ok(None)
     }
@@ -1104,6 +1104,7 @@ impl FamilyCheckpoint {
 struct TerminalSourceEvidence {
     certificate: CertifiedSource,
     terminal_proof: JsonlFamilyTerminalProof,
+    emitted_bytes: u64,
 }
 
 fn default_base_source_path(

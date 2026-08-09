@@ -283,7 +283,89 @@ fn register_codex_trees(roots: &[(&Path, ProviderImportSupport)]) -> SourceBacke
 }
 
 #[test]
-fn codex_parallel_scan_reports_monotonic_certified_source_bytes_without_records() {
+fn codex_multi_page_leaf_reports_source_bytes_before_terminal_record_progress() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb100-0000-7000-8000-000000000001";
+    let expected_records = 129_u64;
+    let events = (0..expected_records)
+        .map(|event| {
+            serde_json::json!({
+                "timestamp": "2026-08-06T12:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": format!("retained multi-page event {event}")
+                    }]
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let bytes = codex_lineage_rollout_with_events(
+        native_session_id,
+        None,
+        SessionRelationshipKind::Root,
+        None,
+        &events,
+    );
+    let expected_bytes = bytes.len() as u64;
+    fs::write(
+        sessions.join(format!("rollout-{native_session_id}.jsonl")),
+        bytes,
+    )
+    .unwrap();
+    let registry = register_codex_tree(&sessions);
+    let mut active_progress = Vec::new();
+
+    let refreshed = refresh_source_backed_generation_with_progress(
+        &index,
+        &registry,
+        WriterOptions {
+            indexer_threads: 1,
+            ..WriterOptions::default()
+        },
+        |progress| {
+            if progress.phase == "refreshing" && progress.current_source.is_some() {
+                active_progress.push((progress.completed_records, progress.completed_bytes));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(refreshed.commit.indexed_documents, expected_records);
+    assert_eq!(refreshed.certified_source_bytes, expected_bytes);
+    let completed_progress = active_progress
+        .iter()
+        .filter_map(|(records, bytes)| Some((records.as_ref()?, bytes.as_ref()?)))
+        .map(|(records, bytes)| (*records, *bytes))
+        .collect::<Vec<_>>();
+    assert!(
+        completed_progress
+            .windows(2)
+            .all(|window| window[0].0 <= window[1].0 && window[0].1 <= window[1].1),
+        "Codex record/byte progress was not monotonic: {completed_progress:?}"
+    );
+    assert!(
+        completed_progress.iter().any(|(records, bytes)| {
+            *records < expected_records && *bytes > 0 && *bytes < expected_bytes
+        }),
+        "Codex bytes did not advance on an intermediate retained-record page: \
+         {completed_progress:?}"
+    );
+    assert_eq!(
+        completed_progress.last().copied(),
+        Some((expected_records, expected_bytes))
+    );
+}
+
+#[test]
+fn codex_parallel_empty_record_pages_reconcile_source_bytes_once() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index = temp.path().join("index");
@@ -335,19 +417,79 @@ fn codex_parallel_scan_reports_monotonic_certified_source_bytes_without_records(
         .iter()
         .filter_map(|(_, completed_bytes)| *completed_bytes)
         .collect::<Vec<_>>();
-    assert!(
-        completed_bytes
-            .windows(2)
-            .all(|window| window[0] <= window[1]),
-        "Codex completed bytes were not monotonic: {completed_bytes:?}"
-    );
-    assert!(
-        completed_bytes
-            .iter()
-            .any(|bytes| *bytes > 0 && *bytes < expected_bytes),
-        "Codex byte progress did not advance before route completion: {completed_bytes:?}"
-    );
+    assert!(completed_bytes
+        .windows(2)
+        .all(|window| window[0] <= window[1]));
+    assert!(completed_bytes
+        .iter()
+        .any(|bytes| *bytes > 0 && *bytes < expected_bytes));
     assert_eq!(completed_bytes.last().copied(), Some(expected_bytes));
+}
+
+#[test]
+fn codex_append_and_replay_progress_reconcile_current_source_bytes_once() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb100-0000-7000-8000-000000000002";
+    let source_path = sessions.join(format!("rollout-{native_session_id}.jsonl"));
+    fs::write(
+        &source_path,
+        codex_lineage_rollout(
+            native_session_id,
+            None,
+            SessionRelationshipKind::Root,
+            None,
+            "initial record",
+        ),
+    )
+    .unwrap();
+    let registry = register_codex_tree(&sessions);
+    refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+
+    append_codex_lineage_message(&source_path, native_session_id, "appended record");
+    let expected_bytes = fs::metadata(&source_path).unwrap().len();
+    let mut append_progress = Vec::new();
+    let appended = refresh_source_backed_generation_with_progress(
+        &index,
+        &registry,
+        WriterOptions::default(),
+        |progress| {
+            if progress.phase == "refreshing" && progress.current_source.is_some() {
+                append_progress.push((progress.completed_records, progress.completed_bytes));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(appended.certified_source_bytes, expected_bytes);
+    assert!(append_progress
+        .iter()
+        .any(|(_, bytes)| { bytes.is_some_and(|bytes| bytes > 0 && bytes < expected_bytes) }));
+    assert_eq!(
+        append_progress.last().copied(),
+        Some((Some(1), Some(expected_bytes)))
+    );
+
+    let mut replay_progress = Vec::new();
+    let replayed = refresh_source_backed_generation_with_progress(
+        &index,
+        &registry,
+        WriterOptions::default(),
+        |progress| {
+            if progress.phase == "refreshing" && progress.current_source.is_some() {
+                replay_progress.push((progress.completed_records, progress.completed_bytes));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(replayed.certified_source_bytes, expected_bytes);
+    assert_eq!(
+        replay_progress.last().copied(),
+        Some((Some(0), Some(expected_bytes)))
+    );
 }
 
 #[cfg(target_os = "linux")]
