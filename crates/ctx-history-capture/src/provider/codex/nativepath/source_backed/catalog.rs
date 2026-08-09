@@ -65,6 +65,8 @@ pub(crate) struct CodexSessionTreeInventoryV0 {
 pub(crate) struct CodexCatalogWorkV0 {
     pub(crate) inventory_walks: u64,
     pub(crate) source_observations: u64,
+    #[cfg(test)]
+    pub(crate) source_hash_reads: u64,
     pub(crate) source_body_reads: u64,
     pub(crate) session_meta_parses: u64,
 }
@@ -75,6 +77,12 @@ impl CodexCatalogWorkV0 {
         self.source_observations = self
             .source_observations
             .saturating_add(other.source_observations);
+        #[cfg(test)]
+        {
+            self.source_hash_reads = self
+                .source_hash_reads
+                .saturating_add(other.source_hash_reads);
+        }
         self.source_body_reads = self
             .source_body_reads
             .saturating_add(other.source_body_reads);
@@ -497,7 +505,12 @@ fn discover_codex_session_tree_inventory_incremental_v0(
             None => {
                 work.source_body_reads = work.source_body_reads.saturating_add(1);
                 work.session_meta_parses = work.session_meta_parses.saturating_add(1);
-                catalog_source_from_body(&leaf)?
+                let (source, _rehashed_prefix) = catalog_source_from_body(&leaf)?;
+                #[cfg(test)]
+                if _rehashed_prefix {
+                    work.source_hash_reads = work.source_hash_reads.saturating_add(1);
+                }
+                source
             }
         };
         catalog_sources.push(source);
@@ -665,6 +678,8 @@ fn discover_codex_metadata_inventory_root_v0(
         CodexCatalogWorkV0 {
             inventory_walks: 1,
             source_observations,
+            #[cfg(test)]
+            source_hash_reads: source_observations,
             ..CodexCatalogWorkV0::default()
         },
     ))
@@ -762,13 +777,30 @@ fn catalog_source_from_seed(
 
 fn catalog_source_from_body(
     leaf: &CodexMetadataInventoryLeafV0,
-) -> CodexSourceBackedResultV0<CodexCatalogSource> {
+) -> CodexSourceBackedResultV0<(CodexCatalogSource, bool)> {
     let opened = leaf.authority.open_file(&leaf.relative_path)?;
-    if opened_file_prefix_sha256(opened.file(), leaf.observation.len)? != leaf.prefix_sha256 {
+    let admitted = opened_codex_file_observation(&leaf.source_path, opened.file())?;
+    opened.revalidate_leaf()?;
+    if !leaf.observation.admits_append_only_growth(&admitted) {
         return Err(CodexSourceBackedErrorV0::Capture(
             CaptureError::SourceChangedDuringCapture,
         ));
     }
+    // Supported filesystems provide a stable object token plus a kernel change
+    // token. Only that exact unchanged observation can skip the duplicate body
+    // proof. Portable observations without a stable object token retain the
+    // full prefix hash even when their sampled fingerprint is unchanged.
+    let metadata_only_noop = admitted == leaf.observation && admitted.stable_token.is_some();
+    let rehashed_prefix = !metadata_only_noop;
+    if rehashed_prefix
+        && opened_file_prefix_sha256(opened.file(), leaf.observation.len)? != leaf.prefix_sha256
+    {
+        return Err(CodexSourceBackedErrorV0::Capture(
+            CaptureError::SourceChangedDuringCapture,
+        ));
+    }
+    // The catalog helper revalidates this retained authority before and after
+    // its bounded session-meta read, so a mutation in that window fails closed.
     let mut catalog = catalog_codex_explicit_session_opened(&leaf.source_path, &opened)?;
     catalog.source_root = leaf.source_root.clone();
     let discovery = super::discover_codex_catalog_sources(&[catalog]);
@@ -806,7 +838,7 @@ fn catalog_source_from_body(
     source.catalog_observation = leaf.observation.clone();
     source.authority_root = Some(leaf.authority.clone());
     source.authority_relative_path = Some(leaf.relative_path.clone());
-    Ok(source)
+    Ok((source, rehashed_prefix))
 }
 
 pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
