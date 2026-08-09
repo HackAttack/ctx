@@ -425,7 +425,10 @@ impl CodexNativeScanner {
                         self.counters.oversized_records.saturating_add(1);
                 }
                 if let Some(lineage_facts) = self.lineage_facts.as_mut() {
-                    lineage_facts.record(CodexLineageRecordEvidence::UnattributedAmbiguity)?;
+                    lineage_facts.record_at(
+                        CodexLineageRecordEvidence::UnattributedAmbiguity,
+                        self.raw_ordinal,
+                    )?;
                 }
                 self.exhausted = true;
                 self.queue_end_pages(false)?;
@@ -440,7 +443,10 @@ impl CodexNativeScanner {
             } else if record_read.oversized {
                 self.reject(true);
                 if let Some(lineage_facts) = self.lineage_facts.as_mut() {
-                    lineage_facts.record(CodexLineageRecordEvidence::UnattributedAmbiguity)?;
+                    lineage_facts.record_at(
+                        CodexLineageRecordEvidence::UnattributedAmbiguity,
+                        self.raw_ordinal,
+                    )?;
                 }
                 CodexRecordProjection::default()
             } else {

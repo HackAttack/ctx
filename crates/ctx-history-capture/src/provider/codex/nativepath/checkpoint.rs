@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use super::rows::CodexSessionRow;
 use super::source::CodexFileObservation;
 
-const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 10;
+const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 11;
 pub(crate) const MAX_CODEX_CERTIFIED_LINEAGE_FACTS: usize = 16;
 const CODEX_PENDING_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/pending-call-id/v1\0";
 const MAX_CODEX_PENDING_TOOL_RECORD_BYTES: u64 = 16 * 1024 * 1024 + 1;
@@ -20,6 +20,7 @@ pub(crate) enum CodexCertifiedLineageFactKindV0 {
     Call,
     Result,
     Ambiguous,
+    DescendantStarted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -27,6 +28,7 @@ pub(crate) enum CodexCertifiedLineageFactKindV0 {
 pub(crate) struct CodexCertifiedLineageFactV0 {
     pub(crate) call_id_sha256: [u8; 32],
     pub(crate) kind: CodexCertifiedLineageFactKindV0,
+    pub(crate) raw_ordinal: u64,
 }
 
 /// Small exact lineage authority carried by an authenticated source frontier.
@@ -39,12 +41,29 @@ pub(crate) struct CodexCertifiedLineageFactV0 {
 pub(crate) struct CodexCertifiedLineageFactsV0 {
     pub(crate) facts: Vec<CodexCertifiedLineageFactV0>,
     pub(crate) has_unattributed_ambiguity: bool,
+    pub(crate) earliest_unattributed_ambiguity_raw_ordinal: Option<u64>,
 }
 
 impl CodexCertifiedLineageFactsV0 {
-    fn validate_wire_state(&self) -> serde_json::Result<()> {
+    fn validate_wire_state(
+        &self,
+        complete_record_count: u64,
+        has_incomplete_tail: bool,
+    ) -> serde_json::Result<()> {
         if self.facts.len() > MAX_CODEX_CERTIFIED_LINEAGE_FACTS
             || self.facts.windows(2).any(|pair| pair[0] >= pair[1])
+            || self
+                .facts
+                .iter()
+                .any(|fact| fact.raw_ordinal >= complete_record_count)
+            || self.has_unattributed_ambiguity
+                != self.earliest_unattributed_ambiguity_raw_ordinal.is_some()
+            || self
+                .earliest_unattributed_ambiguity_raw_ordinal
+                .is_some_and(|ordinal| {
+                    ordinal > complete_record_count
+                        || (ordinal == complete_record_count && !has_incomplete_tail)
+                })
         {
             return Err(serde::de::Error::custom(
                 "Codex certified lineage fact authority is invalid",
@@ -350,7 +369,10 @@ impl CodexNativeCheckpoint {
             ));
         }
         if let Some(facts) = self.certified_lineage_facts.as_ref() {
-            facts.validate_wire_state()?;
+            facts.validate_wire_state(
+                self.complete_record_count,
+                self.incomplete_tail().is_some(),
+            )?;
         }
         Ok(())
     }

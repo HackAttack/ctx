@@ -62,13 +62,20 @@ pub(in super::super) enum CodexSkipProjection {
 ///
 /// The record must already be trimmed of its JSONL terminator.
 pub(in super::super) fn prefilter_codex_record(record: &[u8]) -> CodexRecordAdmission {
-    match Prefilter::new(record)
+    let projection = Prefilter::new(record)
         .envelope()
-        .and_then(codex_skip_projection)
-    {
+        .and_then(codex_skip_projection);
+    match projection {
         Some(projection) => CodexRecordAdmission::NoProjection(projection),
         None => CodexRecordAdmission::Probe,
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct PrefilterPayload<'a> {
+    item_type: Option<&'a str>,
+    activity_kind: Option<&'a str>,
+    has_agent_thread_id: bool,
 }
 
 /// The reader's skip set, expressed against the class the reader projects.
@@ -81,8 +88,11 @@ pub(in super::super) fn codex_skip_projection(
     class: CodexRecordClass,
 ) -> Option<CodexSkipProjection> {
     match class {
-        CodexRecordClass::Ignored => Some(CodexSkipProjection::Ignored),
-        CodexRecordClass::ExcludedResult(_)
+        CodexRecordClass::Ignored | CodexRecordClass::DescendantActivity => {
+            Some(CodexSkipProjection::Ignored)
+        }
+        CodexRecordClass::DescendantStarted
+        | CodexRecordClass::ExcludedResult(_)
         | CodexRecordClass::SessionMeta
         | CodexRecordClass::TurnContext
         | CodexRecordClass::Retained(_) => None,
@@ -106,7 +116,7 @@ impl<'a> Prefilter<'a> {
         self.take(b'{')?;
         self.whitespace();
         let mut record_type = None;
-        let mut item_type = None;
+        let mut payload = PrefilterPayload::default();
         let mut saw_record_type = false;
         let mut saw_timestamp = false;
         let mut saw_payload = false;
@@ -130,7 +140,7 @@ impl<'a> Prefilter<'a> {
                     // Stop as soon as the discriminators rule a skip out. A
                     // record that has to be probed anyway must not pay for a
                     // second full walk of its body.
-                    decided_skip(value, item_type)?;
+                    decided_skip(value, payload.item_type)?;
                     record_type = Some(value);
                 }
                 "timestamp" => {
@@ -149,7 +159,7 @@ impl<'a> Prefilter<'a> {
                         return None;
                     }
                     saw_payload = true;
-                    item_type = self.payload(1, record_type)?;
+                    payload = self.payload(1, record_type)?;
                 }
                 _ => self.value(1)?,
             }
@@ -168,29 +178,41 @@ impl<'a> Prefilter<'a> {
         }
         self.whitespace();
         (self.offset == self.bytes.len()).then_some(())?;
-        Some(codex_record_class(record_type?, item_type))
+        let class = codex_record_class(record_type?, payload.item_type);
+        if class == CodexRecordClass::DescendantActivity
+            && payload.activity_kind == Some("started")
+            && payload.has_agent_thread_id
+        {
+            // Only a provider-authored started activity with an exact thread
+            // field can become a typed boundary. Everything else in this
+            // high-volume class is a proved ignored record.
+            return None;
+        }
+        Some(class)
     }
 
     /// Validates a `payload` member and reports its discriminator.
     ///
     /// The structural probe accepts any JSON here: a non-object payload simply
     /// has no item type.
-    fn payload(&mut self, depth: usize, record_type: Option<&str>) -> Option<Option<&'a str>> {
+    fn payload(&mut self, depth: usize, record_type: Option<&str>) -> Option<PrefilterPayload<'a>> {
         if self.peek()? != b'{' {
             decided_skip_with(record_type, None)?;
             self.value(depth)?;
-            return Some(None);
+            return Some(PrefilterPayload::default());
         }
         self.offset += 1;
         self.whitespace();
         if self.peek()? == b'}' {
             decided_skip_with(record_type, None)?;
             self.offset += 1;
-            return Some(None);
+            return Some(PrefilterPayload::default());
         }
-        let mut item_type = None;
+        let mut payload = PrefilterPayload::default();
         let mut saw_item_type = false;
         let mut saw_call_id = false;
+        let mut saw_activity_kind = false;
+        let mut saw_agent_thread_id = false;
         loop {
             let key = self.simple_string(MAX_PREFILTER_TYPE_BYTES)?;
             self.whitespace();
@@ -208,7 +230,7 @@ impl<'a> Prefilter<'a> {
                     } else {
                         let value = self.simple_string(MAX_PREFILTER_TYPE_BYTES)?;
                         decided_skip_with(record_type, Some(value))?;
-                        item_type = Some(value);
+                        payload.item_type = Some(value);
                     }
                 }
                 "call_id" => {
@@ -221,6 +243,21 @@ impl<'a> Prefilter<'a> {
                     } else {
                         self.simple_string(MAX_PREFILTER_TYPE_BYTES)?;
                     }
+                }
+                "kind" => {
+                    if saw_activity_kind {
+                        return None;
+                    }
+                    saw_activity_kind = true;
+                    payload.activity_kind = Some(self.simple_string(MAX_PREFILTER_TYPE_BYTES)?);
+                }
+                "agent_thread_id" => {
+                    if saw_agent_thread_id {
+                        return None;
+                    }
+                    saw_agent_thread_id = true;
+                    self.simple_string(MAX_PREFILTER_TYPE_BYTES)?;
+                    payload.has_agent_thread_id = true;
                 }
                 _ => self.value(depth + 1)?,
             }
@@ -237,7 +274,7 @@ impl<'a> Prefilter<'a> {
                 _ => return None,
             }
         }
-        Some(item_type)
+        Some(payload)
     }
 
     fn value(&mut self, depth: usize) -> Option<()> {

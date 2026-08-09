@@ -401,7 +401,12 @@ pub(super) fn validate_checkpoint_source(
                     }
                 }
                 if let Some(facts) = lineage_facts.as_deref_mut() {
-                    record_checkpoint_lineage(facts, &lineage_record, lineage_record_oversized)?;
+                    record_checkpoint_lineage(
+                        facts,
+                        &lineage_record,
+                        lineage_record_oversized,
+                        complete_records,
+                    )?;
                     lineage_record.clear();
                     lineage_record_oversized = false;
                 }
@@ -465,7 +470,10 @@ pub(super) fn validate_checkpoint_source(
             // a complete JSONL record. Append replay resumes at that boundary,
             // so the primary scanner derives replacement evidence from the
             // tail's now-current bytes instead of retaining this old fact.
-            facts.record(CodexLineageRecordEvidence::UnattributedAmbiguity)?;
+            facts.record_at(
+                CodexLineageRecordEvidence::UnattributedAmbiguity,
+                complete_records,
+            )?;
         }
     }
 
@@ -557,6 +565,7 @@ fn record_checkpoint_lineage(
     facts: &mut CodexLineageFactsV0,
     record: &[u8],
     oversized: bool,
+    raw_ordinal: u64,
 ) -> Result<()> {
     if record
         .iter()
@@ -565,15 +574,18 @@ fn record_checkpoint_lineage(
         return Ok(());
     }
     if oversized {
-        return facts.record(CodexLineageRecordEvidence::UnattributedAmbiguity);
+        return facts.record_at(
+            CodexLineageRecordEvidence::UnattributedAmbiguity,
+            raw_ordinal,
+        );
     }
     let record = trim_jsonl_terminator(record);
     match classify_codex_record(record) {
-        Ok(probe) => facts.record(codex_lineage_record_evidence(&probe)),
-        Err(_) if malformed_record_may_contain_lineage(record) => {
-            facts.record(CodexLineageRecordEvidence::UnattributedAmbiguity)
+        Ok(probe) => facts.record_at(codex_lineage_record_evidence(&probe), raw_ordinal),
+        Err(_) => {
+            let evidence = malformed_codex_lineage_record_evidence(record);
+            facts.record_at(evidence.as_record_evidence(), raw_ordinal)
         }
-        Err(_) => Ok(()),
     }
 }
 

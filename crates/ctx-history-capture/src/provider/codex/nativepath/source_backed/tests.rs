@@ -133,6 +133,19 @@ fn message(role: &str, text: &str) -> String {
     .to_string()
 }
 
+fn descendant_started(native_session_id: &str) -> String {
+    serde_json::json!({
+        "timestamp": "2026-07-28T12:00:01Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "sub_agent_activity",
+            "agent_thread_id": native_session_id,
+            "kind": "started"
+        }
+    })
+    .to_string()
+}
+
 fn tool_call_with_patch(call_id: &str) -> String {
     serde_json::json!({
             "timestamp": "2026-07-28T12:00:02Z",

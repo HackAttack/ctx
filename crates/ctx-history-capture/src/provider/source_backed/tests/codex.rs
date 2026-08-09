@@ -178,6 +178,18 @@ fn codex_dense_lineage_events(component: usize, pairs: usize) -> Vec<serde_json:
         .collect()
 }
 
+fn codex_descendant_started(native_session_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-06T12:00:00Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "sub_agent_activity",
+            "kind": "started",
+            "agent_thread_id": native_session_id,
+        }
+    })
+}
+
 fn register_codex_route(
     registry: &mut SourceBackedProviderRegistry,
     path: &Path,
@@ -1203,7 +1215,9 @@ fn codex_exact_leaf_uses_three_level_carried_authority_and_missing_parent_fails(
 fn codex_generation_spills_more_than_sixteen_near_budget_components_four_at_a_time() {
     const COMPONENTS: usize = 17;
     const FACT_PAIRS: usize = 20;
-    const BYTE_LIMIT: usize = 2_300;
+    // Typed raw-record ordinals make each in-memory fact 48 bytes; one 64-fact
+    // reservation plus the fixed container remains the deterministic peak.
+    const BYTE_LIMIT: usize = 3_300;
     const FACT_LIMIT: usize = 44;
 
     let temp = tempdir().unwrap();
@@ -1214,6 +1228,8 @@ fn codex_generation_spills_more_than_sixteen_near_budget_components_four_at_a_ti
         let root = format!("019fa100-0000-7000-8000-{component:012x}");
         let child = format!("019fa101-0000-7000-8000-{component:012x}");
         let events = codex_dense_lineage_events(component, FACT_PAIRS);
+        let mut root_events = events.clone();
+        root_events.push(codex_descendant_started(&child));
         fs::write(
             sessions.join(format!("rollout-{root}.jsonl")),
             codex_lineage_rollout_with_events(
@@ -1221,7 +1237,7 @@ fn codex_generation_spills_more_than_sixteen_near_budget_components_four_at_a_ti
                 None,
                 SessionRelationshipKind::Root,
                 None,
-                &events,
+                &root_events,
             ),
         )
         .unwrap();
@@ -1270,7 +1286,7 @@ fn codex_generation_spills_more_than_sixteen_near_budget_components_four_at_a_ti
     assert_eq!(peak, 4);
     assert_eq!(current_bytes, 0);
     assert!(
-        (2_200..=BYTE_LIMIT).contains(&peak_bytes),
+        (3_100..=BYTE_LIMIT).contains(&peak_bytes),
         "lineage component peak was {peak_bytes} bytes"
     );
     assert_eq!(component_loads, COMPONENTS);
