@@ -575,6 +575,7 @@ pub struct SourceBackedRouteDriver {
     pub(in super::super) revalidate_at_publication:
         Option<Arc<RoutePublicationRevalidationCallback>>,
     pub(in super::super) watch_targets: Option<Arc<WatchTargetsCallback>>,
+    pub(in super::super) uses_parallel_leaf_workers: bool,
 }
 
 impl fmt::Debug for SourceBackedRouteDriver {
@@ -618,7 +619,13 @@ impl SourceBackedRouteDriver {
             after_successful_publication: None,
             revalidate_at_publication: None,
             watch_targets: None,
+            uses_parallel_leaf_workers: false,
         }
+    }
+
+    pub(crate) fn with_parallel_leaf_workers(mut self) -> Self {
+        self.uses_parallel_leaf_workers = true;
+        self
     }
 
     pub fn with_complete_inventory_revalidation(
@@ -858,6 +865,28 @@ impl SourceBackedProviderRegistry {
             .iter()
             .filter(|route| route.driver.is_some())
             .count()
+    }
+
+    /// Returns whether any executable route selected by this exact refresh can
+    /// consume the source-scanner half of the coordinated CPU budget.
+    pub fn selected_routes_use_parallel_leaf_workers(
+        &self,
+        scope: &SourceBackedRefreshScope,
+    ) -> bool {
+        self.routes.iter().any(|route| {
+            route
+                .driver
+                .as_ref()
+                .is_some_and(|driver| driver.uses_parallel_leaf_workers)
+                && match scope {
+                    SourceBackedRefreshScope::All => true,
+                    SourceBackedRefreshScope::Exact(selected) => route
+                        .metadata
+                        .route_identity
+                        .as_ref()
+                        .is_some_and(|identity| selected.contains(identity)),
+                }
+        })
     }
 
     pub fn unsupported_route_count(&self) -> usize {

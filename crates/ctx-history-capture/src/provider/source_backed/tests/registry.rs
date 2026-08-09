@@ -117,6 +117,114 @@ fn automatic_identity_preserves_discovered_replacement_and_distinguishes_catalog
     assert_eq!(nanoclaw_registry.executable_route_count(), 2);
 }
 
+#[test]
+fn parallel_leaf_capability_respects_exact_route_scope() {
+    let serial = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 7);
+    let serial_id = serial.metadata.route_identity.clone().unwrap();
+    let mut parallel = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 8);
+    let parallel_id = parallel.metadata.route_identity.clone().unwrap();
+    parallel.driver = parallel
+        .driver
+        .take()
+        .map(SourceBackedRouteDriver::with_parallel_leaf_workers);
+
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(serial);
+    registry.register(parallel);
+
+    assert!(!registry
+        .selected_routes_use_parallel_leaf_workers(&SourceBackedRefreshScope::exact([serial_id])));
+    assert!(
+        registry.selected_routes_use_parallel_leaf_workers(&SourceBackedRefreshScope::exact([
+            parallel_id
+        ]))
+    );
+    assert!(registry.selected_routes_use_parallel_leaf_workers(&SourceBackedRefreshScope::All));
+}
+
+#[test]
+fn production_route_families_advertise_parallel_leaf_capability() {
+    let temp = tempdir().unwrap();
+    let data_root = temp.path().join("ctx-data");
+    fs::create_dir_all(&data_root).unwrap();
+
+    let sources = [
+        (
+            CaptureProvider::Gemini,
+            GEMINI_CLI_SOURCE_FORMAT,
+            temp.path().join("gemini.jsonl"),
+            true,
+            false,
+        ),
+        (
+            CaptureProvider::Cline,
+            crate::CLINE_TASK_JSON_SOURCE_FORMAT,
+            temp.path().join("cline"),
+            true,
+            false,
+        ),
+        (
+            CaptureProvider::Continue,
+            crate::CONTINUE_CLI_SOURCE_FORMAT,
+            temp.path().join("continue"),
+            false,
+            false,
+        ),
+        (
+            CaptureProvider::Hermes,
+            crate::HERMES_SQLITE_SOURCE_FORMAT,
+            temp.path().join("hermes.db"),
+            false,
+            true,
+        ),
+    ];
+
+    let mut registry = SourceBackedProviderRegistry::new();
+    for (provider, source_format, path, _, sqlite) in &sources {
+        if *sqlite {
+            register_landed_source_backed_route_with_data_root(
+                &mut registry,
+                fixture_provider_source_at(
+                    *provider,
+                    source_format,
+                    ProviderImportSupport::Native,
+                    path,
+                ),
+                SourceBackedRouteSelection::Automatic,
+                &data_root,
+            )
+            .unwrap();
+        } else {
+            register_landed_source_backed_route(
+                &mut registry,
+                fixture_provider_source_at(
+                    *provider,
+                    source_format,
+                    ProviderImportSupport::Native,
+                    path,
+                ),
+                SourceBackedRouteSelection::Automatic,
+            )
+            .unwrap();
+        }
+    }
+
+    for (provider, _, _, expected_parallel, _) in sources {
+        let route_id = registry
+            .routes()
+            .find(|route| route.source.provider == provider)
+            .and_then(|route| route.route_identity.clone())
+            .unwrap();
+        assert_eq!(
+            registry.selected_routes_use_parallel_leaf_workers(&SourceBackedRefreshScope::exact([
+                route_id
+            ])),
+            expected_parallel,
+            "unexpected production leaf-worker capability for {provider:?}"
+        );
+    }
+}
+
 fn fail_route_after_scan(
     mut route: SourceBackedRoute,
     kind: SourceBackedRouteErrorKind,

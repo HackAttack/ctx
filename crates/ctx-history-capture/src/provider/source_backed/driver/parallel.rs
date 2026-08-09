@@ -15,7 +15,7 @@ use std::{
 
 use super::{SourceBackedGenerationSink, SourceBackedSourceOutcome};
 use ctx_history_core::SourceKey;
-use ctx_history_index::CoreRecordPreparer;
+use ctx_history_index::{CoreRecordPreparer, WriterOptions};
 
 mod protocol;
 
@@ -35,7 +35,7 @@ pub use protocol::{
 
 const MAX_PARALLEL_LEAF_WORKERS: usize = 16;
 const INDEXER_THREAD_CAP: usize = 8;
-const RUNTIME_THREAD_RESERVATION: usize = 2;
+const RUNTIME_THREAD_RESERVATION: usize = 1;
 const SOURCE_WORKER_THREAD_PREFIX: &str = "ctx-src-scan";
 
 #[derive(Clone)]
@@ -54,6 +54,39 @@ pub fn source_backed_refresh_work_budget(indexer_threads: usize) -> usize {
         .map(usize::from)
         .unwrap_or(1);
     leaf_worker_budget_for_parallelism(indexer_threads, available_parallelism)
+}
+
+/// Chooses one coordinated production budget for source parsing and indexing.
+///
+/// Source-backed refresh runs leaf scanners and Tantivy indexers at the same
+/// time. Giving Tantivy every visible CPU before sizing the scanner pool left
+/// ordinary hosts with one parser. Split the CPUs remaining after the caller
+/// thread between the two stages, while retaining the existing indexer cap.
+pub fn source_backed_refresh_writer_options() -> WriterOptions {
+    let available_parallelism = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    source_backed_refresh_writer_options_for_parallelism(available_parallelism)
+}
+
+fn source_backed_refresh_writer_options_for_parallelism(
+    available_parallelism: usize,
+) -> WriterOptions {
+    let mut options = WriterOptions::default();
+    if available_parallelism <= 2 {
+        // Keep the established low-core writer allocation. The route pipeline
+        // still has one bounded scanner plus its caller, but reducing the
+        // indexer allocation cannot create a second scanner worker at this
+        // scale.
+        options.indexer_threads = available_parallelism.clamp(1, INDEXER_THREAD_CAP);
+        return options;
+    }
+    options.indexer_threads = available_parallelism
+        .saturating_sub(RUNTIME_THREAD_RESERVATION)
+        .checked_div(2)
+        .unwrap_or(0)
+        .clamp(1, INDEXER_THREAD_CAP);
+    options
 }
 
 #[cfg(test)]
@@ -96,7 +129,7 @@ fn worker_spawn_failure_is_injected(_worker_index: usize) -> bool {
 
 impl SourceBackedGenerationSink<'_> {
     /// Recommends the production scanner count after reserving the clamped
-    /// Tantivy indexer budget and two runtime threads.
+    /// Tantivy indexer budget and the route-protocol caller thread.
     pub fn recommended_leaf_workers(&self, leaf_count: usize) -> usize {
         leaf_count.min(self.resources.leaf_worker_budget())
     }
