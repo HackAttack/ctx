@@ -417,6 +417,28 @@ Each progress object includes:
 - `imported_events`, nullable;
 - `done`.
 
+Daemon-owned source refresh events additionally include:
+
+- `completed_sources`, `total_sources`, and `total_sources_known`;
+- `source_completed_records`, the nullable accepted Core-record count for the
+  current source, and `source_completed_bytes`, its nullable authoritative
+  logical-byte progress;
+- `current_source`, nullable bounded and control-safe presentation text for the
+  active source (not an exact route identifier), and `current_source_progress`,
+  nullable typed substep detail;
+- `request_id`, `request_state`, `logical_request_id`, `logical_phase`,
+  `physical_attempt_id`, `physical_attempt_state`,
+  `progress_owner_request_id`, `progress_owner_attempt_state`, and
+  `maintenance_wake` when the corresponding status authority supplies them;
+- `structured_outcome` when a terminal refresh outcome is available.
+
+Source record and byte counters reset or clear at source and finalization
+boundaries. A scan with no authoritative total does not fabricate a total or
+ETA; the common transfer fields use `total_bytes: 0` and `percent: 0.0` as
+unknown-denominator sentinels. The `completed_bytes` / `total_bytes` pair is
+used when the active transfer has a real denominator; source scans expose their
+authoritative completed count through `source_completed_bytes`.
+
 Progress events are operational status events, not durable result records.
 Consumers should key on `type` and `operation`, ignore unknown fields, and read
 the final command result from stdout when `--format json` is present.

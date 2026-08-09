@@ -1107,6 +1107,16 @@ Progress JSON is a best-effort operation stream. Each object has
 `completed_bytes`, `total_bytes`, `percent`, `elapsed_seconds`, `eta_seconds`,
 `completed_files`, `total_files`, `imported_events`, and `done`.
 
+During daemon-owned history refresh, the same object also projects the physical
+job authority and source progress: source counts, `source_completed_records`,
+`source_completed_bytes`, the current source and typed source substep, logical
+and physical request identifiers, and the progress owner. The record counter is
+the accepted Core-record count, while the byte counter is authoritative logical
+source progress; both may clear between sources or finalization phases. When no
+authoritative total exists, ctx reports completed source work without inventing
+a total or ETA; the common transfer fields use `total_bytes: 0` and
+`percent: 0.0` as unknown-denominator sentinels.
+
 ## JSON Contract
 
 JSON output is intended for local scripts, harnesses, and exact field
