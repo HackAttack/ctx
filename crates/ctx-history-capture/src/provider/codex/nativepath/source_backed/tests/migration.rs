@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn v9_frontier_and_v20_parser_generation_is_rebuilt_to_current_authority() {
+fn v9_frontier_and_v20_parser_generation_rebuilds_to_v11_authority() {
     let temp = tempfile::tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index = temp.path().join("global-index");
@@ -74,7 +74,7 @@ fn v9_frontier_and_v20_parser_generation_is_rebuilt_to_current_authority() {
         panic!("rebuilt Codex checkpoint must be byte keyed");
     };
     let checkpoint = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
-    assert_eq!(checkpoint["version"], 10);
+    assert_eq!(checkpoint["version"], 11);
 }
 
 #[test]

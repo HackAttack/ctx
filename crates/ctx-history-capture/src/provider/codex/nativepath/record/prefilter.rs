@@ -62,13 +62,31 @@ pub(in super::super) enum CodexSkipProjection {
 ///
 /// The record must already be trimmed of its JSONL terminator.
 pub(in super::super) fn prefilter_codex_record(record: &[u8]) -> CodexRecordAdmission {
-    match Prefilter::new(record)
-        .envelope()
-        .and_then(codex_skip_projection)
-    {
+    let projection = Prefilter::new(record).envelope().and_then(|class| {
+        if class == CodexRecordClass::DescendantActivity {
+            if record_may_describe_descendant_start(record) {
+                None
+            } else {
+                Some(CodexSkipProjection::Ignored)
+            }
+        } else {
+            codex_skip_projection(class)
+        }
+    });
+    match projection {
         Some(projection) => CodexRecordAdmission::NoProjection(projection),
         None => CodexRecordAdmission::Probe,
     }
+}
+
+/// A fully validated `sub_agent_activity` record needs the structural probe
+/// only when it may be the typed boundary that started a descendant. Escaped
+/// member names already make the prefilter abandon its proof and probe, while
+/// false positives here merely take the conservative parsed path.
+fn record_may_describe_descendant_start(record: &[u8]) -> bool {
+    [br#""agent_thread_id""#.as_slice(), br#""kind""#.as_slice()]
+        .into_iter()
+        .all(|needle| record.windows(needle.len()).any(|window| window == needle))
 }
 
 /// The reader's skip set, expressed against the class the reader projects.
@@ -81,8 +99,11 @@ pub(in super::super) fn codex_skip_projection(
     class: CodexRecordClass,
 ) -> Option<CodexSkipProjection> {
     match class {
-        CodexRecordClass::Ignored => Some(CodexSkipProjection::Ignored),
-        CodexRecordClass::ExcludedResult(_)
+        CodexRecordClass::Ignored | CodexRecordClass::DescendantActivity => {
+            Some(CodexSkipProjection::Ignored)
+        }
+        CodexRecordClass::DescendantStarted
+        | CodexRecordClass::ExcludedResult(_)
         | CodexRecordClass::SessionMeta
         | CodexRecordClass::TurnContext
         | CodexRecordClass::Retained(_) => None,

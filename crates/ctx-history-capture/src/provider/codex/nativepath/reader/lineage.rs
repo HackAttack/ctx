@@ -28,6 +28,15 @@ const MAX_LINEAGE_FACTS_PER_COMPONENT: usize =
 const LINEAGE_FACT_GROWTH: usize = 64;
 const LINEAGE_CONTAINER_CHARGE: usize = 128;
 const LINEAGE_SPILL_DOMAIN: &[u8] = b"ctx/codex-lineage-facts-spill/v1\0";
+const DESCENDANT_SESSION_DOMAIN: &[u8] = b"ctx/codex-lineage-descendant-session/v1\0";
+
+fn codex_lineage_descendant_session_digest(native_session_id: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(DESCENDANT_SESSION_DOMAIN);
+    hasher.update((native_session_id.len() as u64).to_le_bytes());
+    hasher.update(native_session_id.as_bytes());
+    hasher.finalize().into()
+}
 
 #[derive(Debug)]
 pub(crate) struct CodexLineageFactBudgetV0 {
@@ -117,12 +126,23 @@ enum CodexLineageFactKindV0 {
     Call,
     Result,
     Ambiguous,
+    DescendantStarted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct CodexLineageFactV0 {
     call_id_sha256: [u8; 32],
     kind: CodexLineageFactKindV0,
+    raw_ordinal: u64,
+}
+
+fn retain_two_earliest(ordinals: &mut [u64; 2], candidate: u64) {
+    if candidate < ordinals[0] {
+        ordinals[1] = ordinals[0];
+        ordinals[0] = candidate;
+    } else if candidate < ordinals[1] {
+        ordinals[1] = candidate;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +156,7 @@ pub(crate) struct CodexLineageFactsSpillRecordV0 {
 pub(crate) struct CodexLineageFactsV0 {
     facts: Vec<CodexLineageFactV0>,
     has_unattributed_ambiguity: bool,
+    earliest_unattributed_ambiguity_raw_ordinal: Option<u64>,
     sealed: bool,
     conservative: bool,
     charged: usize,
@@ -147,6 +168,7 @@ pub(crate) struct CodexLineageFactsV0 {
 pub(super) struct CodexLineageFactMarkV0 {
     len: usize,
     has_unattributed_ambiguity: bool,
+    earliest_unattributed_ambiguity_raw_ordinal: Option<u64>,
 }
 
 impl CodexLineageFactsV0 {
@@ -159,6 +181,7 @@ impl CodexLineageFactsV0 {
         Ok(Self {
             facts: Vec::new(),
             has_unattributed_ambiguity: false,
+            earliest_unattributed_ambiguity_raw_ordinal: None,
             sealed: conservative,
             conservative,
             charged,
@@ -167,28 +190,44 @@ impl CodexLineageFactsV0 {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn record(&mut self, evidence: CodexLineageRecordEvidence<'_>) -> Result<()> {
+        self.record_at(evidence, 0)
+    }
+
+    pub(super) fn record_at(
+        &mut self,
+        evidence: CodexLineageRecordEvidence<'_>,
+        raw_ordinal: u64,
+    ) -> Result<()> {
         if self.conservative {
             return Ok(());
         }
         match evidence {
             CodexLineageRecordEvidence::None => {}
             CodexLineageRecordEvidence::UnattributedAmbiguity => {
-                self.has_unattributed_ambiguity = true;
+                self.note_unattributed_ambiguity(raw_ordinal);
             }
             CodexLineageRecordEvidence::Call(call_id) => {
-                self.push(CodexLineageFactKindV0::Call, call_id)?;
+                self.push(CodexLineageFactKindV0::Call, call_id, raw_ordinal)?;
             }
             CodexLineageRecordEvidence::Result(call_id) => {
-                self.push(CodexLineageFactKindV0::Result, call_id)?;
+                self.push(CodexLineageFactKindV0::Result, call_id, raw_ordinal)?;
             }
             CodexLineageRecordEvidence::Ambiguous(call_id) => {
-                self.push(CodexLineageFactKindV0::Ambiguous, call_id)?;
+                self.push(CodexLineageFactKindV0::Ambiguous, call_id, raw_ordinal)?;
             }
             CodexLineageRecordEvidence::AmbiguousDigests(digests) => {
                 for digest in digests {
-                    self.push_digest(CodexLineageFactKindV0::Ambiguous, *digest)?;
+                    self.push_digest(CodexLineageFactKindV0::Ambiguous, *digest, raw_ordinal)?;
                 }
+            }
+            CodexLineageRecordEvidence::DescendantStarted(native_session_id) => {
+                self.push_digest(
+                    CodexLineageFactKindV0::DescendantStarted,
+                    codex_lineage_descendant_session_digest(native_session_id),
+                    raw_ordinal,
+                )?;
             }
         }
         Ok(())
@@ -212,24 +251,44 @@ impl CodexLineageFactsV0 {
         let mut write = 0_usize;
         while read < self.facts.len() {
             let digest = self.facts[read].call_id_sha256;
-            let mut call_count = 0_usize;
-            let mut result_count = 0_usize;
             let mut ambiguous = false;
+            let mut call_ordinals = [u64::MAX; 2];
+            let mut result_ordinals = [u64::MAX; 2];
+            let mut ambiguous_ordinal = u64::MAX;
+            let mut descendant_started_ordinal = u64::MAX;
             while read < self.facts.len() && self.facts[read].call_id_sha256 == digest {
                 match self.facts[read].kind {
-                    CodexLineageFactKindV0::Call => call_count = call_count.saturating_add(1),
-                    CodexLineageFactKindV0::Result => result_count = result_count.saturating_add(1),
-                    CodexLineageFactKindV0::Ambiguous => ambiguous = true,
+                    CodexLineageFactKindV0::Call => {
+                        retain_two_earliest(&mut call_ordinals, self.facts[read].raw_ordinal);
+                    }
+                    CodexLineageFactKindV0::Result => {
+                        retain_two_earliest(&mut result_ordinals, self.facts[read].raw_ordinal);
+                    }
+                    CodexLineageFactKindV0::Ambiguous => {
+                        ambiguous = true;
+                        ambiguous_ordinal = ambiguous_ordinal.min(self.facts[read].raw_ordinal);
+                    }
+                    CodexLineageFactKindV0::DescendantStarted => {
+                        descendant_started_ordinal =
+                            descendant_started_ordinal.min(self.facts[read].raw_ordinal);
+                    }
                 }
                 read = read.saturating_add(1);
             }
-            if call_count > 1 || result_count > 1 {
-                ambiguous = true;
-            }
-            for kind in [
-                (call_count != 0).then_some(CodexLineageFactKindV0::Call),
-                (result_count != 0).then_some(CodexLineageFactKindV0::Result),
-                ambiguous.then_some(CodexLineageFactKindV0::Ambiguous),
+            for (kind, raw_ordinal) in [
+                (call_ordinals[0] != u64::MAX)
+                    .then_some((CodexLineageFactKindV0::Call, call_ordinals[0])),
+                (call_ordinals[1] != u64::MAX)
+                    .then_some((CodexLineageFactKindV0::Call, call_ordinals[1])),
+                (result_ordinals[0] != u64::MAX)
+                    .then_some((CodexLineageFactKindV0::Result, result_ordinals[0])),
+                (result_ordinals[1] != u64::MAX)
+                    .then_some((CodexLineageFactKindV0::Result, result_ordinals[1])),
+                ambiguous.then_some((CodexLineageFactKindV0::Ambiguous, ambiguous_ordinal)),
+                (descendant_started_ordinal != u64::MAX).then_some((
+                    CodexLineageFactKindV0::DescendantStarted,
+                    descendant_started_ordinal,
+                )),
             ]
             .into_iter()
             .flatten()
@@ -237,6 +296,7 @@ impl CodexLineageFactsV0 {
                 self.facts[write] = CodexLineageFactV0 {
                     call_id_sha256: digest,
                     kind,
+                    raw_ordinal,
                 };
                 write = write.saturating_add(1);
             }
@@ -255,6 +315,8 @@ impl CodexLineageFactsV0 {
         CodexLineageFactMarkV0 {
             len: self.facts.len(),
             has_unattributed_ambiguity: self.has_unattributed_ambiguity,
+            earliest_unattributed_ambiguity_raw_ordinal: self
+                .earliest_unattributed_ambiguity_raw_ordinal,
         }
     }
 
@@ -267,12 +329,24 @@ impl CodexLineageFactsV0 {
             .expect("Codex lineage logical-fact accounting is balanced");
         self.budget.release_facts(released_facts);
         self.has_unattributed_ambiguity = mark.has_unattributed_ambiguity;
+        self.earliest_unattributed_ambiguity_raw_ordinal =
+            mark.earliest_unattributed_ambiguity_raw_ordinal;
     }
 
+    #[cfg(test)]
     pub(crate) fn presence(
         &self,
         origin_call_id: &str,
         result_call_id: &str,
+    ) -> CodexLineageFactPresenceV0 {
+        self.presence_before(origin_call_id, result_call_id, None)
+    }
+
+    pub(crate) fn presence_before(
+        &self,
+        origin_call_id: &str,
+        result_call_id: &str,
+        descendant_native_session_id: Option<&str>,
     ) -> CodexLineageFactPresenceV0 {
         if self.conservative {
             return CodexLineageFactPresenceV0::Unproven;
@@ -282,11 +356,29 @@ impl CodexLineageFactsV0 {
         }
         let origin = codex_lineage_call_id_digest(origin_call_id);
         let result = codex_lineage_call_id_digest(result_call_id);
-        let has_call = self.contains(origin, CodexLineageFactKindV0::Call);
-        let has_result = self.contains(result, CodexLineageFactKindV0::Result);
-        let ambiguous = self.has_unattributed_ambiguity
-            || self.contains(origin, CodexLineageFactKindV0::Ambiguous)
-            || self.contains(result, CodexLineageFactKindV0::Ambiguous);
+        let inherited_prefix_end = match descendant_native_session_id {
+            Some(descendant) => self.raw_ordinal(
+                codex_lineage_descendant_session_digest(descendant),
+                CodexLineageFactKindV0::DescendantStarted,
+            ),
+            None => None,
+        };
+        let inherited_count =
+            |digest, kind| self.occurrence_count_before(digest, kind, inherited_prefix_end);
+        let call_count = inherited_count(origin, CodexLineageFactKindV0::Call);
+        let result_count = inherited_count(result, CodexLineageFactKindV0::Result);
+        let has_call = call_count != 0;
+        let has_result = result_count != 0;
+        let unattributed_ambiguity_applies = self.has_unattributed_ambiguity
+            && inherited_prefix_end.is_none_or(|prefix_end| {
+                self.earliest_unattributed_ambiguity_raw_ordinal
+                    .is_none_or(|ambiguity| ambiguity <= prefix_end)
+            });
+        let ambiguous = unattributed_ambiguity_applies
+            || call_count > 1
+            || result_count > 1
+            || inherited_count(origin, CodexLineageFactKindV0::Ambiguous) != 0
+            || inherited_count(result, CodexLineageFactKindV0::Ambiguous) != 0;
         if has_call && has_result && !ambiguous {
             CodexLineageFactPresenceV0::Present
         } else if ambiguous || has_call || has_result {
@@ -313,10 +405,16 @@ impl CodexLineageFactsV0 {
                         CodexLineageFactKindV0::Ambiguous => {
                             CodexCertifiedLineageFactKindV0::Ambiguous
                         }
+                        CodexLineageFactKindV0::DescendantStarted => {
+                            CodexCertifiedLineageFactKindV0::DescendantStarted
+                        }
                     },
+                    raw_ordinal: fact.raw_ordinal,
                 })
                 .collect(),
             has_unattributed_ambiguity: self.has_unattributed_ambiguity,
+            earliest_unattributed_ambiguity_raw_ordinal: self
+                .earliest_unattributed_ambiguity_raw_ordinal,
         })
     }
 
@@ -331,11 +429,17 @@ impl CodexLineageFactsV0 {
                     CodexCertifiedLineageFactKindV0::Call => CodexLineageFactKindV0::Call,
                     CodexCertifiedLineageFactKindV0::Result => CodexLineageFactKindV0::Result,
                     CodexCertifiedLineageFactKindV0::Ambiguous => CodexLineageFactKindV0::Ambiguous,
+                    CodexCertifiedLineageFactKindV0::DescendantStarted => {
+                        CodexLineageFactKindV0::DescendantStarted
+                    }
                 },
                 fact.call_id_sha256,
+                fact.raw_ordinal,
             )?;
         }
         facts.has_unattributed_ambiguity = authority.has_unattributed_ambiguity;
+        facts.earliest_unattributed_ambiguity_raw_ordinal =
+            authority.earliest_unattributed_ambiguity_raw_ordinal;
         facts.seal();
         Ok(facts)
     }
@@ -350,9 +454,15 @@ impl CodexLineageFactsV0 {
             hasher.update(bytes);
             Ok(())
         };
-        write(&[1])?;
+        write(&[3])?;
         let flags = u8::from(self.has_unattributed_ambiguity) | (u8::from(self.conservative) << 1);
         write(&[flags])?;
+        write(
+            &self
+                .earliest_unattributed_ambiguity_raw_ordinal
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        )?;
         let count = u64::try_from(self.facts.len()).map_err(|_| lineage_accounting_invariant())?;
         write(&count.to_le_bytes())?;
         for fact in &self.facts {
@@ -360,9 +470,11 @@ impl CodexLineageFactsV0 {
                 CodexLineageFactKindV0::Call => 0,
                 CodexLineageFactKindV0::Result => 1,
                 CodexLineageFactKindV0::Ambiguous => 2,
+                CodexLineageFactKindV0::DescendantStarted => 3,
             };
             write(&[kind])?;
             write(&fact.call_id_sha256)?;
+            write(&fact.raw_ordinal.to_le_bytes())?;
         }
         let end = file.stream_position()?;
         Ok(CodexLineageFactsSpillRecordV0 {
@@ -389,7 +501,7 @@ impl CodexLineageFactsV0 {
         };
         let mut version = [0_u8; 1];
         read(&mut version)?;
-        if version != [1] {
+        if version != [3] {
             return Err(lineage_spill_invalid());
         }
         let mut flags = [0_u8; 1];
@@ -397,13 +509,19 @@ impl CodexLineageFactsV0 {
         if flags[0] & !0b11 != 0 {
             return Err(lineage_spill_invalid());
         }
+        let mut earliest_ambiguity = [0_u8; 8];
+        read(&mut earliest_ambiguity)?;
+        let earliest_ambiguity = match u64::from_le_bytes(earliest_ambiguity) {
+            u64::MAX => None,
+            value => Some(value),
+        };
         let mut count = [0_u8; 8];
         read(&mut count)?;
         let count = u64::from_le_bytes(count);
-        let expected_length = 10_u64
+        let expected_length = 18_u64
             .checked_add(
                 count
-                    .checked_mul(33)
+                    .checked_mul(41)
                     .ok_or_else(lineage_accounting_invariant)?,
             )
             .ok_or_else(lineage_accounting_invariant)?;
@@ -425,13 +543,22 @@ impl CodexLineageFactsV0 {
                 0 => CodexLineageFactKindV0::Call,
                 1 => CodexLineageFactKindV0::Result,
                 2 => CodexLineageFactKindV0::Ambiguous,
+                3 => CodexLineageFactKindV0::DescendantStarted,
                 _ => return Err(lineage_spill_invalid()),
             };
             let mut digest = [0_u8; 32];
             read(&mut digest)?;
-            facts.push_digest(kind, digest)?;
+            let mut raw_ordinal = [0_u8; 8];
+            read(&mut raw_ordinal)?;
+            facts.push_digest(kind, digest, u64::from_le_bytes(raw_ordinal))?;
         }
         facts.has_unattributed_ambiguity = flags[0] & 0b1 != 0;
+        facts.earliest_unattributed_ambiguity_raw_ordinal = earliest_ambiguity;
+        if (facts.has_unattributed_ambiguity != earliest_ambiguity.is_some())
+            || (conservative && earliest_ambiguity.is_some())
+        {
+            return Err(lineage_spill_invalid());
+        }
         facts.seal();
         if (!conservative && facts.conservative)
             || (!conservative && facts.facts.len() != usize::try_from(count).unwrap_or(usize::MAX))
@@ -442,20 +569,30 @@ impl CodexLineageFactsV0 {
         Ok(facts)
     }
 
-    fn push(&mut self, kind: CodexLineageFactKindV0, call_id: &str) -> Result<()> {
+    fn push(
+        &mut self,
+        kind: CodexLineageFactKindV0,
+        call_id: &str,
+        raw_ordinal: u64,
+    ) -> Result<()> {
         if call_id.is_empty() || self.sealed {
-            self.has_unattributed_ambiguity = true;
+            self.note_unattributed_ambiguity(raw_ordinal);
             return Ok(());
         }
-        self.push_digest(kind, codex_lineage_call_id_digest(call_id))
+        self.push_digest(kind, codex_lineage_call_id_digest(call_id), raw_ordinal)
     }
 
-    fn push_digest(&mut self, kind: CodexLineageFactKindV0, digest: [u8; 32]) -> Result<()> {
+    fn push_digest(
+        &mut self,
+        kind: CodexLineageFactKindV0,
+        digest: [u8; 32],
+        raw_ordinal: u64,
+    ) -> Result<()> {
         if self.conservative {
             return Ok(());
         }
         if self.sealed {
-            self.has_unattributed_ambiguity = true;
+            self.note_unattributed_ambiguity(raw_ordinal);
             return Ok(());
         }
         if self.facts.len() == self.facts.capacity() && !self.reserve_more(LINEAGE_FACT_GROWTH)? {
@@ -476,6 +613,7 @@ impl CodexLineageFactsV0 {
         self.facts.push(CodexLineageFactV0 {
             call_id_sha256: digest,
             kind,
+            raw_ordinal,
         });
         Ok(())
     }
@@ -536,19 +674,45 @@ impl CodexLineageFactsV0 {
         self.budget.release(self.charged);
         self.budget.release_facts(self.charged_facts);
         self.has_unattributed_ambiguity = false;
+        self.earliest_unattributed_ambiguity_raw_ordinal = None;
         self.sealed = true;
         self.conservative = true;
         self.charged = 0;
         self.charged_facts = 0;
     }
 
-    fn contains(&self, digest: [u8; 32], kind: CodexLineageFactKindV0) -> bool {
+    fn raw_ordinal(&self, digest: [u8; 32], kind: CodexLineageFactKindV0) -> Option<u64> {
+        let index = self
+            .facts
+            .partition_point(|fact| (fact.call_id_sha256, fact.kind) < (digest, kind));
         self.facts
-            .binary_search(&CodexLineageFactV0 {
-                call_id_sha256: digest,
-                kind,
-            })
-            .is_ok()
+            .get(index)
+            .filter(|fact| (fact.call_id_sha256, fact.kind) == (digest, kind))
+            .map(|fact| fact.raw_ordinal)
+    }
+
+    fn occurrence_count_before(
+        &self,
+        digest: [u8; 32],
+        kind: CodexLineageFactKindV0,
+        inclusive_end: Option<u64>,
+    ) -> usize {
+        let start = self
+            .facts
+            .partition_point(|fact| (fact.call_id_sha256, fact.kind) < (digest, kind));
+        self.facts[start..]
+            .iter()
+            .take_while(|fact| (fact.call_id_sha256, fact.kind) == (digest, kind))
+            .filter(|fact| inclusive_end.is_none_or(|end| fact.raw_ordinal <= end))
+            .count()
+    }
+
+    fn note_unattributed_ambiguity(&mut self, raw_ordinal: u64) {
+        self.earliest_unattributed_ambiguity_raw_ordinal = Some(
+            self.earliest_unattributed_ambiguity_raw_ordinal
+                .map_or(raw_ordinal, |current| current.min(raw_ordinal)),
+        );
+        self.has_unattributed_ambiguity = true;
     }
 }
 
@@ -715,6 +879,46 @@ mod tests {
         facts.seal();
         assert_eq!(
             facts.presence("duplicate", "duplicate"),
+            CodexLineageFactPresenceV0::Unproven
+        );
+    }
+
+    #[test]
+    fn typed_descendant_boundary_excludes_only_later_ambiguity() {
+        let budget = Arc::new(CodexLineageFactBudgetV0::default());
+        let mut later = CodexLineageFactsV0::new(Arc::clone(&budget)).unwrap();
+        later
+            .record_at(CodexLineageRecordEvidence::DescendantStarted("child"), 100)
+            .unwrap();
+        later
+            .record_at(CodexLineageRecordEvidence::UnattributedAmbiguity, 200)
+            .unwrap();
+        later.seal();
+        assert_eq!(
+            later.presence_before("child-call", "child-call", Some("child")),
+            CodexLineageFactPresenceV0::Absent
+        );
+
+        let mut earlier = CodexLineageFactsV0::new(Arc::clone(&budget)).unwrap();
+        earlier
+            .record_at(CodexLineageRecordEvidence::UnattributedAmbiguity, 50)
+            .unwrap();
+        earlier
+            .record_at(CodexLineageRecordEvidence::DescendantStarted("child"), 100)
+            .unwrap();
+        earlier.seal();
+        assert_eq!(
+            earlier.presence_before("child-call", "child-call", Some("child")),
+            CodexLineageFactPresenceV0::Unproven
+        );
+
+        let mut unbounded = CodexLineageFactsV0::new(budget).unwrap();
+        unbounded
+            .record(CodexLineageRecordEvidence::UnattributedAmbiguity)
+            .unwrap();
+        unbounded.seal();
+        assert_eq!(
+            unbounded.presence_before("child-call", "child-call", Some("child")),
             CodexLineageFactPresenceV0::Unproven
         );
     }
@@ -963,6 +1167,89 @@ mod tests {
         let facts = replay.lineage_facts.unwrap();
         assert_eq!(
             facts.presence("checkpoint-call", "checkpoint-call"),
+            CodexLineageFactPresenceV0::Present
+        );
+    }
+
+    #[test]
+    fn typed_descendant_boundary_excludes_later_exact_facts_and_is_mandatory() {
+        let child = "019fa000-0000-7000-8000-000000000301";
+        let budget = Arc::new(CodexLineageFactBudgetV0::default());
+        let mut facts = CodexLineageFactsV0::new(budget).unwrap();
+        facts
+            .record_at(CodexLineageRecordEvidence::Call("inherited"), 1)
+            .unwrap();
+        facts
+            .record_at(CodexLineageRecordEvidence::Result("inherited"), 2)
+            .unwrap();
+        facts
+            .record_at(CodexLineageRecordEvidence::DescendantStarted(child), 3)
+            .unwrap();
+        facts
+            .record_at(CodexLineageRecordEvidence::Call("later"), 4)
+            .unwrap();
+        facts
+            .record_at(CodexLineageRecordEvidence::Result("later"), 5)
+            .unwrap();
+        facts.seal();
+
+        assert_eq!(
+            facts.presence_before("inherited", "inherited", Some(child)),
+            CodexLineageFactPresenceV0::Present
+        );
+        assert_eq!(
+            facts.presence_before("later", "later", Some(child)),
+            CodexLineageFactPresenceV0::Absent
+        );
+
+        let mut duplicate_after =
+            CodexLineageFactsV0::new(Arc::new(CodexLineageFactBudgetV0::default())).unwrap();
+        duplicate_after
+            .record_at(CodexLineageRecordEvidence::Call("shared"), 1)
+            .unwrap();
+        duplicate_after
+            .record_at(CodexLineageRecordEvidence::Result("shared"), 2)
+            .unwrap();
+        duplicate_after
+            .record_at(CodexLineageRecordEvidence::DescendantStarted(child), 3)
+            .unwrap();
+        duplicate_after
+            .record_at(CodexLineageRecordEvidence::Call("shared"), 4)
+            .unwrap();
+        duplicate_after.seal();
+        assert_eq!(
+            duplicate_after.presence_before("shared", "shared", Some(child)),
+            CodexLineageFactPresenceV0::Present
+        );
+
+        let mut duplicate_before =
+            CodexLineageFactsV0::new(Arc::new(CodexLineageFactBudgetV0::default())).unwrap();
+        duplicate_before
+            .record_at(CodexLineageRecordEvidence::Call("shared"), 1)
+            .unwrap();
+        duplicate_before
+            .record_at(CodexLineageRecordEvidence::Call("shared"), 2)
+            .unwrap();
+        duplicate_before
+            .record_at(CodexLineageRecordEvidence::Result("shared"), 3)
+            .unwrap();
+        duplicate_before
+            .record_at(CodexLineageRecordEvidence::DescendantStarted(child), 4)
+            .unwrap();
+        duplicate_before.seal();
+        assert_eq!(
+            duplicate_before.presence_before("shared", "shared", Some(child)),
+            CodexLineageFactPresenceV0::Unproven
+        );
+        // Without a typed boundary, exact call/result identifiers retain the
+        // existing globally unique match semantics. Only unattributed
+        // ambiguity remains conservatively unbounded.
+        assert_eq!(
+            facts.presence_before(
+                "inherited",
+                "inherited",
+                Some("019fa000-0000-7000-8000-000000000302")
+            ),
             CodexLineageFactPresenceV0::Present
         );
     }

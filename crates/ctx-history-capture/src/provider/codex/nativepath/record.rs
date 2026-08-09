@@ -100,6 +100,8 @@ impl CodexResultKind {
 pub(super) enum CodexRecordClass {
     SessionMeta,
     TurnContext,
+    DescendantActivity,
+    DescendantStarted,
     Retained(CodexRetainedKind),
     ExcludedResult(CodexResultKind),
     Ignored,
@@ -359,6 +361,8 @@ impl<'de> Visitor<'de> for CodexEnvelopeProbeVisitor {
 struct CodexPayloadProbe<'a> {
     item_type: Option<CodexText<'a>>,
     call_id: Option<CodexText<'a>>,
+    agent_thread_id: Option<CodexText<'a>>,
+    activity_kind: Option<CodexText<'a>>,
     lineage_call_ids: CodexLineageCallIds,
     relationship_escaped: bool,
     lineage_malformed: bool,
@@ -368,6 +372,8 @@ fn empty_codex_payload_probe<'a>() -> CodexPayloadProbe<'a> {
     CodexPayloadProbe {
         item_type: None,
         call_id: None,
+        agent_thread_id: None,
+        activity_kind: None,
         lineage_call_ids: CodexLineageCallIds::default(),
         relationship_escaped: false,
         lineage_malformed: false,
@@ -398,8 +404,12 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
     {
         let mut item_type = None;
         let mut call_id = None;
+        let mut agent_thread_id = None;
+        let mut activity_kind = None;
         let mut saw_item_type = false;
         let mut saw_call_id = false;
+        let mut saw_agent_thread_id = false;
+        let mut saw_activity_kind = false;
         let mut lineage_call_ids = CodexLineageCallIds::default();
         let mut relationship_escaped = false;
         let mut lineage_malformed = false;
@@ -431,6 +441,28 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
                         }
                     }
                 }
+                "agent_thread_id" => {
+                    let duplicate = saw_agent_thread_id;
+                    saw_agent_thread_id = true;
+                    let value = map.next_value::<CodexLineageText<'de>>()?;
+                    relationship_escaped |=
+                        key_escaped || value.value.as_ref().is_some_and(|value| value.escaped);
+                    lineage_malformed |= duplicate || value.malformed;
+                    if !duplicate {
+                        agent_thread_id = value.value;
+                    }
+                }
+                "kind" => {
+                    let duplicate = saw_activity_kind;
+                    saw_activity_kind = true;
+                    let value = map.next_value::<CodexLineageText<'de>>()?;
+                    relationship_escaped |=
+                        key_escaped || value.value.as_ref().is_some_and(|value| value.escaped);
+                    lineage_malformed |= duplicate || value.malformed;
+                    if !duplicate {
+                        activity_kind = value.value;
+                    }
+                }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -439,6 +471,8 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
         Ok(CodexPayloadProbe {
             item_type,
             call_id,
+            agent_thread_id,
+            activity_kind,
             lineage_call_ids,
             relationship_escaped,
             lineage_malformed,
@@ -496,6 +530,7 @@ pub(super) struct CodexRecordProbe<'a> {
     pub(super) timestamp: Option<Cow<'a, str>>,
     pub(super) call_id: Option<Cow<'a, str>>,
     pub(super) output: Option<CodexStructuralOutput>,
+    descendant_started_native_session_id: Option<Cow<'a, str>>,
     relationship_escaped: bool,
     lineage_malformed: bool,
     lineage_call_ids: CodexLineageCallIds,
@@ -515,6 +550,7 @@ pub(super) enum CodexLineageRecordEvidence<'a> {
     Ambiguous(&'a str),
     AmbiguousDigests(&'a [[u8; 32]]),
     UnattributedAmbiguity,
+    DescendantStarted(&'a str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -535,11 +571,11 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
         .payload
         .as_ref()
         .and_then(|payload| payload.item_type.as_ref().map(CodexText::as_str));
-    let class = codex_record_class(
+    let base_class = codex_record_class(
         envelope.record_type.as_ref().map_or("", CodexText::as_str),
         item_type,
     );
-    let output = match (lineage_malformed, class) {
+    let output = match (lineage_malformed, base_class) {
         (true, _) => None,
         (false, CodexRecordClass::ExcludedResult(_)) => Some(probe_structural_output(line)?),
         (false, _) => None,
@@ -549,6 +585,25 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
             .payload
             .as_ref()
             .is_some_and(|payload| payload.relationship_escaped);
+    let descendant_started_native_session_id = envelope.payload.as_ref().and_then(|payload| {
+        (base_class == CodexRecordClass::DescendantActivity
+            && payload.activity_kind.as_ref().map(CodexText::as_str) == Some("started")
+            && !lineage_malformed
+            && !relationship_escaped)
+            .then(|| {
+                payload
+                    .agent_thread_id
+                    .as_ref()
+                    .map(|value| value.value.clone())
+            })
+            .flatten()
+            .filter(|value| uuid::Uuid::parse_str(value.as_ref()).is_ok())
+    });
+    let class = if descendant_started_native_session_id.is_some() {
+        CodexRecordClass::DescendantStarted
+    } else {
+        base_class
+    };
     Ok(CodexRecordProbe {
         class,
         timestamp: envelope.timestamp,
@@ -556,6 +611,7 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
             .payload
             .and_then(|payload| payload.call_id.map(|call_id| call_id.value)),
         output,
+        descendant_started_native_session_id,
         relationship_escaped,
         lineage_malformed,
         lineage_call_ids: envelope.lineage_call_ids,
@@ -570,6 +626,9 @@ pub(super) fn codex_lineage_record_evidence<'a>(
             return CodexLineageRecordEvidence::AmbiguousDigests(probe.lineage_call_ids.as_slice());
         }
         return CodexLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    if let Some(descendant) = probe.descendant_started_native_session_id.as_deref() {
+        return CodexLineageRecordEvidence::DescendantStarted(descendant);
     }
     let is_call = matches!(
         probe.class,
@@ -638,6 +697,7 @@ pub(super) fn classify_mcp_terminal_after_selector_ambiguity(
         timestamp,
         call_id,
         output: Some(probe_structural_output(line).ok()?),
+        descendant_started_native_session_id: None,
         relationship_escaped: true,
         lineage_malformed: false,
         lineage_call_ids: CodexLineageCallIds::default(),
@@ -686,6 +746,7 @@ fn classify_response_item(item_type: Option<&str>) -> CodexRecordClass {
 
 fn classify_event_message(item_type: Option<&str>) -> CodexRecordClass {
     match item_type {
+        Some("sub_agent_activity") => CodexRecordClass::DescendantActivity,
         Some(
             "patch_apply_end" | "web_search_end" | "exec_command_end" | "command_complete"
             | "tool_complete" | "mcp_tool_call_end",
@@ -821,6 +882,43 @@ mod lineage_tests {
             write!(escaped, "\\u{byte:04x}").unwrap();
         }
         escaped
+    }
+
+    #[test]
+    fn descendant_start_requires_exact_typed_unescaped_uuid_authority() {
+        let child = "019f8d80-ba23-73f3-a02a-9400f9e7b9ec";
+        let exact = format!(
+            r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"started","agent_thread_id":"{child}"}}}}"#
+        );
+        let probe = classify_codex_record(exact.as_bytes()).unwrap();
+        assert_eq!(probe.class, CodexRecordClass::DescendantStarted);
+        assert_eq!(
+            codex_lineage_record_evidence(&probe),
+            CodexLineageRecordEvidence::DescendantStarted(child)
+        );
+
+        for untrusted in [
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"completed","agent_thread_id":"{child}"}}}}"#
+            ),
+            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started","agent_thread_id":"not-a-uuid"}}"#.to_owned(),
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"st\u0061rted","agent_thread_id":"{child}"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"started","agent_thread_id":"{child}","agent_thread_id":"{child}"}}}}"#
+            ),
+        ] {
+            let probe = classify_codex_record(untrusted.as_bytes()).unwrap();
+            assert_ne!(probe.class, CodexRecordClass::DescendantStarted, "{untrusted}");
+            assert!(
+                !matches!(
+                    codex_lineage_record_evidence(&probe),
+                    CodexLineageRecordEvidence::DescendantStarted(_)
+                ),
+                "{untrusted}"
+            );
+        }
     }
 
     #[test]

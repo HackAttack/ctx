@@ -979,9 +979,12 @@ impl CodexOutcomeLineageAuthorityV0 {
         else {
             return Ok(CodexOutcomeOriginV0::Unproven);
         };
-        // Codex event timestamps are not lineage authority: copied native rows
-        // may be reordered or restamped. Only an exhaustive walk of certified
-        // ancestor call/result facts can prove copied presence or unique absence.
+        // Timestamps are not lineage authority: provider clocks may move or
+        // copied rows may be restamped. A parent's typed `sub_agent_activity`
+        // `started` record is an exact append-order boundary for that direct
+        // child. Ambiguity after that raw ordinal could not have been inherited;
+        // without the typed boundary the edge remains conservatively unbounded.
+        let mut direct_child_native_session_id = current.native_session_id.as_str();
         let mut parent = match &current.parent {
             ParentLinkV0::Root => return Ok(CodexOutcomeOriginV0::UniqueToSession),
             ParentLinkV0::Source(index) => ParentLinkV0::Source(*index),
@@ -1013,7 +1016,11 @@ impl CodexOutcomeLineageAuthorityV0 {
                     return Err(CodexSourceBackedErrorV0::LineageWorkingSetUnavailable)
                 }
             };
-            match parent_facts.presence(origin_call_id, result_call_id) {
+            match parent_facts.presence_before(
+                origin_call_id,
+                result_call_id,
+                Some(direct_child_native_session_id),
+            ) {
                 CodexLineageFactPresenceV0::Present => {
                     return Ok(CodexOutcomeOriginV0::CopiedFromAncestor {
                         ancestor_native_session_id: parent_node.native_session_id.clone(),
@@ -1022,6 +1029,7 @@ impl CodexOutcomeLineageAuthorityV0 {
                 CodexLineageFactPresenceV0::Unproven => return Ok(CodexOutcomeOriginV0::Unproven),
                 CodexLineageFactPresenceV0::Absent => {}
             }
+            direct_child_native_session_id = parent_node.native_session_id.as_str();
             parent = parent_node.parent.clone();
         }
         Ok(CodexOutcomeOriginV0::Unproven)
