@@ -26,7 +26,7 @@ pub(super) fn codex_lineage_call_id_digest(call_id: &str) -> [u8; 32] {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct CodexLineageCallIds {
+pub(super) struct CodexLineageCallIds {
     digests: [[u8; 32]; MAX_CODEX_LINEAGE_CALL_IDS_PER_RECORD],
     len: usize,
     overflowed: bool,
@@ -366,6 +366,8 @@ struct CodexPayloadProbe<'a> {
     lineage_call_ids: CodexLineageCallIds,
     relationship_escaped: bool,
     lineage_malformed: bool,
+    activity_relationship_escaped: bool,
+    activity_lineage_malformed: bool,
 }
 
 fn empty_codex_payload_probe<'a>() -> CodexPayloadProbe<'a> {
@@ -377,6 +379,8 @@ fn empty_codex_payload_probe<'a>() -> CodexPayloadProbe<'a> {
         lineage_call_ids: CodexLineageCallIds::default(),
         relationship_escaped: false,
         lineage_malformed: false,
+        activity_relationship_escaped: false,
+        activity_lineage_malformed: false,
     }
 }
 
@@ -413,6 +417,8 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
         let mut lineage_call_ids = CodexLineageCallIds::default();
         let mut relationship_escaped = false;
         let mut lineage_malformed = false;
+        let mut activity_relationship_escaped = false;
+        let mut activity_lineage_malformed = false;
         while let Some(key) = map.next_key::<CodexText<'de>>()? {
             let key_escaped = key.escaped;
             match key.as_str() {
@@ -445,9 +451,9 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
                     let duplicate = saw_agent_thread_id;
                     saw_agent_thread_id = true;
                     let value = map.next_value::<CodexLineageText<'de>>()?;
-                    relationship_escaped |=
+                    activity_relationship_escaped |=
                         key_escaped || value.value.as_ref().is_some_and(|value| value.escaped);
-                    lineage_malformed |= duplicate || value.malformed;
+                    activity_lineage_malformed |= duplicate || value.malformed;
                     if !duplicate {
                         agent_thread_id = value.value;
                     }
@@ -456,9 +462,9 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
                     let duplicate = saw_activity_kind;
                     saw_activity_kind = true;
                     let value = map.next_value::<CodexLineageText<'de>>()?;
-                    relationship_escaped |=
+                    activity_relationship_escaped |=
                         key_escaped || value.value.as_ref().is_some_and(|value| value.escaped);
-                    lineage_malformed |= duplicate || value.malformed;
+                    activity_lineage_malformed |= duplicate || value.malformed;
                     if !duplicate {
                         activity_kind = value.value;
                     }
@@ -476,6 +482,8 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
             lineage_call_ids,
             relationship_escaped,
             lineage_malformed,
+            activity_relationship_escaped,
+            activity_lineage_malformed,
         })
     }
 
@@ -553,6 +561,25 @@ pub(super) enum CodexLineageRecordEvidence<'a> {
     DescendantStarted(&'a str),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CodexMalformedLineageRecordEvidence {
+    None,
+    AmbiguousDigests(CodexLineageCallIds),
+    UnattributedAmbiguity,
+}
+
+impl CodexMalformedLineageRecordEvidence {
+    pub(super) fn as_record_evidence(&self) -> CodexLineageRecordEvidence<'_> {
+        match self {
+            Self::None => CodexLineageRecordEvidence::None,
+            Self::AmbiguousDigests(call_ids) => {
+                CodexLineageRecordEvidence::AmbiguousDigests(call_ids.as_slice())
+            }
+            Self::UnattributedAmbiguity => CodexLineageRecordEvidence::UnattributedAmbiguity,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CodexStructuralOutput {
     pub(super) outcome: OutputOutcomeMetadata,
@@ -562,11 +589,6 @@ pub(super) struct CodexStructuralOutput {
 
 pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexRecordProbe<'_>> {
     let envelope = serde_json::from_slice::<CodexEnvelopeProbe<'_>>(line)?;
-    let lineage_malformed = envelope.lineage_malformed
-        || envelope
-            .payload
-            .as_ref()
-            .is_some_and(|payload| payload.lineage_malformed);
     let item_type = envelope
         .payload
         .as_ref()
@@ -575,16 +597,21 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
         envelope.record_type.as_ref().map_or("", CodexText::as_str),
         item_type,
     );
+    let activity_record = base_class == CodexRecordClass::DescendantActivity;
+    let lineage_malformed = envelope.lineage_malformed
+        || envelope.payload.as_ref().is_some_and(|payload| {
+            payload.lineage_malformed || (activity_record && payload.activity_lineage_malformed)
+        });
     let output = match (lineage_malformed, base_class) {
         (true, _) => None,
         (false, CodexRecordClass::ExcludedResult(_)) => Some(probe_structural_output(line)?),
         (false, _) => None,
     };
     let relationship_escaped = envelope.relationship_escaped
-        || envelope
-            .payload
-            .as_ref()
-            .is_some_and(|payload| payload.relationship_escaped);
+        || envelope.payload.as_ref().is_some_and(|payload| {
+            payload.relationship_escaped
+                || (activity_record && payload.activity_relationship_escaped)
+        });
     let descendant_started_native_session_id = envelope.payload.as_ref().and_then(|payload| {
         (base_class == CodexRecordClass::DescendantActivity
             && payload.activity_kind.as_ref().map(CodexText::as_str) == Some("started")
@@ -661,9 +688,199 @@ pub(super) fn malformed_record_may_contain_lineage(record: &[u8]) -> bool {
         br#""custom_tool_call""#.as_slice(),
         br#""function_call_output""#.as_slice(),
         br#""custom_tool_call_output""#.as_slice(),
+        br#""sub_agent_activity""#.as_slice(),
+        br#""agent_thread_id""#.as_slice(),
     ]
     .into_iter()
     .any(|needle| record.windows(needle.len()).any(|window| window == needle))
+}
+
+/// Recovers exact ambiguity scope when one physical JSONL row is a sequence of
+/// otherwise valid Codex envelopes.
+///
+/// Real Codex interruption races have concatenated two complete JSON objects
+/// without a newline. The row is still rejected, but treating that corruption
+/// as ambiguity for every call in the entire session discards unrelated exact
+/// producer evidence. A complete serde stream proves the full malformed row is
+/// composed only of the envelopes inspected here; any parse error, overflow,
+/// or selector whose call identity cannot be recovered retains the existing
+/// fail-closed global ambiguity.
+pub(super) fn malformed_codex_lineage_record_evidence(
+    record: &[u8],
+) -> CodexMalformedLineageRecordEvidence {
+    if !malformed_record_may_contain_lineage(record) {
+        return CodexMalformedLineageRecordEvidence::None;
+    }
+
+    let mut stream =
+        serde_json::Deserializer::from_slice(record).into_iter::<CodexEnvelopeProbe<'_>>();
+    let mut call_ids = CodexLineageCallIds::default();
+    let mut envelopes = 0_usize;
+    while let Some(next) = stream.next() {
+        let Ok(envelope) = next else {
+            return literal_malformed_call_id_evidence(record);
+        };
+        envelopes = envelopes.saturating_add(1);
+
+        let item_type = envelope
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.item_type.as_ref().map(CodexText::as_str));
+        let class = codex_record_class(
+            envelope.record_type.as_ref().map_or("", CodexText::as_str),
+            item_type,
+        );
+        if class == CodexRecordClass::DescendantActivity {
+            // A malformed physical row can never grant a trusted child-start
+            // boundary. Preserve source-wide abstention instead of silently
+            // treating a concatenated activity as ordinary ignored telemetry.
+            return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+        }
+        let lineage_malformed = envelope.lineage_malformed
+            || envelope
+                .payload
+                .as_ref()
+                .is_some_and(|payload| payload.lineage_malformed);
+
+        if lineage_malformed {
+            if envelope.lineage_call_ids.overflowed
+                || envelope.lineage_call_ids.as_slice().is_empty()
+            {
+                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+            }
+            call_ids.merge(envelope.lineage_call_ids);
+        } else if matches!(
+            class,
+            CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
+                | CodexRecordClass::ExcludedResult(_)
+        ) {
+            let Some(call_id) = envelope
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.call_id.as_ref())
+                .map(CodexText::as_str)
+            else {
+                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+            };
+            if call_id.is_empty() || call_id.len() > super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES
+            {
+                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+            }
+            call_ids.remember(call_id);
+        }
+
+        if call_ids.overflowed {
+            return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+        }
+    }
+
+    if envelopes == 0
+        || !record[stream.byte_offset()..]
+            .iter()
+            .all(u8::is_ascii_whitespace)
+    {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    }
+    if call_ids.as_slice().is_empty() {
+        CodexMalformedLineageRecordEvidence::None
+    } else {
+        CodexMalformedLineageRecordEvidence::AmbiguousDigests(call_ids)
+    }
+}
+
+fn literal_malformed_call_id_evidence(record: &[u8]) -> CodexMalformedLineageRecordEvidence {
+    let Some(call_ids) = recover_literal_malformed_call_ids(record) else {
+        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
+    };
+    CodexMalformedLineageRecordEvidence::AmbiguousDigests(call_ids)
+}
+
+/// Returns a conservative superset of every literal `call_id` in a corrupted
+/// row, or declines to scope the ambiguity.
+///
+/// A malformed outer string can contain either ordinary JSON fields or an
+/// escaped serialized JSON fragment. Both forms are admitted only when every
+/// `call_id` substring has the exact key/colon/plain-string shape and every
+/// value is bounded. Any Unicode escape could encode a hidden key, while any
+/// unrecognized occurrence could be a key whose value this scanner failed to
+/// recover, so either condition preserves global ambiguity.
+fn recover_literal_malformed_call_ids(record: &[u8]) -> Option<CodexLineageCallIds> {
+    if record.windows(2).any(|window| window == br#"\u"#) {
+        return None;
+    }
+
+    let needle = b"call_id";
+    let mut search_from = 0_usize;
+    let mut call_ids = CodexLineageCallIds::default();
+    let mut occurrences = 0_usize;
+    while let Some(relative) = record
+        .get(search_from..)?
+        .windows(needle.len())
+        .position(|window| window == needle)
+    {
+        let start = search_from.checked_add(relative)?;
+        occurrences = occurrences.checked_add(1)?;
+        let mut cursor = start.checked_add(needle.len())?;
+
+        let escaped_key = match (
+            record.get(start.checked_sub(2)?..start),
+            record.get(start.checked_sub(1)?),
+        ) {
+            (Some(br#"\""#), _) => true,
+            (_, Some(b'"')) => false,
+            _ => return None,
+        };
+        if escaped_key {
+            (record.get(cursor..cursor.checked_add(2)?)? == br#"\""#).then_some(())?;
+            cursor = cursor.checked_add(2)?;
+        } else {
+            (record.get(cursor) == Some(&b'"')).then_some(())?;
+            cursor = cursor.checked_add(1)?;
+        }
+        while record
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor = cursor.checked_add(1)?;
+        }
+        (record.get(cursor) == Some(&b':')).then_some(())?;
+        cursor = cursor.checked_add(1)?;
+        while record
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor = cursor.checked_add(1)?;
+        }
+
+        let escaped_value = record.get(cursor..cursor.checked_add(2)?)? == br#"\""#;
+        if escaped_value {
+            cursor = cursor.checked_add(2)?;
+        } else {
+            (record.get(cursor) == Some(&b'"')).then_some(())?;
+            cursor = cursor.checked_add(1)?;
+        }
+        let value_start = cursor;
+        let value_end = loop {
+            if escaped_value {
+                if record.get(cursor..cursor.checked_add(2)?)? == br#"\""# {
+                    break cursor;
+                }
+            } else if record.get(cursor) == Some(&b'"') {
+                break cursor;
+            }
+            // Call IDs are provider identifiers. Escapes make the exact value
+            // non-literal and therefore retain global ambiguity.
+            (record.get(cursor) != Some(&b'\\')).then_some(())?;
+            cursor = cursor.checked_add(1)?;
+        };
+        let value = std::str::from_utf8(record.get(value_start..value_end)?).ok()?;
+        (!value.is_empty() && value.len() <= super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES)
+            .then_some(())?;
+        call_ids.remember(value);
+        (!call_ids.overflowed).then_some(())?;
+        search_from = start.checked_add(needle.len())?;
+    }
+    (occurrences > 0 && !call_ids.as_slice().is_empty()).then_some(call_ids)
 }
 
 /// Recovers only the canonical MCP terminal shape when the strict selector
@@ -1028,6 +1245,81 @@ mod lineage_tests {
             codex_lineage_record_evidence(&probe),
             CodexLineageRecordEvidence::UnattributedAmbiguity
         );
+    }
+
+    #[test]
+    fn concatenated_valid_envelopes_recover_exact_ambiguity_scope() {
+        let record = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first","name":"exec"}}{"type":"response_item","payload":{"type":"function_call_output","call_id":"second","output":"ok"}}"#;
+        assert!(classify_codex_record(record).is_err());
+        let evidence = malformed_codex_lineage_record_evidence(record);
+        assert_ambiguous_call_ids(evidence.as_record_evidence(), &["first", "second"]);
+    }
+
+    #[test]
+    fn corrupted_outer_call_recovers_its_exact_trailing_call_id() {
+        let record = br#"{"type":"response_item","payload":{"type":"function_call","arguments":"prefix {"type":"response_item","payload":{"type":"function_call"}","call_id":"outer-call","name":"exec"}}"#;
+        assert!(classify_codex_record(record).is_err());
+        let evidence = malformed_codex_lineage_record_evidence(record);
+        assert!(
+            matches!(
+                evidence,
+                CodexMalformedLineageRecordEvidence::AmbiguousDigests(_)
+            ),
+            "outer corruption was not scoped: {evidence:?}"
+        );
+        assert_ambiguous_call_ids(evidence.as_record_evidence(), &["outer-call"]);
+    }
+
+    #[test]
+    fn malformed_unicode_or_unstructured_call_id_retains_global_ambiguity() {
+        for record in [
+            br#"{"type":"response_item","payload":{"type":"function_call","call_\u0069d":"hidden""#
+                .as_slice(),
+            br#"{"type":"response_item","payload":{"type":"function_call","text":"call_id without exact field""#
+                .as_slice(),
+        ] {
+            let evidence = malformed_codex_lineage_record_evidence(record);
+            assert!(matches!(
+                evidence,
+                CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
+            ), "unexpected scoped evidence: {evidence:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_rows_scope_all_exact_ids_but_not_descendant_authority() {
+        let exact_ids = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first"}}{"type":"response_item","payload":{"type":"function_call","call_id":"hidden""#;
+        let evidence = malformed_codex_lineage_record_evidence(exact_ids);
+        assert_ambiguous_call_ids(evidence.as_record_evidence(), &["first", "hidden"]);
+
+        let descendant = br#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started","agent_thread_id":"019f8d80-ba23-73f3-a02a-9400f9e7b9ec"}} trailing"#;
+        assert!(matches!(
+            malformed_codex_lineage_record_evidence(descendant),
+            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
+        ));
+    }
+
+    #[test]
+    fn malformed_non_lineage_record_adds_no_lineage_ambiguity() {
+        let record = br#"{"type":"event_msg","payload":{"type":"token_count","value":1}} trailing"#;
+        assert!(matches!(
+            malformed_codex_lineage_record_evidence(record),
+            CodexMalformedLineageRecordEvidence::None
+        ));
+    }
+
+    #[test]
+    fn too_many_concatenated_call_ids_retain_global_ambiguity() {
+        let mut record = String::new();
+        for index in 0..=MAX_CODEX_LINEAGE_CALL_IDS_PER_RECORD {
+            record.push_str(&format!(
+                r#"{{"type":"response_item","payload":{{"type":"function_call","call_id":"call-{index}"}}}}"#
+            ));
+        }
+        assert!(matches!(
+            malformed_codex_lineage_record_evidence(record.as_bytes()),
+            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
+        ));
     }
 }
 

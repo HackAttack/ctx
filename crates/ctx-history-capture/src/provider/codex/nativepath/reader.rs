@@ -20,10 +20,10 @@ use super::{
     },
     record::{
         classify_codex_record, classify_mcp_terminal_after_selector_ambiguity,
-        codex_lineage_record_evidence, malformed_record_may_contain_lineage, parse_decoded_record,
-        parse_session_meta, parse_turn_context_cwd, prefilter_codex_record,
-        CodexLineageRecordEvidence, CodexRecordAdmission, CodexRecordClass, CodexRecordProbe,
-        CodexResultKind, CodexSkipProjection,
+        codex_lineage_record_evidence, malformed_codex_lineage_record_evidence,
+        parse_decoded_record, parse_session_meta, parse_turn_context_cwd, prefilter_codex_record,
+        CodexLineageRecordEvidence, CodexMalformedLineageRecordEvidence, CodexRecordAdmission,
+        CodexRecordClass, CodexRecordProbe, CodexResultKind, CodexSkipProjection,
     },
     rows::{
         build_source_backed_event_row, build_source_backed_sparse_output_row, encoded_json_len,

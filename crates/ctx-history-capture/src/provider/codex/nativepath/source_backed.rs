@@ -74,7 +74,7 @@ const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
 const CODEX_SOURCE_REVISION_KIND: &str = "codex-ordinary-file-observation-v1";
 const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v11";
 const CODEX_PARSER_REVISION: &str =
-    "codex-nativepath-core-record-v23-typed-descendant-prefix-authority";
+    "codex-nativepath-core-record-v24-scoped-malformed-descendant-authority";
 const CODEX_GENERATION_LINEAGE_COMPONENTS_PER_WAVE: usize = 4;
 #[cfg(test)]
 const CODEX_INVENTORY_AUTHORITY_NAMESPACE: &str = "codex.sessions-root";

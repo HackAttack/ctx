@@ -97,11 +97,45 @@ fn prefilter_probes_only_candidate_descendant_start_activity() {
         CodexRecordAdmission::Probe
     );
 
-    let unrelated = r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"completed","message":"done"}}"#;
-    assert_eq!(
-        prefilter_codex_record(unrelated.as_bytes()),
-        CodexRecordAdmission::NoProjection(CodexSkipProjection::Ignored)
-    );
+    for unrelated in [
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"completed","message":"done"}}"#,
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"completed","agent_thread_id":"019f8d80-ba23-73f3-a02a-9400f9e7b9ec"}}"#,
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started","message":"missing child"}}"#,
+    ] {
+        assert_eq!(
+            prefilter_codex_record(unrelated.as_bytes()),
+            CodexRecordAdmission::NoProjection(CodexSkipProjection::Ignored),
+            "ordinary activity should retain the ignored fast path: {unrelated}"
+        );
+    }
+
+    for malformed in [
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":{}}}"#,
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"completed","agent_thread_id":7}}"#,
+        r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"completed","kind":"started"}}"#,
+    ] {
+        assert_eq!(
+            prefilter_codex_record(malformed.as_bytes()),
+            CodexRecordAdmission::Probe,
+            "malformed activity authority must reach the shared structural probe: {malformed}"
+        );
+    }
+}
+
+#[test]
+fn unrelated_payload_kind_does_not_become_lineage_authority() {
+    for raw in [
+        r#"{"type":"response_item","payload":{"type":"message","kind":{},"role":"user","content":[]}}"#,
+        r#"{"type":"response_item","payload":{"type":"message","kind":"a","kind":"b","role":"user","content":[]}}"#,
+        r#"{"type":"response_item","payload":{"type":"message","k\u0069nd":"escaped","role":"user","content":[]}}"#,
+    ] {
+        let probe = classify_codex_record(raw.as_bytes())
+            .unwrap_or_else(|error| panic!("unrelated kind must remain valid: {error}"));
+        assert!(
+            !probe.lineage_malformed(),
+            "unrelated kind poisoned lineage"
+        );
+    }
 }
 
 /// Envelopes with no payload discriminator must classify exactly like the

@@ -582,11 +582,10 @@ fn record_checkpoint_lineage(
     let record = trim_jsonl_terminator(record);
     match classify_codex_record(record) {
         Ok(probe) => facts.record_at(codex_lineage_record_evidence(&probe), raw_ordinal),
-        Err(_) if malformed_record_may_contain_lineage(record) => facts.record_at(
-            CodexLineageRecordEvidence::UnattributedAmbiguity,
-            raw_ordinal,
-        ),
-        Err(_) => Ok(()),
+        Err(_) => {
+            let evidence = malformed_codex_lineage_record_evidence(record);
+            facts.record_at(evidence.as_record_evidence(), raw_ordinal)
+        }
     }
 }
 
