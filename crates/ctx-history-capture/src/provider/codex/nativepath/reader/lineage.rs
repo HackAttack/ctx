@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::checkpoint::{
-    observed_opened_file, open_codex_source_capability, read_bounded_record,
+    observed_opened_file, open_codex_source_capability, read_bounded_record_full_sha256,
     record_checkpoint_lineage, revalidate_opened_prefix, validate_catalog_owner,
 };
 use super::*;
@@ -63,15 +63,13 @@ pub(crate) fn scan_codex_lineage_source_v0(
     let mut raw_ordinal = 0_u64;
     let mut record_buffer = Vec::new();
     let mut full_hasher = Sha256::new();
-    let mut complete_hasher = Sha256::new();
     let mut owner = None;
 
     while offset < before.len {
-        let Some(record) = read_bounded_record(
+        let Some(record) = read_bounded_record_full_sha256(
             &mut reader,
             &mut record_buffer,
             &mut full_hasher,
-            &mut complete_hasher,
             before.len.saturating_sub(offset),
         )?
         else {
