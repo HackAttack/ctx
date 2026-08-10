@@ -52,7 +52,10 @@ pub(crate) use route::{
     JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
     JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
-pub(crate) use terminal_authority::{JsonlTerminalAuthority, JsonlTerminalObservationRegion};
+pub(crate) use terminal_authority::{
+    jsonl_terminal_call_id_digest, JsonlCheckpointedTerminalAuthority, JsonlTerminalAuthority,
+    JsonlTerminalObservationRegion,
+};
 const PREFIX_HASH_DOMAIN: &[u8] = b"ctx-direct-jsonl-nativepath-prefix-v1\0";
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
