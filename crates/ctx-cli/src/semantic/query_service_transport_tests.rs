@@ -91,7 +91,7 @@ struct CountingAuthenticatedHandler {
 }
 
 impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
-    fn handle(&self, _service: &ServiceId, _request_body: &[u8]) -> HandlerOutcome {
+    fn handle(&self, _service: &ServiceId, _request: AuthenticatedRequest) -> HandlerOutcome {
         self.handled
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let response = if self.fail {
@@ -135,14 +135,16 @@ fn authenticated_transport_finalizes_once_after_success_error_and_disconnect() -
             fail,
         };
         if disconnected {
-            assert!(handle_authenticated_daemon_stream(
-                &handler,
-                &ServiceId::new("test-service")?,
-                TOKEN,
-                DisconnectedResponseWriter,
-                request(),
-            )
-            .is_err());
+            assert!(
+                handle_authenticated_daemon_stream(
+                    &handler,
+                    &ServiceId::new("test-service")?,
+                    TOKEN,
+                    DisconnectedResponseWriter,
+                    request(),
+                )
+                .is_err()
+            );
         } else {
             let mut response = Vec::new();
             handle_authenticated_daemon_stream(
@@ -207,13 +209,58 @@ fn malformed_and_bad_token_requests_never_reach_handler_or_post_write_action() -
 struct RecordingServiceHandler(std::sync::Mutex<Vec<String>>);
 
 impl AuthenticatedRequestHandler for RecordingServiceHandler {
-    fn handle(&self, service: &ServiceId, _request_body: &[u8]) -> HandlerOutcome {
+    fn handle(&self, service: &ServiceId, _request: AuthenticatedRequest) -> HandlerOutcome {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(service.as_str().to_owned());
         HandlerOutcome::response(Ok(json!({"ok": true})))
     }
+}
+
+struct ParsedRequestHandler(std::sync::Mutex<Vec<Value>>);
+
+impl AuthenticatedRequestHandler for ParsedRequestHandler {
+    fn handle(&self, _service: &ServiceId, request: AuthenticatedRequest) -> HandlerOutcome {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(request.into_value());
+        HandlerOutcome::response(Ok(json!({"ok": true})))
+    }
+}
+
+#[test]
+fn bounded_authenticated_request_is_parsed_once_before_dispatch() -> Result<()> {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    let payload = "x".repeat(DAEMON_QUERY_REQUEST_MAX_BYTES / 2);
+    let request = json!({
+        "token": TOKEN,
+        "op": "ping",
+        "payload": payload,
+    })
+    .to_string();
+    assert!(request.len() < DAEMON_QUERY_REQUEST_MAX_BYTES);
+
+    let handler = ParsedRequestHandler(std::sync::Mutex::new(Vec::new()));
+    let mut response = Vec::new();
+    handle_authenticated_daemon_stream(
+        &handler,
+        &ServiceId::new("test-service")?,
+        TOKEN,
+        &mut response,
+        Ok(request),
+    )?;
+
+    assert_eq!(response, b"{\"ok\":true}\n");
+    let requests = handler.0.lock().unwrap_or_else(|error| error.into_inner());
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["op"], "ping");
+    assert_eq!(
+        requests[0]["payload"].as_str().map(str::len),
+        Some(DAEMON_QUERY_REQUEST_MAX_BYTES / 2)
+    );
+    Ok(())
 }
 
 #[test]
@@ -235,20 +282,24 @@ fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping()
     {
         let constructor: fn(ServiceId, PathBuf, PathBuf, bool) -> Result<IpcServiceSpec> =
             IpcServiceSpec::new;
-        assert!(constructor(
-            service_id.clone(),
-            PathBuf::from("/"),
-            PathBuf::from("/tmp/opaque.sock"),
-            false,
-        )
-        .is_err());
-        assert!(constructor(
-            service_id.clone(),
-            PathBuf::from("/tmp/opaque-endpoint.json"),
-            PathBuf::from("/"),
-            false,
-        )
-        .is_err());
+        assert!(
+            constructor(
+                service_id.clone(),
+                PathBuf::from("/"),
+                PathBuf::from("/tmp/opaque.sock"),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            constructor(
+                service_id.clone(),
+                PathBuf::from("/tmp/opaque-endpoint.json"),
+                PathBuf::from("/"),
+                false,
+            )
+            .is_err()
+        );
         let spec = constructor(
             service_id.clone(),
             PathBuf::from("/tmp/opaque-endpoint.json"),
@@ -564,9 +615,11 @@ fn partial_unix_response_preserves_one_aggregate_byte_limit() -> Result<()> {
     let error = read_daemon_query_response_unix(&mut client, 8, StdDuration::from_secs(1))
         .expect_err("split response above the aggregate limit must fail");
 
-    assert!(error
-        .downcast_ref::<DaemonQueryResponseTooLarge>()
-        .is_some());
+    assert!(
+        error
+            .downcast_ref::<DaemonQueryResponseTooLarge>()
+            .is_some()
+    );
     writer.join().expect("query response writer panicked")?;
     Ok(())
 }
@@ -895,9 +948,11 @@ fn stale_unix_endpoint_is_sanitized_and_removed() -> Result<()> {
     .expect_err("missing socket should be unavailable");
     let message = format!("{error:#}");
 
-    assert!(error
-        .downcast_ref::<DaemonQueryServiceUnavailable>()
-        .is_some());
+    assert!(
+        error
+            .downcast_ref::<DaemonQueryServiceUnavailable>()
+            .is_some()
+    );
     assert!(message.len() < 256, "{message}");
     assert!(!message.contains(&socket_path.display().to_string()));
     assert!(!message.contains("Connection refused"));
@@ -929,9 +984,11 @@ fn closed_unix_listener_is_sanitized_and_removed() -> Result<()> {
     )
     .expect_err("closed listener should be unavailable");
     let message = format!("{error:#}");
-    assert!(error
-        .downcast_ref::<DaemonQueryServiceUnavailable>()
-        .is_some());
+    assert!(
+        error
+            .downcast_ref::<DaemonQueryServiceUnavailable>()
+            .is_some()
+    );
     assert!(!message.contains(&socket_path.display().to_string()));
     assert!(!message.contains("Connection refused"));
     assert!(!message.contains("os error"));

@@ -4,11 +4,11 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Result, anyhow};
 use ctx_semantic_model::{
-    semantic_model_cache_available, semantic_model_key, SharedSemanticRuntime,
+    SharedSemanticRuntime, semantic_model_cache_available, semantic_model_key,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::output::compact_json;
 use crate::semantic::{
@@ -22,11 +22,58 @@ use crate::semantic::{
 #[cfg(unix)]
 use crate::semantic::paths_status::{daemon_query_socket_path, daemon_root_path};
 
-use super::super::transport::{daemon_service_endpoint_path, DaemonIpcService};
-use super::{
-    start_ipc_service_with_request_timeout, AuthenticatedRequestHandler, DaemonQueryService,
-    HandlerOutcome, IpcServiceSpec, ServiceId, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+use super::super::transport::{
+    DaemonIpcService, DaemonQueryEndpoint, daemon_service_endpoint_path,
 };
+use super::{
+    AuthenticatedRequest, AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+    DaemonQueryService, DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore,
+    IpcServiceSpec, ServiceId, start_ipc_service_with_request_timeout,
+};
+
+struct CtxIpcEndpointStore {
+    endpoint_path: PathBuf,
+}
+
+impl CtxIpcEndpointStore {
+    fn new(endpoint_path: PathBuf) -> Arc<Self> {
+        Arc::new(Self { endpoint_path })
+    }
+}
+
+impl IpcEndpointStore for CtxIpcEndpointStore {
+    fn prepare(&self) -> Result<()> {
+        let parent = self
+            .endpoint_path
+            .parent()
+            .ok_or_else(|| anyhow!("IPC service endpoint has no parent directory"))?;
+        crate::semantic::health_search::create_private_dir_all(parent)
+    }
+
+    fn publish(&self, endpoint: &IpcEndpointPublication) -> Result<()> {
+        #[cfg(unix)]
+        let endpoint = DaemonQueryEndpoint::Unix {
+            path: endpoint.unix_socket_path.clone(),
+            token: endpoint.token.clone(),
+        };
+        #[cfg(windows)]
+        let endpoint = DaemonQueryEndpoint::WindowsNamedPipe {
+            pipe_name: endpoint.windows_pipe_name.clone(),
+            token: endpoint.token.clone(),
+        };
+        super::super::transport::write_daemon_service_endpoint_at(&self.endpoint_path, &endpoint)
+    }
+
+    fn remove(&self) {
+        super::super::transport::remove_daemon_service_endpoint_at(&self.endpoint_path);
+    }
+}
+
+impl DaemonWakePort for DaemonWakeup {
+    fn signal_ipc(&self) {
+        self.signal_ipc();
+    }
+}
 
 const SEMANTIC_QUERY_SERVICE_ID: &str = "semantic-query";
 const SOURCE_REFRESH_SERVICE_ID: &str = "source-refresh";
@@ -76,6 +123,10 @@ pub(in crate::semantic) fn start_daemon_query_service(
     {
         start_ipc_service_with_request_timeout(
             semantic_query_service_spec(data_root)?,
+            CtxIpcEndpointStore::new(daemon_service_endpoint_path(
+                data_root,
+                DaemonIpcService::SemanticQuery,
+            )),
             handler,
             DAEMON_QUERY_REQUEST_READ_TIMEOUT,
             Some(wakeup),
@@ -98,6 +149,10 @@ pub(in crate::semantic) fn start_daemon_query_service_with_request_timeout(
 ) -> Result<DaemonQueryService> {
     start_ipc_service_with_request_timeout(
         semantic_query_service_spec(data_root)?,
+        CtxIpcEndpointStore::new(daemon_service_endpoint_path(
+            data_root,
+            DaemonIpcService::SemanticQuery,
+        )),
         handler,
         request_read_timeout,
         Some(Arc::new(DaemonWakeup::default())),
@@ -113,6 +168,10 @@ pub(in crate::semantic) fn start_daemon_source_refresh_service(
     {
         start_ipc_service_with_request_timeout(
             source_refresh_service_spec(data_root)?,
+            CtxIpcEndpointStore::new(daemon_service_endpoint_path(
+                data_root,
+                DaemonIpcService::SourceRefresh,
+            )),
             handler,
             DAEMON_QUERY_REQUEST_READ_TIMEOUT,
             Some(wakeup),
@@ -135,6 +194,10 @@ pub(in crate::semantic) fn start_daemon_source_refresh_service_with_request_time
 ) -> Result<DaemonQueryService> {
     start_ipc_service_with_request_timeout(
         source_refresh_service_spec(data_root)?,
+        CtxIpcEndpointStore::new(daemon_service_endpoint_path(
+            data_root,
+            DaemonIpcService::SourceRefresh,
+        )),
         handler,
         request_read_timeout,
         Some(Arc::new(DaemonWakeup::default())),
@@ -170,11 +233,10 @@ pub(in crate::semantic) fn ctx_authenticated_request_handler(
 }
 
 impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
-    fn handle(&self, service: &ServiceId, request_body: &[u8]) -> HandlerOutcome {
-        let request =
-            serde_json::from_slice::<Value>(request_body).context("parse daemon query request");
+    fn handle(&self, service: &ServiceId, request: AuthenticatedRequest) -> HandlerOutcome {
+        let request = request.into_value();
         if service.as_str() == SOURCE_REFRESH_SERVICE_ID {
-            return match request.and_then(|request| self.handle_source_refresh(&request)) {
+            return match self.handle_source_refresh(&request) {
                 Ok(SourceRefreshResponse::Wire(response)) => wire::wire_handler_outcome(
                     response,
                     Arc::clone(&self.source_refresh),
@@ -193,9 +255,7 @@ impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
             };
         }
         if service.as_str() == SEMANTIC_QUERY_SERVICE_ID {
-            return HandlerOutcome::response(
-                request.and_then(|request| self.handle_semantic_query(&request)),
-            );
+            return HandlerOutcome::response(self.handle_semantic_query(&request));
         }
         HandlerOutcome::response(Err(anyhow!(
             "unknown authenticated IPC service `{}`",

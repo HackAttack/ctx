@@ -1,18 +1,17 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant},
 };
+
+#[cfg(unix)]
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::Value;
 
 #[cfg(unix)]
 use std::{fs, net::Shutdown, os::unix::net::UnixStream};
-
-use crate::semantic::daemon_wakeup::DaemonWakeup;
-
-use super::transport::remove_daemon_service_endpoint_at;
 
 mod dispatch;
 mod transport;
@@ -25,8 +24,8 @@ mod windows_security;
 pub(in crate::semantic) use dispatch::bind_daemon_query_listener;
 #[allow(unused_imports)]
 pub(in crate::semantic) use dispatch::{
-    ctx_authenticated_request_handler, start_daemon_query_service,
-    start_daemon_source_refresh_service, CtxAuthenticatedRequestHandler,
+    CtxAuthenticatedRequestHandler, ctx_authenticated_request_handler, start_daemon_query_service,
+    start_daemon_source_refresh_service,
 };
 #[cfg(test)]
 pub(in crate::semantic) use dispatch::{
@@ -112,10 +111,6 @@ impl IpcServiceSpec {
         &self.service_id
     }
 
-    pub(in crate::semantic) fn endpoint_path(&self) -> &Path {
-        &self.endpoint_path
-    }
-
     pub(in crate::semantic) fn wake_when_idle(&self) -> bool {
         self.wake_when_idle
     }
@@ -129,7 +124,26 @@ impl IpcServiceSpec {
 pub(in crate::semantic) trait AuthenticatedRequestHandler:
     Send + Sync + 'static
 {
-    fn handle(&self, service: &ServiceId, request_body: &[u8]) -> HandlerOutcome;
+    fn handle(&self, service: &ServiceId, request: AuthenticatedRequest) -> HandlerOutcome;
+}
+
+/// The transport has bounded, parsed, and authenticated this value.  Keeping
+/// the parsed request move-only makes the single parse an explicit boundary
+/// invariant rather than an accidental optimization.
+pub(in crate::semantic) struct AuthenticatedRequest(Value);
+
+impl AuthenticatedRequest {
+    pub(in crate::semantic) fn from_authenticated_value(value: Value) -> Self {
+        Self(value)
+    }
+
+    pub(in crate::semantic) fn into_value(self) -> Value {
+        self.0
+    }
+}
+
+pub(in crate::semantic) trait DaemonWakePort: Send + Sync + 'static {
+    fn signal_ipc(&self);
 }
 
 pub(in crate::semantic) struct HandlerOutcome {
@@ -172,6 +186,7 @@ pub(in crate::semantic) struct DaemonQueryService {
     pub(in crate::semantic) shutdown_stream: UnixStream,
     #[cfg(windows)]
     pub(in crate::semantic) pipe_name: String,
+    pub(in crate::semantic) endpoint_store: Arc<dyn IpcEndpointStore>,
 }
 
 pub(in crate::semantic) const DAEMON_QUERY_REQUEST_MAX_BYTES: usize = 256 * 1024;
@@ -204,7 +219,7 @@ impl Drop for DaemonQueryService {
         }
         #[cfg(windows)]
         transport::wake_windows_daemon_query_pipe(&self.pipe_name);
-        remove_daemon_service_endpoint_at(self.spec.endpoint_path());
+        self.endpoint_store.remove();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -221,7 +236,7 @@ impl Drop for DaemonQueryService {
 #[derive(Default)]
 pub(in crate::semantic) struct DaemonQueryActivity {
     pub(in crate::semantic) state: Mutex<DaemonQueryActivityState>,
-    idle_wakeup: Option<Arc<DaemonWakeup>>,
+    idle_wakeup: Option<Arc<dyn DaemonWakePort>>,
 }
 
 #[derive(Default)]
@@ -248,7 +263,14 @@ impl DaemonQueryActivity {
         }
     }
 
-    pub(in crate::semantic) fn with_idle_wakeup(idle_wakeup: Arc<DaemonWakeup>) -> Self {
+    #[cfg(test)]
+    pub(in crate::semantic) fn with_idle_wakeup<W: DaemonWakePort>(idle_wakeup: Arc<W>) -> Self {
+        let mut activity = Self::new();
+        activity.idle_wakeup = Some(idle_wakeup);
+        activity
+    }
+
+    pub(in crate::semantic) fn with_idle_wakeup_port(idle_wakeup: Arc<dyn DaemonWakePort>) -> Self {
         let mut activity = Self::new();
         activity.idle_wakeup = Some(idle_wakeup);
         activity
@@ -322,6 +344,21 @@ impl DaemonQueryActivity {
     pub(in crate::semantic) fn stopping(&self) -> bool {
         self.state().stopping
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::semantic) struct IpcEndpointPublication {
+    pub(in crate::semantic) token: String,
+    #[cfg(unix)]
+    pub(in crate::semantic) unix_socket_path: PathBuf,
+    #[cfg(windows)]
+    pub(in crate::semantic) windows_pipe_name: String,
+}
+
+pub(in crate::semantic) trait IpcEndpointStore: Send + Sync + 'static {
+    fn prepare(&self) -> Result<()>;
+    fn publish(&self, endpoint: &IpcEndpointPublication) -> Result<()>;
+    fn remove(&self);
 }
 
 impl Drop for DaemonQueryRequestGuard {

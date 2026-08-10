@@ -300,7 +300,7 @@ pub(super) fn request_daemon_autostart(
             "installation_upgrade_active",
         ));
     }
-    if daemon_upgrade_handoff_is_active(data_root) {
+    if daemon_upgrade_handoff_fences_start(data_root) {
         let request =
             write_daemon_restart_request(data_root, trigger, &Uuid::now_v7().to_string())?;
         return Ok(DaemonAutostartRequest::Deferred(request));
@@ -788,6 +788,12 @@ pub(super) struct DetachedDaemonLaunch {
     environment: BTreeMap<OsString, OsString>,
 }
 
+/// Product policy is resolved before the detached-process mechanics receive
+/// their input.  In particular, release authority never crosses this DTO and
+/// the Pro channel is represented only by its validated product value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedDaemonLaunchEnvironment(BTreeMap<OsString, OsString>);
+
 impl DetachedDaemonLaunch {
     #[cfg(test)]
     pub(super) fn for_test(
@@ -797,7 +803,7 @@ impl DetachedDaemonLaunch {
     ) -> io::Result<Self> {
         let mut environment = daemon_child_environment();
         environment.extend(overrides);
-        Self::normalized(program, args, environment)
+        Self::normalized(program, args, normalize_daemon_launch_environment(environment)?)
     }
 
     #[cfg(test)]
@@ -820,29 +826,12 @@ impl DetachedDaemonLaunch {
     fn normalized(
         program: PathBuf,
         args: Vec<OsString>,
-        environment: BTreeMap<OsString, OsString>,
+        environment: NormalizedDaemonLaunchEnvironment,
     ) -> io::Result<Self> {
-        validate_daemon_pro_channel(
-            environment
-                .get(OsStr::new(DAEMON_PRO_CHANNEL_ENV))
-                .map(OsString::as_os_str),
-        )?;
-        if let Some(name) = environment
-            .keys()
-            .find(|name| is_release_authority_environment_name(name.as_os_str()))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "detached daemon environment may not contain release authority variable {}",
-                    name.to_string_lossy()
-                ),
-            ));
-        }
         Ok(Self {
             program,
             args,
-            environment,
+            environment: environment.0,
         })
     }
 }
@@ -908,7 +897,11 @@ fn daemon_autostart_command_with_environment_overrides(
     for (name, value) in overrides {
         environment.insert(name, value);
     }
-    DetachedDaemonLaunch::normalized(exe.to_path_buf(), args, environment)
+    DetachedDaemonLaunch::normalized(
+        exe.to_path_buf(),
+        args,
+        normalize_daemon_launch_environment(environment)?,
+    )
 }
 
 const DAEMON_CHILD_ENV_ALLOWLIST: &[&str] = &[
@@ -980,6 +973,29 @@ fn daemon_child_environment() -> BTreeMap<OsString, OsString> {
         .iter()
         .filter_map(|name| env::var_os(name).map(|value| (OsString::from(name), value)))
         .collect()
+}
+
+fn normalize_daemon_launch_environment(
+    environment: BTreeMap<OsString, OsString>,
+) -> io::Result<NormalizedDaemonLaunchEnvironment> {
+    validate_daemon_pro_channel(
+        environment
+            .get(OsStr::new(DAEMON_PRO_CHANNEL_ENV))
+            .map(OsString::as_os_str),
+    )?;
+    if let Some(name) = environment
+        .keys()
+        .find(|name| is_release_authority_environment_name(name.as_os_str()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "detached daemon environment may not contain release authority variable {}",
+                name.to_string_lossy()
+            ),
+        ));
+    }
+    Ok(NormalizedDaemonLaunchEnvironment(environment))
 }
 
 pub(super) fn spawn_daemon_child(launch: DetachedDaemonLaunch) -> io::Result<Child> {

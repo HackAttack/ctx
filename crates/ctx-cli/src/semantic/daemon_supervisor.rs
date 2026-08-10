@@ -8,11 +8,11 @@ use std::{
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::{fs, process::Command};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 #[cfg(any(test, windows))]
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ctx_history_core::managed_data_root;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::compact_json;
 #[cfg(unix)]
@@ -41,14 +41,16 @@ use coordination::SupervisorInstallationLock;
 #[cfg(target_os = "linux")]
 use environment::linux_systemd_unit_with_environment;
 use environment::{
-    supervisor_environment_contract_report, supervisor_environment_snapshot,
-    SupervisorEnvironmentSnapshot,
+    SupervisorEnvironmentSnapshot, supervisor_environment_contract_report,
+    supervisor_environment_snapshot,
 };
 #[cfg(any(test, windows))]
 use environment::{
     validated_supervisor_artifact_path, validated_supervisor_artifact_text, xml_escape,
 };
 pub(super) use report::daemon_supervisor_report;
+#[cfg(test)]
+use report::daemon_supervisor_report_with_normalized_environment;
 #[cfg(any(test, target_os = "freebsd"))]
 use report::freebsd_supervisor_authority_blocker;
 use report::native_supervisor_product_authority_blocker;
@@ -57,9 +59,9 @@ use report::revalidated_supervisor_report_with;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use state::write_atomic_file;
 use state::{
-    native_supervisor_artifact_path, native_supervisor_kind, native_supervisor_limitation,
-    stored_supervisor_report, write_installed_receipt, write_supervisor_receipt,
-    write_supervisor_receipt_with_environment_snapshot, SupervisorReceipt,
+    SupervisorReceipt, native_supervisor_artifact_path, native_supervisor_kind,
+    native_supervisor_limitation, stored_supervisor_report, write_installed_receipt,
+    write_supervisor_receipt, write_supervisor_receipt_with_environment_snapshot,
 };
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use unsupported::*;
@@ -87,16 +89,20 @@ const SUPERVISOR_ENV_ALLOWLIST: &[&str] = &[
 ];
 
 fn supervisor_manager_environment() -> Result<SupervisorManagerEnvironment> {
-    let mut values = SUPERVISOR_ENV_ALLOWLIST
+    let values = SUPERVISOR_ENV_ALLOWLIST
         .iter()
         .filter_map(|name| env::var_os(name).map(|value| (OsString::from(name), value)))
         .collect::<BTreeMap<_, _>>();
     #[cfg(unix)]
-    if !values.contains_key(OsStr::new("HOME")) {
-        if let Some(home) = identity::home_dir() {
-            values.insert(OsString::from("HOME"), home.into_os_string());
+    let values = {
+        let mut values = values;
+        if !values.contains_key(OsStr::new("HOME")) {
+            if let Some(home) = identity::home_dir() {
+                values.insert(OsString::from("HOME"), home.into_os_string());
+            }
         }
-    }
+        values
+    };
     SupervisorManagerEnvironment::normalized(values)
 }
 
@@ -179,8 +185,18 @@ trait NativeSupervisorBackend: Sync {
 }
 
 struct PlatformNativeSupervisor<'a> {
-    daemon_environment: &'a SupervisorEnvironmentSnapshot,
+    daemon_environment: Option<&'a SupervisorEnvironmentSnapshot>,
     manager_environment: &'a SupervisorManagerEnvironment,
+}
+
+impl PlatformNativeSupervisor<'_> {
+    fn launch_environment(&self) -> Result<&SupervisorEnvironmentSnapshot> {
+        self.daemon_environment.ok_or_else(|| {
+            anyhow!(
+                "native supervisor launch or verification requires a normalized daemon environment"
+            )
+        })
+    }
 }
 
 impl NativeSupervisorBackend for PlatformNativeSupervisor<'_> {
@@ -194,14 +210,15 @@ impl NativeSupervisorBackend for PlatformNativeSupervisor<'_> {
         executable: &Path,
         environment: &SupervisorEnvironmentSnapshot,
     ) -> Result<PathBuf> {
+        let daemon_environment = self.launch_environment()?;
         debug_assert_eq!(
-            environment.values, self.daemon_environment.values,
+            environment.values, daemon_environment.values,
             "installation must use the normalized daemon environment"
         );
         install_native_supervisor(
             data_root,
             executable,
-            self.daemon_environment,
+            daemon_environment,
             self.manager_environment,
         )
     }
@@ -214,7 +231,7 @@ impl NativeSupervisorBackend for PlatformNativeSupervisor<'_> {
         verify_native_supervisor_registration(
             data_root,
             executable,
-            self.daemon_environment,
+            self.launch_environment()?,
             self.manager_environment,
         )
     }
@@ -223,7 +240,7 @@ impl NativeSupervisorBackend for PlatformNativeSupervisor<'_> {
         verify_native_supervisor(
             data_root,
             executable,
-            self.daemon_environment,
+            self.launch_environment()?,
             self.manager_environment,
         )
     }
@@ -262,7 +279,7 @@ pub(super) fn ensure_daemon_supervisor(data_root: &Path) -> Result<DaemonSupervi
     super::daemon_autostart::handoff_mismatched_daemon_owner(data_root, &input.executable)
         .context("replace daemon ownership held by a different ctx binary image")?;
     let backend = PlatformNativeSupervisor {
-        daemon_environment: &input.daemon_environment,
+        daemon_environment: Some(&input.daemon_environment),
         manager_environment: &input.manager_environment,
     };
     ensure_native_supervisor_with(&input, &backend)
@@ -528,11 +545,9 @@ pub(super) fn disable_daemon_supervisor(data_root: &Path) -> Result<()> {
             },
         );
     }
-    let daemon_environment = supervisor_environment_snapshot()
-        .context("capture native supervisor daemon environment")?;
     let manager_environment = supervisor_manager_environment()?;
     let backend = PlatformNativeSupervisor {
-        daemon_environment: &daemon_environment,
+        daemon_environment: None,
         manager_environment: &manager_environment,
     };
     let artifact = backend.artifact_path(data_root)?;
@@ -634,7 +649,7 @@ pub(super) fn resume_daemon_supervisor_after_upgrade(
         .context("capture native supervisor daemon environment")?;
     let manager_environment = supervisor_manager_environment()?;
     let backend = PlatformNativeSupervisor {
-        daemon_environment: &daemon_environment,
+        daemon_environment: Some(&daemon_environment),
         manager_environment: &manager_environment,
     };
     resume_daemon_supervisor_after_upgrade_with(data_root, executable, &backend, upgrade_fence)
@@ -781,7 +796,7 @@ fn supervisor_process_executable(pid: u32) -> Option<PathBuf> {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
         },
     };
 
@@ -896,7 +911,7 @@ fn disable_native_supervisor(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("remove systemd user unit {}", path.display()))
+                .with_context(|| format!("remove systemd user unit {}", path.display()));
         }
     }
     systemctl_user(["daemon-reload"], manager_environment)?;

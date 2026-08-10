@@ -25,6 +25,8 @@ use crate::{
 
 #[cfg(test)]
 use crate::analytics::DaemonRuntimeObservationV1;
+#[cfg(unix)]
+use super::query_service::DaemonQueryEndpoint;
 
 use super::source_backed_refresh_coordinator::CoreRefreshEngine;
 
@@ -57,8 +59,7 @@ use super::{
     query_service::{
         daemon_can_begin_idle_shutdown, daemon_service_endpoint_path,
         daemon_source_refresh_request, observe_daemon_query_activity,
-        read_daemon_service_endpoint_identity, DaemonIpcService, DaemonQueryEndpoint,
-        DaemonQueryService,
+        read_daemon_service_endpoint_identity, DaemonIpcService, DaemonQueryService,
     },
     runtime_limits::DAEMON_BACKGROUND_CHILD_ENV,
 };

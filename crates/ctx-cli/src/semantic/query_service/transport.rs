@@ -474,80 +474,6 @@ pub(in crate::semantic) fn daemon_query_windows_io_error_is_pre_submission_unava
     )
 }
 
-pub(in crate::semantic) fn read_daemon_query_request<S: std::io::Read>(
-    stream: &mut S,
-    max_bytes: usize,
-) -> Result<String> {
-    let mut body = Vec::new();
-    let mut chunk = [0u8; 8 * 1024];
-    while body.len() < max_bytes {
-        let read_limit = (max_bytes - body.len()).min(chunk.len());
-        let read = stream
-            .read(&mut chunk[..read_limit])
-            .context("read daemon query request")?;
-        if read == 0 {
-            break;
-        }
-        if let Some(newline) = chunk[..read].iter().position(|byte| *byte == b'\n') {
-            body.extend_from_slice(&chunk[..newline]);
-            return String::from_utf8(body).context("daemon query request is not UTF-8");
-        }
-        body.extend_from_slice(&chunk[..read]);
-    }
-    if body.len() >= max_bytes {
-        return Err(anyhow!("daemon query request is too large"));
-    }
-    String::from_utf8(body).context("daemon query request is not UTF-8")
-}
-
-#[cfg(unix)]
-pub(in crate::semantic) fn read_daemon_query_request_unix(
-    stream: &mut UnixStream,
-    max_bytes: usize,
-    timeout: StdDuration,
-) -> Result<String> {
-    struct DeadlineReader<'a> {
-        stream: &'a mut UnixStream,
-        started: Instant,
-        timeout: StdDuration,
-    }
-
-    impl std::io::Read for DeadlineReader<'_> {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            let remaining = self.timeout.saturating_sub(self.started.elapsed());
-            if remaining.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "daemon query request read timed out",
-                ));
-            }
-            self.stream.set_read_timeout(Some(remaining))?;
-            self.stream.read(buffer).map_err(|error| {
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                ) {
-                    std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "daemon query request read timed out",
-                    )
-                } else {
-                    error
-                }
-            })
-        }
-    }
-
-    read_daemon_query_request(
-        &mut DeadlineReader {
-            stream,
-            started: Instant::now(),
-            timeout,
-        },
-        max_bytes,
-    )
-}
-
 #[cfg(windows)]
 pub(in crate::semantic) fn daemon_query_pipe_name() -> String {
     format!(r"\\.\pipe\ctx-daemon-query-{}", Uuid::new_v4().simple())
@@ -654,7 +580,7 @@ pub(in crate::semantic) fn open_windows_daemon_query_pipe(
     deadline: &WindowsIoDeadline,
 ) -> Result<WindowsQueryHandle> {
     use windows_sys::Win32::Foundation::{
-        GetLastError, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE,
+        ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, GetLastError,
         INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Storage::FileSystem::{
@@ -816,10 +742,10 @@ where
     F: FnOnce(*mut u32, *mut windows_sys::Win32::System::IO::OVERLAPPED) -> windows_sys::core::BOOL,
 {
     use windows_sys::Win32::Foundation::{
-        GetLastError, ERROR_IO_PENDING, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_IO_PENDING, GetLastError, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
-    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
     use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() {
@@ -969,18 +895,26 @@ use std::{
     time::Duration as StdDuration,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
-#[cfg(unix)]
-use std::{os::unix::fs::OpenOptionsExt, os::unix::net::UnixStream, time::Instant};
 
-use anyhow::{anyhow, Context, Result};
+#[cfg(test)]
+pub(in crate::semantic) fn read_daemon_query_request<S: std::io::Read>(
+    stream: &mut S,
+    max_bytes: usize,
+) -> Result<String> {
+    super::server::read_bounded_daemon_request(stream, max_bytes)
+}
+
+use anyhow::{Context, Result, anyhow};
 use ctx_history_core::platform_security::verify_private_directory;
 #[cfg(not(windows))]
 use ctx_history_core::platform_security::verify_private_file;
 #[cfg(windows)]
 use ctx_history_core::platform_security::verify_private_file_handle;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 #[cfg(windows)]
 use uuid::Uuid;
 #[cfg(windows)]

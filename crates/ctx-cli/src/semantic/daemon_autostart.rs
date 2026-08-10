@@ -82,7 +82,11 @@ pub(crate) use handoff::{
     finish_replacement_daemon_handoff, mark_replacement_helper_handoff,
     replacement_helper_owns_daemon_handoff, DaemonUpgradeHandoff,
 };
-use handoff::{daemon_upgrade_handoff_is_active, remove_daemon_restart_requests};
+use handoff::{
+    daemon_upgrade_handoff_fences_start, remove_daemon_restart_requests,
+};
+#[cfg(test)]
+use handoff::daemon_upgrade_handoff_is_active;
 #[cfg(test)]
 use handoff::{read_daemon_upgrade_handoff, write_daemon_upgrade_handoff};
 

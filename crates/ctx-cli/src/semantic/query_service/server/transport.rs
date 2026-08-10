@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, time::Duration as StdDuration};
+use std::{sync::Arc, time::Duration as StdDuration};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -9,33 +9,67 @@ use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 #[cfg(unix)]
 use std::path::Path;
 #[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::{env, fs};
 
-use anyhow::{anyhow, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, anyhow};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{
-    output::compact_json,
-    semantic::{daemon_wakeup::DaemonWakeup, health_search::create_private_dir_all},
-};
-
-#[cfg(unix)]
-use super::super::transport::read_daemon_query_request_unix;
-#[cfg(windows)]
-use super::super::transport::{
-    daemon_query_pipe_name, read_daemon_query_request, windows_named_pipe_name_is_local,
-    windows_wide_null, WindowsIoDeadline,
-};
-use super::super::transport::{
-    remove_daemon_service_endpoint_at, write_daemon_service_endpoint_at, DaemonQueryEndpoint,
-};
 #[cfg(windows)]
 use super::windows_security::WindowsDaemonQueryPipeSecurity;
 use super::{
-    AuthenticatedRequestHandler, DaemonQueryActivity, DaemonQueryService, HandlerOutcome,
-    IpcServiceSpec, ServiceId, DAEMON_QUERY_REQUEST_MAX_BYTES,
+    AuthenticatedRequest, AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_MAX_BYTES,
+    DaemonQueryActivity, DaemonQueryService, DaemonWakePort, HandlerOutcome,
+    IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec, ServiceId,
 };
+
+#[cfg(windows)]
+fn windows_named_pipe_name_is_local(pipe_name: &str) -> bool {
+    pipe_name
+        .strip_prefix(r"\\.\pipe\ctx-daemon-query-")
+        .is_some_and(|suffix| {
+            suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+#[cfg(windows)]
+fn windows_wide_null(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(windows)]
+pub(in crate::semantic) struct WindowsIoDeadline {
+    started: std::time::Instant,
+    timeout: StdDuration,
+}
+
+#[cfg(windows)]
+impl WindowsIoDeadline {
+    fn new(timeout: StdDuration) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            timeout,
+        }
+    }
+
+    fn remaining_ms(&self, operation: &str) -> std::io::Result<u32> {
+        let remaining = self.timeout.saturating_sub(self.started.elapsed());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("daemon query named pipe {operation} timed out"),
+            ));
+        }
+        Ok(remaining.as_millis().max(1).min(u128::from(u32::MAX - 1)) as u32)
+    }
+}
 
 pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>(
     handler: &dyn AuthenticatedRequestHandler,
@@ -49,7 +83,10 @@ pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>
         if parsed.get("token").and_then(Value::as_str) != Some(token) {
             return Err(anyhow!("daemon query authentication failed"));
         }
-        Ok(handler.handle(service_id, body.as_bytes()))
+        Ok(handler.handle(
+            service_id,
+            AuthenticatedRequest::from_authenticated_value(parsed),
+        ))
     }) {
         Ok(outcome) => outcome,
         Err(error) => HandlerOutcome::response(Err(error)),
@@ -65,23 +102,96 @@ pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>
 fn serialize_handler_response(response: Result<Value>) -> Result<String> {
     match response {
         Ok(value) => serde_json::to_string(&value).context("serialize daemon query response"),
-        Err(error) => Ok(serde_json::to_string(&compact_json(json!({
+        Err(error) => Ok(serde_json::to_string(&json!({
             "ok": false,
             "error": format!("{error:#}"),
-        })))
+        }))
         .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"query failed\"}".to_owned())),
     }
 }
 
+pub(in crate::semantic) fn read_bounded_daemon_request<S: std::io::Read>(
+    stream: &mut S,
+    max_bytes: usize,
+) -> Result<String> {
+    let mut body = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    while body.len() < max_bytes {
+        let read_limit = (max_bytes - body.len()).min(chunk.len());
+        let read = std::io::Read::read(stream, &mut chunk[..read_limit])
+            .context("read daemon query request")?;
+        if read == 0 {
+            break;
+        }
+        if let Some(newline) = chunk[..read].iter().position(|byte| *byte == b'\n') {
+            body.extend_from_slice(&chunk[..newline]);
+            return String::from_utf8(body).context("daemon query request is not UTF-8");
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    if body.len() >= max_bytes {
+        return Err(anyhow!("daemon query request is too large"));
+    }
+    String::from_utf8(body).context("daemon query request is not UTF-8")
+}
+
+#[cfg(unix)]
+fn read_daemon_query_request_unix(
+    stream: &mut UnixStream,
+    max_bytes: usize,
+    timeout: StdDuration,
+) -> Result<String> {
+    struct DeadlineReader<'a> {
+        stream: &'a mut UnixStream,
+        started: std::time::Instant,
+        timeout: StdDuration,
+    }
+
+    impl std::io::Read for DeadlineReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let remaining = self.timeout.saturating_sub(self.started.elapsed());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "daemon query request read timed out",
+                ));
+            }
+            self.stream.set_read_timeout(Some(remaining))?;
+            std::io::Read::read(self.stream, buffer).map_err(|error| {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "daemon query request read timed out",
+                    )
+                } else {
+                    error
+                }
+            })
+        }
+    }
+
+    read_bounded_daemon_request(
+        &mut DeadlineReader {
+            stream,
+            started: std::time::Instant::now(),
+            timeout,
+        },
+        max_bytes,
+    )
+}
+
 struct DaemonServiceThreadExit {
-    endpoint_path: PathBuf,
+    endpoint_store: Arc<dyn IpcEndpointStore>,
     activity: Arc<DaemonQueryActivity>,
-    wakeup: Option<Arc<DaemonWakeup>>,
+    wakeup: Option<Arc<dyn DaemonWakePort>>,
 }
 
 impl Drop for DaemonServiceThreadExit {
     fn drop(&mut self) {
-        remove_daemon_service_endpoint_at(&self.endpoint_path);
+        self.endpoint_store.remove();
         if !self.activity.stopping() {
             if let Some(wakeup) = self.wakeup.as_ref() {
                 wakeup.signal_ipc();
@@ -158,41 +268,36 @@ pub(in crate::semantic) fn bind_daemon_service_listener(
 #[cfg(unix)]
 pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     spec: IpcServiceSpec,
+    endpoint_store: Arc<dyn IpcEndpointStore>,
     handler: Arc<dyn AuthenticatedRequestHandler>,
     request_read_timeout: StdDuration,
-    wakeup: Option<Arc<DaemonWakeup>>,
+    wakeup: Option<Arc<dyn DaemonWakePort>>,
 ) -> Result<DaemonQueryService> {
-    let endpoint_parent = spec
-        .endpoint_path()
-        .parent()
-        .ok_or_else(|| anyhow!("IPC service endpoint has no parent directory"))?;
-    create_private_dir_all(endpoint_parent)?;
+    endpoint_store.prepare()?;
     let (shutdown_reader, shutdown_stream) =
         UnixStream::pair().context("create daemon query shutdown channel")?;
     let (listener, path, socket_runtime_dir) =
         bind_daemon_service_listener(spec.unix_socket_path())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("set daemon query socket permissions {}", path.display()))?;
-    let endpoint = DaemonQueryEndpoint::Unix {
-        path,
+    let endpoint = IpcEndpointPublication {
         token: Uuid::new_v4().simple().to_string(),
+        unix_socket_path: path,
     };
-    let socket_path = match &endpoint {
-        DaemonQueryEndpoint::Unix { path, .. } => path.clone(),
-    };
-    if let Err(error) = write_daemon_service_endpoint_at(spec.endpoint_path(), &endpoint) {
-        let _ = fs::remove_file(socket_path);
+    let socket_path = endpoint.unix_socket_path.clone();
+    if let Err(error) = endpoint_store.publish(&endpoint) {
+        let _ = fs::remove_file(&socket_path);
         if let Some(dir) = socket_runtime_dir.as_ref() {
             let _ = fs::remove_dir(dir);
         }
         return Err(error);
     }
-    let thread_token = endpoint.token().to_owned();
+    let thread_token = endpoint.token.clone();
     let activity = Arc::new(if spec.wake_when_idle() {
         wakeup
             .as_ref()
             .map_or_else(DaemonQueryActivity::new, |wakeup| {
-                DaemonQueryActivity::with_idle_wakeup(Arc::clone(wakeup))
+                DaemonQueryActivity::with_idle_wakeup_port(Arc::clone(wakeup))
             })
     } else {
         DaemonQueryActivity::new()
@@ -200,11 +305,12 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     let thread_activity = activity.clone();
     let thread_wakeup = wakeup;
     let thread_spec = spec.clone();
+    let thread_endpoint_store = Arc::clone(&endpoint_store);
     let spawn_result = std::thread::Builder::new()
         .name("ctx-daemon-query".to_owned())
         .spawn(move || {
             let _exit = DaemonServiceThreadExit {
-                endpoint_path: thread_spec.endpoint_path().to_path_buf(),
+                endpoint_store: thread_endpoint_store,
                 activity: Arc::clone(&thread_activity),
                 wakeup: thread_wakeup.clone(),
             };
@@ -247,7 +353,7 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     let thread = match spawn_result {
         Ok(thread) => thread,
         Err(error) => {
-            remove_daemon_service_endpoint_at(spec.endpoint_path());
+            endpoint_store.remove();
             let _ = fs::remove_file(socket_path);
             if let Some(dir) = socket_runtime_dir.as_ref() {
                 let _ = fs::remove_dir(dir);
@@ -259,11 +365,10 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
         spec,
         activity,
         thread: Some(thread),
-        socket_path: match endpoint {
-            DaemonQueryEndpoint::Unix { path, .. } => path,
-        },
+        socket_path: endpoint.unix_socket_path,
         socket_runtime_dir,
         shutdown_stream,
+        endpoint_store,
     })
 }
 
@@ -317,33 +422,28 @@ pub(in crate::semantic) fn configure_daemon_query_stream_unix(
 #[cfg(windows)]
 pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     spec: IpcServiceSpec,
+    endpoint_store: Arc<dyn IpcEndpointStore>,
     handler: Arc<dyn AuthenticatedRequestHandler>,
     request_read_timeout: StdDuration,
-    wakeup: Option<Arc<DaemonWakeup>>,
+    wakeup: Option<Arc<dyn DaemonWakePort>>,
 ) -> Result<DaemonQueryService> {
-    let endpoint_parent = spec
-        .endpoint_path()
-        .parent()
-        .ok_or_else(|| anyhow!("IPC service endpoint has no parent directory"))?;
-    create_private_dir_all(endpoint_parent)?;
-    let endpoint = DaemonQueryEndpoint::WindowsNamedPipe {
-        pipe_name: daemon_query_pipe_name(),
+    endpoint_store.prepare()?;
+    let endpoint = IpcEndpointPublication {
+        windows_pipe_name: format!(r"\\.\pipe\ctx-daemon-query-{}", Uuid::new_v4().simple()),
         token: Uuid::new_v4().simple().to_string(),
     };
-    let pipe_name = match &endpoint {
-        DaemonQueryEndpoint::WindowsNamedPipe { pipe_name, .. } => pipe_name.clone(),
-    };
+    let pipe_name = endpoint.windows_pipe_name.clone();
     let first_stream = create_windows_daemon_query_pipe(&pipe_name, true)?;
-    if let Err(error) = write_daemon_service_endpoint_at(spec.endpoint_path(), &endpoint) {
+    if let Err(error) = endpoint_store.publish(&endpoint) {
         drop(first_stream);
         return Err(error);
     }
-    let thread_token = endpoint.token().to_owned();
+    let thread_token = endpoint.token.clone();
     let activity = Arc::new(if spec.wake_when_idle() {
         wakeup
             .as_ref()
             .map_or_else(DaemonQueryActivity::new, |wakeup| {
-                DaemonQueryActivity::with_idle_wakeup(Arc::clone(wakeup))
+                DaemonQueryActivity::with_idle_wakeup_port(Arc::clone(wakeup))
             })
     } else {
         DaemonQueryActivity::new()
@@ -352,11 +452,12 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     let thread_wakeup = wakeup;
     let thread_pipe_name = pipe_name.clone();
     let thread_spec = spec.clone();
+    let thread_endpoint_store = Arc::clone(&endpoint_store);
     let spawn_result = std::thread::Builder::new()
         .name("ctx-daemon-query".to_owned())
         .spawn(move || {
             let _exit = DaemonServiceThreadExit {
-                endpoint_path: thread_spec.endpoint_path().to_path_buf(),
+                endpoint_store: thread_endpoint_store,
                 activity: Arc::clone(&thread_activity),
                 wakeup: thread_wakeup.clone(),
             };
@@ -393,7 +494,7 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     let thread = match spawn_result {
         Ok(thread) => thread,
         Err(error) => {
-            remove_daemon_service_endpoint_at(spec.endpoint_path());
+            endpoint_store.remove();
             return Err(error).context("start daemon query service thread");
         }
     };
@@ -402,6 +503,7 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
         activity,
         thread: Some(thread),
         pipe_name,
+        endpoint_store,
     })
 }
 
@@ -449,7 +551,7 @@ impl WindowsDaemonQueryRequestReader<'_> {
 impl std::io::Read for WindowsDaemonQueryRequestReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use windows_sys::Win32::Foundation::{
-            GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
+            ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED, GetLastError,
         };
         use windows_sys::Win32::Storage::FileSystem::ReadFile;
         use windows_sys::Win32::System::Pipes::PeekNamedPipe;
@@ -518,7 +620,7 @@ pub(in crate::semantic) fn read_daemon_query_request_windows(
     max_bytes: usize,
     timeout: StdDuration,
 ) -> Result<String> {
-    read_daemon_query_request(
+    read_bounded_daemon_request(
         &mut WindowsDaemonQueryRequestReader::new(pipe, timeout),
         max_bytes,
     )
@@ -612,7 +714,7 @@ pub(in crate::semantic) fn create_windows_daemon_query_pipe(
 pub(in crate::semantic) fn connect_windows_daemon_query_pipe(
     stream: &WindowsDaemonQueryPipe,
 ) -> Result<()> {
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_PIPE_CONNECTED};
+    use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError};
     use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
 
     let ok = unsafe { ConnectNamedPipe(stream.handle, std::ptr::null_mut()) };
@@ -655,9 +757,10 @@ pub(in crate::semantic) fn wake_windows_daemon_query_pipe(pipe_name: &str) {
 #[cfg(not(any(unix, windows)))]
 pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
     _spec: IpcServiceSpec,
+    _endpoint_store: Arc<dyn IpcEndpointStore>,
     _handler: Arc<dyn AuthenticatedRequestHandler>,
     _request_read_timeout: StdDuration,
-    _wakeup: Option<Arc<DaemonWakeup>>,
+    _wakeup: Option<Arc<dyn DaemonWakePort>>,
 ) -> Result<DaemonQueryService> {
     Err(anyhow!("IPC service is not supported on this platform"))
 }

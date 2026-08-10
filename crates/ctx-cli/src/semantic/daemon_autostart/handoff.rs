@@ -60,16 +60,51 @@ fn read_daemon_upgrade_handoff_at(path: &Path) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-pub(super) fn daemon_upgrade_handoff_is_active(data_root: &Path) -> bool {
-    let path = daemon_upgrade_handoff_path(data_root);
-    daemon_upgrade_handoff_is_active_at(&path)
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DaemonUpgradeHandoffState {
+    Absent,
+    Terminal,
+    Active,
+    CorruptOrUnreadable,
 }
 
-fn daemon_upgrade_handoff_is_active_at(path: &Path) -> bool {
-    let Some(value) = read_daemon_upgrade_handoff_at(path) else {
-        return false;
+fn daemon_upgrade_handoff_state_at(path: &Path) -> DaemonUpgradeHandoffState {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return DaemonUpgradeHandoffState::Absent
+        }
+        Err(_) => return DaemonUpgradeHandoffState::CorruptOrUnreadable,
     };
-    let marker_is_fresh = fs::metadata(&path)
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
+    };
+    let Some(handoff_id) = value.get("handoff_id").and_then(Value::as_str) else {
+        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
+    };
+    if handoff_id.is_empty() {
+        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
+    }
+    let Some(phase) = value.get("phase").and_then(Value::as_str) else {
+        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
+    };
+    if matches!(phase, "completed" | "aborted") {
+        return DaemonUpgradeHandoffState::Terminal;
+    }
+    let pid_key = match phase {
+        "scheduled" => "helper_pid",
+        "preparing" | "ready" => "owner_pid",
+        _ => return DaemonUpgradeHandoffState::CorruptOrUnreadable,
+    };
+    let Some(pid) = value
+        .get(pid_key)
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+    else {
+        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
+    };
+    let marker_is_fresh = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()
         .is_some_and(|modified| {
@@ -78,33 +113,37 @@ fn daemon_upgrade_handoff_is_active_at(path: &Path) -> bool {
                 .map_or(true, |age| age <= DAEMON_UPGRADE_HANDOFF_STALE_AFTER)
         });
     if !marker_is_fresh {
-        return false;
+        return DaemonUpgradeHandoffState::Terminal;
     }
-    let pid_keys: &[&str] = match value.get("phase").and_then(Value::as_str) {
-        Some("completed" | "aborted") => return false,
-        Some("scheduled") => &["helper_pid"],
-        _ => &["owner_pid"],
-    };
-    pid_keys.iter().any(|key| {
-        let Some(pid) = value
-            .get(*key)
-            .and_then(Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok())
-        else {
-            return false;
-        };
-        match process_state(pid) {
-            ProcessState::Running | ProcessState::Unknown => true,
-            ProcessState::NotRunning => false,
-        }
-    })
+    match process_state(pid) {
+        ProcessState::Running | ProcessState::Unknown => DaemonUpgradeHandoffState::Active,
+        ProcessState::NotRunning => DaemonUpgradeHandoffState::Terminal,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn daemon_upgrade_handoff_is_active(data_root: &Path) -> bool {
+    let path = daemon_upgrade_handoff_path(data_root);
+    daemon_upgrade_handoff_is_active_at(&path)
+}
+
+fn daemon_upgrade_handoff_is_active_at(path: &Path) -> bool {
+    daemon_upgrade_handoff_state_at(path) == DaemonUpgradeHandoffState::Active
 }
 
 pub(in crate::semantic) fn daemon_upgrade_handoff_blocks_current_process(data_root: &Path) -> bool {
-    if !daemon_upgrade_handoff_is_active(data_root) {
-        return false;
+    match daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)) {
+        DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => false,
+        DaemonUpgradeHandoffState::CorruptOrUnreadable => true,
+        DaemonUpgradeHandoffState::Active => !current_process_owns_daemon_upgrade_handoff(data_root),
     }
-    !current_process_owns_daemon_upgrade_handoff(data_root)
+}
+
+pub(super) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
+    !matches!(
+        daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)),
+        DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal
+    )
 }
 
 pub(in crate::semantic) fn current_process_owns_daemon_upgrade_handoff(data_root: &Path) -> bool {
@@ -438,10 +477,14 @@ fn begin_daemon_upgrade_handoff_with(
         restart_request_root,
         mut cooperative_stop,
     } = input;
-    if daemon_upgrade_handoff_is_active_at(&handoff_path) {
-        return Err(anyhow!(
-            "another ctx upgrade owns the daemon lifecycle handoff"
-        ));
+    match daemon_upgrade_handoff_state_at(&handoff_path) {
+        DaemonUpgradeHandoffState::Active => {
+            return Err(anyhow!("another ctx upgrade owns the daemon lifecycle handoff"));
+        }
+        DaemonUpgradeHandoffState::CorruptOrUnreadable => {
+            return Err(anyhow!("daemon upgrade handoff state is corrupt or unreadable"));
+        }
+        DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => {}
     }
     persist_handoff_before_cooperative_stop(
         &handoff_path,
@@ -741,7 +784,11 @@ fn begin_current_daemon_upgrade_handoff_with(
             "automatic upgrade handoff requires current daemon ownership"
         ));
     }
-    if daemon_upgrade_handoff_is_active_at(&handoff_path) {
+    match daemon_upgrade_handoff_state_at(&handoff_path) {
+        DaemonUpgradeHandoffState::CorruptOrUnreadable => {
+            return Err(anyhow!("daemon upgrade handoff state is corrupt or unreadable"));
+        }
+        DaemonUpgradeHandoffState::Active => {
         let current = read_daemon_upgrade_handoff_at(&handoff_path)
             .ok_or_else(|| anyhow!("active daemon handoff disappeared"))?;
         if current.get("handoff_id").and_then(Value::as_str) != Some(handoff_id.as_str())
@@ -761,6 +808,8 @@ fn begin_current_daemon_upgrade_handoff_with(
             persisted_restart_label: Some(persisted_restart_label),
             release_on_drop: true,
         });
+        }
+        DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => {}
     }
     write_daemon_restart_request_at(&restart_request_root, &persisted_restart_label, &handoff_id)?;
     write_daemon_upgrade_handoff_at(&handoff_path, &handoff_id, "ready", None)?;
@@ -1005,9 +1054,29 @@ fn write_daemon_restart_request_at(
 pub(in crate::semantic) fn read_daemon_restart_request(
     data_root: &Path,
 ) -> Option<(PathBuf, DaemonTriggerCommandArg)> {
-    read_daemon_restart_requests_at(&daemon_upgrade_restart_request_root(data_root))
-        .into_iter()
-        .find_map(|(path, label)| Some((path, parse_daemon_trigger(Some(&label))?)))
+    let restart_request_root = daemon_upgrade_restart_request_root(data_root);
+    let Ok(entries) = fs::read_dir(&restart_request_root) else {
+        return None;
+    };
+    let mut paths = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(label) = value.get("trigger_command").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(trigger) = parse_daemon_trigger(Some(label)) {
+            return Some((path, trigger));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1017,6 +1086,7 @@ fn read_daemon_restart_request_at(restart_request_root: &Path) -> Option<(PathBu
         .next()
 }
 
+#[cfg(test)]
 fn read_daemon_restart_requests_at(restart_request_root: &Path) -> Vec<(PathBuf, String)> {
     let Ok(entries) = fs::read_dir(restart_request_root) else {
         return Vec::new();
@@ -1141,6 +1211,38 @@ mod seam_tests {
         let (_, opaque) = read_daemon_restart_request_at(&restart_root)
             .expect("generic reader preserves the first opaque label");
         assert_eq!(opaque, "opaque-future-restart-label");
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_corrupt_handoff_is_a_start_fence_not_an_absent_handoff() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let handoff_path = daemon_upgrade_handoff_path(temp.path());
+        fs::create_dir_all(handoff_path.parent().expect("handoff parent"))?;
+        fs::write(&handoff_path, b"{not-json")?;
+
+        assert_eq!(
+            daemon_upgrade_handoff_state_at(&handoff_path),
+            DaemonUpgradeHandoffState::CorruptOrUnreadable
+        );
+        assert!(daemon_upgrade_handoff_fences_start(temp.path()));
+        assert!(daemon_upgrade_handoff_blocks_current_process(temp.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn restart_reader_returns_at_first_recognized_trigger_in_path_order() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let restart_root = daemon_upgrade_restart_request_root(temp.path());
+        write_daemon_restart_request_at(&restart_root, "search", "000-first")?;
+        // A directory here would make a full traversal perform another failed
+        // file read. The selected first request must make it irrelevant.
+        fs::create_dir(restart_root.join("001-never-read.json"))?;
+
+        let (path, trigger) = read_daemon_restart_request(temp.path())
+            .expect("first recognized trigger must be selected");
+        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("000-first.json"));
+        assert_eq!(trigger.as_str(), DaemonTriggerCommandArg::Search.as_str());
         Ok(())
     }
 }
