@@ -56,13 +56,13 @@ use revalidation::{
 };
 mod scanner;
 #[cfg(test)]
+pub(crate) use scanner::with_family_scanner_workers;
+#[cfg(test)]
 use scanner::{
     jsonl_family_scanner_activity, jsonl_family_scanner_probe,
     record_jsonl_family_scanner_activity, JsonlFamilyScannerActivity, JsonlFamilyScannerProbe,
     FAMILY_SCANNER_WORKERS_OVERRIDE,
 };
-#[cfg(test)]
-pub(crate) use scanner::{jsonl_family_scanner_max_worker_count, with_family_scanner_workers};
 pub(crate) use scanner::{
     JsonlFamilyAppendMode, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
     JsonlFamilyPublication, JsonlFamilyWorkerContext,
@@ -753,13 +753,6 @@ impl JsonlFamilyLeaf {
         Ok(Arc::new(opened))
     }
 
-    /// Reopens an optimized leaf through the shared no-follow authority at
-    /// worker admission, bounding retained leaf capabilities by the scheduled
-    /// worker set while preserving the opening observation as the proof fence.
-    pub(crate) fn open_for_optimized_scan(&self) -> Result<Arc<OpenedProviderSourceFile>> {
-        self.open_for_scan().map(|(_, opened)| opened)
-    }
-
     fn open_for_scan(&self) -> Result<(Self, Arc<OpenedProviderSourceFile>)> {
         let opened = self.authority.open_file(&self.authority_path)?;
         let current = observe_opened_file(&self.source_path, &opened)?;
@@ -835,28 +828,6 @@ impl JsonlFamilyRejectedLeaf {
             rejected_records,
             terminal: None,
             logical_source_failure_detail: None,
-        }
-    }
-
-    pub(crate) fn bind_observed_with_terminal(
-        source_path: PathBuf,
-        authority_path: PathBuf,
-        proof: TypedKey,
-        rejected_records: u64,
-        source: SourceKey,
-        revalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
-        logical_source_failure_detail: Option<String>,
-    ) -> Self {
-        Self {
-            source_path,
-            authority_path,
-            proof,
-            rejected_records,
-            terminal: Some(JsonlFamilyRejectedTerminal {
-                source,
-                revalidate: Arc::new(revalidate),
-            }),
-            logical_source_failure_detail,
         }
     }
 }

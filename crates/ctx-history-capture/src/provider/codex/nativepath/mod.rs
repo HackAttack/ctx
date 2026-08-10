@@ -35,7 +35,7 @@ pub(crate) use source_backed::{
 #[cfg(test)]
 pub(crate) use source_backed::{
     install_after_codex_causal_stage_hook_v1, install_after_codex_metadata_inventory_hook,
-    CodexCausalSourceObservationV1, CodexSourceBackedCountersV0,
+    CodexCausalSourceObservationV1,
 };
 #[cfg(test)]
 mod tests;
