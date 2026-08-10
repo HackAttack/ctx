@@ -1,8 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration as StdDuration,
-};
+use std::{path::PathBuf, sync::Arc, time::Duration as StdDuration};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -11,20 +7,18 @@ use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 #[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
 use std::{env, fs};
 
 use anyhow::{anyhow, Context, Result};
-use ctx_semantic_model::SharedSemanticRuntime;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::semantic::{
-    daemon_wakeup::DaemonWakeup, health_search::create_private_dir_all,
-    paths_status::daemon_root_path, source_backed_refresh_adapter,
-    source_backed_refresh_coordinator::CoreRefreshEngine,
+use crate::{
+    output::compact_json,
+    semantic::{daemon_wakeup::DaemonWakeup, health_search::create_private_dir_all},
 };
-
-#[cfg(unix)]
-use crate::semantic::paths_status::daemon_query_socket_path;
 
 #[cfg(unix)]
 use super::super::transport::read_daemon_query_request_unix;
@@ -34,49 +28,60 @@ use super::super::transport::{
     windows_wide_null, WindowsIoDeadline,
 };
 use super::super::transport::{
-    remove_daemon_service_endpoint, write_daemon_service_endpoint, DaemonIpcService,
-    DaemonQueryEndpoint,
+    remove_daemon_service_endpoint_at, write_daemon_service_endpoint_at, DaemonQueryEndpoint,
 };
 #[cfg(windows)]
 use super::windows_security::WindowsDaemonQueryPipeSecurity;
 use super::{
-    dispatch::handle_daemon_query_stream, DaemonQueryActivity, DaemonQueryService,
-    DAEMON_QUERY_REQUEST_MAX_BYTES, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+    AuthenticatedRequestHandler, DaemonQueryActivity, DaemonQueryService, HandlerOutcome,
+    IpcServiceSpec, ServiceId, DAEMON_QUERY_REQUEST_MAX_BYTES,
 };
 
-fn source_refresh_coordinator(
-    _data_root: &Path,
-    _service: DaemonIpcService,
-    coordinator: Option<Arc<CoreRefreshEngine>>,
-) -> Result<Arc<CoreRefreshEngine>> {
-    Ok(coordinator.unwrap_or_else(|| Arc::new(source_backed_refresh_adapter::refresh_engine())))
+pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>(
+    handler: &dyn AuthenticatedRequestHandler,
+    service_id: &ServiceId,
+    token: &str,
+    mut stream: S,
+    request: Result<String>,
+) -> Result<()> {
+    let mut outcome = match request.and_then(|body| {
+        let parsed: Value = serde_json::from_str(&body).context("parse daemon query request")?;
+        if parsed.get("token").and_then(Value::as_str) != Some(token) {
+            return Err(anyhow!("daemon query authentication failed"));
+        }
+        Ok(handler.handle(service_id, body.as_bytes()))
+    }) {
+        Ok(outcome) => outcome,
+        Err(error) => HandlerOutcome::response(Err(error)),
+    };
+    let response_write = serialize_handler_response(outcome.response)
+        .and_then(|body| writeln!(stream, "{body}").context("write daemon query response"));
+    if let Some(after_write_attempt) = outcome.after_write_attempt.take() {
+        after_write_attempt.run();
+    }
+    response_write
 }
 
-fn wake_source_refresh_lifecycle(
-    service: DaemonIpcService,
-    source_refresh: &CoreRefreshEngine,
-    daemon_wakeup: Option<&DaemonWakeup>,
-) {
-    if service != DaemonIpcService::SourceRefresh {
-        return;
-    }
-    if source_refresh.has_pending_request() {
-        if let Some(daemon_wakeup) = daemon_wakeup {
-            daemon_wakeup.signal_ipc();
-        }
+fn serialize_handler_response(response: Result<Value>) -> Result<String> {
+    match response {
+        Ok(value) => serde_json::to_string(&value).context("serialize daemon query response"),
+        Err(error) => Ok(serde_json::to_string(&compact_json(json!({
+            "ok": false,
+            "error": format!("{error:#}"),
+        })))
+        .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"query failed\"}".to_owned())),
     }
 }
 
 struct DaemonServiceThreadExit {
-    data_root: PathBuf,
-    service: DaemonIpcService,
+    endpoint_path: PathBuf,
     activity: Arc<DaemonQueryActivity>,
     wakeup: Option<Arc<DaemonWakeup>>,
 }
 
 impl Drop for DaemonServiceThreadExit {
     fn drop(&mut self) {
-        remove_daemon_service_endpoint(&self.data_root, self.service);
+        remove_daemon_service_endpoint_at(&self.endpoint_path);
         if !self.activity.stopping() {
             if let Some(wakeup) = self.wakeup.as_ref() {
                 wakeup.signal_ipc();
@@ -89,27 +94,14 @@ impl Drop for DaemonServiceThreadExit {
 pub(in crate::semantic) const DAEMON_QUERY_SOCKET_PATH_SAFE_BYTES: usize = 90;
 
 #[cfg(unix)]
-#[cfg(test)]
-pub(in crate::semantic) fn bind_daemon_query_listener(
-    data_root: &Path,
-) -> Result<(UnixListener, PathBuf, Option<PathBuf>)> {
-    bind_daemon_service_listener(data_root, DaemonIpcService::SemanticQuery)
-}
-
-#[cfg(unix)]
 pub(in crate::semantic) fn bind_daemon_service_listener(
-    data_root: &Path,
-    service: DaemonIpcService,
+    preferred: &Path,
 ) -> Result<(UnixListener, PathBuf, Option<PathBuf>)> {
-    let preferred = match service {
-        DaemonIpcService::SemanticQuery => daemon_query_socket_path(data_root),
-        DaemonIpcService::SourceRefresh => daemon_root_path(data_root).join("source-refresh.sock"),
-    };
     if preferred.as_os_str().as_bytes().len() <= DAEMON_QUERY_SOCKET_PATH_SAFE_BYTES {
-        let _ = fs::remove_file(&preferred);
-        let listener = UnixListener::bind(&preferred)
+        let _ = fs::remove_file(preferred);
+        let listener = UnixListener::bind(preferred)
             .with_context(|| format!("bind daemon query socket {}", preferred.display()))?;
-        return Ok((listener, preferred, None));
+        return Ok((listener, preferred.to_path_buf(), None));
     }
 
     let mut roots = vec![PathBuf::from("/tmp")];
@@ -164,119 +156,21 @@ pub(in crate::semantic) fn bind_daemon_service_listener(
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn start_daemon_query_service(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    wakeup: Arc<DaemonWakeup>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-        DaemonIpcService::SemanticQuery,
-        Some(wakeup),
-        None,
-    )
-}
-
-#[cfg(unix)]
-#[cfg(test)]
-pub(in crate::semantic) fn start_daemon_query_service_with_request_timeout(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
+pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
+    spec: IpcServiceSpec,
+    handler: Arc<dyn AuthenticatedRequestHandler>,
     request_read_timeout: StdDuration,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        request_read_timeout,
-        DaemonIpcService::SemanticQuery,
-        Some(Arc::new(DaemonWakeup::default())),
-        None,
-    )
-}
-
-#[cfg(unix)]
-pub(in crate::semantic) fn start_daemon_source_refresh_service(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    wakeup: Arc<DaemonWakeup>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-        DaemonIpcService::SourceRefresh,
-        Some(wakeup),
-        None,
-    )
-}
-
-#[cfg(unix)]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_coordinator(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    wakeup: Arc<DaemonWakeup>,
-    source_refresh: Arc<CoreRefreshEngine>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-        DaemonIpcService::SourceRefresh,
-        Some(wakeup),
-        Some(source_refresh),
-    )
-}
-
-#[cfg(unix)]
-#[cfg(test)]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_request_timeout(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    request_read_timeout: StdDuration,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        request_read_timeout,
-        DaemonIpcService::SourceRefresh,
-        Some(Arc::new(DaemonWakeup::default())),
-        None,
-    )
-}
-
-#[cfg(all(test, unix))]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_coordinator_for_test(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    request_read_timeout: StdDuration,
-    source_refresh: Arc<CoreRefreshEngine>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        request_read_timeout,
-        DaemonIpcService::SourceRefresh,
-        Some(Arc::new(DaemonWakeup::default())),
-        Some(source_refresh),
-    )
-}
-
-#[cfg(unix)]
-fn start_daemon_service_with_request_timeout(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    request_read_timeout: StdDuration,
-    service: DaemonIpcService,
     wakeup: Option<Arc<DaemonWakeup>>,
-    source_refresh_override: Option<Arc<CoreRefreshEngine>>,
 ) -> Result<DaemonQueryService> {
-    let root = daemon_root_path(data_root);
-    create_private_dir_all(&root)?;
+    let endpoint_parent = spec
+        .endpoint_path()
+        .parent()
+        .ok_or_else(|| anyhow!("IPC service endpoint has no parent directory"))?;
+    create_private_dir_all(endpoint_parent)?;
     let (shutdown_reader, shutdown_stream) =
         UnixStream::pair().context("create daemon query shutdown channel")?;
-    let (listener, path, socket_runtime_dir) = bind_daemon_service_listener(data_root, service)?;
+    let (listener, path, socket_runtime_dir) =
+        bind_daemon_service_listener(spec.unix_socket_path())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("set daemon query socket permissions {}", path.display()))?;
     let endpoint = DaemonQueryEndpoint::Unix {
@@ -286,16 +180,15 @@ fn start_daemon_service_with_request_timeout(
     let socket_path = match &endpoint {
         DaemonQueryEndpoint::Unix { path, .. } => path.clone(),
     };
-    if let Err(error) = write_daemon_service_endpoint(data_root, service, &endpoint) {
+    if let Err(error) = write_daemon_service_endpoint_at(spec.endpoint_path(), &endpoint) {
         let _ = fs::remove_file(socket_path);
         if let Some(dir) = socket_runtime_dir.as_ref() {
             let _ = fs::remove_dir(dir);
         }
         return Err(error);
     }
-    let thread_data_root = data_root.to_path_buf();
     let thread_token = endpoint.token().to_owned();
-    let activity = Arc::new(if service == DaemonIpcService::SemanticQuery {
+    let activity = Arc::new(if spec.wake_when_idle() {
         wakeup
             .as_ref()
             .map_or_else(DaemonQueryActivity::new, |wakeup| {
@@ -305,15 +198,13 @@ fn start_daemon_service_with_request_timeout(
         DaemonQueryActivity::new()
     });
     let thread_activity = activity.clone();
-    let source_refresh = source_refresh_coordinator(data_root, service, source_refresh_override)?;
-    let thread_source_refresh = source_refresh.clone();
     let thread_wakeup = wakeup;
+    let thread_spec = spec.clone();
     let spawn_result = std::thread::Builder::new()
         .name("ctx-daemon-query".to_owned())
         .spawn(move || {
             let _exit = DaemonServiceThreadExit {
-                data_root: thread_data_root.clone(),
-                service,
+                endpoint_path: thread_spec.endpoint_path().to_path_buf(),
                 activity: Arc::clone(&thread_activity),
                 wakeup: thread_wakeup.clone(),
             };
@@ -341,20 +232,12 @@ fn start_daemon_service_with_request_timeout(
                             DAEMON_QUERY_REQUEST_MAX_BYTES,
                             request_read_timeout,
                         );
-                        handle_daemon_query_stream(
-                            &thread_data_root,
-                            &runtime,
-                            &thread_source_refresh,
-                            service,
+                        let _ = handle_authenticated_daemon_stream(
+                            handler.as_ref(),
+                            thread_spec.service_id(),
                             &thread_token,
                             stream,
                             request,
-                            thread_wakeup.as_deref(),
-                        );
-                        wake_source_refresh_lifecycle(
-                            service,
-                            &thread_source_refresh,
-                            thread_wakeup.as_deref(),
                         );
                     }
                     Err(_) => break,
@@ -364,7 +247,7 @@ fn start_daemon_service_with_request_timeout(
     let thread = match spawn_result {
         Ok(thread) => thread,
         Err(error) => {
-            remove_daemon_service_endpoint(data_root, service);
+            remove_daemon_service_endpoint_at(spec.endpoint_path());
             let _ = fs::remove_file(socket_path);
             if let Some(dir) = socket_runtime_dir.as_ref() {
                 let _ = fs::remove_dir(dir);
@@ -373,10 +256,8 @@ fn start_daemon_service_with_request_timeout(
         }
     };
     Ok(DaemonQueryService {
-        data_root: data_root.to_path_buf(),
-        service,
+        spec,
         activity,
-        source_refresh,
         thread: Some(thread),
         socket_path: match endpoint {
             DaemonQueryEndpoint::Unix { path, .. } => path,
@@ -434,116 +315,17 @@ pub(in crate::semantic) fn configure_daemon_query_stream_unix(
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn start_daemon_query_service(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    wakeup: Arc<DaemonWakeup>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-        DaemonIpcService::SemanticQuery,
-        Some(wakeup),
-        None,
-    )
-}
-
-#[cfg(windows)]
-#[cfg(test)]
-pub(in crate::semantic) fn start_daemon_query_service_with_request_timeout(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
+pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
+    spec: IpcServiceSpec,
+    handler: Arc<dyn AuthenticatedRequestHandler>,
     request_read_timeout: StdDuration,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        request_read_timeout,
-        DaemonIpcService::SemanticQuery,
-        Some(Arc::new(DaemonWakeup::default())),
-        None,
-    )
-}
-
-#[cfg(windows)]
-pub(in crate::semantic) fn start_daemon_source_refresh_service(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    wakeup: Arc<DaemonWakeup>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-        DaemonIpcService::SourceRefresh,
-        Some(wakeup),
-        None,
-    )
-}
-
-#[cfg(windows)]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_coordinator(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    wakeup: Arc<DaemonWakeup>,
-    source_refresh: Arc<CoreRefreshEngine>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-        DaemonIpcService::SourceRefresh,
-        Some(wakeup),
-        Some(source_refresh),
-    )
-}
-
-#[cfg(windows)]
-#[cfg(test)]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_request_timeout(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    request_read_timeout: StdDuration,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        request_read_timeout,
-        DaemonIpcService::SourceRefresh,
-        Some(Arc::new(DaemonWakeup::default())),
-        None,
-    )
-}
-
-#[cfg(all(test, windows))]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_coordinator_for_test(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    request_read_timeout: StdDuration,
-    source_refresh: Arc<CoreRefreshEngine>,
-) -> Result<DaemonQueryService> {
-    start_daemon_service_with_request_timeout(
-        data_root,
-        runtime,
-        request_read_timeout,
-        DaemonIpcService::SourceRefresh,
-        Some(Arc::new(DaemonWakeup::default())),
-        Some(source_refresh),
-    )
-}
-
-#[cfg(windows)]
-fn start_daemon_service_with_request_timeout(
-    data_root: &Path,
-    runtime: SharedSemanticRuntime,
-    request_read_timeout: StdDuration,
-    service: DaemonIpcService,
     wakeup: Option<Arc<DaemonWakeup>>,
-    source_refresh_override: Option<Arc<CoreRefreshEngine>>,
 ) -> Result<DaemonQueryService> {
-    let root = daemon_root_path(data_root);
-    create_private_dir_all(&root)?;
+    let endpoint_parent = spec
+        .endpoint_path()
+        .parent()
+        .ok_or_else(|| anyhow!("IPC service endpoint has no parent directory"))?;
+    create_private_dir_all(endpoint_parent)?;
     let endpoint = DaemonQueryEndpoint::WindowsNamedPipe {
         pipe_name: daemon_query_pipe_name(),
         token: Uuid::new_v4().simple().to_string(),
@@ -552,13 +334,12 @@ fn start_daemon_service_with_request_timeout(
         DaemonQueryEndpoint::WindowsNamedPipe { pipe_name, .. } => pipe_name.clone(),
     };
     let first_stream = create_windows_daemon_query_pipe(&pipe_name, true)?;
-    if let Err(error) = write_daemon_service_endpoint(data_root, service, &endpoint) {
+    if let Err(error) = write_daemon_service_endpoint_at(spec.endpoint_path(), &endpoint) {
         drop(first_stream);
         return Err(error);
     }
-    let thread_data_root = data_root.to_path_buf();
     let thread_token = endpoint.token().to_owned();
-    let activity = Arc::new(if service == DaemonIpcService::SemanticQuery {
+    let activity = Arc::new(if spec.wake_when_idle() {
         wakeup
             .as_ref()
             .map_or_else(DaemonQueryActivity::new, |wakeup| {
@@ -568,16 +349,14 @@ fn start_daemon_service_with_request_timeout(
         DaemonQueryActivity::new()
     });
     let thread_activity = activity.clone();
-    let source_refresh = source_refresh_coordinator(data_root, service, source_refresh_override)?;
-    let thread_source_refresh = source_refresh.clone();
     let thread_wakeup = wakeup;
     let thread_pipe_name = pipe_name.clone();
+    let thread_spec = spec.clone();
     let spawn_result = std::thread::Builder::new()
         .name("ctx-daemon-query".to_owned())
         .spawn(move || {
             let _exit = DaemonServiceThreadExit {
-                data_root: thread_data_root.clone(),
-                service,
+                endpoint_path: thread_spec.endpoint_path().to_path_buf(),
                 activity: Arc::clone(&thread_activity),
                 wakeup: thread_wakeup.clone(),
             };
@@ -602,35 +381,25 @@ fn start_daemon_service_with_request_timeout(
                     DAEMON_QUERY_REQUEST_MAX_BYTES,
                     request_read_timeout,
                 );
-                handle_daemon_query_stream(
-                    &thread_data_root,
-                    &runtime,
-                    &thread_source_refresh,
-                    service,
+                let _ = handle_authenticated_daemon_stream(
+                    handler.as_ref(),
+                    thread_spec.service_id(),
                     &thread_token,
                     stream,
                     request,
-                    thread_wakeup.as_deref(),
-                );
-                wake_source_refresh_lifecycle(
-                    service,
-                    &thread_source_refresh,
-                    thread_wakeup.as_deref(),
                 );
             }
         });
     let thread = match spawn_result {
         Ok(thread) => thread,
         Err(error) => {
-            remove_daemon_service_endpoint(data_root, service);
+            remove_daemon_service_endpoint_at(spec.endpoint_path());
             return Err(error).context("start daemon query service thread");
         }
     };
     Ok(DaemonQueryService {
-        data_root: data_root.to_path_buf(),
-        service,
+        spec,
         activity,
-        source_refresh,
         thread: Some(thread),
         pipe_name,
     })
@@ -884,35 +653,11 @@ pub(in crate::semantic) fn wake_windows_daemon_query_pipe(pipe_name: &str) {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn start_daemon_query_service(
-    _data_root: &Path,
-    _runtime: SharedSemanticRuntime,
-    _wakeup: Arc<DaemonWakeup>,
+pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
+    _spec: IpcServiceSpec,
+    _handler: Arc<dyn AuthenticatedRequestHandler>,
+    _request_read_timeout: StdDuration,
+    _wakeup: Option<Arc<DaemonWakeup>>,
 ) -> Result<DaemonQueryService> {
-    Err(anyhow!(
-        "daemon query service is not supported on this platform"
-    ))
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn start_daemon_source_refresh_service(
-    _data_root: &Path,
-    _runtime: SharedSemanticRuntime,
-    _wakeup: Arc<DaemonWakeup>,
-) -> Result<DaemonQueryService> {
-    Err(anyhow!(
-        "daemon source refresh service is not supported on this platform"
-    ))
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn start_daemon_source_refresh_service_with_coordinator(
-    _data_root: &Path,
-    _runtime: SharedSemanticRuntime,
-    _wakeup: Arc<DaemonWakeup>,
-    _source_refresh: Arc<CoreRefreshEngine>,
-) -> Result<DaemonQueryService> {
-    Err(anyhow!(
-        "daemon source refresh service is not supported on this platform"
-    ))
+    Err(anyhow!("IPC service is not supported on this platform"))
 }

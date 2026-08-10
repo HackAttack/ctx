@@ -1,6 +1,8 @@
 use std::{
-    collections::BTreeSet,
-    env, fs, io,
+    collections::{BTreeMap, BTreeSet},
+    env,
+    ffi::{OsStr, OsString},
+    fs, io,
     path::{Path, PathBuf},
     process::{self, Child, Command, Stdio},
     time::{Duration as StdDuration, Instant, SystemTime},
@@ -49,9 +51,10 @@ mod handoff;
 mod installation;
 mod recovery;
 
-#[cfg(test)]
-use autostart::configure_narrow_daemon_environment;
 pub(super) use autostart::handoff_mismatched_daemon_owner;
+#[cfg(test)]
+use autostart::spawn_detached_daemon_child;
+use autostart::DetachedDaemonLaunch;
 pub(crate) use autostart::{
     autostart_daemon_and_wait, daemon_autostart_suppression_reason, maybe_autostart_daemon,
 };

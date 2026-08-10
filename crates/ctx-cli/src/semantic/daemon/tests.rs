@@ -37,10 +37,17 @@ use sha2::{Digest, Sha256};
 #[test]
 fn completed_ipc_listener_is_a_fatal_daemon_health_failure() -> Result<()> {
     let root = tempfile::tempdir()?;
+    let wakeup = Arc::new(crate::semantic::daemon_wakeup::DaemonWakeup::default());
+    let handler = crate::semantic::query_service::ctx_authenticated_request_handler(
+        root.path(),
+        SharedSemanticRuntime::default(),
+        Arc::new(crate::semantic::source_backed_refresh_adapter::refresh_engine()),
+        wakeup,
+    );
     let service =
         crate::semantic::query_service::start_daemon_source_refresh_service_with_request_timeout(
             root.path(),
-            SharedSemanticRuntime::default(),
+            handler,
             StdDuration::from_millis(100),
         )?;
     assert!(daemon_service_endpoint_path(root.path(), DaemonIpcService::SourceRefresh).exists());

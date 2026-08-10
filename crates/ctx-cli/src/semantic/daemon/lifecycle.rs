@@ -48,7 +48,7 @@ pub(super) fn ensure_daemon_ipc_services_healthy(
         if service.listener_finished() {
             return Err(anyhow!(
                 "daemon {} IPC listener exited unexpectedly",
-                service.service.as_str()
+                service.service_id().as_str()
             ));
         }
     }

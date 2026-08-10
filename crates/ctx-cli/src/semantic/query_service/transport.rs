@@ -27,13 +27,6 @@ pub(in crate::semantic) enum DaemonIpcService {
 }
 
 impl DaemonIpcService {
-    pub(in crate::semantic) fn as_str(self) -> &'static str {
-        match self {
-            Self::SemanticQuery => "semantic-query",
-            Self::SourceRefresh => "source-refresh",
-        }
-    }
-
     fn endpoint_file(self) -> &'static str {
         match self {
             Self::SemanticQuery => DAEMON_QUERY_ENDPOINT_FILE,
@@ -134,9 +127,17 @@ pub(in crate::semantic) fn write_daemon_query_endpoint(
     write_daemon_service_endpoint(data_root, DaemonIpcService::SemanticQuery, endpoint)
 }
 
+#[cfg(test)]
 pub(in crate::semantic) fn write_daemon_service_endpoint(
     data_root: &Path,
     service: DaemonIpcService,
+    endpoint: &DaemonQueryEndpoint,
+) -> Result<()> {
+    write_daemon_service_endpoint_at(&daemon_service_endpoint_path(data_root, service), endpoint)
+}
+
+pub(in crate::semantic) fn write_daemon_service_endpoint_at(
+    path: &Path,
     endpoint: &DaemonQueryEndpoint,
 ) -> Result<()> {
     let value = match endpoint {
@@ -163,14 +164,11 @@ pub(in crate::semantic) fn write_daemon_service_endpoint(
             ));
         }
     };
-    write_private_json_file(&daemon_service_endpoint_path(data_root, service), &value)
+    write_private_json_file(path, &value)
 }
 
-pub(in crate::semantic) fn remove_daemon_service_endpoint(
-    data_root: &Path,
-    service: DaemonIpcService,
-) {
-    let _ = fs::remove_file(daemon_service_endpoint_path(data_root, service));
+pub(in crate::semantic) fn remove_daemon_service_endpoint_at(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 #[cfg(test)]

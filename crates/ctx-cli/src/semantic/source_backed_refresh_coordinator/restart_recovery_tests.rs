@@ -17,9 +17,33 @@ use crate::{
         paths_status::{
             daemon_source_backed_refresh_job_path, read_daemon_job_status, write_daemon_job_status,
         },
-        query_service::start_daemon_source_refresh_service_with_request_timeout,
+        query_service::{
+            ctx_authenticated_request_handler,
+            start_daemon_source_refresh_service_with_request_timeout, DaemonQueryService,
+        },
     },
 };
+
+#[cfg(any(unix, windows))]
+fn start_source_refresh_service_for_test(
+    data_root: &Path,
+) -> (DaemonQueryService, Arc<CoreRefreshEngine>) {
+    let source_refresh = Arc::new(CoreRefreshEngine::new());
+    let wakeup = Arc::new(crate::semantic::daemon_wakeup::DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
+        data_root,
+        SharedSemanticRuntime::default(),
+        Arc::clone(&source_refresh),
+        wakeup,
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        data_root,
+        handler,
+        StdDuration::from_millis(100),
+    )
+    .unwrap();
+    (service, source_refresh)
+}
 
 #[test]
 fn every_normal_status_state_requires_exact_response_authority() {
@@ -172,12 +196,7 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
-    let service = start_daemon_source_refresh_service_with_request_timeout(
-        &data_root,
-        SharedSemanticRuntime::default(),
-        StdDuration::from_millis(100),
-    )
-    .unwrap();
+    let (_service, source_refresh) = start_source_refresh_service_for_test(&data_root);
     let stable_request_id = Uuid::from_u128(0x28108).to_string();
     let terminal_generation = Arc::new(Mutex::new(None::<String>));
 
@@ -198,7 +217,7 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
 
         let started = StdInstant::now();
         loop {
-            if service.source_refresh.status(&stable_request_id).is_some() {
+            if source_refresh.status(&stable_request_id).is_some() {
                 break;
             }
             assert!(
@@ -209,8 +228,7 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
         }
         let execute_generation = Arc::clone(&terminal_generation);
         let probe_generation = Arc::clone(&terminal_generation);
-        let run = service
-            .source_refresh
+        let run = source_refresh
             .run_next_with(
                 move |request_id, _| {
                     let publication = publish_authoritative_empty_generation_for_test(
@@ -243,7 +261,7 @@ fn typed_unknown_recovery_reenqueues_stable_uuid_and_returns_its_terminal_genera
     );
     assert_eq!(observation.pin.generation_id(), generation);
     assert_eq!(
-        service.source_refresh.status(&stable_request_id).unwrap()["request_id"],
+        source_refresh.status(&stable_request_id).unwrap()["request_id"],
         stable_request_id
     );
 }
@@ -485,18 +503,11 @@ fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_genera
     let old_requested_at_ms = old["requested_at_ms"].as_i64().unwrap();
     drop(prior_process);
 
-    let service = start_daemon_source_refresh_service_with_request_timeout(
-        &data_root,
-        SharedSemanticRuntime::default(),
-        StdDuration::from_millis(100),
-    )
-    .unwrap();
-    assert!(service
-        .source_refresh
+    let (service, source_refresh) = start_source_refresh_service_for_test(&data_root);
+    assert!(source_refresh
         .recover_interrupted_publication(&data_root)
         .unwrap());
-    let recovered = service
-        .source_refresh
+    let recovered = source_refresh
         .status(&old_request_id)
         .expect("acknowledged request survives restart");
     assert_eq!(recovered["request_id"], old_request_id);
@@ -512,8 +523,7 @@ fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_genera
         recovered["requested_explicit_source_catalog"],
         old["requested_explicit_source_catalog"]
     );
-    let active = service
-        .source_refresh
+    let active = source_refresh
         .handle_ipc_request(
             &data_root,
             &json!({
@@ -547,8 +557,7 @@ fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_genera
 
         let started = StdInstant::now();
         loop {
-            let status = service
-                .source_refresh
+            let status = source_refresh
                 .status(&active_request_id)
                 .expect("active restarted request");
             if status["coalesced_requests"].as_u64() == Some(1) {
@@ -561,17 +570,14 @@ fn old_wait_request_keeps_exact_identity_across_restart_and_returns_exact_genera
             std::thread::sleep(StdDuration::from_millis(5));
         }
         assert_eq!(
-            service
-                .source_refresh
-                .request_catalog_authority_for_test(&active_request_id),
+            source_refresh.request_catalog_authority_for_test(&active_request_id),
             Some(authority.clone())
         );
 
         let execute_generation = Arc::clone(&terminal_generation);
         let execute_authority = authority.clone();
         let probe_generation = Arc::clone(&terminal_generation);
-        let run = service
-            .source_refresh
+        let run = source_refresh
             .run_next_with(
                 move |request_id, _| {
                     let mut publication = publish_authoritative_empty_generation_for_test(

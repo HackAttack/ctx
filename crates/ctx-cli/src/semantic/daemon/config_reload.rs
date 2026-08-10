@@ -1,5 +1,6 @@
 use std::{path::Path, sync::Arc};
 
+use anyhow::anyhow;
 use ctx_history_core::utc_now;
 use ctx_semantic_model::semantic_query_service_supported;
 use serde_json::{json, Value};
@@ -14,9 +15,8 @@ use super::{
         daemon_wakeup::DaemonWakeup,
         paths_status::lower_semantic_worker_priority,
         query_service::{
-            daemon_query_service_transport_supported, start_daemon_query_service,
-            start_daemon_source_refresh_service,
-            start_daemon_source_refresh_service_with_coordinator, DaemonQueryService,
+            ctx_authenticated_request_handler, daemon_query_service_transport_supported,
+            start_daemon_query_service, start_daemon_source_refresh_service, DaemonQueryService,
         },
     },
     DaemonRuntime,
@@ -139,24 +139,19 @@ pub(super) fn reload_daemon_runtime_config(
         semantic_query_service_supported() && daemon_query_service_transport_supported(),
     );
     if daemon_query_service_transport_supported() && refresh_service.is_none() {
-        let source_refresh = runtime.source_refresh_coordinator.as_ref().cloned();
-        let started = source_refresh.map_or_else(
-            || {
-                start_daemon_source_refresh_service(
-                    data_root,
-                    runtime.semantic_runtime.clone(),
-                    Arc::clone(wakeup),
-                )
-            },
-            |source_refresh| {
-                start_daemon_source_refresh_service_with_coordinator(
-                    data_root,
-                    runtime.semantic_runtime.clone(),
-                    Arc::clone(wakeup),
-                    source_refresh,
-                )
-            },
+        let Some(source_refresh) = runtime.source_refresh_coordinator.as_ref().cloned() else {
+            reload.activation_failed(anyhow!(
+                "daemon source refresh engine was not recovered before IPC activation"
+            ));
+            return DaemonConfigReloadOutcome::Continue;
+        };
+        let handler = ctx_authenticated_request_handler(
+            data_root,
+            runtime.semantic_runtime.clone(),
+            source_refresh,
+            Arc::clone(wakeup),
         );
+        let started = start_daemon_source_refresh_service(data_root, handler, Arc::clone(wakeup));
         match started {
             Ok(service) => *refresh_service = Some(service),
             Err(error) => {
@@ -166,11 +161,19 @@ pub(super) fn reload_daemon_runtime_config(
         }
     }
     if semantic_runtime_requested && query_service.is_none() {
-        match start_daemon_query_service(
+        let Some(source_refresh) = runtime.source_refresh_coordinator.as_ref().cloned() else {
+            reload.activation_failed(anyhow!(
+                "daemon source refresh engine was not recovered before IPC activation"
+            ));
+            return DaemonConfigReloadOutcome::Continue;
+        };
+        let handler = ctx_authenticated_request_handler(
             data_root,
             runtime.semantic_runtime.clone(),
+            source_refresh,
             Arc::clone(wakeup),
-        ) {
+        );
+        match start_daemon_query_service(data_root, handler, Arc::clone(wakeup)) {
             Ok(service) => {
                 *query_service = Some(service);
                 // The query service thread keeps normal interactive priority.

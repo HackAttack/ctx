@@ -23,9 +23,9 @@ mod server;
 pub(in crate::semantic) use server::*;
 #[cfg(not(test))]
 pub(in crate::semantic) use server::{
-    daemon_can_begin_idle_shutdown, observe_daemon_query_activity, start_daemon_query_service,
-    start_daemon_source_refresh_service, start_daemon_source_refresh_service_with_coordinator,
-    DaemonQueryActivity, DaemonQueryService,
+    ctx_authenticated_request_handler, daemon_can_begin_idle_shutdown,
+    observe_daemon_query_activity, start_daemon_query_service, start_daemon_source_refresh_service,
+    AfterWriteAttempt, DaemonQueryActivity, DaemonQueryService, HandlerOutcome,
 };
 
 pub(in crate::semantic) fn daemon_query_service_transport_supported() -> bool {

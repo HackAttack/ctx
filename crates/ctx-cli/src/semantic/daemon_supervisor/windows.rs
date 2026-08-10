@@ -12,23 +12,25 @@ pub(super) fn install_native_supervisor(
     data_root: &Path,
     executable: &Path,
     environment: &SupervisorEnvironmentSnapshot,
+    manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<PathBuf> {
     let path = daemon_root_path(data_root).join("windows-task.xml");
-    let system_root =
-        env::var_os("SystemRoot").ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
-    let sid = current_windows_user_sid()?;
+    let system_root = manager_environment
+        .get("SystemRoot")
+        .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
+    let sid = current_windows_user_sid(manager_environment)?;
     let task_name = windows_task_name(&sid);
     let xml = windows_task_xml_with_environment(
         executable,
         data_root,
-        Path::new(&system_root),
+        Path::new(system_root),
         &sid,
         &task_name,
         environment,
     )?;
     write_atomic_file(&path, &windows_task_xml_bytes(&xml))?;
 
-    let mut create = supervisor_command("schtasks");
+    let mut create = supervisor_command("schtasks", manager_environment);
     create
         .args(["/Create", "/TN"])
         .arg(&task_name)
@@ -37,21 +39,24 @@ pub(super) fn install_native_supervisor(
         .arg("/F");
     command_success(&mut create, "schtasks /Create")?;
     migrate_existing_daemon_to_supervisor(data_root)?;
-    start_native_supervisor(data_root)?;
+    start_native_supervisor(data_root, manager_environment)?;
     Ok(path)
 }
 
 #[cfg(windows)]
-pub(super) fn disable_native_supervisor(data_root: &Path) -> Result<Option<PathBuf>> {
+pub(super) fn disable_native_supervisor(
+    data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<PathBuf>> {
     let path = daemon_root_path(data_root).join("windows-task.xml");
-    let task_name = windows_task_name(&current_windows_user_sid()?);
-    let mut end = supervisor_command("schtasks");
+    let task_name = windows_task_name(&current_windows_user_sid(manager_environment)?);
+    let mut end = supervisor_command("schtasks", manager_environment);
     end.args(["/End", "/TN"]).arg(&task_name);
     let _ = supervisor_output(&mut end);
-    let mut delete = supervisor_command("schtasks");
+    let mut delete = supervisor_command("schtasks", manager_environment);
     delete.args(["/Delete", "/TN"]).arg(&task_name).arg("/F");
     let output = supervisor_output(&mut delete).context("run schtasks /Delete")?;
-    let query = query_windows_task(&task_name)?;
+    let query = query_windows_task(&task_name, manager_environment)?;
     if !output.status.success() && query.status.success() {
         return Err(anyhow!(
             "schtasks /Delete failed: {}",
@@ -79,27 +84,8 @@ pub(super) fn windows_task_name(user_sid: &str) -> String {
     format!("{WINDOWS_TASK_PREFIX}{user_sid}")
 }
 
-#[cfg(test)]
-pub(super) fn windows_task_xml(
-    executable: &Path,
-    data_root: &Path,
-    system_root: &Path,
-    user_sid: &str,
-    task_name: &str,
-) -> Result<String> {
-    let environment = supervisor_environment_snapshot()?;
-    windows_task_xml_with_environment(
-        executable,
-        data_root,
-        system_root,
-        user_sid,
-        task_name,
-        &environment,
-    )
-}
-
 #[cfg(any(test, windows))]
-fn windows_task_xml_with_environment(
+pub(super) fn windows_task_xml_with_environment(
     executable: &Path,
     data_root: &Path,
     system_root: &Path,
@@ -156,16 +142,7 @@ pub(super) fn windows_task_xml_bytes(xml: &str) -> Vec<u8> {
 }
 
 #[cfg(any(test, windows))]
-pub(super) fn windows_sanitized_daemon_script(
-    executable: &Path,
-    data_root: &Path,
-) -> Result<String> {
-    let environment = supervisor_environment_snapshot()?;
-    windows_sanitized_daemon_script_with_environment(executable, data_root, &environment)
-}
-
-#[cfg(any(test, windows))]
-fn windows_sanitized_daemon_script_with_environment(
+pub(super) fn windows_sanitized_daemon_script_with_environment(
     executable: &Path,
     data_root: &Path,
     snapshot: &SupervisorEnvironmentSnapshot,
@@ -251,8 +228,10 @@ pub(super) fn windows_command_line_quote(value: &str) -> String {
 }
 
 #[cfg(windows)]
-pub(super) fn current_windows_user_sid() -> Result<String> {
-    let mut command = supervisor_command("whoami");
+pub(super) fn current_windows_user_sid(
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<String> {
+    let mut command = supervisor_command("whoami", manager_environment);
     command.args(["/user", "/fo", "csv", "/nh"]);
     let output = supervisor_output(&mut command).context("query current Windows user SID")?;
     if !output.status.success() {
@@ -270,8 +249,11 @@ pub(super) fn current_windows_user_sid() -> Result<String> {
 }
 
 #[cfg(windows)]
-fn query_windows_task(task_name: &str) -> Result<std::process::Output> {
-    let mut query = supervisor_command("schtasks");
+fn query_windows_task(
+    task_name: &str,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<std::process::Output> {
+    let mut query = supervisor_command("schtasks", manager_environment);
     query.args(["/Query", "/TN"]).arg(task_name).arg("/XML");
     supervisor_output(&mut query).context("run schtasks /Query")
 }
@@ -280,12 +262,15 @@ fn query_windows_task(task_name: &str) -> Result<std::process::Output> {
 pub(super) fn verify_native_supervisor_registration(
     data_root: &Path,
     executable: &Path,
+    daemon_environment: &SupervisorEnvironmentSnapshot,
+    manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<()> {
-    let system_root =
-        env::var_os("SystemRoot").ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
-    let sid = current_windows_user_sid()?;
+    let system_root = manager_environment
+        .get("SystemRoot")
+        .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
+    let sid = current_windows_user_sid(manager_environment)?;
     let task_name = windows_task_name(&sid);
-    let output = query_windows_task(&task_name)?;
+    let output = query_windows_task(&task_name, manager_environment)?;
     if !output.status.success() {
         return Err(anyhow!(
             "ctx current-user scheduled task is not registered: {}",
@@ -293,13 +278,15 @@ pub(super) fn verify_native_supervisor_registration(
         ));
     }
     let xml = decode_supervisor_text(&output.stdout);
-    if !windows_task_registration_matches(
+    if !windows_task_registration_matches_with_environment(
         &xml,
         executable,
         data_root,
-        Path::new(&system_root),
+        Path::new(system_root),
         &sid,
         &task_name,
+        daemon_environment,
+        manager_environment,
     )? {
         return Err(anyhow!(
             "ctx scheduled task registration does not match the maintained definition"
@@ -309,13 +296,24 @@ pub(super) fn verify_native_supervisor_registration(
 }
 
 #[cfg(windows)]
-pub(super) fn verify_native_supervisor(data_root: &Path, executable: &Path) -> Result<u32> {
-    verify_native_supervisor_registration(data_root, executable)?;
-    let system_root =
-        env::var_os("SystemRoot").ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
-    let sid = current_windows_user_sid()?;
+pub(super) fn verify_native_supervisor(
+    data_root: &Path,
+    executable: &Path,
+    daemon_environment: &SupervisorEnvironmentSnapshot,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<u32> {
+    verify_native_supervisor_registration(
+        data_root,
+        executable,
+        daemon_environment,
+        manager_environment,
+    )?;
+    let system_root = manager_environment
+        .get("SystemRoot")
+        .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
+    let sid = current_windows_user_sid(manager_environment)?;
     let task_name = windows_task_name(&sid);
-    if !windows_task_is_running(&task_name, Path::new(&system_root))? {
+    if !windows_task_is_running(&task_name, Path::new(system_root), manager_environment)? {
         return Err(anyhow!(
             "ctx current-user scheduled task has no live supervisor ownership"
         ));
@@ -324,15 +322,22 @@ pub(super) fn verify_native_supervisor(data_root: &Path, executable: &Path) -> R
 }
 
 #[cfg(windows)]
-pub(super) fn start_native_supervisor(_data_root: &Path) -> Result<()> {
-    let task_name = windows_task_name(&current_windows_user_sid()?);
-    let mut run = supervisor_command("schtasks");
+pub(super) fn start_native_supervisor(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<()> {
+    let task_name = windows_task_name(&current_windows_user_sid(manager_environment)?);
+    let mut run = supervisor_command("schtasks", manager_environment);
     run.args(["/Run", "/TN"]).arg(&task_name);
     command_success(&mut run, "schtasks /Run")
 }
 
 #[cfg(windows)]
-fn windows_task_is_running(task_name: &str, system_root: &Path) -> Result<bool> {
+fn windows_task_is_running(
+    task_name: &str,
+    system_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<bool> {
     let powershell = system_root
         .join("System32")
         .join("WindowsPowerShell")
@@ -342,6 +347,7 @@ fn windows_task_is_running(task_name: &str, system_root: &Path) -> Result<bool> 
         powershell
             .to_str()
             .ok_or_else(|| anyhow!("Windows PowerShell path is not Unicode"))?,
+        manager_environment,
     );
     command
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
@@ -365,20 +371,26 @@ pub(super) fn parse_windows_task_state(output: &[u8]) -> Option<u32> {
 }
 
 #[cfg(any(test, windows))]
-pub(super) fn windows_task_registration_matches(
+pub(super) fn windows_task_registration_matches_with_environment(
     xml: &str,
     executable: &Path,
     data_root: &Path,
     system_root: &Path,
     user_sid: &str,
     task_name: &str,
+    daemon_environment: &SupervisorEnvironmentSnapshot,
+    manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<bool> {
     let powershell = system_root
         .join("System32")
         .join("WindowsPowerShell")
         .join("v1.0")
         .join("powershell.exe");
-    let script = windows_sanitized_daemon_script(executable, data_root)?;
+    let script = windows_sanitized_daemon_script_with_environment(
+        executable,
+        data_root,
+        daemon_environment,
+    )?;
     let encoded = BASE64.encode(
         script
             .encode_utf16()
@@ -393,6 +405,7 @@ pub(super) fn windows_task_registration_matches(
         registration.logon_trigger_user_id.as_deref(),
         user_sid,
         system_root,
+        manager_environment,
     )?;
     Ok(!registration.invalid
         && registration.root_count == 1
@@ -437,6 +450,7 @@ fn windows_task_trigger_identity_matches(
     actual: Option<&str>,
     expected_sid: &str,
     system_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<bool> {
     let Some(actual) = actual else {
         return Ok(false);
@@ -444,7 +458,7 @@ fn windows_task_trigger_identity_matches(
     if windows_task_user_identity_matches(actual, expected_sid, None) {
         return Ok(true);
     }
-    let resolved_sid = resolve_windows_account_sid(actual, system_root)?;
+    let resolved_sid = resolve_windows_account_sid(actual, system_root, manager_environment)?;
     Ok(windows_task_user_identity_matches(
         actual,
         expected_sid,
@@ -457,6 +471,7 @@ fn windows_task_trigger_identity_matches(
     actual: Option<&str>,
     expected_sid: &str,
     _system_root: &Path,
+    _manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<bool> {
     Ok(actual.is_some_and(|actual| windows_task_user_identity_matches(actual, expected_sid, None)))
 }
@@ -472,7 +487,11 @@ pub(super) fn windows_task_user_identity_matches(
 }
 
 #[cfg(windows)]
-fn resolve_windows_account_sid(account: &str, system_root: &Path) -> Result<String> {
+fn resolve_windows_account_sid(
+    account: &str,
+    system_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<String> {
     let account = validated_supervisor_artifact_text("Windows task account", account)?;
     let powershell = system_root
         .join("System32")
@@ -490,7 +509,7 @@ fn resolve_windows_account_sid(account: &str, system_root: &Path) -> Result<Stri
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>(),
     );
-    let mut command = supervisor_command(powershell);
+    let mut command = supervisor_command(powershell, manager_environment);
     command.args([
         "-NoLogo",
         "-NoProfile",

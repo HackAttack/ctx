@@ -352,7 +352,12 @@ pub(super) fn run_daemon_inner(
             &mut config_reload,
             &wakeup,
         ) == DaemonConfigReloadOutcome::StopDisabled;
-        install_source_watch_ingress(&wakeup, refresh_service.as_ref());
+        install_source_watch_ingress(
+            &wakeup,
+            refresh_service
+                .as_ref()
+                .and(runtime.source_refresh_coordinator.as_ref()),
+        );
         if config_reload.status == "activation_failed" {
             let activation_error = config_reload
                 .last_error
@@ -393,7 +398,7 @@ pub(super) fn run_daemon_inner(
             data_root,
             refresh_service
                 .as_ref()
-                .map(|service| service.source_refresh.as_ref()),
+                .and(runtime.source_refresh_coordinator.as_deref()),
             WatchCatalogReconcileTrigger::Startup,
             false,
         );
@@ -453,7 +458,12 @@ pub(super) fn run_daemon_inner(
                 break;
             }
             ensure_daemon_ipc_services_healthy(query_service.as_ref(), refresh_service.as_ref())?;
-            install_source_watch_ingress(&wakeup, refresh_service.as_ref());
+            install_source_watch_ingress(
+                &wakeup,
+                refresh_service
+                    .as_ref()
+                    .and(runtime.source_refresh_coordinator.as_ref()),
+            );
             if runtime.config.daemon.mode.runs_only_source_refresh() {
                 // A live mode change must not carry a previously prepared
                 // automatic upgrade into the source-refresh-only profile.
@@ -463,7 +473,7 @@ pub(super) fn run_daemon_inner(
             }
             if let Some(source_refresh) = refresh_service
                 .as_ref()
-                .map(|service| service.source_refresh.as_ref())
+                .and(runtime.source_refresh_coordinator.as_deref())
                 .filter(|refresh| !refresh.watch_routes_initialized())
             {
                 watch_runtime.reconcile_catalog_and_route_authority(
@@ -522,10 +532,13 @@ pub(super) fn run_daemon_inner(
             send_daemon_events(data_root, &events);
             let retry_due = !runtime.config.daemon.mode.runs_only_source_refresh()
                 && daemon_retry_due(&runtime);
-            let source_refresh_pending = refresh_service.as_ref().is_some_and(|service| {
-                service.source_refresh.has_pending_request()
-                    || service.source_refresh.has_scheduled_route_work()
-            });
+            let source_refresh_pending = refresh_service
+                .as_ref()
+                .and(runtime.source_refresh_coordinator.as_deref())
+                .is_some_and(|source_refresh| {
+                    source_refresh.has_pending_request()
+                        || source_refresh.has_scheduled_route_work()
+                });
             // Retry and queued-refresh state describe future scheduler work,
             // not work currently executing. An explicit finite daemon must
             // still attempt shutdown once its idle lifetime expires; the
@@ -564,6 +577,10 @@ pub(super) fn run_daemon_inner(
             let cycle_started = Instant::now();
             let semantic_runtime_active =
                 daemon_semantic_runtime_active(&runtime, query_service.as_ref());
+            let source_refresh = refresh_service
+                .as_ref()
+                .and(runtime.source_refresh_coordinator.as_ref())
+                .cloned();
             let mut iteration = run_daemon_scheduler_cycle_with_activity(
                 &args,
                 data_root,
@@ -573,9 +590,7 @@ pub(super) fn run_daemon_inner(
                 query_service
                     .as_ref()
                     .map(|service| service.activity.as_ref()),
-                refresh_service
-                    .as_ref()
-                    .map(|service| service.source_refresh.as_ref()),
+                source_refresh.as_deref(),
             )?;
             let continue_immediately = iteration.continue_immediately;
             let cycle_duration = cycle_started.elapsed();
@@ -623,7 +638,7 @@ pub(super) fn run_daemon_inner(
                 &runtime,
                 refresh_service
                     .as_ref()
-                    .map(|service| service.source_refresh.as_ref()),
+                    .and(runtime.source_refresh_coordinator.as_deref()),
                 next_safety_reconcile,
                 idle_since,
                 idle_exit,
@@ -640,7 +655,7 @@ pub(super) fn run_daemon_inner(
             }
             let source_refresh = refresh_service
                 .as_ref()
-                .map(|service| service.source_refresh.as_ref());
+                .and(runtime.source_refresh_coordinator.as_deref());
             let scheduled_refresh_wakeup_due = wake.timed_out
                 && !retry_wakeup_due
                 && daemon_scheduled_refresh_due(
@@ -867,13 +882,12 @@ pub(super) fn daemon_wait_duration(
 
 fn install_source_watch_ingress(
     wakeup: &DaemonWakeup,
-    refresh_service: Option<&DaemonQueryService>,
+    source_refresh: Option<&Arc<CoreRefreshEngine>>,
 ) {
     if wakeup.has_source_watch_sink() {
         return;
     }
-    let Some(source_refresh) = refresh_service.map(|service| Arc::clone(&service.source_refresh))
-    else {
+    let Some(source_refresh) = source_refresh.cloned() else {
         return;
     };
     wakeup.install_source_watch_sink(Arc::new(move |batch: &SourceWatchBatch| {

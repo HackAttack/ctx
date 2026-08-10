@@ -331,8 +331,8 @@ pub(super) fn request_daemon_autostart(
             return Err(error);
         }
     };
-    let mut command = configured_daemon_autostart_command(&exe, data_root, trigger, None);
-    match spawn_daemon_child(&mut command) {
+    let launch = configured_daemon_autostart_command(&exe, data_root, trigger, None);
+    match launch.and_then(spawn_daemon_child) {
         Ok(child) => Ok(DaemonAutostartRequest::Spawned(child)),
         Err(error) => {
             let _ = write_daemon_autostart_status(
@@ -781,6 +781,72 @@ pub(super) fn wait_for_daemon_handoff_with(
     Err(DaemonHandoffTimeout.into())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DetachedDaemonLaunch {
+    program: PathBuf,
+    args: Vec<OsString>,
+    environment: BTreeMap<OsString, OsString>,
+}
+
+impl DetachedDaemonLaunch {
+    #[cfg(test)]
+    pub(super) fn for_test(
+        program: PathBuf,
+        args: Vec<OsString>,
+        overrides: BTreeMap<OsString, OsString>,
+    ) -> io::Result<Self> {
+        let mut environment = daemon_child_environment();
+        environment.extend(overrides);
+        Self::normalized(program, args, environment)
+    }
+
+    #[cfg(test)]
+    pub(super) fn program(&self) -> &Path {
+        &self.program
+    }
+
+    #[cfg(test)]
+    pub(super) fn get_args(&self) -> impl Iterator<Item = &OsStr> {
+        self.args.iter().map(OsString::as_os_str)
+    }
+
+    #[cfg(test)]
+    pub(super) fn get_envs(&self) -> impl Iterator<Item = (&OsStr, Option<&OsStr>)> {
+        self.environment
+            .iter()
+            .map(|(key, value)| (key.as_os_str(), Some(value.as_os_str())))
+    }
+
+    fn normalized(
+        program: PathBuf,
+        args: Vec<OsString>,
+        environment: BTreeMap<OsString, OsString>,
+    ) -> io::Result<Self> {
+        validate_daemon_pro_channel(
+            environment
+                .get(OsStr::new(DAEMON_PRO_CHANNEL_ENV))
+                .map(OsString::as_os_str),
+        )?;
+        if let Some(name) = environment
+            .keys()
+            .find(|name| is_release_authority_environment_name(name.as_os_str()))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "detached daemon environment may not contain release authority variable {}",
+                    name.to_string_lossy()
+                ),
+            ));
+        }
+        Ok(Self {
+            program,
+            args,
+            environment,
+        })
+    }
+}
+
 pub(super) fn daemon_autostart_command(
     exe: &Path,
     data_root: &Path,
@@ -788,48 +854,61 @@ pub(super) fn daemon_autostart_command(
     idle_exit: Option<u64>,
     loop_interval: Option<u64>,
     handoff_token: Option<&str>,
-) -> Command {
-    let mut command = Command::new(exe);
-    configure_narrow_daemon_environment(&mut command);
-    command
-        .arg("--data-root")
-        .arg(data_root)
-        .arg("daemon")
-        .arg("run")
-        .arg("--start-mode")
-        .arg(DaemonStartModeArg::Auto.as_str())
-        .arg("--trigger-command")
-        .arg(trigger.as_str())
-        .arg("--format=json")
-        .env(DAEMON_BACKGROUND_CHILD_ENV, "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+) -> io::Result<DetachedDaemonLaunch> {
+    daemon_autostart_command_with_environment_overrides(
+        exe,
+        data_root,
+        trigger,
+        idle_exit,
+        loop_interval,
+        handoff_token,
+        BTreeMap::new(),
+    )
+}
+
+fn daemon_autostart_command_with_environment_overrides(
+    exe: &Path,
+    data_root: &Path,
+    trigger: DaemonTriggerCommandArg,
+    idle_exit: Option<u64>,
+    loop_interval: Option<u64>,
+    handoff_token: Option<&str>,
+    overrides: BTreeMap<OsString, OsString>,
+) -> io::Result<DetachedDaemonLaunch> {
+    let mut args = vec![
+        OsString::from("--data-root"),
+        data_root.as_os_str().to_os_string(),
+        OsString::from("daemon"),
+        OsString::from("run"),
+        OsString::from("--start-mode"),
+        OsString::from(DaemonStartModeArg::Auto.as_str()),
+        OsString::from("--trigger-command"),
+        OsString::from(trigger.as_str()),
+        OsString::from("--format=json"),
+    ];
     if let Some(idle_exit) = idle_exit {
-        command
-            .arg("--idle-exit-seconds")
-            .arg(idle_exit.to_string());
+        args.push(OsString::from("--idle-exit-seconds"));
+        args.push(OsString::from(idle_exit.to_string()));
     }
     if let Some(loop_interval) = loop_interval {
-        command
-            .arg("--loop-interval-seconds")
-            .arg(loop_interval.to_string());
+        args.push(OsString::from("--loop-interval-seconds"));
+        args.push(OsString::from(loop_interval.to_string()));
     }
-    #[cfg(unix)]
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    #[cfg(windows)]
-    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    let mut environment = daemon_child_environment();
+    environment.insert(
+        OsString::from(DAEMON_BACKGROUND_CHILD_ENV),
+        OsString::from("1"),
+    );
     if let Some(token) = handoff_token {
-        command.env(DAEMON_UPGRADE_HANDOFF_TOKEN_ENV, token);
+        environment.insert(
+            OsString::from(DAEMON_UPGRADE_HANDOFF_TOKEN_ENV),
+            OsString::from(token),
+        );
     }
-    command
+    for (name, value) in overrides {
+        environment.insert(name, value);
+    }
+    DetachedDaemonLaunch::normalized(exe.to_path_buf(), args, environment)
 }
 
 const DAEMON_CHILD_ENV_ALLOWLIST: &[&str] = &[
@@ -896,24 +975,22 @@ const DAEMON_CHILD_ENV_ALLOWLIST: &[&str] = &[
 ];
 const DAEMON_PRO_CHANNEL_ENV: &str = "CTX_PRO_CHANNEL";
 
-pub(super) fn configure_narrow_daemon_environment(command: &mut Command) {
-    let inherited = DAEMON_CHILD_ENV_ALLOWLIST
+fn daemon_child_environment() -> BTreeMap<OsString, OsString> {
+    DAEMON_CHILD_ENV_ALLOWLIST
         .iter()
-        .filter_map(|name| env::var_os(name).map(|value| (*name, value)))
-        .collect::<Vec<_>>();
-    command.env_clear();
-    command.envs(inherited);
+        .filter_map(|name| env::var_os(name).map(|value| (OsString::from(name), value)))
+        .collect()
 }
 
-pub(super) fn spawn_daemon_child(command: &mut Command) -> io::Result<Child> {
+pub(super) fn spawn_daemon_child(launch: DetachedDaemonLaunch) -> io::Result<Child> {
     if hosted_uninstall_fences_daemon_autostart() {
         return Err(hosted_uninstall_daemon_fence_error());
     }
-    spawn_daemon_child_after_hosted_uninstall_admission(command)
+    spawn_detached_daemon_child(launch)
 }
 
 pub(super) fn spawn_daemon_child_for_upgrade_handoff(
-    command: &mut Command,
+    launch: DetachedDaemonLaunch,
     replacement_executable: &Path,
 ) -> io::Result<Child> {
     if crate::upgrade::installation_hosted_uninstall_is_active_for_executable(
@@ -923,7 +1000,7 @@ pub(super) fn spawn_daemon_child_for_upgrade_handoff(
     {
         return Err(hosted_uninstall_daemon_fence_error());
     }
-    spawn_daemon_child_after_hosted_uninstall_admission(command)
+    spawn_detached_daemon_child(launch)
 }
 
 fn hosted_uninstall_daemon_fence_error() -> io::Error {
@@ -933,17 +1010,39 @@ fn hosted_uninstall_daemon_fence_error() -> io::Error {
     )
 }
 
-fn spawn_daemon_child_after_hosted_uninstall_admission(command: &mut Command) -> io::Result<Child> {
-    validate_daemon_pro_channel_environment(command)?;
-    crate::process_environment::sanitize_release_authority_env(command);
+pub(super) fn spawn_detached_daemon_child(launch: DetachedDaemonLaunch) -> io::Result<Child> {
+    spawn_detached_daemon_launch(launch)
+}
+
+fn spawn_detached_daemon_launch(launch: DetachedDaemonLaunch) -> io::Result<Child> {
+    let mut command = Command::new(launch.program);
+    command
+        .args(launch.args)
+        .env_clear()
+        .envs(launch.environment)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    #[cfg(windows)]
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     command.spawn()
 }
 
-fn validate_daemon_pro_channel_environment(command: &Command) -> io::Result<()> {
-    let channel = command
-        .get_envs()
-        .find(|(name, _)| *name == std::ffi::OsStr::new(DAEMON_PRO_CHANNEL_ENV))
-        .and_then(|(_, value)| value);
+fn is_release_authority_environment_name(name: &OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_uppercase();
+    name.starts_with("CTX_RELEASE_") || name == "CTX_ALLOW_CUSTOM_RELEASE_BASE_URL"
+}
+
+fn validate_daemon_pro_channel(channel: Option<&OsStr>) -> io::Result<()> {
     if channel.is_none_or(|value| {
         value == std::ffi::OsStr::new("stable") || value == std::ffi::OsStr::new("staging")
     }) {
@@ -960,8 +1059,12 @@ pub(super) fn configured_daemon_autostart_command(
     data_root: &Path,
     trigger: DaemonTriggerCommandArg,
     handoff_token: Option<&str>,
-) -> Command {
-    let mut command = daemon_autostart_command(
+) -> io::Result<DetachedDaemonLaunch> {
+    let mut overrides = BTreeMap::new();
+    if let Some(mode) = env::var_os(DAEMON_MODE_ENV) {
+        overrides.insert(OsString::from(DAEMON_MODE_ENV), mode);
+    }
+    daemon_autostart_command_with_environment_overrides(
         exe,
         data_root,
         trigger,
@@ -971,15 +1074,8 @@ pub(super) fn configured_daemon_autostart_command(
         ),
         daemon_autostart_u64_env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", 3_600),
         handoff_token,
-    );
-    // Preserve an explicit process override across detached launch and
-    // replacement handoff. Config-selected mode remains reloadable because
-    // the child reads the same data root instead of freezing it into an env
-    // override.
-    if let Some(mode) = env::var_os(DAEMON_MODE_ENV) {
-        command.env(DAEMON_MODE_ENV, mode);
-    }
-    command
+        overrides,
+    )
 }
 
 pub(super) fn daemon_restart_allowed(data_root: &Path) -> Result<bool> {

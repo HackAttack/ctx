@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 
 #[path = "query_service_transport_tests/admission_lifecycle.rs"]
 mod admission_lifecycle;
@@ -23,20 +24,42 @@ fn short_test_query_socket_path() -> Result<(tempfile::TempDir, PathBuf)> {
 
 #[cfg(any(unix, windows))]
 fn start_test_query_service(data_root: &Path) -> Result<DaemonQueryService> {
-    start_daemon_query_service_with_request_timeout(
+    let wakeup = Arc::new(super::daemon_wakeup::DaemonWakeup::default());
+    let source_refresh = Arc::new(super::source_backed_refresh_adapter::refresh_engine());
+    let handler = ctx_authenticated_request_handler(
         data_root,
         SharedSemanticRuntime::default(),
+        source_refresh,
+        wakeup,
+    );
+    start_daemon_query_service_with_request_timeout(
+        data_root,
+        handler,
         TEST_QUERY_REQUEST_READ_TIMEOUT,
     )
 }
 
 #[cfg(any(unix, windows))]
-fn start_test_source_refresh_service(data_root: &Path) -> Result<DaemonQueryService> {
-    start_daemon_source_refresh_service_with_request_timeout(
+fn start_test_source_refresh_service(
+    data_root: &Path,
+) -> Result<(
+    DaemonQueryService,
+    Arc<super::source_backed_refresh_coordinator::CoreRefreshEngine>,
+)> {
+    let wakeup = Arc::new(super::daemon_wakeup::DaemonWakeup::default());
+    let source_refresh = Arc::new(super::source_backed_refresh_adapter::refresh_engine());
+    let handler = ctx_authenticated_request_handler(
         data_root,
         SharedSemanticRuntime::default(),
+        Arc::clone(&source_refresh),
+        wakeup,
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        data_root,
+        handler,
         TEST_QUERY_REQUEST_READ_TIMEOUT,
-    )
+    )?;
+    Ok((service, source_refresh))
 }
 
 #[cfg(any(unix, windows))]
@@ -51,6 +74,209 @@ fn wait_for_active_query(service: &DaemonQueryService) -> Result<()> {
     Err(anyhow!(
         "daemon query service did not accept the test client"
     ))
+}
+
+struct CountingAfterWrite(Arc<std::sync::atomic::AtomicUsize>);
+
+impl AfterWriteAttempt for CountingAfterWrite {
+    fn run(self: Box<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct CountingAuthenticatedHandler {
+    handled: Arc<std::sync::atomic::AtomicUsize>,
+    finalized: Arc<std::sync::atomic::AtomicUsize>,
+    fail: bool,
+}
+
+impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
+    fn handle(&self, _service: &ServiceId, _request_body: &[u8]) -> HandlerOutcome {
+        self.handled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let response = if self.fail {
+            Err(anyhow!("authenticated handler failed"))
+        } else {
+            Ok(json!({"ok": true, "schema_version": 1}))
+        };
+        HandlerOutcome::with_after_write_attempt(
+            response,
+            Box::new(CountingAfterWrite(Arc::clone(&self.finalized))),
+        )
+    }
+}
+
+struct DisconnectedResponseWriter;
+
+impl std::io::Write for DisconnectedResponseWriter {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "test client disconnected",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn authenticated_transport_finalizes_once_after_success_error_and_disconnect() -> Result<()> {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    let request = || Ok(format!("{{\"token\":\"{TOKEN}\",\"op\":\"ping\"}}"));
+
+    for (fail, disconnected) in [(false, false), (true, false), (false, true)] {
+        let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handler = CountingAuthenticatedHandler {
+            handled: Arc::clone(&handled),
+            finalized: Arc::clone(&finalized),
+            fail,
+        };
+        if disconnected {
+            assert!(handle_authenticated_daemon_stream(
+                &handler,
+                &ServiceId::new("test-service")?,
+                TOKEN,
+                DisconnectedResponseWriter,
+                request(),
+            )
+            .is_err());
+        } else {
+            let mut response = Vec::new();
+            handle_authenticated_daemon_stream(
+                &handler,
+                &ServiceId::new("test-service")?,
+                TOKEN,
+                &mut response,
+                request(),
+            )?;
+            let expected = if fail {
+                b"{\"error\":\"authenticated handler failed\",\"ok\":false}\n".as_slice()
+            } else {
+                b"{\"ok\":true,\"schema_version\":1}\n".as_slice()
+            };
+            assert_eq!(response, expected);
+        }
+        assert_eq!(handled.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(finalized.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_and_bad_token_requests_never_reach_handler_or_post_write_action() -> Result<()> {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler = CountingAuthenticatedHandler {
+        handled: Arc::clone(&handled),
+        finalized: Arc::clone(&finalized),
+        fail: false,
+    };
+
+    for (request, expected) in [
+        ("{not-json", None),
+        (
+            "{\"token\":\"wrong\",\"op\":\"ping\"}",
+            Some(b"{\"error\":\"daemon query authentication failed\",\"ok\":false}\n".as_slice()),
+        ),
+    ] {
+        let mut response = Vec::new();
+        handle_authenticated_daemon_stream(
+            &handler,
+            &ServiceId::new("test-service")?,
+            TOKEN,
+            &mut response,
+            Ok(request.to_owned()),
+        )?;
+        if let Some(expected) = expected {
+            assert_eq!(response, expected);
+        } else {
+            assert_eq!(response.last(), Some(&b'\n'));
+            let response: Value = serde_json::from_slice(&response)?;
+            assert_eq!(response["ok"], false);
+        }
+    }
+    assert_eq!(handled.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(finalized.load(std::sync::atomic::Ordering::SeqCst), 0);
+    Ok(())
+}
+
+struct RecordingServiceHandler(std::sync::Mutex<Vec<String>>);
+
+impl AuthenticatedRequestHandler for RecordingServiceHandler {
+    fn handle(&self, service: &ServiceId, _request_body: &[u8]) -> HandlerOutcome {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(service.as_str().to_owned());
+        HandlerOutcome::response(Ok(json!({"ok": true})))
+    }
+}
+
+#[test]
+fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping() -> Result<()> {
+    for invalid in [
+        "",
+        "UPPER",
+        "leading/slash",
+        "-leading",
+        "trailing-",
+        "service_name",
+    ] {
+        assert!(ServiceId::new(invalid).is_err(), "accepted `{invalid}`");
+    }
+    assert!(ServiceId::new("a".repeat(65)).is_err());
+
+    let service_id = ServiceId::new("opaque-service-7")?;
+    #[cfg(unix)]
+    {
+        let constructor: fn(ServiceId, PathBuf, PathBuf, bool) -> Result<IpcServiceSpec> =
+            IpcServiceSpec::new;
+        assert!(constructor(
+            service_id.clone(),
+            PathBuf::from("/"),
+            PathBuf::from("/tmp/opaque.sock"),
+            false,
+        )
+        .is_err());
+        assert!(constructor(
+            service_id.clone(),
+            PathBuf::from("/tmp/opaque-endpoint.json"),
+            PathBuf::from("/"),
+            false,
+        )
+        .is_err());
+        let spec = constructor(
+            service_id.clone(),
+            PathBuf::from("/tmp/opaque-endpoint.json"),
+            PathBuf::from("/tmp/opaque.sock"),
+            false,
+        )?;
+        assert_eq!(spec.unix_socket_path(), Path::new("/tmp/opaque.sock"));
+    }
+    #[cfg(not(unix))]
+    {
+        assert!(IpcServiceSpec::new(service_id.clone(), PathBuf::from("/"), false).is_err());
+    }
+
+    let handler = RecordingServiceHandler(std::sync::Mutex::new(Vec::new()));
+    let mut response = Vec::new();
+    handle_authenticated_daemon_stream(
+        &handler,
+        &service_id,
+        "token",
+        &mut response,
+        Ok("{\"token\":\"token\",\"op\":\"opaque\"}".to_owned()),
+    )?;
+    assert_eq!(
+        *handler.0.lock().unwrap_or_else(|error| error.into_inner()),
+        ["opaque-service-7"]
+    );
+    assert_eq!(response, b"{\"ok\":true}\n");
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -448,9 +674,16 @@ fn stalled_query_client_is_discarded_and_next_query_is_served() -> Result<()> {
 fn query_service_ping_stays_healthy_while_embedder_is_busy() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let runtime = SharedSemanticRuntime::default();
-    let service = start_daemon_query_service_with_request_timeout(
+    let wakeup = Arc::new(super::daemon_wakeup::DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
         temp.path(),
         runtime.clone(),
+        Arc::new(super::source_backed_refresh_adapter::refresh_engine()),
+        wakeup,
+    );
+    let service = start_daemon_query_service_with_request_timeout(
+        temp.path(),
+        handler,
         TEST_QUERY_REQUEST_READ_TIMEOUT,
     )?;
     let _runtime_guard = runtime.lock_for_test()?;
@@ -479,7 +712,7 @@ fn query_service_ping_stays_healthy_while_embedder_is_busy() -> Result<()> {
 #[test]
 fn query_service_coalesces_source_refresh_requests_on_one_daemon_ticket() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let service = start_test_source_refresh_service(temp.path())?;
+    let (service, source_refresh) = start_test_source_refresh_service(temp.path())?;
     let request = || {
         daemon_source_refresh_request(
             temp.path(),
@@ -502,7 +735,7 @@ fn query_service_coalesces_source_refresh_requests_on_one_daemon_ticket() -> Res
     assert_eq!(first["request_id"], second["request_id"]);
     assert_eq!(first["coalesced_requests"], 0);
     assert_eq!(second["coalesced_requests"], 1);
-    assert!(service.source_refresh.has_pending_request());
+    assert!(source_refresh.has_pending_request());
     let job = read_daemon_job_status(&daemon_source_backed_refresh_job_path(temp.path()))
         .expect("queued source refresh job status");
     assert_eq!(job["owner"], "daemon");

@@ -13,6 +13,7 @@ use anyhow::Result;
 use anyhow::{anyhow, Context};
 use serde_json::{json, Value};
 
+use super::SupervisorManagerEnvironment;
 use crate::compact_json;
 
 use super::super::{
@@ -80,14 +81,22 @@ fn sync_supervisor_directory(_path: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn native_supervisor_artifact_path(_data_root: &Path) -> Result<Option<PathBuf>> {
-    super::linux_systemd_unit_path().map(Some)
+pub(super) fn native_supervisor_artifact_path(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<PathBuf>> {
+    super::linux_systemd_unit_path(manager_environment).map(Some)
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn native_supervisor_artifact_path(_data_root: &Path) -> Result<Option<PathBuf>> {
-    let home =
-        crate::identity::home_dir().ok_or_else(|| anyhow!("resolve user home for LaunchAgent"))?;
+pub(super) fn native_supervisor_artifact_path(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<PathBuf>> {
+    let home = manager_environment
+        .get("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("resolve user home for LaunchAgent"))?;
     Ok(Some(
         home.join("Library")
             .join("LaunchAgents")
@@ -96,12 +105,18 @@ pub(super) fn native_supervisor_artifact_path(_data_root: &Path) -> Result<Optio
 }
 
 #[cfg(windows)]
-pub(super) fn native_supervisor_artifact_path(data_root: &Path) -> Result<Option<PathBuf>> {
+pub(super) fn native_supervisor_artifact_path(
+    data_root: &Path,
+    _manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<PathBuf>> {
     Ok(Some(daemon_root_path(data_root).join("windows-task.xml")))
 }
 
 #[cfg(target_os = "freebsd")]
-pub(super) fn native_supervisor_artifact_path(_data_root: &Path) -> Result<Option<PathBuf>> {
+pub(super) fn native_supervisor_artifact_path(
+    _data_root: &Path,
+    _manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
@@ -111,7 +126,10 @@ pub(super) fn native_supervisor_artifact_path(_data_root: &Path) -> Result<Optio
     target_os = "freebsd",
     windows
 )))]
-pub(super) fn native_supervisor_artifact_path(_data_root: &Path) -> Result<Option<PathBuf>> {
+pub(super) fn native_supervisor_artifact_path(
+    _data_root: &Path,
+    _manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 

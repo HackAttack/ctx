@@ -1,7 +1,21 @@
 use super::*;
 
 pub(in crate::semantic) fn daemon_supervisor_report(data_root: &Path) -> Value {
-    revalidated_supervisor_report_with(data_root, &PlatformNativeSupervisor)
+    let normalized = supervisor_environment_snapshot().and_then(|daemon_environment| {
+        supervisor_manager_environment()
+            .map(|manager_environment| (daemon_environment, manager_environment))
+    });
+    let Ok((daemon_environment, manager_environment)) = normalized else {
+        let mut report = stored_supervisor_report(data_root);
+        append_forced_termination_identity_report(&mut report);
+        append_supervisor_environment_report(&mut report);
+        return report;
+    };
+    let backend = PlatformNativeSupervisor {
+        daemon_environment: &daemon_environment,
+        manager_environment: &manager_environment,
+    };
+    revalidated_supervisor_report_with(data_root, &backend)
 }
 
 pub(super) fn revalidated_supervisor_report_with(

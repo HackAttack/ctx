@@ -43,20 +43,37 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
                 env::var("CTX_RELEASE_INHERITED_AUTHORITY").as_deref(),
                 Ok("attacker")
             );
-            let mut descendant = Command::new(env::current_exe()?);
-            configure_narrow_daemon_environment(&mut descendant);
-            descendant
-                .args(["--exact", DAEMON_ENV_PROBE_TEST, "--nocapture"])
-                .env(DAEMON_ENV_PROBE_STAGE, "final")
-                .env(DAEMON_ENV_PROBE_EXPECTED_CHANNEL, &expected_channel)
-                .env("CTX_RELEASE_CONFIGURED_AUTHORITY", "attacker");
+            let args: Vec<OsString> = ["--exact", DAEMON_ENV_PROBE_TEST, "--nocapture"]
+                .into_iter()
+                .map(OsString::from)
+                .collect();
+            let overrides = BTreeMap::from([
+                (
+                    OsString::from(DAEMON_ENV_PROBE_STAGE),
+                    OsString::from("final"),
+                ),
+                (
+                    OsString::from(DAEMON_ENV_PROBE_EXPECTED_CHANNEL),
+                    OsString::from(&expected_channel),
+                ),
+            ]);
+            let mut forbidden = overrides.clone();
+            forbidden.insert(
+                OsString::from("CTX_RELEASE_CONFIGURED_AUTHORITY"),
+                OsString::from("attacker"),
+            );
+            let forbidden_error =
+                DetachedDaemonLaunch::for_test(env::current_exe()?, args.clone(), forbidden)
+                    .expect_err("release authority must be rejected during normalization");
+            assert_eq!(forbidden_error.kind(), io::ErrorKind::InvalidInput);
+            let descendant = DetachedDaemonLaunch::for_test(env::current_exe()?, args, overrides);
             if expected_channel == "invalid" {
-                let error = spawn_daemon_child(&mut descendant)
-                    .expect_err("unsupported Pro channel must fail before child launch");
+                let error =
+                    descendant.expect_err("unsupported Pro channel must fail during normalization");
                 assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
                 assert!(error.to_string().contains("must be stable or staging"));
             } else {
-                assert!(spawn_daemon_child(&mut descendant)?.wait()?.success());
+                assert!(spawn_detached_daemon_child(descendant?)?.wait()?.success());
             }
             return Ok(());
         }
@@ -256,7 +273,8 @@ fn autostart_child_inherits_effective_analytics_policy() {
         Some(5),
         Some(5),
         None,
-    );
+    )
+    .expect("normalized daemon launch");
     let env = command
         .get_envs()
         .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
@@ -278,13 +296,101 @@ fn persistent_autostart_child_has_no_implicit_exit_or_poll_interval() {
         None,
         None,
         None,
-    );
+    )
+    .expect("normalized daemon launch");
     let args = command
         .get_args()
         .filter_map(std::ffi::OsStr::to_str)
         .collect::<Vec<_>>();
     assert!(!args.contains(&"--idle-exit-seconds"), "{args:?}");
     assert!(!args.contains(&"--loop-interval-seconds"), "{args:?}");
+}
+
+#[test]
+fn detached_daemon_launch_dto_preserves_the_complete_cli_schema() {
+    let launch = daemon_autostart_command(
+        Path::new("/managed/ctx"),
+        Path::new("/managed/data"),
+        DaemonTriggerCommandArg::Import,
+        Some(17),
+        Some(23),
+        Some("handoff-token"),
+    )
+    .expect("normalized daemon launch");
+    assert_eq!(launch.program(), Path::new("/managed/ctx"));
+    assert_eq!(
+        launch
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        [
+            "--data-root",
+            "/managed/data",
+            "daemon",
+            "run",
+            "--start-mode",
+            "auto",
+            "--trigger-command",
+            "import",
+            "--format=json",
+            "--idle-exit-seconds",
+            "17",
+            "--loop-interval-seconds",
+            "23",
+        ]
+    );
+    let environment = launch
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        environment.get(DAEMON_BACKGROUND_CHILD_ENV),
+        Some(&Some("1".to_owned()))
+    );
+    assert_eq!(
+        environment.get(DAEMON_UPGRADE_HANDOFF_TOKEN_ENV),
+        Some(&Some("handoff-token".to_owned()))
+    );
+}
+
+#[test]
+fn detached_daemon_launch_freezes_the_normalized_environment() {
+    struct RestoreHome(Option<OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+        }
+    }
+
+    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let _restore = RestoreHome(env::var_os("HOME"));
+    env::set_var("HOME", "/before-normalization");
+    let launch = daemon_autostart_command(
+        Path::new("ctx"),
+        Path::new("/data"),
+        DaemonTriggerCommandArg::Search,
+        None,
+        None,
+        None,
+    )
+    .expect("normalized daemon launch");
+    env::set_var("HOME", "/after-normalization");
+
+    let home = launch
+        .get_envs()
+        .find(|(name, _)| *name == OsStr::new("HOME"))
+        .and_then(|(_, value)| value);
+    assert_eq!(home, Some(OsStr::new("/before-normalization")));
 }
 
 #[test]
@@ -339,7 +445,8 @@ fn configured_autostart_child_inherits_source_refresh_only_mode() {
         temp.path(),
         DaemonTriggerCommandArg::Search,
         None,
-    );
+    )
+    .expect("normalized configured daemon launch");
     let mode = command
         .get_envs()
         .find(|(key, _)| *key == std::ffi::OsStr::new(DAEMON_MODE_ENV))
@@ -503,16 +610,15 @@ fn autostart_child_detaches_from_the_invoking_terminal_session() -> Result<()> {
     permissions.set_mode(0o700);
     fs::set_permissions(&executable, permissions)?;
 
-    let mut command = daemon_autostart_command(
-        &executable,
-        temp.path(),
-        DaemonTriggerCommandArg::Setup,
-        Some(5),
-        Some(5),
-        None,
-    );
-    command.env("CTX_DAEMON_TEST_RECEIPT", &receipt);
-    let mut child = command.spawn()?;
+    let launch = DetachedDaemonLaunch::for_test(
+        executable.clone(),
+        Vec::new(),
+        BTreeMap::from([(
+            OsString::from("CTX_DAEMON_TEST_RECEIPT"),
+            receipt.as_os_str().to_os_string(),
+        )]),
+    )?;
+    let mut child = spawn_detached_daemon_child(launch)?;
     for _ in 0..100 {
         if fs::read_to_string(&receipt)
             .is_ok_and(|recorded| recorded.split_whitespace().count() == 2)
@@ -662,6 +768,32 @@ fn scheduled_fence_does_not_remain_owned_by_old_parent() -> Result<()> {
 }
 
 #[test]
+fn handoff_and_restart_dtos_preserve_schema_v1_fields() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let handoff_id = "ua_01890f3e-2c80-7000-8000-000000000020";
+    write_daemon_upgrade_handoff(temp.path(), handoff_id, "scheduled", Some(42))?;
+    let handoff = read_daemon_upgrade_handoff(temp.path()).expect("handoff DTO");
+    assert_eq!(handoff["schema_version"], 1);
+    assert_eq!(handoff["handoff_id"], handoff_id);
+    assert_eq!(handoff["phase"], "scheduled");
+    assert_eq!(handoff["owner_pid"], process::id());
+    assert_eq!(handoff["helper_pid"], 42);
+    assert!(handoff["updated_at_ms"].as_i64().is_some());
+    assert_eq!(handoff.as_object().map(serde_json::Map::len), Some(6));
+
+    let restart_path =
+        write_daemon_restart_request(temp.path(), DaemonTriggerCommandArg::Setup, handoff_id)?;
+    let restart: Value = serde_json::from_slice(&fs::read(restart_path)?)?;
+    assert_eq!(restart["schema_version"], 1);
+    assert_eq!(restart["request_id"], handoff_id);
+    assert_eq!(restart["trigger_command"], "setup");
+    assert_eq!(restart["requester_pid"], process::id());
+    assert!(restart["requested_at_ms"].as_i64().is_some());
+    assert_eq!(restart.as_object().map(serde_json::Map::len), Some(5));
+    Ok(())
+}
+
+#[test]
 fn current_format_recovery_reexec_preserves_daemon_restart_intent() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let attempt_id = "ua_01890f3e-2c80-7000-8000-000000000007";
@@ -750,7 +882,8 @@ fn replacement_daemon_receives_only_its_handoff_bypass_token() {
         Some(5),
         Some(5),
         Some("handoff-token"),
-    );
+    )
+    .expect("normalized daemon launch");
     let env = command
         .get_envs()
         .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))

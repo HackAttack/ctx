@@ -1,4 +1,8 @@
-use std::{path::Path, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use anyhow::{anyhow, Context, Result};
 use ctx_semantic_model::{
@@ -15,223 +19,316 @@ use crate::semantic::{
     source_backed_refresh_coordinator::CoreRefreshEngine,
 };
 
-use super::super::transport::DaemonIpcService;
+#[cfg(unix)]
+use crate::semantic::paths_status::{daemon_query_socket_path, daemon_root_path};
 
-pub(in crate::semantic) struct DaemonQueryDispatch<'a> {
-    data_root: &'a Path,
-    runtime: &'a SharedSemanticRuntime,
-    source_refresh: &'a CoreRefreshEngine,
-    service: DaemonIpcService,
-    token: &'a str,
-    wakeup: Option<&'a DaemonWakeup>,
-}
+use super::super::transport::{daemon_service_endpoint_path, DaemonIpcService};
+use super::{
+    start_ipc_service_with_request_timeout, AuthenticatedRequestHandler, DaemonQueryService,
+    HandlerOutcome, IpcServiceSpec, ServiceId, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+};
 
-// The Unix and Windows transport loops own this callback ABI and pass the
-// stream plus request by value. Keep that boundary stable while grouping the
-// cohesive service state used by the actual dispatcher below.
-#[allow(clippy::too_many_arguments)]
-pub(in crate::semantic) fn handle_daemon_query_stream<S: std::io::Write>(
-    data_root: &Path,
-    runtime: &SharedSemanticRuntime,
-    source_refresh: &CoreRefreshEngine,
-    service: DaemonIpcService,
-    token: &str,
-    mut stream: S,
-    request: Result<String>,
-    wakeup: Option<&DaemonWakeup>,
-) {
-    let result = request.and_then(|body| {
-        handle_daemon_query_stream_inner(
-            DaemonQueryDispatch {
-                data_root,
-                runtime,
-                source_refresh,
-                service,
-                token,
-                wakeup,
-            },
-            &mut stream,
-            &body,
+const SEMANTIC_QUERY_SERVICE_ID: &str = "semantic-query";
+const SOURCE_REFRESH_SERVICE_ID: &str = "source-refresh";
+
+fn semantic_query_service_spec(data_root: &Path) -> Result<IpcServiceSpec> {
+    let service_id = ServiceId::new(SEMANTIC_QUERY_SERVICE_ID)?;
+    let endpoint_path = daemon_service_endpoint_path(data_root, DaemonIpcService::SemanticQuery);
+    #[cfg(unix)]
+    {
+        IpcServiceSpec::new(
+            service_id,
+            endpoint_path,
+            daemon_query_socket_path(data_root),
+            true,
         )
-    });
-    if let Err(error) = result {
-        let _ = writeln!(
-            stream,
-            "{}",
-            serde_json::to_string(&compact_json(json!({
-                "ok": false,
-                "error": format!("{error:#}"),
-            })))
-            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"query failed\"}".to_owned())
-        );
+    }
+    #[cfg(not(unix))]
+    {
+        IpcServiceSpec::new(service_id, endpoint_path, true)
     }
 }
 
-pub(in crate::semantic) fn handle_daemon_query_stream_inner<S: std::io::Write>(
-    dispatch: DaemonQueryDispatch<'_>,
-    stream: &mut S,
-    body: &str,
-) -> Result<()> {
-    let DaemonQueryDispatch {
-        data_root,
+fn source_refresh_service_spec(data_root: &Path) -> Result<IpcServiceSpec> {
+    let service_id = ServiceId::new(SOURCE_REFRESH_SERVICE_ID)?;
+    let endpoint_path = daemon_service_endpoint_path(data_root, DaemonIpcService::SourceRefresh);
+    #[cfg(unix)]
+    {
+        IpcServiceSpec::new(
+            service_id,
+            endpoint_path,
+            daemon_root_path(data_root).join("source-refresh.sock"),
+            false,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        IpcServiceSpec::new(service_id, endpoint_path, false)
+    }
+}
+
+pub(in crate::semantic) fn start_daemon_query_service(
+    data_root: &Path,
+    handler: Arc<dyn AuthenticatedRequestHandler>,
+    wakeup: Arc<DaemonWakeup>,
+) -> Result<DaemonQueryService> {
+    #[cfg(any(unix, windows))]
+    {
+        start_ipc_service_with_request_timeout(
+            semantic_query_service_spec(data_root)?,
+            handler,
+            DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+            Some(wakeup),
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (data_root, handler, wakeup);
+        Err(anyhow!(
+            "daemon query service is not supported on this platform"
+        ))
+    }
+}
+
+#[cfg(test)]
+pub(in crate::semantic) fn start_daemon_query_service_with_request_timeout(
+    data_root: &Path,
+    handler: Arc<dyn AuthenticatedRequestHandler>,
+    request_read_timeout: std::time::Duration,
+) -> Result<DaemonQueryService> {
+    start_ipc_service_with_request_timeout(
+        semantic_query_service_spec(data_root)?,
+        handler,
+        request_read_timeout,
+        Some(Arc::new(DaemonWakeup::default())),
+    )
+}
+
+pub(in crate::semantic) fn start_daemon_source_refresh_service(
+    data_root: &Path,
+    handler: Arc<dyn AuthenticatedRequestHandler>,
+    wakeup: Arc<DaemonWakeup>,
+) -> Result<DaemonQueryService> {
+    #[cfg(any(unix, windows))]
+    {
+        start_ipc_service_with_request_timeout(
+            source_refresh_service_spec(data_root)?,
+            handler,
+            DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+            Some(wakeup),
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (data_root, handler, wakeup);
+        Err(anyhow!(
+            "daemon source refresh service is not supported on this platform"
+        ))
+    }
+}
+
+#[cfg(test)]
+pub(in crate::semantic) fn start_daemon_source_refresh_service_with_request_timeout(
+    data_root: &Path,
+    handler: Arc<dyn AuthenticatedRequestHandler>,
+    request_read_timeout: std::time::Duration,
+) -> Result<DaemonQueryService> {
+    start_ipc_service_with_request_timeout(
+        source_refresh_service_spec(data_root)?,
+        handler,
+        request_read_timeout,
+        Some(Arc::new(DaemonWakeup::default())),
+    )
+}
+
+#[cfg(all(test, unix))]
+pub(in crate::semantic) fn bind_daemon_query_listener(
+    data_root: &Path,
+) -> Result<(std::os::unix::net::UnixListener, PathBuf, Option<PathBuf>)> {
+    super::bind_daemon_service_listener(&daemon_query_socket_path(data_root))
+}
+
+pub(in crate::semantic) struct CtxAuthenticatedRequestHandler {
+    data_root: PathBuf,
+    runtime: SharedSemanticRuntime,
+    source_refresh: Arc<CoreRefreshEngine>,
+    wakeup: Arc<DaemonWakeup>,
+}
+
+pub(in crate::semantic) fn ctx_authenticated_request_handler(
+    data_root: &Path,
+    runtime: SharedSemanticRuntime,
+    source_refresh: Arc<CoreRefreshEngine>,
+    wakeup: Arc<DaemonWakeup>,
+) -> Arc<CtxAuthenticatedRequestHandler> {
+    Arc::new(CtxAuthenticatedRequestHandler {
+        data_root: data_root.to_path_buf(),
         runtime,
         source_refresh,
-        service,
-        token,
         wakeup,
-    } = dispatch;
-    let request: Value = serde_json::from_str(body).context("parse daemon query request")?;
-    if request.get("token").and_then(Value::as_str) != Some(token) {
-        return Err(anyhow!("daemon query authentication failed"));
-    }
-    let op = request.get("op").and_then(Value::as_str).unwrap_or("");
-    if service == DaemonIpcService::SourceRefresh {
-        if let Some(response) = wire::handle_ipc_request(source_refresh, data_root, &request)? {
-            wire::write_response(stream, source_refresh, response)?;
-            return Ok(());
+    })
+}
+
+impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
+    fn handle(&self, service: &ServiceId, request_body: &[u8]) -> HandlerOutcome {
+        let request =
+            serde_json::from_slice::<Value>(request_body).context("parse daemon query request");
+        if service.as_str() == SOURCE_REFRESH_SERVICE_ID {
+            return match request.and_then(|request| self.handle_source_refresh(&request)) {
+                Ok(SourceRefreshResponse::Wire(response)) => wire::wire_handler_outcome(
+                    response,
+                    Arc::clone(&self.source_refresh),
+                    Arc::clone(&self.wakeup),
+                ),
+                Ok(SourceRefreshResponse::Value(response)) => wire::handler_outcome(
+                    Ok(response),
+                    Arc::clone(&self.source_refresh),
+                    Arc::clone(&self.wakeup),
+                ),
+                Err(error) => wire::handler_outcome(
+                    Err(error),
+                    Arc::clone(&self.source_refresh),
+                    Arc::clone(&self.wakeup),
+                ),
+            };
         }
+        if service.as_str() == SEMANTIC_QUERY_SERVICE_ID {
+            return HandlerOutcome::response(
+                request.and_then(|request| self.handle_semantic_query(&request)),
+            );
+        }
+        HandlerOutcome::response(Err(anyhow!(
+            "unknown authenticated IPC service `{}`",
+            service.as_str()
+        )))
+    }
+}
+
+enum SourceRefreshResponse {
+    Wire(wire::WireResponse),
+    Value(Value),
+}
+
+impl CtxAuthenticatedRequestHandler {
+    fn handle_source_refresh(&self, request: &Value) -> Result<SourceRefreshResponse> {
+        if let Some(response) =
+            wire::handle_ipc_request(&self.source_refresh, &self.data_root, request)?
+        {
+            return Ok(SourceRefreshResponse::Wire(response));
+        }
+        let op = request.get("op").and_then(Value::as_str).unwrap_or("");
         if op == "ping" {
-            let published_generation = read_daemon_job_status(
-                &daemon_source_backed_refresh_job_path(data_root),
-            )
-            .and_then(|job| {
-                job.get("published_generation")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&compact_json(json!({
-                    "ok": true,
-                    "schema_version": 1,
-                    "owner": "daemon",
-                    "service": "source_refresh",
-                    "pid": std::process::id(),
-                    "published_generation": published_generation,
-                })))?
-            )?;
-            return Ok(());
+            let published_generation =
+                read_daemon_job_status(&daemon_source_backed_refresh_job_path(&self.data_root))
+                    .and_then(|job| {
+                        job.get("published_generation")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    });
+            return Ok(SourceRefreshResponse::Value(compact_json(json!({
+                "ok": true,
+                "schema_version": 1,
+                "owner": "daemon",
+                "service": "source_refresh",
+                "pid": std::process::id(),
+                "published_generation": published_generation,
+            }))));
         }
         if op == "shutdown" {
-            let config = crate::config::AppConfig::load(data_root)?;
+            let config = crate::config::AppConfig::load(&self.data_root)?;
             if config.daemon.enabled {
                 return Err(anyhow!("daemon shutdown requires [daemon] enabled = false"));
             }
-            let wakeup = wakeup.ok_or_else(|| anyhow!("daemon shutdown wakeup is unavailable"))?;
-            wakeup.signal_shutdown();
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&compact_json(json!({
-                    "ok": true,
-                    "schema_version": 1,
-                    "owner": "daemon",
-                    "service": "source_refresh",
-                    "shutdown": "accepted",
-                    "pid": std::process::id(),
-                })))?
-            )?;
-            return Ok(());
+            self.wakeup.signal_shutdown();
+            return Ok(SourceRefreshResponse::Value(compact_json(json!({
+                "ok": true,
+                "schema_version": 1,
+                "owner": "daemon",
+                "service": "source_refresh",
+                "shutdown": "accepted",
+                "pid": std::process::id(),
+            }))));
         }
         if op == "lifecycle_wakeup" {
-            let wakeup = wakeup.ok_or_else(|| anyhow!("daemon lifecycle wakeup is unavailable"))?;
-            wakeup.signal_ipc();
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&compact_json(json!({
-                    "ok": true,
-                    "schema_version": 1,
-                    "owner": "daemon",
-                    "service": "source_refresh",
-                    "lifecycle_wakeup": "accepted",
-                    "pid": std::process::id(),
-                })))?
-            )?;
-            return Ok(());
+            self.wakeup.signal_ipc();
+            return Ok(SourceRefreshResponse::Value(compact_json(json!({
+                "ok": true,
+                "schema_version": 1,
+                "owner": "daemon",
+                "service": "source_refresh",
+                "lifecycle_wakeup": "accepted",
+                "pid": std::process::id(),
+            }))));
         }
         if op == "supervisor_handoff" {
-            let config = crate::config::AppConfig::load(data_root)?;
+            let config = crate::config::AppConfig::load(&self.data_root)?;
             if !config.daemon.enabled {
                 return Err(anyhow!(
                     "native-supervisor handoff requires an enabled daemon"
                 ));
             }
-            let wakeup =
-                wakeup.ok_or_else(|| anyhow!("daemon supervisor handoff wakeup is unavailable"))?;
-            wakeup.signal_shutdown();
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&compact_json(json!({
-                    "ok": true,
-                    "schema_version": 1,
-                    "owner": "daemon",
-                    "service": "source_refresh",
-                    "supervisor_handoff": "accepted",
-                    "pid": std::process::id(),
-                })))?
-            )?;
-            return Ok(());
+            self.wakeup.signal_shutdown();
+            return Ok(SourceRefreshResponse::Value(compact_json(json!({
+                "ok": true,
+                "schema_version": 1,
+                "owner": "daemon",
+                "service": "source_refresh",
+                "supervisor_handoff": "accepted",
+                "pid": std::process::id(),
+            }))));
         }
-        return Err(anyhow!("unknown daemon source refresh operation `{op}`"));
+        Err(anyhow!("unknown daemon source refresh operation `{op}`"))
     }
-    if op == "ping" {
-        let (embedding_runtime, busy) = runtime.try_runtime_status_json()?;
-        writeln!(
-            stream,
-            "{}",
-            serde_json::to_string(&compact_json(json!({
+
+    fn handle_semantic_query(&self, request: &Value) -> Result<Value> {
+        let op = request.get("op").and_then(Value::as_str).unwrap_or("");
+        if op == "ping" {
+            let (embedding_runtime, busy) = self.runtime.try_runtime_status_json()?;
+            return Ok(compact_json(json!({
                 "ok": true,
                 "schema_version": 1,
                 "model_key": semantic_model_key(),
                 "embedding_runtime": embedding_runtime,
                 "busy": busy,
-            })))?
-        )?;
-        return Ok(());
-    }
-    if op != "embed_query" {
-        return Err(anyhow!("unknown daemon query operation `{op}`"));
-    }
-    let model_key = request
-        .get("model_key")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if model_key != semantic_model_key() {
-        return Err(anyhow!("daemon query model key mismatch"));
-    }
-    let text = request
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if text.is_empty() {
-        return Err(anyhow!("daemon query text is empty"));
-    }
-    let started = Instant::now();
-    let model_config = semantic_model_config(data_root);
-    if !runtime.is_loaded()
-        && !semantic_model_cache_available(model_config.paths().model_cache_dir())
-    {
-        return Err(anyhow!(
-            "semantic model cache is not available to daemon query service"
-        ));
-    }
-    runtime.ensure_loaded_from_cache(&model_config)?;
-    let (embedding, embedding_runtime) = runtime.embed_query(&model_config, text.to_owned())?;
-    let query_embed_ms = started.elapsed().as_millis() as u64;
-    writeln!(
-        stream,
-        "{}",
-        serde_json::to_string(&compact_json(json!({
+            })));
+        }
+        if op != "embed_query" {
+            return Err(anyhow!("unknown daemon query operation `{op}`"));
+        }
+        let model_key = request
+            .get("model_key")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if model_key != semantic_model_key() {
+            return Err(anyhow!("daemon query model key mismatch"));
+        }
+        let text = request
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if text.is_empty() {
+            return Err(anyhow!("daemon query text is empty"));
+        }
+        let started = Instant::now();
+        let model_config = semantic_model_config(&self.data_root);
+        if !self.runtime.is_loaded()
+            && !semantic_model_cache_available(model_config.paths().model_cache_dir())
+        {
+            return Err(anyhow!(
+                "semantic model cache is not available to daemon query service"
+            ));
+        }
+        self.runtime.ensure_loaded_from_cache(&model_config)?;
+        let (embedding, embedding_runtime) =
+            self.runtime.embed_query(&model_config, text.to_owned())?;
+        let query_embed_ms = started.elapsed().as_millis() as u64;
+        Ok(compact_json(json!({
             "ok": true,
             "model_key": semantic_model_key(),
             "embedding_runtime": embedding_runtime.to_json(),
             "query_embed_ms": query_embed_ms,
             "embedding": embedding,
-        })))?
-    )?;
-    Ok(())
+        })))
+    }
 }

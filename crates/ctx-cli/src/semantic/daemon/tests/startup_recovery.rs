@@ -59,9 +59,12 @@ fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> R
         ),
         DaemonConfigReloadOutcome::Continue
     );
-    let service = refresh_service.as_ref().expect("source refresh service");
+    let _service = refresh_service.as_ref().expect("source refresh service");
     assert!(Arc::ptr_eq(
-        &service.source_refresh,
+        runtime
+            .source_refresh_coordinator
+            .as_ref()
+            .expect("runtime source refresh coordinator"),
         &startup_source_refresh
     ));
     assert!(daemon_service_endpoint_path(&data_root, DaemonIpcService::SourceRefresh).exists());
