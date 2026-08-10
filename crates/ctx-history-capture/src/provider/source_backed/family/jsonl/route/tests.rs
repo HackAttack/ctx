@@ -230,7 +230,6 @@ fn expected_state(
             ownership_initialized: true,
             owned_sources,
             terminal_sources,
-            terminal_rejected_sources: HashMap::new(),
             absent_sources: Vec::new(),
             opening_membership: Some(opening_membership),
             certified_inventory: Some(inventory.clone()),
@@ -309,13 +308,7 @@ impl JsonlFamilyAdapter for FrozenMultiRootTestAdapter {
             authorities.push(authority);
         }
         authorities.reverse();
-        JsonlFamilyInventory::present_multi_with_rejected(
-            self.provider(),
-            root,
-            authorities,
-            leaves,
-            Vec::new(),
-        )
+        JsonlFamilyInventory::present_multi(self.provider(), root, authorities, leaves)
     }
 
     fn projector(

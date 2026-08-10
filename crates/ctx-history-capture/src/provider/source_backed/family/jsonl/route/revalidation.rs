@@ -5,7 +5,6 @@ pub(super) fn reset_terminal(resident: &Mutex<FamilyResident>) -> SourceBackedRo
         .lock()
         .map_err(|_| route_internal("JSONL resident catalog lock was poisoned"))?;
     resident.terminal_sources.clear();
-    resident.terminal_rejected_sources.clear();
     resident.absent_sources.clear();
     resident.opening_membership = None;
     resident.certified_inventory = None;
@@ -22,22 +21,13 @@ pub(super) fn revalidate_target(
     };
     match target {
         SourceBackedRevalidationTarget::Source(expected) => {
-            let source = expected.observation().source();
-            let digest = source.exact_descriptor_digest();
-            if let Some(evidence) = resident.terminal_sources.get(&digest) {
-                return evidence.certificate == *expected;
-            }
-            resident
-                .terminal_rejected_sources
-                .get(&digest)
-                .is_some_and(|rejected| {
-                    !rejected.is_empty()
-                        && rejected.iter().all(|terminal| {
-                            terminal.source.exact_descriptor_eq(source)
-                                && terminal.retained_source.as_ref() == Some(expected)
-                                && terminal.revalidate().is_ok()
-                        })
-                })
+            let Some(evidence) = resident
+                .terminal_sources
+                .get(&expected.observation().source().exact_descriptor_digest())
+            else {
+                return false;
+            };
+            evidence.certificate == *expected
         }
         SourceBackedRevalidationTarget::Deletion(deletion) => resident
             .certified_inventory
@@ -64,7 +54,6 @@ pub(super) fn revalidate_complete_inventory(
         opening_membership,
         certified_inventory,
         opening_inventory,
-        rejected_sources,
     ) = {
         let resident = resident.lock().map_err(|_| {
             CaptureError::InvalidPayload("JSONL resident catalog lock was poisoned".to_owned())
@@ -76,7 +65,6 @@ pub(super) fn revalidate_complete_inventory(
             resident.opening_membership.clone(),
             resident.certified_inventory.clone(),
             resident.opening_inventory.clone(),
-            resident.terminal_rejected_sources.clone(),
         )
     };
     if certified_inventory.as_ref() != Some(expected_inventory) {
@@ -96,7 +84,6 @@ pub(super) fn revalidate_complete_inventory(
         adapter.inventory_mode(),
         &expected_sources,
         &owned_sources,
-        &rejected_sources,
     ) {
         return Ok(false);
     }
@@ -109,9 +96,6 @@ pub(super) fn revalidate_complete_inventory(
         evidence
             .terminal_proof
             .revalidate_for(&evidence.certificate)?;
-    }
-    for rejected in rejected_sources.values().flatten() {
-        rejected.revalidate()?;
     }
     for dependency in &opening_inventory.exact_dependencies {
         dependency.revalidate_dependency()?;

@@ -13,9 +13,8 @@ use crate::{
             observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
             JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
             JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome,
-            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
-            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
-            JsonlFileObservation,
+            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRootMissingMode,
+            JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlFileObservation,
         },
         SourceBackedRouteErrorKind,
     },
@@ -23,38 +22,6 @@ use crate::{
 };
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
-
-fn codex_root_conflict_rejected_leaf_v0(
-    rejected: super::generation::CodexRootConflictRejectedSourceV0,
-) -> Result<JsonlFamilyRejectedLeaf> {
-    let source = rejected.plan.1;
-    let catalog = rejected.plan.0;
-    let authority_path =
-        catalog
-            .authority_relative_path
-            .clone()
-            .ok_or(CaptureError::SystemInvariant(
-                "rejected Codex source has no retained authority path",
-            ))?;
-    let proof = TypedKey::bytes(serde_json::to_vec(&rejected.conflict)?)
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-    let diagnostic = rejected.conflict.diagnostic();
-    let terminal_source = catalog.clone();
-    let opened = reopen_codex_source_capability(&terminal_source)?;
-    revalidate_codex_catalog_source_capability(&terminal_source, &opened)?;
-    Ok(JsonlFamilyRejectedLeaf::bind_observed_with_terminal(
-        catalog.source_path,
-        authority_path,
-        proof,
-        1,
-        source,
-        move || {
-            let opened = reopen_codex_source_capability(&terminal_source)?;
-            revalidate_codex_catalog_source_capability(&terminal_source, &opened)
-        },
-        diagnostic,
-    ))
-}
 
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
@@ -283,7 +250,6 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
                 CodexPreparedRouteV0 {
                     missing: false,
                     sources,
-                    rejections: Vec::new(),
                     prehydrated: false,
                     #[cfg(any(test, ctx_codex_causal_qualification))]
                     catalog_observations: Vec::new(),
@@ -298,11 +264,6 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             ));
         }
         let normalized_sources = prepared.sources;
-        let rejected_leaves = prepared
-            .rejections
-            .into_iter()
-            .map(codex_root_conflict_rejected_leaf_v0)
-            .collect::<Result<Vec<_>>>()?;
         let mut ordered_sources = (0..normalized_sources.len()).collect::<Vec<_>>();
         ordered_sources.sort_by_key(|index| normalized_sources[*index].1.identity().digest());
         let mut authorities = BTreeMap::<PathBuf, Arc<ProviderSourceRoot>>::new();
@@ -350,12 +311,11 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             }
         }
         let authorities = authorities.into_values().collect();
-        let family_inventory = JsonlFamilyInventory::present_multi_with_rejected(
+        let family_inventory = JsonlFamilyInventory::present_multi(
             CaptureProvider::Codex,
             route_root,
             authorities,
             leaves,
-            rejected_leaves,
         )?;
         let mut state = self.state.lock().map_err(|_| {
             CaptureError::InvalidPayload("Codex JSONL family state lock was poisoned".to_owned())
@@ -603,7 +563,6 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
                 CodexPreparedRouteV0 {
                     missing: false,
                     sources: vec![plan],
-                    rejections: Vec::new(),
                     prehydrated: false,
                     #[cfg(any(test, ctx_codex_causal_qualification))]
                     catalog_observations: Vec::new(),

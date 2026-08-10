@@ -436,7 +436,6 @@ impl JsonlFamilyMembershipObservation {
         mode: JsonlFamilyInventoryMode,
         expected_sources: &HashMap<[u8; 32], TerminalSourceEvidence>,
         owned_sources: &HashMap<[u8; 32], SourceKey>,
-        rejected_sources: &HashMap<[u8; 32], Vec<JsonlFamilyRejectedTerminal>>,
     ) -> bool {
         if self.root_missing != current.root_missing {
             return false;
@@ -450,11 +449,6 @@ impl JsonlFamilyMembershipObservation {
                         .get(&digest)
                         .is_some_and(|owned| owned.exact_descriptor_eq(source))
                         || expected_sources.contains_key(&digest)
-                        || rejected_sources.get(&digest).is_some_and(|rejected| {
-                            rejected
-                                .iter()
-                                .any(|rejected| rejected.source.exact_descriptor_eq(source))
-                        })
                 })
             }
         }
@@ -787,32 +781,6 @@ pub(crate) struct JsonlFamilyRejectedLeaf {
     authority_path: PathBuf,
     proof: TypedKey,
     rejected_records: u64,
-    terminal: Option<JsonlFamilyRejectedTerminal>,
-    logical_source_failure_detail: Option<String>,
-}
-
-type JsonlFamilyRejectedRevalidator = Arc<dyn Fn() -> Result<()> + Send + Sync>;
-
-#[derive(Clone)]
-struct JsonlFamilyRejectedTerminal {
-    source: SourceKey,
-    retained_source: Option<CertifiedSource>,
-    revalidate: JsonlFamilyRejectedRevalidator,
-}
-
-impl std::fmt::Debug for JsonlFamilyRejectedTerminal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("JsonlFamilyRejectedTerminal")
-            .field("source", &self.source)
-            .finish_non_exhaustive()
-    }
-}
-
-impl JsonlFamilyRejectedTerminal {
-    fn revalidate(&self) -> Result<()> {
-        (self.revalidate)()
-    }
 }
 
 impl JsonlFamilyRejectedLeaf {
@@ -827,31 +795,6 @@ impl JsonlFamilyRejectedLeaf {
             authority_path,
             proof,
             rejected_records,
-            terminal: None,
-            logical_source_failure_detail: None,
-        }
-    }
-
-    pub(crate) fn bind_observed_with_terminal(
-        source_path: PathBuf,
-        authority_path: PathBuf,
-        proof: TypedKey,
-        rejected_records: u64,
-        source: SourceKey,
-        revalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
-        logical_source_failure_detail: String,
-    ) -> Self {
-        Self {
-            source_path,
-            authority_path,
-            proof,
-            rejected_records,
-            terminal: Some(JsonlFamilyRejectedTerminal {
-                source,
-                retained_source: None,
-                revalidate: Arc::new(revalidate),
-            }),
-            logical_source_failure_detail: Some(logical_source_failure_detail),
         }
     }
 }
@@ -884,6 +827,15 @@ impl JsonlFamilyInventory {
         rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
     ) -> Result<Self> {
         Self::present_multi_with_rejected(provider, root, vec![authority], leaves, rejected_leaves)
+    }
+
+    pub(crate) fn present_multi(
+        provider: CaptureProvider,
+        root: &Path,
+        authorities: Vec<Arc<ProviderSourceRoot>>,
+        leaves: Vec<JsonlFamilyLeaf>,
+    ) -> Result<Self> {
+        Self::present_multi_with_rejected(provider, root, authorities, leaves, Vec::new())
     }
 
     pub(crate) fn present_multi_with_rejected(
@@ -1130,7 +1082,6 @@ struct FamilyResident {
     ownership_initialized: bool,
     owned_sources: HashMap<[u8; 32], SourceKey>,
     terminal_sources: HashMap<[u8; 32], TerminalSourceEvidence>,
-    terminal_rejected_sources: HashMap<[u8; 32], Vec<JsonlFamilyRejectedTerminal>>,
     absent_sources: Vec<JsonlFamilyAbsentMember>,
     opening_membership: Option<JsonlFamilyMembershipObservation>,
     certified_inventory: Option<CertifiedSourceInventory>,
@@ -1260,13 +1211,7 @@ fn capture(
             "provider JSONL root is unavailable",
         ));
     }
-    if opening.leaves().is_empty()
-        && !opening.rejected_leaves().is_empty()
-        && opening
-            .rejected_leaves()
-            .iter()
-            .all(|leaf| leaf.terminal.is_none())
-    {
+    if opening.leaves().is_empty() && !opening.rejected_leaves().is_empty() {
         let rejected_records =
             opening
                 .rejected_leaves()
@@ -1289,34 +1234,6 @@ fn capture(
         ));
     }
     let bases = base_sources_for_root(adapter, &opening, root, sink)?;
-    if opening.leaves().is_empty() && bases.is_empty() && !opening.rejected_leaves().is_empty() {
-        let rejected_records =
-            opening
-                .rejected_leaves()
-                .iter()
-                .try_fold(0_u64, |total, leaf| {
-                    total.checked_add(leaf.rejected_records).ok_or_else(|| {
-                        SourceBackedRouteError::new(
-                            SourceBackedRouteErrorKind::Internal,
-                            "provider JSONL rejected-record count overflow",
-                        )
-                    })
-                })?;
-        let diagnostic = opening
-            .rejected_leaves()
-            .iter()
-            .find_map(|leaf| leaf.logical_source_failure_detail.as_deref())
-            .map(|detail| format!("; first rejection diagnostic: {detail}"))
-            .unwrap_or_default();
-        return Err(SourceBackedRouteError::new(
-            SourceBackedRouteErrorKind::InvalidSource,
-            format!(
-                "direct JSONL route rejected {rejected_records} records across {} sources; \
-                 all provider-native session identity leaves were rejected{diagnostic}",
-                opening.rejected_leaves().len(),
-            ),
-        ));
-    }
     let mut selected_leaves = opening
         .leaves()
         .iter()
@@ -1360,77 +1277,9 @@ fn capture(
     let terminal_sources = terminal_sources?;
     finish_leaf_scans?;
 
-    // A current identity-level rejection owns only its source. Preserve an
-    // exact last-good base for that descriptor while healthy peers publish.
-    let mut retained_rejected_sources = HashMap::<[u8; 32], CertifiedSource>::new();
-    for rejected in opening.rejected_leaves() {
-        let (Some(terminal), Some(detail)) = (
-            rejected.terminal.as_ref(),
-            rejected.logical_source_failure_detail.as_ref(),
-        ) else {
-            continue;
-        };
-        let digest = terminal.source.exact_descriptor_digest();
-        let carried_forward = match bases_by_descriptor.get(&digest) {
-            Some(base)
-                if base
-                    .observation()
-                    .source()
-                    .exact_descriptor_eq(&terminal.source) =>
-            {
-                if retained_rejected_sources
-                    .insert(digest, (*base).clone())
-                    .is_none()
-                {
-                    sink.retain_source((*base).clone())
-                        .map_err(route_internal)?;
-                }
-                true
-            }
-            Some(_) => {
-                return Err(route_invalid(
-                    "rejected JSONL source descriptor digest collision",
-                ));
-            }
-            None => false,
-        };
-        sink.record_logical_source_failure(
-            terminal.source.clone(),
-            SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, detail.clone()),
-            carried_forward,
-        )
-        .map_err(route_internal)?;
-    }
-
-    let mut terminal_rejected_sources =
-        HashMap::<[u8; 32], Vec<JsonlFamilyRejectedTerminal>>::new();
-    for rejected in opening.rejected_leaves() {
-        let Some(terminal) = rejected.terminal.as_ref() else {
-            continue;
-        };
-        let mut terminal = terminal.clone();
-        let digest = terminal.source.exact_descriptor_digest();
-        terminal.retained_source = retained_rejected_sources.get(&digest).cloned();
-        let matching = terminal_rejected_sources.entry(digest).or_default();
-        if matching
-            .first()
-            .is_some_and(|prior| !prior.source.exact_descriptor_eq(&terminal.source))
-        {
-            return Err(route_invalid(
-                "terminally rejected JSONL source descriptor digest collision",
-            ));
-        }
-        matching.push(terminal);
-    }
-
     let selected_sources = selected_leaves
         .iter()
         .map(|leaf| leaf.source().clone())
-        .chain(
-            retained_rejected_sources
-                .values()
-                .map(|source| source.observation().source().clone()),
-        )
         .collect::<Vec<_>>();
     let inventory = opening
         .certify_selected_against(&opening, selected_sources)
@@ -1463,7 +1312,6 @@ fn capture(
     resident.ownership_initialized = true;
     resident.owned_sources = owned_sources;
     resident.terminal_sources = terminal_sources;
-    resident.terminal_rejected_sources = terminal_rejected_sources;
     resident.absent_sources = absent_sources;
     resident.opening_membership = Some(opening_membership);
     resident.certified_inventory = Some(inventory);
