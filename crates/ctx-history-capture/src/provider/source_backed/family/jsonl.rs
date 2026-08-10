@@ -16,6 +16,7 @@ use crate::{
 mod checkpoint;
 mod framing;
 mod identity;
+mod mcp_exchange;
 mod occurrence;
 mod pending_exchange;
 mod physical;
@@ -33,6 +34,10 @@ pub(crate) use framing::{
 };
 use identity::observe_metadata;
 pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
+pub(crate) use mcp_exchange::{
+    fit_jsonl_mcp_exchange, selected_content_fits as jsonl_selected_content_fits,
+    JsonlMcpObservedEncodedBytes,
+};
 pub(crate) use occurrence::{JsonlAppendOccurrenceState, JsonlOrderedAppendOccurrenceState};
 pub(crate) use pending_exchange::{
     ordered_pending_exchange_entries, remember_pending_exchange,

@@ -9,6 +9,9 @@ use serde_json::{value::RawValue, Map, Value};
 use super::mcp::BoundedStringProbe;
 use super::*;
 use crate::common::json::exact_value as exact_json_value;
+use crate::provider::source_backed::family::jsonl::{
+    fit_jsonl_mcp_exchange, jsonl_selected_content_fits, JsonlMcpObservedEncodedBytes,
+};
 
 pub(super) struct ProjectedMcpExchange {
     content: ctx_history_core::McpExchangeContent,
@@ -22,18 +25,18 @@ impl ProjectedMcpExchange {
     /// normalized body. Larger JSON channels become explicit omissions; the
     /// normalized body itself is never shortened or replaced.
     pub(super) fn fit_selected_body(mut self, normalized_body: &str) -> Option<Self> {
-        while !selected_content_fits(normalized_body, None, Some(&self.content)) {
-            match (
-                self.arguments_omission_savings(),
-                self.payload_omission_savings(),
-            ) {
-                (Some(arguments), Some(payload)) if arguments >= payload => self.omit_arguments(),
-                (Some(_), Some(_)) => self.omit_payload(),
-                (Some(_), None) => self.omit_arguments(),
-                (None, Some(_)) => self.omit_payload(),
-                (None, None) => return None,
-            }
-        }
+        let mut exchange = Some(self.content);
+        fit_jsonl_mcp_exchange(
+            normalized_body,
+            None,
+            &mut exchange,
+            JsonlMcpObservedEncodedBytes::exact(
+                self.arguments_observed_encoded_bytes,
+                self.payload_observed_encoded_bytes,
+            ),
+            ctx_history_core::MAX_CORE_CONTENT_BYTES,
+        );
+        self.content = exchange?;
         Some(self)
     }
 
@@ -90,53 +93,6 @@ impl ProjectedMcpExchange {
         );
         crate::provider::ctx_retrieval::discovery_exclusion_for([contribution])
     }
-
-    fn omit_arguments(&mut self) {
-        if let Some(invocation) = self.content.invocation.as_mut() {
-            invocation.arguments = ctx_history_core::McpJsonCapture::Omitted {
-                reason: ctx_history_core::McpPayloadOmissionReason::SizeLimit,
-                observed_encoded_bytes: self.arguments_observed_encoded_bytes,
-            };
-        }
-    }
-
-    fn omit_payload(&mut self) {
-        if let Some(response) = self.content.response.as_mut() {
-            response.payload = ctx_history_core::McpJsonCapture::Omitted {
-                reason: ctx_history_core::McpPayloadOmissionReason::SizeLimit,
-                observed_encoded_bytes: self.payload_observed_encoded_bytes,
-            };
-        }
-    }
-
-    fn arguments_omission_savings(&self) -> Option<usize> {
-        omission_savings(
-            &self.content.invocation.as_ref()?.arguments,
-            self.arguments_observed_encoded_bytes,
-        )
-    }
-
-    fn payload_omission_savings(&self) -> Option<usize> {
-        omission_savings(
-            &self.content.response.as_ref()?.payload,
-            self.payload_observed_encoded_bytes,
-        )
-    }
-}
-
-fn omission_savings(
-    capture: &ctx_history_core::McpJsonCapture,
-    observed_encoded_bytes: Option<u64>,
-) -> Option<usize> {
-    if !matches!(capture, ctx_history_core::McpJsonCapture::Present { .. }) {
-        return None;
-    }
-    let present = encoded_json_len(capture)?;
-    let omitted = encoded_json_len(&ctx_history_core::McpJsonCapture::Omitted {
-        reason: ctx_history_core::McpPayloadOmissionReason::SizeLimit,
-        observed_encoded_bytes,
-    })?;
-    Some(present.saturating_sub(omitted))
 }
 
 pub(super) fn project_mcp_exchange(record: &[u8], payload: &Value) -> Option<ProjectedMcpExchange> {
@@ -248,17 +204,12 @@ pub(super) fn selected_content_fits(
     structured_content: Option<&Value>,
     exchange: Option<&ctx_history_core::McpExchangeContent>,
 ) -> bool {
-    normalized_body
-        .len()
-        .checked_add(
-            structured_content
-                .and_then(encoded_json_len)
-                .unwrap_or_default(),
-        )
-        .and_then(|bytes| {
-            bytes.checked_add(exchange.and_then(encoded_json_len).unwrap_or_default())
-        })
-        .is_some_and(|bytes| bytes <= ctx_history_core::MAX_CORE_CONTENT_BYTES)
+    jsonl_selected_content_fits(
+        normalized_body,
+        structured_content,
+        exchange,
+        ctx_history_core::MAX_CORE_CONTENT_BYTES,
+    )
 }
 
 #[derive(Default)]
