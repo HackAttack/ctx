@@ -158,7 +158,7 @@ fn mcp_fixture_show_event(root: &Path, event: &CoreEventRecord) -> Value {
         0,
         0,
         None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap()
 }

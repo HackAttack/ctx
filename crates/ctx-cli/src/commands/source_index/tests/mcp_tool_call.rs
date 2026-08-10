@@ -76,7 +76,7 @@ fn exact_show_surfaces_omit_absence_and_keep_tool_outputs_log_only() {
         TranscriptMode::Log,
         10,
         None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap();
     assert_eq!(

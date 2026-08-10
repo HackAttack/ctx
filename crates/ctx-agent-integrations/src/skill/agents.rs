@@ -1,35 +1,26 @@
 use std::path::PathBuf;
 
-use clap::ValueEnum;
-
 use super::paths::PathContext;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub(super) enum SkillAgentArg {
-    #[value(name = "universal", alias = "agents")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SkillAgentArg {
     Universal,
     Codex,
-    #[value(name = "claude-code", alias = "claude")]
     ClaudeCode,
     Cursor,
-    #[value(name = "opencode", alias = "open-code")]
     OpenCode,
-    #[value(name = "mimocode", alias = "mimo-code", alias = "mimo_code")]
     MiMoCode,
     Amp,
-    #[value(name = "gemini-cli", alias = "gemini")]
     GeminiCli,
     Antigravity,
-    #[value(name = "antigravity-cli")]
     AntigravityCli,
-    #[value(name = "github-copilot", alias = "copilot")]
     GitHubCopilot,
     Pi,
     Goose,
 }
 
 impl SkillAgentArg {
-    pub(super) const ALL: &'static [Self] = &[
+    pub const ALL: &'static [Self] = &[
         Self::Universal,
         Self::Codex,
         Self::ClaudeCode,
@@ -45,7 +36,7 @@ impl SkillAgentArg {
         Self::Goose,
     ];
 
-    pub(super) fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::Universal => "universal",
             Self::Codex => "codex",
@@ -63,7 +54,7 @@ impl SkillAgentArg {
         }
     }
 
-    pub(super) fn display_name(self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
             Self::Universal => "Universal .agents",
             Self::Codex => "Codex",
@@ -81,7 +72,7 @@ impl SkillAgentArg {
         }
     }
 
-    pub(super) fn project_skills_dir(self) -> &'static str {
+    pub fn project_skills_dir(self) -> &'static str {
         match self {
             Self::ClaudeCode => ".claude/skills",
             Self::Pi => ".pi/skills",
@@ -99,7 +90,7 @@ impl SkillAgentArg {
         }
     }
 
-    pub(super) fn global_skills_dir(self, context: &PathContext) -> PathBuf {
+    pub fn global_skills_dir(self, context: &PathContext) -> PathBuf {
         match self {
             Self::Universal => context.home.join(".agents").join("skills"),
             Self::Codex => context
@@ -129,11 +120,11 @@ impl SkillAgentArg {
         }
     }
 
-    pub(super) fn needs_agent_specific_default(self) -> bool {
+    pub fn needs_agent_specific_default(self) -> bool {
         self.project_skills_dir() != ".agents/skills"
     }
 
-    pub(super) fn detect_dir(self, context: &PathContext) -> Option<PathBuf> {
+    pub fn detect_dir(self, context: &PathContext) -> Option<PathBuf> {
         match self {
             Self::Universal => Some(context.home.join(".agents")),
             Self::Codex => Some(context.env_or_home_child("CODEX_HOME", ".codex")),
@@ -152,7 +143,7 @@ impl SkillAgentArg {
     }
 }
 
-pub(super) fn picker_agents() -> &'static [SkillAgentArg] {
+pub fn picker_agents() -> &'static [SkillAgentArg] {
     &[
         SkillAgentArg::Universal,
         SkillAgentArg::ClaudeCode,
@@ -170,7 +161,7 @@ pub(super) fn picker_agents() -> &'static [SkillAgentArg] {
     ]
 }
 
-pub(super) fn agent_from_name(value: &str) -> Option<SkillAgentArg> {
+pub fn agent_from_name(value: &str) -> Option<SkillAgentArg> {
     match value.to_ascii_lowercase().as_str() {
         "universal" | "agents" | ".agents" => Some(SkillAgentArg::Universal),
         "codex" => Some(SkillAgentArg::Codex),
@@ -187,4 +178,8 @@ pub(super) fn agent_from_name(value: &str) -> Option<SkillAgentArg> {
         "goose" => Some(SkillAgentArg::Goose),
         _ => None,
     }
+}
+
+pub fn parse_skill_agent(value: &str) -> Result<SkillAgentArg, String> {
+    agent_from_name(value).ok_or_else(|| format!("unknown skill agent: {value}"))
 }

@@ -1,8 +1,31 @@
+use std::io;
+
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::response::{error_response, success_response, tool_error_result};
-use crate::presentation_limit::serialized_json_line_bytes;
+
+#[derive(Default)]
+struct SerializedByteCounter {
+    bytes: usize,
+}
+
+impl io::Write for SerializedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_json_line_bytes(value: &Value) -> serde_json::Result<usize> {
+    let mut counter = SerializedByteCounter::default();
+    serde_json::to_writer(&mut counter, value)?;
+    Ok(counter.bytes.saturating_add(1))
+}
 
 #[cfg(test)]
 pub(super) fn is_show_tool_call(message: &Value) -> bool {
@@ -48,15 +71,20 @@ pub(super) fn bound_query_events_mcp_response(
             "recommendation": "lower `limit` and retry with content=text or content=none",
         },
     });
-    let bounded = success_response(response_id, result);
+    let mut bounded = success_response(response_id, result);
     if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
         bounded
     } else {
-        error_response(
-            Value::Null,
+        let response_id = bounded
+            .get_mut("id")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
+        bounded_protocol_error(
+            response_id,
+            output_limit_bytes,
             -32603,
             "query_events response too large",
-            Some(json!({ "error": "output_limit_exceeded" })),
+            json!({ "error": "output_limit_exceeded" }),
         )
     }
 }
@@ -83,15 +111,20 @@ pub(super) fn bound_blame_mcp_response(
             "retryable": true,
         },
     });
-    let bounded = success_response(response_id, result);
+    let mut bounded = success_response(response_id, result);
     if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
         bounded
     } else {
-        error_response(
-            Value::Null,
+        let response_id = bounded
+            .get_mut("id")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
+        bounded_protocol_error(
+            response_id,
+            output_limit_bytes,
             -32603,
             "Blame response too large",
-            Some(json!({ "error": "invalid_response" })),
+            json!({ "error": "invalid_response" }),
         )
     }
 }
@@ -124,17 +157,45 @@ pub(super) fn bound_show_mcp_response(
             },
         }),
     };
-    let bounded = success_response(response_id, result);
+    let mut bounded = success_response(response_id, result);
     if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
         bounded
     } else {
-        error_response(
-            Value::Null,
+        let response_id = bounded
+            .get_mut("id")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
+        bounded_protocol_error(
+            response_id,
+            output_limit_bytes,
             -32603,
             "Show response too large",
-            Some(json!({ "error": "output_limit_exceeded" })),
+            json!({ "error": "output_limit_exceeded" }),
         )
     }
+}
+
+fn bounded_protocol_error(
+    response_id: Value,
+    output_limit_bytes: usize,
+    code: i64,
+    message: &str,
+    data: Value,
+) -> Value {
+    let mut bounded = error_response(response_id, code, message, Some(data));
+    if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
+        return bounded;
+    }
+
+    bounded
+        .get_mut("error")
+        .and_then(Value::as_object_mut)
+        .and_then(|error| error.remove("data"));
+    // Every accepted request ID is capped so this smallest correlated error
+    // fits the production blame bound (and therefore the larger show/query
+    // bounds). Correlation is never discarded to satisfy an ad hoc lower
+    // internal limit.
+    bounded
 }
 
 fn response_show_event_id(response: &Value) -> Option<Uuid> {

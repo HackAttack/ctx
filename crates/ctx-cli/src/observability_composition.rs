@@ -1,24 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    analytics::{pro_operation_event, AnalyticsDeliveryAuthority, Outcome, PublicEventV1},
+    analytics::{AnalyticsDeliveryAuthority, PublicEventV1},
     config::{AppConfig, LocalUsageConfigResolver, LocalUsageConfigState},
     local_usage::{UsageControlRevision, UsageControlSnapshot},
 };
-
-pub(crate) fn tool_product_event(
-    observation: crate::tool_backend::ToolProductObservation,
-) -> PublicEventV1 {
-    pro_operation_event(
-        observation.operation,
-        if observation.success {
-            Outcome::Success
-        } else {
-            Outcome::Failure
-        },
-        observation.duration,
-    )
-}
 
 const LOCAL_USAGE_DATABASE_FILE: &str = "usage.sqlite";
 

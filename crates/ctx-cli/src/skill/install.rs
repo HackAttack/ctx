@@ -1,8 +1,9 @@
-use std::{fs, path::Path};
-
-use anyhow::{anyhow, Context, Result};
-use ctx_history_core::utc_now;
-use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, Result};
+use ctx_agent_integrations::skill::{
+    bundled_hash, execute_install, execute_status, InstallResult, SkillAgentSelection,
+    SkillInstallRequest, SkillInstallStatus, SkillSelectionSource, SkillStatusRequest, SkillTarget,
+    StatusResult,
+};
 use serde_json::{json, Value};
 
 use crate::{
@@ -14,13 +15,8 @@ use crate::{
 };
 
 use super::{
-    paths::{bundled_hash, ensure_path_inside, sha256_hex},
-    selection::{
-        install_agent_selection, status_agent_selection, SkillAgentSelection, SkillSelectionSource,
-    },
-    target::{resolve_targets_for_agents, SkillTarget},
-    SkillInstallArgs, SkillStatusArgs, BUNDLED_SKILL_BODY, BUNDLED_SKILL_NAME,
-    LEGACY_BUNDLED_SKILL_HASHES, METADATA_FILE,
+    selection::{install_agent_selection, status_agent_selection},
+    SkillInstallArgs, SkillStatusArgs, BUNDLED_SKILL_NAME,
 };
 
 pub(super) fn run_install(
@@ -31,51 +27,46 @@ pub(super) fn run_install(
 ) -> Result<()> {
     let selection = install_agent_selection(&args, context)?;
     insert_selection_analytics(telemetry, &selection);
-    let targets = resolve_targets_for_agents(&selection.agents, args.project, context)?;
-    let mut results = Vec::with_capacity(targets.len());
-    let modified_preserve_is_fatal = modified_preserve_is_fatal(selection.source);
-    for target in &targets {
-        results.push(install_target(
-            target,
-            args.force,
-            modified_preserve_is_fatal,
-        )?);
-    }
-    let fatal_failures = results.iter().filter(|result| result.fatal).count();
-    let already_installed = results.iter().all(|result| result.already_installed);
-    let updated = results.iter().any(|result| result.updated);
-    telemetry.result = Some(if fatal_failures == 0 {
+    let receipt = execute_install(
+        SkillInstallRequest {
+            selection,
+            project: args.project,
+            force: args.force,
+            product_version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        context,
+    )?;
+    telemetry.result = Some(if receipt.fatal_failures == 0 {
         IntegrationResult::Ok
     } else {
         IntegrationResult::PartialError
     });
-    telemetry.already_installed = Some(already_installed);
-    telemetry.updated = Some(updated);
-    telemetry.modified_targets = Some(count_bucket(
-        results.iter().filter(|result| result.updated).count() as u64,
-    ));
+    telemetry.already_installed = Some(receipt.already_installed);
+    telemetry.updated = Some(receipt.updated);
+    telemetry.modified_targets = Some(count_bucket(receipt.modified_targets as u64));
     if args.format.is_json() {
         println!(
             "{}",
             json!({
                 "skill": BUNDLED_SKILL_NAME,
                 "scope": if args.project { "project" } else { "global" },
-                "results": results.iter().map(InstallResult::to_json).collect::<Vec<_>>(),
+                "results": receipt.results.iter().map(install_result_json).collect::<Vec<_>>(),
             })
         );
     } else {
-        let document = render_install_results(ui.stdout_context(), &results);
+        let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;
-        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &results) {
+        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &receipt.results) {
             ui.write_stderr(&diagnostics)?;
         }
     }
-    if fatal_failures > 0 {
+    if receipt.fatal_failures > 0 {
         if !args.format.is_json() {
             return Err(crate::dispatch::rendered_cli_error());
         }
         return Err(anyhow!(
-            "failed to install skill for {fatal_failures} target(s)"
+            "failed to install skill for {} target(s)",
+            receipt.fatal_failures
         ));
     }
     Ok(())
@@ -89,31 +80,31 @@ pub(super) fn run_status(
 ) -> Result<()> {
     let selection = status_agent_selection(&args, context);
     insert_selection_analytics(telemetry, &selection);
-    let targets = resolve_targets_for_agents(&selection.agents, args.project, context)?;
-    let results = targets
-        .iter()
-        .map(status_target)
-        .collect::<Result<Vec<_>>>()?;
-    let current_count = results
-        .iter()
-        .filter(|result| result.status == SkillInstallStatus::Current)
-        .count();
-    telemetry.result = Some(if current_count == results.len() {
+    let receipt = execute_status(
+        SkillStatusRequest {
+            selection,
+            project: args.project,
+        },
+        context,
+    )?;
+    telemetry.result = Some(if receipt.current_count == receipt.results.len() {
         IntegrationResult::AllCurrent
-    } else if current_count == 0 {
+    } else if receipt.current_count == 0 {
         IntegrationResult::NoneCurrent
     } else {
         IntegrationResult::PartiallyCurrent
     });
-    telemetry.current_targets = Some(count_bucket(current_count as u64));
+    telemetry.current_targets = Some(count_bucket(receipt.current_count as u64));
     telemetry.missing_targets = Some(count_bucket(
-        results
+        receipt
+            .results
             .iter()
             .filter(|result| result.status == SkillInstallStatus::Missing)
             .count() as u64,
     ));
     telemetry.conflicting_targets = Some(count_bucket(
-        results
+        receipt
+            .results
             .iter()
             .filter(|result| result.status == SkillInstallStatus::Modified)
             .count() as u64,
@@ -124,12 +115,14 @@ pub(super) fn run_status(
             json!({
                 "skill": BUNDLED_SKILL_NAME,
                 "scope": if args.project { "project" } else { "global" },
-                "results": results.iter().map(StatusResult::to_json).collect::<Vec<_>>(),
+                "results": receipt.results.iter().map(status_result_json).collect::<Vec<_>>(),
             })
         );
     } else {
-        let recovery_command = status_install_command(&selection, args.project, &results);
-        let document = render_status_results(ui.stdout_context(), &results, &recovery_command);
+        let recovery_command =
+            status_install_command(&receipt.selection, args.project, &receipt.results);
+        let document =
+            render_status_results(ui.stdout_context(), &receipt.results, &recovery_command);
         ui.write_stdout(&document)?;
     }
     Ok(())
@@ -149,244 +142,37 @@ fn insert_selection_analytics(
     telemetry.resolved_agents = Some(count_bucket(selection.agents.len() as u64));
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SkillInstallStatus {
-    Current,
-    Stale,
-    Modified,
-    Missing,
-}
-
-impl SkillInstallStatus {
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::Current => "current",
-            Self::Stale => "stale",
-            Self::Modified => "modified",
-            Self::Missing => "missing",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct StatusResult {
-    pub(super) target: SkillTarget,
-    pub(super) status: SkillInstallStatus,
-    pub(super) metadata: Option<SkillMetadata>,
-    installed_hash: Option<String>,
-}
-
-impl StatusResult {
-    fn to_json(&self) -> Value {
-        json!({
-            "agent": self.target.agent.id(),
-            "agent_display_name": self.target.agent.display_name(),
-            "scope": self.target.scope.as_str(),
-            "status": self.status.as_str(),
-            "path": self.target.skill_dir,
-            "installed_hash": self.installed_hash,
-            "bundled_hash": bundled_hash(),
-            "metadata": self.metadata.as_ref().map(|metadata| json!({
-                "schema_version": metadata.schema_version,
-                "skill_name": metadata.skill_name,
-                "skill_hash": metadata.skill_hash,
-                "ctx_cli_version": metadata.ctx_cli_version,
-            })),
-        })
-    }
-}
-
-#[derive(Debug)]
-struct InstallResult {
-    target: SkillTarget,
-    success: bool,
-    fatal: bool,
-    previous_status: SkillInstallStatus,
-    status: SkillInstallStatus,
-    already_installed: bool,
-    updated: bool,
-    error: Option<String>,
-}
-
-impl InstallResult {
-    fn to_json(&self) -> Value {
-        json!({
-            "agent": self.target.agent.id(),
-            "agent_display_name": self.target.agent.display_name(),
-            "scope": self.target.scope.as_str(),
-            "path": self.target.skill_dir,
-            "success": self.success,
-            "previous_status": self.previous_status.as_str(),
-            "status": self.status.as_str(),
-            "already_installed": self.already_installed,
-            "updated": self.updated,
-            "error": self.error,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct SkillMetadata {
-    schema_version: u32,
-    installer: String,
-    skill_name: String,
-    pub(super) skill_hash: String,
-    ctx_cli_version: String,
-    installed_at: String,
-}
-
-impl SkillMetadata {
-    pub(super) fn current() -> Self {
-        Self {
-            schema_version: 1,
-            installer: "ctx-cli".to_owned(),
-            skill_name: BUNDLED_SKILL_NAME.to_owned(),
-            skill_hash: bundled_hash(),
-            ctx_cli_version: env!("CARGO_PKG_VERSION").to_owned(),
-            installed_at: utc_now().to_rfc3339(),
-        }
-    }
-}
-
-fn install_target(
-    target: &SkillTarget,
-    force: bool,
-    modified_preserve_is_fatal: bool,
-) -> Result<InstallResult> {
-    let previous = status_target(target)?;
-    if previous.status == SkillInstallStatus::Current {
-        if !metadata_is_current(previous.metadata.as_ref()) {
-            write_metadata(target)?;
-        }
-        return Ok(InstallResult {
-            target: target.clone(),
-            success: true,
-            fatal: false,
-            previous_status: previous.status,
-            status: SkillInstallStatus::Current,
-            already_installed: true,
-            updated: false,
-            error: None,
-        });
-    }
-    if previous.status == SkillInstallStatus::Modified && !force {
-        return Ok(InstallResult {
-            target: target.clone(),
-            success: false,
-            fatal: modified_preserve_is_fatal,
-            previous_status: previous.status,
-            status: previous.status,
-            already_installed: false,
-            updated: false,
-            error: Some(format!(
-                "preserved existing {} skill; use --force to replace",
-                target.agent.display_name()
-            )),
-        });
-    }
-    write_skill_dir(target)?;
-    Ok(InstallResult {
-        target: target.clone(),
-        success: true,
-        fatal: false,
-        previous_status: previous.status,
-        status: SkillInstallStatus::Current,
-        already_installed: false,
-        updated: matches!(
-            previous.status,
-            SkillInstallStatus::Stale | SkillInstallStatus::Modified
-        ),
-        error: None,
+fn status_result_json(result: &StatusResult) -> Value {
+    json!({
+        "agent": result.target.agent.id(),
+        "agent_display_name": result.target.agent.display_name(),
+        "scope": result.target.scope.as_str(),
+        "status": result.status.as_str(),
+        "path": result.target.skill_dir,
+        "installed_hash": result.installed_hash,
+        "bundled_hash": bundled_hash(),
+        "metadata": result.metadata.as_ref().map(|metadata| json!({
+            "schema_version": metadata.schema_version,
+            "skill_name": metadata.skill_name,
+            "skill_hash": metadata.skill_hash,
+            "ctx_cli_version": metadata.ctx_cli_version,
+        })),
     })
 }
 
-pub(super) fn status_target(target: &SkillTarget) -> Result<StatusResult> {
-    ensure_path_inside(&target.base_dir, &target.skill_dir)?;
-    let skill_file = target.skill_dir.join("SKILL.md");
-    let metadata = read_metadata(&target.skill_dir);
-    let installed_hash = match fs::read(&skill_file) {
-        Ok(body) => Some(sha256_hex(&body)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("read {}", skill_file.display())),
-    };
-    let status = match installed_hash.as_deref() {
-        None => SkillInstallStatus::Missing,
-        Some(hash) if hash == bundled_hash() => SkillInstallStatus::Current,
-        Some(hash) if is_legacy_bundled_hash(hash) => SkillInstallStatus::Stale,
-        Some(hash) => match metadata.as_ref() {
-            Some(metadata) if metadata.skill_hash == hash => SkillInstallStatus::Stale,
-            _ => SkillInstallStatus::Modified,
-        },
-    };
-    Ok(StatusResult {
-        target: target.clone(),
-        status,
-        metadata,
-        installed_hash,
+fn install_result_json(result: &InstallResult) -> Value {
+    json!({
+        "agent": result.target.agent.id(),
+        "agent_display_name": result.target.agent.display_name(),
+        "scope": result.target.scope.as_str(),
+        "path": result.target.skill_dir,
+        "success": result.success,
+        "previous_status": result.previous_status.as_str(),
+        "status": result.status.as_str(),
+        "already_installed": result.already_installed,
+        "updated": result.updated,
+        "error": result.error,
     })
-}
-
-fn modified_preserve_is_fatal(source: SkillSelectionSource) -> bool {
-    !matches!(
-        source,
-        SkillSelectionSource::Detected | SkillSelectionSource::Fallback
-    )
-}
-
-fn is_legacy_bundled_hash(hash: &str) -> bool {
-    LEGACY_BUNDLED_SKILL_HASHES.contains(&hash)
-}
-
-fn read_metadata(skill_dir: &Path) -> Option<SkillMetadata> {
-    let path = skill_dir.join(METADATA_FILE);
-    let body = fs::read(path).ok()?;
-    serde_json::from_slice(&body).ok()
-}
-
-fn metadata_is_current(metadata: Option<&SkillMetadata>) -> bool {
-    metadata.is_some_and(|metadata| {
-        metadata.schema_version == 1
-            && metadata.installer == "ctx-cli"
-            && metadata.skill_name == BUNDLED_SKILL_NAME
-            && metadata.skill_hash == bundled_hash()
-            && metadata.ctx_cli_version == env!("CARGO_PKG_VERSION")
-    })
-}
-
-pub(super) fn write_skill_dir(target: &SkillTarget) -> Result<()> {
-    ensure_path_inside(&target.base_dir, &target.skill_dir)?;
-    remove_existing_target(&target.skill_dir)
-        .with_context(|| format!("remove existing {}", target.skill_dir.display()))?;
-    fs::create_dir_all(&target.skill_dir)
-        .with_context(|| format!("create {}", target.skill_dir.display()))?;
-    fs::write(target.skill_dir.join("SKILL.md"), BUNDLED_SKILL_BODY)
-        .with_context(|| format!("write {}", target.skill_dir.join("SKILL.md").display()))?;
-    write_metadata(target)
-}
-
-fn write_metadata(target: &SkillTarget) -> Result<()> {
-    fs::create_dir_all(&target.skill_dir)
-        .with_context(|| format!("create {}", target.skill_dir.display()))?;
-    let metadata = serde_json::to_vec_pretty(&SkillMetadata::current())?;
-    fs::write(target.skill_dir.join(METADATA_FILE), metadata)
-        .with_context(|| format!("write {}", target.skill_dir.join(METADATA_FILE).display()))
-}
-
-fn remove_existing_target(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
-            fs::remove_file(path)?;
-        }
-        Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(path)?;
-        }
-        Ok(_) => {
-            fs::remove_file(path)?;
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
-    Ok(())
 }
 
 fn render_install_results(context: &RenderContext, results: &[InstallResult]) -> Document {
@@ -584,6 +370,9 @@ mod render_tests {
         skill::agents::SkillAgentArg,
         ui::{ColorMode, StreamKind, TestContext, Token},
     };
+    use ctx_agent_integrations::skill::{
+        install_target, resolve_targets_for_agents, status_target,
+    };
 
     fn render_context(width: usize, color: ColorMode) -> RenderContext {
         RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
@@ -617,7 +406,7 @@ mod render_tests {
             .unwrap()
             .remove(0);
         let missing = status_target(&target).unwrap();
-        let installed = install_target(&target, false, true).unwrap();
+        let installed = install_target(&target, false, true, env!("CARGO_PKG_VERSION")).unwrap();
         let current = status_target(&target).unwrap();
 
         for (document, expected) in [

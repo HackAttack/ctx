@@ -1,15 +1,10 @@
 use serde_json::{json, Value};
 
-use super::{compact_json, render_tool_text};
+use super::compact_json;
 use crate::tool_backend::{CursorFailureKind, ToolBackendError};
 
 pub(super) fn invalid_tool_request(message: impl Into<String>) -> ToolBackendError {
     ToolBackendError::invalid_request(message)
-}
-
-pub(super) fn tool_result(structured: Value) -> Value {
-    let text = render_tool_text(&structured);
-    tool_result_with_text(structured, text)
 }
 
 pub(super) fn tool_result_with_text(structured: Value, text: String) -> Value {
@@ -95,16 +90,12 @@ pub(super) fn tool_error_result(error: ToolBackendError) -> Value {
             "error": detail,
             "error_code": "invalid_request",
         }),
-        ToolBackendError::EventQuery(error) => {
-            crate::commands::list::events::event_query_error_value(&error)
-        }
+        ToolBackendError::EventQuery(error) => error.structured,
         ToolBackendError::SourceUnavailable => json!({
             "error": "source_unavailable",
             "error_code": "source_unavailable",
         }),
-        ToolBackendError::GenerationAuthority(error) => {
-            crate::commands::source_index::generation_query_authority_error_json(&error)
-        }
+        ToolBackendError::GenerationAuthority(error) => error.structured,
         ToolBackendError::GenerationChanged => json!({
             "error": "generation_changed/active_generation_race",
             "error_code": "generation_changed",
@@ -168,7 +159,7 @@ pub(super) fn success_response(id: Value, result: Value) -> Value {
     })
 }
 
-pub(super) fn error_response(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
+pub fn error_response(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
     let error = compact_json(json!({
         "code": code,
         "message": message,
@@ -206,7 +197,7 @@ mod tests {
 
     use super::{
         error_response, invalid_request_response, invalid_tool_request, structured_error_result,
-        tool_error_result, tool_result,
+        tool_error_result, tool_result_with_text,
     };
     use crate::tool_backend::{CursorFailureKind, ToolBackendError};
 
@@ -277,10 +268,11 @@ mod tests {
 
     #[test]
     fn pro_error_structured_content_is_the_cli_json_diagnostic() {
-        let error = anyhow::anyhow!("resource_not_found");
-        let mut cli_json = Vec::new();
-        assert!(crate::pro::write_stable_error_json(&mut cli_json, &error).unwrap());
-        let expected: serde_json::Value = serde_json::from_slice(&cli_json).unwrap();
+        let expected = json!({
+            "error": "resource_not_found",
+            "error_code": "resource_not_found",
+            "message": "The requested resource was not found.",
+        });
 
         let result = tool_error_result(ToolBackendError::Pro {
             code: "resource_not_found",
@@ -341,7 +333,8 @@ mod tests {
             "matches": [],
             "evidence": []
         });
-        let result = tool_result(structured.clone());
+        let result =
+            tool_result_with_text(structured.clone(), "Producer evidence conflicts".to_owned());
 
         assert!(result.get("isError").is_none());
         assert_eq!(result["structuredContent"], structured);
@@ -353,11 +346,6 @@ mod tests {
     #[test]
     fn presentation_output_limit_has_stable_structured_content() {
         let event_id = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
-        let error = crate::presentation_limit::PresentationOutputLimitError {
-            event_id,
-            actual_bytes: 2048,
-            maximum_bytes: 1024,
-        };
         let result = tool_error_result(ToolBackendError::OutputLimit {
             event_id,
             actual_bytes: 2048,
@@ -367,44 +355,53 @@ mod tests {
         assert_eq!(result["isError"], true);
         assert_eq!(
             result["structuredContent"],
-            crate::presentation_limit::presentation_output_limit_error_json(&error)
+            json!({
+                "error": "output_limit_exceeded",
+                "error_code": "output_limit_exceeded",
+                "ctx_event_id": event_id,
+                "actual_bytes": 2048,
+                "maximum_bytes": 1024,
+                "retryable": false,
+                "remediation": "reduce the event window or choose a narrower transcript mode",
+            })
         );
         assert_eq!(
             result["structuredContent"]["error_code"],
             "output_limit_exceeded"
         );
         assert_eq!(result["structuredContent"]["retryable"], false);
-        assert_eq!(result["content"][0]["text"], error.to_string());
+        assert_eq!(
+            result["content"][0]["text"],
+            format!(
+                "Core content output for ctx event {event_id} requires 2048 bytes; the presentation limit is 1024 bytes"
+            )
+        );
     }
 
     #[test]
     fn session_cursor_failures_have_stable_typed_tool_errors() {
         let cases = [
             (
-                ctx_history_index::IndexError::SessionEventCursorGenerationMismatch {
-                    cursor_generation: "old".to_owned(),
-                    pinned_generation: "new".to_owned(),
-                },
+                "cursor generation mismatch",
                 CursorFailureKind::Stale,
                 "cursor_stale",
             ),
             (
-                ctx_history_index::IndexError::SessionEventCursorSessionMismatch,
+                "cursor session mismatch",
                 CursorFailureKind::Mismatch,
                 "cursor_mismatch",
             ),
             (
-                ctx_history_index::IndexError::InvalidSessionEventCursorCoordinate,
+                "invalid cursor coordinate",
                 CursorFailureKind::Invalid,
                 "invalid_cursor",
             ),
         ];
 
-        for (error, kind, code) in cases {
-            let message = error.to_string();
+        for (message, kind, code) in cases {
             let result = tool_error_result(ToolBackendError::Cursor {
                 kind,
-                detail: message.clone(),
+                detail: message.to_owned(),
             });
             assert_eq!(result["isError"], true);
             assert_eq!(result["structuredContent"]["error_code"], code);

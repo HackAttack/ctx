@@ -3,7 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use super::super::SERVER_NAME;
 use super::{server_command, ConfigStatus};
 
-pub(super) fn status_continue(body: &str) -> Result<ConfigStatus> {
+pub fn status_continue(body: &str) -> Result<ConfigStatus> {
     let doc: serde_yaml::Value = serde_yaml::from_str(body).context("parse YAML config")?;
     let Some(servers) = mapping_get(&doc, "mcpServers") else {
         return Ok(ConfigStatus::Missing);
@@ -21,7 +21,7 @@ pub(super) fn status_continue(body: &str) -> Result<ConfigStatus> {
     })
 }
 
-pub(super) fn upsert_continue(body: &str, force: bool) -> Result<String> {
+pub fn upsert_continue(body: &str, force: bool) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         let mut mapping = serde_yaml::Mapping::new();
         mapping.insert(
@@ -66,7 +66,7 @@ pub(super) fn upsert_continue(body: &str, force: bool) -> Result<String> {
     render(&doc)
 }
 
-pub(super) fn status_goose(body: &str) -> Result<ConfigStatus> {
+pub fn status_goose(body: &str) -> Result<ConfigStatus> {
     let doc: serde_yaml::Value = serde_yaml::from_str(body).context("parse YAML config")?;
     let Some(extensions) = mapping_get(&doc, "extensions") else {
         return Ok(ConfigStatus::Missing);
@@ -81,7 +81,7 @@ pub(super) fn status_goose(body: &str) -> Result<ConfigStatus> {
     })
 }
 
-pub(super) fn upsert_goose(body: &str, force: bool) -> Result<String> {
+pub fn upsert_goose(body: &str, force: bool) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         serde_yaml::Value::Mapping(Default::default())
     } else {
@@ -226,9 +226,11 @@ fn goose_server_is_current(value: &serde_yaml::Value) -> bool {
 fn args_are_current(args: Option<&Vec<serde_yaml::Value>>) -> bool {
     let expected = server_command();
     args.is_some_and(|args| {
-        args.iter()
-            .filter_map(serde_yaml::Value::as_str)
-            .eq(expected.args().iter().copied())
+        args.len() == expected.args().len()
+            && args
+                .iter()
+                .zip(expected.args().iter().copied())
+                .all(|(value, expected)| value.as_str() == Some(expected))
     })
 }
 
@@ -274,5 +276,58 @@ mod tests {
         assert_eq!(status_continue(&first).unwrap(), ConfigStatus::Current);
         let second = upsert_continue(&first, false).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn malformed_mixed_continue_args_are_conflicting_and_repaired_only_when_forced() {
+        let malformed = "mcpServers:\n  - name: ctx\n    type: stdio\n    command: ctx\n    args: [mcp, 7, serve]\n";
+        assert_eq!(status_continue(malformed).unwrap(), ConfigStatus::Conflict);
+        assert!(upsert_continue(malformed, false).is_err());
+
+        let repaired = upsert_continue(malformed, true).unwrap();
+        assert_eq!(status_continue(&repaired).unwrap(), ConfigStatus::Current);
+        let value: serde_yaml::Value = serde_yaml::from_str(&repaired).unwrap();
+        let servers = mapping_get(&value, "mcpServers")
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        let args = mapping_get(continue_server_by_name(servers).unwrap(), "args")
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        assert_eq!(
+            args,
+            &server_command()
+                .args()
+                .iter()
+                .map(|arg| serde_yaml::Value::String((*arg).to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn malformed_mixed_goose_args_are_conflicting_and_repaired_only_when_forced() {
+        let malformed = "extensions:\n  ctx:\n    enabled: true\n    name: ctx\n    type: stdio\n    cmd: ctx\n    args: [mcp, false, serve]\n";
+        assert_eq!(status_goose(malformed).unwrap(), ConfigStatus::Conflict);
+        assert!(upsert_goose(malformed, false).is_err());
+
+        let repaired = upsert_goose(malformed, true).unwrap();
+        assert_eq!(status_goose(&repaired).unwrap(), ConfigStatus::Current);
+        let value: serde_yaml::Value = serde_yaml::from_str(&repaired).unwrap();
+        let args = mapping_get(
+            mapping_get(mapping_get(&value, "extensions").unwrap(), "ctx").unwrap(),
+            "args",
+        )
+        .unwrap()
+        .as_sequence()
+        .unwrap();
+        assert_eq!(
+            args,
+            &server_command()
+                .args()
+                .iter()
+                .map(|arg| serde_yaml::Value::String((*arg).to_owned()))
+                .collect::<Vec<_>>()
+        );
     }
 }

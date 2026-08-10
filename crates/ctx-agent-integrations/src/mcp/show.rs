@@ -3,26 +3,17 @@ use serde_json::Value;
 use super::{
     invalid_tool_request, optional_string, optional_transcript_mode, optional_usize,
     MAX_EVENT_WINDOW, MCP_DEFAULT_SESSION_PAGE_LIMIT, MCP_MAX_SESSION_CURSOR_BYTES,
-    MCP_MAX_SESSION_PAGE_LIMIT,
+    MCP_MAX_SESSION_PAGE_LIMIT, MCP_PRESENTATION_MAX_OUTPUT_BYTES,
 };
-use crate::{
-    presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    tool_backend::{
-        ShowEventRequest, ShowSessionRequest, ToolBackendError, ToolOperation, ToolTranscriptMode,
-    },
-    TranscriptMode,
+use crate::tool_backend::{
+    ShowEventRequest, ShowSessionRequest, ToolBackendError, ToolOperation, ToolTranscriptMode,
 };
 
 pub(super) fn show_session_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
     let session_id = optional_string(arguments, "ctx_session_id")?
         .ok_or_else(|| invalid_tool_request("ctx_session_id is required"))?;
     validate_ctx_id(&session_id, "ctx_session_id", "session")?;
-    let mode = optional_transcript_mode(arguments, "mode")?.unwrap_or(TranscriptMode::Lite);
-    let mode = match mode {
-        TranscriptMode::Full => ToolTranscriptMode::Full,
-        TranscriptMode::Lite => ToolTranscriptMode::Lite,
-        TranscriptMode::Log => ToolTranscriptMode::Log,
-    };
+    let mode = optional_transcript_mode(arguments, "mode")?.unwrap_or(ToolTranscriptMode::Lite);
     let limit = optional_usize(arguments, "limit")?.unwrap_or(MCP_DEFAULT_SESSION_PAGE_LIMIT);
     if !(1..=MCP_MAX_SESSION_PAGE_LIMIT).contains(&limit) {
         return Err(invalid_tool_request(format!(
@@ -83,7 +74,26 @@ fn validate_ctx_id(id: &str, argument: &str, kind: &str) -> Result<(), ToolBacke
     if uuid::Uuid::parse_str(id.trim()).is_ok() {
         return Ok(());
     }
-    crate::transcript::normalize_uuid_prefix(id, kind)
+    normalize_uuid_prefix(id, kind)
         .map(|_| ())
         .map_err(|error| invalid_tool_request(format!("invalid {argument}: {error}")))
+}
+
+fn normalize_uuid_prefix(value: &str, kind: &str) -> Result<String, String> {
+    let prefix = value.trim();
+    if prefix.len() < 8 {
+        return Err(format!(
+            "{kind} id prefix must be at least 8 hex characters, or pass a full ctx UUID"
+        ));
+    }
+    if prefix.contains('-')
+        || !prefix
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "{kind} id must be a full ctx UUID or an unambiguous hex prefix from verbose search output"
+        ));
+    }
+    Ok(prefix.to_ascii_lowercase())
 }

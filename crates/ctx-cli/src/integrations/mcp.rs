@@ -4,22 +4,26 @@ use clap::Args;
 use crate::analytics::{count_bucket, IntegrationScope, IntegrationTelemetry, TargetSelection};
 use crate::output::JsonOutputFormat;
 
-mod format;
 mod operation;
-mod registry;
 
-pub(crate) use registry::{McpAgentArg, McpPathContext};
+pub(crate) use ctx_agent_integrations::mcp_config::{McpAgentArg, McpPathContext};
+
+mod format {
+    pub(super) use ctx_agent_integrations::mcp_config::{server_command, ConfigStatus};
+}
+
+mod registry {
+    pub(super) use ctx_agent_integrations::mcp_config::McpTarget;
+}
 
 const SERVER_NAME: &str = "ctx";
-const SERVER_COMMAND: &str = "ctx";
-const SERVER_ARGS: &[&str] = &["mcp", "serve"];
 
 #[derive(Debug, Args)]
 pub(crate) struct McpInstallArgs {
     #[arg(
         long = "agent",
         alias = "provider",
-        value_enum,
+        value_parser = ctx_agent_integrations::mcp_config::parse_mcp_agent,
         conflicts_with = "all_agents",
         help = "Install for one coding-agent client; --provider is accepted as an alias"
     )]
@@ -45,7 +49,7 @@ pub(crate) struct McpStatusArgs {
     #[arg(
         long = "agent",
         alias = "provider",
-        value_enum,
+        value_parser = ctx_agent_integrations::mcp_config::parse_mcp_agent,
         conflicts_with = "all_agents",
         help = "Inspect one coding-agent client; --provider is accepted as an alias"
     )]

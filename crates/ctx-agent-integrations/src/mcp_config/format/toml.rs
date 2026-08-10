@@ -6,7 +6,7 @@ use toml_edit::{
 use super::super::SERVER_NAME;
 use super::{server_command, ConfigStatus};
 
-pub(super) fn status(body: &str) -> Result<ConfigStatus> {
+pub fn status(body: &str) -> Result<ConfigStatus> {
     let doc = body.parse::<DocumentMut>().context("parse TOML config")?;
     let Some(server) = doc
         .get("mcp_servers")
@@ -23,7 +23,7 @@ pub(super) fn status(body: &str) -> Result<ConfigStatus> {
     })
 }
 
-pub(super) fn upsert(body: &str, force: bool) -> Result<String> {
+pub fn upsert(body: &str, force: bool) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         DocumentMut::new()
     } else {
@@ -67,9 +67,11 @@ fn server_is_current(table: &Table) -> bool {
         .get("args")
         .and_then(Item::as_array)
         .is_some_and(|args| {
-            args.iter()
-                .filter_map(TomlValue::as_str)
-                .eq(command.args().iter().copied())
+            args.len() == command.args().len()
+                && args
+                    .iter()
+                    .zip(command.args().iter().copied())
+                    .all(|(value, expected)| value.as_str() == Some(expected))
         });
     command_ok && args_ok
 }
@@ -86,5 +88,27 @@ mod tests {
         assert_eq!(status(&first).unwrap(), ConfigStatus::Current);
         let second = upsert(&first, false).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn malformed_mixed_args_are_conflicting_and_repaired_only_when_forced() {
+        let malformed = r#"[mcp_servers.ctx]
+command = "ctx"
+args = ["mcp", 7, "serve"]
+"#;
+        assert_eq!(status(malformed).unwrap(), ConfigStatus::Conflict);
+        assert!(upsert(malformed, false).is_err());
+
+        let repaired = upsert(malformed, true).unwrap();
+        assert_eq!(status(&repaired).unwrap(), ConfigStatus::Current);
+        let parsed = repaired.parse::<DocumentMut>().unwrap();
+        let args = parsed["mcp_servers"][SERVER_NAME]["args"]
+            .as_array()
+            .unwrap();
+        assert_eq!(args.len(), server_command().args().len());
+        assert!(args
+            .iter()
+            .zip(server_command().args())
+            .all(|(value, expected)| value.as_str() == Some(*expected)));
     }
 }

@@ -48,7 +48,7 @@ fn lineage_models(root: &Path, selected: &CoreEventRecord) -> (Value, Value, Val
         0,
         0,
         None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap();
     (cli, mcp, compact)
@@ -93,7 +93,7 @@ fn full_show_surfaces_mcp_exchange_losslessly_and_accounts_for_its_output_bytes(
         TranscriptMode::Log,
         10,
         None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap();
     assert_eq!(shown_session["events"][0]["mcp_exchange"], exact_exchange);

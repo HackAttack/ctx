@@ -1,14 +1,13 @@
-use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{invalid_tool_request, optional_string, optional_usize};
-use crate::{
-    commands::list::events::DEFAULT_EVENT_QUERY_LIMIT,
-    presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    tool_backend::{
-        QueryEventFilters, QueryEventsRequest, ToolBackendError, ToolEventContent, ToolOperation,
-    },
+use super::{
+    invalid_tool_request, optional_string, optional_usize, MCP_DEFAULT_EVENT_QUERY_LIMIT,
+    MCP_MAX_EVENT_QUERY_LIMIT, MCP_MIN_EVENT_QUERY_LIMIT, MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+};
+use crate::tool_backend::{
+    QueryEventFilters, QueryEventsRequest, ToolBackendError, ToolEventContent,
+    ToolEventRangeDirection, ToolEventRangeScope, ToolOperation,
 };
 
 pub(super) fn query_events_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
@@ -56,7 +55,12 @@ pub(super) fn query_events_operation(arguments: &Value) -> Result<ToolOperation,
     let limit = optional_usize(arguments, "limit")?
         .map(usize_to_u64)
         .transpose()?
-        .unwrap_or(DEFAULT_EVENT_QUERY_LIMIT);
+        .unwrap_or(MCP_DEFAULT_EVENT_QUERY_LIMIT);
+    if !(MCP_MIN_EVENT_QUERY_LIMIT..=MCP_MAX_EVENT_QUERY_LIMIT).contains(&limit) {
+        return Err(invalid_tool_request(format!(
+            "limit must be between {MCP_MIN_EVENT_QUERY_LIMIT} and {MCP_MAX_EVENT_QUERY_LIMIT}"
+        )));
+    }
     let content = optional_content_projection(arguments)?;
     Ok(ToolOperation::QueryEvents(QueryEventsRequest {
         since,
@@ -101,21 +105,21 @@ fn parse_optional_uuid(
         .transpose()
 }
 
-fn optional_scope(arguments: &Value) -> Result<CoreEventRangeScope, ToolBackendError> {
+fn optional_scope(arguments: &Value) -> Result<ToolEventRangeScope, ToolBackendError> {
     match optional_string(arguments, "scope")?.as_deref() {
-        None | Some("all") => Ok(CoreEventRangeScope::All),
-        Some("primary") => Ok(CoreEventRangeScope::Primary),
-        Some("subagent") => Ok(CoreEventRangeScope::Subagent),
+        None | Some("all") => Ok(ToolEventRangeScope::All),
+        Some("primary") => Ok(ToolEventRangeScope::Primary),
+        Some("subagent") => Ok(ToolEventRangeScope::Subagent),
         Some(_) => Err(invalid_tool_request(
             "scope must be one of all, primary, subagent",
         )),
     }
 }
 
-fn optional_direction(arguments: &Value) -> Result<CoreEventRangeDirection, ToolBackendError> {
+fn optional_direction(arguments: &Value) -> Result<ToolEventRangeDirection, ToolBackendError> {
     match optional_string(arguments, "direction")?.as_deref() {
-        None | Some("ascending") => Ok(CoreEventRangeDirection::Ascending),
-        Some("descending") => Ok(CoreEventRangeDirection::Descending),
+        None | Some("ascending") => Ok(ToolEventRangeDirection::Ascending),
+        Some("descending") => Ok(ToolEventRangeDirection::Descending),
         Some(_) => Err(invalid_tool_request(
             "direction must be one of ascending, descending",
         )),
@@ -130,5 +134,55 @@ fn optional_content_projection(arguments: &Value) -> Result<ToolEventContent, To
         Some(_) => Err(invalid_tool_request(
             "content must be one of full, text, none",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::mcp::McpToolKind;
+
+    fn query_events_limit(operation: ToolOperation) -> u64 {
+        let ToolOperation::QueryEvents(request) = operation else {
+            panic!("expected query_events operation");
+        };
+        request.limit
+    }
+
+    #[test]
+    fn query_events_schema_and_parser_share_the_exact_limit_contract() {
+        let definitions = super::super::tool_definitions(Vec::new());
+        let query_events = definitions
+            .iter()
+            .find(|tool| tool["name"] == McpToolKind::QueryEvents.tool_name())
+            .unwrap();
+        let schema = &query_events["inputSchema"]["properties"]["limit"];
+        assert_eq!(schema["minimum"], MCP_MIN_EVENT_QUERY_LIMIT);
+        assert_eq!(schema["maximum"], MCP_MAX_EVENT_QUERY_LIMIT);
+        assert_eq!(schema["default"], MCP_DEFAULT_EVENT_QUERY_LIMIT);
+
+        assert_eq!(
+            query_events_limit(query_events_operation(&json!({})).unwrap()),
+            MCP_DEFAULT_EVENT_QUERY_LIMIT
+        );
+        assert_eq!(
+            query_events_limit(
+                query_events_operation(&json!({"limit": MCP_MIN_EVENT_QUERY_LIMIT})).unwrap()
+            ),
+            MCP_MIN_EVENT_QUERY_LIMIT
+        );
+        assert_eq!(
+            query_events_limit(
+                query_events_operation(&json!({"limit": MCP_MAX_EVENT_QUERY_LIMIT})).unwrap()
+            ),
+            MCP_MAX_EVENT_QUERY_LIMIT
+        );
+
+        for invalid in [MCP_MIN_EVENT_QUERY_LIMIT - 1, MCP_MAX_EVENT_QUERY_LIMIT + 1] {
+            let error = query_events_operation(&json!({"limit": invalid})).unwrap_err();
+            assert_eq!(error.to_string(), "limit must be between 1 and 10000000");
+        }
     }
 }

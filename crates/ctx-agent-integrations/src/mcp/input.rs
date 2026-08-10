@@ -4,13 +4,13 @@ use anyhow::Result;
 
 use super::MCP_MAX_LINE_BYTES;
 
-pub(super) enum McpInputLine {
+pub enum McpInputLine {
     Line(String),
     InvalidUtf8,
     TooLarge,
 }
 
-pub(super) fn read_mcp_input_line(reader: &mut impl BufRead) -> Result<Option<McpInputLine>> {
+pub fn read_mcp_input_line(reader: &mut impl BufRead) -> Result<Option<McpInputLine>> {
     let mut buffer = Vec::new();
     loop {
         let available = reader.fill_buf()?;

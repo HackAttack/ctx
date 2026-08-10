@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/ctx-agent-integrations",
     "crates/ctx-cli",
     "crates/ctx-client-observability",
     "crates/ctx-daemon-runtime",

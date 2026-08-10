@@ -4,13 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, Context, Result};
-use clap::ValueEnum;
-
 use super::format::{ConfigKind, JsonRoot, JsonServerShape};
+use anyhow::{anyhow, Context, Result};
 
 #[derive(Debug, Clone)]
-pub(crate) struct McpPathContext {
+pub struct McpPathContext {
     home: PathBuf,
     xdg_config_home: PathBuf,
     cwd: PathBuf,
@@ -18,7 +16,7 @@ pub(crate) struct McpPathContext {
 }
 
 impl McpPathContext {
-    pub(crate) fn from_env() -> Result<Self> {
+    pub fn from_env() -> Result<Self> {
         let home = home_dir().context("resolve home directory")?;
         let xdg_config_home =
             non_empty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
@@ -42,8 +40,7 @@ impl McpPathContext {
         })
     }
 
-    #[cfg(test)]
-    pub(super) fn for_tests(home: PathBuf, cwd: PathBuf) -> Self {
+    pub fn for_tests(home: PathBuf, cwd: PathBuf) -> Self {
         Self {
             xdg_config_home: home.join(".config"),
             home,
@@ -142,35 +139,50 @@ fn existing_or_default(paths: impl IntoIterator<Item = PathBuf>, default: PathBu
         .unwrap_or(default)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum McpAgentArg {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpAgentArg {
     Codex,
-    #[value(name = "claude-code", alias = "claude")]
     ClaudeCode,
     Cursor,
-    #[value(name = "opencode", alias = "open-code")]
     OpenCode,
-    #[value(name = "mimocode", alias = "mimo-code", alias = "mimo_code")]
     MiMoCode,
-    #[value(name = "gemini-cli", alias = "gemini")]
     GeminiCli,
-    #[value(name = "qwen-code", alias = "qwen")]
     QwenCode,
     Goose,
     Kiro,
     Warp,
     Continue,
     Cline,
-    #[value(name = "github-copilot", alias = "copilot", alias = "copilot-cli")]
     GitHubCopilot,
     Zed,
     Windsurf,
-    #[value(name = "roo-code", alias = "roo")]
     RooCode,
 }
 
+pub fn parse_mcp_agent(value: &str) -> std::result::Result<McpAgentArg, String> {
+    match value {
+        "codex" => Ok(McpAgentArg::Codex),
+        "claude-code" | "claude" => Ok(McpAgentArg::ClaudeCode),
+        "cursor" => Ok(McpAgentArg::Cursor),
+        "opencode" | "open-code" => Ok(McpAgentArg::OpenCode),
+        "mimocode" | "mimo-code" | "mimo_code" => Ok(McpAgentArg::MiMoCode),
+        "gemini-cli" | "gemini" => Ok(McpAgentArg::GeminiCli),
+        "qwen-code" | "qwen" => Ok(McpAgentArg::QwenCode),
+        "goose" => Ok(McpAgentArg::Goose),
+        "kiro" => Ok(McpAgentArg::Kiro),
+        "warp" => Ok(McpAgentArg::Warp),
+        "continue" => Ok(McpAgentArg::Continue),
+        "cline" => Ok(McpAgentArg::Cline),
+        "github-copilot" | "copilot" | "copilot-cli" => Ok(McpAgentArg::GitHubCopilot),
+        "zed" => Ok(McpAgentArg::Zed),
+        "windsurf" => Ok(McpAgentArg::Windsurf),
+        "roo-code" | "roo" => Ok(McpAgentArg::RooCode),
+        _ => Err(format!("unknown MCP agent: {value}")),
+    }
+}
+
 impl McpAgentArg {
-    pub(super) const ALL: &'static [Self] = &[
+    pub const ALL: &'static [Self] = &[
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
@@ -187,7 +199,7 @@ impl McpAgentArg {
         Self::Zed,
         Self::Windsurf,
     ];
-    pub(super) const PROJECT_CAPABLE: &'static [Self] = &[
+    pub const PROJECT_CAPABLE: &'static [Self] = &[
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
@@ -202,7 +214,7 @@ impl McpAgentArg {
         Self::RooCode,
     ];
 
-    pub(super) fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::Codex => "codex",
             Self::ClaudeCode => "claude-code",
@@ -223,7 +235,7 @@ impl McpAgentArg {
         }
     }
 
-    pub(super) fn display_name(self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
             Self::ClaudeCode => "Claude Code",
@@ -244,7 +256,7 @@ impl McpAgentArg {
         }
     }
 
-    pub(super) fn detected(self, context: &McpPathContext) -> bool {
+    pub fn detected(self, context: &McpPathContext) -> bool {
         match self {
             Self::Codex => {
                 context.env_overrides.contains_key("CODEX_HOME")
@@ -282,7 +294,7 @@ impl McpAgentArg {
         }
     }
 
-    pub(super) fn target(self, project: bool, context: &McpPathContext) -> McpTarget {
+    pub fn target(self, project: bool, context: &McpPathContext) -> McpTarget {
         if project {
             return self.project_target(context);
         }
@@ -496,7 +508,7 @@ impl McpAgentArg {
     }
 }
 
-pub(super) fn project_detection_path(agent: McpAgentArg, context: &McpPathContext) -> PathBuf {
+pub fn project_detection_path(agent: McpAgentArg, context: &McpPathContext) -> PathBuf {
     match agent {
         McpAgentArg::Codex => context.cwd.join(".codex"),
         McpAgentArg::ClaudeCode => context.cwd.join(".mcp.json"),
@@ -518,13 +530,13 @@ pub(super) fn project_detection_path(agent: McpAgentArg, context: &McpPathContex
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum McpScope {
+pub enum McpScope {
     Global,
     Project,
 }
 
 impl McpScope {
-    pub(super) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Global => "global",
             Self::Project => "project",
@@ -533,13 +545,13 @@ impl McpScope {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct McpTarget {
-    pub(super) agent: McpAgentArg,
-    pub(super) scope: McpScope,
-    pub(super) path: Option<PathBuf>,
-    pub(super) kind: Option<ConfigKind>,
-    pub(super) detected: bool,
-    pub(super) unsupported_reason: Option<String>,
+pub struct McpTarget {
+    pub agent: McpAgentArg,
+    pub scope: McpScope,
+    pub path: Option<PathBuf>,
+    pub kind: Option<ConfigKind>,
+    pub detected: bool,
+    pub unsupported_reason: Option<String>,
 }
 
 impl McpTarget {
