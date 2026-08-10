@@ -773,13 +773,9 @@ repository = "https://example.invalid/{name}"
                 for item in component.get("properties", [])
             )
         ]
-<<<<<<< HEAD
         self.assertEqual(
             len(cargo_components), len(WORKSPACE_PACKAGES) + len(EXTERNAL_PACKAGES)
         )
-=======
-        self.assertEqual(len(cargo_components), 18)
->>>>>>> ab3765c93 (WIP: checkpoint refresh execution extraction)
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
         )
