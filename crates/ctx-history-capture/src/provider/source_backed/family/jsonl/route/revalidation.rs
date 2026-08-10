@@ -22,13 +22,22 @@ pub(super) fn revalidate_target(
     };
     match target {
         SourceBackedRevalidationTarget::Source(expected) => {
-            let Some(evidence) = resident
-                .terminal_sources
-                .get(&expected.observation().source().exact_descriptor_digest())
-            else {
-                return false;
-            };
-            evidence.certificate == *expected
+            let source = expected.observation().source();
+            let digest = source.exact_descriptor_digest();
+            if let Some(evidence) = resident.terminal_sources.get(&digest) {
+                return evidence.certificate == *expected;
+            }
+            resident
+                .terminal_rejected_sources
+                .get(&digest)
+                .is_some_and(|rejected| {
+                    !rejected.is_empty()
+                        && rejected.iter().all(|terminal| {
+                            terminal.source.exact_descriptor_eq(source)
+                                && terminal.retained_source.as_ref() == Some(expected)
+                                && terminal.revalidate().is_ok()
+                        })
+                })
         }
         SourceBackedRevalidationTarget::Deletion(deletion) => resident
             .certified_inventory

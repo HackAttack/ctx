@@ -122,14 +122,20 @@ fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
     let root = temp.path().join("private-codex-sessions");
     let root_a = "019fb600-0000-7000-8000-0000000032a0";
     let child_a = "019fb600-0000-7000-8000-0000000032a1";
+    let sibling_a = "019fb600-0000-7000-8000-0000000032a2";
+    let descendant_a = "019fb600-0000-7000-8000-0000000032a3";
     let root_b = "019fb600-0000-7000-8000-0000000032b0";
     let private_root_marker = "privaterootacanary328";
     let private_child_marker = "privatechildacanary328";
+    let sibling_marker = "healthysiblingacanary328";
+    let descendant_marker = "healthydescendantacanary328";
     let valid_marker = "validrootbpublicationmarker";
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&cwd).unwrap();
     write_codex_rollout(&root, root_a, private_root_marker);
     write_codex_root_conflict_rollout(&root, child_a, root_a, root_b, private_child_marker);
+    write_codex_related_rollout(&root, sibling_a, root_a, sibling_marker);
+    write_codex_related_rollout(&root, descendant_a, child_a, descendant_marker);
     write_codex_rollout(&root, root_b, valid_marker);
     let report = DiscoveryReport {
         sources: vec![provider_source_for_path(
@@ -164,15 +170,15 @@ fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, 2);
-    assert_eq!(result.source_failures.len(), 2);
+    assert_eq!(result.source_failure_total, 1);
+    assert_eq!(result.source_failures.len(), 1);
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, 1);
+    assert_eq!(publication.current.source_count, 4);
     assert_eq!(publication.current.rejected_records, 0);
     let verified = VerifiedIndex::open(&index_root).unwrap();
     let records = codex_core_records(&verified);
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 4);
     assert_eq!(
         verified
             .search_event_candidates(valid_marker, 10)
@@ -185,7 +191,7 @@ fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
             .search_event_candidates(private_root_marker, 10)
             .unwrap()
             .len(),
-        0
+        1
     );
     assert_eq!(
         verified
@@ -194,12 +200,18 @@ fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
             .len(),
         0
     );
+    for marker in [sibling_marker, descendant_marker] {
+        assert_eq!(
+            verified.search_event_candidates(marker, 10).unwrap().len(),
+            1
+        );
+    }
 }
 
 #[test]
 fn codex_root_conflicts_fail_closed_with_bounded_failure_receipts() {
     const CONFLICTING_CHILDREN: usize = 65;
-    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN + 1;
+    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN;
 
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -216,11 +228,7 @@ fn codex_root_conflicts_fail_closed_with_bounded_failure_receipts() {
     write_codex_rollout(&root, root_a, private_marker);
     for index in 0..CONFLICTING_CHILDREN {
         let child = format!("019fb600-0000-7000-8001-{index:012x}");
-        if index == 0 {
-            write_codex_root_conflict_rollout(&root, &child, root_a, root_b, private_marker);
-        } else {
-            write_codex_related_rollout(&root, &child, root_a, private_marker);
-        }
+        write_codex_root_conflict_rollout(&root, &child, root_a, root_b, private_marker);
     }
     write_codex_rollout(&root, root_b, valid_marker);
     let report = DiscoveryReport {
@@ -260,11 +268,11 @@ fn codex_root_conflicts_fail_closed_with_bounded_failure_receipts() {
     assert!(!result.source_failures.is_empty());
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, 1);
+    assert_eq!(publication.current.source_count, 2);
     assert_eq!(publication.current.rejected_records, 0);
     assert_eq!(
         codex_core_records(&VerifiedIndex::open(&index_root).unwrap()).len(),
-        1
+        2
     );
 
     let receipt = SourceBackedRefreshReceipt::from_verified_publication(

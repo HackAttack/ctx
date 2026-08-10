@@ -92,84 +92,68 @@ pub(super) struct CodexRootConflictRejectedSourceV0 {
     pub(super) conflict: CodexRootConflictV0,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CodexRootConflictWorkV0 {
+    source_claims_examined: u64,
+    advisory_claims_examined: u64,
+    identity_comparisons: u64,
+}
+
+fn advisory_contradicts_child_local_claim_v0(
+    native_session_id: &str,
+    child_local_root_native_session_id: &str,
+    advisory_session_id: &str,
+    work: &mut CodexRootConflictWorkV0,
+) -> bool {
+    work.advisory_claims_examined += 1;
+    work.identity_comparisons += 1;
+    if advisory_session_id == native_session_id {
+        return false;
+    }
+    work.identity_comparisons += 1;
+    advisory_session_id != child_local_root_native_session_id
+}
+
 fn quarantine_root_conflicts_v0(
     sources: Vec<CodexSessionPlanV0>,
 ) -> (
     Vec<CodexSessionPlanV0>,
     Vec<CodexRootConflictRejectedSourceV0>,
+    CodexRootConflictWorkV0,
 ) {
-    let indices = sources
-        .iter()
-        .enumerate()
-        .map(|(index, plan)| (plan.2.as_str(), index))
-        .collect::<HashMap<_, _>>();
-    let parents = sources
-        .iter()
-        .map(|plan| {
-            plan.0
-                .catalog_parent_native_session_id
-                .as_deref()
-                .and_then(|parent| indices.get(parent).copied())
-        })
-        .collect::<Vec<_>>();
-    let mut roots = vec![None; sources.len()];
-    for (start, root) in roots.iter_mut().enumerate() {
-        let mut current = start;
-        for _ in 0..=sources.len() {
-            match parents[current] {
-                Some(parent) => current = parent,
-                None => {
-                    *root = Some(current);
-                    break;
-                }
-            }
-        }
-    }
-    let mut evidence_order = (0..sources.len()).collect::<Vec<_>>();
-    evidence_order.sort_by(|left, right| sources[*left].2.cmp(&sources[*right].2));
-    let mut conflicts = HashMap::<usize, CodexRootConflictV0>::new();
-    for index in evidence_order {
-        let Some(advisory) = sources[index].0.catalog_advisory_session_id.as_deref() else {
-            continue;
-        };
-        let Some(parent) = parents[index] else {
-            // A child whose direct parent is outside this route remains an
-            // unresolved child-local claim; another route must not become a
-            // prerequisite for admitting its own bytes.
-            continue;
-        };
-        let mut corroborated = advisory == sources[index].2;
-        let mut ancestor = Some(parent);
-        for _ in 0..sources.len() {
-            let Some(candidate) = ancestor else { break };
-            corroborated |= advisory == sources[candidate].2;
-            ancestor = parents[candidate];
-        }
-        let Some(root) = roots[index] else { continue };
-        if corroborated {
-            continue;
-        }
-        conflicts
-            .entry(root)
-            .or_insert_with(|| CodexRootConflictV0 {
-                computed_root_native_session_id: sources[root].2.clone(),
-                conflicting_advisory_session_id: advisory.to_owned(),
-                evidence_source_record: format!("session_meta:{}", sources[index].2),
-                computed_root_source_record: format!("session_meta:{}", sources[root].2),
-                advisory_source_record: indices
-                    .contains_key(advisory)
-                    .then(|| format!("session_meta:{advisory}")),
-            });
-    }
+    let mut work = CodexRootConflictWorkV0::default();
     let mut accepted = Vec::with_capacity(sources.len());
     let mut rejected = Vec::new();
-    for (index, plan) in sources.into_iter().enumerate() {
-        match roots[index].and_then(|root| conflicts.get(&root)).cloned() {
-            Some(conflict) => rejected.push(CodexRootConflictRejectedSourceV0 { plan, conflict }),
-            None => accepted.push(plan),
+    for plan in sources {
+        work.source_claims_examined += 1;
+        let conflict = plan
+            .0
+            .catalog_advisory_session_id
+            .as_deref()
+            .zip(plan.0.catalog_root_native_session_id.as_deref())
+            .filter(|(advisory, child_local_root)| {
+                advisory_contradicts_child_local_claim_v0(
+                    &plan.2,
+                    child_local_root,
+                    advisory,
+                    &mut work,
+                )
+            })
+            .map(|(advisory, child_local_root)| CodexRootConflictV0 {
+                computed_root_native_session_id: child_local_root.to_owned(),
+                conflicting_advisory_session_id: advisory.to_owned(),
+                evidence_source_record: format!("session_meta:{}", plan.2),
+                computed_root_source_record: format!("session_meta:{child_local_root}"),
+                // Target presence must never change this source's validity.
+                advisory_source_record: None,
+            });
+        if let Some(conflict) = conflict {
+            rejected.push(CodexRootConflictRejectedSourceV0 { plan, conflict });
+        } else {
+            accepted.push(plan);
         }
     }
-    (accepted, rejected)
+    (accepted, rejected, work)
 }
 
 struct CodexPreparedGenerationV0 {
@@ -340,7 +324,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 // same child-local tuple from its own checkpoint.
                 sources.push(plan);
             }
-            let (sources, rejections) = quarantine_root_conflicts_v0(sources);
+            let (sources, rejections, _root_conflict_work) = quarantine_root_conflicts_v0(sources);
             routes.insert(
                 participant,
                 CodexPreparedRouteV0 {
@@ -372,5 +356,28 @@ impl CodexGenerationNormalizationCoordinatorV0 {
             .and_then(|prepared| prepared.routes.get(&participant))
             .cloned()
             .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
+    }
+}
+
+#[cfg(test)]
+mod root_conflict_tests {
+    use super::*;
+
+    #[test]
+    fn source_local_root_conflict_validation_is_linear_at_catalog_limit_for_deep_chain() {
+        const SOURCES: u64 = 131_072;
+        let mut work = CodexRootConflictWorkV0::default();
+        for index in 0..SOURCES {
+            let native = format!("session-{index}");
+            let parent = format!("session-{}", index.saturating_sub(1));
+            let advisory = if index == 0 { &native } else { &parent };
+            work.source_claims_examined += 1;
+            assert!(!advisory_contradicts_child_local_claim_v0(
+                &native, &parent, advisory, &mut work,
+            ));
+        }
+        assert_eq!(work.source_claims_examined, SOURCES);
+        assert_eq!(work.advisory_claims_examined, SOURCES);
+        assert_eq!(work.identity_comparisons, SOURCES * 2 - 1);
     }
 }
