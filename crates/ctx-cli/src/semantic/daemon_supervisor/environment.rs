@@ -1,4 +1,4 @@
-#[cfg(any(test, unix))]
+#[cfg(any(test, unix, windows))]
 use std::path::PathBuf;
 use std::{collections::BTreeMap, env, ffi::OsString, path::Path};
 
