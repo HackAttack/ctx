@@ -34,6 +34,7 @@ WORKSPACE_PACKAGES = (
     ("ctx-history-index", "crates/ctx-history-index"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
+    ("ctx-upgrade-engine", "crates/ctx-upgrade-engine"),
 )
 EXTERNAL_PACKAGES = (
     ("fs4", "0.1.0"),
@@ -142,6 +143,7 @@ members = [
   "crates/ctx-history-index",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
+  "crates/ctx-upgrade-engine",
 ]
 
 [workspace.package]
@@ -161,12 +163,18 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             manifest = self.main_runfiles / directory / "Cargo.toml"
             manifest.parent.mkdir(parents=True)
             dependencies = {
-                "ctx": "ctx-semantic-model = { path = \"../ctx-semantic-model\" }",
+                "ctx": (
+                    "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
+                    "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
+                ),
                 "ctx-history-index": (
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "tantivy.workspace = true"
                 ),
                 "ctx-semantic-model": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }"
+                ),
+                "ctx-upgrade-engine": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
             }.get(name)
@@ -211,6 +219,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-index:ctx_history_index",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
+            "@@//crates/ctx-upgrade-engine:ctx_upgrade_engine",
         ]
         inventory_labels.extend(
             f"@@{CRATE_REPOSITORY_PREFIX}crates__{name}-{version}//:{name}"
@@ -295,6 +304,7 @@ repository = "https://example.invalid/{name}"
                     "ctx-history-index",
                     "ctx-semantic-index",
                     "ctx-semantic-model",
+                    "ctx-upgrade-engine",
                 ),
             ),
             self.package("ctx-history-core", "0.26.0"),
@@ -315,6 +325,11 @@ repository = "https://example.invalid/{name}"
             ),
             self.package(
                 "ctx-semantic-model",
+                "0.26.0",
+                ("ctx-history-core",),
+            ),
+            self.package(
+                "ctx-upgrade-engine",
                 "0.26.0",
                 ("ctx-history-core",),
             ),
@@ -639,7 +654,7 @@ repository = "https://example.invalid/{name}"
                 for item in component.get("properties", [])
             )
         ]
-        self.assertEqual(len(cargo_components), 11)
+        self.assertEqual(len(cargo_components), 12)
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
         )
