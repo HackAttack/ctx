@@ -1,11 +1,10 @@
 use std::{
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant},
 };
 
 #[cfg(unix)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -15,6 +14,7 @@ use std::{fs, net::Shutdown, os::unix::net::UnixStream};
 
 mod dispatch;
 mod transport;
+pub(in crate::semantic) use transport::AuthenticatedRequest;
 #[cfg(windows)]
 #[path = "windows_security.rs"]
 mod windows_security;
@@ -63,7 +63,6 @@ impl ServiceId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::semantic) struct IpcServiceSpec {
     service_id: ServiceId,
-    endpoint_path: PathBuf,
     wake_when_idle: bool,
     #[cfg(unix)]
     unix_socket_path: PathBuf,
@@ -73,19 +72,14 @@ impl IpcServiceSpec {
     #[cfg(unix)]
     pub(in crate::semantic) fn new(
         service_id: ServiceId,
-        endpoint_path: PathBuf,
         unix_socket_path: PathBuf,
         wake_when_idle: bool,
     ) -> Result<Self> {
-        if endpoint_path.file_name().is_none() {
-            anyhow::bail!("IPC service endpoint path must name a file");
-        }
         if unix_socket_path.file_name().is_none() {
             anyhow::bail!("IPC service Unix socket path must name a socket");
         }
         Ok(Self {
             service_id,
-            endpoint_path,
             wake_when_idle,
             unix_socket_path,
         })
@@ -94,15 +88,10 @@ impl IpcServiceSpec {
     #[cfg(not(unix))]
     pub(in crate::semantic) fn new(
         service_id: ServiceId,
-        endpoint_path: PathBuf,
         wake_when_idle: bool,
     ) -> Result<Self> {
-        if endpoint_path.file_name().is_none() {
-            anyhow::bail!("IPC service endpoint path must name a file");
-        }
         Ok(Self {
             service_id,
-            endpoint_path,
             wake_when_idle,
         })
     }
@@ -124,54 +113,73 @@ impl IpcServiceSpec {
 pub(in crate::semantic) trait AuthenticatedRequestHandler:
     Send + Sync + 'static
 {
-    fn handle(&self, service: &ServiceId, request: AuthenticatedRequest) -> HandlerOutcome;
-}
-
-/// The transport has bounded, parsed, and authenticated this value.  Keeping
-/// the parsed request move-only makes the single parse an explicit boundary
-/// invariant rather than an accidental optimization.
-pub(in crate::semantic) struct AuthenticatedRequest(Value);
-
-impl AuthenticatedRequest {
-    pub(in crate::semantic) fn from_authenticated_value(value: Value) -> Self {
-        Self(value)
-    }
-
-    pub(in crate::semantic) fn into_value(self) -> Value {
-        self.0
-    }
+    fn handle<'a>(
+        &'a self,
+        service: &ServiceId,
+        request: AuthenticatedRequest,
+    ) -> HandlerOutcome<'a>;
 }
 
 pub(in crate::semantic) trait DaemonWakePort: Send + Sync + 'static {
     fn signal_ipc(&self);
 }
 
-pub(in crate::semantic) struct HandlerOutcome {
-    pub(in crate::semantic) response: Result<Value>,
-    pub(in crate::semantic) after_write_attempt: Option<Box<dyn AfterWriteAttempt>>,
+/// A bounded, move-only action that runs after the response-write attempt.
+/// Completion stays borrowed from the handler, while the admission barrier is
+/// carried inline so no request path needs a box or refcount clone.
+pub(in crate::semantic) enum AfterWriteAction<'a> {
+    None,
+    Completion {
+        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+        completion: &'a dyn AfterWriteCompletion,
+    },
 }
 
-impl HandlerOutcome {
+impl AfterWriteAction<'_> {
+    fn run(self) {
+        if let Self::Completion {
+            response_barrier,
+            completion,
+        } = self
+        {
+            completion.finish_after_response_write(response_barrier);
+        }
+    }
+}
+
+pub(in crate::semantic) trait AfterWriteCompletion: Sync {
+    fn finish_after_response_write(
+        &self,
+        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+    );
+}
+
+pub(in crate::semantic) struct HandlerOutcome<'a> {
+    pub(in crate::semantic) response: Result<Value>,
+    pub(in crate::semantic) after_write_action: AfterWriteAction<'a>,
+}
+
+impl<'a> HandlerOutcome<'a> {
     pub(in crate::semantic) fn response(response: Result<Value>) -> Self {
         Self {
             response,
-            after_write_attempt: None,
+            after_write_action: AfterWriteAction::None,
         }
     }
 
-    pub(in crate::semantic) fn with_after_write_attempt(
+    pub(in crate::semantic) fn with_after_write_completion(
         response: Result<Value>,
-        after_write_attempt: Box<dyn AfterWriteAttempt>,
+        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+        completion: &'a dyn AfterWriteCompletion,
     ) -> Self {
         Self {
             response,
-            after_write_attempt: Some(after_write_attempt),
+            after_write_action: AfterWriteAction::Completion {
+                response_barrier,
+                completion,
+            },
         }
     }
-}
-
-pub(in crate::semantic) trait AfterWriteAttempt: Send + 'static {
-    fn run(self: Box<Self>);
 }
 
 pub(in crate::semantic) struct DaemonQueryService {

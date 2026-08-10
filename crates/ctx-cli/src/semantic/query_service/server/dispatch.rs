@@ -26,9 +26,10 @@ use super::super::transport::{
     DaemonIpcService, DaemonQueryEndpoint, daemon_service_endpoint_path,
 };
 use super::{
-    AuthenticatedRequest, AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
-    DaemonQueryService, DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore,
-    IpcServiceSpec, ServiceId, start_ipc_service_with_request_timeout,
+    AfterWriteCompletion, AuthenticatedRequest, AuthenticatedRequestHandler,
+    DAEMON_QUERY_REQUEST_READ_TIMEOUT, DaemonQueryService, DaemonWakePort, HandlerOutcome,
+    IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec, ServiceId,
+    start_ipc_service_with_request_timeout,
 };
 
 struct CtxIpcEndpointStore {
@@ -80,37 +81,31 @@ const SOURCE_REFRESH_SERVICE_ID: &str = "source-refresh";
 
 fn semantic_query_service_spec(data_root: &Path) -> Result<IpcServiceSpec> {
     let service_id = ServiceId::new(SEMANTIC_QUERY_SERVICE_ID)?;
-    let endpoint_path = daemon_service_endpoint_path(data_root, DaemonIpcService::SemanticQuery);
     #[cfg(unix)]
     {
-        IpcServiceSpec::new(
-            service_id,
-            endpoint_path,
-            daemon_query_socket_path(data_root),
-            true,
-        )
+        IpcServiceSpec::new(service_id, daemon_query_socket_path(data_root), true)
     }
     #[cfg(not(unix))]
     {
-        IpcServiceSpec::new(service_id, endpoint_path, true)
+        let _ = data_root;
+        IpcServiceSpec::new(service_id, true)
     }
 }
 
 fn source_refresh_service_spec(data_root: &Path) -> Result<IpcServiceSpec> {
     let service_id = ServiceId::new(SOURCE_REFRESH_SERVICE_ID)?;
-    let endpoint_path = daemon_service_endpoint_path(data_root, DaemonIpcService::SourceRefresh);
     #[cfg(unix)]
     {
         IpcServiceSpec::new(
             service_id,
-            endpoint_path,
             daemon_root_path(data_root).join("source-refresh.sock"),
             false,
         )
     }
     #[cfg(not(unix))]
     {
-        IpcServiceSpec::new(service_id, endpoint_path, false)
+        let _ = data_root;
+        IpcServiceSpec::new(service_id, false)
     }
 }
 
@@ -233,25 +228,26 @@ pub(in crate::semantic) fn ctx_authenticated_request_handler(
 }
 
 impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
-    fn handle(&self, service: &ServiceId, request: AuthenticatedRequest) -> HandlerOutcome {
+    fn handle<'a>(
+        &'a self,
+        service: &ServiceId,
+        request: AuthenticatedRequest,
+    ) -> HandlerOutcome<'a> {
         let request = request.into_value();
         if service.as_str() == SOURCE_REFRESH_SERVICE_ID {
             return match self.handle_source_refresh(&request) {
-                Ok(SourceRefreshResponse::Wire(response)) => wire::wire_handler_outcome(
-                    response,
-                    Arc::clone(&self.source_refresh),
-                    Arc::clone(&self.wakeup),
-                ),
-                Ok(SourceRefreshResponse::Value(response)) => wire::handler_outcome(
-                    Ok(response),
-                    Arc::clone(&self.source_refresh),
-                    Arc::clone(&self.wakeup),
-                ),
-                Err(error) => wire::handler_outcome(
-                    Err(error),
-                    Arc::clone(&self.source_refresh),
-                    Arc::clone(&self.wakeup),
-                ),
+                Ok(SourceRefreshResponse::Wire(response)) => {
+                    let (response, response_barrier) = response.into_parts();
+                    HandlerOutcome::with_after_write_completion(
+                        Ok(response),
+                        response_barrier,
+                        self,
+                    )
+                }
+                Ok(SourceRefreshResponse::Value(response)) => {
+                    HandlerOutcome::with_after_write_completion(Ok(response), None, self)
+                }
+                Err(error) => HandlerOutcome::with_after_write_completion(Err(error), None, self),
             };
         }
         if service.as_str() == SEMANTIC_QUERY_SERVICE_ID {
@@ -261,6 +257,17 @@ impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
             "unknown authenticated IPC service `{}`",
             service.as_str()
         )))
+    }
+}
+
+impl AfterWriteCompletion for CtxAuthenticatedRequestHandler {
+    fn finish_after_response_write(
+        &self,
+        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+    ) {
+        wire::finish_source_refresh_response(response_barrier, &self.source_refresh, || {
+            self.wakeup.signal_ipc()
+        });
     }
 }
 

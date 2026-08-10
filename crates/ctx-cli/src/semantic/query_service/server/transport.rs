@@ -20,10 +20,26 @@ use uuid::Uuid;
 #[cfg(windows)]
 use super::windows_security::WindowsDaemonQueryPipeSecurity;
 use super::{
-    AuthenticatedRequest, AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_MAX_BYTES,
-    DaemonQueryActivity, DaemonQueryService, DaemonWakePort, HandlerOutcome,
+    AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_MAX_BYTES, DaemonQueryActivity,
+    DaemonQueryService, DaemonWakePort, HandlerOutcome,
     IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec, ServiceId,
 };
+
+/// The transport has bounded, parsed, and authenticated this value. Keeping
+/// the parsed request move-only makes the single parse an explicit boundary
+/// invariant. Its private field and constructor prevent product dispatch from
+/// forging an authenticated request.
+pub(in crate::semantic) struct AuthenticatedRequest(Value);
+
+impl AuthenticatedRequest {
+    fn from_authenticated_value(value: Value) -> Self {
+        Self(value)
+    }
+
+    pub(in crate::semantic) fn into_value(self) -> Value {
+        self.0
+    }
+}
 
 #[cfg(windows)]
 fn windows_named_pipe_name_is_local(pipe_name: &str) -> bool {
@@ -45,13 +61,13 @@ fn windows_wide_null(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) struct WindowsIoDeadline {
+struct WindowsServerIoDeadline {
     started: std::time::Instant,
     timeout: StdDuration,
 }
 
 #[cfg(windows)]
-impl WindowsIoDeadline {
+impl WindowsServerIoDeadline {
     fn new(timeout: StdDuration) -> Self {
         Self {
             started: std::time::Instant::now(),
@@ -78,7 +94,7 @@ pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>
     mut stream: S,
     request: Result<String>,
 ) -> Result<()> {
-    let mut outcome = match request.and_then(|body| {
+    let outcome = match request.and_then(|body| {
         let parsed: Value = serde_json::from_str(&body).context("parse daemon query request")?;
         if parsed.get("token").and_then(Value::as_str) != Some(token) {
             return Err(anyhow!("daemon query authentication failed"));
@@ -91,11 +107,13 @@ pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>
         Ok(outcome) => outcome,
         Err(error) => HandlerOutcome::response(Err(error)),
     };
-    let response_write = serialize_handler_response(outcome.response)
+    let HandlerOutcome {
+        response,
+        after_write_action,
+    } = outcome;
+    let response_write = serialize_handler_response(response)
         .and_then(|body| writeln!(stream, "{body}").context("write daemon query response"));
-    if let Some(after_write_attempt) = outcome.after_write_attempt.take() {
-        after_write_attempt.run();
-    }
+    after_write_action.run();
     response_write
 }
 
@@ -530,8 +548,8 @@ impl Drop for WindowsDaemonQueryPipe {
 
 #[cfg(windows)]
 pub(in crate::semantic) struct WindowsDaemonQueryRequestReader<'a> {
-    pub(in crate::semantic) pipe: &'a WindowsDaemonQueryPipe,
-    pub(in crate::semantic) deadline: WindowsIoDeadline,
+    pipe: &'a WindowsDaemonQueryPipe,
+    deadline: WindowsServerIoDeadline,
 }
 
 #[cfg(windows)]
@@ -542,7 +560,7 @@ impl WindowsDaemonQueryRequestReader<'_> {
     ) -> WindowsDaemonQueryRequestReader<'_> {
         WindowsDaemonQueryRequestReader {
             pipe,
-            deadline: WindowsIoDeadline::new(timeout),
+            deadline: WindowsServerIoDeadline::new(timeout),
         }
     }
 }

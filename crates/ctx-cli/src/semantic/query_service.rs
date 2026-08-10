@@ -26,7 +26,7 @@ pub(in crate::semantic) use server::*;
 pub(in crate::semantic) use server::{
     ctx_authenticated_request_handler, daemon_can_begin_idle_shutdown,
     observe_daemon_query_activity, start_daemon_query_service, start_daemon_source_refresh_service,
-    AfterWriteAttempt, DaemonQueryActivity, DaemonQueryService, HandlerOutcome,
+    DaemonQueryActivity, DaemonQueryService,
 };
 
 pub(in crate::semantic) fn daemon_query_service_transport_supported() -> bool {

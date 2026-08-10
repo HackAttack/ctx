@@ -84,6 +84,7 @@ fn windows_task_registration_matches(
 #[derive(Default)]
 struct FakeSupervisorState {
     registered: bool,
+    registration_probes: usize,
     live_owner: Option<u32>,
     installs: usize,
     disables: usize,
@@ -97,6 +98,7 @@ struct FakeSupervisorBackend {
     state: Mutex<FakeSupervisorState>,
     delay_install: bool,
     fail_install_after_registration: bool,
+    fail_disable: bool,
 }
 
 impl FakeSupervisorBackend {
@@ -109,6 +111,7 @@ impl FakeSupervisorBackend {
             }),
             delay_install: false,
             fail_install_after_registration: false,
+            fail_disable: false,
         }
     }
 }
@@ -145,15 +148,18 @@ impl NativeSupervisorBackend for FakeSupervisorBackend {
     fn disable(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
         let mut state = self.state.lock().unwrap();
         state.disables += 1;
+        if self.fail_disable {
+            return Err(anyhow!("fake native disable failed"));
+        }
         state.registered = false;
         state.live_owner = None;
         Ok(None)
     }
 
     fn verify_registration(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
-        self.state
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        state.registration_probes += 1;
+        state
             .registered
             .then_some(())
             .ok_or_else(|| anyhow!("fake native registration is absent"))
@@ -1103,6 +1109,53 @@ fn fallback_disable_status_is_retry_safe_without_claiming_registration() {
     assert_eq!(status["live_owner_verified"], false);
     assert_eq!(status["autostart_supported"], false);
     assert_eq!(status["restart_supported"], false);
+}
+
+#[test]
+fn native_disable_attempts_surviving_registration_without_artifact_or_launch_probe() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let backend = FakeSupervisorBackend::with_registration(Some(4_242));
+
+    disable_native_supervisor_candidate_with(
+        temp.path(),
+        Some(temp.path().join("ctx")),
+        &backend,
+    )?;
+
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.disables, 1);
+    assert_eq!(state.registration_probes, 0);
+    assert!(!state.registered);
+    drop(state);
+    let receipt = stored_supervisor_report(temp.path());
+    assert_eq!(receipt["status"], "disabled");
+    assert_eq!(receipt["registration_verified"], false);
+    Ok(())
+}
+
+#[test]
+fn native_disable_failure_does_not_claim_an_unavailable_launch_probe_is_healthy() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut backend = FakeSupervisorBackend::with_registration(Some(4_242));
+    backend.fail_disable = true;
+
+    assert!(disable_native_supervisor_candidate_with(
+        temp.path(),
+        Some(temp.path().join("ctx")),
+        &backend,
+    )
+    .is_err());
+
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.disables, 1);
+    assert_eq!(state.registration_probes, 0);
+    assert!(state.registered);
+    drop(state);
+    let receipt = stored_supervisor_report(temp.path());
+    assert_eq!(receipt["status"], "disable_failed");
+    assert_eq!(receipt["registration_verified"], false);
+    assert!(receipt["last_error"].as_str().is_some_and(|error| error.contains("failed")));
+    Ok(())
 }
 
 #[test]

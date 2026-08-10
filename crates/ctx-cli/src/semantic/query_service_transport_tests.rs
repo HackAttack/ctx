@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 #[path = "query_service_transport_tests/admission_lifecycle.rs"]
@@ -78,20 +79,27 @@ fn wait_for_active_query(service: &DaemonQueryService) -> Result<()> {
 
 struct CountingAfterWrite(Arc<std::sync::atomic::AtomicUsize>);
 
-impl AfterWriteAttempt for CountingAfterWrite {
-    fn run(self: Box<Self>) {
+impl AfterWriteCompletion for CountingAfterWrite {
+    fn finish_after_response_write(
+        &self,
+        _response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+    ) {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 struct CountingAuthenticatedHandler {
     handled: Arc<std::sync::atomic::AtomicUsize>,
-    finalized: Arc<std::sync::atomic::AtomicUsize>,
+    after_write: CountingAfterWrite,
     fail: bool,
 }
 
 impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
-    fn handle(&self, _service: &ServiceId, _request: AuthenticatedRequest) -> HandlerOutcome {
+    fn handle<'a>(
+        &'a self,
+        _service: &ServiceId,
+        _request: AuthenticatedRequest,
+    ) -> HandlerOutcome<'a> {
         self.handled
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let response = if self.fail {
@@ -99,9 +107,10 @@ impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
         } else {
             Ok(json!({"ok": true, "schema_version": 1}))
         };
-        HandlerOutcome::with_after_write_attempt(
+        HandlerOutcome::with_after_write_completion(
             response,
-            Box::new(CountingAfterWrite(Arc::clone(&self.finalized))),
+            None,
+            &self.after_write,
         )
     }
 }
@@ -131,7 +140,7 @@ fn authenticated_transport_finalizes_once_after_success_error_and_disconnect() -
         let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let handler = CountingAuthenticatedHandler {
             handled: Arc::clone(&handled),
-            finalized: Arc::clone(&finalized),
+            after_write: CountingAfterWrite(Arc::clone(&finalized)),
             fail,
         };
         if disconnected {
@@ -174,7 +183,7 @@ fn malformed_and_bad_token_requests_never_reach_handler_or_post_write_action() -
     let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let handler = CountingAuthenticatedHandler {
         handled: Arc::clone(&handled),
-        finalized: Arc::clone(&finalized),
+        after_write: CountingAfterWrite(Arc::clone(&finalized)),
         fail: false,
     };
 
@@ -209,7 +218,11 @@ fn malformed_and_bad_token_requests_never_reach_handler_or_post_write_action() -
 struct RecordingServiceHandler(std::sync::Mutex<Vec<String>>);
 
 impl AuthenticatedRequestHandler for RecordingServiceHandler {
-    fn handle(&self, service: &ServiceId, _request: AuthenticatedRequest) -> HandlerOutcome {
+    fn handle<'a>(
+        &'a self,
+        service: &ServiceId,
+        _request: AuthenticatedRequest,
+    ) -> HandlerOutcome<'a> {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -221,7 +234,11 @@ impl AuthenticatedRequestHandler for RecordingServiceHandler {
 struct ParsedRequestHandler(std::sync::Mutex<Vec<Value>>);
 
 impl AuthenticatedRequestHandler for ParsedRequestHandler {
-    fn handle(&self, _service: &ServiceId, request: AuthenticatedRequest) -> HandlerOutcome {
+    fn handle<'a>(
+        &'a self,
+        _service: &ServiceId,
+        request: AuthenticatedRequest,
+    ) -> HandlerOutcome<'a> {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -280,21 +297,10 @@ fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping()
     let service_id = ServiceId::new("opaque-service-7")?;
     #[cfg(unix)]
     {
-        let constructor: fn(ServiceId, PathBuf, PathBuf, bool) -> Result<IpcServiceSpec> =
-            IpcServiceSpec::new;
+        let constructor: fn(ServiceId, PathBuf, bool) -> Result<IpcServiceSpec> = IpcServiceSpec::new;
         assert!(
             constructor(
                 service_id.clone(),
-                PathBuf::from("/"),
-                PathBuf::from("/tmp/opaque.sock"),
-                false,
-            )
-            .is_err()
-        );
-        assert!(
-            constructor(
-                service_id.clone(),
-                PathBuf::from("/tmp/opaque-endpoint.json"),
                 PathBuf::from("/"),
                 false,
             )
@@ -302,7 +308,6 @@ fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping()
         );
         let spec = constructor(
             service_id.clone(),
-            PathBuf::from("/tmp/opaque-endpoint.json"),
             PathBuf::from("/tmp/opaque.sock"),
             false,
         )?;
@@ -310,7 +315,8 @@ fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping()
     }
     #[cfg(not(unix))]
     {
-        assert!(IpcServiceSpec::new(service_id.clone(), PathBuf::from("/"), false).is_err());
+        let spec = IpcServiceSpec::new(service_id.clone(), false)?;
+        assert_eq!(spec.service_id(), &service_id);
     }
 
     let handler = RecordingServiceHandler(std::sync::Mutex::new(Vec::new()));

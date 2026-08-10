@@ -550,33 +550,18 @@ pub(super) fn disable_daemon_supervisor(data_root: &Path) -> Result<()> {
         daemon_environment: None,
         manager_environment: &manager_environment,
     };
-    let artifact = backend.artifact_path(data_root)?;
-    let artifact_exists = artifact.as_deref().is_some_and(Path::exists);
-    let registration_exists = executable
-        .as_deref()
-        .is_some_and(|executable| backend.verify_registration(data_root, executable).is_ok());
-    if !artifact_exists && !registration_exists {
-        return write_supervisor_receipt(
-            data_root,
-            &SupervisorReceipt {
-                kind: current
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or("cli_self_heal")
-                    .to_owned(),
-                status: "disabled",
-                autostart_supported: false,
-                restart_supported: false,
-                registration_verified: false,
-                live_owner_verified: false,
-                owner_pid: None,
-                artifact_path: None,
-                executable_path: executable,
-                limitation: None,
-                last_error: None,
-            },
-        );
-    }
+    disable_native_supervisor_candidate_with(data_root, executable, &backend)
+}
+
+fn disable_native_supervisor_candidate_with(
+    data_root: &Path,
+    executable: Option<PathBuf>,
+    backend: &dyn NativeSupervisorBackend,
+) -> Result<()> {
+    // A disable request is idempotent control-plane work. Do not probe through
+    // launch verification first: a surviving service-manager registration must
+    // still be removed when its launch artifact or launch environment is gone.
+    let artifact = backend.artifact_path(data_root).ok().flatten();
     let result = backend.disable(data_root);
     match result {
         Ok(artifact) => write_supervisor_receipt(
@@ -603,7 +588,7 @@ pub(super) fn disable_daemon_supervisor(data_root: &Path) -> Result<()> {
                     status: "disable_failed",
                     autostart_supported: false,
                     restart_supported: false,
-                    registration_verified: registration_exists,
+                    registration_verified: false,
                     live_owner_verified: false,
                     owner_pid: None,
                     artifact_path: artifact,

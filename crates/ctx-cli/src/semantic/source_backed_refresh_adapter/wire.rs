@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::{collections::BTreeSet, path::Path};
 
 use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_index::SourceRouteIdentity;
@@ -11,8 +11,6 @@ use uuid::Uuid;
 
 use crate::output::compact_json;
 use crate::semantic::{
-    daemon_wakeup::DaemonWakeup,
-    query_service::{AfterWriteAttempt, HandlerOutcome},
     source_backed_refresh_coordinator::CoreRefreshEngine,
 };
 
@@ -61,54 +59,13 @@ pub(in crate::semantic) fn handle_ipc_request(
     }
 }
 
-pub(in crate::semantic) fn handler_outcome(
-    response: Result<Value>,
-    engine: Arc<CoreRefreshEngine>,
-    wakeup: Arc<DaemonWakeup>,
-) -> HandlerOutcome {
-    HandlerOutcome::with_after_write_attempt(
-        response,
-        Box::new(FinishSourceRefreshResponse {
-            barrier: None,
-            engine,
-            wakeup,
-        }),
-    )
-}
-
-pub(in crate::semantic) fn wire_handler_outcome(
-    response: WireResponse,
-    engine: Arc<CoreRefreshEngine>,
-    wakeup: Arc<DaemonWakeup>,
-) -> HandlerOutcome {
-    HandlerOutcome::with_after_write_attempt(
-        Ok(response.value),
-        Box::new(FinishSourceRefreshResponse {
-            barrier: response.response_barrier,
-            engine,
-            wakeup,
-        }),
-    )
-}
-
-struct FinishSourceRefreshResponse {
-    barrier: Option<AdmissionResponseBarrier>,
-    engine: Arc<CoreRefreshEngine>,
-    wakeup: Arc<DaemonWakeup>,
-}
-
-impl AfterWriteAttempt for FinishSourceRefreshResponse {
-    fn run(self: Box<Self>) {
-        let Self {
-            barrier,
-            engine,
-            wakeup,
-        } = *self;
-        finish_source_refresh_response(barrier, &engine, || wakeup.signal_ipc());
+impl WireResponse {
+    pub(in crate::semantic) fn into_parts(self) -> (Value, Option<AdmissionResponseBarrier>) {
+        (self.value, self.response_barrier)
     }
 }
 
-fn finish_source_refresh_response(
+pub(in crate::semantic) fn finish_source_refresh_response(
     barrier: Option<AdmissionResponseBarrier>,
     engine: &CoreRefreshEngine,
     signal_scheduler: impl FnOnce(),
