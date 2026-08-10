@@ -103,7 +103,6 @@ pub(in crate::semantic) fn render_daemon_status_human(
             || semantic_failed
             || history_catching_up
             || source_failures > 0
-            || rejected_records > 0
             || semantic_fallback.is_some()
             || service_issue)
     {
@@ -120,11 +119,6 @@ pub(in crate::semantic) fn render_daemon_status_human(
             OutcomeState::Warning,
             "Daemon is running; history is catching up",
             Some("The current search index remains available."),
-        ),
-        DaemonPresentation::Partial if rejected_records > 0 => (
-            OutcomeState::Warning,
-            "Daemon is partially healthy",
-            Some("Core refresh rejected one or more records."),
         ),
         DaemonPresentation::Partial if source_failures > 0 => (
             OutcomeState::Warning,
@@ -289,7 +283,10 @@ pub(in crate::semantic) fn render_daemon_status_human(
             ));
         }
         if rejected_records > 0 {
-            history_details.push(("Rejected", counted(rejected_records, "record", "records")));
+            history_details.push((
+                "Rejected",
+                counted(rejected_records, "provider record", "provider records"),
+            ));
         }
         if history_failed {
             history_details.push((
@@ -751,9 +748,15 @@ fn recovery_action(
             "ctx daemon enable",
         ));
     }
-    if history_failed || source_failures > 0 || rejected_records > 0 {
+    if history_failed || source_failures > 0 {
         return Some((
             "Inspect source-level refresh failures.",
+            "ctx import --all --no-daemon",
+        ));
+    }
+    if rejected_records > 0 {
+        return Some((
+            "Inspect rejected provider records.",
             "ctx import --all --no-daemon",
         ));
     }

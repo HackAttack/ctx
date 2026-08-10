@@ -106,7 +106,12 @@ action-focused JSON shape with `read_only: false` and do not read Core status.
 
 `history_epoch` and `lexical` identify the verified searchable Core generation.
 `refresh` reports the latest observed daemon-owned refresh request and its exact
-generation binding. `semantic` reports the current source-backed semantic
+generation binding. A generation-bound published refresh with deterministic
+record rejections but zero source failures has `refresh.status: "ready"`; its
+`current.current_rejected_records` remains present for diagnostics. Source
+failures, retryable failures, and publication/generation mismatches do not
+become ready merely because an older verified generation remains searchable.
+`semantic` reports the current source-backed semantic
 projection, including exact `flat_f32` document/event/chunk coverage when it is
 available. `daemon` reports process and relevant job state. These diagnostic
 objects can contain local paths and should not be persisted or forwarded outside

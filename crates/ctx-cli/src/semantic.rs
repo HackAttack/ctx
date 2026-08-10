@@ -42,7 +42,7 @@ pub(crate) mod daemon_service_ports;
 mod daemon_status;
 mod daemon_supervisor;
 mod source_status;
-pub(crate) use source_status::source_epoch_status_report;
+pub(crate) use source_status::{current_rejected_record_count, source_epoch_status_report};
 mod source_backed_pro_catch_up;
 pub(crate) use ctx_daemon_service::wait_for_completed_generation as wait_for_source_backed_pro_generation;
 pub(crate) use ctx_daemon_service::{

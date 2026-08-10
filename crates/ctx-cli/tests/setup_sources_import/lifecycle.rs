@@ -1212,7 +1212,35 @@ fn foreground_import_rejections_complete_and_preserve_diagnostics() {
 
     let status = json_output(ctx_from_binary(&temp, &binary).args(["status", "--format=json"]));
     assert_eq!(status["lexical"]["status"], "ready", "{status:#}");
-    assert_eq!(status["refresh"]["status"], "partial", "{status:#}");
+    assert_eq!(status["refresh"]["status"], "ready", "{status:#}");
+    assert_eq!(
+        status["refresh"]["current"]["current_rejected_records"],
+        1,
+        "{status:#}"
+    );
+
+    let search = json_output(ctx_from_binary(&temp, &binary).args([
+        "search",
+        "after malformed",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert!(!search["results"].as_array().unwrap().is_empty(), "{search:#}");
+
+    let doctor = json_output(ctx_from_binary(&temp, &binary).args(["doctor", "--format=json"]));
+    assert_eq!(doctor["ok"], true, "{doctor:#}");
+    assert_eq!(doctor["findings"], json!([]), "{doctor:#}");
+    assert_eq!(
+        doctor["source_epoch"]["refresh"]["status"],
+        "ready",
+        "{doctor:#}"
+    );
+    assert_eq!(
+        doctor["source_epoch"]["refresh"]["current"]["current_rejected_records"],
+        1,
+        "{doctor:#}"
+    );
     ctx_from_binary(&temp, &binary)
         .args([
             "index",
