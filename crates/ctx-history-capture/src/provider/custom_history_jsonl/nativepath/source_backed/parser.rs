@@ -78,36 +78,25 @@ pub(super) fn parse_projection_with_limits(
     });
 
     let frozen_length = source.len();
-    let mut file = source.file().try_clone()?;
-    file.seek(SeekFrom::Start(0))?;
-    let mut reader = BufReader::new(file);
     let mut event_spool = tempfile::tempfile()?;
     let mut catalog = ProjectionCatalog::new(limits);
-    let mut source_hasher = new_prefix_hasher();
-    let mut prior_hasher = new_prefix_hasher();
-    let mut prior_remaining = prior_prefix_bytes.unwrap_or(0);
-    let mut line = Vec::new();
-    let mut byte_offset = 0_u64;
-    let mut line_start = 0_u64;
-    let mut line_number = 0_usize;
+    let mut stream = JsonlPhysicalStream::open(
+        source.file().try_clone()?,
+        frozen_length,
+        0,
+        0,
+        JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_sub(1), false),
+        JsonlPhysicalDigest::complete_and_bounded_prefix(
+            new_prefix_hasher(),
+            new_prefix_hasher(),
+            prior_prefix_bytes.unwrap_or(0),
+        ),
+        || CaptureError::SourceChangedDuringCapture,
+    )?;
 
     {
         let mut event_writer = BufWriter::new(&mut event_spool);
-        while byte_offset < frozen_length {
-            let record = read_bounded_record_complete_and_prefix_sha256(
-                &mut reader,
-                &mut line,
-                &mut source_hasher,
-                &mut prior_hasher,
-                &mut prior_remaining,
-                frozen_length.saturating_sub(byte_offset),
-                JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_sub(1), false),
-                || CaptureError::SourceChangedDuringCapture,
-            )?
-            .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
-            byte_offset = byte_offset
-                .checked_add(record.byte_len)
-                .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
+        while let Some(record) = stream.next_record()? {
             #[cfg(test)]
             record_custom_history_work(|work| {
                 work.peak_provider_record_bytes =
@@ -117,12 +106,11 @@ pub(super) fn parse_projection_with_limits(
                 break;
             }
 
-            line_number = line_number
-                .checked_add(1)
-                .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
+            let line_number = usize::try_from(record.physical_ordinal.saturating_add(1))
+                .map_err(|_| CustomHistorySourceBackedError::CountMismatch)?;
             let evidence = CompleteLine {
                 line_number,
-                byte_offset: line_start,
+                byte_offset: record.byte_start,
             };
             catalog.budget.admit_record()?;
             if record.oversized {
@@ -130,20 +118,31 @@ pub(super) fn parse_projection_with_limits(
                 catalog.summary.skipped_events = catalog.summary.skipped_events.saturating_add(1);
                 catalog.oversized_lines.insert(line_number);
             } else {
-                visit_record(&line, evidence, &mut catalog, &mut event_writer)?;
+                visit_record(
+                    stream.record_bytes(record),
+                    evidence,
+                    &mut catalog,
+                    &mut event_writer,
+                )?;
             }
-            line_start = byte_offset;
         }
         event_writer.flush()?;
     }
 
     event_spool.seek(SeekFrom::Start(0))?;
-    let terminal = line_start == frozen_length;
-    let certified_prefix_bytes = line_start;
-    let content_digest = finish_prefix_digest(&source_hasher, certified_prefix_bytes);
+    let terminal = stream.terminal();
+    let certified_prefix_bytes = stream.complete_prefix_end();
+    let complete_records = usize::try_from(stream.next_physical_ordinal())
+        .map_err(|_| CustomHistorySourceBackedError::CountMismatch)?;
+    let source_hasher = stream.digest().complete_hasher();
+    let content_digest = finish_prefix_digest(source_hasher, certified_prefix_bytes);
+    let (prior_hasher, prior_remaining) = stream
+        .digest()
+        .bounded_prefix()
+        .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
     let observed_prior_prefix_digest = match prior_prefix_bytes {
         Some(expected) if prior_remaining == 0 => {
-            Some(finish_prefix_digest(&prior_hasher, expected))
+            Some(finish_prefix_digest(prior_hasher, expected))
         }
         _ => None,
     };
@@ -151,7 +150,7 @@ pub(super) fn parse_projection_with_limits(
         catalog,
         event_spool,
         certified_prefix_bytes,
-        line_number,
+        complete_records,
         terminal,
         content_digest,
         observed_prior_prefix_digest,
