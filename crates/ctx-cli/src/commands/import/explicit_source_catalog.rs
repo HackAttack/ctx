@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use anyhow::Result;
-use ctx_history_capture::{ProviderSource, SourceBackedRouteError, SourceBackedRouteErrorKind};
+use ctx_history_capture::{SourceBackedRouteError, SourceBackedRouteErrorKind};
+use ctx_history_capture_model::ProviderSource;
 
 use crate::{provider_args::ImportFormatArg, ImportArgs};
 

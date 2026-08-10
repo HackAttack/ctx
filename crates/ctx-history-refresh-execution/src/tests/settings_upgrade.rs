@@ -27,13 +27,13 @@ fn automatic_execution_replaces_an_incompatible_settings_generation() {
             },
         ],
         issues: vec![
-            ctx_history_capture::DiscoveryIssue {
+            DiscoveryIssue {
                 provider: CaptureProvider::Warp,
                 path: None,
                 kind: DiscoveryIssueKind::NoDiskHistory,
                 reason: "fixture has no provider history",
             },
-            ctx_history_capture::DiscoveryIssue {
+            DiscoveryIssue {
                 provider: CaptureProvider::Warp,
                 path: None,
                 kind: DiscoveryIssueKind::InsufficientOfficialEvidence,

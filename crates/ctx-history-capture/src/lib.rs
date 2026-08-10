@@ -13,14 +13,14 @@ pub use provider_sources::{
     discover_provider_sources_with_context, discover_provider_sources_with_context_and_work_budget,
     discover_provider_sources_with_projects, discover_warp_sources_with_authority,
     observe_ordinary_file, provider_source_for_path, provider_source_spec, provider_source_specs,
-    resolve_lingma_discovery_authority, resolve_warp_discovery_authority,
-    validate_provider_source_roots_outside_data_root, DiscoveredLingmaDatabase,
-    DiscoveredWarpSource, DiscoveryContext, DiscoveryIssue, DiscoveryIssueKind, DiscoveryPlatform,
-    DiscoveryPlatformDirs, DiscoveryReport, LingmaDatabaseCatalogLineage,
-    LingmaDiscoveredInventory, LingmaDiscoveryUnavailable, LingmaInventorySelector,
-    LingmaVscodeClient, LingmaVscodeProfile, OrdinaryFileObservation, ProviderCatalogSupport,
-    ProviderDefaultLocation, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-    ProviderSourceRootBoundaryError, ProviderSourceSpec, ProviderSourceStatus,
+    provider_source_status_reason, resolve_lingma_discovery_authority,
+    resolve_warp_discovery_authority, validate_provider_source_roots_outside_data_root,
+    DiscoveredLingmaDatabase, DiscoveredWarpSource, DiscoveryContext, DiscoveryIssue,
+    DiscoveryIssueKind, DiscoveryPlatform, DiscoveryPlatformDirs, DiscoveryReport,
+    LingmaDatabaseCatalogLineage, LingmaDiscoveredInventory, LingmaDiscoveryUnavailable,
+    LingmaInventorySelector, LingmaVscodeClient, LingmaVscodeProfile, OrdinaryFileObservation,
+    ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport, ProviderSource,
+    ProviderSourceKind, ProviderSourceRootBoundaryError, ProviderSourceSpec, ProviderSourceStatus,
     ProviderSourceStatusReason, WarpDiscoveryUnavailable, WarpInstalledPlatform,
     WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface, DISCOVERY_ENV_ALLOWLIST,
     HERMES_STATE_DB_UNSUPPORTED_REASON,
@@ -71,18 +71,16 @@ pub(crate) const MUX_SOURCE_FORMAT: &str = "mux_session_jsonl";
 pub(crate) const PROVIDER_MAX_PREVIEW_CHARS: usize = 4_000;
 
 pub(crate) mod native_source;
-mod pro_output;
 pub(crate) mod record_evidence;
 pub(crate) mod repository_attribution;
-pub use pro_output::{OutputObservationKind, OutputOutcome, OutputOutcomeMetadata};
+pub use ctx_history_capture_model::{
+    stable_capture_uuid, CatalogSummary, OutputObservationKind, OutputOutcome,
+    OutputOutcomeMetadata, ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
+    ProviderSourceFailureKind,
+};
 
 mod error;
-pub use error::{CaptureError, ProviderJsonlInventoryLimit, ProviderSourceFailureKind, Result};
-
-mod summaries;
-pub use summaries::{
-    CatalogSummary, ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
-};
+pub use error::{CaptureError, ProviderJsonlInventoryLimit, Result};
 
 pub(crate) mod common {
     pub(crate) mod identity;
@@ -90,7 +88,7 @@ pub(crate) mod common {
     pub(crate) mod json;
     pub(crate) mod time;
 }
-pub use common::identity::{compute_payload_hash, stable_capture_uuid};
+pub use common::identity::compute_payload_hash;
 pub(crate) use common::identity::{default_machine_id, fnv1a64};
 
 #[cfg(test)]

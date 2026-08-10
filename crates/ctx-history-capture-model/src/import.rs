@@ -71,3 +71,46 @@ impl ProviderImportSummary {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_summary_wire_shape_and_skip_semantics_are_stable() {
+        let summary = ProviderImportSummary {
+            imported: 1,
+            skipped: 2,
+            failed: 3,
+            imported_sessions: 4,
+            skipped_sessions: 5,
+            imported_events: 6,
+            skipped_events: 7,
+            imported_edges: 8,
+            skipped_edges: 9,
+            work_remaining: true,
+            failures: vec![ProviderImportFailure {
+                line: 10,
+                error: "invalid record".to_owned(),
+            }],
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert_eq!(
+            json,
+            r#"{"imported":1,"skipped":2,"failed":3,"imported_sessions":4,"skipped_sessions":5,"imported_events":6,"skipped_events":7,"imported_edges":8,"skipped_edges":9,"failures":[{"line":10,"error":"invalid record"}]}"#
+        );
+        let decoded: ProviderImportSummary = serde_json::from_str(&json).unwrap();
+        assert!(!decoded.work_remaining);
+        assert_eq!(decoded.work_result(), ProviderImportWorkResult::Changed);
+    }
+
+    #[test]
+    fn work_result_strings_and_merge_are_stable() {
+        assert_eq!(ProviderImportWorkResult::Changed.as_str(), "changed");
+        assert_eq!(ProviderImportWorkResult::NoOp.as_str(), "no_op");
+        assert_eq!(
+            ProviderImportWorkResult::NoOp.merge(ProviderImportWorkResult::Changed),
+            ProviderImportWorkResult::Changed
+        );
+    }
+}

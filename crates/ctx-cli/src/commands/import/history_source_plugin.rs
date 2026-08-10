@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use anyhow::{bail, Context, Result};
-use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult};
+use ctx_history_capture_model::{ProviderImportSummary, ProviderImportWorkResult};
 use ctx_history_core::{platform_security::establish_private_data_root, CaptureProvider};
 use serde_json::json;
 

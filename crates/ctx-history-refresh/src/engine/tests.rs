@@ -12,8 +12,10 @@ use crate::{
     publication::observation::install_after_capture_scan_before_metadata_hook_for_test,
 };
 use ctx_history_capture::{
-    provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, ProviderCatalogSupport,
-    ProviderImportSupport, ProviderSource, ProviderSourceKind, SourceBackedFailedRoute,
+    provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, SourceBackedFailedRoute,
+};
+use ctx_history_capture_model::{
+    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,

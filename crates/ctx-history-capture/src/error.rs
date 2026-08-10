@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+
+use ctx_history_capture_model::ProviderSourceFailureKind;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,36 +19,6 @@ impl std::fmt::Display for ProviderJsonlInventoryLimit {
             Self::EligiblePaths => "eligible_jsonl_paths",
             Self::MetadataEntries => "metadata_entries",
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderSourceFailureKind {
-    NotFound,
-    Permission,
-    Locked,
-    Corrupt,
-    SchemaIncompatible,
-    InvalidSource,
-    SourceChanged,
-    SourceDatabase,
-    Io,
-}
-
-impl std::fmt::Display for ProviderSourceFailureKind {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::NotFound => "not_found",
-            Self::Permission => "permission",
-            Self::Locked => "locked",
-            Self::Corrupt => "corrupt",
-            Self::SchemaIncompatible => "schema_incompatible",
-            Self::InvalidSource => "invalid_source",
-            Self::SourceChanged => "source_changed",
-            Self::SourceDatabase => "source_database",
-            Self::Io => "io",
-        };
-        formatter.write_str(value)
     }
 }
 

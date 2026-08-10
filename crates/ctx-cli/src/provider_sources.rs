@@ -8,6 +8,9 @@ use serde_json::{json, Value};
 
 use ctx_history_capture::{
     discover_provider_sources_for_provider_report, discover_provider_sources_report,
+    provider_source_status_reason,
+};
+use ctx_history_capture_model::{
     DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderImportSupport, ProviderSource,
     ProviderSourceStatus,
 };
@@ -118,7 +121,7 @@ pub(crate) fn sources_json(sources: &[SourceInfo]) -> Vec<Value> {
                 "exists": source.exists,
                 "source_format": source.source_format,
                 "status": source.status.as_str(),
-                "status_reason": source.status_reason().map(|reason| reason.as_str()),
+                "status_reason": provider_source_status_reason(source).map(|reason| reason.as_str()),
                 "import_support": import_support_json(source.import_support),
                 "native_import": source.import_support.is_auto_importable(),
                 "importable": source.status == ProviderSourceStatus::Available
@@ -285,7 +288,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ctx_history_capture::{provider_source_for_path, ProviderSourceKind};
+    use ctx_history_capture::provider_source_for_path;
+    use ctx_history_capture_model::ProviderSourceKind;
     use rusqlite::{params, Connection};
 
     fn issue(kind: DiscoveryIssueKind, reason: &'static str) -> DiscoveryIssue {
