@@ -5,6 +5,8 @@ use std::{
 
 use anyhow::{anyhow, Result};
 
+#[cfg(windows)]
+use super::super::DaemonUpgradePort;
 use super::super::{ReleaseProcessPort, SemanticLayoutPort, UpgradePlan};
 use super::{
     durability::{stage_downloaded_binary, sync_parent},
