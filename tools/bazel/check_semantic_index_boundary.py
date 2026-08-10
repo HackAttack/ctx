@@ -37,14 +37,8 @@ ALLOWED_CLI_SEMANTIC_SOURCES = {
     path.strip()
     for path in """
 daemon.rs
-daemon/config_reload.rs
 daemon/control.rs
-daemon/lifecycle.rs
-daemon/recovery_cadence.rs
-daemon/telemetry.rs
-daemon/tests.rs
-daemon/tests/startup_recovery.rs
-daemon/watch_runtime.rs
+daemon/seam_tests.rs
 daemon_autostart.rs
 daemon_autostart/autostart.rs
 daemon_autostart/handoff.rs
@@ -53,12 +47,6 @@ daemon_autostart/handoff/termination/legacy.rs
 daemon_autostart/installation.rs
 daemon_autostart/recovery.rs
 daemon_autostart/tests.rs
-daemon_retry.rs
-daemon_scheduler.rs
-daemon_scheduler/background_refresh_cadence.rs
-daemon_scheduler_tests.rs
-daemon_scheduler_tests/background_refresh.rs
-daemon_scheduler_tests/refresh_retry.rs
 daemon_status.rs
 daemon_status/render.rs
 daemon_status/tests.rs
@@ -70,11 +58,7 @@ daemon_supervisor/state.rs
 daemon_supervisor/tests.rs
 daemon_supervisor/unsupported.rs
 daemon_supervisor/windows.rs
-daemon_wakeup.rs
-daemon_wakeup/event_routing.rs
-daemon_wakeup/tests.rs
-daemon_worker.rs
-daemon_worker_tests.rs
+daemon_service_ports.rs
 health_search.rs
 model_config.rs
 model_config_tests.rs
@@ -84,43 +68,36 @@ paths_status/tests.rs
 query_adapter.rs
 query_adapter/tests.rs
 query_service.rs
-query_service/server.rs
-query_service/server/dispatch.rs
-query_service/server/transport.rs
-query_service/transport.rs
-query_service/transport/submission.rs
-query_service/transport/submission_tests.rs
-query_service/transport/unix_response.rs
-query_service/transport/windows_submission_tests.rs
-query_service/windows_security.rs
-query_service_transport_tests.rs
-query_service_transport_tests/admission_lifecycle.rs
-resource_policy.rs
 runtime_limits.rs
 source_backed_pro_catch_up.rs
-source_backed_pro_catch_up/finalization.rs
 source_backed_pro_catch_up/lease_reconciliation.rs
-source_backed_pro_catch_up/recheck.rs
 source_backed_pro_catch_up/status.rs
-source_backed_refresh_adapter.rs
-source_backed_refresh_adapter/journal.rs
-source_backed_refresh_adapter/runtime.rs
-source_backed_refresh_adapter/wire.rs
+source_backed_pro_catch_up/tests.rs
 source_backed_refresh_coordinator.rs
-source_backed_refresh_coordinator/client.rs
-source_backed_refresh_coordinator/client_admission_recovery_tests.rs
-source_backed_refresh_coordinator/client_observation_recovery.rs
-source_backed_refresh_coordinator/client_observation_recovery_tests.rs
-source_backed_refresh_coordinator/client_transport_recovery_tests.rs
-source_backed_refresh_coordinator/refresh_mode.rs
-source_backed_refresh_coordinator/request.rs
-source_backed_refresh_coordinator/restart_recovery_tests.rs
 source_status.rs
 source_status_tests.rs
 tests.rs
 tests/lifecycle.rs
 tests/locking.rs
-tests/workflow.rs
+""".splitlines()
+    if path.strip()
+}
+
+ALLOWED_DAEMON_SERVICE_SEMANTIC_SOURCES = {
+    path.strip()
+    for path in """
+daemon.rs
+daemon/config_reload.rs
+daemon_retry.rs
+daemon_scheduler.rs
+daemon_worker.rs
+daemon_worker_tests.rs
+lib.rs
+ports.rs
+query_service/server/dispatch.rs
+resource_policy.rs
+source_backed_refresh_coordinator/restart_recovery_tests.rs
+test_support.rs
 """.splitlines()
     if path.strip()
 }
@@ -222,10 +199,26 @@ def validate_cli_partition(repo_root: Path) -> None:
         )
 
 
+def validate_daemon_service_partition(repo_root: Path) -> None:
+    service_root = repo_root / "crates/ctx-daemon-service/src"
+    semantic_sources = set()
+    for source in service_root.rglob("*.rs"):
+        text = source.read_text(encoding="utf-8")
+        if "ctx_semantic_index::" in text or "ctx_semantic_model::" in text:
+            semantic_sources.add(source.relative_to(service_root).as_posix())
+    violations = sorted(semantic_sources - ALLOWED_DAEMON_SERVICE_SEMANTIC_SOURCES)
+    if violations:
+        raise BoundaryError(
+            "unreviewed semantic dependency appeared in ctx-daemon-service: "
+            + ", ".join(violations)
+        )
+
+
 def validate(repo_root: Path) -> None:
     validate_manifest(repo_root / "crates/ctx-semantic-index/Cargo.toml")
     validate_build(repo_root / "crates/ctx-semantic-index/BUILD.bazel")
     validate_cli_partition(repo_root)
+    validate_daemon_service_partition(repo_root)
 
 
 def main() -> int:

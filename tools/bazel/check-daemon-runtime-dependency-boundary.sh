@@ -67,7 +67,9 @@ expected_reverse_lib="${tmp}/expected-reverse-lib.txt"
 printf '%s\n' \
   '//crates/ctx-cli:ctx' \
   '//crates/ctx-cli:ctx_pro_test_host' \
-  '//crates/ctx-daemon-runtime:lib' >"${expected_reverse_lib}"
+  '//crates/ctx-daemon-runtime:lib' \
+  '//crates/ctx-daemon-service:lib' \
+  '//crates/ctx-daemon-service:test_support_lib' >"${expected_reverse_lib}"
 query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib))' \
   | LC_ALL=C sort -u >"${tmp}/actual-reverse-lib.txt"
 if ! diff -u "${expected_reverse_lib}" "${tmp}/actual-reverse-lib.txt"; then
@@ -80,7 +82,8 @@ printf '%s\n' \
   '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
   '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
   '//crates/ctx-cli:ctx_upgrade_test_harness' \
-  '//crates/ctx-daemon-runtime:qualification_lib' >"${expected_reverse_qualification}"
+  '//crates/ctx-daemon-runtime:qualification_lib' \
+  '//crates/ctx-daemon-service:qualification_lib' >"${expected_reverse_qualification}"
 query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:qualification_lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:qualification_lib))' \
   | LC_ALL=C sort -u >"${tmp}/actual-reverse-qualification.txt"
 if ! diff -u "${expected_reverse_qualification}" "${tmp}/actual-reverse-qualification.txt"; then
@@ -106,7 +109,9 @@ while IFS= read -r manifest; do
   fi
 done < <(find "${repo_root}/crates" -mindepth 2 -maxdepth 2 -name Cargo.toml -type f | LC_ALL=C sort) \
   >"${actual_reverse_cargo}"
-printf '%s\n' 'crates/ctx-cli/Cargo.toml' >"${tmp}/expected-reverse-cargo.txt"
+printf '%s\n' \
+  'crates/ctx-cli/Cargo.toml' \
+  'crates/ctx-daemon-service/Cargo.toml' >"${tmp}/expected-reverse-cargo.txt"
 if ! diff -u "${tmp}/expected-reverse-cargo.txt" "${actual_reverse_cargo}"; then
   echo 'unexpected reverse Cargo consumer of ctx-daemon-runtime' >&2
   exit 1

@@ -1,42 +1,9 @@
 use super::*;
 
 #[test]
-fn daemon_autostart_records_lifecycle_trigger_metadata() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let args = DaemonRunArgs {
-        foreground: false,
-        idle_exit_seconds: None,
-        loop_interval_seconds: None,
-        max_chunks: None,
-        max_seconds: None,
-        force: false,
-        start_mode: Some(DaemonStartModeArg::Auto),
-        trigger_command: Some(DaemonTriggerCommandArg::Setup),
-        format: crate::output::JsonOutputFormat::Json,
-    };
-
-    write_daemon_lifecycle_status(temp.path(), &args, "running", 123, None, None)?;
-    let status = read_daemon_status(temp.path()).expect("daemon status");
-    assert_eq!(status["start_mode"], "auto");
-    assert_eq!(status["trigger_command"], "setup");
-    Ok(())
-}
-
-#[test]
 fn daemon_report_marks_orphaned_running_status_recoverable() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let args = DaemonRunArgs {
-        foreground: false,
-        idle_exit_seconds: None,
-        loop_interval_seconds: None,
-        max_chunks: None,
-        max_seconds: None,
-        force: false,
-        start_mode: Some(DaemonStartModeArg::Manual),
-        trigger_command: None,
-        format: crate::output::JsonOutputFormat::Json,
-    };
-    write_daemon_lifecycle_status(temp.path(), &args, "running", 123, None, None)?;
+    write_test_daemon_lifecycle_status(temp.path(), "running", None)?;
 
     let daemon = paths_status::daemon_report(temp.path());
 
@@ -57,25 +24,7 @@ fn daemon_report_preserves_terminal_status_when_advisory_metadata_is_unreleased(
         ),
     ] {
         let temp = tempfile::tempdir()?;
-        let args = DaemonRunArgs {
-            foreground: false,
-            idle_exit_seconds: None,
-            loop_interval_seconds: None,
-            max_chunks: None,
-            max_seconds: None,
-            force: false,
-            start_mode: Some(DaemonStartModeArg::Auto),
-            trigger_command: Some(DaemonTriggerCommandArg::Setup),
-            format: crate::output::JsonOutputFormat::Json,
-        };
-        write_daemon_lifecycle_status(
-            temp.path(),
-            &args,
-            status,
-            123,
-            Some(456),
-            last_error.clone(),
-        )?;
+        write_test_daemon_lifecycle_status(temp.path(), status, last_error.clone())?;
         let lock_path = daemon_lock_path(temp.path());
         create_private_dir_all(lock_path.parent().expect("daemon lock parent"))?;
         fs::write(

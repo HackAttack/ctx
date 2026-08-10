@@ -43,6 +43,7 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-agent-integrations",
     "ctx-client-observability",
     "ctx-daemon-runtime",
+    "ctx-daemon-service",
     "ctx-history-core",
     "ctx-history-index-format",
     "ctx-history-index",

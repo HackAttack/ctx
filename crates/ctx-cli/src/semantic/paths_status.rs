@@ -7,42 +7,18 @@ use serde_json::{json, Value};
 
 use crate::{compact_json, config::AppConfig};
 
-use super::{
-    health_search::{json_i64, json_string, json_u32},
-    runtime_limits::DAEMON_SEMANTIC_JOB_FILE,
-};
+use super::health_search::{json_i64, json_string, json_u32};
 
 #[allow(unused_imports)]
 pub(super) use ctx_daemon_runtime::*;
 
 pub(super) fn daemon_core_refresh_job_path(data_root: &Path) -> PathBuf {
-    daemon_jobs_path(data_root).join("core-refresh.json")
-}
-
-pub(super) fn daemon_source_backed_refresh_job_path(data_root: &Path) -> PathBuf {
-    daemon_core_refresh_job_path(data_root)
+    ctx_daemon_service::daemon_core_refresh_job_path(data_root)
 }
 
 pub(super) fn daemon_semantic_job_path(data_root: &Path) -> PathBuf {
-    daemon_jobs_path(data_root).join(DAEMON_SEMANTIC_JOB_FILE)
+    ctx_daemon_service::daemon_semantic_job_path(data_root)
 }
-
-#[cfg(all(unix, not(target_os = "macos")))]
-pub(super) fn lower_semantic_worker_priority() {
-    unsafe {
-        let _ = libc::setpriority(libc::PRIO_PROCESS, 0, 10);
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn lower_semantic_worker_priority() {
-    unsafe {
-        let _ = libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
-    }
-}
-
-#[cfg(not(unix))]
-pub(super) fn lower_semantic_worker_priority() {}
 
 pub(super) fn daemon_report(data_root: &Path) -> Value {
     daemon_report_with_disabled_status(data_root, true)
@@ -222,7 +198,7 @@ fn daemon_report_with_config_snapshot(
         "lock_identity": lock_identity,
         "core_refresh_endpoint": daemon_core_refresh_endpoint_report(data_root),
         "supervisor": super::daemon_supervisor::daemon_supervisor_report(data_root),
-        "wakeup": super::daemon_wakeup::daemon_wakeup_report(data_root),
+        "wakeup": ctx_daemon_service::daemon_wakeup_report(data_root),
         "status_path": status_path,
         "jobs": jobs,
     }))

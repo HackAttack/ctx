@@ -1,34 +1,4 @@
 #[cfg(test)]
-use std::{
-    fs,
-    path::Path,
-    process,
-    time::{Duration as StdDuration, Instant},
-};
-
-#[cfg(all(unix, test))]
-use std::io::Write;
-
-#[cfg(test)]
-use std::sync::Arc;
-
-#[cfg(all(unix, test))]
-use std::net::Shutdown;
-#[cfg(all(unix, test))]
-use std::os::unix::ffi::OsStrExt;
-#[cfg(all(unix, test))]
-use std::os::unix::net::UnixStream;
-
-#[cfg(all(unix, test))]
-use anyhow::Context;
-#[cfg(test)]
-use anyhow::{anyhow, Result};
-#[cfg(test)]
-use ctx_history_core::utc_now;
-#[cfg(test)]
-use serde_json::{json, Value};
-
-#[cfg(test)]
 fn committed_generation_recovery_error(
     recovery: ctx_history_index::CommittedPredecessorMigrationRecovery,
 ) -> ctx_history_index::IndexError {
@@ -38,13 +8,6 @@ fn committed_generation_recovery_error(
         detail: recovery.detail().to_owned(),
     }
 }
-
-#[cfg(test)]
-use crate::config::CONFIG_FILE;
-#[cfg(test)]
-use crate::output::compact_json;
-#[cfg(test)]
-use crate::{DaemonRunArgs, DaemonStartModeArg, DaemonTriggerCommandArg};
 
 #[allow(unused_imports)]
 pub(crate) use ctx_semantic_model::{
@@ -63,10 +26,7 @@ use ctx_semantic_model::{
     SEMANTIC_DIMENSIONS,
 };
 mod model_config;
-pub(crate) use model_config::{
-    semantic_model_config, semantic_runtime_cache_dir, semantic_worker_cache_dir,
-};
-mod resource_policy;
+pub(crate) use model_config::{semantic_runtime_cache_dir, semantic_worker_cache_dir};
 mod runtime_limits;
 pub(crate) use ctx_semantic_index::SemanticNotReady;
 #[allow(unused_imports)]
@@ -75,35 +35,23 @@ mod query_adapter;
 pub(crate) use query_adapter::SemanticQueryAdapter;
 mod query_service;
 pub(crate) use query_service::wait_for_daemon_query_service;
-#[cfg(test)]
-use query_service::*;
-mod paths_status;
-#[cfg(test)]
-use paths_status::*;
 mod daemon;
+mod paths_status;
 pub(crate) use daemon::run_daemon_command;
-#[cfg(test)]
-use daemon::*;
-mod daemon_retry;
+pub(crate) mod daemon_service_ports;
 mod daemon_status;
 mod daemon_supervisor;
-mod daemon_wakeup;
-#[cfg(test)]
-use daemon_retry::*;
 mod source_status;
 pub(crate) use source_status::source_epoch_status_report;
 mod source_backed_pro_catch_up;
-pub(crate) use source_backed_pro_catch_up::wait_for_completed_generation as wait_for_source_backed_pro_generation;
-pub(crate) use source_backed_pro_catch_up::{
-    cancel_core_finalization_generation_lease,
+pub(crate) use ctx_daemon_service::wait_for_completed_generation as wait_for_source_backed_pro_generation;
+pub(crate) use ctx_daemon_service::{
     helper_recheck_targets as source_backed_pro_recheck_targets,
     publish_helper_recheck_intent as publish_source_backed_pro_recheck,
     wake_helper_recheck as wake_source_backed_pro_recheck,
 };
-mod source_backed_refresh_adapter;
+pub(crate) use source_backed_pro_catch_up::cancel_core_finalization_generation_lease;
 mod source_backed_refresh_coordinator;
-#[cfg(test)]
-pub(crate) use source_backed_refresh_coordinator::SourceBackedRefreshPublication;
 pub(crate) use source_backed_refresh_coordinator::{
     coordinate_import_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
     coordinate_source_backed_refresh_with_progress, pin_active_verified_generation,
@@ -111,12 +59,6 @@ pub(crate) use source_backed_refresh_coordinator::{
     SourceBackedCurrentSourceProgress, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
 };
-mod daemon_scheduler;
-#[cfg(test)]
-use daemon_scheduler::*;
-mod daemon_worker;
-#[cfg(test)]
-use daemon_worker::*;
 mod daemon_autostart;
 #[allow(unused_imports)]
 pub(crate) use daemon_autostart::{
@@ -128,21 +70,4 @@ pub(crate) use daemon_autostart::{
 };
 mod health_search;
 #[cfg(test)]
-mod query_service_transport_tests;
-#[cfg(all(
-    test,
-    any(
-        all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64"),
-            target_env = "gnu"
-        ),
-        all(
-            target_os = "macos",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ),
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "freebsd", target_arch = "x86_64")
-    )
-))]
 mod tests;

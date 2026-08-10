@@ -1,67 +1,38 @@
-use super::*;
+use std::{fs, process, sync::Arc, time::Duration as StdDuration};
 
-#[cfg(any(
-    all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        target_env = "gnu"
-    ),
-    all(
-        target_os = "macos",
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ),
-    all(target_os = "windows", target_arch = "x86_64"),
-    all(target_os = "freebsd", target_arch = "x86_64")
-))]
-use ctx_semantic_model::test_support::{
-    load_missing_semantic_onnxruntime as load_missing_semantic_onnxruntime_for_test,
-    map_daemon_coreml_load_error, write_test_semantic_cache,
+use anyhow::Result;
+use ctx_daemon_runtime::{
+    create_private_dir_all, daemon_lock_is_stale, daemon_lock_path, daemon_status_path,
+    observe_pid_advisory_lock, pid_lock_file_reports_running, pid_lock_guard_path,
+    pid_lock_payload, pid_lock_uses_advisory_protocol, private_create_new_lock_file,
+    private_open_existing_lock_file, publish_pid_lock_metadata, read_pid_lock_json,
+    write_private_json_file, DaemonLock, PidAdvisoryLockObservation, ProcessState,
 };
+use ctx_history_core::utc_now;
+use serde_json::json;
 
-fn test_daemon_run_args() -> DaemonRunArgs {
-    DaemonRunArgs {
-        foreground: false,
-        idle_exit_seconds: None,
-        loop_interval_seconds: None,
-        max_chunks: Some(1),
-        max_seconds: Some(1),
-        force: false,
-        start_mode: Some(DaemonStartModeArg::Manual),
-        trigger_command: None,
-        format: crate::output::JsonOutputFormat::Json,
-    }
-}
+use super::paths_status;
 
-fn write_semantic_enabled_config(data_root: &Path) -> Result<()> {
-    fs::create_dir_all(data_root)?;
-    let path = data_root.join(CONFIG_FILE);
-    fs::write(
-        path,
-        "[daemon]\nenabled = true\n\n[search]\nsemantic = true\n",
-    )?;
-    Ok(())
-}
-
-fn daemon_semantic_indexed_test_job(_data_root: &Path) -> Value {
-    daemon_semantic_job_json(
-        "budget_exhausted",
-        None,
-        utc_now().timestamp_millis(),
-        Some(1),
-        None,
+fn write_test_daemon_lifecycle_status(
+    data_root: &std::path::Path,
+    status: &str,
+    last_error: Option<String>,
+) -> Result<()> {
+    write_private_json_file(
+        &daemon_status_path(data_root),
+        &json!({
+            "schema_version": 1,
+            "status": status,
+            "pid": 123,
+            "started_at_ms": 123,
+            "heartbeat_at_ms": 456,
+            "finished_at_ms": 456,
+            "start_mode": "auto",
+            "trigger_command": "setup",
+            "last_error": last_error,
+        }),
     )
-}
-
-fn install_test_daemon_jobs(
-    calls: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
-    semantic_index: Option<Value>,
-) -> DaemonTestJobHookGuard {
-    install_daemon_test_job_hooks(DaemonTestJobHooks {
-        calls,
-        semantic_index,
-    })
 }
 
 mod lifecycle;
 mod locking;
-mod workflow;

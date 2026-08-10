@@ -87,6 +87,10 @@ if [[ -z "$(query 'somepath(//crates/ctx-cli:ctx, //crates/ctx-semantic-index:li
   echo 'ctx-cli has no Bazel dependency path to ctx-semantic-index' >&2
   exit 1
 fi
+if [[ -z "$(query 'somepath(//crates/ctx-daemon-service:lib, //crates/ctx-semantic-index:lib)')" ]]; then
+  echo 'ctx-daemon-service has no Bazel dependency path to ctx-semantic-index' >&2
+  exit 1
+fi
 
 index_root="${repo_root}/crates/ctx-semantic-index"
 if grep -En 'ctx-(history-refresh|cli)|fastembed|hf-hub|coreml-native|tokenizers|(^|[^a-z])ort([^a-z]|$)' \
