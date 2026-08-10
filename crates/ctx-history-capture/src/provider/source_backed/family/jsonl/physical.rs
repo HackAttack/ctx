@@ -314,6 +314,9 @@ mod tests {
 
         let first = stream.next_record().unwrap().unwrap();
         assert_eq!(stream.record_bytes(first), b"one");
+        let record_buffer = stream.take_record_buffer();
+        assert_eq!(&record_buffer[..first.stored_len], b"one");
+        stream.restore_record_buffer(record_buffer);
         let after_first = stream.position();
         let second = stream.next_record().unwrap().unwrap();
         assert_eq!(stream.record_bytes(second), b"two");
@@ -322,6 +325,9 @@ mod tests {
         let tail = stream.next_record().unwrap().unwrap();
         assert!(!tail.complete);
         assert_eq!(stream.record_bytes(tail), b"incomplete");
+        let after_tail = stream.position();
+        assert!(stream.next_record().unwrap().is_none());
+        stream.restore(after_tail).unwrap();
         assert!(stream.next_record().unwrap().is_none());
         assert_eq!(stream.complete_prefix_end(), 8);
         assert_eq!(stream.next_physical_ordinal(), 2);

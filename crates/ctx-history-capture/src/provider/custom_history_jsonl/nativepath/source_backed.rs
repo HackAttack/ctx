@@ -212,6 +212,11 @@ struct CustomHistoryJsonlFamilyAdapter {
     source: SourceKey,
 }
 
+// Framing, physical evidence, and family publication are shared. The semantic
+// executor remains staged because safe append requires validating the complete
+// source/session graph from byte zero while publishing only events beyond the
+// prior prefix; that graph can exceed the bounded provider-checkpoint contract.
+
 pub(crate) fn custom_history_jsonl_family_adapter(
     input: CustomHistorySourceBackedInput,
 ) -> CustomHistorySourceBackedResult<Arc<dyn JsonlFamilyAdapter>> {

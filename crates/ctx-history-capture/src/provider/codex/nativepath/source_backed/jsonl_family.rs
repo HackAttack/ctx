@@ -172,10 +172,12 @@ fn order_codex_session_jsonl_scans_v0(
     Ok(())
 }
 
-/// Codex's multi-root session inventory and native optimized JSONL leaf
-/// executor. The shared family owns the generation lifecycle and bounded
-/// per-source scheduler; this adapter retains the native prefilter, parser,
-/// checkpoints, identities, projection, and commit-time prefix evidence.
+/// Codex's multi-root session inventory and semantic JSONL leaf executor. The
+/// shared family owns generation scheduling and publication, and the shared
+/// physical stream owns framing, offsets, ordinals, digests, and rollback.
+/// Codex retains the semantic layer because appended MCP evidence can retract
+/// an append into replacement and its certificate binds the incomplete EOF
+/// tail; the ordinary projector contract supports neither operation.
 #[derive(Clone)]
 pub(crate) struct CodexSessionTreeJsonlFamilyAdapterV0 {
     roots: Arc<[PathBuf]>,

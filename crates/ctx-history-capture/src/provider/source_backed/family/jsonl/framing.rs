@@ -363,3 +363,162 @@ fn read_bounded_record_with_digest<D: JsonlRecordDigest>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::Digest;
+
+    const TEST_STORED_BYTES: usize = 1024;
+
+    fn source_changed() -> CaptureError {
+        CaptureError::SourceChangedDuringCapture
+    }
+
+    fn assert_digest_policies_match(contents: &[u8], frozen_len: u64) {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let path = temp.path().join("bounded-record.jsonl");
+        std::fs::write(&path, contents).unwrap();
+        let framing = JsonlRecordFraming::terminal_nul_padded(TEST_STORED_BYTES);
+        let mut hashed_reader = BufReader::with_capacity(8 * 1024, File::open(&path).unwrap());
+        let mut unhashed_reader = BufReader::with_capacity(64 * 1024, File::open(&path).unwrap());
+        let mut hashed_storage = Vec::new();
+        let mut unhashed_storage = Vec::new();
+        let mut full_hasher = Sha256::new();
+        let mut complete_hasher = Sha256::new();
+        let mut offset = 0_u64;
+        let mut complete_end = 0_u64;
+
+        while offset < frozen_len {
+            let hashed = read_bounded_record(
+                &mut hashed_reader,
+                &mut hashed_storage,
+                &mut full_hasher,
+                &mut complete_hasher,
+                frozen_len.saturating_sub(offset),
+                framing,
+                source_changed,
+            )
+            .unwrap()
+            .unwrap();
+            let unhashed = read_bounded_record_unhashed(
+                &mut unhashed_reader,
+                &mut unhashed_storage,
+                frozen_len.saturating_sub(offset),
+                framing,
+                source_changed,
+            )
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(unhashed.complete, hashed.complete);
+            assert_eq!(unhashed.terminal_nul_padding, hashed.terminal_nul_padding);
+            assert_eq!(unhashed.oversized, hashed.oversized);
+            assert_eq!(unhashed.stored_len, hashed.stored_len);
+            assert_eq!(unhashed.byte_len, hashed.byte_len);
+            assert_eq!(unhashed.sha256, [0; 32]);
+            assert_eq!(unhashed_storage, hashed_storage);
+
+            let record_end = offset.saturating_add(hashed.byte_len);
+            if hashed.terminal_nul_padding {
+                assert_eq!(hashed.sha256, [0; 32]);
+            } else {
+                let start = usize::try_from(offset).unwrap();
+                let end = usize::try_from(record_end).unwrap();
+                assert_eq!(
+                    hashed.sha256,
+                    <[u8; 32]>::from(Sha256::digest(&contents[start..end]))
+                );
+            }
+            if hashed.complete {
+                complete_end = record_end;
+            }
+            offset = record_end;
+        }
+
+        let frozen_end = usize::try_from(frozen_len).unwrap();
+        assert_eq!(offset, frozen_len);
+        assert_eq!(
+            <[u8; 32]>::from(full_hasher.finalize()),
+            <[u8; 32]>::from(Sha256::digest(&contents[..frozen_end]))
+        );
+        assert_eq!(
+            <[u8; 32]>::from(complete_hasher.finalize()),
+            <[u8; 32]>::from(Sha256::digest(
+                &contents[..usize::try_from(complete_end).unwrap()]
+            ))
+        );
+    }
+
+    #[test]
+    fn digest_policies_preserve_bounds_terminal_padding_and_incomplete_tails() {
+        let mut records = b"alpha\r\n".to_vec();
+        records.resize(records.len() + TEST_STORED_BYTES + 17, b'x');
+        records.push(b'\n');
+        records.extend_from_slice(b"incomplete tail");
+        assert_digest_policies_match(&records, records.len() as u64);
+
+        let terminal_nul = vec![0; 64 * 1024 + 17];
+        assert_digest_policies_match(&terminal_nul, terminal_nul.len() as u64);
+
+        let frozen = b"first\nsecond\nnot admitted";
+        assert_digest_policies_match(frozen, b"first\nsec".len() as u64);
+    }
+
+    #[test]
+    fn digest_policies_fail_closed_when_frozen_bytes_are_missing() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let path = temp.path().join("truncated.jsonl");
+        std::fs::write(&path, b"complete\n").unwrap();
+        let framing = JsonlRecordFraming::terminal_nul_padded(TEST_STORED_BYTES);
+        let mut hashed_reader = BufReader::new(File::open(&path).unwrap());
+        let mut unhashed_reader = BufReader::new(File::open(&path).unwrap());
+        let mut hashed_storage = Vec::new();
+        let mut unhashed_storage = Vec::new();
+        let mut full_hasher = Sha256::new();
+        let mut complete_hasher = Sha256::new();
+
+        read_bounded_record(
+            &mut hashed_reader,
+            &mut hashed_storage,
+            &mut full_hasher,
+            &mut complete_hasher,
+            10,
+            framing,
+            source_changed,
+        )
+        .unwrap();
+        read_bounded_record_unhashed(
+            &mut unhashed_reader,
+            &mut unhashed_storage,
+            10,
+            framing,
+            source_changed,
+        )
+        .unwrap();
+        let hashed_error = read_bounded_record(
+            &mut hashed_reader,
+            &mut hashed_storage,
+            &mut full_hasher,
+            &mut complete_hasher,
+            1,
+            framing,
+            source_changed,
+        )
+        .unwrap_err();
+        let unhashed_error = read_bounded_record_unhashed(
+            &mut unhashed_reader,
+            &mut unhashed_storage,
+            1,
+            framing,
+            source_changed,
+        )
+        .unwrap_err();
+
+        assert_eq!(unhashed_error.to_string(), hashed_error.to_string());
+        assert!(matches!(
+            unhashed_error,
+            CaptureError::SourceChangedDuringCapture
+        ));
+    }
+}
