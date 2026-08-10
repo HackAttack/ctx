@@ -24,6 +24,8 @@ const WRITER_HANDOFF_RETRY_WINDOW: Duration = Duration::from_millis(500);
 const WRITER_HANDOFF_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 const ACTIVE_GENERATION_REBUILD_MARKER_FILE: &str = "active-generation-rebuild-required.json";
 
+pub(super) use ctx_history_index_generation::acquire_generation_writer_lock_with_retry;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ActiveGenerationRebuildMarker {
@@ -75,50 +77,6 @@ pub(super) fn clear_active_generation_rebuild_marker(root: &Path) -> Result<()> 
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
-    }
-}
-
-pub(super) fn acquire_generation_writer_lock_with_retry(
-    directory: &impl Directory,
-    lock: &Lock,
-) -> Result<DirectoryLock> {
-    acquire_lock_with_retry(
-        directory,
-        lock,
-        "failed to acquire the generation writer lock",
-    )
-}
-
-fn acquire_lock_with_retry(
-    directory: &impl Directory,
-    lock: &Lock,
-    context: &'static str,
-) -> Result<DirectoryLock> {
-    let deadline = Instant::now() + WRITER_HANDOFF_RETRY_WINDOW;
-    loop {
-        match directory.acquire_lock(lock) {
-            Ok(lock) => return Ok(lock),
-            Err(error @ LockError::LockBusy) if Instant::now() >= deadline => {
-                return Err(tantivy::TantivyError::LockFailure(
-                    error,
-                    Some(
-                        "Failed to acquire index lock. If you are using a regular directory, this \
-                         means there is already an `IndexWriter` working on this `Directory`, in \
-                         this process or in a different process."
-                            .to_owned(),
-                    ),
-                )
-                .into());
-            }
-            Err(LockError::LockBusy) => {
-                std::thread::sleep(WRITER_HANDOFF_RETRY_INTERVAL);
-            }
-            Err(error) => {
-                return Err(
-                    tantivy::TantivyError::LockFailure(error, Some(context.to_owned())).into(),
-                );
-            }
-        }
     }
 }
 

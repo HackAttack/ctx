@@ -2,9 +2,7 @@ use std::path::Path;
 
 use tantivy::Index;
 
-use crate::{IndexError, Result};
-
-use super::super::ActiveGenerationPointer;
+use crate::{ActiveGenerationPointer, GenerationError as IndexError, Result};
 
 #[cfg(not(any(
     target_os = "linux",
@@ -17,11 +15,16 @@ compile_error!("predecessor republish clone is only qualified on ctx release tar
 mod candidate;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod exact_copy;
-#[cfg(any(test, target_os = "windows", target_os = "freebsd"))]
+#[cfg(any(
+    test,
+    feature = "test-support",
+    target_os = "windows",
+    target_os = "freebsd"
+))]
 mod portable;
 
 use candidate::CandidateAuthentication;
-pub(super) use candidate::RepublishCandidate;
+pub use candidate::RepublishCandidate;
 
 pub(super) const MAX_REPUBLISH_CLONE_FILES: usize = 4_096;
 pub(super) const MAX_REPUBLISH_CLONE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
@@ -31,12 +34,12 @@ const REPUBLISH_HEADROOM_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MANAGED_FILE: &str = ".managed.json";
 const TANTIVY_LOCK_FILES: [&str; 2] = [".tantivy-meta.lock", ".tantivy-writer.lock"];
 
-pub(super) fn create_authenticated_republish_candidate(
+pub fn create_authenticated_republish_candidate(
     root: &Path,
     predecessor_pointer: &ActiveGenerationPointer,
     predecessor_index: &Index,
 ) -> Result<RepublishCandidate> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if portable::forced_for_test() {
         let (candidate, guard) = portable::create_authenticated_republish_candidate(
             root,
@@ -131,22 +134,18 @@ mod unix {
     use tantivy::Index;
     use uuid::Uuid;
 
-    use crate::{
-        analyzer::register_body_analyzer, durable_directory::DurableMmapDirectory,
-        physical_integrity_digest, IndexError, Result,
-    };
-
-    use super::super::super::{
-        generation::CandidateGeneration, lexical_index_settings, ActiveGenerationPointer,
-        INDEX_GENERATIONS_DIRECTORY,
-    };
     use super::exact_copy::copy_exact_authenticated_file;
     use super::{
         admit_clone_resource, validate_single_component, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES,
         MAX_REPUBLISH_CLONE_BYTES, MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
         REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
     };
-    pub(in crate::publication::republish) use guard::CandidateGuard;
+    use crate::{
+        active_index_files, lexical_index_settings, physical_integrity_digest,
+        ActiveGenerationPointer, CandidateGeneration, DurableMmapDirectory,
+        GenerationError as IndexError, Result, INDEX_GENERATIONS_DIRECTORY,
+    };
+    pub(super) use guard::CandidateGuard;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct FileIdentity {
@@ -313,9 +312,7 @@ mod unix {
                 .map_err(tantivy::TantivyError::from)?;
             let index = Index::open(directory)?;
             if index.settings() != &lexical_index_settings() {
-                return Err(IndexError::IndexSettingsMismatch(
-                    crate::LEXICAL_SCHEMA_VERSION,
-                ));
+                return Err(IndexError::IndexSettingsMismatch);
             }
             let cloned_digest =
                 physical_integrity_digest(&index, &destination_path, Some(predecessor_pointer))?;
@@ -323,7 +320,6 @@ mod unix {
                 return Err(IndexError::ChecksumMismatch);
             }
             guard.validate_binding()?;
-            register_body_analyzer(&index);
             Ok(CandidateGeneration {
                 directory_name: directory_name.clone(),
                 index,
@@ -339,7 +335,7 @@ mod unix {
     }
 
     fn authenticated_clone_plan(source: &BoundDirectory, index: &Index) -> Result<ClonePlan> {
-        let mut active = super::super::super::verification::active_index_files(index)?;
+        let mut active = active_index_files(index)?;
         active.insert(PathBuf::from("meta.json"));
         for path in &active {
             validate_single_component(path)?;
@@ -817,7 +813,7 @@ mod unix {
     }
 
     fn available_bytes(directory: &File) -> Result<u64> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(available) = TEST_CLONE_OPTIONS.with(|options| options.borrow().available_bytes)
         {
             return Ok(available);
@@ -843,9 +839,9 @@ mod unix {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum CloneStage {
+    pub enum CloneStage {
         BeforeFile,
         BeforeHardlink,
         BeforeCopy,
@@ -853,7 +849,7 @@ mod unix {
         BeforeCleanup,
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     #[derive(Debug, Clone, Copy)]
     enum CloneStage {
         BeforeFile,
@@ -863,29 +859,29 @@ mod unix {
         BeforeCleanup,
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[derive(Debug, Clone, Copy, Default)]
-    pub(crate) struct CloneTestOptions {
-        pub(crate) force_copy: bool,
-        pub(crate) available_bytes: Option<u64>,
+    pub struct CloneTestOptions {
+        pub force_copy: bool,
+        pub available_bytes: Option<u64>,
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub(crate) struct CloneMetrics {
-        pub(crate) planned_files: usize,
-        pub(crate) logical_bytes: u64,
-        pub(crate) required_headroom: u64,
-        pub(crate) available_bytes: u64,
-        pub(crate) copied_bytes: u64,
-        pub(crate) linked_files: usize,
-        pub(crate) copied_files: usize,
+    pub struct CloneMetrics {
+        pub planned_files: usize,
+        pub logical_bytes: u64,
+        pub required_headroom: u64,
+        pub available_bytes: u64,
+        pub copied_bytes: u64,
+        pub linked_files: usize,
+        pub copied_files: usize,
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     type CloneTestHook = Box<dyn for<'a> FnMut(CloneStage, &'a Path) -> Result<()>>;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     thread_local! {
         static TEST_CLONE_OPTIONS: std::cell::RefCell<CloneTestOptions> = const {
             std::cell::RefCell::new(CloneTestOptions { force_copy: false, available_bytes: None })
@@ -905,16 +901,16 @@ mod unix {
         };
     }
 
-    #[cfg(test)]
-    pub(crate) struct CloneTestHookGuard {
+    #[cfg(any(test, feature = "test-support"))]
+    pub struct CloneTestHookGuard {
         previous_options: CloneTestOptions,
         previous_hook: Option<CloneTestHook>,
         previous_metrics: CloneMetrics,
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     impl CloneTestHookGuard {
-        pub(crate) fn set<F>(options: CloneTestOptions, hook: F) -> Self
+        pub fn set<F>(options: CloneTestOptions, hook: F) -> Self
         where
             F: for<'a> FnMut(CloneStage, &'a Path) -> Result<()> + 'static,
         {
@@ -929,12 +925,12 @@ mod unix {
             }
         }
 
-        pub(crate) fn metrics(&self) -> CloneMetrics {
+        pub fn metrics(&self) -> CloneMetrics {
             TEST_CLONE_METRICS.with(std::cell::Cell::get)
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     impl Drop for CloneTestHookGuard {
         fn drop(&mut self) {
             TEST_CLONE_OPTIONS.with(|slot| slot.replace(self.previous_options));
@@ -943,17 +939,17 @@ mod unix {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn force_copy_fallback() -> bool {
         TEST_CLONE_OPTIONS.with(|options| options.borrow().force_copy)
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     fn force_copy_fallback() -> bool {
         false
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn clone_checkpoint(stage: CloneStage, path: &Path) -> Result<()> {
         TEST_CLONE_HOOK.with(|hook| match hook.borrow_mut().as_mut() {
             Some(hook) => hook(stage, path),
@@ -961,12 +957,12 @@ mod unix {
         })
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     fn clone_checkpoint(_stage: CloneStage, _path: &Path) -> Result<()> {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_plan_metrics(plan: &ClonePlan, available: u64) {
         TEST_CLONE_METRICS.with(|metrics| {
             metrics.set(CloneMetrics {
@@ -979,10 +975,10 @@ mod unix {
         });
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     fn record_plan_metrics(_plan: &ClonePlan, _available: u64) {}
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_clone_metrics(copied_bytes: u64, linked_files: usize, copied_files: usize) {
         TEST_CLONE_METRICS.with(|metrics| {
             metrics.set(CloneMetrics {
@@ -994,15 +990,18 @@ mod unix {
         });
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     fn record_clone_metrics(_copied_bytes: u64, _linked_files: usize, _copied_files: usize) {}
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-pub(crate) use unix::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};
+#[cfg(all(
+    any(test, feature = "test-support"),
+    any(target_os = "linux", target_os = "macos")
+))]
+pub use unix::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};
 
-#[cfg(test)]
-pub(crate) use portable::{
+#[cfg(any(test, feature = "test-support"))]
+pub use portable::{
     PortableCloneMetrics, PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions,
 };
 

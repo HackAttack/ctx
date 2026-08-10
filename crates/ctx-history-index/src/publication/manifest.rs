@@ -1,23 +1,16 @@
-use std::{
-    collections::BTreeMap,
-    fs::{self, File},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use ctx_history_core::{CORE_RECORD_VERSION, IDENTITY_VERSION};
+use ctx_history_index_generation::{load_manifest_bytes, write_manifest_bytes};
 use serde::{Deserialize, Serialize};
-use tantivy::{directory::Directory, IndexMeta, Searcher};
-use uuid::Uuid;
+use tantivy::{IndexMeta, Searcher};
 
 use crate::{
-    durable_directory::DurableMmapDirectory,
-    expected_source_generation_policy_hash,
-    identity::{is_generation_id, sha256_hex},
-    validate_core_contract_fingerprint, CommitPayload, GenerationManifest, IndexError, Result,
-    COMMIT_PAYLOAD_VERSION, GENERATION_MANIFEST_VERSION, LEXICAL_ANALYZER_VERSION,
-    LEXICAL_SCHEMA_VERSION, MANIFEST_DIRECTORY, MAX_PUBLICATION_METADATA_BYTES,
+    expected_source_generation_policy_hash, is_generation_id, validate_core_contract_fingerprint,
+    CommitPayload, GenerationManifest, IndexError, Result, COMMIT_PAYLOAD_VERSION,
+    GENERATION_MANIFEST_VERSION, LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION,
+    MAX_PUBLICATION_METADATA_BYTES,
 };
 
 const MAX_PUBLICATION_METADATA_ENCODED_BYTES: usize =
@@ -57,18 +50,7 @@ pub(crate) fn load_publication_for_metas(
             .as_deref()
             .ok_or(IndexError::MissingCommitPayload)?,
     )?;
-    let path = manifest_path(root, &payload.generation_id);
-    let bytes = fs::read(&path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => IndexError::MissingManifest(payload.generation_id.clone()),
-        _ => IndexError::Io(error),
-    })?;
-    let actual = sha256_hex(&bytes);
-    if actual != payload.generation_id {
-        return Err(IndexError::ManifestDigestMismatch {
-            expected: payload.generation_id,
-            actual,
-        });
-    }
+    let bytes = load_manifest_bytes(root, &payload.generation_id)?;
     let manifest: GenerationManifest = serde_json::from_slice(&bytes)?;
     if serde_json::to_vec(&manifest)? != bytes {
         return Err(IndexError::NonCanonicalManifest);
@@ -247,92 +229,7 @@ pub(crate) fn write_manifest(
     manifest: &GenerationManifest,
 ) -> Result<()> {
     let bytes = serde_json::to_vec(manifest)?;
-    let actual = sha256_hex(&bytes);
-    if actual != generation_id {
-        return Err(IndexError::ManifestDigestMismatch {
-            expected: generation_id.to_owned(),
-            actual,
-        });
-    }
-    let directory = root.join(MANIFEST_DIRECTORY);
-    fs::create_dir_all(&directory)?;
-    let path = manifest_path(root, generation_id);
-    if path.is_file() {
-        let existing = fs::read(&path)?;
-        if existing == bytes {
-            File::open(&path)?.sync_all()?;
-            sync_directory(&directory)?;
-            return Ok(());
-        }
-        let quarantine = directory.join(format!(
-            ".{generation_id}.corrupt-{}",
-            Uuid::now_v7().simple()
-        ));
-        fs::rename(&path, quarantine)?;
-        sync_directory(&directory)?;
-    }
-
-    let durable_directory =
-        DurableMmapDirectory::open(root).map_err(tantivy::TantivyError::from)?;
-    let relative_path = Path::new(MANIFEST_DIRECTORY).join(format!("{generation_id}.json"));
-    durable_directory.atomic_write(&relative_path, &bytes)?;
-    Ok(())
-}
-
-pub(crate) fn reclaim_unreferenced_manifests(
-    root: &Path,
-    retained_generation_ids: &[String],
-) -> Result<()> {
-    let directory = root.join(MANIFEST_DIRECTORY);
-    fs::create_dir_all(&directory)?;
-    let mut removed = false;
-    for entry in fs::read_dir(&directory)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else {
-            continue;
-        };
-        let immutable_generation = file_name
-            .strip_suffix(".json")
-            .filter(|generation_id| is_generation_id(generation_id));
-        let corrupt_quarantine = file_name
-            .strip_prefix('.')
-            .and_then(|name| name.split_once(".corrupt-"))
-            .is_some_and(|(generation_id, suffix)| {
-                is_generation_id(generation_id) && !suffix.is_empty()
-            });
-        let obsolete_integrity_sidecar = is_legacy_generation_integrity_sidecar(file_name);
-        let should_remove = immutable_generation.is_some_and(|generation_id| {
-            !retained_generation_ids
-                .iter()
-                .any(|retained| retained == generation_id)
-        }) || corrupt_quarantine
-            || obsolete_integrity_sidecar;
-        if should_remove {
-            fs::remove_file(entry.path())?;
-            removed = true;
-        }
-    }
-    if removed {
-        sync_directory(&directory)?;
-    }
-    Ok(())
-}
-
-fn is_legacy_generation_integrity_sidecar(file_name: &str) -> bool {
-    let Some(generation_uuid) = file_name
-        .strip_prefix("generation-")
-        .and_then(|name| name.strip_suffix(".integrity.json"))
-    else {
-        return false;
-    };
-    generation_uuid.len() == 32
-        && generation_uuid
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    Ok(write_manifest_bytes(root, generation_id, &bytes)?)
 }
 
 pub(crate) fn meta_generation(metas: &IndexMeta) -> BTreeMap<String, Option<u64>> {
@@ -349,19 +246,4 @@ pub(crate) fn searcher_generation(searcher: &Searcher) -> BTreeMap<String, Optio
         .iter()
         .map(|segment| (segment.segment_id().uuid_string(), segment.delete_opstamp()))
         .collect()
-}
-
-pub(crate) fn manifest_path(root: &Path, generation_id: &str) -> PathBuf {
-    root.join(MANIFEST_DIRECTORY)
-        .join(format!("{generation_id}.json"))
-}
-
-#[cfg(not(windows))]
-pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-#[cfg(windows)]
-pub(crate) fn sync_directory(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }

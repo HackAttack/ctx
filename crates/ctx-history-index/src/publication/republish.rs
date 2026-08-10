@@ -3,10 +3,11 @@ use std::{path::Path, sync::Arc};
 use tantivy::{indexer::NoMergePolicy, Index, ReloadPolicy};
 
 use crate::{
-    durable_directory::DurableMmapDirectory, fields_from_schema, validate_schema,
+    analyzer::register_body_analyzer, fields_from_schema, validate_schema,
     writer_support::construct_index_writer_with_retry, GenerationManifest, IndexError, Result,
     WriterOptions,
 };
+use ctx_history_index_generation::DurableMmapDirectory;
 
 use super::{
     canonical_commit_payload, certify_activated_generation, lexical_index_settings,
@@ -19,7 +20,19 @@ use super::{
     PointerPublicationOutcome, INDEX_GENERATIONS_DIRECTORY,
 };
 
-mod clone;
+mod clone {
+    pub(crate) use ctx_history_index_generation::{
+        create_authenticated_republish_candidate, RepublishCandidate,
+    };
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    pub(crate) use ctx_history_index_generation::{
+        CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions,
+    };
+    #[cfg(test)]
+    pub(crate) use ctx_history_index_generation::{
+        PortableCloneMetrics, PortableCloneStage, PortableCloneTestGuard, PortableCloneTestOptions,
+    };
+}
 
 use clone::create_authenticated_republish_candidate;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -118,10 +131,11 @@ fn republish_current(
 
     republish_checkpoint(RepublishStage::BeforeCandidateCreation, None)?;
     let candidate = create_authenticated_republish_candidate(root, pointer, &current_index)?;
+    register_body_analyzer(candidate.index());
     let candidate_path = root
         .join(INDEX_GENERATIONS_DIRECTORY)
-        .join(&candidate.directory_name);
-    let candidate_directory_name = candidate.directory_name.clone();
+        .join(candidate.directory_name());
+    let candidate_directory_name = candidate.directory_name().to_owned();
     let republish = republish_candidate(
         root,
         pointer,
@@ -157,7 +171,7 @@ fn republish_candidate(
 ) -> Result<CurrentRepublishOutcome> {
     republish_checkpoint(RepublishStage::AfterCandidateCreation, Some(candidate_path))?;
     candidate.validate_binding()?;
-    let candidate_index = &candidate.index;
+    let candidate_index = candidate.index();
     validate_schema(&candidate_index.schema())?;
     fields_from_schema(&candidate_index.schema())?;
     if candidate_index.settings() != &lexical_index_settings() {
@@ -198,7 +212,7 @@ fn republish_candidate(
     }
     if let Err(error) = candidate.validate_binding() {
         let _ = prepared.abort();
-        return Err(error);
+        return Err(error.into());
     }
     let commit_result = prepared.commit();
     writer.wait_merging_threads()?;

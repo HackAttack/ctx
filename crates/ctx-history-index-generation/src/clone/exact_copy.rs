@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use crate::{IndexError, Result};
+use crate::{GenerationError as IndexError, Result};
 
 pub(super) fn copy_exact_authenticated_file<R: Read, W: Write>(
     source: &mut R,

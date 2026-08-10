@@ -24,7 +24,7 @@ mod writer_publication;
 mod writer_routes;
 mod writer_support;
 
-pub use durable_directory::durable_atomic_replace_file;
+pub use ctx_history_index_generation::durable_atomic_replace_file;
 
 pub use publication::{
     acquire_generation_retention_lease, load_generation_retention_lease,
@@ -37,8 +37,7 @@ pub use commit_contract::{
 };
 
 pub(crate) use contracts::{
-    CommitPayload, COMMIT_PAYLOAD_VERSION, INDEX_MEMORY_MIN_PER_THREAD, MANIFEST_DIRECTORY,
-    MAX_DOCUMENT_METADATA_BYTES,
+    CommitPayload, COMMIT_PAYLOAD_VERSION, INDEX_MEMORY_MIN_PER_THREAD, MAX_DOCUMENT_METADATA_BYTES,
 };
 pub use contracts::{
     CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount, GenerationManifest,
@@ -52,9 +51,11 @@ pub(crate) use core_contract::{
     validate_core_contract_fingerprint,
 };
 pub use ctx_history_core::CoreRecord;
+pub(crate) use ctx_history_index_generation::{
+    hex, is_generation_id, sha256_hex, MANIFEST_DIRECTORY,
+};
 pub(crate) use identity::{
-    hex, is_generation_id, prior_core_record, register_compact_identity, sha256_hex,
-    source_sort_key, source_token,
+    prior_core_record, register_compact_identity, source_sort_key, source_token,
 };
 pub use policy::{
     current_semantic_generation_policy, current_semantic_generation_policy_hash,
@@ -70,15 +71,13 @@ pub use preparation::{
     PreparedCoreRecordMaterialization,
 };
 #[cfg(test)]
-pub(crate) use publication::manifest_path;
-#[cfg(test)]
 pub(crate) use publication::republish_current_for_qualification;
 pub(crate) use publication::{
     best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
     load_active_generation_pointer, load_publication_for_metas, meta_generation, open_slot_index,
-    payload_generation_id, physical_integrity_audit, physical_integrity_digest,
-    publish_active_generation_pointer, reclaim_inactive_generation_directories,
-    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
+    payload_generation_id, physical_integrity_audit, publish_active_generation_pointer,
+    reclaim_inactive_generation_directories, reclaim_unreferenced_certifications,
+    reclaim_unreferenced_manifests, reconcile_commit_error,
     republish_current_with_publication_metadata, scrub_and_certify_physical_integrity,
     searcher_generation, sync_directory, sync_generation, verify_or_certify_physical_integrity,
     verify_physical_integrity, verify_publication_candidate, verify_searcher,
@@ -86,6 +85,8 @@ pub(crate) use publication::{
     GenerationSlot, PhysicalIntegrityAudit, PointerPublicationOutcome, GENERATION_WRITER_LOCK_FILE,
     INDEX_GENERATIONS_DIRECTORY,
 };
+#[cfg(test)]
+pub(crate) use publication::{manifest_path, physical_integrity_digest};
 pub use query::{
     AgentScope, CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
     CopiedEventLineageRelationshipCount, CoreEventBatch, CoreEventPageBudget, CoreEventRangeCursor,
@@ -139,7 +140,7 @@ use tantivy::{
 };
 use uuid::Uuid;
 
-use durable_directory::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
+use ctx_history_index_generation::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
 use index_document::IndexDocument;
 #[cfg(test)]
 use index_document::{core_content_bytes, IndexSourceFields};

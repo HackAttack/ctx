@@ -10,19 +10,15 @@ use sha2::{Digest, Sha256};
 use tantivy::Index;
 use uuid::Uuid;
 
-use crate::{
-    analyzer::register_body_analyzer, durable_directory::DurableMmapDirectory,
-    physical_integrity_digest, IndexError, Result,
-};
-
-use super::super::super::{
-    generation::CandidateGeneration, lexical_index_settings, ActiveGenerationPointer,
-    INDEX_GENERATIONS_DIRECTORY,
-};
 use super::{
     admit_clone_resource, validate_single_component, MANAGED_FILE, MAX_MANAGED_METADATA_BYTES,
     MAX_REPUBLISH_CLONE_BYTES, MAX_REPUBLISH_CLONE_FILES, MAX_REPUBLISH_DIRECTORY_ENTRIES,
     REPUBLISH_HEADROOM_RESERVE_BYTES, TANTIVY_LOCK_FILES,
+};
+use crate::{
+    active_index_files, lexical_index_settings, physical_integrity_digest, ActiveGenerationPointer,
+    CandidateGeneration, DurableMmapDirectory, GenerationError as IndexError, Result,
+    INDEX_GENERATIONS_DIRECTORY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,16 +231,13 @@ pub(super) fn create_authenticated_republish_candidate(
             DurableMmapDirectory::open(&destination_path).map_err(tantivy::TantivyError::from)?;
         let index = Index::open(directory)?;
         if index.settings() != &lexical_index_settings() {
-            return Err(IndexError::IndexSettingsMismatch(
-                crate::LEXICAL_SCHEMA_VERSION,
-            ));
+            return Err(IndexError::IndexSettingsMismatch);
         }
         let cloned_digest =
             physical_integrity_digest(&index, &destination_path, Some(predecessor_pointer))?;
         if cloned_digest != base.physical_integrity_digest() {
             return Err(IndexError::ChecksumMismatch);
         }
-        register_body_analyzer(&index);
         Ok(CandidateGeneration {
             directory_name,
             index,
@@ -265,7 +258,7 @@ fn authenticated_clone_plan(
     source: &BoundDirectory,
     index: &Index,
 ) -> Result<ClonePlan> {
-    let mut active = super::super::super::verification::active_index_files(index)?;
+    let mut active = active_index_files(index)?;
     active.insert(PathBuf::from("meta.json"));
     for path in &active {
         validate_single_component(path)?;
@@ -662,23 +655,23 @@ fn source_topology_open_error(error: io::Error) -> IndexError {
 }
 
 fn available_bytes(directory: &BoundDirectory) -> Result<u64> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(available) = TEST_OPTIONS.with(|options| options.borrow().available_bytes) {
         return Ok(available);
     }
     platform::available_bytes(&directory.file, &directory.path).map_err(IndexError::Io)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PortableCloneStage {
+pub enum PortableCloneStage {
     BeforeCopy,
     AfterSourceOpen,
     AfterCopy,
     BeforeCleanup,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 #[derive(Debug, Clone, Copy)]
 enum PortableCloneStage {
     BeforeCopy,
@@ -687,27 +680,27 @@ enum PortableCloneStage {
     BeforeCleanup,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct PortableCloneTestOptions {
-    pub(crate) available_bytes: Option<u64>,
+pub struct PortableCloneTestOptions {
+    pub available_bytes: Option<u64>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct PortableCloneMetrics {
-    pub(crate) planned_files: usize,
-    pub(crate) logical_bytes: u64,
-    pub(crate) required_headroom: u64,
-    pub(crate) available_bytes: u64,
-    pub(crate) copied_bytes: u64,
-    pub(crate) copied_files: usize,
+pub struct PortableCloneMetrics {
+    pub planned_files: usize,
+    pub logical_bytes: u64,
+    pub required_headroom: u64,
+    pub available_bytes: u64,
+    pub copied_bytes: u64,
+    pub copied_files: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type PortableCloneTestHook = Box<dyn for<'a> FnMut(PortableCloneStage, &'a Path) -> Result<()>>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FORCE_PORTABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_OPTIONS: std::cell::RefCell<PortableCloneTestOptions> = const {
@@ -727,17 +720,17 @@ thread_local! {
     };
 }
 
-#[cfg(test)]
-pub(crate) struct PortableCloneTestGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub struct PortableCloneTestGuard {
     previous_force: bool,
     previous_options: PortableCloneTestOptions,
     previous_hook: Option<PortableCloneTestHook>,
     previous_metrics: PortableCloneMetrics,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl PortableCloneTestGuard {
-    pub(crate) fn set<F>(options: PortableCloneTestOptions, hook: F) -> Self
+    pub fn set<F>(options: PortableCloneTestOptions, hook: F) -> Self
     where
         F: for<'a> FnMut(PortableCloneStage, &'a Path) -> Result<()> + 'static,
     {
@@ -754,12 +747,12 @@ impl PortableCloneTestGuard {
         }
     }
 
-    pub(crate) fn metrics(&self) -> PortableCloneMetrics {
+    pub fn metrics(&self) -> PortableCloneMetrics {
         TEST_METRICS.with(std::cell::Cell::get)
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for PortableCloneTestGuard {
     fn drop(&mut self) {
         FORCE_PORTABLE.with(|slot| slot.set(self.previous_force));
@@ -769,12 +762,12 @@ impl Drop for PortableCloneTestGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn forced_for_test() -> bool {
     FORCE_PORTABLE.with(std::cell::Cell::get)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn clone_checkpoint(stage: PortableCloneStage, path: &Path) -> Result<()> {
     TEST_HOOK.with(|hook| match hook.borrow_mut().as_mut() {
         Some(hook) => hook(stage, path),
@@ -782,12 +775,12 @@ fn clone_checkpoint(stage: PortableCloneStage, path: &Path) -> Result<()> {
     })
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn clone_checkpoint(_stage: PortableCloneStage, _path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn record_plan_metrics(plan: &ClonePlan, available: u64) {
     TEST_METRICS.with(|metrics| {
         metrics.set(PortableCloneMetrics {
@@ -800,10 +793,10 @@ fn record_plan_metrics(plan: &ClonePlan, available: u64) {
     });
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn record_plan_metrics(_plan: &ClonePlan, _available: u64) {}
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn record_clone_metrics(copied_bytes: u64, copied_files: usize) {
     TEST_METRICS.with(|metrics| {
         metrics.set(PortableCloneMetrics {
@@ -814,7 +807,7 @@ fn record_clone_metrics(copied_bytes: u64, copied_files: usize) {
     });
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn record_clone_metrics(_copied_bytes: u64, _copied_files: usize) {}
 
 #[cfg(unix)]

@@ -11,20 +11,20 @@ use serde::{
 };
 use tantivy::directory::Directory as _;
 
-use super::{
-    manifest::manifest_path,
-    verification::{active_index_files, physical_integrity_audit, PhysicalIntegrityAudit},
-    ActiveGenerationPointer, GenerationSlot, INDEX_GENERATIONS_DIRECTORY,
+use crate::{
+    active_index_files, load_active_generation_pointer, manifest_path, physical_integrity_audit,
+    slot_path, sync_directory, ActiveGenerationPointer, DurableMmapDirectory,
+    GenerationError as IndexError, GenerationRetentionLease, GenerationSlot,
+    PhysicalIntegrityAudit, Result, INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
 };
-use crate::{durable_directory::DurableMmapDirectory, IndexError, Result, MANIFEST_DIRECTORY};
 
 const CERTIFICATION_VERSION: u32 = 1;
 const CERTIFICATION_SUFFIX: &str = ".physical-certification.json";
 const CERTIFICATION_DIRECTORY: &str = "integrity-certifications";
 const TANTIVY_META_FILE: &str = "meta.json";
 const ARTIFACT_STABLE_SNAPSHOT_ATTEMPTS: usize = 4;
-pub(crate) const MAX_CERTIFICATION_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_CERTIFIED_ARTIFACTS: usize = 1024;
+pub const MAX_CERTIFICATION_BYTES: usize = 1024 * 1024;
+pub const MAX_CERTIFIED_ARTIFACTS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,7 +228,7 @@ impl FileIdentity {
     }
 }
 
-pub(crate) fn verify_or_certify_physical_integrity(
+pub fn verify_or_certify_physical_integrity(
     root: &Path,
     pointer: &ActiveGenerationPointer,
     slot: &GenerationSlot,
@@ -238,7 +238,7 @@ pub(crate) fn verify_or_certify_physical_integrity(
         return Ok(());
     }
 
-    let generation_path = super::slot_path(root, slot);
+    let generation_path = slot_path(root, slot);
     let audit = physical_integrity_audit(index, &generation_path, Some(pointer))?;
     if audit.digest() != slot.physical_integrity_digest() {
         return Err(IndexError::ChecksumMismatch);
@@ -246,13 +246,13 @@ pub(crate) fn verify_or_certify_physical_integrity(
     install_certification(root, pointer, slot, index, &audit, false)
 }
 
-pub(crate) fn scrub_and_certify_physical_integrity(
+pub fn scrub_and_certify_physical_integrity(
     root: &Path,
     pointer: &ActiveGenerationPointer,
     slot: &GenerationSlot,
     index: &tantivy::Index,
 ) -> Result<()> {
-    let generation_path = super::slot_path(root, slot);
+    let generation_path = slot_path(root, slot);
     let audit = physical_integrity_audit(index, &generation_path, Some(pointer))?;
     if audit.digest() != slot.physical_integrity_digest() {
         return Err(IndexError::ChecksumMismatch);
@@ -264,7 +264,7 @@ pub(crate) fn scrub_and_certify_physical_integrity(
 /// pointer publication. Reclaiming the formerly retained previous generation
 /// can only reduce hard-link counts; every other identity field remains bound
 /// to the file that supplied the candidate hash.
-pub(crate) fn certify_activated_generation(
+pub fn certify_activated_generation(
     root: &Path,
     pointer: &ActiveGenerationPointer,
     slot: &GenerationSlot,
@@ -293,7 +293,7 @@ fn install_certification(
         return Err(IndexError::ChecksumMismatch);
     }
 
-    let generation_path = super::slot_path(root, slot);
+    let generation_path = slot_path(root, slot);
     ensure_real_directory(root)?;
     ensure_real_directory(&root.join(MANIFEST_DIRECTORY))?;
     ensure_real_directory(&root.join(INDEX_GENERATIONS_DIRECTORY))?;
@@ -395,7 +395,7 @@ fn certification_matches(
     ensure_real_directory(root)?;
     ensure_real_directory(&root.join(MANIFEST_DIRECTORY))?;
     ensure_real_directory(&root.join(INDEX_GENERATIONS_DIRECTORY))?;
-    let generation_path = super::slot_path(root, slot);
+    let generation_path = slot_path(root, slot);
     ensure_real_directory(&generation_path)?;
     if capture_pointer_bound_single_link_control(
         root,
@@ -439,7 +439,7 @@ fn certification_matches(
 }
 
 fn load_current_pointer(root: &Path) -> Result<ActiveGenerationPointer> {
-    super::load_active_generation_pointer(root)?.ok_or(IndexError::MissingActiveGenerationPointer)
+    load_active_generation_pointer(root)?.ok_or(IndexError::MissingActiveGenerationPointer)
 }
 
 fn expected_artifact_paths(index: &tantivy::Index) -> Result<Vec<String>> {
@@ -981,15 +981,15 @@ fn certification_file_name(slot: &GenerationSlot) -> String {
     format!("{}{CERTIFICATION_SUFFIX}", slot.directory())
 }
 
-pub(crate) fn certification_path(root: &Path, slot: &GenerationSlot) -> PathBuf {
+pub fn certification_path(root: &Path, slot: &GenerationSlot) -> PathBuf {
     root.join(CERTIFICATION_DIRECTORY)
         .join(certification_file_name(slot))
 }
 
-pub(crate) fn reclaim_unreferenced_certifications(
+pub fn reclaim_unreferenced_certifications(
     root: &Path,
     pointer: Option<&ActiveGenerationPointer>,
-    lease: Option<&super::GenerationRetentionLease>,
+    lease: Option<&GenerationRetentionLease>,
 ) -> Result<()> {
     let directory = root.join(CERTIFICATION_DIRECTORY);
     fs::create_dir_all(&directory)?;
@@ -1016,13 +1016,13 @@ pub(crate) fn reclaim_unreferenced_certifications(
         }
     }
     if removed {
-        super::sync_directory(&directory)?;
+        sync_directory(&directory)?;
     }
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn certification_file_for_active(root: &Path) -> Result<PathBuf> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn certification_file_for_active(root: &Path) -> Result<PathBuf> {
     let pointer = load_current_pointer(root)?;
     Ok(certification_path(root, pointer.active()))
 }
