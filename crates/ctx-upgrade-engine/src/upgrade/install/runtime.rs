@@ -226,19 +226,18 @@ pub(super) fn stage_semantic_artifacts(
         ));
     }
     let mut staged = StagedSemanticInstall { paths: Vec::new() };
+    let context = SemanticStagingContext {
+        process,
+        layout,
+        plan,
+        data_root,
+    };
     for (selected, artifact) in provisioning.assets.iter().zip(downloads.iter_mut()) {
         artifact.verify_unchanged()?;
         let archive_path = artifact.stable_path()?;
-        if let Err(error) = stage_semantic_asset(
-            process,
-            layout,
-            plan,
-            selected,
-            &archive_path,
-            unique,
-            data_root,
-            &mut staged,
-        ) {
+        if let Err(error) =
+            stage_semantic_asset(&context, selected, &archive_path, unique, &mut staged)
+        {
             staged.cleanup();
             return Err(error);
         }
@@ -259,19 +258,23 @@ impl StagedSemanticInstall {
     }
 }
 
+struct SemanticStagingContext<'a> {
+    process: &'a dyn ReleaseProcessPort,
+    layout: &'a dyn SemanticLayoutPort,
+    plan: &'a UpgradePlan,
+    data_root: &'a Path,
+}
+
 fn stage_semantic_asset(
-    process: &dyn ReleaseProcessPort,
-    layout: &dyn SemanticLayoutPort,
-    plan: &UpgradePlan,
+    context: &SemanticStagingContext<'_>,
     selected: &SelectedSemanticAsset,
     archive_path: &Path,
     unique: &str,
-    data_root: &Path,
     staged: &mut StagedSemanticInstall,
 ) -> Result<()> {
     let asset = &selected.metadata;
-    prepare_semantic_roots(layout, asset, data_root)?;
-    let target = semantic_asset_target(layout, asset, data_root)?;
+    prepare_semantic_roots(context.layout, asset, context.data_root)?;
+    let target = semantic_asset_target(context.layout, asset, context.data_root)?;
     let parent = target
         .parent()
         .ok_or_else(|| anyhow!("Semantic target has no parent: {}", target.display()))?;
@@ -290,11 +293,11 @@ fn stage_semantic_asset(
             .with_context(|| format!("create staged Semantic asset {}", staged_path.display()))?;
         restrict_private_directory(&staged_path)
             .with_context(|| format!("protect staged Semantic asset {}", staged_path.display()))?;
-        extract_semantic_archive(process, archive_path, &staged_path, asset)?;
+        extract_semantic_archive(context.process, archive_path, &staged_path, asset)?;
         verify_exact_files(&staged_path, &asset.files, None)?;
         if is_ort_runtime(asset) {
-            write_semantic_runtime_manifest(plan, asset, &staged_path)?;
-            verify_runtime_install(plan, asset, &staged_path)?;
+            write_semantic_runtime_manifest(context.plan, asset, &staged_path)?;
+            verify_runtime_install(context.plan, asset, &staged_path)?;
         }
         #[cfg(unix)]
         sync_directory(&staged_path)?;
