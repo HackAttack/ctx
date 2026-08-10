@@ -61,19 +61,30 @@ if [[ -z "$(query 'somepath(//crates/ctx-cli:ctx, //crates/ctx-daemon-runtime:li
   exit 1
 fi
 
-expected_reverse_bazel="${tmp}/expected-reverse-bazel.txt"
-# The fixture binaries compile the CLI production source under controlled cfg
-# variants, so the complete binary/library reverse set is intentionally exact.
+# Keep production and qualification consumers as independent exact inventories
+# so a consumer cannot migrate between variants without failing this check.
+expected_reverse_lib="${tmp}/expected-reverse-lib.txt"
 printf '%s\n' \
   '//crates/ctx-cli:ctx' \
-  '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
   '//crates/ctx-cli:ctx_pro_test_host' \
-  '//crates/ctx-cli:ctx_upgrade_test_harness' \
-  '//crates/ctx-daemon-runtime:lib' >"${expected_reverse_bazel}"
+  '//crates/ctx-daemon-runtime:lib' >"${expected_reverse_lib}"
 query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib))' \
-  | LC_ALL=C sort -u >"${tmp}/actual-reverse-bazel.txt"
-if ! diff -u "${expected_reverse_bazel}" "${tmp}/actual-reverse-bazel.txt"; then
+  | LC_ALL=C sort -u >"${tmp}/actual-reverse-lib.txt"
+if ! diff -u "${expected_reverse_lib}" "${tmp}/actual-reverse-lib.txt"; then
   echo 'unexpected reverse production consumer of ctx-daemon-runtime' >&2
+  exit 1
+fi
+
+expected_reverse_qualification="${tmp}/expected-reverse-qualification.txt"
+printf '%s\n' \
+  '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
+  '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
+  '//crates/ctx-cli:ctx_upgrade_test_harness' \
+  '//crates/ctx-daemon-runtime:qualification_lib' >"${expected_reverse_qualification}"
+query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:qualification_lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:qualification_lib))' \
+  | LC_ALL=C sort -u >"${tmp}/actual-reverse-qualification.txt"
+if ! diff -u "${expected_reverse_qualification}" "${tmp}/actual-reverse-qualification.txt"; then
+  echo 'unexpected reverse qualification consumer of ctx-daemon-runtime' >&2
   exit 1
 fi
 
