@@ -1,74 +1,10 @@
 use super::*;
 
-#[cfg(test)]
-use crate::provider::codex::nativepath::CodexSourceBackedCountersV0;
 use crate::provider::codex::nativepath::{
     codex_session_root_rank, CodexExplicitSessionJsonlFamilyAdapterV0,
     CodexExplicitSessionSourceBackedInputV0, CodexPromptHistoryJsonlFamilyAdapterV0,
     CodexPromptHistorySourceBackedInputV0, CodexSessionTreeJsonlFamilyAdapterV0,
 };
-
-#[cfg(test)]
-type ExplicitCodexStageHook = Box<dyn FnOnce(CodexSourceBackedCountersV0)>;
-
-#[cfg(test)]
-type CodexSessionTreeStageHook = Box<dyn FnOnce(CodexSourceBackedCountersV0)>;
-
-#[cfg(test)]
-std::thread_local! {
-    static AFTER_EXPLICIT_CODEX_STAGE_HOOK:
-        std::cell::RefCell<Option<ExplicitCodexStageHook>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-std::thread_local! {
-    static AFTER_CODEX_SESSION_TREE_STAGE_HOOK:
-        std::cell::RefCell<Option<CodexSessionTreeStageHook>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn set_after_explicit_codex_stage_hook(
-    hook: impl FnOnce(CodexSourceBackedCountersV0) + 'static,
-) {
-    AFTER_EXPLICIT_CODEX_STAGE_HOOK.with(|slot| {
-        assert!(
-            slot.borrow().is_none(),
-            "explicit Codex stage hook is already installed"
-        );
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn set_after_codex_session_tree_stage_hook(
-    hook: impl FnOnce(CodexSourceBackedCountersV0) + 'static,
-) {
-    AFTER_CODEX_SESSION_TREE_STAGE_HOOK.with(|slot| {
-        assert!(
-            slot.borrow().is_none(),
-            "Codex session-tree stage hook is already installed"
-        );
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-fn run_after_codex_session_tree_stage_hook(counters: CodexSourceBackedCountersV0) {
-    let hook = AFTER_CODEX_SESSION_TREE_STAGE_HOOK.with(|slot| slot.borrow_mut().take());
-    if let Some(hook) = hook {
-        hook(counters);
-    }
-}
-
-#[cfg(test)]
-fn run_after_explicit_codex_stage_hook(counters: CodexSourceBackedCountersV0) {
-    let hook = AFTER_EXPLICIT_CODEX_STAGE_HOOK.with(|slot| slot.borrow_mut().take());
-    if let Some(hook) = hook {
-        hook(counters);
-    }
-}
 
 pub(super) fn register_codex_session_tree_route(
     registry: &mut SourceBackedProviderRegistry,
@@ -122,8 +58,6 @@ pub(in crate::provider::source_backed) fn register_codex_session_tree_routes(
     let adapter = CodexSessionTreeJsonlFamilyAdapterV0::new(roots)
         .map(|adapter| adapter.with_generation(generation))
         .map_err(|error| invalid_route(CaptureProvider::Codex, error.to_string()))?;
-    #[cfg(test)]
-    let adapter = adapter.with_after_stage_observer(run_after_codex_session_tree_stage_hook);
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         Arc::new(adapter),
         source.path.clone(),
@@ -156,8 +90,6 @@ pub(super) fn register_codex_explicit_session_route(
         .map_err(|error| invalid_route(source.provider, error.to_string()))?;
     let participant = generation.participant();
     let adapter = CodexExplicitSessionJsonlFamilyAdapterV0::new(input).with_generation(generation);
-    #[cfg(test)]
-    let adapter = adapter.with_after_stage_observer(run_after_explicit_codex_stage_hook);
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         Arc::new(adapter),
         route_path,

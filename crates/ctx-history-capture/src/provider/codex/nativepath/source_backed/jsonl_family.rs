@@ -172,17 +172,17 @@ fn order_codex_session_jsonl_scans_v0(
     Ok(())
 }
 
-/// Codex's multi-root session inventory and native optimized JSONL leaf
-/// executor. The shared family owns the generation lifecycle and bounded
-/// per-source scheduler; this adapter retains the native prefilter, parser,
-/// checkpoints, identities, projection, and commit-time prefix evidence.
+/// Codex's multi-root session inventory and semantic JSONL leaf executor. The
+/// shared family owns generation scheduling and publication, and the shared
+/// physical stream owns framing, offsets, ordinals, digests, and rollback.
+/// Codex retains the semantic layer because appended MCP evidence can retract
+/// an append into replacement and its certificate binds the incomplete EOF
+/// tail; the ordinary projector contract supports neither operation.
 #[derive(Clone)]
 pub(crate) struct CodexSessionTreeJsonlFamilyAdapterV0 {
     roots: Arc<[PathBuf]>,
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     generation: Option<CodexGenerationRouteV0>,
-    #[cfg(test)]
-    after_stage: Option<fn(CodexSourceBackedCountersV0)>,
 }
 
 impl CodexSessionTreeJsonlFamilyAdapterV0 {
@@ -203,22 +203,11 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             roots: roots.into(),
             state: Arc::new(Mutex::new(CodexSessionJsonlFamilyStateV0::default())),
             generation: None,
-            #[cfg(test)]
-            after_stage: None,
         })
     }
 
     pub(crate) fn with_generation(mut self, generation: CodexGenerationRouteV0) -> Self {
         self.generation = Some(generation);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_after_stage_observer(
-        mut self,
-        observer: fn(CodexSourceBackedCountersV0),
-    ) -> Self {
-        self.after_stage = Some(observer);
         self
     }
 
@@ -350,11 +339,6 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             state.stage_pending = false;
             (state.counters, std::mem::take(&mut state.causal))
         };
-        #[cfg(test)]
-        if let Some(observer) = self.after_stage {
-            observer(counters);
-        }
-        #[cfg(not(test))]
         let _ = counters;
         #[cfg(test)]
         causal.run_test_observer();
@@ -505,8 +489,6 @@ pub(crate) struct CodexExplicitSessionJsonlFamilyAdapterV0 {
     input: CodexExplicitSessionSourceBackedInputV0,
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     generation: Option<CodexGenerationRouteV0>,
-    #[cfg(test)]
-    after_stage: Option<fn(CodexSourceBackedCountersV0)>,
 }
 
 impl CodexExplicitSessionJsonlFamilyAdapterV0 {
@@ -515,22 +497,11 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
             input,
             state: Arc::new(Mutex::new(CodexSessionJsonlFamilyStateV0::default())),
             generation: None,
-            #[cfg(test)]
-            after_stage: None,
         }
     }
 
     pub(crate) fn with_generation(mut self, generation: CodexGenerationRouteV0) -> Self {
         self.generation = Some(generation);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_after_stage_observer(
-        mut self,
-        observer: fn(CodexSourceBackedCountersV0),
-    ) -> Self {
-        self.after_stage = Some(observer);
         self
     }
 
@@ -641,11 +612,6 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
             state.stage_pending = false;
             (state.counters, std::mem::take(&mut state.causal))
         };
-        #[cfg(test)]
-        if let Some(observer) = self.after_stage {
-            observer(counters);
-        }
-        #[cfg(not(test))]
         let _ = counters;
         #[cfg(test)]
         causal.run_test_observer();

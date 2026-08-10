@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     path::Path,
     sync::Arc,
 };
@@ -42,6 +42,9 @@ use crate::{
     provider::file_touches::{
         event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
         MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+    },
+    provider::source_backed::family::jsonl::{
+        JsonlPhysicalDigest, JsonlPhysicalStream, JsonlPhysicalStreamPosition, JsonlRecordFraming,
     },
     CaptureError, Result,
 };
@@ -230,19 +233,13 @@ pub(crate) struct CodexNativeScanner {
     source: CodexCatalogSource,
     opened: Arc<OpenedProviderSourceFile>,
     before: CodexFileObservation,
-    frozen_len: u64,
-    reader: BufReader<File>,
+    physical: Option<JsonlPhysicalStream>,
     disposition: CodexParseDisposition,
-    offset: u64,
-    raw_ordinal: u64,
     owner: Option<CodexSessionRow>,
     tool_contexts: BTreeMap<String, CodexToolCallContext>,
     tool_authorities: BTreeMap<String, CodexPendingToolAuthority>,
     continuations: BTreeMap<String, String>,
     mcp_terminal_authority: project::CodexMcpTerminalAuthority,
-    complete_hasher: Sha256,
-    full_hasher: Sha256,
-    record_buffer: Vec<u8>,
     incomplete_tail: Option<CodexIncompleteTail>,
     counters: CodexScanCounters,
     local_turn_started: bool,
@@ -270,11 +267,8 @@ impl CodexNativeScanner {
 }
 
 struct ScannerPosition {
-    offset: u64,
-    raw_ordinal: u64,
+    physical: JsonlPhysicalStreamPosition,
     had_owner: bool,
-    complete_hasher: Sha256,
-    full_hasher: Sha256,
     counters: CodexScanCounters,
     local_turn_started: bool,
 }

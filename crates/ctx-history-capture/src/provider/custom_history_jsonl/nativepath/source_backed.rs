@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
+    io::{BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -44,7 +44,7 @@ use crate::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
             JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector,
             JsonlFamilyPublication, JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof,
-            JsonlFamilyWorkerContext,
+            JsonlFamilyWorkerContext, JsonlPhysicalDigest, JsonlPhysicalStream, JsonlRecordFraming,
         },
     },
     CaptureError, ProviderImportSummary, ProviderSourceFailureKind, MAX_PROVIDER_JSONL_LINE_BYTES,
@@ -211,6 +211,11 @@ struct CustomHistoryJsonlFamilyAdapter {
     input: CustomHistorySourceBackedInput,
     source: SourceKey,
 }
+
+// Framing, physical evidence, and family publication are shared. The semantic
+// executor remains staged because safe append requires validating the complete
+// source/session graph from byte zero while publishing only events beyond the
+// prior prefix; that graph can exceed the bounded provider-checkpoint contract.
 
 pub(crate) fn custom_history_jsonl_family_adapter(
     input: CustomHistorySourceBackedInput,

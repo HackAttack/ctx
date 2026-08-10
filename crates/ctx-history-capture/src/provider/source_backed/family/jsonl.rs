@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -14,14 +14,23 @@ use crate::{
 };
 
 mod checkpoint;
+mod framing;
 mod identity;
+mod physical;
 mod revalidation;
 mod route;
 
 pub(crate) use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
 };
+use framing::read_bounded_record_complete_sha256;
+pub(crate) use framing::{
+    read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
+    read_bounded_record_unhashed, JsonlBoundedRecordRead, JsonlRecordFraming,
+};
 use identity::observe_metadata;
+pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
+pub(crate) use physical::{JsonlPhysicalDigest, JsonlPhysicalStream, JsonlPhysicalStreamPosition};
 use revalidation::hash_prefix;
 #[cfg(test)]
 pub(crate) use revalidation::{
@@ -38,8 +47,6 @@ pub(crate) use route::{
     JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
     JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
-#[cfg(test)]
-pub(crate) use route::{jsonl_family_scanner_max_worker_count, with_family_scanner_workers};
 const PREFIX_HASH_DOMAIN: &[u8] = b"ctx-direct-jsonl-nativepath-prefix-v1\0";
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -312,7 +319,8 @@ pub(crate) struct JsonlReader {
     identity: JsonlSourceIdentity,
     observation: JsonlFileObservation,
     source_file: Arc<OpenedProviderSourceFile>,
-    reader: BufReader<File>,
+    reader: Option<BufReader<File>>,
+    physical: Option<JsonlPhysicalStream>,
     prefix_hasher: Sha256,
     complete_prefix_end: u64,
     next_physical_ordinal: u64,
@@ -381,8 +389,11 @@ impl JsonlReader {
             if same_file
                 && previous_observation.supports_exact_revalidation()
                 && previous_observation == &observation
-                && previous.terminal()
             {
+                // Exact physical equality also proves an unfinished tail is
+                // unchanged. Its complete prefix remains the certified
+                // frontier, so no provider projection or publication work is
+                // needed until the file itself changes.
                 complete_prefix_end = previous.complete_prefix_end();
                 next_physical_ordinal = previous.next_physical_ordinal();
                 source_change = JsonlSourceChange::Unchanged;
@@ -432,11 +443,28 @@ impl JsonlReader {
             }
         }
         file.seek(SeekFrom::Start(complete_prefix_end))?;
+        let (reader, physical) = if whole_record {
+            (Some(BufReader::new(file)), None)
+        } else {
+            (
+                None,
+                Some(JsonlPhysicalStream::open(
+                    file,
+                    observation.length,
+                    complete_prefix_end,
+                    next_physical_ordinal,
+                    JsonlRecordFraming::ordinary(),
+                    JsonlPhysicalDigest::complete(prefix_hasher.clone()),
+                    || CaptureError::SourceChangedDuringCapture,
+                )?),
+            )
+        };
         Ok(Self {
             identity,
             observation,
             source_file,
-            reader: BufReader::new(file),
+            reader,
+            physical,
             prefix_hasher,
             complete_prefix_end,
             next_physical_ordinal,
@@ -485,75 +513,84 @@ impl JsonlReader {
         let mut records = 0_usize;
         let mut page_bytes = 0_usize;
         while records < PAGE_MAX_RECORDS {
-            let start = self.complete_prefix_end;
-            let ordinal = self.next_physical_ordinal;
-            let hasher_before = self.prefix_hasher.clone();
-            let line = read_bounded_line(
-                &mut self.reader,
-                &mut self.record_buffer,
-                &mut self.prefix_hasher,
-                self.observation.length,
-                start,
-            )
-            .map_err(E::from)?;
-            let (end, record_digest, wire_bytes, oversized) = match line {
-                RawLine::Complete {
-                    end,
-                    record_digest,
-                    wire_bytes,
-                } => (end, record_digest, wire_bytes, false),
-                RawLine::Oversized {
-                    end,
-                    record_digest,
-                    wire_bytes,
-                } if self.oversized_record_policy == JsonlOversizedRecordPolicy::RejectRecord => {
-                    (end, record_digest, wire_bytes, true)
-                }
-                RawLine::Oversized { .. } => {
-                    return Err(E::from(CaptureError::InvalidPayload(format!(
-                        "{}:{} exceeds the {} byte JSONL record limit",
-                        self.identity.source_path.display(),
-                        ordinal.saturating_add(1),
-                        MAX_PROVIDER_JSONL_LINE_BYTES
-                    ))));
-                }
-                RawLine::EndOfFile => {
-                    self.finish(true).map_err(E::from)?;
-                    break;
-                }
-                RawLine::IncompleteTail => {
-                    self.prefix_hasher = hasher_before;
-                    self.reader
-                        .seek(SeekFrom::Start(start))
-                        .map_err(CaptureError::from)
-                        .map_err(E::from)?;
-                    self.finish(false).map_err(E::from)?;
-                    break;
-                }
+            let (position, record) = {
+                let physical = self.physical.as_mut().ok_or_else(|| {
+                    E::from(CaptureError::SystemInvariant(
+                        "ordinary JSONL source lost its physical stream",
+                    ))
+                })?;
+                let position = physical.position();
+                (position, physical.next_record().map_err(E::from)?)
             };
+            let Some(record) = record else {
+                self.finish(true).map_err(E::from)?;
+                break;
+            };
+            if !record.complete {
+                self.finish(false).map_err(E::from)?;
+                break;
+            }
+            let wire_bytes = usize::try_from(record.byte_len()).unwrap_or(usize::MAX);
+            let stored_record_bytes = {
+                let record_bytes = self
+                    .physical
+                    .as_ref()
+                    .ok_or_else(|| {
+                        E::from(CaptureError::SystemInvariant(
+                            "ordinary JSONL source lost its physical stream",
+                        ))
+                    })?
+                    .record_bytes(record);
+                record_bytes
+                    .strip_suffix(b"\r")
+                    .unwrap_or(record_bytes)
+                    .len()
+            };
+            let oversized = record.oversized || stored_record_bytes > MAX_PROVIDER_JSONL_LINE_BYTES;
+            if oversized && self.oversized_record_policy != JsonlOversizedRecordPolicy::RejectRecord
+            {
+                return Err(E::from(CaptureError::InvalidPayload(format!(
+                    "{}:{} exceeds the {} byte JSONL record limit",
+                    self.identity.source_path.display(),
+                    record.physical_ordinal.saturating_add(1),
+                    MAX_PROVIDER_JSONL_LINE_BYTES
+                ))));
+            }
 
             if records != 0 && page_bytes.saturating_add(wire_bytes) > PAGE_MAX_BYTES {
-                self.prefix_hasher = hasher_before;
-                self.reader
-                    .seek(SeekFrom::Start(start))
-                    .map_err(CaptureError::from)
+                self.physical
+                    .as_mut()
+                    .ok_or_else(|| {
+                        E::from(CaptureError::SystemInvariant(
+                            "ordinary JSONL source lost its physical stream",
+                        ))
+                    })?
+                    .restore(position)
                     .map_err(E::from)?;
                 break;
             }
 
             let evidence = JsonlRecordEvidence {
-                physical_ordinal: ordinal,
-                byte_start: start,
-                byte_end_exclusive: end,
-                record_digest,
+                physical_ordinal: record.physical_ordinal,
+                byte_start: record.byte_start,
+                byte_end_exclusive: record.byte_end_exclusive,
+                record_digest: record.sha256,
             };
+            let record_bytes = self
+                .physical
+                .as_ref()
+                .ok_or_else(|| {
+                    E::from(CaptureError::SystemInvariant(
+                        "ordinary JSONL source lost its physical stream",
+                    ))
+                })?
+                .record_bytes(record);
+            let record_bytes = record_bytes.strip_suffix(b"\r").unwrap_or(record_bytes);
             visit(JsonlRecordRef {
-                bytes: &self.record_buffer,
+                bytes: record_bytes,
                 evidence,
                 oversized,
             })?;
-            self.complete_prefix_end = end;
-            self.next_physical_ordinal = self.next_physical_ordinal.saturating_add(1);
             records = records.saturating_add(1);
             page_bytes = page_bytes.saturating_add(wire_bytes);
         }
@@ -594,6 +631,12 @@ impl JsonlReader {
         }
         self.record_buffer.resize(length, 0);
         self.reader
+            .as_mut()
+            .ok_or_else(|| {
+                E::from(CaptureError::SystemInvariant(
+                    "whole-record JSON source lost its reader",
+                ))
+            })?
             .read_exact(&mut self.record_buffer)
             .map_err(CaptureError::from)
             .map_err(E::from)?;
@@ -616,22 +659,36 @@ impl JsonlReader {
     }
 
     fn checkpoint(&self, terminal: bool) -> JsonlCheckpoint {
+        let (complete_prefix_end, complete_prefix_sha256, next_physical_ordinal) =
+            match self.physical.as_ref() {
+                Some(physical) => (
+                    physical.complete_prefix_end(),
+                    prefix_digest(physical.digest().complete_hasher()),
+                    physical.next_physical_ordinal(),
+                ),
+                None => (
+                    self.complete_prefix_end,
+                    prefix_digest(&self.prefix_hasher),
+                    self.next_physical_ordinal,
+                ),
+            };
         JsonlCheckpoint {
             version: JsonlCheckpoint::VERSION,
             identity: self.identity.clone(),
             source_observation: self.observation.clone(),
-            complete_prefix_end: self.complete_prefix_end,
-            complete_prefix_sha256: prefix_digest(&self.prefix_hasher),
-            next_physical_ordinal: self.next_physical_ordinal,
+            complete_prefix_end,
+            complete_prefix_sha256,
+            next_physical_ordinal,
             terminal,
         }
     }
 
     fn finish(&mut self, terminal: bool) -> Result<()> {
+        let checkpoint = self.checkpoint(terminal);
         let current = observe_metadata(
             self.identity.source_path(),
-            self.reader.get_ref(),
-            &self.reader.get_ref().metadata()?,
+            self.source_file.file(),
+            &self.source_file.file().metadata()?,
         )?;
         if current == self.observation {
             if self.append_log {
@@ -652,15 +709,12 @@ impl JsonlReader {
                 self.identity.source_path(),
                 self.source_file.as_ref(),
                 &self.observation,
-                self.complete_prefix_end,
-                prefix_digest(&self.prefix_hasher),
+                checkpoint.complete_prefix_end,
+                checkpoint.complete_prefix_sha256,
             )?;
         }
         self.outcome = Some(JsonlScanOutcome {
-            checkpoint: self
-                .unchanged_checkpoint
-                .clone()
-                .unwrap_or_else(|| self.checkpoint(terminal)),
+            checkpoint: self.unchanged_checkpoint.clone().unwrap_or(checkpoint),
         });
         self.finished = true;
         Ok(())
@@ -745,7 +799,7 @@ where
                 wire_bytes,
             } => (end, record_digest, wire_bytes),
             RawLine::EndOfFile | RawLine::IncompleteTail => break,
-            RawLine::Oversized { .. } => {
+            RawLine::Oversized => {
                 return Err(E::from(CaptureError::InvalidPayload(format!(
                     "provider identity record exceeds the {} byte JSONL record limit",
                     MAX_PROVIDER_JSONL_LINE_BYTES
@@ -801,11 +855,7 @@ where
 enum RawLine {
     EndOfFile,
     IncompleteTail,
-    Oversized {
-        end: u64,
-        record_digest: [u8; 32],
-        wire_bytes: usize,
-    },
+    Oversized,
     Complete {
         end: u64,
         record_digest: [u8; 32],
@@ -824,77 +874,38 @@ fn read_bounded_line(
     if start >= frozen_length {
         return Ok(RawLine::EndOfFile);
     }
-    let mut total = 0_u64;
-    let mut oversized = false;
-    let mut record_hasher = Sha256::new();
-    loop {
-        let remaining = frozen_length.saturating_sub(start.saturating_add(total));
-        if remaining == 0 {
-            return Ok(RawLine::IncompleteTail);
-        }
-        let available = reader.fill_buf()?;
-        if available.is_empty() {
-            return Err(CaptureError::SourceChangedDuringCapture);
-        }
-        let available_len = usize::try_from(remaining.min(available.len() as u64))
-            .map_err(|_| CaptureError::SystemInvariant("JSONL read bound exceeds usize"))?;
-        let available = &available[..available_len];
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |index| index.saturating_add(1));
-        let chunk = &available[..take];
-        hasher.update(chunk);
-        record_hasher.update(chunk);
-        total = total.saturating_add(chunk.len() as u64);
-        if !oversized {
-            if bytes.len().saturating_add(chunk.len())
-                > MAX_PROVIDER_JSONL_LINE_BYTES.saturating_add(2)
-            {
-                oversized = true;
-                bytes.clear();
-            } else {
-                bytes.extend_from_slice(chunk);
-            }
-        }
-        let complete = chunk.last() == Some(&b'\n');
-        reader.consume(take);
-        if complete {
-            let end = start
-                .checked_add(total)
-                .ok_or(CaptureError::SystemInvariant(
-                    "JSONL byte offset overflowed",
-                ))?;
-            if oversized {
-                return Ok(RawLine::Oversized {
-                    end,
-                    record_digest: record_hasher.finalize().into(),
-                    wire_bytes: usize::try_from(total).unwrap_or(usize::MAX),
-                });
-            }
-            let record_digest = record_hasher.finalize().into();
-            let wire_bytes = bytes.len();
-            if bytes.last() == Some(&b'\n') {
-                bytes.pop();
-                if bytes.last() == Some(&b'\r') {
-                    bytes.pop();
-                }
-            }
-            if bytes.len() > MAX_PROVIDER_JSONL_LINE_BYTES {
-                bytes.clear();
-                return Ok(RawLine::Oversized {
-                    end,
-                    record_digest,
-                    wire_bytes,
-                });
-            }
-            return Ok(RawLine::Complete {
-                end,
-                record_digest,
-                wire_bytes,
-            });
-        }
+    let Some(record) = read_bounded_record_complete_sha256(
+        reader,
+        bytes,
+        hasher,
+        frozen_length.saturating_sub(start),
+        JsonlRecordFraming::ordinary(),
+        || CaptureError::SourceChangedDuringCapture,
+    )?
+    else {
+        return Ok(RawLine::EndOfFile);
+    };
+    if !record.complete {
+        return Ok(RawLine::IncompleteTail);
     }
+    let end = start
+        .checked_add(record.byte_len)
+        .ok_or(CaptureError::SystemInvariant(
+            "JSONL byte offset overflowed",
+        ))?;
+    let wire_bytes = usize::try_from(record.byte_len).unwrap_or(usize::MAX);
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    if record.oversized || bytes.len() > MAX_PROVIDER_JSONL_LINE_BYTES {
+        bytes.clear();
+        return Ok(RawLine::Oversized);
+    }
+    Ok(RawLine::Complete {
+        end,
+        record_digest: record.sha256,
+        wire_bytes,
+    })
 }
 
 fn new_prefix_hasher() -> Sha256 {

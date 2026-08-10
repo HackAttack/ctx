@@ -24,6 +24,9 @@ use ctx_history_core::{
 };
 use ctx_history_index::{CommitReceipt, GenerationWriter, SourceRouteIdentity, WriterOptions};
 
+#[path = "tests/checkpoint_lifecycle.rs"]
+mod checkpoint_lifecycle;
+
 const TEST_SOURCE_FORMAT: &str = "terminal_witness_jsonl";
 const TEST_SCHEMA: &str = "terminal-witness-v1";
 
@@ -993,7 +996,10 @@ impl JsonlFamilyAdapter for EmissionTestAdapter {
     }
 }
 
-struct CheckpointTestAdapter;
+#[derive(Default)]
+struct CheckpointTestAdapter {
+    projection_modes: Mutex<Vec<JsonlFamilyProjectionMode>>,
+}
 
 struct OptimizedLeafTestAdapter {
     scans: AtomicUsize,
@@ -1165,6 +1171,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         base_event_lookup: Option<BaseEventIdentityLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        self.projection_modes.lock().unwrap().push(mode);
         let Some(checkpoint) = checkpoint else {
             if mode == JsonlFamilyProjectionMode::Cold && base_event_lookup.is_some() {
                 return Err(CaptureError::InvalidPayload(
@@ -1278,7 +1285,13 @@ fn capture_checkpoint_test_generation(
             current_source_progress: None,
         };
         with_family_scanner_workers(workers, || {
-            capture(&CheckpointTestAdapter, root, &resident, &mut sink).unwrap();
+            capture(
+                &CheckpointTestAdapter::default(),
+                root,
+                &resident,
+                &mut sink,
+            )
+            .unwrap();
         });
     }
     writer
@@ -1711,45 +1724,6 @@ fn certified_append_generation_is_identical_with_one_and_eight_workers() {
         .sources
         .iter()
         .all(|source| source.counts().complete_records == 2));
-}
-
-#[test]
-fn opaque_provider_checkpoint_and_base_lookup_resume_only_the_certified_suffix() {
-    for workers in [1, 8] {
-        let temp = crate::test_support_paths::tempdir().unwrap();
-        let root = temp.path().join("sessions");
-        let index = temp.path().join("index");
-        fs::create_dir_all(&root).unwrap();
-        let transcripts = (0..workers)
-            .map(|index| root.join(format!("checkpoint-{index}.jsonl")))
-            .collect::<Vec<_>>();
-        for transcript in &transcripts {
-            fs::write(transcript, b"{\"message\":\"prefix\"}\n").unwrap();
-        }
-
-        let cold = capture_checkpoint_test_generation(&root, &index, workers);
-        assert!(provider_checkpoints(&cold)
-            .into_iter()
-            .all(|checkpoint| checkpoint == Some(TypedKey::U64(1))));
-
-        for transcript in &transcripts {
-            OpenOptions::new()
-                .append(true)
-                .open(transcript)
-                .unwrap()
-                .write_all(b"{\"message\":\"suffix\"}\n")
-                .unwrap();
-        }
-        let appended = capture_checkpoint_test_generation(&root, &index, workers);
-        assert!(provider_checkpoints(&appended)
-            .into_iter()
-            .all(|checkpoint| checkpoint == Some(TypedKey::U64(2))));
-        assert!(appended
-            .manifest()
-            .sources
-            .iter()
-            .all(|source| source.counts().complete_records == 2));
-    }
 }
 
 #[test]

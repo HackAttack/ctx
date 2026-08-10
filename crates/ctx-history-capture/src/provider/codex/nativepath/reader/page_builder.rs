@@ -5,11 +5,13 @@ impl CodexNativeScanner {
     /// of a prepared page crosses to the writer. The next window reserves and
     /// reacquires that input capacity through the shared preparation budget.
     pub(crate) fn release_transient_record_buffer(&mut self) {
-        self.record_buffer = Vec::new();
+        if let Some(physical) = self.physical.as_mut() {
+            physical.release_record_buffer();
+        }
     }
 
     pub(super) fn new_core_page(&mut self) -> Result<CodexNativePage> {
-        let expected_frontier = self.frontier();
+        let expected_frontier = self.frontier()?;
         Ok(CodexNativePage {
             owner: self.owner.clone(),
             next_safe_frontier: expected_frontier.clone(),
@@ -72,8 +74,26 @@ impl CodexNativeScanner {
             return Ok(replay);
         }
 
-        let full_revision_sha256: [u8; 32] = self.full_hasher.finalize().into();
-        let complete_prefix_sha256 = self.complete_hasher.finalize().into();
+        let physical = self.physical.take().ok_or(CaptureError::SystemInvariant(
+            "Codex NativePath has no physical JSONL stream to certify",
+        ))?;
+        let full_revision_sha256: [u8; 32] = physical
+            .digest()
+            .full_hasher()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex NativePath physical stream omitted its full digest",
+            ))?
+            .clone()
+            .finalize()
+            .into();
+        let complete_prefix_sha256: [u8; 32] = physical
+            .digest()
+            .complete_hasher()
+            .clone()
+            .finalize()
+            .into();
+        let complete_prefix_end = physical.complete_prefix_end();
+        let next_raw_ordinal = physical.next_physical_ordinal();
         let current = opened_file_observation(&self.source.source_path, self.opened.file())?;
         self.opened.revalidate_same_object()?;
         if current != self.before {
@@ -91,12 +111,8 @@ impl CodexNativeScanner {
             disposition: self.disposition,
             full_revision_sha256,
             complete_prefix_sha256,
-            complete_prefix_end: self
-                .incomplete_tail
-                .as_ref()
-                .map(|tail| tail.start_byte)
-                .unwrap_or(self.offset),
-            next_raw_ordinal: self.raw_ordinal,
+            complete_prefix_end,
+            next_raw_ordinal,
             owner: self.owner,
             pending_tool_authorities: self.tool_authorities.into_values().collect(),
             terminal_authority: self.mcp_terminal_authority.checkpoint(),
@@ -106,16 +122,19 @@ impl CodexNativeScanner {
         })
     }
 
-    pub(super) fn position(&self) -> ScannerPosition {
-        ScannerPosition {
-            offset: self.offset,
-            raw_ordinal: self.raw_ordinal,
+    pub(super) fn position(&self) -> Result<ScannerPosition> {
+        Ok(ScannerPosition {
+            physical: self
+                .physical
+                .as_ref()
+                .ok_or(CaptureError::SystemInvariant(
+                    "Codex NativePath lost its physical JSONL stream",
+                ))?
+                .position(),
             had_owner: self.owner.is_some(),
-            complete_hasher: self.complete_hasher.clone(),
-            full_hasher: self.full_hasher.clone(),
             counters: self.counters,
             local_turn_started: self.local_turn_started,
-        }
+        })
     }
 
     pub(super) fn restore(&mut self, position: ScannerPosition) -> Result<()> {
@@ -125,14 +144,15 @@ impl CodexNativeScanner {
             self.counters.typed_json_parses,
             self.counters.structural_output_probes,
         );
-        self.reader.seek(SeekFrom::Start(position.offset))?;
-        self.offset = position.offset;
-        self.raw_ordinal = position.raw_ordinal;
+        self.physical
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex NativePath lost its physical JSONL stream",
+            ))?
+            .restore(position.physical)?;
         if !position.had_owner {
             self.owner = None;
         }
-        self.complete_hasher = position.complete_hasher;
-        self.full_hasher = position.full_hasher;
         self.counters = position.counters;
         self.local_turn_started = position.local_turn_started;
         (
@@ -144,16 +164,20 @@ impl CodexNativeScanner {
         Ok(())
     }
 
-    pub(super) fn frontier(&self) -> CodexNativeFrontier {
-        CodexNativeFrontier {
-            complete_prefix_end: self
-                .incomplete_tail
-                .as_ref()
-                .map(|tail| tail.start_byte)
-                .unwrap_or(self.offset),
-            next_raw_ordinal: self.raw_ordinal,
-            complete_prefix_sha256: self.complete_hasher.clone().finalize().into(),
-        }
+    pub(super) fn frontier(&self) -> Result<CodexNativeFrontier> {
+        let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+            "Codex NativePath lost its physical JSONL stream",
+        ))?;
+        Ok(CodexNativeFrontier {
+            complete_prefix_end: physical.complete_prefix_end(),
+            next_raw_ordinal: physical.next_physical_ordinal(),
+            complete_prefix_sha256: physical
+                .digest()
+                .complete_hasher()
+                .clone()
+                .finalize()
+                .into(),
+        })
     }
 
     pub(super) fn finish_page(&mut self, mut page: CodexNativePage) -> Result<CodexNativePage> {
@@ -162,7 +186,7 @@ impl CodexNativeScanner {
             .clone()
             .map(|owner| validate_catalog_owner(&self.source, owner))
             .transpose()?;
-        page.next_safe_frontier = self.frontier();
+        page.next_safe_frontier = self.frontier()?;
         debug_assert!(page.physical_records <= MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS);
         debug_assert!(page.units() <= MAX_CODEX_PAGE_UNITS);
         debug_assert!(

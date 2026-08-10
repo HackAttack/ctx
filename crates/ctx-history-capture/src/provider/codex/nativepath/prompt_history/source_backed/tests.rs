@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Barrier},
 };
 
-use ctx_history_core::{CoreRecord, TypedKey};
+use ctx_history_core::TypedKey;
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use serde_json::json;
 
@@ -40,30 +40,6 @@ fn append(path: &Path, bytes: &[u8]) {
     let mut file = OpenOptions::new().append(true).open(path).unwrap();
     file.write_all(bytes).unwrap();
     file.sync_all().unwrap();
-}
-
-fn collect(
-    input: &CodexPromptHistorySourceBackedInputV0,
-    prior: Option<&CertifiedSource>,
-) -> (
-    CodexPromptHistorySourceBackedScanV0,
-    Vec<CoreRecord>,
-    Vec<(usize, usize)>,
-) {
-    let source = observe_codex_prompt_history_source_backed_explicit_v0(input).unwrap();
-    let mut records = Vec::new();
-    let mut pages = Vec::new();
-    let scan = scan_codex_prompt_history_source_backed_v0(source, prior, |page| {
-        pages.push((page.records.len(), page.retained_bytes));
-        records.extend(page.records);
-        Ok(())
-    })
-    .unwrap();
-    (scan, records, pages)
-}
-
-fn core_body(record: &CoreRecord) -> &str {
-    record.content.normalized_body.as_deref().unwrap()
 }
 
 #[test]
@@ -359,124 +335,135 @@ fn active_source_family_contract_prompt_history_defers_live_suffix_exactly_once(
 }
 
 #[test]
-fn cold_scan_emits_complete_self_contained_core_records() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("history.jsonl");
-    let long = "complete prompt body ".repeat(8_000);
-    write_lines(
-        &path,
-        &[
-            prompt_line("session-a", 1_700_000_000, &long),
-            prompt_line("session-a", 1_700_000_001, "second prompt"),
-        ],
-    );
-    let input = CodexPromptHistorySourceBackedInputV0::explicit(&path, [7; 32]);
-    let (scan, records, pages) = collect(&input, None);
+fn projector_preserves_prompt_identity_and_rejections() {
+    use crate::provider::source_backed::family::jsonl::{JsonlFamilyWorkerContext, JsonlRecordRef};
 
-    assert!(matches!(
-        scan.disposition,
-        CodexPromptHistorySourceBackedDispositionV0::Cold
-    ));
-    assert_eq!(records.len(), 2);
-    assert_eq!(core_body(&records[0]), long);
-    assert_eq!(records[0].provider_session_id.as_deref(), Some("session-a"));
-    assert_eq!(records[0].native_event_id, Some(TypedKey::U64(0)));
-    assert_eq!(records[0].occurred_at_unix_ms, Some(1_700_000_000_000));
-    assert_eq!(records[0].role.as_deref(), Some("user"));
-    assert!(records
-        .iter()
-        .all(|record| record.validate_contract().is_ok()));
-    assert!(pages
-        .iter()
-        .all(|(count, bytes)| *count <= PAGE_MAX_DOCUMENTS && *bytes <= PAGE_MAX_RETAINED_BYTES));
+    let input = CodexPromptHistorySourceBackedInputV0::explicit("history.jsonl", [7; 32]);
+    let mut projector = CodexPromptHistoryProjector {
+        source: input.source_key().unwrap(),
+        rejected_records: 0,
+    };
+    let mut worker = JsonlFamilyWorkerContext::default();
+    let mut records = Vec::new();
+    let mut bytes = prompt_line("session-a", 1_700_000_000, "complete prompt body");
+    bytes.pop();
+    projector
+        .project(
+            JsonlRecordRef::for_test(&bytes, 4),
+            &mut worker,
+            &mut |record| {
+                records.push(record);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(
+        record.content.normalized_body.as_deref(),
+        Some("complete prompt body")
+    );
+    assert_eq!(record.provider_session_id.as_deref(), Some("session-a"));
+    assert_eq!(record.native_event_id, Some(TypedKey::U64(4)));
+    assert_eq!(record.event_sequence, 4);
+    assert_eq!(record.occurred_at_unix_ms, Some(1_700_000_000_000));
+    assert_eq!(record.role.as_deref(), Some("user"));
+    assert!(record.validate_contract().is_ok());
+
+    for invalid in [
+        b"not json".as_slice(),
+        br#"{"session_id":"","ts":1,"text":"x"}"#,
+    ] {
+        projector
+            .project(
+                JsonlRecordRef::for_test(invalid, 5),
+                &mut worker,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+    }
+    assert_eq!(projector.rejected_records(), 2);
 }
 
 #[test]
-fn active_source_family_contract_prompt_history_preserves_append_noop_and_rewrite_lifecycle() {
+fn active_source_family_contract_prompt_history_preserves_append_noop_rewrite_and_tail() {
     let temp = tempdir().unwrap();
-    let path = temp.path().join("history.jsonl");
-    write_lines(&path, &[prompt_line("s", 1_700_000_000, "one")]);
-    let input = CodexPromptHistorySourceBackedInputV0::explicit(&path, [8; 32]);
-    let (cold, cold_records, _) = collect(&input, None);
+    let history = temp.path().join("history.jsonl");
+    write_lines(&history, &[prompt_line("s", 1_700_000_000, "one")]);
+    let input = CodexPromptHistorySourceBackedInputV0::explicit(&history, [8; 32]);
+    let adapter = CodexPromptHistoryJsonlFamilyAdapterV0::new(input).unwrap();
+    let driver = jsonl_family_driver(Arc::new(adapter), history.clone());
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(
+        SourceBackedRoute::automatic(
+            ProviderSource {
+                provider: CaptureProvider::Codex,
+                path: history.clone(),
+                exists: true,
+                source_format: SOURCE_FORMAT,
+                source_kind: ProviderSourceKind::NativeHistory,
+                import_support: ProviderImportSupport::Native,
+                catalog_support: ProviderCatalogSupport::None,
+                status: ProviderSourceStatus::Available,
+                unsupported_reason: None,
+            },
+            SourceBackedSelectorAuthority::DiscoveredWinner,
+            driver,
+        )
+        .unwrap(),
+    );
+    let index_root = temp.path().join("index");
 
-    append(&path, &prompt_line("s", 1_700_000_001, "two"));
-    let (appended, appended_records, _) = collect(&input, Some(&cold.certificate));
-    assert!(matches!(
-        appended.disposition,
-        CodexPromptHistorySourceBackedDispositionV0::Append
-    ));
-    assert_eq!(appended_records.len(), 1);
-    assert_eq!(core_body(&appended_records[0]), "two");
-    assert_eq!(appended_records[0].event_sequence, 1);
+    let cold =
+        refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
+    let cold_id = cold.commit.generation_id;
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    let one = index.search_event_candidates("one", 8).unwrap();
+    assert_eq!(one.len(), 1);
+    let first_event_id = one[0].event.event_id;
 
-    let (unchanged, unchanged_records, _) = collect(&input, Some(&appended.certificate));
-    assert!(matches!(
-        unchanged.disposition,
-        CodexPromptHistorySourceBackedDispositionV0::Unchanged
-    ));
-    assert!(unchanged_records.is_empty());
+    append(&history, &prompt_line("s", 1_700_000_001, "two"));
+    let appended =
+        refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
+    assert_ne!(appended.commit.generation_id, cold_id);
+    let appended_id = appended.commit.generation_id;
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(index.document_count(), 2);
+    assert_eq!(index.search_event_candidates("two", 8).unwrap().len(), 1);
+
+    let unchanged =
+        refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
+    assert_eq!(unchanged.commit.generation_id, appended_id);
 
     write_lines(
-        &path,
+        &history,
         &[
             prompt_line("s", 1_700_000_000, "rewritten one"),
             prompt_line("s", 1_700_000_001, "two"),
         ],
     );
-    let (replacement, replacement_records, _) = collect(&input, Some(&appended.certificate));
-    assert!(matches!(
-        replacement.disposition,
-        CodexPromptHistorySourceBackedDispositionV0::Replacement
-    ));
-    assert_eq!(replacement_records.len(), 2);
-    assert_eq!(core_body(&replacement_records[0]), "rewritten one");
-    assert_eq!(replacement_records[0].event_id, cold_records[0].event_id);
-}
+    refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(index.document_count(), 2);
+    let rewritten = index.search_event_candidates("rewritten", 8).unwrap();
+    assert_eq!(rewritten.len(), 1);
+    assert_eq!(rewritten[0].event.event_id, first_event_id);
 
-#[test]
-fn incomplete_tail_is_deferred_until_terminated() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("history.jsonl");
-    let complete = prompt_line("s", 1_700_000_000, "one");
-    let mut partial = prompt_line("s", 1_700_000_001, "two");
-    partial.pop();
-    write_lines(&path, &[complete, partial]);
-    let input = CodexPromptHistorySourceBackedInputV0::explicit(&path, [9; 32]);
-
-    let (cold, records, _) = collect(&input, None);
-    assert_eq!(records.len(), 1);
-    assert!(!cold.terminal);
-    append(&path, b"\n");
-    let (appended, records, _) = collect(&input, Some(&cold.certificate));
-    assert!(matches!(
-        appended.disposition,
-        CodexPromptHistorySourceBackedDispositionV0::Append
-    ));
-    assert_eq!(records.len(), 1);
-    assert_eq!(core_body(&records[0]), "two");
-    assert!(appended.terminal);
-}
-
-#[test]
-fn pages_remain_bounded() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("history.jsonl");
-    let lines = (0..(PAGE_MAX_DOCUMENTS + 3))
-        .map(|index| {
-            prompt_line(
-                "s",
-                1_700_000_000 + index as i64,
-                &format!("prompt {index}"),
-            )
-        })
-        .collect::<Vec<_>>();
-    write_lines(&path, &lines);
-    let input = CodexPromptHistorySourceBackedInputV0::explicit(&path, [10; 32]);
-    let (_, records, pages) = collect(&input, None);
-    assert_eq!(records.len(), PAGE_MAX_DOCUMENTS + 3);
-    assert_eq!(pages.len(), 2);
-    assert_eq!(pages[0].0, PAGE_MAX_DOCUMENTS);
-    assert!(pages
-        .iter()
-        .all(|(_, bytes)| *bytes <= PAGE_MAX_RETAINED_BYTES));
+    let mut tail = prompt_line("s", 1_700_000_002, "deferred tail");
+    tail.pop();
+    append(&history, &tail);
+    refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
+    assert!(VerifiedIndex::open(&index_root)
+        .unwrap()
+        .search_event_candidates("deferred", 8)
+        .unwrap()
+        .is_empty());
+    append(&history, b"\n");
+    refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(index.document_count(), 3);
+    assert_eq!(
+        index.search_event_candidates("deferred", 8).unwrap().len(),
+        1
+    );
 }
