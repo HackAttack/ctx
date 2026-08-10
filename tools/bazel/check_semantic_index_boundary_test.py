@@ -103,6 +103,26 @@ class BoundaryMutationTests(unittest.TestCase):
         with self.assertRaises(BoundaryError):
             validate(self.root)
 
+    def test_build_dependency_bypass_fails(self) -> None:
+        cargo = self.root / "crates/ctx-semantic-index/Cargo.toml"
+        cargo.write_text(
+            cargo.read_text(encoding="utf-8")
+            + "\n[build-dependencies]\ncc = \"1\"\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(BoundaryError):
+            validate(self.root)
+
+    def test_target_dependency_bypass_fails(self) -> None:
+        cargo = self.root / "crates/ctx-semantic-index/Cargo.toml"
+        cargo.write_text(
+            cargo.read_text(encoding="utf-8")
+            + "\n[target.'cfg(unix)'.dependencies]\nnix = \"0.30\"\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(BoundaryError):
+            validate(self.root)
+
     def test_cargo_feature_drift_fails(self) -> None:
         cargo = self.root / "crates/ctx-semantic-index/Cargo.toml"
         cargo.write_text(
@@ -127,6 +147,12 @@ class BoundaryMutationTests(unittest.TestCase):
     def test_nested_cli_duplicate_fails(self) -> None:
         duplicate = self.root / "crates/ctx-cli/src/semantic/vector_store/new.rs"
         duplicate.parent.mkdir(parents=True)
+        duplicate.write_text("pub fn duplicate() {}\n", encoding="utf-8")
+        with self.assertRaises(BoundaryError):
+            validate(self.root)
+
+    def test_renamed_cli_duplicate_fails(self) -> None:
+        duplicate = self.root / "crates/ctx-cli/src/semantic/semantic_store.rs"
         duplicate.write_text("pub fn duplicate() {}\n", encoding="utf-8")
         with self.assertRaises(BoundaryError):
             validate(self.root)
