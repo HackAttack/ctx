@@ -98,6 +98,10 @@ pub(super) fn tool_error_result(error: ToolBackendError) -> Value {
         ToolBackendError::EventQuery(error) => {
             crate::commands::list::events::event_query_error_value(&error)
         }
+        ToolBackendError::SourceUnavailable => json!({
+            "error": "source_unavailable",
+            "error_code": "source_unavailable",
+        }),
         ToolBackendError::GenerationAuthority(error) => {
             crate::commands::source_index::generation_query_authority_error_json(&error)
         }

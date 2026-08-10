@@ -78,10 +78,13 @@ pub(super) const MISSING_INDEX_ERROR: &str =
     "the Core index does not exist; retry with daemon refresh enabled";
 const QUEUED_WITHOUT_GENERATION_ERROR: &str =
     "daemon source refresh was queued but no published generation exists; retry with --refresh wait";
+const SOURCE_UNAVAILABLE_ERROR: &str =
+    "source_unavailable: active verified Core generation is missing";
 
 #[derive(Debug)]
 pub(super) enum SourceSearchFailure {
     Semantic(HistorySemanticError),
+    SourceUnavailable,
     GenerationChanged,
     GenerationAuthority(ctx_history_refresh::GenerationQueryAuthorityError),
     Other(anyhow::Error),
@@ -97,6 +100,8 @@ pub(crate) enum McpSearchError {
     },
     #[error("{detail}")]
     SemanticFailed { detail: String },
+    #[error("source_unavailable")]
+    SourceUnavailable,
     #[error(
         "History changed while ctx was opening the searchable generation. Retry the same request."
     )]
@@ -111,6 +116,7 @@ impl SourceSearchFailure {
     pub(super) fn into_anyhow(self) -> anyhow::Error {
         match self {
             Self::Semantic(error) => semantic_error_into_anyhow(error),
+            Self::SourceUnavailable => anyhow::anyhow!(SOURCE_UNAVAILABLE_ERROR),
             Self::GenerationChanged => {
                 anyhow::Error::new(ctx_history_index::IndexError::ConcurrentGenerationChange)
             }
@@ -133,6 +139,7 @@ impl SourceSearchFailure {
             Self::Semantic(HistorySemanticError::Failed { detail }) => {
                 McpSearchError::SemanticFailed { detail }
             }
+            Self::SourceUnavailable => McpSearchError::SourceUnavailable,
             Self::GenerationChanged => McpSearchError::GenerationChanged,
             Self::GenerationAuthority(error) => McpSearchError::GenerationAuthority(error),
             Self::Other(error) => McpSearchError::Application {
@@ -155,6 +162,7 @@ impl std::fmt::Display for SourceSearchFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Semantic(error) => std::fmt::Display::fmt(error, formatter),
+            Self::SourceUnavailable => formatter.write_str(SOURCE_UNAVAILABLE_ERROR),
             Self::GenerationChanged => formatter.write_str(
                 "History changed while ctx was opening the searchable generation. Retry the same request.",
             ),
@@ -622,7 +630,17 @@ where
             }
             return Err(SourceSearchFailure::from(error));
         }
-        Err(error) => return Err(SourceSearchFailure::from(error)),
+        Err(error) => {
+            let failure = SourceSearchFailure::from(error);
+            if mode == SourceBackedRefreshMode::Off
+                && matches!(&failure, SourceSearchFailure::Other(_))
+                && VerifiedIndex::active_generation_id(&index_root(data_root))
+                    .is_ok_and(|generation| generation.is_none())
+            {
+                return Err(SourceSearchFailure::SourceUnavailable);
+            }
+            return Err(failure);
+        }
     };
     if observation.mode != mode {
         return Err(anyhow!(
