@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -41,10 +41,11 @@ use crate::{
         custom_history_jsonl::{validate_custom_history_identifier, validate_custom_source_record},
         normalization::{provider_policy_event_text, provider_value_text},
         source_backed::family::jsonl::{
-            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
-            JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector,
-            JsonlFamilyPublication, JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof,
-            JsonlFamilyWorkerContext,
+            read_bounded_record_complete_and_prefix_sha256, JsonlFamilyAdapter,
+            JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory, JsonlFamilyLeaf,
+            JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector, JsonlFamilyPublication,
+            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+            JsonlRecordFraming,
         },
     },
     CaptureError, ProviderImportSummary, ProviderSourceFailureKind, MAX_PROVIDER_JSONL_LINE_BYTES,

@@ -14,21 +14,25 @@ pub(crate) struct JsonlRecordFraming {
 }
 
 impl JsonlRecordFraming {
-    pub(crate) const fn ordinary() -> Self {
+    pub(crate) const fn new(maximum_stored_bytes: usize, terminal_nul_padding: bool) -> Self {
         Self {
-            // Preserve the ordinary-family contract: a maximum-sized JSON
-            // value may be followed by CRLF. The common framer omits LF from
-            // storage, and the ordinary caller removes the optional CR.
-            maximum_stored_bytes: MAX_PROVIDER_JSONL_LINE_BYTES + 1,
-            terminal_nul_padding: false,
+            maximum_stored_bytes,
+            terminal_nul_padding,
         }
     }
 
+    pub(crate) const fn ordinary() -> Self {
+        Self::new(
+            // Preserve the ordinary-family contract: a maximum-sized JSON
+            // value may be followed by CRLF. The common framer omits LF from
+            // storage, and the ordinary caller removes the optional CR.
+            MAX_PROVIDER_JSONL_LINE_BYTES + 1,
+            false,
+        )
+    }
+
     pub(crate) const fn codex() -> Self {
-        Self {
-            maximum_stored_bytes: MAX_PROVIDER_JSONL_LINE_BYTES,
-            terminal_nul_padding: true,
-        }
+        Self::new(MAX_PROVIDER_JSONL_LINE_BYTES, true)
     }
 }
 
@@ -81,6 +85,39 @@ struct CompleteSha256<'a> {
     complete_hasher: &'a mut Sha256,
     complete_before_record: Sha256,
     record_hasher: Sha256,
+}
+
+struct CompleteAndBoundedPrefixSha256<'a> {
+    complete_hasher: &'a mut Sha256,
+    complete_before_record: Sha256,
+    record_hasher: Sha256,
+    bounded_prefix_hasher: &'a mut Sha256,
+    bounded_prefix_remaining: &'a mut u64,
+}
+
+impl JsonlRecordDigest for CompleteAndBoundedPrefixSha256<'_> {
+    #[inline(always)]
+    fn update(&mut self, chunk: &[u8]) {
+        self.complete_hasher.update(chunk);
+        self.record_hasher.update(chunk);
+        let take = usize::try_from((*self.bounded_prefix_remaining).min(chunk.len() as u64))
+            .unwrap_or(chunk.len());
+        self.bounded_prefix_hasher.update(&chunk[..take]);
+        *self.bounded_prefix_remaining = self
+            .bounded_prefix_remaining
+            .saturating_sub(u64::try_from(take).unwrap_or(u64::MAX));
+    }
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        self.record_hasher.finalize().into()
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        *self.complete_hasher = self.complete_before_record;
+        self.record_hasher.finalize().into()
+    }
 }
 
 impl JsonlRecordDigest for CompleteSha256<'_> {
@@ -183,6 +220,36 @@ pub(crate) fn read_bounded_record_complete_sha256(
         complete_before_record: complete_hasher.clone(),
         complete_hasher,
         record_hasher: Sha256::new(),
+    };
+    read_bounded_record_with_digest(
+        reader,
+        storage,
+        maximum_bytes,
+        framing,
+        source_changed,
+        digest,
+    )
+}
+
+pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    complete_hasher: &mut Sha256,
+    bounded_prefix_hasher: &mut Sha256,
+    bounded_prefix_remaining: &mut u64,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    let digest = CompleteAndBoundedPrefixSha256 {
+        complete_before_record: complete_hasher.clone(),
+        complete_hasher,
+        record_hasher: Sha256::new(),
+        bounded_prefix_hasher,
+        bounded_prefix_remaining,
     };
     read_bounded_record_with_digest(
         reader,

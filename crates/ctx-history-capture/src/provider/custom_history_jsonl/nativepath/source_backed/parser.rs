@@ -84,11 +84,9 @@ pub(super) fn parse_projection_with_limits(
     let mut event_spool = tempfile::tempfile()?;
     let mut catalog = ProjectionCatalog::new(limits);
     let mut source_hasher = new_prefix_hasher();
-    let mut committed_source_hasher = source_hasher.clone();
-    let mut prior_hasher = prior_prefix_bytes.map(|_| new_prefix_hasher());
-    let mut prior_observed_bytes = 0_u64;
+    let mut prior_hasher = new_prefix_hasher();
+    let mut prior_remaining = prior_prefix_bytes.unwrap_or(0);
     let mut line = Vec::new();
-    let mut line_oversized = false;
     let mut byte_offset = 0_u64;
     let mut line_start = 0_u64;
     let mut line_number = 0_usize;
@@ -96,49 +94,27 @@ pub(super) fn parse_projection_with_limits(
     {
         let mut event_writer = BufWriter::new(&mut event_spool);
         while byte_offset < frozen_length {
-            let available = reader.fill_buf()?;
-            if available.is_empty() {
-                return Err(CaptureError::SourceChangedDuringCapture.into());
-            }
-            let remaining = frozen_length.saturating_sub(byte_offset);
-            let available_len = usize::try_from(remaining.min(available.len() as u64))
-                .map_err(|_| CustomHistorySourceBackedError::CountMismatch)?;
-            let available = &available[..available_len];
-            let take = available
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(available.len(), |index| index.saturating_add(1));
-            let chunk = &available[..take];
-            source_hasher.update(chunk);
-            if let (Some(prior_prefix_bytes), Some(prior_hasher)) =
-                (prior_prefix_bytes, prior_hasher.as_mut())
-            {
-                let prior_remaining = prior_prefix_bytes.saturating_sub(prior_observed_bytes);
-                let prior_take = usize::try_from(prior_remaining.min(chunk.len() as u64))
-                    .map_err(|_| CustomHistorySourceBackedError::CountMismatch)?;
-                prior_hasher.update(&chunk[..prior_take]);
-                prior_observed_bytes = prior_observed_bytes.saturating_add(prior_take as u64);
-            }
-            if !line_oversized {
-                if line.len().saturating_add(chunk.len()) > MAX_PROVIDER_JSONL_LINE_BYTES {
-                    line.clear();
-                    line_oversized = true;
-                } else {
-                    line.extend_from_slice(chunk);
-                    #[cfg(test)]
-                    record_custom_history_work(|work| {
-                        work.peak_provider_record_bytes =
-                            work.peak_provider_record_bytes.max(line.len());
-                    });
-                }
-            }
+            let record = read_bounded_record_complete_and_prefix_sha256(
+                &mut reader,
+                &mut line,
+                &mut source_hasher,
+                &mut prior_hasher,
+                &mut prior_remaining,
+                frozen_length.saturating_sub(byte_offset),
+                JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_sub(1), false),
+                || CaptureError::SourceChangedDuringCapture,
+            )?
+            .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
             byte_offset = byte_offset
-                .checked_add(chunk.len() as u64)
+                .checked_add(record.byte_len)
                 .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
-            let complete = chunk.last() == Some(&b'\n');
-            reader.consume(take);
-            if !complete {
-                continue;
+            #[cfg(test)]
+            record_custom_history_work(|work| {
+                work.peak_provider_record_bytes =
+                    work.peak_provider_record_bytes.max(record.stored_len);
+            });
+            if !record.complete {
+                break;
             }
 
             line_number = line_number
@@ -149,16 +125,13 @@ pub(super) fn parse_projection_with_limits(
                 byte_offset: line_start,
             };
             catalog.budget.admit_record()?;
-            if line_oversized {
+            if record.oversized {
                 catalog.summary.skipped = catalog.summary.skipped.saturating_add(1);
                 catalog.summary.skipped_events = catalog.summary.skipped_events.saturating_add(1);
                 catalog.oversized_lines.insert(line_number);
             } else {
                 visit_record(&line, evidence, &mut catalog, &mut event_writer)?;
             }
-            committed_source_hasher = source_hasher.clone();
-            line.clear();
-            line_oversized = false;
             line_start = byte_offset;
         }
         event_writer.flush()?;
@@ -167,10 +140,10 @@ pub(super) fn parse_projection_with_limits(
     event_spool.seek(SeekFrom::Start(0))?;
     let terminal = line_start == frozen_length;
     let certified_prefix_bytes = line_start;
-    let content_digest = finish_prefix_digest(&committed_source_hasher, certified_prefix_bytes);
-    let observed_prior_prefix_digest = match (prior_prefix_bytes, prior_hasher) {
-        (Some(expected), Some(hasher)) if prior_observed_bytes == expected => {
-            Some(finish_prefix_digest(&hasher, expected))
+    let content_digest = finish_prefix_digest(&source_hasher, certified_prefix_bytes);
+    let observed_prior_prefix_digest = match prior_prefix_bytes {
+        Some(expected) if prior_remaining == 0 => {
+            Some(finish_prefix_digest(&prior_hasher, expected))
         }
         _ => None,
     };
