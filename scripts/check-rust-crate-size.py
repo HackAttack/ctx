@@ -20,14 +20,19 @@ BASELINE_SHA256 = "97e4c317875e50608afb339adaacc8f08579119cc33ff1e6f7253355c1ece
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 LABEL = re.compile(r"^//(?:[A-Za-z0-9._+/-]*):[A-Za-z0-9._+/-]+$")
-STANDALONE_KINDS = {"test": "tests", "example": "examples", "bench": "benches"}
 RUST_RULE_KINDS = {"rust_library rule", "rust_binary rule", "rust_proc_macro rule", "rust_test rule"}
 CENSUS_CONTROL_PATHS = {
+    ".bazelignore",
+    ".bazelrc",
     ".bazelversion",
+    ".gitignore",
+    ".cargo/config",
+    ".cargo/config.toml",
     "Cargo.lock",
     "MODULE.bazel",
     "MODULE.bazel.lock",
     "scripts/bazelw",
+    "scripts/check.sh",
 }
 
 
@@ -151,18 +156,18 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
 
 
 def read_policy(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    configured = os.environ.get("CTX_CRATE_LOC_POLICY_FILE", POLICY_PATH)
-    policy = load_json(repo_file(root, configured, "crate-size policy"), "crate-size policy")
+    policy = load_json(repo_file(root, POLICY_PATH, "crate-size policy"), "crate-size policy")
     expected = {
         "schema_version",
         "policy",
         "metric_policy",
         "hard_limit",
         "grandfathered_at",
+        "previous_accepted_mainline",
         "baseline_inventory",
         "target_inventory",
         "checked_report",
-        "temporary_exceptions",
+        "exception_ledger",
     }
     if set(policy) != expected or policy.get("schema_version") != 1:
         raise GateError("crate-size policy schema is unsupported")
@@ -173,6 +178,9 @@ def read_policy(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     snapshot = policy.get("grandfathered_at")
     if not isinstance(snapshot, str) or COMMIT.fullmatch(snapshot) is None:
         raise GateError("grandfathered_at must be a full lowercase commit SHA")
+    previous = policy.get("previous_accepted_mainline")
+    if not isinstance(previous, str) or COMMIT.fullmatch(previous) is None:
+        raise GateError("previous_accepted_mainline must be a full lowercase commit SHA")
     metric_policy = load_json(
         repo_file(root, policy.get("metric_policy"), "LOC-v2 metric policy"),
         "LOC-v2 metric policy",
@@ -325,7 +333,7 @@ def packages_from_cargo_metadata(metadata: dict[str, Any]) -> list[dict[str, Any
                 raise GateError(f"unsupported Cargo target kind for {name}: {kinds!r}")
             if not isinstance(target_name, str) or not target_name:
                 raise GateError(f"cargo metadata target name is malformed: {name}")
-            kind = "lib" if kinds[0] == "proc-macro" else kinds[0]
+            kind = kinds[0]
             key = f"{kind}:{target_name}"
             path = metadata_repo_path(target.get("src_path"), f"Cargo target source for {name} {key}")
             if key in targets:
@@ -359,7 +367,7 @@ def validate_label(value: Any, label: str) -> str:
 
 def load_inventory(root: Path, policy: dict[str, Any]) -> dict[str, Any]:
     value = load_json(repo_file(root, policy.get("target_inventory"), "Rust target inventory"), "Rust target inventory")
-    if set(value) != {"schema_version", "census", "packages"} or value.get("schema_version") != 3:
+    if set(value) != {"schema_version", "census", "packages"} or value.get("schema_version") != 4:
         raise GateError("Rust target inventory schema is unsupported")
     if not isinstance(value.get("census"), dict) or not isinstance(value.get("packages"), dict):
         raise GateError("Rust target inventory packages must be an object")
@@ -383,17 +391,6 @@ def rust_source_owner(packages: list[dict[str, Any]], path: str) -> dict[str, An
     return embedded[0]
 
 
-def standalone_target_root(package: dict[str, Any], target: CargoTarget) -> bool:
-    directory = STANDALONE_KINDS.get(target.kind)
-    if directory is None:
-        return False
-    try:
-        relative = PurePosixPath(target.root).relative_to(package["root"])
-    except ValueError:
-        return False
-    return bool(relative.parts and relative.parts[0] == directory)
-
-
 def validate_inventory(
     view: SourceView,
     packages: list[dict[str, Any]],
@@ -405,10 +402,9 @@ def validate_inventory(
     expected_keys = {
         "manifest",
         "root",
-        "targets",
+        "cargo_bazel_targets",
         "cargo_target_roots",
         "bazel_production_targets",
-        "excluded_test_sources",
         "native_unit",
         "focused_tests",
     }
@@ -425,35 +421,30 @@ def validate_inventory(
             raise GateError(f"workspace package has no declared BUILD.bazel: {root}")
         package = {"package": name, "manifest": manifest, "root": root, "build": build}
         roots = entry["cargo_target_roots"]
-        targets = entry["targets"]
-        if not isinstance(targets, dict) or not isinstance(roots, dict) or set(targets) != set(roots):
-            raise GateError(f"Rust target inventory target/root mismatch for {name}")
+        targets = entry["cargo_bazel_targets"]
+        if not isinstance(targets, dict) or not isinstance(roots, dict):
+            raise GateError(f"Rust target inventory target/root mapping is malformed for {name}")
         actual_targets: dict[str, CargoTarget] = {}
         for key, path in roots.items():
             if not isinstance(key, str) or ":" not in key:
                 raise GateError(f"Cargo target identity is malformed: {name} {key!r}")
             kind, target_name = key.split(":", 1)
-            if kind not in {"lib", "bin", "test", "example", "bench", "custom-build"} or not target_name:
+            if kind not in {"lib", "bin", "test", "example", "bench", "custom-build", "proc-macro"} or not target_name:
                 raise GateError(f"Cargo target identity is malformed: {name} {key}")
             normalized_path(path, f"Cargo target source for {name} {key}")
             if natural_package_owner([package], path) is None or not view.exists(path):
                 raise GateError(f"Cargo target source is missing or outside its package: {name} {key} -> {path}")
             actual_targets[key] = CargoTarget(key, kind, target_name, path)
+        expected_mapped = {key for key, target in actual_targets.items() if target.kind != "custom-build"}
+        if set(targets) != expected_mapped:
+            raise GateError(f"Rust target inventory derived Cargo/Bazel mapping mismatch for {name}")
         labels = [validate_label(value, f"target label for {name} {key}") for key, value in targets.items()]
         if len(labels) != len(set(labels)):
-            raise GateError(f"Cargo target labels are not unique within {name}")
+            raise GateError(f"Cargo/Bazel mappings are not one-to-one within {name}")
         production_labels = [
             validate_label(value, f"Bazel production target for {name}")
             for value in validate_string_list(entry["bazel_production_targets"], f"Bazel production targets for {name}")
         ]
-        excluded_test_sources = validate_string_list(
-            entry["excluded_test_sources"],
-            f"independently proven standalone test sources for {name}",
-        )
-        for path in excluded_test_sources:
-            normalized_path(path, f"standalone test source for {name}")
-            if not path.endswith(".rs") or not view.exists(path) or natural_package_owner([package], path) is None:
-                raise GateError(f"standalone test source is missing, non-Rust, or outside its package: {path}")
         native_unit = entry["native_unit"]
         if native_unit is not None:
             validate_label(native_unit, f"native unit target for {name}")
@@ -464,7 +455,6 @@ def validate_inventory(
             "targets": actual_targets,
             "package": package,
             "bazel_production_targets": set(production_labels),
-            "excluded_test_sources": set(excluded_test_sources),
         }
     packages = [item["package"] for item in result.values()]
     roots = sorted(package["root"] for package in packages)
@@ -486,7 +476,7 @@ def census_input_paths(paths: set[str]) -> set[str]:
         name = PurePosixPath(path).name
         if (
             path.endswith(".rs")
-            or name in {"Cargo.toml", "BUILD", "BUILD.bazel"}
+            or name in {".gitignore", "Cargo.toml", "BUILD", "BUILD.bazel"}
             or path.endswith(".bzl")
             or path in CENSUS_CONTROL_PATHS
         ):
@@ -517,20 +507,13 @@ def file_census_digest(view: SourceView) -> str:
 def tool_identities(
     root: Path,
     metric_policy: dict[str, Any],
-    discovered: dict[str, Any],
 ) -> dict[str, str]:
-    for key in ("cargo_binary", "git_binary", "python_binary"):
-        if not isinstance(discovered.get(key), str) or not discovered[key]:
-            raise GateError(f"crate-size census tool identity is malformed: {key}")
     return {
-        "git": "ls-files --cached --others --exclude-standard -z; git-blob-sha1",
-        "cargo": "cargo metadata --locked --offline --no-deps --format-version 1",
+        "git": "isolated-config ls-files --cached --others --exclude-standard -z; git-blob-sha1",
+        "cargo": "cargo-1.97.1 metadata-v1 locked offline no-deps isolated-home-target-config",
         "bazel": repo_file(root, ".bazelversion", "Bazel version pin").read_text(encoding="utf-8").strip(),
-        "bazel_query": "unconfigured XML rust_binary|rust_library|rust_proc_macro|rust_test with recursive srcs/filegroups",
+        "bazel_query": "local-offline unconfigured XML rust_binary|rust_library|rust_proc_macro|rust_test recursive srcs/filegroups",
         "scc": f"3.7.0:{metric_policy['binary_sha256']}",
-        "cargo_binary": discovered["cargo_binary"],
-        "git_binary": discovered["git_binary"],
-        "python_binary": discovered["python_binary"],
     }
 
 
@@ -544,18 +527,26 @@ def census_components(
 ) -> dict[str, Any]:
     cargo_hash = census.get("cargo_metadata_sha256")
     bazel_hash = census.get("bazel_query_sha256")
+    accepted_ledger_hash = census.get("accepted_ledger_sha256")
     if not isinstance(cargo_hash, str) or SHA256.fullmatch(cargo_hash) is None:
         raise GateError("Cargo metadata census hash is malformed")
     if not isinstance(bazel_hash, str) or SHA256.fullmatch(bazel_hash) is None:
         raise GateError("Bazel query census hash is malformed")
+    if not isinstance(accepted_ledger_hash, str) or SHA256.fullmatch(accepted_ledger_hash) is None:
+        raise GateError("accepted mainline ledger census hash is malformed")
     return {
         "schema_version": 1,
         "admission_sha": policy["grandfathered_at"],
+        "previous_accepted_mainline": policy["previous_accepted_mainline"],
         "files_sha256": file_census_digest(view),
         "cargo_metadata_sha256": cargo_hash,
         "bazel_query_sha256": bazel_hash,
+        "accepted_ledger_sha256": accepted_ledger_hash,
         "authority_packages_sha256": hashlib.sha256(canonical_bytes(authority_packages)).hexdigest(),
         "policy_sha256": hashlib.sha256(repo_file(root, POLICY_PATH, "crate-size policy").read_bytes()).hexdigest(),
+        "metric_policy_sha256": hashlib.sha256(
+            repo_file(root, policy["metric_policy"], "LOC-v2 metric policy").read_bytes()
+        ).hexdigest(),
         "implementation_sha256": hashlib.sha256(
             repo_file(root, "scripts/check-rust-crate-size.py", "crate-size implementation").read_bytes()
         ).hexdigest(),
@@ -565,7 +556,10 @@ def census_components(
         "authority_harness_sha256": hashlib.sha256(
             repo_file(root, "scripts/bazel-test.sh", "crate-size authority harness").read_bytes()
         ).hexdigest(),
-        "tool_identities": tool_identities(root, metric_policy, census.get("tool_identities", {})),
+        "ci_driver_sha256": hashlib.sha256(
+            repo_file(root, "scripts/check.sh", "crate-size CI preflight driver").read_bytes()
+        ).hexdigest(),
+        "tool_identities": tool_identities(root, metric_policy),
     }
 
 
@@ -582,9 +576,10 @@ def validate_census(
     authority_packages: dict[str, Any],
 ) -> str:
     expected_keys = {
-        "schema_version", "admission_sha", "files_sha256", "cargo_metadata_sha256", "bazel_query_sha256",
-        "authority_packages_sha256",
-        "policy_sha256", "implementation_sha256", "inventory_checker_sha256", "authority_harness_sha256",
+        "schema_version", "admission_sha", "previous_accepted_mainline", "files_sha256",
+        "cargo_metadata_sha256", "bazel_query_sha256", "accepted_ledger_sha256", "authority_packages_sha256",
+        "policy_sha256", "metric_policy_sha256", "implementation_sha256", "inventory_checker_sha256",
+        "authority_harness_sha256", "ci_driver_sha256",
         "tool_identities", "full_sha256",
     }
     if set(census) != expected_keys or census.get("schema_version") != 1:
@@ -612,7 +607,6 @@ def production_sources(
     for package in packages:
         name = package["package"]
         sources = {path for path, owner in assigned.items() if owner == name}
-        sources.difference_update(inventory[name]["excluded_test_sources"])
         if not sources:
             raise GateError(f"workspace package has no production Rust source: {name}")
         result[name] = sources
@@ -711,38 +705,128 @@ def validate_baseline(root: Path, policy: dict[str, Any]) -> dict[str, dict[str,
     return result
 
 
-def validate_exceptions(
-    policy: dict[str, Any], baseline: dict[str, dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    entries = policy.get("temporary_exceptions")
-    if not isinstance(entries, list):
-        raise GateError("temporary_exceptions must be an array")
-    names: list[str] = []
-    result: dict[str, dict[str, Any]] = {}
-    for entry in entries:
+def parse_exception_ledger(
+    ledger: Any,
+    baseline: dict[str, dict[str, Any]],
+    label: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    if not isinstance(ledger, dict) or set(ledger) != {"active", "retired"}:
+        raise GateError(f"{label} exception ledger is malformed")
+    active_entries = ledger["active"]
+    retired_entries = ledger["retired"]
+    if not isinstance(active_entries, list) or not isinstance(retired_entries, list):
+        raise GateError(f"{label} exception ledger arrays are malformed")
+    active: dict[str, dict[str, Any]] = {}
+    active_names: list[str] = []
+    for entry in active_entries:
         if not isinstance(entry, dict) or set(entry) != {"package", "manifest", "maximum_cloc"}:
-            raise GateError("temporary crate-size exception is malformed")
+            raise GateError(f"{label} active exception is malformed")
         name = entry.get("package")
         ceiling = entry.get("maximum_cloc")
         if not isinstance(name, str) or not name:
-            raise GateError("temporary crate-size exception package is malformed")
+            raise GateError(f"{label} active exception package is malformed")
         source = baseline.get(name)
         if source is None or source["production_cloc"] <= 20_000:
-            raise GateError(f"new crate-size exceptions are forbidden: {name} was not over limit at the fixed baseline")
+            raise GateError(f"new crate-size exceptions are forbidden: {name} was not over limit at admission")
         if entry.get("manifest") != source["manifest"]:
-            raise GateError(f"temporary crate-size exception manifest drift: {name}")
+            raise GateError(f"{label} active exception manifest drift: {name}")
         if (
             not isinstance(ceiling, int)
             or isinstance(ceiling, bool)
             or ceiling <= 20_000
             or ceiling > source["production_cloc"]
         ):
-            raise GateError(f"temporary crate-size exception ceiling is invalid: {name}")
-        names.append(name)
-        result[name] = entry
-    if names != sorted(names) or len(names) != len(set(names)):
-        raise GateError("temporary crate-size exceptions must be sorted and unique")
-    return result
+            raise GateError(f"{label} active exception ceiling is invalid: {name}")
+        active_names.append(name)
+        active[name] = entry
+    if active_names != sorted(active_names) or len(active_names) != len(set(active_names)):
+        raise GateError(f"{label} active exceptions must be sorted and unique")
+
+    retired: dict[str, dict[str, Any]] = {}
+    retired_names: list[str] = []
+    for entry in retired_entries:
+        if not isinstance(entry, dict) or set(entry) != {"package", "manifest", "admission_cloc"}:
+            raise GateError(f"{label} retired exception tombstone is malformed")
+        name = entry.get("package")
+        source = baseline.get(name)
+        if not isinstance(name, str) or source is None or source["production_cloc"] <= 20_000:
+            raise GateError(f"{label} retired exception was not an admission offender: {name!r}")
+        if entry.get("manifest") != source["manifest"] or entry.get("admission_cloc") != source["production_cloc"]:
+            raise GateError(f"{label} retired exception tombstone drift: {name}")
+        retired_names.append(name)
+        retired[name] = entry
+    if retired_names != sorted(retired_names) or len(retired_names) != len(set(retired_names)):
+        raise GateError(f"{label} retired exception tombstones must be sorted and unique")
+    overlap = set(active) & set(retired)
+    if overlap:
+        raise GateError(f"{label} exception ledger has active/retired overlap: {sorted(overlap)}")
+    return active, retired
+
+
+def validate_ledger(
+    policy: dict[str, Any], baseline: dict[str, dict[str, Any]]
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    return parse_exception_ledger(policy.get("exception_ledger"), baseline, "candidate")
+
+
+def validate_ledger_transition(
+    candidate_policy: dict[str, Any],
+    previous_policy: dict[str, Any] | None,
+    baseline: dict[str, dict[str, Any]],
+) -> str:
+    candidate_active, candidate_retired = validate_ledger(candidate_policy, baseline)
+    admission_offenders = {
+        name for name, record in baseline.items() if record["production_cloc"] > 20_000
+    }
+    if previous_policy is None:
+        if candidate_retired or set(candidate_active) != admission_offenders:
+            raise GateError("bootstrap exception ledger must contain exactly the admission offenders and no tombstones")
+        for name, entry in candidate_active.items():
+            if entry["maximum_cloc"] != baseline[name]["production_cloc"]:
+                raise GateError(f"bootstrap exception ceiling must equal immutable admission CLOC: {name}")
+        return "bootstrap"
+
+    if previous_policy.get("grandfathered_at") != candidate_policy["grandfathered_at"]:
+        raise GateError("immutable exception admission snapshot changed from previous accepted mainline")
+    if previous_policy.get("hard_limit") != 20_000:
+        raise GateError("previous accepted mainline did not contain the one-tier hard limit")
+    previous_active, previous_retired = parse_exception_ledger(
+        previous_policy.get("exception_ledger"), baseline, "previous accepted mainline"
+    )
+    resurrected = set(candidate_active) & set(previous_retired)
+    if resurrected:
+        raise GateError(f"retired exception cannot be resurrected: {sorted(resurrected)}")
+    for name, previous in previous_retired.items():
+        if candidate_retired.get(name) != previous:
+            raise GateError(f"retired exception tombstone is irreversible: {name}")
+    for name, candidate in candidate_active.items():
+        previous = previous_active.get(name)
+        if previous is None:
+            raise GateError(f"new exception is forbidden by previous accepted mainline: {name}")
+        if candidate["manifest"] != previous["manifest"]:
+            raise GateError(f"exception manifest changed from previous accepted mainline: {name}")
+        if candidate["maximum_cloc"] > previous["maximum_cloc"]:
+            raise GateError(
+                f"exception ceiling increase is forbidden: {name} "
+                f"{previous['maximum_cloc']} -> {candidate['maximum_cloc']}"
+            )
+    removed = set(previous_active) - set(candidate_active)
+    expected_retired = set(previous_retired) | removed
+    if set(candidate_retired) != expected_retired:
+        raise GateError(
+            "removed exceptions must become permanent tombstones: "
+            f"missing={sorted(expected_retired-set(candidate_retired))}, "
+            f"unexpected={sorted(set(candidate_retired)-expected_retired)}"
+        )
+    for name in removed:
+        expected = {
+            "package": name,
+            "manifest": baseline[name]["manifest"],
+            "admission_cloc": baseline[name]["production_cloc"],
+        }
+        if candidate_retired[name] != expected:
+            raise GateError(f"new retired exception tombstone is malformed: {name}")
+    return "successor"
 
 
 def evaluate_limits(
@@ -882,7 +966,7 @@ def main() -> int:
     counts = run_scc(scc, root, all_sources)
 
     baseline = validate_baseline(root, policy)
-    exceptions = validate_exceptions(policy, baseline)
+    exceptions, retired = validate_ledger(policy, baseline)
     packages_report = build_package_report(packages, package_sources, counts, exceptions)
     checked_shape = {
         "schema_version": 2,
@@ -904,7 +988,7 @@ def main() -> int:
         return 1
     print(
         f"Rust crate-size gate passed ({len(packages_report)} production crates; hard limit 20000 CLOC; "
-        f"{len(exceptions)} temporary shrink-only entries).",
+        f"{len(exceptions)} active shrink-only entries; {len(retired)} irreversible tombstones).",
         file=sys.stderr,
     )
     return 0

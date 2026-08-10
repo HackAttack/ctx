@@ -1,22 +1,26 @@
 {
   "schema_version": 1,
-  "policy": "Every Rust workspace package has one hard maximum of 20,000 scc Code/CLOC under the checked checkout census. Every checked-in Rust file is assigned to exactly one package and counts in full unless Cargo metadata or a Bazel rust_test source closure proves exclusive standalone-test ownership; rust_library, rust_binary, and rust_proc_macro sources remain production even when testonly. Only packages proven over the limit by the immutable admission baseline may use an exact temporary ceiling; each ceiling is shrink-only and must be deleted at or below 20,000 CLOC. New exceptions, manual cfg/feature exclusions, and advisory tiers are forbidden.",
+  "policy": "Every Rust workspace package has one hard maximum of 20,000 scc Code/CLOC under the checked checkout census. Every checked-in Rust file assigned to a package counts in full, including standalone tests, examples, benches, inline tests, test support, unreachable code, and every cfg/feature/path variant. Only immutable admission offenders may have active temporary ceilings. Each accepted successor ceiling must equal current CLOC and may never exceed the previous accepted mainline ceiling; retired exceptions become permanent tombstones and can never be resurrected. New exceptions, manual exclusions, ceiling increases, and advisory tiers are forbidden.",
   "metric_policy": "scripts/check-loc-policy-v2.json",
   "hard_limit": 20000,
   "grandfathered_at": "5a972aeb8ba846bef25167b11763d18cab271004",
+  "previous_accepted_mainline": "5a972aeb8ba846bef25167b11763d18cab271004",
   "baseline_inventory": "scripts/check-rust-crate-size-baseline-v1.json",
   "target_inventory": "tools/bazel/rust-target-inventory.json",
   "checked_report": "scripts/check-rust-crate-size-report-v1.json",
-  "temporary_exceptions": [
-    {
-      "package": "ctx",
-      "manifest": "crates/ctx-cli/Cargo.toml",
-      "maximum_cloc": 115409
-    },
-    {
-      "package": "ctx-history-capture",
-      "manifest": "crates/ctx-history-capture/Cargo.toml",
-      "maximum_cloc": 160949
-    }
-  ]
+  "exception_ledger": {
+    "active": [
+      {
+        "package": "ctx",
+        "manifest": "crates/ctx-cli/Cargo.toml",
+        "maximum_cloc": 115409
+      },
+      {
+        "package": "ctx-history-capture",
+        "manifest": "crates/ctx-history-capture/Cargo.toml",
+        "maximum_cloc": 160949
+      }
+    ],
+    "retired": []
+  }
 }

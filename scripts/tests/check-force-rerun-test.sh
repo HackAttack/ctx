@@ -16,9 +16,15 @@ fail() {
   exit 1
 }
 
-mkdir -p "${repo_root}/scripts"
+mkdir -p "${repo_root}/scripts" "${repo_root}/tools/bazel"
 cp "${source_root}/scripts/check.sh" "${repo_root}/scripts/check.sh"
 cp "${source_root}/scripts/tests/fixtures/fake-bazel.sh" "${repo_root}/scripts/bazelw"
+printf '%s\n' \
+  '#!/usr/bin/env python3' \
+  'import os, sys' \
+  'with open(os.environ["CTX_FAKE_BAZEL_LOG"], "a", encoding="utf-8") as output:' \
+  '    output.write("preflight=" + " ".join(sys.argv[1:]) + "\n")' \
+  >"${repo_root}/tools/bazel/check_rust_target_inventory.py"
 chmod +x "${repo_root}/scripts/check.sh" "${repo_root}/scripts/bazelw"
 
 export CTX_FAKE_BAZEL_LOG="${test_root}/fake-bazel.log"
@@ -27,6 +33,10 @@ unset RUST_TEST_THREADS
 : >"${CTX_FAKE_BAZEL_LOG}"
 "${repo_root}/scripts/check.sh" --mode ci --force-rerun \
   >"${test_root}/ci.out" 2>"${test_root}/ci.err"
+[[ "$(grep -c '^preflight=--preflight ' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+  || fail 'ci mode did not run exactly one local authority preflight'
+[[ "$(sed -n '1p' "${CTX_FAKE_BAZEL_LOG}")" == preflight=--preflight\ * ]] \
+  || fail 'ci mode did not run authority preflight before Bazel'
 if grep -Fqx 'arg=query' "${CTX_FAKE_BAZEL_LOG}"; then
   fail 'ci mode ran a redundant Bazel query'
 fi
@@ -55,6 +65,8 @@ fi
 : >"${CTX_FAKE_BAZEL_LOG}"
 "${repo_root}/scripts/check.sh" --mode ci \
   >"${test_root}/normal.out" 2>"${test_root}/normal.err"
+[[ "$(grep -c '^preflight=--preflight ' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+  || fail 'normal ci mode did not run exactly one local authority preflight'
 if grep -Fqx 'arg=--cache_test_results=no' "${CTX_FAKE_BAZEL_LOG}"; then
   fail 'normal mode disabled Bazel test-result reuse'
 fi
@@ -82,18 +94,24 @@ expected_modes="$(printf '%s\n' ci nightly release)"
   || fail 'mode inventory is not the canonical three-tier taxonomy'
 
 for removed_mode in fast presubmit smoke; do
+  : >"${CTX_FAKE_BAZEL_LOG}"
   if "${repo_root}/scripts/check.sh" --mode "${removed_mode}" \
     >"${test_root}/${removed_mode}.out" 2>"${test_root}/${removed_mode}.err"; then
     fail "removed ${removed_mode} mode still succeeds"
   fi
   grep -Fq "unknown check mode: ${removed_mode}" "${test_root}/${removed_mode}.err" \
     || fail "removed ${removed_mode} mode did not fail explicitly"
+  if [[ -s "${CTX_FAKE_BAZEL_LOG}" ]]; then
+    fail "removed ${removed_mode} mode ran preflight or Bazel"
+  fi
 done
 
 for mode in nightly release; do
   : >"${CTX_FAKE_BAZEL_LOG}"
   "${repo_root}/scripts/check.sh" --mode "${mode}" \
     >"${test_root}/${mode}.out" 2>"${test_root}/${mode}.err"
+  [[ "$(grep -c '^preflight=--preflight ' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+    || fail "${mode} mode did not run exactly one local authority preflight"
   grep -Fqx "arg=//:${mode}" "${CTX_FAKE_BAZEL_LOG}" \
     || fail "${mode} mode did not execute its owning suite"
 done
