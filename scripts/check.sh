@@ -18,6 +18,11 @@ run_bazel() {
   scripts/bazelw "${command[@]}"
 }
 
+run_rust_crate_size_preflight() {
+  printf '==> local physical Rust crate-size preflight\n'
+  python3 scripts/check-rust-crate-size.py --preflight "${repo_root}"
+}
+
 usage() {
   cat <<'USAGE'
 usage: scripts/check.sh [--mode MODE] [--force-rerun]
@@ -29,6 +34,7 @@ Modes:
   nightly    ci plus serialized upgrade, daemon, and fault qualification
   release    nightly qualification for a release candidate
 
+The physical Rust crate-size preflight runs locally before each named mode.
 Cargo is not invoked by these modes; Bazel is the build and test authority.
 --force-rerun disables test-result reuse without deleting compilation caches.
 USAGE
@@ -59,6 +65,13 @@ while (( "$#" > 0 )); do
 done
 
 case "${mode}" in
+  ci|nightly|release) ;;
+  *) printf 'unknown check mode: %s\n' "${mode}" >&2; usage >&2; exit 2 ;;
+esac
+
+run_rust_crate_size_preflight
+
+case "${mode}" in
   ci)
     run_bazel build //... --config=ci --config=lint
     run_bazel test //:ci --config=ci
@@ -71,5 +84,4 @@ case "${mode}" in
     run_bazel build //... --config=ci --config=lint
     run_bazel test //:release --config=ci
     ;;
-  *) printf 'unknown check mode: %s\n' "${mode}" >&2; usage >&2; exit 2 ;;
 esac
