@@ -1304,39 +1304,41 @@ fn package_root() -> PathBuf {
     );
 }
 
-fn production_source_paths(root: &Path) -> Vec<PathBuf> {
-    fn visit(directory: &Path, paths: &mut Vec<PathBuf>) {
-        let mut entries = fs::read_dir(directory)
-            .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|error| panic!("read {} entry: {error}", directory.display()));
-        entries.sort_by_key(|entry| entry.path());
-        for entry in entries {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.file_name().and_then(|name| name.to_str()) != Some("tests") {
-                    visit(&path, paths);
-                }
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs")
-                && !is_test_source_file(&path)
-            {
-                paths.push(path);
+fn visit_production_source_files(directory: &Path, paths: &mut Vec<PathBuf>) {
+    let mut entries = fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("read {} entry: {error}", directory.display()));
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|name| name.to_str()) != Some("tests") {
+                visit_production_source_files(&path, paths);
             }
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+            && !is_test_source_file(&path)
+        {
+            paths.push(path);
         }
     }
+}
 
+fn production_source_paths(root: &Path) -> Vec<PathBuf> {
     let workspace_root = root
         .parent()
         .and_then(Path::parent)
         .expect("ctx-cli package belongs to the workspace crates directory");
+    let daemon_runtime_root = workspace_root.join("crates/ctx-daemon-runtime");
     let engine_root = workspace_root.join("crates/ctx-upgrade-engine");
     let mut paths = vec![
         root.join("build.rs"),
         workspace_root.join("crates/ctx-semantic-model/build.rs"),
         engine_root.join("build.rs"),
     ];
-    visit(&root.join("src"), &mut paths);
-    visit(&engine_root.join("src"), &mut paths);
+    visit_production_source_files(&root.join("src"), &mut paths);
+    visit_production_source_files(&daemon_runtime_root.join("src"), &mut paths);
+    visit_production_source_files(&engine_root.join("src"), &mut paths);
     paths.sort();
     paths
 }
@@ -1364,11 +1366,17 @@ fn scan_package() -> Vec<Site> {
         .and_then(Path::parent)
         .expect("ctx-cli package belongs to the workspace crates directory");
     let model_build = workspace_root.join("crates/ctx-semantic-model/build.rs");
+    let daemon_runtime_root = workspace_root.join("crates/ctx-daemon-runtime");
     let engine_root = workspace_root.join("crates/ctx-upgrade-engine");
     let mut sources = Vec::new();
     for path in production_source_paths(&root) {
         let relative = if path == model_build {
             "crates/ctx-semantic-model/build.rs".to_owned()
+        } else if let Ok(relative) = path.strip_prefix(&daemon_runtime_root) {
+            format!(
+                "crates/ctx-daemon-runtime/{}",
+                relative.to_string_lossy().replace('\\', "/")
+            )
         } else if let Ok(relative) = path.strip_prefix(&engine_root) {
             format!(
                 "crates/ctx-upgrade-engine/{}",

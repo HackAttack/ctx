@@ -1106,8 +1106,8 @@ fn windows_pre_submission_disconnect_codes_are_classified_without_native_io() {
 
 #[test]
 fn windows_pipe_creation_source_verifies_a_protected_handle_bound_acl() {
-    let security = include_str!("query_service/windows_security.rs");
-    let server = include_str!("query_service/server/transport.rs");
+    let security = include_str!("../../../ctx-daemon-runtime/src/ipc/server/windows_security.rs");
+    let server = include_str!("../../../ctx-daemon-runtime/src/ipc/server/transport.rs");
     assert!(security.contains("GetTokenInformation"));
     assert!(security.contains("WinLocalSystemSid"));
     assert!(security.contains("SE_DACL_PROTECTED"));

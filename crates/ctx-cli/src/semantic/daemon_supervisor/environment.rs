@@ -1,8 +1,9 @@
-#[cfg(unix)]
+#[cfg(any(test, unix))]
 use std::path::PathBuf;
 use std::{collections::BTreeMap, env, ffi::OsString, path::Path};
 
 use anyhow::{anyhow, Result};
+use ctx_daemon_runtime::{NormalizedLaunch, SupervisorIdentity, SupervisorSpec};
 use ctx_history_core::utc_now;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -49,6 +50,11 @@ const SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST: &[&str] = &[
     "no_proxy",
 ];
 const PRO_CHANNEL_ENV: &str = "CTX_PRO_CHANNEL";
+#[cfg(any(test, target_os = "linux"))]
+pub(super) const SYSTEMD_UNIT_NAME: &str = "ctx.service";
+#[cfg(any(test, target_os = "macos"))]
+pub(super) const LAUNCH_AGENT_LABEL: &str = "rs.ctx.daemon";
+pub(super) const SUPERVISOR_DESCRIPTION: &str = "ctx persistent history daemon";
 const SUPERVISOR_DAEMON_FIXED_PATH: &str = if cfg!(windows) {
     r"C:\Windows\System32;C:\Windows"
 } else {
@@ -139,32 +145,16 @@ pub(super) fn supervisor_environment_contract_report() -> Value {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(test)]
 pub(super) fn linux_systemd_unit_with_environment(
     executable: &Path,
     data_root: &Path,
     snapshot: &SupervisorEnvironmentSnapshot,
 ) -> Result<String> {
-    let executable = validated_supervisor_artifact_path("ctx executable", executable)?;
-    let data_root = validated_supervisor_artifact_path("ctx data root", data_root)?;
-    let environment = snapshot
-        .values
-        .iter()
-        .map(|(name, value)| systemd_quote_text(&format!("{name}={value}")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok(format!(
-        "[Unit]\nDescription=ctx persistent history daemon\n\n[Service]\nType=simple\nExecStart=/usr/bin/env -i {} {} --data-root {} daemon run --format=json\nRestart=on-failure\nRestartSec=2\nStandardOutput=null\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n",
-        environment,
-        systemd_quote_text(executable),
-        systemd_quote_text(data_root),
-    ))
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn systemd_quote_text(value: &str) -> String {
-    let value = value.replace('%', "%%");
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    let identity = supervisor_identity(SYSTEMD_UNIT_NAME, PathBuf::from(SYSTEMD_UNIT_NAME))?;
+    ctx_daemon_runtime::linux_systemd_unit(&supervisor_artifact_spec(
+        identity, executable, data_root, snapshot,
+    )?)
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -173,35 +163,60 @@ pub(super) fn launch_agent_plist_with_environment(
     data_root: &Path,
     snapshot: &SupervisorEnvironmentSnapshot,
 ) -> Result<String> {
-    let executable = validated_supervisor_artifact_path("ctx executable", executable)?;
-    let data_root = validated_supervisor_artifact_path("ctx data root", data_root)?;
+    let identity = supervisor_identity(
+        LAUNCH_AGENT_LABEL,
+        PathBuf::from(format!("{LAUNCH_AGENT_LABEL}.plist")),
+    )?;
+    ctx_daemon_runtime::launch_agent_plist(&supervisor_artifact_spec(
+        identity, executable, data_root, snapshot,
+    )?)
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+pub(super) fn supervisor_identity(
+    name: &str,
+    artifact_path: PathBuf,
+) -> Result<SupervisorIdentity> {
+    SupervisorIdentity::new(name, artifact_path)
+}
+
+#[cfg(any(test, windows))]
+pub(super) fn windows_supervisor_identity(
+    data_root: &Path,
+    user_sid: &str,
+) -> Result<SupervisorIdentity> {
+    supervisor_identity(
+        &format!(r"\ctx-daemon-{user_sid}"),
+        ctx_daemon_runtime::daemon_root_path(data_root).join("windows-task.xml"),
+    )
+}
+
+pub(super) fn supervisor_artifact_spec(
+    identity: SupervisorIdentity,
+    executable: &Path,
+    data_root: &Path,
+    snapshot: &SupervisorEnvironmentSnapshot,
+) -> Result<SupervisorSpec> {
     let environment = snapshot
         .values
         .iter()
-        .map(|(name, value)| {
-            format!(
-                "<string>{}</string>",
-                xml_escape(&format!("{name}={value}"))
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    Ok(format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>rs.ctx.daemon</string>\n<key>ProgramArguments</key><array><string>/usr/bin/env</string><string>-i</string>{}<string>{}</string><string>--data-root</string><string>{}</string><string>daemon</string><string>run</string><string>--format=json</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ProcessType</key><string>Background</string>\n<key>StandardOutPath</key><string>/dev/null</string>\n<key>StandardErrorPath</key><string>/dev/null</string>\n</dict></plist>\n",
-        environment,
-        xml_escape(executable),
-        xml_escape(data_root),
-    ))
-}
-
-#[cfg(any(test, target_os = "macos", windows))]
-pub(super) fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect();
+    SupervisorSpec::new(
+        identity,
+        SUPERVISOR_DESCRIPTION,
+        NormalizedLaunch::new(
+            executable.to_path_buf(),
+            vec![
+                OsString::from("--data-root"),
+                data_root.as_os_str().to_os_string(),
+                OsString::from("daemon"),
+                OsString::from("run"),
+                OsString::from("--format=json"),
+            ],
+            environment,
+        ),
+    )
 }
 
 fn validated_supervisor_environment_value(name: &str, value: OsString) -> Result<String> {
@@ -232,26 +247,19 @@ fn validated_supervisor_fallback_home(home: PathBuf) -> Result<String> {
     validated_supervisor_environment_value("HOME", home.into_os_string())
 }
 
+#[cfg(all(test, windows))]
 pub(super) fn validated_supervisor_artifact_path<'a>(
     label: &str,
     path: &'a Path,
 ) -> Result<&'a str> {
-    let value = path.to_str().ok_or_else(|| {
-        anyhow!("supervisor {label} is not Unicode and cannot be persisted safely")
-    })?;
-    validated_supervisor_artifact_text(label, value)
+    ctx_daemon_runtime::validated_supervisor_artifact_path(label, path)
 }
 
 pub(super) fn validated_supervisor_artifact_text<'a>(
     label: &str,
     value: &'a str,
 ) -> Result<&'a str> {
-    if value.chars().any(char::is_control) {
-        return Err(anyhow!(
-            "supervisor {label} contains control characters and cannot be persisted safely"
-        ));
-    }
-    Ok(value)
+    ctx_daemon_runtime::validated_supervisor_artifact_text(label, value)
 }
 
 fn supervisor_environment_allowlist_names() -> Vec<&'static str> {

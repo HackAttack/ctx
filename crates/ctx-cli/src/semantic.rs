@@ -128,8 +128,6 @@ pub(crate) use daemon_autostart::{
 };
 mod health_search;
 #[cfg(test)]
-use health_search::*;
-#[cfg(test)]
 mod query_service_transport_tests;
 #[cfg(all(
     test,

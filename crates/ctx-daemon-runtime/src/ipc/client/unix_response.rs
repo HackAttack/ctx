@@ -340,7 +340,7 @@ fn read_daemon_query_response_unix_with_deadline(
     }
 }
 
-pub(in crate::semantic) fn daemon_query_roundtrip_unix(
+pub fn daemon_query_roundtrip_unix(
     path: &Path,
     request: &[u8],
     timeout: Duration,
@@ -369,8 +369,7 @@ pub(in crate::semantic) fn daemon_query_roundtrip_unix(
         .map_err(mark_request_may_have_been_submitted)
 }
 
-#[cfg(test)]
-pub(in crate::semantic) fn read_daemon_query_response_unix(
+pub fn read_daemon_query_response_unix(
     stream: &mut UnixStream,
     max_response_bytes: u64,
     timeout: Duration,

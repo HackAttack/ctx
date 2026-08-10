@@ -19,9 +19,14 @@ pub(super) fn daemon_supervisor_report_with_normalized_environment(
         append_supervisor_environment_report(&mut report);
         return report;
     };
-    let backend = PlatformNativeSupervisor {
-        daemon_environment: Some(&daemon_environment),
-        manager_environment: &manager_environment,
+    let Ok(backend) =
+        PlatformNativeSupervisor::new(data_root, Some(&daemon_environment), &manager_environment)
+    else {
+        let mut report = stored_supervisor_report(data_root);
+        invalidate_supervisor_claims_for_environment_failure(&mut report);
+        append_forced_termination_identity_report(&mut report);
+        append_supervisor_environment_report(&mut report);
+        return report;
     };
     revalidated_supervisor_report_with(data_root, &backend)
 }
@@ -48,7 +53,7 @@ fn invalidate_supervisor_claims_for_environment_failure(report: &mut Value) {
 
 pub(super) fn revalidated_supervisor_report_with(
     data_root: &Path,
-    backend: &dyn NativeSupervisorBackend,
+    backend: &dyn NativeSupervisorBackend<SupervisorEnvironmentSnapshot>,
 ) -> Value {
     let mut report = stored_supervisor_report(data_root);
     append_forced_termination_identity_report(&mut report);

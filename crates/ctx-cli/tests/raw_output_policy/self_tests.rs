@@ -3,6 +3,43 @@ use std::collections::BTreeSet;
 use super::*;
 
 #[test]
+fn production_inventory_covers_every_daemon_runtime_source() {
+    let cli_root = package_root();
+    let workspace_root = cli_root
+        .parent()
+        .and_then(Path::parent)
+        .expect("ctx-cli package belongs to the workspace crates directory");
+    let runtime_src = workspace_root.join("crates/ctx-daemon-runtime/src");
+    let mut expected = Vec::new();
+    visit_production_source_files(&runtime_src, &mut expected);
+    expected.sort();
+
+    let actual = production_source_paths(&cli_root)
+        .into_iter()
+        .filter(|path| path.starts_with(&runtime_src))
+        .collect::<Vec<_>>();
+    assert!(
+        !expected.is_empty(),
+        "daemon runtime source inventory is empty"
+    );
+    assert_eq!(
+        actual, expected,
+        "raw-output policy must scan every daemon runtime production source"
+    );
+}
+
+#[test]
+fn daemon_runtime_raw_output_mutation_is_rejected() {
+    let sites = scan_source(
+        "crates/ctx-daemon-runtime/src/example.rs",
+        "fn emit() { eprintln!(\"unexpected runtime output\"); }",
+    );
+    let diff = compare_policy(sites, &[]);
+    assert_eq!(diff.unmatched.len(), 1);
+    assert!(!diff.is_closed());
+}
+
+#[test]
 fn exact_allowed_site_is_accepted() {
     let sites = scan_source(
         "src/example.rs",
