@@ -993,7 +993,10 @@ impl JsonlFamilyAdapter for EmissionTestAdapter {
     }
 }
 
-struct CheckpointTestAdapter;
+#[derive(Default)]
+struct CheckpointTestAdapter {
+    projection_modes: Mutex<Vec<JsonlFamilyProjectionMode>>,
+}
 
 struct OptimizedLeafTestAdapter {
     scans: AtomicUsize,
@@ -1165,6 +1168,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         base_event_lookup: Option<BaseEventIdentityLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        self.projection_modes.lock().unwrap().push(mode);
         let Some(checkpoint) = checkpoint else {
             if mode == JsonlFamilyProjectionMode::Cold && base_event_lookup.is_some() {
                 return Err(CaptureError::InvalidPayload(
@@ -1278,7 +1282,13 @@ fn capture_checkpoint_test_generation(
             current_source_progress: None,
         };
         with_family_scanner_workers(workers, || {
-            capture(&CheckpointTestAdapter, root, &resident, &mut sink).unwrap();
+            capture(
+                &CheckpointTestAdapter::default(),
+                root,
+                &resident,
+                &mut sink,
+            )
+            .unwrap();
         });
     }
     writer
@@ -1750,6 +1760,128 @@ fn opaque_provider_checkpoint_and_base_lookup_resume_only_the_certified_suffix()
             .iter()
             .all(|source| source.counts().complete_records == 2));
     }
+}
+
+#[test]
+fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("incomplete.jsonl");
+    fs::write(
+        &transcript,
+        b"{\"message\":\"prefix\"}\n{\"message\":\"tail\"",
+    )
+    .unwrap();
+    let writer = GenerationWriter::open(
+        temp.path().join("index"),
+        WriterOptions {
+            indexer_threads: 1,
+            memory_bytes: 15_000_000,
+        },
+    )
+    .unwrap()
+    .into_writer()
+    .unwrap();
+    let lookup = writer.base_event_identity_lookup();
+    let adapter = CheckpointTestAdapter::default();
+    let mut worker = JsonlFamilyWorkerContext::default();
+
+    let cold = {
+        let inventory = adapter.discover(&root).unwrap();
+        let leaf = inventory.leaves().first().unwrap();
+        let mut emit = |_event| Ok(());
+        let mut output = JsonlLeafOutput::new(&mut emit);
+        prepare_leaf(&adapter, leaf, None, &lookup, &mut worker, &mut output).unwrap()
+    };
+    let cold_inventory = adapter.discover(&root).unwrap();
+    let cold_checkpoint = super::leaf::decode_checkpoint(
+        &adapter,
+        cold_inventory.leaves().first().unwrap(),
+        &cold.certificate,
+    )
+    .unwrap();
+    assert!(!cold_checkpoint.physical.terminal());
+    assert_eq!(cold_checkpoint.physical.next_physical_ordinal(), 1);
+    assert_eq!(cold_checkpoint.provider_checkpoint, Some(TypedKey::U64(1)));
+    assert_eq!(
+        adapter.projection_modes.lock().unwrap().as_slice(),
+        [JsonlFamilyProjectionMode::Cold]
+    );
+
+    let unchanged = {
+        let inventory = adapter.discover(&root).unwrap();
+        let leaf = inventory.leaves().first().unwrap();
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+        let mut output = JsonlLeafOutput::new(&mut emit);
+        let prepared = prepare_leaf(
+            &adapter,
+            leaf,
+            Some(&cold.certificate),
+            &lookup,
+            &mut worker,
+            &mut output,
+        )
+        .unwrap();
+        drop(output);
+        assert!(events.is_empty());
+        prepared
+    };
+    assert_eq!(unchanged.certificate, cold.certificate);
+    assert!(unchanged.append.is_some());
+    assert_eq!(
+        adapter.projection_modes.lock().unwrap().as_slice(),
+        [JsonlFamilyProjectionMode::Cold],
+        "an exactly unchanged incomplete tail must not reconstruct a projector"
+    );
+
+    OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap()
+        .write_all(b"}\n")
+        .unwrap();
+    let completed = {
+        let inventory = adapter.discover(&root).unwrap();
+        let leaf = inventory.leaves().first().unwrap();
+        let mut emit = |_event| Ok(());
+        let mut output = JsonlLeafOutput::new(&mut emit);
+        prepare_leaf(
+            &adapter,
+            leaf,
+            Some(&cold.certificate),
+            &lookup,
+            &mut worker,
+            &mut output,
+        )
+        .unwrap()
+    };
+    assert!(completed.append.is_some());
+    let completed_inventory = adapter.discover(&root).unwrap();
+    let completed_checkpoint = super::leaf::decode_checkpoint(
+        &adapter,
+        completed_inventory.leaves().first().unwrap(),
+        &completed.certificate,
+    )
+    .unwrap();
+    assert!(completed_checkpoint.physical.terminal());
+    assert_eq!(completed_checkpoint.physical.next_physical_ordinal(), 2);
+    assert_eq!(
+        completed_checkpoint.provider_checkpoint,
+        Some(TypedKey::U64(2))
+    );
+    assert_eq!(
+        adapter.projection_modes.lock().unwrap().as_slice(),
+        [
+            JsonlFamilyProjectionMode::Cold,
+            JsonlFamilyProjectionMode::CertifiedAppend,
+        ],
+        "tail completion must resume the shared checkpoint instead of replacing the source"
+    );
 }
 
 #[test]

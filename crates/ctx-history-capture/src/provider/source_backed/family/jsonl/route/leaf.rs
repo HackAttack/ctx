@@ -753,10 +753,13 @@ pub(super) fn prepare_leaf(
 
     let (leaf, opened) = leaf.open_for_scan()?;
     let previous = base.and_then(|base| decode_checkpoint(adapter, &leaf, base).ok());
+    // A nonterminal checkpoint still certifies every complete record before
+    // its unfinished tail. Reuse it for an exact no-op, or let append-capable
+    // adapters resume at that complete frontier so the unfinished bytes are
+    // reconsidered without replaying already certified records.
     let previous_physical = previous.as_ref().filter(|checkpoint| {
-        checkpoint.physical.terminal()
-            && (checkpoint.physical.source_observation() == leaf.observation()
-                || adapter.append_mode() == JsonlFamilyAppendMode::CertifiedSuffix)
+        checkpoint.physical.source_observation() == leaf.observation()
+            || adapter.append_mode() == JsonlFamilyAppendMode::CertifiedSuffix
     });
     let mut reader = if leaf.whole_record {
         JsonlReader::open_whole_record(
@@ -1053,7 +1056,7 @@ fn certify(
     .map_err(route_invalid)
 }
 
-fn decode_checkpoint(
+pub(super) fn decode_checkpoint(
     adapter: &dyn JsonlFamilyAdapter,
     leaf: &JsonlFamilyLeaf,
     certificate: &CertifiedSource,

@@ -392,8 +392,11 @@ impl JsonlReader {
             if same_file
                 && previous_observation.supports_exact_revalidation()
                 && previous_observation == &observation
-                && previous.terminal()
             {
+                // Exact physical equality also proves an unfinished tail is
+                // unchanged. Its complete prefix remains the certified
+                // frontier, so no provider projection or publication work is
+                // needed until the file itself changes.
                 complete_prefix_end = previous.complete_prefix_end();
                 next_physical_ordinal = previous.next_physical_ordinal();
                 source_change = JsonlSourceChange::Unchanged;
