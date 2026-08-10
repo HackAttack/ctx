@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+    restore_hash_pending_exchange_entries, sorted_pending_exchange_entries,
 };
 
 pub(super) const MAX_PROJECTOR_CHECKPOINT_BYTES: usize = 40 * 1024;
@@ -39,19 +40,10 @@ fn checkpoint_value(projector: &OpenClawProjector) -> ProjectorCheckpoint {
         version: PROJECTOR_CHECKPOINT_VERSION,
         native_session_id: projector.native_session_id.clone(),
         session: projector.session.checkpoint(),
-        pending_calls: sorted_states(&projector.pending_calls),
-        running_processes: sorted_states(&projector.running_processes),
+        pending_calls: sorted_pending_exchange_entries(&projector.pending_calls),
+        running_processes: sorted_pending_exchange_entries(&projector.running_processes),
         linkage_capacity_exceeded: projector.linkage_capacity_exceeded,
     }
-}
-
-fn sorted_states(states: &HashMap<String, PendingCallState>) -> Vec<(String, PendingCallState)> {
-    let mut entries = states
-        .iter()
-        .map(|(identity, state)| (identity.clone(), state.clone()))
-        .collect::<Vec<_>>();
-    entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    entries
 }
 
 pub(super) fn projector_checkpoint_fits(projector: &OpenClawProjector) -> bool {
@@ -103,13 +95,9 @@ fn restore_pending_states(
     entries: Vec<(String, PendingCallState)>,
     identity_kind: &str,
 ) -> Result<HashMap<String, PendingCallState>> {
-    let mut restored = HashMap::with_capacity(entries.len());
-    for (identity, state) in entries {
-        if identity.is_empty() || restored.insert(identity, state).is_some() {
-            return Err(CaptureError::InvalidPayload(format!(
-                "OpenClaw projector checkpoint repeats a {identity_kind} identity"
-            )));
-        }
-    }
-    Ok(restored)
+    restore_hash_pending_exchange_entries(entries).ok_or_else(|| {
+        CaptureError::InvalidPayload(format!(
+            "OpenClaw projector checkpoint repeats a {identity_kind} identity"
+        ))
+    })
 }

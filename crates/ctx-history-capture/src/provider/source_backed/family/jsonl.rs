@@ -33,7 +33,9 @@ pub(crate) use framing::{
 use identity::observe_metadata;
 pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
 pub(crate) use pending_exchange::{
-    remember_pending_exchange, take_pending_exchange, JsonlPendingExchangeLookup,
+    ordered_pending_exchange_entries, remember_pending_exchange,
+    restore_hash_pending_exchange_entries, restore_ordered_pending_exchange_entries,
+    sorted_pending_exchange_entries, take_pending_exchange, JsonlPendingExchangeLookup,
     JsonlPendingExchangeRemember, JsonlPendingExchangeState,
 };
 pub(crate) use physical::{JsonlPhysicalDigest, JsonlPhysicalStream, JsonlPhysicalStreamPosition};
