@@ -8,6 +8,7 @@ use serde_json::{json, Map};
 use tempfile::TempDir;
 
 use super::*;
+use crate::analytics::McpMethodV1;
 
 #[test]
 fn query_events_telemetry_uses_only_bounded_page_metadata() {
@@ -21,7 +22,7 @@ fn query_events_telemetry_uses_only_bounded_page_metadata() {
             }
         }
     });
-    let metadata = result_metadata(McpToolV1::QueryEvents, &response);
+    let metadata = result_metadata(McpOperationKind::QueryEvents, &response);
     assert_eq!(
         metadata.result_count,
         Some(crate::analytics::count_bucket(2))
@@ -29,10 +30,36 @@ fn query_events_telemetry_uses_only_bounded_page_metadata() {
     assert_eq!(metadata.zero_result, Some(false));
     assert_eq!(metadata.result_truncated, Some(true));
 }
+
+#[test]
+fn tools_call_method_identity_is_independent_from_unknown_or_missing_tool_kind() {
+    for (message, expected_kind) in [
+        (
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "private-tool"}}),
+            McpOperationKind::Unknown,
+        ),
+        (
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {}}),
+            McpOperationKind::Missing,
+        ),
+    ] {
+        let operation = RequestDescriptor::from_message(&message).operation();
+        assert_eq!(operation.method(), McpMethodV1::ToolsCall);
+        assert_eq!(operation.kind(), expected_kind);
+    }
+
+    let operation = RequestDescriptor::from_message(
+        &json!({"jsonrpc": "2.0", "id": 3, "method": "private-method"}),
+    )
+    .operation();
+    assert_eq!(operation.method(), McpMethodV1::Unknown);
+    assert_eq!(operation.kind(), McpOperationKind::Missing);
+}
 use crate::analytics::{
-    pro_operation_event, OperationPayloadV1, ProHostOperationV1, ProStatusTelemetryV1,
-    ProSurfaceV1, RuntimeObservationKindV1,
+    pro_operation_event, ProHostOperationV1, ProStatusTelemetryV1, ProSurfaceV1,
+    RuntimeObservationKindV1,
 };
+use crate::operation_descriptor::{McpOperation, McpOperationKind, OperationDescriptor};
 
 fn private_tempdir() -> TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -42,7 +69,7 @@ fn private_tempdir() -> TempDir {
 
 fn test_event() -> PublicEventV1 {
     operation_event(
-        McpOperationV1::tool_call(McpToolV1::Status),
+        McpOperation::tool_call(McpOperationKind::Status),
         Outcome::Success,
         Duration::ZERO,
     )
@@ -152,7 +179,7 @@ fn malformed_and_tool_requests_get_typed_terminal_events() {
         panic!("expected operation event");
     };
     let mut properties = Map::new();
-    let crate::analytics::OperationPayloadV1::Mcp(operation) = event.payload else {
+    let OperationDescriptor::Mcp(operation) = event.descriptor else {
         panic!("expected MCP operation");
     };
     operation.insert_properties(&mut properties);
@@ -185,7 +212,7 @@ fn malformed_and_tool_requests_get_typed_terminal_events() {
     let event = lifecycle
         .record_delivered(
             RequestDescriptor::ToolCall {
-                tool: McpToolV1::Search,
+                operation: McpOperationKind::Search,
             },
             Some(&response),
             Duration::ZERO,
@@ -204,7 +231,7 @@ fn pro_tools_do_not_derive_product_result_dimensions() {
             }
         }
     });
-    for tool in [McpToolV1::Blame, McpToolV1::ProStatus] {
+    for tool in [McpOperationKind::Blame, McpOperationKind::ProStatus] {
         assert_eq!(
             result_metadata(tool, &response),
             McpResultMetadataV1::default()
@@ -226,9 +253,9 @@ fn response_flush_precedes_one_local_blame_increment_and_remote_submissions() {
         AsyncMcpSender::start_with(temp.path().to_path_buf(), 4, Arc::new(|_, _, _| Ok(())));
     sender.submit_observer = Some(Arc::new(move |event| {
         let label = match event {
-            PublicEventV1::OperationCompleted(event) => match &event.payload {
-                OperationPayloadV1::Mcp(_) => "submit_mcp",
-                OperationPayloadV1::ProHost(_) => "submit_pro",
+            PublicEventV1::OperationCompleted(event) => match &event.descriptor {
+                OperationDescriptor::Mcp(_) => "submit_mcp",
+                OperationDescriptor::ProHost(_) => "submit_pro",
                 _ => "submit_other",
             },
             _ => "submit_other",
@@ -480,7 +507,7 @@ fn mixed_mcp_and_pro_queue_pressure_is_bounded_and_counted() {
     };
     telemetry.record_delivered(
         RequestDescriptor::ToolCall {
-            tool: McpToolV1::Status,
+            operation: McpOperationKind::Status,
         },
         Some(&json!({"result": {"structuredContent": {}}})),
         Duration::ZERO,

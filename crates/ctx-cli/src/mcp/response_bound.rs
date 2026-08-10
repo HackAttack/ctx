@@ -4,6 +4,7 @@ use uuid::Uuid;
 use super::response::{error_response, success_response, tool_error_result};
 use crate::presentation_limit::serialized_json_line_bytes;
 
+#[cfg(test)]
 pub(super) fn is_show_tool_call(message: &Value) -> bool {
     message.get("method").and_then(Value::as_str) == Some("tools/call")
         && matches!(
@@ -12,11 +13,13 @@ pub(super) fn is_show_tool_call(message: &Value) -> bool {
         )
 }
 
+#[cfg(test)]
 pub(super) fn is_blame_tool_call(message: &Value) -> bool {
     message.get("method").and_then(Value::as_str) == Some("tools/call")
         && message.pointer("/params/name").and_then(Value::as_str) == Some("blame")
 }
 
+#[cfg(test)]
 pub(super) fn is_query_events_tool_call(message: &Value) -> bool {
     message.get("method").and_then(Value::as_str) == Some("tools/call")
         && message.pointer("/params/name").and_then(Value::as_str) == Some("query_events")
@@ -103,13 +106,11 @@ pub(super) fn bound_show_mcp_response(
     }
 
     let result = match response_show_event_id(&response) {
-        Some(event_id) => tool_error_result(anyhow::Error::new(
-            crate::presentation_limit::PresentationOutputLimitError {
-                event_id,
-                actual_bytes: serialized_json_line_bytes(&response).unwrap_or(usize::MAX),
-                maximum_bytes: output_limit_bytes,
-            },
-        )),
+        Some(event_id) => tool_error_result(crate::tool_backend::ToolBackendError::OutputLimit {
+            event_id,
+            actual_bytes: serialized_json_line_bytes(&response).unwrap_or(usize::MAX),
+            maximum_bytes: output_limit_bytes,
+        }),
         None => json!({
             "isError": true,
             "content": [{

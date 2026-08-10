@@ -13,11 +13,12 @@ use serde_json::Value;
 
 use crate::{
     analytics::{
-        self, McpErrorClassV1, McpErrorLayerV1, McpLifecycleCountsV1, McpOperationV1,
-        McpResponseBoundV1, McpResultMetadataV1, McpRuntimeObservationV1, McpStopReasonV1,
-        McpToolV1, OperationCompletedV1, Outcome, PublicEventV1, RuntimeObservationV1,
+        self, McpErrorClassV1, McpErrorLayerV1, McpLifecycleCountsV1, McpResponseBoundV1,
+        McpResultMetadataV1, McpRuntimeObservationV1, McpStopReasonV1, OperationCompletedV1,
+        Outcome, PublicEventV1, RuntimeObservationV1,
     },
     config::AppConfig,
+    operation_descriptor::{McpOperation, McpOperationKind},
 };
 
 const MCP_TELEMETRY_QUEUE_CAPACITY: usize = 64;
@@ -29,7 +30,7 @@ pub(super) enum RequestDescriptor {
     Initialize,
     Ping,
     ToolsList,
-    ToolCall { tool: McpToolV1 },
+    ToolCall { operation: McpOperationKind },
     UnknownRequest,
     MissingRequest,
     InitializedNotification,
@@ -58,17 +59,19 @@ impl RequestDescriptor {
             Some("ping") => Self::Ping,
             Some("tools/list") => Self::ToolsList,
             Some("tools/call") => Self::ToolCall {
-                tool: McpToolV1::from_name(message.pointer("/params/name").and_then(Value::as_str)),
+                operation: McpOperationKind::from_tool_name(
+                    message.pointer("/params/name").and_then(Value::as_str),
+                ),
             },
             Some(_) => Self::UnknownRequest,
             None => Self::MissingRequest,
         }
     }
 
-    fn operation(self) -> McpOperationV1 {
+    fn operation(self) -> McpOperation {
         match self {
-            Self::ToolCall { tool, .. } => McpOperationV1::tool_call(tool),
-            Self::UnknownRequest => McpOperationV1::unknown_method(),
+            Self::ToolCall { operation } => McpOperation::tool_call(operation),
+            Self::UnknownRequest => McpOperation::unknown_request(),
             Self::Initialize
             | Self::Ping
             | Self::ToolsList
@@ -77,7 +80,7 @@ impl RequestDescriptor {
             | Self::InvalidUtf8
             | Self::LineTooLarge
             | Self::InitializedNotification
-            | Self::UnknownNotification => McpOperationV1::missing(),
+            | Self::UnknownNotification => McpOperation::missing_request(),
         }
     }
 }
@@ -85,7 +88,6 @@ impl RequestDescriptor {
 pub(super) struct McpHandled<T> {
     pub(super) value: T,
     pub(super) pro_event: Option<PublicEventV1>,
-    pub(super) text_content: Option<String>,
 }
 
 impl<T> McpHandled<T> {
@@ -93,23 +95,6 @@ impl<T> McpHandled<T> {
         Self {
             value,
             pro_event: None,
-            text_content: None,
-        }
-    }
-
-    pub(super) fn with_pro_event(value: T, pro_event: PublicEventV1) -> Self {
-        Self {
-            value,
-            pro_event: Some(pro_event),
-            text_content: None,
-        }
-    }
-
-    pub(super) fn with_text_content(value: T, text_content: String) -> Self {
-        Self {
-            value,
-            pro_event: None,
-            text_content: Some(text_content),
         }
     }
 }
@@ -300,17 +285,19 @@ impl McpLifecycle {
             RequestDescriptor::Ping
             | RequestDescriptor::ToolsList
             | RequestDescriptor::Initialize => None,
-            RequestDescriptor::ToolCall { tool } => {
+            RequestDescriptor::ToolCall { operation } => {
                 let response = response?;
                 let tool_error =
                     response.pointer("/result/isError").and_then(Value::as_bool) == Some(true);
                 if tool_error {
                     self.counts.tool_failures = self.counts.tool_failures.saturating_add(1);
                 }
-                let mut result = result_metadata(tool, response);
+                let mut result = result_metadata(operation, response);
                 if matches!(
-                    tool,
-                    McpToolV1::ShowSession | McpToolV1::ShowEvent | McpToolV1::QueryEvents
+                    operation,
+                    McpOperationKind::ShowSession
+                        | McpOperationKind::ShowEvent
+                        | McpOperationKind::QueryEvents
                 ) && response.get("result").is_some()
                 {
                     result.response_bound = Some(
@@ -325,7 +312,7 @@ impl McpLifecycle {
                         },
                     );
                 }
-                let mut operation = McpOperationV1::tool_call(tool).with_result(result);
+                let mut operation = McpOperation::tool_call(operation).with_result(result);
                 let outcome = if tool_error {
                     operation =
                         operation.with_error(McpErrorLayerV1::Tool, McpErrorClassV1::ToolFailure);
@@ -347,11 +334,7 @@ impl McpLifecycle {
     }
 }
 
-fn operation_event(
-    operation: McpOperationV1,
-    outcome: Outcome,
-    duration: Duration,
-) -> PublicEventV1 {
+fn operation_event(operation: McpOperation, outcome: Outcome, duration: Duration) -> PublicEventV1 {
     PublicEventV1::OperationCompleted(OperationCompletedV1::for_mcp(operation, outcome, duration))
 }
 
@@ -368,7 +351,7 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     if matches!(
         descriptor,
         RequestDescriptor::ToolCall {
-            tool: McpToolV1::Missing,
+            operation: McpOperationKind::Missing,
             ..
         }
     ) {
@@ -377,7 +360,7 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     if matches!(
         descriptor,
         RequestDescriptor::ToolCall {
-            tool: McpToolV1::Unknown,
+            operation: McpOperationKind::Unknown,
             ..
         }
     ) {
@@ -393,13 +376,13 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     }
 }
 
-fn result_metadata(tool: McpToolV1, response: &Value) -> McpResultMetadataV1 {
+fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMetadataV1 {
     let Some(result) = response.pointer("/result/structuredContent") else {
         return McpResultMetadataV1::default();
     };
     let mut metadata = McpResultMetadataV1::default();
-    match tool {
-        McpToolV1::Sources => {
+    match operation {
+        McpOperationKind::Sources => {
             if let Some(count) = result
                 .get("sources")
                 .and_then(Value::as_array)
@@ -408,7 +391,7 @@ fn result_metadata(tool: McpToolV1, response: &Value) -> McpResultMetadataV1 {
                 metadata = metadata.with_result_count(count);
             }
         }
-        McpToolV1::Search => {
+        McpOperationKind::Search => {
             if let Some(count) = result
                 .get("results")
                 .and_then(Value::as_array)
@@ -428,24 +411,24 @@ fn result_metadata(tool: McpToolV1, response: &Value) -> McpResultMetadataV1 {
                 (None, None) => None,
             };
         }
-        McpToolV1::ShowSession | McpToolV1::ShowEvent => {
+        McpOperationKind::ShowSession | McpOperationKind::ShowEvent => {
             if let Some(count) = result.get("events").and_then(Value::as_array).map(Vec::len) {
                 metadata = metadata.with_result_count(count);
             }
             metadata.events_truncated =
                 result.pointer("/truncated/events").and_then(Value::as_bool);
         }
-        McpToolV1::QueryEvents => {
+        McpOperationKind::QueryEvents => {
             if let Some(count) = result.get("events").and_then(Value::as_array).map(Vec::len) {
                 metadata = metadata.with_result_count(count);
             }
             metadata.result_truncated = result.get("truncated").and_then(Value::as_bool);
         }
-        McpToolV1::Blame | McpToolV1::ProStatus => {
+        McpOperationKind::Blame | McpOperationKind::ProStatus => {
             // MCP owns protocol and delivery telemetry. Pro-host telemetry owns
             // Pro product outcomes, result counts, and materialization facts.
         }
-        McpToolV1::Status | McpToolV1::Unknown | McpToolV1::Missing => {}
+        McpOperationKind::Status | McpOperationKind::Unknown | McpOperationKind::Missing => {}
     }
     metadata
 }

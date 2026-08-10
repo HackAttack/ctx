@@ -44,6 +44,8 @@ mod integrations;
 mod local_usage;
 mod mcp;
 mod net;
+mod observability_composition;
+mod operation_descriptor;
 mod output;
 mod presentation_limit;
 mod pro;
@@ -55,6 +57,7 @@ mod release_build_identity;
 mod search_filters;
 mod semantic;
 mod skill;
+mod tool_backend;
 mod transcript;
 #[allow(dead_code, unused_imports)]
 mod ui;

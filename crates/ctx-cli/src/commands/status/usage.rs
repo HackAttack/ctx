@@ -16,6 +16,7 @@ use crate::{
 pub(crate) fn run_usage_action(
     mode: UsageStatusMode,
     data_root: &Path,
+    storage: &local_usage::LocalUsageStorageAuthority,
     json_output: bool,
     quiet: bool,
     ui: &mut Ui,
@@ -54,7 +55,7 @@ pub(crate) fn run_usage_action(
             )
         }
         UsageStatusMode::Reset => {
-            let store_state = match local_usage::reset(data_root) {
+            let store_state = match local_usage::reset_authorized(storage) {
                 Ok(true) => "cleared",
                 Ok(false) => "missing",
                 Err(_) => {

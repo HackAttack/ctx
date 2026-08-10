@@ -4,6 +4,7 @@ use ctx_history_core::CaptureProvider;
 use uuid::Uuid;
 
 use super::{sender::serialize_event, *};
+use crate::operation_descriptor::{CliOperation, McpOperation, OperationDescriptor};
 
 #[test]
 fn buckets_cover_boundaries() {
@@ -89,7 +90,7 @@ fn runtime_observation_has_typed_constructor_seams() {
 #[test]
 fn event_ids_are_uuid_v4_and_timestamps_are_minute_aligned() {
     let event = PublicEventV1::OperationCompleted(OperationCompletedV1::for_mcp(
-        McpOperationV1::Initialize,
+        McpOperation::missing_request(),
         Outcome::Success,
         Duration::ZERO,
     ));
@@ -106,24 +107,27 @@ fn event_ids_are_uuid_v4_and_timestamps_are_minute_aligned() {
 #[test]
 fn automatic_upgrade_event_uses_an_ephemeral_delivery_id() {
     let event = PublicEventV1::OperationCompleted(OperationCompletedV1 {
-        payload: OperationPayloadV1::Cli(ClientOperationV1::Upgrade(UpgradeTelemetry {
-            mode: UpgradeMode::Auto,
-            operation: UpgradeOperation::Apply,
-            dry_run: false,
-            suppress_event: false,
-            status: Some(UpgradeStatus::Applied),
-            applied: Some(true),
-            scheduled: Some(false),
-            update_available: Some(false),
-            update_was_available: Some(true),
-            upgrade_attempt_id: Some("ua_replacement".to_owned()),
-            managed_install: Some(true),
-            self_upgrade_allowed: Some(true),
-            auto_upgrade_allowed: Some(true),
-            warning_count: Some(CountBucket::Zero),
-            channel: Some(UpgradeChannel::Stable),
-            failure_kind: None,
-        })),
+        descriptor: OperationDescriptor::Cli(CliOperation::Upgrade {
+            telemetry: UpgradeTelemetry {
+                mode: UpgradeMode::Auto,
+                operation: UpgradeOperation::Apply,
+                dry_run: false,
+                suppress_event: false,
+                status: Some(UpgradeStatus::Applied),
+                applied: Some(true),
+                scheduled: Some(false),
+                update_available: Some(false),
+                update_was_available: Some(true),
+                upgrade_attempt_id: Some("ua_replacement".to_owned()),
+                managed_install: Some(true),
+                self_upgrade_allowed: Some(true),
+                auto_upgrade_allowed: Some(true),
+                warning_count: Some(CountBucket::Zero),
+                channel: Some(UpgradeChannel::Stable),
+                failure_kind: None,
+            },
+            record_local_usage: false,
+        }),
         output: Some(OutputKind::Human),
         outcome: Outcome::Success,
         duration: duration_bucket(Duration::ZERO),
@@ -164,7 +168,7 @@ fn durable_family_serialization_matches_public_goldens() {
     let events = [
         (
             PublicEventV1::OperationCompleted(OperationCompletedV1 {
-                payload: OperationPayloadV1::Cli(ClientOperationV1::Status(StatusTelemetry {
+                descriptor: OperationDescriptor::Cli(CliOperation::Status(StatusTelemetry {
                     initialized: Some(true),
                     indexed_items: Some(count_bucket(42)),
                     indexed_sessions: None,

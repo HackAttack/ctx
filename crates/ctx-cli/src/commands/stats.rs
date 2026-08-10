@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 
 use crate::{
@@ -19,11 +17,11 @@ use crate::{
 /// the detached read-only snapshot can never count the report itself.
 pub(crate) fn run(
     args: StatsArgs,
-    data_root: PathBuf,
-    local_usage_enabled: bool,
+    storage: &local_usage::LocalUsageStorageAuthority,
+    control: &local_usage::UsageControlSnapshot,
     ui: &mut Ui,
 ) -> Result<()> {
-    let report = local_usage::read_report(&data_root, local_usage_enabled, true);
+    let report = local_usage::read_report_authorized(storage, control, true);
     if args.format.is_json() {
         print_json(serde_json::to_value(report)?)
     } else {

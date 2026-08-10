@@ -323,7 +323,8 @@ fn source_daemon_report_preserves_semantic_terminal_job_facts() {
     )
     .unwrap();
 
-    let daemon = source_daemon_report(&data_root);
+    let config = crate::config::AppConfig::load(&data_root).unwrap();
+    let daemon = source_daemon_report(&data_root, &config);
     let jobs = daemon["jobs"].as_object().unwrap();
     assert!(jobs.contains_key("core_refresh"), "{daemon:#}");
     assert!(jobs.contains_key("semantic_index"), "{daemon:#}");

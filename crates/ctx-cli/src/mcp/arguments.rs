@@ -1,4 +1,3 @@
-use anyhow::Result;
 use ctx_history_core::EventType;
 use ctx_history_index::SearchContentScope;
 use serde_json::Value;
@@ -6,8 +5,11 @@ use uuid::Uuid;
 
 use super::{invalid_tool_request, provider_names};
 use crate::{
-    cli_supported_provider, ProviderArg, SearchBackendArg, SourceIdentityFilterArgs, TranscriptMode,
+    cli_supported_provider, operation_descriptor::McpOperationKind, tool_backend::ToolBackendError,
+    ProviderArg, SearchBackendArg, SourceIdentityFilterArgs, TranscriptMode,
 };
+
+type Result<T> = std::result::Result<T, ToolBackendError>;
 
 pub(super) fn optional_string(arguments: &Value, key: &str) -> Result<Option<String>> {
     match arguments.get(key) {
@@ -104,10 +106,14 @@ pub(super) fn optional_content_scope(
     }
 }
 
-pub(super) fn allowed_tool_arguments(name: &str) -> Option<&'static [&'static str]> {
-    match name {
-        "status" | "sources" | "pro_status" => Some(&[]),
-        "search" => Some(&[
+pub(super) fn allowed_tool_arguments(
+    operation: McpOperationKind,
+) -> Option<&'static [&'static str]> {
+    match operation {
+        McpOperationKind::Status | McpOperationKind::Sources | McpOperationKind::ProStatus => {
+            Some(&[])
+        }
+        McpOperationKind::Search => Some(&[
             "query",
             "limit",
             "provider",
@@ -128,9 +134,9 @@ pub(super) fn allowed_tool_arguments(name: &str) -> Option<&'static [&'static st
             "backend",
             "semantic_weight",
         ]),
-        "show_session" => Some(&["ctx_session_id", "mode", "limit", "cursor"]),
-        "show_event" => Some(&["ctx_event_id", "before", "after", "window"]),
-        "query_events" => Some(&[
+        McpOperationKind::ShowSession => Some(&["ctx_session_id", "mode", "limit", "cursor"]),
+        McpOperationKind::ShowEvent => Some(&["ctx_event_id", "before", "after", "window"]),
+        McpOperationKind::QueryEvents => Some(&[
             "since",
             "until",
             "providers",
@@ -155,8 +161,8 @@ pub(super) fn allowed_tool_arguments(name: &str) -> Option<&'static [&'static st
             "limit",
             "content",
         ]),
-        "blame" => Some(&["target", "limit", "cursor"]),
-        _ => None,
+        McpOperationKind::Blame => Some(&["target", "limit", "cursor"]),
+        McpOperationKind::Unknown | McpOperationKind::Missing => None,
     }
 }
 
