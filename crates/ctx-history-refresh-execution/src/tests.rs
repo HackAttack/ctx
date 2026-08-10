@@ -227,6 +227,76 @@ fn test_publication(generation_id: impl Into<String>) -> SourceBackedRefreshPubl
     }
 }
 
+#[test]
+fn query_readiness_accepts_nonempty_generation_without_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let generation_id = publish_pin_source(temp.path(), publication_pin_source_with_anchor(0x95));
+    let verified = VerifiedIndex::open(temp.path()).unwrap();
+
+    assert_eq!(verified.generation_id(), generation_id);
+    assert!(verified.publication_metadata().is_none());
+    assert_eq!(
+        verify_generation_query_readiness(&verified).unwrap(),
+        GenerationQueryReadiness::Ready
+    );
+}
+
+#[test]
+fn query_readiness_decodes_metadata_before_certifying_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let generation_id = publish_pin_source(temp.path(), publication_pin_source_with_anchor(0x96));
+    let publication = test_publication(generation_id.clone());
+    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
+        None,
+        generation_id.clone(),
+        &publication,
+    )
+    .unwrap();
+    let encoded = SourceBackedPublicationMetadata {
+        version: SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+        request_id: "query-readiness-metadata".to_owned(),
+        operation: RefreshOperation::Refresh,
+        refresh_scope: SourceBackedRefreshScope::All,
+        receipt: receipt.to_json(),
+        route_observations: BTreeMap::new(),
+    }
+    .encode()
+    .unwrap();
+    let writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let verified = writer
+        .republish_current_publication_metadata(&generation_id, encoded)
+        .unwrap();
+
+    assert!(verified.publication_metadata().is_some());
+    assert_eq!(
+        verify_generation_query_readiness(&verified).unwrap(),
+        GenerationQueryReadiness::Ready
+    );
+
+    let mut invalid_metadata: Value =
+        serde_json::from_slice(verified.publication_metadata().unwrap()).unwrap();
+    invalid_metadata["version"] = json!(99);
+    drop(verified);
+    let writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let invalid = writer
+        .republish_current_publication_metadata(
+            &generation_id,
+            serde_json::to_vec(&invalid_metadata).unwrap(),
+        )
+        .unwrap();
+    assert!(format!(
+        "{:#}",
+        verify_generation_query_readiness(&invalid).unwrap_err()
+    )
+    .contains("unsupported Core source-refresh publication metadata version"));
+}
+
 #[path = "tests/execution_path.rs"]
 mod execution_path;
 #[path = "tests/receipt.rs"]

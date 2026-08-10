@@ -97,24 +97,15 @@ pub fn verify_generation_query_authority(
     index: &VerifiedIndex,
 ) -> std::result::Result<(), GenerationQueryAuthorityError> {
     let generation_id = index.generation_id().to_owned();
-    match index.publication_metadata() {
-        None if index.manifest().sources.is_empty() => {
+    match verify_generation_query_readiness(index) {
+        Ok(GenerationQueryReadiness::Ready) => Ok(()),
+        Ok(GenerationQueryReadiness::Uncertified) => {
             Err(GenerationQueryAuthorityError::UncertifiedEmpty { generation_id })
         }
-        None => Ok(()),
-        Some(_) => {
-            let metadata = SourceBackedPublicationMetadata::decode(index).map_err(|error| {
-                GenerationQueryAuthorityError::Invalid {
-                    generation_id: generation_id.clone(),
-                    detail: format!("{error:#}"),
-                }
-            })?;
-            if metadata.certifies_generation(index) {
-                Ok(())
-            } else {
-                Err(GenerationQueryAuthorityError::UncertifiedEmpty { generation_id })
-            }
-        }
+        Err(error) => Err(GenerationQueryAuthorityError::Invalid {
+            generation_id,
+            detail: format!("{error:#}"),
+        }),
     }
 }
 

@@ -449,7 +449,10 @@ pub fn refresh_all_provider_sources_route_local(
         .verified_index
         .as_ref()
         .ok_or_else(|| anyhow!("reused Core refresh publication lost its exact verified pin"))?;
-    if publication.current.source_count == 0 && !verified_generation_is_query_ready(verified_index)?
+    if publication.current.source_count == 0
+        && !verify_generation_query_readiness(verified_index)
+            .context("decode Core source-refresh publication authority")?
+            .is_ready()
     {
         let route_observations = receipt
             .successful_route_outcomes
@@ -643,15 +646,6 @@ fn publication_from_verified_metadata(
         timings,
         verified_index: Some(verified_index),
     })
-}
-
-pub(crate) fn verified_generation_is_query_ready(index: &VerifiedIndex) -> Result<bool> {
-    let Some(_) = index.publication_metadata() else {
-        return Ok(!index.manifest().sources.is_empty());
-    };
-    let metadata = SourceBackedPublicationMetadata::decode(index)
-        .context("decode Core source-refresh publication authority")?;
-    Ok(metadata.certifies_generation(index))
 }
 
 fn validate_recertified_metadata(

@@ -21,7 +21,10 @@ use ctx_history_core::{
     SourceKey, SourceObservation, TypedKey,
 };
 use ctx_history_index::SourceRouteIdentity;
-use ctx_history_refresh_execution::source_backed_requested_route_observations;
+use ctx_history_refresh_execution::{
+    source_backed_requested_route_observations, verify_generation_query_readiness,
+    GenerationQueryReadiness,
+};
 
 #[path = "tests/harness.rs"]
 mod harness;

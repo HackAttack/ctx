@@ -64,7 +64,10 @@ pub use explicit_source_catalog::{
     ExplicitSourceCatalogRouteBinding, ExplicitSourceCatalogUpsert,
     ExplicitSourceRelocationAuthority,
 };
-pub use metadata::{SourceBackedPublicationMetadata, SOURCE_REFRESH_PUBLICATION_METADATA_VERSION};
+pub use metadata::{
+    verify_generation_query_readiness, GenerationQueryReadiness, SourceBackedPublicationMetadata,
+    SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+};
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub use observation::install_after_capture_scan_before_metadata_hook_for_test;

@@ -42,8 +42,9 @@ use ctx_history_index::{
 use ctx_history_refresh_execution::{
     is_sha256_identity, refresh_scope_from_json, refresh_scope_json, required_generation,
     required_route_results, source_backed_requested_route_observations,
-    source_backed_route_retry_disposition, PublishedSourceBackedState,
-    PublishedSourceBackedStatePort, SourceBackedRefreshCoveredPublication,
+    source_backed_route_retry_disposition, verify_generation_query_readiness,
+    GenerationQueryReadiness, PublishedSourceBackedState, PublishedSourceBackedStatePort,
+    SourceBackedRefreshCoveredPublication,
     SourceBackedRefreshProgressUpdate as PhysicalRefreshProgressUpdate,
 };
 use serde_json::{json, Value};

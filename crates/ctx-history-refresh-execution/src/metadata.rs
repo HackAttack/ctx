@@ -4,6 +4,24 @@ use ctx_history_index::MAX_PUBLICATION_METADATA_BYTES;
 pub const SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 2;
 const LEGACY_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 1;
 
+/// Provider-neutral query-readiness verdict for one physically verified Core
+/// generation.
+///
+/// Public API boundaries can map an uncertified generation or a metadata
+/// decoding failure into their own typed errors without reimplementing the
+/// publication predicate.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum GenerationQueryReadiness {
+    Ready,
+    Uncertified,
+}
+
+impl GenerationQueryReadiness {
+    pub const fn is_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
+
 /// Refresh-owned authority carried by Core's opaque CommitPayload metadata.
 /// Core deliberately knows nothing about this encoding.
 #[derive(Debug, Clone)]
@@ -226,6 +244,27 @@ impl SourceBackedPublicationMetadata {
             None => false,
         }
     }
+}
+
+/// Applies the single publication-authority predicate to a verified Core
+/// generation. A legacy nonempty generation is query-ready without metadata;
+/// metadata-bearing generations must decode and certify their exact pin.
+pub fn verify_generation_query_readiness(
+    index: &VerifiedIndex,
+) -> Result<GenerationQueryReadiness> {
+    let Some(_) = index.publication_metadata() else {
+        return Ok(if index.manifest().sources.is_empty() {
+            GenerationQueryReadiness::Uncertified
+        } else {
+            GenerationQueryReadiness::Ready
+        });
+    };
+    let metadata = SourceBackedPublicationMetadata::decode(index)?;
+    Ok(if metadata.certifies_generation(index) {
+        GenerationQueryReadiness::Ready
+    } else {
+        GenerationQueryReadiness::Uncertified
+    })
 }
 
 fn validate_receipt_generation(receipt: &Value, index: &VerifiedIndex) -> Result<()> {
