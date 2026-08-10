@@ -9,11 +9,11 @@ use crate::provider::source_backed::family::document::DocumentLeafExecutionPolic
 /// extension project index is immutable evidence copied into each affected
 /// leaf; it does not create cross-leaf session lineage.
 ///
-/// Rovo Dev resolves immutable parent/root identity for every leaf during
-/// complete discovery, so its cross-leaf dependency is fingerprinted before
-/// independent scans begin. Auggie and Continue derive exact source identity
-/// from document bodies, while NanoClaw is one catalog-lineage compound
-/// source; those routes retain the serial default.
+/// Rovo Dev fingerprints each leaf's direct parent claim without consulting
+/// the parent leaf, so parent lifecycle cannot invalidate an unchanged child.
+/// Auggie and Continue derive exact source identity from document bodies, while
+/// NanoClaw is one catalog-lineage compound source; those routes retain the
+/// serial default.
 pub(crate) fn document_leaf_execution_policy(
     provider: CaptureProvider,
 ) -> DocumentLeafExecutionPolicy {
@@ -169,11 +169,11 @@ mod tests {
         ProviderCatalogSupport, ProviderImportSupport, ProviderSourceKind, ProviderSourceStatus,
         ROVODEV_SOURCE_FORMAT,
     };
-    use ctx_history_index::{CoreEventRecord, IndexError, VerifiedIndex, WriterOptions};
+    use ctx_history_index::{CoreEventRecord, VerifiedIndex, WriterOptions};
     use std::{fs, path::Path};
 
     #[test]
-    fn rovodev_transitive_root_rewrite_invalidates_unchanged_leaf_replay() {
+    fn rovodev_parent_rewrite_preserves_unchanged_child_replay() {
         let temp = crate::test_support_paths::tempdir().unwrap();
         let root = temp.path().join("sessions");
         write_rovodev_session(&root, "root-a", None);
@@ -194,8 +194,8 @@ mod tests {
         let (refreshed_leaf_root, refreshed_root_b_session) =
             leaf_and_root_b_ids(&index, &refreshed);
         assert_ne!(refreshed.commit.generation_id, cold.commit.generation_id);
-        assert_ne!(refreshed_leaf_root, cold_leaf_root);
-        assert_eq!(refreshed_leaf_root, refreshed_root_b_session);
+        assert_eq!(refreshed_leaf_root, cold_leaf_root);
+        assert_ne!(refreshed_leaf_root, refreshed_root_b_session);
 
         let replay =
             refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
@@ -263,20 +263,29 @@ mod tests {
     }
 
     #[test]
-    fn rovodev_dangling_parent_graph_fails_closed_and_preserves_verified_generation() {
+    fn rovodev_missing_parent_publishes_unresolved_and_preserves_child_identity() {
         let temp = crate::test_support_paths::tempdir().unwrap();
         let root = temp.path().join("sessions");
         write_rovodev_session(&root, "leaf", Some("middle"));
         let index = temp.path().join("index");
         let registry = rovodev_registry(&root);
 
-        assert!(matches!(
-            refresh_source_backed_generation(&index, &registry, WriterOptions::default()),
-            Err(SourceBackedCoordinatorError::Index(
-                IndexError::InvalidSessionRelationshipGraph("related session does not exist")
-            ))
-        ));
-        assert!(VerifiedIndex::open(&index).is_err());
+        let unresolved =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        let unresolved_events = rovodev_events(&index, &unresolved);
+        let [unresolved_leaf] = unresolved_events.as_slice() else {
+            panic!("one unresolved Rovo Dev leaf expected");
+        };
+        let child_event_id = unresolved_leaf.event_id;
+        let child_session_id = unresolved_leaf.session_id;
+        let direct_parent_id = unresolved_leaf
+            .parent_session_id
+            .expect("direct parent claim");
+        assert_eq!(unresolved_leaf.root_session_id, direct_parent_id);
+        assert_eq!(
+            unresolved_leaf.session_relationship.as_str(),
+            "related_unknown"
+        );
 
         write_rovodev_session(&root, "root", None);
         write_rovodev_session(&root, "middle", Some("root"));
@@ -291,19 +300,34 @@ mod tests {
             .iter()
             .find(|event| event.provider_session_id.as_deref() == Some("root"))
             .unwrap();
-        assert_eq!(leaf.root_session_id, lineage_root.session_id);
+        let middle = published_events
+            .iter()
+            .find(|event| event.provider_session_id.as_deref() == Some("middle"))
+            .unwrap();
+        assert_eq!(leaf.event_id, child_event_id);
+        assert_eq!(leaf.session_id, child_session_id);
+        assert_eq!(leaf.parent_session_id, Some(middle.session_id));
+        assert_eq!(leaf.root_session_id, middle.session_id);
+        assert_eq!(middle.parent_session_id, Some(lineage_root.session_id));
 
         fs::remove_dir_all(root.join("middle")).unwrap();
         fs::remove_dir_all(root.join("root")).unwrap();
-        assert!(matches!(
-            refresh_source_backed_generation(&index, &registry, WriterOptions::default()),
-            Err(SourceBackedCoordinatorError::Index(
-                IndexError::InvalidSessionRelationshipGraph("related session does not exist")
-            ))
-        ));
-        let retained = VerifiedIndex::open(&index).unwrap();
-        assert_eq!(retained.generation_id(), published.commit.generation_id);
-        assert_eq!(rovodev_events(&index, &published), published_events);
+        let deleted =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        assert_ne!(deleted.commit.generation_id, published.commit.generation_id);
+        let deleted_events = rovodev_events(&index, &deleted);
+        let [deleted_leaf] = deleted_events.as_slice() else {
+            panic!("unchanged child must remain after parent deletion");
+        };
+        assert_eq!(deleted_leaf.event_id, child_event_id);
+        assert_eq!(deleted_leaf.session_id, child_session_id);
+        assert_eq!(deleted_leaf.parent_session_id, Some(direct_parent_id));
+        assert_eq!(deleted_leaf.root_session_id, direct_parent_id);
+
+        let replay =
+            refresh_source_backed_generation(&index, &registry, WriterOptions::default()).unwrap();
+        assert_eq!(replay.commit.generation_id, deleted.commit.generation_id);
+        assert_eq!(rovodev_events(&index, &replay), deleted_events);
     }
 
     #[test]

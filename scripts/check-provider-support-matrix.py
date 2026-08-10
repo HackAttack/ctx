@@ -66,7 +66,7 @@ PUBLIC_DOCS_WITH_SELF_CONTAINED_CLAIMS = (
 PUBLIC_PRIVATE_BOUNDARY_SCAN_PATHS = PUBLIC_DOCS_WITH_SELF_CONTAINED_CLAIMS
 CODEX_PUBLIC_CLAIM_TEST_SUITE = (
     REPO_ROOT
-    / "crates/ctx-history-capture/src/provider/codex/nativepath/source_backed/tests"
+    / "crates/ctx-history-capture/src/provider/source_backed/tests/codex_child_independence.rs"
 )
 FORBIDDEN_PUBLIC_CLAIM_RE = re.compile(
     r"ctx-" + r"private|private\s+conformance|conformance\s+evidence|"
@@ -193,6 +193,8 @@ def reject_redundant_default_capability_fields(value: Any, field: str) -> None:
 def codex_public_claim_scan_paths(
     suite_path: Path = CODEX_PUBLIC_CLAIM_TEST_SUITE,
 ) -> tuple[Path, ...]:
+    if suite_path.is_file():
+        return (suite_path,)
     if not suite_path.is_dir():
         fail(f"public claim test suite does not exist: {suite_path}")
     scan_paths = tuple(sorted(suite_path.glob("*.rs")))
@@ -388,6 +390,44 @@ def validate_provider_lineage_claims(providers: list[dict[str, Any]]) -> None:
             )
 
 
+def validate_detected_unsupported_sources(
+    entries: Any, supported_ids: set[str]
+) -> None:
+    entries = expect_type(entries, list, "detected_unsupported_sources")
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        label = f"detected_unsupported_sources[{index}]"
+        expect_type(entry, dict, label)
+        expected_fields = {
+            "id",
+            "display_name",
+            "capture_provider",
+            "source_format",
+            "history_locations",
+            "importable",
+            "reason",
+            "public_docs",
+        }
+        if set(entry) != expected_fields:
+            fail(f"{label} must contain the exact unsupported-source fields")
+        provider_id = require_non_empty_string(entry["id"], f"{label}.id")
+        if provider_id in seen or provider_id in supported_ids:
+            fail(f"{label}.id duplicates another support classification")
+        seen.add(provider_id)
+        require_non_empty_string(entry["display_name"], f"{label}.display_name")
+        require_non_empty_string(entry["capture_provider"], f"{label}.capture_provider")
+        require_non_empty_string(entry["source_format"], f"{label}.source_format")
+        require_string_list(entry["history_locations"], f"{label}.history_locations")
+        if entry["importable"] is not False:
+            fail(f"{label}.importable must be false")
+        reason = require_non_empty_string(entry["reason"], f"{label}.reason")
+        if "transactionally maintained per-session content revision" not in reason:
+            fail(f"{label}.reason must state the child-independent revision blocker")
+        public_docs = require_repo_path(entry["public_docs"], f"{label}.public_docs")
+        if entry["display_name"] not in public_docs.read_text(encoding="utf-8"):
+            fail(f"{label}.public_docs does not mention the detected provider")
+
+
 def main() -> int:
     try:
         matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
@@ -439,6 +479,9 @@ def main() -> int:
         for index, provider in enumerate(providers):
             validate_provider(provider, index, seen_ids)
         validate_provider_lineage_claims(providers)
+        validate_detected_unsupported_sources(
+            matrix.get("detected_unsupported_sources"), seen_ids
+        )
     except (OSError, json.JSONDecodeError, MatrixError) as exc:
         print(f"provider support matrix check failed: {exc}", file=sys.stderr)
         return 1

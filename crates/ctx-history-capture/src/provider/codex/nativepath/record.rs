@@ -6,68 +6,15 @@ use serde::{
     Deserialize, Deserializer,
 };
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
-use super::rows::{CodexSessionGitMetadata, CodexSessionRow};
+use super::rows::{
+    CodexSessionGitMetadata, CodexSessionRow, MAX_CODEX_DURABLE_CWD_BYTES,
+    MAX_CODEX_DURABLE_METADATA_BYTES, MAX_CODEX_DURABLE_SESSION_ID_BYTES,
+};
 use crate::common::time::parse_rfc3339_utc;
 use crate::provider::codex::catalog::{codex_session_relationship, codex_source_kind};
 use crate::provider::codex::events::{CodexExitCodeParser, CodexWallTimeParser};
 use crate::{OutputOutcome, OutputOutcomeMetadata};
-
-const CODEX_LINEAGE_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-lineage-call-id/v1\0";
-const MAX_CODEX_LINEAGE_CALL_IDS_PER_RECORD: usize = 8;
-
-pub(super) fn codex_lineage_call_id_digest(call_id: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(CODEX_LINEAGE_CALL_ID_DOMAIN);
-    hasher.update((call_id.len() as u64).to_le_bytes());
-    hasher.update(call_id.as_bytes());
-    hasher.finalize().into()
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct CodexLineageCallIds {
-    digests: [[u8; 32]; MAX_CODEX_LINEAGE_CALL_IDS_PER_RECORD],
-    len: usize,
-    overflowed: bool,
-}
-
-impl CodexLineageCallIds {
-    fn remember(&mut self, call_id: &str) {
-        if call_id.is_empty() || call_id.len() > super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES {
-            return;
-        }
-        let digest = codex_lineage_call_id_digest(call_id);
-        if self.digests[..self.len].contains(&digest) {
-            return;
-        }
-        if self.len == self.digests.len() {
-            self.overflowed = true;
-            return;
-        }
-        self.digests[self.len] = digest;
-        self.len += 1;
-    }
-
-    fn merge(&mut self, other: Self) {
-        self.overflowed |= other.overflowed;
-        for digest in other.as_slice() {
-            if self.digests[..self.len].contains(digest) {
-                continue;
-            }
-            if self.len == self.digests.len() {
-                self.overflowed = true;
-                return;
-            }
-            self.digests[self.len] = *digest;
-            self.len += 1;
-        }
-    }
-
-    fn as_slice(&self) -> &[[u8; 32]] {
-        &self.digests[..self.len]
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CodexRetainedKind {
@@ -266,7 +213,6 @@ struct CodexEnvelopeProbe<'a> {
     record_type: Option<CodexText<'a>>,
     timestamp: Option<Cow<'a, str>>,
     payload: Option<CodexPayloadProbe<'a>>,
-    lineage_call_ids: CodexLineageCallIds,
     relationship_escaped: bool,
     lineage_malformed: bool,
 }
@@ -299,7 +245,6 @@ impl<'de> Visitor<'de> for CodexEnvelopeProbeVisitor {
         let mut saw_record_type = false;
         let mut saw_timestamp = false;
         let mut saw_payload = false;
-        let mut lineage_call_ids = CodexLineageCallIds::default();
         let mut relationship_escaped = false;
         let mut lineage_malformed = false;
         while let Some(key) = map.next_key::<CodexText<'de>>()? {
@@ -322,7 +267,6 @@ impl<'de> Visitor<'de> for CodexEnvelopeProbeVisitor {
                     relationship_escaped |= key_escaped;
                     let value = map.next_value::<Option<CodexPayloadProbe<'de>>>()?;
                     if let Some(value) = value.as_ref() {
-                        lineage_call_ids.merge(value.lineage_call_ids);
                         relationship_escaped |= value.relationship_escaped;
                         lineage_malformed |= value.lineage_malformed;
                     }
@@ -350,7 +294,6 @@ impl<'de> Visitor<'de> for CodexEnvelopeProbeVisitor {
             record_type,
             timestamp,
             payload,
-            lineage_call_ids,
             relationship_escaped,
             lineage_malformed,
         })
@@ -363,7 +306,6 @@ struct CodexPayloadProbe<'a> {
     call_id: Option<CodexText<'a>>,
     agent_thread_id: Option<CodexText<'a>>,
     activity_kind: Option<CodexText<'a>>,
-    lineage_call_ids: CodexLineageCallIds,
     relationship_escaped: bool,
     lineage_malformed: bool,
     activity_relationship_escaped: bool,
@@ -376,7 +318,6 @@ fn empty_codex_payload_probe<'a>() -> CodexPayloadProbe<'a> {
         call_id: None,
         agent_thread_id: None,
         activity_kind: None,
-        lineage_call_ids: CodexLineageCallIds::default(),
         relationship_escaped: false,
         lineage_malformed: false,
         activity_relationship_escaped: false,
@@ -414,7 +355,6 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
         let mut saw_call_id = false;
         let mut saw_agent_thread_id = false;
         let mut saw_activity_kind = false;
-        let mut lineage_call_ids = CodexLineageCallIds::default();
         let mut relationship_escaped = false;
         let mut lineage_malformed = false;
         let mut activity_relationship_escaped = false;
@@ -441,7 +381,6 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
                         key_escaped || value.value.as_ref().is_some_and(|value| value.escaped);
                     lineage_malformed |= duplicate || value.malformed;
                     if let Some(value) = value.value {
-                        lineage_call_ids.remember(value.as_str());
                         if !duplicate {
                             call_id = Some(value);
                         }
@@ -479,7 +418,6 @@ impl<'de> Visitor<'de> for CodexPayloadProbeVisitor {
             call_id,
             agent_thread_id,
             activity_kind,
-            lineage_call_ids,
             relationship_escaped,
             lineage_malformed,
             activity_relationship_escaped,
@@ -538,45 +476,12 @@ pub(super) struct CodexRecordProbe<'a> {
     pub(super) timestamp: Option<Cow<'a, str>>,
     pub(super) call_id: Option<Cow<'a, str>>,
     pub(super) output: Option<CodexStructuralOutput>,
-    descendant_started_native_session_id: Option<Cow<'a, str>>,
-    relationship_escaped: bool,
     lineage_malformed: bool,
-    lineage_call_ids: CodexLineageCallIds,
 }
 
 impl CodexRecordProbe<'_> {
     pub(super) const fn lineage_malformed(&self) -> bool {
         self.lineage_malformed
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum CodexLineageRecordEvidence<'a> {
-    None,
-    Call(&'a str),
-    Result(&'a str),
-    Ambiguous(&'a str),
-    AmbiguousDigests(&'a [[u8; 32]]),
-    UnattributedAmbiguity,
-    DescendantStarted(&'a str),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum CodexMalformedLineageRecordEvidence {
-    None,
-    AmbiguousDigests(CodexLineageCallIds),
-    UnattributedAmbiguity,
-}
-
-impl CodexMalformedLineageRecordEvidence {
-    pub(super) fn as_record_evidence(&self) -> CodexLineageRecordEvidence<'_> {
-        match self {
-            Self::None => CodexLineageRecordEvidence::None,
-            Self::AmbiguousDigests(call_ids) => {
-                CodexLineageRecordEvidence::AmbiguousDigests(call_ids.as_slice())
-            }
-            Self::UnattributedAmbiguity => CodexLineageRecordEvidence::UnattributedAmbiguity,
-        }
     }
 }
 
@@ -612,315 +517,29 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
             payload.relationship_escaped
                 || (activity_record && payload.activity_relationship_escaped)
         });
-    let descendant_started_native_session_id = envelope.payload.as_ref().and_then(|payload| {
-        (base_class == CodexRecordClass::DescendantActivity
+    let descendant_started = envelope.payload.as_ref().is_some_and(|payload| {
+        base_class == CodexRecordClass::DescendantActivity
             && payload.activity_kind.as_ref().map(CodexText::as_str) == Some("started")
             && !lineage_malformed
-            && !relationship_escaped)
-            .then(|| {
-                payload
-                    .agent_thread_id
-                    .as_ref()
-                    .map(|value| value.value.clone())
-            })
-            .flatten()
-            .filter(|value| uuid::Uuid::parse_str(value.as_ref()).is_ok())
+            && !relationship_escaped
+            && payload
+                .agent_thread_id
+                .as_ref()
+                .is_some_and(|value| uuid::Uuid::parse_str(value.as_str()).is_ok())
     });
-    let class = if descendant_started_native_session_id.is_some() {
-        CodexRecordClass::DescendantStarted
-    } else {
-        base_class
-    };
     Ok(CodexRecordProbe {
-        class,
+        class: if descendant_started {
+            CodexRecordClass::DescendantStarted
+        } else {
+            base_class
+        },
         timestamp: envelope.timestamp,
         call_id: envelope
             .payload
             .and_then(|payload| payload.call_id.map(|call_id| call_id.value)),
         output,
-        descendant_started_native_session_id,
-        relationship_escaped,
         lineage_malformed,
-        lineage_call_ids: envelope.lineage_call_ids,
     })
-}
-
-pub(super) fn codex_lineage_record_evidence<'a>(
-    probe: &'a CodexRecordProbe<'_>,
-) -> CodexLineageRecordEvidence<'a> {
-    if probe.lineage_malformed {
-        if !probe.lineage_call_ids.overflowed && !probe.lineage_call_ids.as_slice().is_empty() {
-            return CodexLineageRecordEvidence::AmbiguousDigests(probe.lineage_call_ids.as_slice());
-        }
-        return CodexLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    if let Some(descendant) = probe.descendant_started_native_session_id.as_deref() {
-        return CodexLineageRecordEvidence::DescendantStarted(descendant);
-    }
-    let is_call = matches!(
-        probe.class,
-        CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
-    );
-    let is_result = matches!(probe.class, CodexRecordClass::ExcludedResult(_));
-    if !is_call && !is_result {
-        return CodexLineageRecordEvidence::None;
-    }
-    let Some(call_id) = probe.call_id.as_deref() else {
-        return CodexLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    if call_id.is_empty() || call_id.len() > super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES {
-        return CodexLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    if probe.relationship_escaped {
-        return CodexLineageRecordEvidence::Ambiguous(call_id);
-    }
-    if is_call {
-        CodexLineageRecordEvidence::Call(call_id)
-    } else {
-        CodexLineageRecordEvidence::Result(call_id)
-    }
-}
-
-pub(super) fn malformed_record_may_contain_lineage(record: &[u8]) -> bool {
-    [
-        br#""call_id""#.as_slice(),
-        br#""function_call""#.as_slice(),
-        br#""custom_tool_call""#.as_slice(),
-        br#""function_call_output""#.as_slice(),
-        br#""custom_tool_call_output""#.as_slice(),
-        br#""sub_agent_activity""#.as_slice(),
-        br#""agent_thread_id""#.as_slice(),
-    ]
-    .into_iter()
-    .any(|needle| record.windows(needle.len()).any(|window| window == needle))
-}
-
-/// Recovers exact ambiguity scope when one physical JSONL row is a sequence of
-/// otherwise valid Codex envelopes.
-///
-/// Real Codex interruption races have concatenated two complete JSON objects
-/// without a newline. The row is still rejected, but treating that corruption
-/// as ambiguity for every call in the entire session discards unrelated exact
-/// producer evidence. A complete serde stream proves the full malformed row is
-/// composed only of the envelopes inspected here; any parse error, overflow,
-/// or selector whose call identity cannot be recovered retains the existing
-/// fail-closed global ambiguity.
-pub(super) fn malformed_codex_lineage_record_evidence(
-    record: &[u8],
-) -> CodexMalformedLineageRecordEvidence {
-    if !malformed_record_may_contain_lineage(record) {
-        return CodexMalformedLineageRecordEvidence::None;
-    }
-
-    let mut stream =
-        serde_json::Deserializer::from_slice(record).into_iter::<CodexEnvelopeProbe<'_>>();
-    let mut call_ids = CodexLineageCallIds::default();
-    let mut envelopes = 0_usize;
-    while let Some(next) = stream.next() {
-        let Ok(envelope) = next else {
-            if envelopes != 0 {
-                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-            }
-            return interrupted_duplicate_call_evidence(record);
-        };
-        envelopes = envelopes.saturating_add(1);
-
-        let item_type = envelope
-            .payload
-            .as_ref()
-            .and_then(|payload| payload.item_type.as_ref().map(CodexText::as_str));
-        let class = codex_record_class(
-            envelope.record_type.as_ref().map_or("", CodexText::as_str),
-            item_type,
-        );
-        if class == CodexRecordClass::DescendantActivity {
-            // A malformed physical row can never grant a trusted child-start
-            // boundary. Preserve source-wide abstention instead of silently
-            // treating a concatenated activity as ordinary ignored telemetry.
-            return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-        }
-        let lineage_malformed = envelope.lineage_malformed
-            || envelope
-                .payload
-                .as_ref()
-                .is_some_and(|payload| payload.lineage_malformed);
-
-        if lineage_malformed {
-            if envelope.lineage_call_ids.overflowed
-                || envelope.lineage_call_ids.as_slice().is_empty()
-            {
-                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-            }
-            call_ids.merge(envelope.lineage_call_ids);
-        } else if matches!(
-            class,
-            CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
-                | CodexRecordClass::ExcludedResult(_)
-        ) {
-            let Some(call_id) = envelope
-                .payload
-                .as_ref()
-                .and_then(|payload| payload.call_id.as_ref())
-                .map(CodexText::as_str)
-            else {
-                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-            };
-            if call_id.is_empty() || call_id.len() > super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES
-            {
-                return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-            }
-            call_ids.remember(call_id);
-        }
-
-        if call_ids.overflowed {
-            return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-        }
-    }
-
-    if envelopes == 0
-        || !record[stream.byte_offset()..]
-            .iter()
-            .all(u8::is_ascii_whitespace)
-    {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    if call_ids.as_slice().is_empty() {
-        CodexMalformedLineageRecordEvidence::None
-    } else {
-        CodexMalformedLineageRecordEvidence::AmbiguousDigests(call_ids)
-    }
-}
-
-/// Recovers the one malformed-row shape observed from interrupted Codex file
-/// writes: a truncated function-call envelope immediately followed by a full
-/// retry of the same provider response item. The provider response `id` must
-/// occur exactly once in each fragment and match byte-for-byte; the complete
-/// retry must independently classify as one exact tool call. Everything else
-/// retains source-wide ambiguity because a truncated producer might have no
-/// recoverable `call_id` at all.
-fn interrupted_duplicate_call_evidence(record: &[u8]) -> CodexMalformedLineageRecordEvidence {
-    const ENVELOPE_START: &[u8] = br#"{"timestamp""#;
-    let mut starts = record
-        .windows(ENVELOPE_START.len())
-        .enumerate()
-        .filter(|(_, window)| *window == ENVELOPE_START)
-        .map(|(start, _)| start);
-    if starts.next() != Some(0) {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    let Some(retry_start) = starts.next() else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    if starts.next().is_some() {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-
-    let Some(prefix) = record.get(..retry_start) else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    let Some(suffix) = record.get(retry_start..) else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    let Some((prefix_item_id, interrupted_arguments)) = canonical_function_call_prefix(prefix)
-    else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    if !is_unterminated_json_string_fragment(interrupted_arguments) {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    let Some((suffix_item_id, _)) = canonical_function_call_prefix(suffix) else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    if prefix_item_id != suffix_item_id
-        || count_bytes(suffix, br#""id""#) != 1
-        || suffix.windows(2).any(|window| window == br#"\u"#)
-    {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    let Ok(probe) = classify_codex_record(suffix) else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    if probe.lineage_malformed
-        || probe.relationship_escaped
-        || !matches!(
-            probe.class,
-            CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
-        )
-    {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    let Some(call_id) = probe.call_id.as_deref() else {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    };
-    if call_id.is_empty() || call_id.len() > super::checkpoint::MAX_CODEX_TOOL_CALL_ID_BYTES {
-        return CodexMalformedLineageRecordEvidence::UnattributedAmbiguity;
-    }
-    let mut call_ids = CodexLineageCallIds::default();
-    call_ids.remember(call_id);
-    CodexMalformedLineageRecordEvidence::AmbiguousDigests(call_ids)
-}
-
-fn canonical_function_call_prefix(record: &[u8]) -> Option<(&str, &[u8])> {
-    let mut remaining = record.strip_prefix(br#"{"timestamp":""#)?;
-    let (_, after_timestamp) = plain_json_string_prefix(remaining)?;
-    remaining = after_timestamp
-        .strip_prefix(br#","type":"response_item","payload":{"type":"function_call","id":""#)?;
-    let (item_id, after_item_id) = plain_json_string_prefix(remaining)?;
-    remaining = after_item_id.strip_prefix(br#","name":""#)?;
-    let (_, after_name) = plain_json_string_prefix(remaining)?;
-    let arguments = after_name.strip_prefix(br#","arguments":""#)?;
-    Some((item_id, arguments))
-}
-
-fn plain_json_string_prefix(record: &[u8]) -> Option<(&str, &[u8])> {
-    let end = record
-        .iter()
-        .position(|byte| *byte == b'"' || *byte == b'\\')?;
-    (record.get(end) == Some(&b'"')).then_some(())?;
-    let value = std::str::from_utf8(record.get(..end)?).ok()?;
-    (!value.is_empty() && value.bytes().all(|byte| byte >= 0x20)).then_some(())?;
-    Some((value, record.get(end.checked_add(1)?..)?))
-}
-
-fn is_unterminated_json_string_fragment(fragment: &[u8]) -> bool {
-    let mut cursor = 0_usize;
-    while let Some(byte) = fragment.get(cursor).copied() {
-        if byte == b'"' || byte < 0x20 {
-            return false;
-        }
-        if byte != b'\\' {
-            cursor = cursor.saturating_add(1);
-            continue;
-        }
-        cursor = cursor.saturating_add(1);
-        let Some(escape) = fragment.get(cursor).copied() else {
-            return false;
-        };
-        match escape {
-            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
-                cursor = cursor.saturating_add(1);
-            }
-            b'u' => {
-                let Some(hex) = fragment.get(cursor.saturating_add(1)..cursor.saturating_add(5))
-                else {
-                    return false;
-                };
-                if !hex.iter().all(u8::is_ascii_hexdigit) {
-                    return false;
-                }
-                cursor = cursor.saturating_add(5);
-            }
-            _ => return false,
-        }
-    }
-    std::str::from_utf8(fragment).is_ok()
-}
-
-fn count_bytes(haystack: &[u8], needle: &[u8]) -> usize {
-    haystack
-        .windows(needle.len())
-        .filter(|window| *window == needle)
-        .count()
 }
 
 /// Recovers only the canonical MCP terminal shape when the strict selector
@@ -954,10 +573,7 @@ pub(super) fn classify_mcp_terminal_after_selector_ambiguity(
         timestamp,
         call_id,
         output: Some(probe_structural_output(line).ok()?),
-        descendant_started_native_session_id: None,
-        relationship_escaped: true,
         lineage_malformed: false,
-        lineage_call_ids: CodexLineageCallIds::default(),
     })
 }
 
@@ -1066,7 +682,7 @@ struct CodexTurnContextPayload {
 pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
     let envelope = serde_json::from_slice::<CodexSessionMetaEnvelope>(line).ok()?;
     let payload = envelope.payload;
-    let native_session_id = nonempty(payload.id)?;
+    let native_session_id = bounded_nonempty(payload.id, MAX_CODEX_DURABLE_SESSION_ID_BYTES)?;
     let started_at = payload
         .timestamp
         .as_deref()
@@ -1081,7 +697,15 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
             .as_ref()
             .map(|history_base| history_base.thread_id.as_str()),
     );
-    let advisory_session_id = payload.session_id.and_then(nonempty);
+    if parent_native_session_id
+        .as_ref()
+        .is_some_and(|id| id.len() > MAX_CODEX_DURABLE_SESSION_ID_BYTES)
+    {
+        return None;
+    }
+    let advisory_session_id = payload
+        .session_id
+        .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_SESSION_ID_BYTES));
     Some(CodexSessionRow {
         native_session_id,
         parent_native_session_id,
@@ -1089,18 +713,37 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
         root_native_session_id: None,
         session_relationship,
         started_at,
-        cwd: payload.cwd.and_then(nonempty),
-        originator: payload.originator.and_then(nonempty),
-        cli_version: payload.cli_version.and_then(nonempty),
-        source_kind: codex_source_kind(&payload.source),
-        external_agent_id: payload.agent_nickname.and_then(nonempty),
-        role_hint: payload.agent_role.and_then(nonempty),
-        model_provider: payload.model_provider.and_then(nonempty),
+        cwd: payload
+            .cwd
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_CWD_BYTES)),
+        originator: payload
+            .originator
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+        cli_version: payload
+            .cli_version
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+        source_kind: codex_source_kind(&payload.source)
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+        external_agent_id: payload
+            .agent_nickname
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+        role_hint: payload
+            .agent_role
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+        model_provider: payload
+            .model_provider
+            .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
         git: payload.git.and_then(|git| {
             let git = CodexSessionGitMetadata {
-                commit_hash: git.commit_hash.and_then(nonempty),
-                branch: git.branch.and_then(nonempty),
-                repository_url: git.repository_url.and_then(nonempty),
+                commit_hash: git
+                    .commit_hash
+                    .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+                branch: git
+                    .branch
+                    .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
+                repository_url: git
+                    .repository_url
+                    .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_METADATA_BYTES)),
             };
             (git.commit_hash.is_some() || git.branch.is_some() || git.repository_url.is_some())
                 .then_some(git)
@@ -1110,289 +753,17 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
 
 pub(super) fn parse_turn_context_cwd(line: &[u8]) -> Option<String> {
     let envelope = serde_json::from_slice::<CodexTurnContextEnvelope>(line).ok()?;
-    nonempty(envelope.payload.cwd)
+    bounded_nonempty(envelope.payload.cwd, MAX_CODEX_DURABLE_CWD_BYTES)
 }
 
 fn nonempty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
-#[cfg(test)]
-mod lineage_tests {
-    use super::*;
-
-    fn assert_ambiguous_call_ids(evidence: CodexLineageRecordEvidence<'_>, expected: &[&str]) {
-        let CodexLineageRecordEvidence::AmbiguousDigests(actual) = evidence else {
-            panic!("expected attributed ambiguity, got {evidence:?}");
-        };
-        assert_eq!(actual.len(), expected.len());
-        for (actual, expected) in actual.iter().zip(expected) {
-            assert_eq!(*actual, codex_lineage_call_id_digest(expected));
-        }
-    }
-
-    fn escaped_ascii(value: &str) -> String {
-        use std::fmt::Write;
-
-        let mut escaped = String::new();
-        for byte in value.bytes() {
-            write!(escaped, "\\u{byte:04x}").unwrap();
-        }
-        escaped
-    }
-
-    #[test]
-    fn descendant_start_requires_exact_typed_unescaped_uuid_authority() {
-        let child = "019f8d80-ba23-73f3-a02a-9400f9e7b9ec";
-        let exact = format!(
-            r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"started","agent_thread_id":"{child}"}}}}"#
-        );
-        let probe = classify_codex_record(exact.as_bytes()).unwrap();
-        assert_eq!(probe.class, CodexRecordClass::DescendantStarted);
-        assert_eq!(
-            codex_lineage_record_evidence(&probe),
-            CodexLineageRecordEvidence::DescendantStarted(child)
-        );
-
-        for untrusted in [
-            format!(
-                r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"completed","agent_thread_id":"{child}"}}}}"#
-            ),
-            r#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started","agent_thread_id":"not-a-uuid"}}"#.to_owned(),
-            format!(
-                r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"st\u0061rted","agent_thread_id":"{child}"}}}}"#
-            ),
-            format!(
-                r#"{{"type":"event_msg","payload":{{"type":"sub_agent_activity","kind":"started","agent_thread_id":"{child}","agent_thread_id":"{child}"}}}}"#
-            ),
-        ] {
-            let probe = classify_codex_record(untrusted.as_bytes()).unwrap();
-            assert_ne!(probe.class, CodexRecordClass::DescendantStarted, "{untrusted}");
-            assert!(
-                !matches!(
-                    codex_lineage_record_evidence(&probe),
-                    CodexLineageRecordEvidence::DescendantStarted(_)
-                ),
-                "{untrusted}"
-            );
-        }
-    }
-
-    #[test]
-    fn escaped_relationship_fields_are_ambiguous_not_exact() {
-        let record = br#"{"type":"response_item","payload":{"type":"function_call","call_\u0069d":"escaped-call"}}"#;
-        let probe = classify_codex_record(record).unwrap();
-        assert_eq!(
-            codex_lineage_record_evidence(&probe),
-            CodexLineageRecordEvidence::Ambiguous("escaped-call")
-        );
-    }
-
-    #[test]
-    fn duplicate_relationship_fields_are_malformed_and_call_scoped() {
-        let record = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first","call_id":"second"}}"#;
-        let probe = classify_codex_record(record).unwrap();
-        assert!(probe.lineage_malformed());
-        assert_ambiguous_call_ids(codex_lineage_record_evidence(&probe), &["first", "second"]);
-    }
-
-    #[test]
-    fn duplicate_payloads_attribute_identifiers_from_every_occurrence() {
-        let record = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first"},"payload":{"type":"function_call_output","call_id":"second"}}"#;
-        let probe = classify_codex_record(record).unwrap();
-        assert!(probe.lineage_malformed());
-        assert_ambiguous_call_ids(codex_lineage_record_evidence(&probe), &["first", "second"]);
-    }
-
-    #[test]
-    fn fully_escaped_duplicate_lineage_fields_do_not_evade_ambiguity() {
-        let record = br#"{"\u0074\u0079\u0070\u0065":"\u0072\u0065\u0073\u0070\u006f\u006e\u0073\u0065\u005f\u0069\u0074\u0065\u006d","\u0070\u0061\u0079\u006c\u006f\u0061\u0064":{"\u0074\u0079\u0070\u0065":"\u0066\u0075\u006e\u0063\u0074\u0069\u006f\u006e\u005f\u0063\u0061\u006c\u006c","\u0063\u0061\u006c\u006c\u005f\u0069\u0064":"first","\u0063\u0061\u006c\u006c\u005f\u0069\u0064":"second"}}"#;
-        assert!(!malformed_record_may_contain_lineage(record));
-        let probe = classify_codex_record(record).unwrap();
-        assert!(probe.lineage_malformed());
-        assert_ambiguous_call_ids(codex_lineage_record_evidence(&probe), &["first", "second"]);
-    }
-
-    #[test]
-    fn escaped_non_string_call_ids_are_ambiguous_in_either_duplicate_order() {
-        let records = [
-            br#"{"\u0074\u0079\u0070\u0065":"\u0072\u0065\u0073\u0070\u006f\u006e\u0073\u0065\u005f\u0069\u0074\u0065\u006d","\u0070\u0061\u0079\u006c\u006f\u0061\u0064":{"\u0074\u0079\u0070\u0065":"\u0066\u0075\u006e\u0063\u0074\u0069\u006f\u006e\u005f\u0063\u0061\u006c\u006c","\u0063\u0061\u006c\u006c\u005f\u0069\u0064":7,"\u0063\u0061\u006c\u006c\u005f\u0069\u0064":"target"}}"#
-                .as_slice(),
-            br#"{"\u0074\u0079\u0070\u0065":"\u0072\u0065\u0073\u0070\u006f\u006e\u0073\u0065\u005f\u0069\u0074\u0065\u006d","\u0070\u0061\u0079\u006c\u006f\u0061\u0064":{"\u0074\u0079\u0070\u0065":"\u0066\u0075\u006e\u0063\u0074\u0069\u006f\u006e\u005f\u0063\u0061\u006c\u006c","\u0063\u0061\u006c\u006c\u005f\u0069\u0064":"target","\u0063\u0061\u006c\u006c\u005f\u0069\u0064":7}}"#
-                .as_slice(),
-        ];
-        for record in records {
-            assert!(!malformed_record_may_contain_lineage(record));
-            let probe = classify_codex_record(record).unwrap();
-            assert!(probe.lineage_malformed());
-            assert_ambiguous_call_ids(codex_lineage_record_evidence(&probe), &["target"]);
-        }
-
-        let unrelated = br#"{"timestamp":"a","timestamp":"b","type":"event_msg","payload":{"type":"token_count"}}"#;
-        assert!(classify_codex_record(unrelated).is_err());
-        assert!(!malformed_record_may_contain_lineage(unrelated));
-    }
-
-    #[test]
-    fn escaped_duplicate_type_values_of_any_json_kind_are_call_scoped_in_either_order() {
-        let type_key = escaped_ascii("type");
-        let payload_key = escaped_ascii("payload");
-        let call_id_key = escaped_ascii("call_id");
-        let response_item = escaped_ascii("response_item");
-        let function_call = escaped_ascii("function_call");
-        for invalid in ["{}", "[]", "null", "7"] {
-            for invalid_first in [true, false] {
-                let envelope_types = if invalid_first {
-                    format!(r#""{type_key}":{invalid},"{type_key}":"{response_item}""#)
-                } else {
-                    format!(r#""{type_key}":"{response_item}","{type_key}":{invalid}"#)
-                };
-                let envelope = format!(
-                    r#"{{{envelope_types},"{payload_key}":{{"{type_key}":"{function_call}","{call_id_key}":"target"}}}}"#
-                );
-                assert!(!malformed_record_may_contain_lineage(envelope.as_bytes()));
-                let probe = classify_codex_record(envelope.as_bytes()).unwrap();
-                assert!(probe.lineage_malformed());
-                assert_ambiguous_call_ids(codex_lineage_record_evidence(&probe), &["target"]);
-
-                let payload_types = if invalid_first {
-                    format!(r#""{type_key}":{invalid},"{type_key}":"{function_call}""#)
-                } else {
-                    format!(r#""{type_key}":"{function_call}","{type_key}":{invalid}"#)
-                };
-                let payload = format!(
-                    r#"{{"{type_key}":"{response_item}","{payload_key}":{{{payload_types},"{call_id_key}":"target"}}}}"#
-                );
-                assert!(!malformed_record_may_contain_lineage(payload.as_bytes()));
-                let probe = classify_codex_record(payload.as_bytes()).unwrap();
-                assert!(probe.lineage_malformed());
-                assert_ambiguous_call_ids(codex_lineage_record_evidence(&probe), &["target"]);
-            }
-        }
-    }
-
-    #[test]
-    fn too_many_distinct_duplicate_call_ids_fall_back_to_source_ambiguity() {
-        let mut call_ids = String::new();
-        for index in 0..=MAX_CODEX_LINEAGE_CALL_IDS_PER_RECORD {
-            call_ids.push_str(&format!(r#", "call_id":"call-{index}""#));
-        }
-        let record =
-            format!(r#"{{"type":"response_item","payload":{{"type":"function_call"{call_ids}}}}}"#);
-        let probe = classify_codex_record(record.as_bytes()).unwrap();
-        assert!(probe.lineage_malformed());
-        assert_eq!(
-            codex_lineage_record_evidence(&probe),
-            CodexLineageRecordEvidence::UnattributedAmbiguity
-        );
-    }
-
-    #[test]
-    fn concatenated_valid_envelopes_recover_exact_ambiguity_scope() {
-        let record = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first","name":"exec"}}{"type":"response_item","payload":{"type":"function_call_output","call_id":"second","output":"ok"}}"#;
-        assert!(classify_codex_record(record).is_err());
-        let evidence = malformed_codex_lineage_record_evidence(record);
-        assert_ambiguous_call_ids(evidence.as_record_evidence(), &["first", "second"]);
-    }
-
-    #[test]
-    fn interrupted_duplicate_call_recovers_its_exact_retry_call_id() {
-        let record = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"outer-call"}}"#;
-        assert!(classify_codex_record(record).is_err());
-        let evidence = malformed_codex_lineage_record_evidence(record);
-        assert!(
-            matches!(
-                evidence,
-                CodexMalformedLineageRecordEvidence::AmbiguousDigests(_)
-            ),
-            "outer corruption was not scoped: {evidence:?}"
-        );
-        assert_ambiguous_call_ids(evidence.as_record_evidence(), &["outer-call"]);
-    }
-
-    #[test]
-    fn interrupted_duplicate_recovery_rejects_noncanonical_or_ambiguous_fragments() {
-        let decoy_then_unidentified = br#"{"timestamp":"2026-07-23T21:34:00Z","type":"response_item","payload":{"type":"function_call_output","call_id":"decoy"}}{"type":"response_item","payload":{"type":"function_call"{"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
-        let mismatched_retry = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_first","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_second","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
-        let escaped_duplicate_id = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","\u0069\u0064":"fc_same","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
-        let extra_fragment = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:10Z","type":"event_msg","payload":{"type":"sub_agent_activity"}}{"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"target"}}"#;
-        let escaped_call_id = br#"{"timestamp":"2026-07-23T21:34:01Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"prefix {"timestamp":"2026-07-23T21:34:22Z","type":"response_item","payload":{"type":"function_call","id":"fc_same","name":"exec_command","arguments":"{}","call_id":"call\/id"}}"#;
-        let control_in_prefix = b"{\"timestamp\":\"2026-07-23\x01\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"id\":\"fc_same\",\"name\":\"exec_command\",\"arguments\":\"prefix {\"timestamp\":\"2026-07-23T21:34:22Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"id\":\"fc_same\",\"name\":\"exec_command\",\"arguments\":\"{}\",\"call_id\":\"target\"}}";
-
-        for record in [
-            decoy_then_unidentified.as_slice(),
-            mismatched_retry.as_slice(),
-            escaped_duplicate_id.as_slice(),
-            extra_fragment.as_slice(),
-            escaped_call_id.as_slice(),
-            control_in_prefix.as_slice(),
-        ] {
-            assert!(matches!(
-                malformed_codex_lineage_record_evidence(record),
-                CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
-            ));
-        }
-    }
-
-    #[test]
-    fn malformed_unicode_or_unstructured_call_id_retains_global_ambiguity() {
-        for record in [
-            br#"{"type":"response_item","payload":{"type":"function_call","call_\u0069d":"hidden""#
-                .as_slice(),
-            br#"{"type":"response_item","payload":{"type":"function_call","text":"call_id without exact field""#
-                .as_slice(),
-        ] {
-            let evidence = malformed_codex_lineage_record_evidence(record);
-            assert!(matches!(
-                evidence,
-                CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
-            ), "unexpected scoped evidence: {evidence:?}");
-        }
-    }
-
-    #[test]
-    fn truncated_rows_retain_global_ambiguity_even_when_literal_ids_are_visible() {
-        let exact_ids = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first"}}{"type":"response_item","payload":{"type":"function_call","call_id":"hidden""#;
-        assert!(matches!(
-            malformed_codex_lineage_record_evidence(exact_ids),
-            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
-        ));
-
-        let unidentified_producer = br#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"decoy"}}{"type":"response_item","payload":{"type":"function_call"#;
-        assert!(matches!(
-            malformed_codex_lineage_record_evidence(unidentified_producer),
-            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
-        ));
-
-        let descendant = br#"{"type":"event_msg","payload":{"type":"sub_agent_activity","kind":"started","agent_thread_id":"019f8d80-ba23-73f3-a02a-9400f9e7b9ec"}} trailing"#;
-        assert!(matches!(
-            malformed_codex_lineage_record_evidence(descendant),
-            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
-        ));
-    }
-
-    #[test]
-    fn malformed_non_lineage_record_adds_no_lineage_ambiguity() {
-        let record = br#"{"type":"event_msg","payload":{"type":"token_count","value":1}} trailing"#;
-        assert!(matches!(
-            malformed_codex_lineage_record_evidence(record),
-            CodexMalformedLineageRecordEvidence::None
-        ));
-    }
-
-    #[test]
-    fn too_many_concatenated_call_ids_retain_global_ambiguity() {
-        let mut record = String::new();
-        for index in 0..=MAX_CODEX_LINEAGE_CALL_IDS_PER_RECORD {
-            record.push_str(&format!(
-                r#"{{"type":"response_item","payload":{{"type":"function_call","call_id":"call-{index}"}}}}"#
-            ));
-        }
-        assert!(matches!(
-            malformed_codex_lineage_record_evidence(record.as_bytes()),
-            CodexMalformedLineageRecordEvidence::UnattributedAmbiguity
-        ));
-    }
+fn bounded_nonempty(value: String, max_bytes: usize) -> Option<String> {
+    (value.len() <= max_bytes)
+        .then_some(value)
+        .and_then(nonempty)
 }
 
 #[cfg(test)]
@@ -1428,7 +799,7 @@ mod session_relationship_tests {
     }
 
     #[test]
-    fn payload_session_id_remains_advisory_until_graph_normalization() {
+    fn payload_session_id_remains_advisory_to_the_child_local_parent_claim() {
         let parent = "019fa000-0000-7000-8000-000000000913";
         let advisory = "019fa000-0000-7000-8000-000000000914";
         let row = parse(serde_json::json!({
@@ -1512,6 +883,47 @@ mod session_relationship_tests {
             row.session_relationship,
             SessionRelationshipKind::RelatedUnknown
         );
+    }
+
+    #[test]
+    fn oversized_advisory_metadata_is_dropped_without_truncation() {
+        let oversized = "m".repeat(MAX_CODEX_DURABLE_METADATA_BYTES + 1);
+        let row = parse(serde_json::json!({
+            "id": "019fa000-0000-7000-8000-000000000916",
+            "timestamp": "2026-08-05T12:00:00Z",
+            "source": "cli",
+            "originator": oversized,
+            "cli_version": "bounded-version",
+        }));
+        assert_eq!(row.originator, None);
+        assert_eq!(row.cli_version.as_deref(), Some("bounded-version"));
+    }
+
+    #[test]
+    fn oversized_required_native_or_parent_identity_rejects_session_owner() {
+        let oversized = "i".repeat(MAX_CODEX_DURABLE_SESSION_ID_BYTES + 1);
+        let native = serde_json::json!({
+            "timestamp": "2026-08-05T12:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": oversized,
+                "timestamp": "2026-08-05T12:00:00Z",
+                "source": "cli",
+            },
+        });
+        assert!(parse_session_meta(native.to_string().as_bytes()).is_none());
+
+        let parent = serde_json::json!({
+            "timestamp": "2026-08-05T12:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "019fa000-0000-7000-8000-000000000917",
+                "timestamp": "2026-08-05T12:00:00Z",
+                "source": "cli",
+                "forked_from_id": "p".repeat(MAX_CODEX_DURABLE_SESSION_ID_BYTES + 1),
+            },
+        });
+        assert!(parse_session_meta(parent.to_string().as_bytes()).is_none());
     }
 }
 

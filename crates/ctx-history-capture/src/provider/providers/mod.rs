@@ -10,7 +10,6 @@ pub(crate) mod firebender;
 pub(crate) mod forgecode;
 pub(crate) mod gemini;
 pub(crate) mod goose;
-pub(crate) mod hermes;
 pub(crate) mod junie;
 pub(crate) mod kimi;
 pub(crate) mod kiro;

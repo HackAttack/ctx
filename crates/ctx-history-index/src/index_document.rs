@@ -635,20 +635,30 @@ impl IndexDocument {
             core_record_encoded_bytes,
             core_content_bytes,
         )?;
-        let repository_path_values = record
-            .repository_file_observations
-            .iter()
-            .map(|observation| 1 + usize::from(observation.prior_relative_path.is_some()))
-            .sum::<usize>();
-        let produced_object_values = record
-            .repository_vcs_observations
-            .iter()
-            .filter_map(|observation| match &observation.kind {
-                RepositoryVcsObservationKind::Outcome(outcome) => Some(outcome),
-                _ => None,
+        let repository_attribution_eligible =
+            matches!(&record.event_origin, EventOrigin::UniqueToSession);
+        let repository_path_values = repository_attribution_eligible
+            .then(|| {
+                record
+                    .repository_file_observations
+                    .iter()
+                    .map(|observation| 1 + usize::from(observation.prior_relative_path.is_some()))
+                    .sum::<usize>()
             })
-            .map(|outcome| outcome.produced_object_ids.len())
-            .sum::<usize>();
+            .unwrap_or(0);
+        let produced_object_values = repository_attribution_eligible
+            .then(|| {
+                record
+                    .repository_vcs_observations
+                    .iter()
+                    .filter_map(|observation| match &observation.kind {
+                        RepositoryVcsObservationKind::Outcome(outcome) => Some(outcome),
+                        _ => None,
+                    })
+                    .map(|outcome| outcome.produced_object_ids.len())
+                    .sum::<usize>()
+            })
+            .unwrap_or(0);
         let mut target = Self::with_capacity(
             BASE_FIELD_VALUES + repository_path_values + produced_object_values,
         );
@@ -680,10 +690,7 @@ impl IndexDocument {
             ancestor_event_id, ..
         } = &record.event_origin
         {
-            target.add_text(
-                fields.origin_event_identity_digest,
-                crate::hex(&ancestor_event_id.digest()),
-            );
+            target.add_text(fields.origin_event_id, ancestor_event_id.to_string());
         }
         target.add_shared_text(fields.source_key, source.token);
         target.add_shared_text(fields.provider, source.provider);
@@ -717,10 +724,12 @@ impl IndexDocument {
         if let Some(body) = project_indexed_body_search(&record.event_origin, record.content)? {
             target.add_text(fields.body_search, body);
         }
-        for observation in record.repository_vcs_observations {
-            if let RepositoryVcsObservationKind::Outcome(outcome) = observation.kind {
-                for object_id in outcome.produced_object_ids {
-                    target.add_text(fields.repository_produced_object_id, object_id.hex);
+        if repository_attribution_eligible {
+            for observation in record.repository_vcs_observations {
+                if let RepositoryVcsObservationKind::Outcome(outcome) = observation.kind {
+                    for object_id in outcome.produced_object_ids {
+                        target.add_text(fields.repository_produced_object_id, object_id.hex);
+                    }
                 }
             }
         }
@@ -730,16 +739,18 @@ impl IndexDocument {
         if let Some(cwd) = record.cwd {
             target.add_text(fields.workspace_filter, cwd.to_lowercase());
         }
-        for observation in record.repository_file_observations {
-            target.add_text(
-                fields.touched_file_filter,
-                observation.relative_path.to_lowercase(),
-            );
-            if let Some(prior_relative_path) = observation.prior_relative_path {
+        if repository_attribution_eligible {
+            for observation in record.repository_file_observations {
                 target.add_text(
                     fields.touched_file_filter,
-                    prior_relative_path.to_lowercase(),
+                    observation.relative_path.to_lowercase(),
                 );
+                if let Some(prior_relative_path) = observation.prior_relative_path {
+                    target.add_text(
+                        fields.touched_file_filter,
+                        prior_relative_path.to_lowercase(),
+                    );
+                }
             }
         }
         target.add_u64(

@@ -8,10 +8,10 @@ use inventory_replay::{inventory_replay_registry, revisioned_receipt_route};
 #[test]
 fn heterogeneous_routes_publish_one_core_generation() {
     let gemini = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 1);
-    let hermes = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 2);
+    let mux = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 2);
     let mut registry = SourceBackedProviderRegistry::new();
     registry.register(gemini);
-    registry.register(hermes);
+    registry.register(mux);
 
     let temp = tempdir().unwrap();
     let mut progress = Vec::new();
@@ -121,7 +121,7 @@ fn automatic_identity_preserves_discovered_replacement_and_distinguishes_catalog
 fn parallel_leaf_capability_respects_exact_route_scope() {
     let serial = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 7);
     let serial_id = serial.metadata.route_identity.clone().unwrap();
-    let mut parallel = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 8);
+    let mut parallel = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 8);
     let parallel_id = parallel.metadata.route_identity.clone().unwrap();
     parallel.driver = parallel
         .driver
@@ -169,13 +169,6 @@ fn production_route_families_advertise_parallel_leaf_capability() {
             temp.path().join("continue"),
             false,
             false,
-        ),
-        (
-            CaptureProvider::Hermes,
-            crate::HERMES_SQLITE_SOURCE_FORMAT,
-            temp.path().join("hermes.db"),
-            false,
-            true,
         ),
     ];
 
@@ -361,7 +354,7 @@ fn cold_second_route_failure_after_output_publishes_first_without_partial_record
         fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 1),
         Arc::clone(&first_scans),
     );
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 2);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 2);
     let first_id = first.metadata.route_identity.clone().unwrap();
     let second_id = second.metadata.route_identity.clone().unwrap();
     let mut registry = SourceBackedProviderRegistry::new();
@@ -399,7 +392,7 @@ fn cold_second_route_failure_after_output_publishes_first_without_partial_record
 #[test]
 fn warm_success_advances_while_failed_route_is_carried_exactly() {
     let (first_v1, _) = revisioned_receipt_route(1);
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 9);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 9);
     let second_id = second.metadata.route_identity.clone().unwrap();
     let mut initial_registry = SourceBackedProviderRegistry::new();
     initial_registry.register(first_v1);
@@ -460,7 +453,7 @@ fn warm_success_advances_while_failed_route_is_carried_exactly() {
 #[test]
 fn successful_route_outcomes_distinguish_changed_and_unchanged_routes() {
     let (first_v1, _) = revisioned_receipt_route(1);
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 9);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 9);
     let first_id = first_v1.metadata.route_identity.clone().unwrap();
     let second_id = second.metadata.route_identity.clone().unwrap();
     let mut initial_registry = SourceBackedProviderRegistry::new();
@@ -490,7 +483,7 @@ fn successful_route_outcomes_distinguish_changed_and_unchanged_routes() {
 #[test]
 fn authoritative_executor_publishes_valid_route_and_receipts_carried_failure() {
     let (valid_v1, _) = revisioned_receipt_route(31);
-    let failing = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 32);
+    let failing = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 32);
     let failing_id = failing.metadata.route_identity.clone().unwrap();
     let mut initial_registry = SourceBackedProviderRegistry::new();
     initial_registry.register(valid_v1);
@@ -541,9 +534,9 @@ fn internal_route_failure_aborts_the_whole_cold_refresh() {
         fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 11),
         Arc::clone(&first_scans),
     );
-    let second_source = fixture_source(CaptureProvider::Hermes, "hermes_state_sqlite", 12);
+    let second_source = fixture_source(CaptureProvider::Mux, "mux_session_jsonl_tree", 12);
     let second = fail_route_with_systemic_writer_error(
-        fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 12),
+        fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 12),
         second_source,
     );
     let mut registry = SourceBackedProviderRegistry::new();
@@ -626,7 +619,7 @@ fn terminal_callback_errors_are_route_fatal_not_source_changed() {
 #[test]
 fn real_shared_resource_exhaustion_aborts_warm_refresh_and_retains_complete_prior_generation() {
     let (first_v1, _) = revisioned_receipt_route(51);
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 52);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 52);
     let mut initial_registry = SourceBackedProviderRegistry::new();
     initial_registry.register(first_v1);
     initial_registry.register(second.clone());
@@ -641,8 +634,8 @@ fn real_shared_resource_exhaustion_aborts_warm_refresh_and_retains_complete_prio
     let mut warm_registry = SourceBackedProviderRegistry::new();
     warm_registry.register(first_v2);
     warm_registry.register(fixture_route_with_body(
-        CaptureProvider::Hermes,
-        "hermes_state_sqlite",
+        CaptureProvider::Mux,
+        "mux_session_jsonl_tree",
         52,
         "x".repeat(8 * 1024),
     ));
@@ -683,8 +676,8 @@ fn cold_final_revalidation_failures_scan_each_route_once_and_publish_only_succes
     );
     let second = count_route_scans(
         fail_route_at_final_revalidation(fixture_route(
-            CaptureProvider::Hermes,
-            "hermes_state_sqlite",
+            CaptureProvider::Mux,
+            "mux_session_jsonl_tree",
             14,
         )),
         Arc::clone(&second_scans),
@@ -770,7 +763,7 @@ fn final_inventory_failure_scans_each_route_once_and_stays_route_local() {
     let successful_scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let failed_scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let successful = count_route_scans(
-        fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 16),
+        fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 16),
         Arc::clone(&successful_scans),
     );
     let successful_id = successful.metadata.route_identity.clone().unwrap();
@@ -813,7 +806,7 @@ fn final_inventory_failure_scans_each_route_once_and_stays_route_local() {
 #[test]
 fn warm_final_revalidation_failure_scans_once_and_carries_the_exact_route() {
     let (first_v1, _) = revisioned_receipt_route(1);
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 16);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 16);
     let second_id = second.metadata.route_identity.clone().unwrap();
     let mut initial_registry = SourceBackedProviderRegistry::new();
     initial_registry.register(first_v1);
@@ -952,7 +945,7 @@ fn warm_missing_route_in_grace_remains_usable_when_a_new_cold_route_fails() {
     .unwrap();
     assert_eq!(missing.metadata.route_identity.as_ref(), Some(&route_id));
     let failed = fail_route_before_scan(
-        fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 17),
+        fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 17),
         SourceBackedRouteErrorKind::Unavailable,
     );
     let failed_id = failed.metadata.route_identity.clone().unwrap();
@@ -990,7 +983,7 @@ fn warm_missing_route_in_grace_remains_usable_when_a_new_cold_route_fails() {
 #[test]
 fn selected_route_refresh_carries_unselected_route_and_reports_exact_noop_success() {
     let first = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 21);
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 22);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 22);
     let first_id = first.metadata.route_identity.clone().unwrap();
     let second_id = second.metadata.route_identity.clone().unwrap();
     let second_scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1115,7 +1108,7 @@ fn empty_replacement_cannot_hide_a_cold_route_failure_behind_retired_content() {
     ));
     let replacement_id = replacement.metadata.route_identity.clone().unwrap();
     let failed = fail_route_before_scan(
-        fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 75),
+        fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 75),
         SourceBackedRouteErrorKind::SourceChanged,
     );
     let failed_id = failed.metadata.route_identity.clone().unwrap();
@@ -1149,8 +1142,8 @@ fn empty_replacement_cannot_hide_a_cold_route_failure_behind_retired_content() {
 fn selected_clean_route_completion_ignores_carried_unselected_rejections() {
     let clean = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 61);
     let rejected = fixture_route_with_body_and_rejections(
-        CaptureProvider::Hermes,
-        "hermes_state_sqlite",
+        CaptureProvider::Mux,
+        "mux_session_jsonl_tree",
         62,
         "retained peer".to_owned(),
         1,
@@ -1189,7 +1182,7 @@ fn selected_clean_route_completion_ignores_carried_unselected_rejections() {
 #[test]
 fn selected_failed_route_reports_exact_identity_and_carries_the_whole_base() {
     let first = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 23);
-    let second = fixture_route(CaptureProvider::Hermes, "hermes_state_sqlite", 24);
+    let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 24);
     let first_id = first.metadata.route_identity.clone().unwrap();
     let second_id = second.metadata.route_identity.clone().unwrap();
     let mut initial_registry = SourceBackedProviderRegistry::new();

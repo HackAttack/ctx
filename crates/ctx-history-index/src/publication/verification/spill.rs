@@ -395,10 +395,6 @@ impl IdentityKeySpill {
         }
         Ok(())
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.records == 0
-    }
 }
 
 fn identity_sort_run_count(records: u64) -> Result<usize> {
@@ -1124,19 +1120,6 @@ mod tests {
                 DOCUMENTS * 2 * COMPACT_IDENTITY_BYTES as u64,
                 identity_sort_scratch_heap_bytes(DOCUMENTS * 2, run_count).unwrap(),
             )
-            .unwrap();
-        let _descendant_frontiers = budget
-            .reserve(
-                DOCUMENTS * 3 * COMPACT_IDENTITY_BYTES as u64,
-                identity_sort_scratch_heap_bytes(
-                    DOCUMENTS,
-                    identity_sort_run_count(DOCUMENTS).unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        let _inverse_copies = budget
-            .reserve(DOCUMENTS * IDENTITY_SPILL_RECORD_BYTES as u64, 0)
             .unwrap();
     }
 

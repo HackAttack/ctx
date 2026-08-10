@@ -6,7 +6,7 @@
   "conformance_authority": {
     "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
     "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "acd45049ef1917f9df255677408ec28d43051cceacac28ade45e171ba71d57ec",
+    "manifest_sha256": "d7d31900c62f80ddc7e656347c19ac62021793aef50ad7151e37a6f06d6b9f7f",
     "suite_registry_sha256": "32e3e9ac4645251c6bdb38aa2877f33e185b7d63d705b6723c0f737b3983da87",
     "manifest_schema_version": 6,
     "capability_revision": 5,
@@ -16,13 +16,13 @@
       "excluded": "excluded"
     },
     "expected_counts": {
-      "providers": 41,
-      "base_routes": 43,
-      "schema_generations": 42,
-      "capability_lanes": 46,
+      "providers": 40,
+      "base_routes": 42,
+      "schema_generations": 41,
+      "capability_lanes": 45,
       "status_rows": {
         "supported": 3,
-        "not_qualified": 42,
+        "not_qualified": 41,
         "excluded": 1
       }
     }
@@ -76,17 +76,17 @@
     "exact_requires_source_commits": false
   },
   "expected_counts": {
-    "providers": 41,
-    "base_routes": 43,
-    "capability_lanes": 46,
+    "providers": 40,
+    "base_routes": 42,
+    "capability_lanes": 45,
     "lane_statuses": {
       "exact": 3,
-      "not-qualified": 42,
+      "not-qualified": 41,
       "excluded": 1
     },
     "provider_statuses": {
       "exact": 3,
-      "not-qualified": 38,
+      "not-qualified": 37,
       "excluded": 0
     }
   },
@@ -239,13 +239,6 @@
       "status": "not-qualified", "reason": "route_mismatch",
       "detail": "Legacy JSONL has stable result linkage but only a lossy generated name; exact current MCP metadata belongs to the newer SQLite route, which this tuple does not import.",
       "evidence": ["https://github.com/openclaw/openclaw/tree/554a6f3bbf6d8173efc2f1c92e30139f88dc26d6"]
-    },
-    {
-      "provider_id": "hermes", "route": "native_import", "source_format": "hermes_state_sqlite", "source_schema": "hermes-state-db-v1",
-      "producer_bound": {"kind": "versions", "versions": [], "ranges": [{"minimum": "2026.3.12", "maximum": "2026.8.3"}], "source_commits": ["a991dfc25daf68994c21d6adcdfbafb1b3dc23cf"], "unknown_generations": "not-qualified"},
-      "status": "not-qualified", "reason": "lossy_composite",
-      "detail": "Both historical single-underscore and current double-underscore durable names are non-injective composites even though call IDs survive.",
-      "evidence": ["https://github.com/NousResearch/hermes-agent/tree/a991dfc25daf68994c21d6adcdfbafb1b3dc23cf"]
     },
     {
       "provider_id": "nanoclaw", "route": "native_import", "source_format": "nanoclaw_project", "source_schema": "nanoclaw-compound-project-v1",
@@ -435,7 +428,7 @@
       "provider_id": "codex", "route": "native_import", "source_format": "codex_session_jsonl_tree", "source_schema": "codex-nativepath-jsonl-v0",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-capture/src/provider/codex/nativepath/source_backed.rs",
-      "parser_revision": "codex-nativepath-core-record-v24-scoped-malformed-descendant-authority",
+      "parser_revision": "codex-nativepath-core-record-v27-bounded-exact-origin",
       "suite_id": "ctx-history-capture::test:codex_direct_result",
       "conformance_suite": "codex_direct_result",
       "tests": [

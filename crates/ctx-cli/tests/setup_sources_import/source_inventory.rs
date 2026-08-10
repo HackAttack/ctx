@@ -1,5 +1,8 @@
 use super::{ctx, support::*};
 
+const HERMES_UNSUPPORTED_REASON: &str =
+    "current Hermes state.db schemas are unsupported because they lack a provider-owned, transactionally maintained per-session content revision; ctx did not modify the database; retry only with a ctx release that explicitly supports a revision-bearing Hermes schema";
+
 #[test]
 fn setup_skips_empty_codex_session_tree() {
     let temp = tempdir();
@@ -185,7 +188,6 @@ fn sources_lists_supported_personal_agent_provider_defaults() {
 
     let sources = json_output(ctx(&temp).args(["sources", "--format=json"]));
     for (provider, source_format, import_support, native_import) in [
-        ("hermes", "hermes_state_sqlite", "native", true),
         ("kilo", "kilo_sqlite", "native", true),
         ("kiro_cli", "kiro_cli_sqlite", "native", true),
         ("astrbot", "astrbot_data_v4_sqlite", "native", true),
@@ -218,6 +220,106 @@ fn sources_lists_supported_personal_agent_provider_defaults() {
         assert_eq!(source["importable"], true);
         assert!(source["unsupported_reason"].is_null());
     }
+
+    let hermes = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| {
+            source["provider"] == "hermes" && source["source_format"] == "hermes_state_sqlite"
+        })
+        .unwrap_or_else(|| panic!("missing Hermes discovery source in {sources:#}"));
+    assert_eq!(hermes["status"], "unsupported");
+    assert_eq!(hermes["import_support"], "unsupported");
+    assert_eq!(hermes["native_import"], false);
+    assert_eq!(hermes["importable"], false);
+    assert_eq!(hermes["unsupported_reason"], HERMES_UNSUPPORTED_REASON);
+}
+
+#[test]
+fn hermes_sources_and_imports_fail_closed_without_reading_or_writing_state_db() {
+    let temp = tempdir();
+    install_default_hermes_fixture(&temp, "Hermes body must remain unread");
+    let database = temp.path().join(".hermes/state.db");
+    let original = fs::read(&database).unwrap();
+
+    let sources =
+        json_output(ctx(&temp).args(["sources", "--provider", "hermes", "--format=json"]));
+    let [source] = sources["sources"].as_array().unwrap().as_slice() else {
+        panic!("one Hermes source expected: {sources:#}");
+    };
+    assert_eq!(source["status"], "unsupported");
+    assert_eq!(source["import_support"], "unsupported");
+    assert_eq!(source["importable"], false);
+    assert_eq!(source["native_import"], false);
+    assert_eq!(source["unsupported_reason"], HERMES_UNSUPPORTED_REASON);
+    assert_eq!(fs::read(&database).unwrap(), original);
+
+    let human = ctx(&temp)
+        .args(["sources", "--provider", "hermes"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = String::from_utf8(human).unwrap();
+    assert!(human.contains("hermes history cannot be imported automatically"));
+    assert!(human.contains("ctx did not modify the database"));
+    assert!(!human.contains("ctx import --provider hermes"));
+    assert_eq!(fs::read(&database).unwrap(), original);
+
+    let automatic = ctx(&temp)
+        .args([
+            "import",
+            "--provider",
+            "hermes",
+            "--format=json",
+            "--progress",
+            "none",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let automatic: Value = serde_json::from_slice(&automatic).unwrap();
+    assert_eq!(automatic["failure_scope"], "source", "{automatic:#}");
+    assert_eq!(
+        automatic["sources"][0]["failure_type"],
+        "unsupported_schema"
+    );
+    assert_eq!(
+        automatic["sources"][0]["source_failure_class"],
+        "incompatible"
+    );
+    assert_eq!(automatic["sources"][0]["carried_forward"], false);
+    assert_eq!(automatic["sources"][0]["detail"], HERMES_UNSUPPORTED_REASON);
+    assert_eq!(fs::read(&database).unwrap(), original);
+    assert!(!data_root(&temp).exists());
+
+    let rewritten = b"a different in-place Hermes schema that is not SQLite".to_vec();
+    fs::write(&database, &rewritten).unwrap();
+    let explicit = ctx(&temp)
+        .args([
+            "import",
+            "--provider",
+            "hermes",
+            "--path",
+            database.to_str().unwrap(),
+            "--format=json",
+            "--progress",
+            "none",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let explicit: Value = serde_json::from_slice(&explicit).unwrap();
+    assert_eq!(explicit["failure_scope"], "source", "{explicit:#}");
+    assert_eq!(explicit["sources"], automatic["sources"]);
+    assert_eq!(fs::read(&database).unwrap(), rewritten);
+    assert!(!data_root(&temp).exists());
 }
 
 #[test]

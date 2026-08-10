@@ -17,11 +17,7 @@ fn result_terminal_authority_is_ambiguous(record: &[u8]) -> bool {
     !crate::common::json::raw_object_keys_are_unique(record)
 }
 
-fn observe_result_terminal_call_id(
-    authority: &mut CodexMcpTerminalAuthority,
-    record: &[u8],
-    in_certified_prefix: bool,
-) {
+fn observe_result_terminal_call_id(authority: &mut CodexMcpTerminalAuthority, record: &[u8]) {
     if let Ok(probe) = classify_codex_record(record) {
         if matches!(probe.class, CodexRecordClass::ExcludedResult(_)) {
             if let Some(call_id) = probe
@@ -29,7 +25,7 @@ fn observe_result_terminal_call_id(
                 .as_deref()
                 .filter(|call_id| !call_id.is_empty())
             {
-                authority.observe_result_call_id(call_id, in_certified_prefix);
+                authority.observe_result_call_id(call_id);
                 return;
             }
         }
@@ -60,20 +56,20 @@ fn observe_result_terminal_call_id(
         .and_then(Value::as_str)
         .filter(|call_id| !call_id.is_empty())
     {
-        authority.observe_result_call_id(call_id, in_certified_prefix);
+        authority.observe_result_call_id(call_id);
     }
 }
 
 fn preflight_mcp_terminal_authority(
     opened: &OpenedProviderSourceFile,
+    start: u64,
     frozen_len: u64,
-    certified_prefix_end: Option<u64>,
+    mut authority: CodexMcpTerminalAuthority,
 ) -> Result<McpTerminalAuthorityPreflight> {
     let mut reader = BufReader::new(opened.file().try_clone()?);
-    reader.seek(SeekFrom::Start(0))?;
-    let mut offset = 0_u64;
+    reader.seek(SeekFrom::Start(start))?;
+    let mut offset = start;
     let mut record_buffer = Vec::new();
-    let mut authority = CodexMcpTerminalAuthority::default();
     let mut peak_record_bytes = 0_usize;
     while offset < frozen_len {
         let Some(record_read) = read_bounded_record_unhashed(
@@ -97,23 +93,24 @@ fn preflight_mcp_terminal_authority(
             continue;
         }
         if record_read.oversized {
-            authority.observe_ambiguous_result_terminal();
+            // The bounded scanner cannot classify any complete oversized
+            // provider record. Conservatively exhaust both terminal domains:
+            // it may contain either an MCP terminal or a result terminal.
+            authority.observe_ambiguous_terminal();
             continue;
         }
         let record = trim_jsonl_terminator(&record_buffer[..record_read.stored_len]);
-        let in_certified_prefix =
-            certified_prefix_end.is_some_and(|prefix_end| offset <= prefix_end);
         if result_terminal_authority_is_ambiguous(record) {
             authority.observe_ambiguous_result_terminal();
         }
         if let Some(evidence) = mcp_terminal_candidate_evidence(record) {
-            authority.observe(&evidence, in_certified_prefix);
+            authority.observe(&evidence);
         }
-        observe_result_terminal_call_id(&mut authority, record, in_certified_prefix);
+        observe_result_terminal_call_id(&mut authority, record);
     }
     Ok(McpTerminalAuthorityPreflight {
         authority,
-        bytes_read: offset,
+        bytes_read: offset.saturating_sub(start),
         peak_record_bytes,
     })
 }
@@ -124,24 +121,14 @@ impl CodexNativeScanner {
         source: CodexCatalogSource,
         proof: Option<&CodexAppendProof>,
     ) -> Result<Self> {
-        Self::new_with_lineage(source, proof, None)
-    }
-
-    pub(super) fn new_with_lineage(
-        source: CodexCatalogSource,
-        proof: Option<&CodexAppendProof>,
-        lineage_facts: Option<CodexLineageFactsV0>,
-    ) -> Result<Self> {
-        let opened = open_codex_source_capability(&source)?;
-        Self::new_retained(source, opened, proof, lineage_facts)
+        Self::new_retained(source, proof)
     }
 
     pub(super) fn new_retained(
         mut source: CodexCatalogSource,
-        opened: Arc<OpenedProviderSourceFile>,
         proof: Option<&CodexAppendProof>,
-        mut lineage_facts: Option<CodexLineageFactsV0>,
     ) -> Result<Self> {
+        let opened = open_codex_source_capability(&source)?;
         source.opened = Some(Arc::clone(&opened));
         if let Some(proof) = proof {
             proof.validate_source(&source)?;
@@ -162,7 +149,6 @@ impl CodexNativeScanner {
                 &mut reader,
                 &proof.checkpoint,
                 before.len > proof.checkpoint.observation.len,
-                lineage_facts.as_mut(),
             )?)
         } else {
             None
@@ -194,6 +180,7 @@ impl CodexNativeScanner {
                 next_raw_ordinal: proof.checkpoint.next_raw_ordinal(),
                 owner: Some(replay_owner),
                 pending_tool_authorities: proof.checkpoint.pending_tool_authorities().to_vec(),
+                terminal_authority: proof.checkpoint.terminal_authority().clone(),
                 incomplete_tail,
                 counters: CodexScanCounters {
                     bytes_read: validated.bytes_read,
@@ -203,7 +190,7 @@ impl CodexNativeScanner {
                         .min(usize::try_from(validated.bytes_read).unwrap_or(usize::MAX)),
                     ..CodexScanCounters::default()
                 },
-                lineage_facts: None,
+                local_turn_started: proof.checkpoint.local_turn_started(),
             };
             return Ok(Self {
                 source,
@@ -218,13 +205,15 @@ impl CodexNativeScanner {
                 tool_contexts: BTreeMap::new(),
                 tool_authorities: BTreeMap::new(),
                 continuations: BTreeMap::new(),
-                mcp_terminal_authority: CodexMcpTerminalAuthority::default(),
+                mcp_terminal_authority: CodexMcpTerminalAuthority::from_checkpoint(
+                    proof.checkpoint.terminal_authority(),
+                ),
                 complete_hasher: Sha256::new(),
                 full_hasher: Sha256::new(),
                 record_buffer: Vec::new(),
                 incomplete_tail: None,
                 counters: replay.counters,
-                lineage_facts,
+                local_turn_started: proof.checkpoint.local_turn_started(),
                 replay: Some(replay),
                 active_core_page: None,
                 ready_core_page: None,
@@ -232,18 +221,30 @@ impl CodexNativeScanner {
             });
         }
 
-        let certified_prefix_end = proof.map(|proof| proof.checkpoint.complete_prefix_end());
-        let authority_preflight =
-            preflight_mcp_terminal_authority(&opened, before.len, certified_prefix_end)?;
-        if proof.is_some()
-            && before.len
-                > proof
-                    .map(|proof| proof.checkpoint.observation.len)
-                    .unwrap_or_default()
-            && authority_preflight.authority.append_requires_replacement()
-        {
+        // The strict checkpoint carries the bounded authority derived from the
+        // certified prefix. Extend it from suffix bytes only. If those bytes
+        // invalidate a positive claim already published for this same source,
+        // reject append and let the caller replace only this source.
+        let append_prefix = proof
+            .filter(|proof| before.len > proof.checkpoint.observation.len)
+            .map(|proof| {
+                CodexMcpTerminalAuthority::from_checkpoint(proof.checkpoint.terminal_authority())
+            });
+        let authority_start = append_prefix
+            .as_ref()
+            .and_then(|_| proof.map(|proof| proof.checkpoint.complete_prefix_end()))
+            .unwrap_or(0);
+        let authority_preflight = preflight_mcp_terminal_authority(
+            &opened,
+            authority_start,
+            before.len,
+            append_prefix.clone().unwrap_or_default(),
+        )?;
+        if append_prefix.as_ref().is_some_and(|prefix| {
+            prefix.appended_suffix_invalidates(&authority_preflight.authority)
+        }) {
             return Err(invalid_checkpoint_proof(
-                "an appended terminal reuses a certified native call ID",
+                "an appended terminal invalidates certified native call authority",
             ));
         }
         let authority_entries = authority_preflight.authority.entry_count();
@@ -259,6 +260,7 @@ impl CodexNativeScanner {
             offset,
             complete_hasher,
             validation_bytes,
+            local_turn_started,
         ) = match (proof, validated) {
             (Some(proof), Some(validated)) if before.len > proof.checkpoint.observation.len => {
                 let ValidatedCheckpoint {
@@ -285,6 +287,7 @@ impl CodexNativeScanner {
                     proof.checkpoint.complete_prefix_end(),
                     complete_prefix_hasher,
                     bytes_read,
+                    proof.checkpoint.local_turn_started(),
                 )
             }
             (Some(_), Some(_)) => {
@@ -304,6 +307,7 @@ impl CodexNativeScanner {
                     0,
                     Sha256::new(),
                     0,
+                    false,
                 )
             }
             _ => {
@@ -341,7 +345,7 @@ impl CodexNativeScanner {
                 peak_line_buffer_bytes: authority_preflight.peak_record_bytes,
                 ..CodexScanCounters::default()
             },
-            lineage_facts,
+            local_turn_started,
             replay: None,
             active_core_page: None,
             ready_core_page: None,
@@ -420,12 +424,6 @@ impl CodexNativeScanner {
                     self.counters.oversized_records =
                         self.counters.oversized_records.saturating_add(1);
                 }
-                if let Some(lineage_facts) = self.lineage_facts.as_mut() {
-                    lineage_facts.record_at(
-                        CodexLineageRecordEvidence::UnattributedAmbiguity,
-                        self.raw_ordinal,
-                    )?;
-                }
                 self.exhausted = true;
                 self.queue_end_pages(false)?;
                 return Ok(self.take_ready_page());
@@ -438,12 +436,6 @@ impl CodexNativeScanner {
                 CodexRecordProjection::default()
             } else if record_read.oversized {
                 self.reject(true);
-                if let Some(lineage_facts) = self.lineage_facts.as_mut() {
-                    lineage_facts.record_at(
-                        CodexLineageRecordEvidence::UnattributedAmbiguity,
-                        self.raw_ordinal,
-                    )?;
-                }
                 CodexRecordProjection::default()
             } else {
                 let record_buffer = std::mem::take(&mut self.record_buffer);

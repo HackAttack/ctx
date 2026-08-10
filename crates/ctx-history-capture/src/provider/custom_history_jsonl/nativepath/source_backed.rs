@@ -8,7 +8,7 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -62,7 +62,7 @@ const CUSTOM_SOURCE_IDENTITY_VERSION: u32 = 1;
 const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v1";
 const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v1-source-backed-v1";
 pub(super) const CUSTOM_SOURCE_BACKED_PARSER_REVISION: &str =
-    "custom-history-jsonl-source-backed-v3";
+    "custom-history-jsonl-source-backed-v5-unresolved-copy-lineage";
 const CUSTOM_SOURCE_FRONTIER_KIND: &str = "custom-history-jsonl-frontier-v2";
 pub(super) const CUSTOM_SESSION_KEY_NAMESPACE: &str = "custom-history.session";
 pub(super) const CUSTOM_EVENT_KEY_NAMESPACE: &str = "custom-history.event";
@@ -84,9 +84,6 @@ pub(crate) struct CustomHistorySourceBackedWork {
     pub(crate) source_read_passes: usize,
     pub(crate) provider_records_parsed: usize,
     pub(crate) session_nodes: usize,
-    pub(crate) session_dependencies: usize,
-    pub(crate) session_root_nodes: usize,
-    pub(crate) event_root_lookups: usize,
     pub(crate) spooled_event_body_bytes: usize,
     pub(crate) resident_event_body_bytes: usize,
     pub(crate) peak_resident_event_body_bytes: usize,
@@ -104,9 +101,6 @@ thread_local! {
             source_read_passes: 0,
             provider_records_parsed: 0,
             session_nodes: 0,
-            session_dependencies: 0,
-            session_root_nodes: 0,
-            event_root_lookups: 0,
             spooled_event_body_bytes: 0,
             resident_event_body_bytes: 0,
             peak_resident_event_body_bytes: 0,
@@ -498,7 +492,6 @@ pub(super) struct CustomEventCatalogEntry {
 pub(super) struct ValidatedCopiedFrom {
     pub(super) ancestor_session_id: String,
     pub(super) ancestor_event_id: String,
-    pub(super) ancestor_event_index: u64,
     pub(super) proof: EventCopyProofKind,
 }
 
@@ -528,7 +521,6 @@ impl SpooledCustomEvent {
 pub(super) struct ParsedProjection {
     pub(super) sources: BTreeMap<String, CustomSourceCatalogEntry>,
     pub(super) sessions: BTreeMap<CustomSessionKey, CustomSessionCatalogEntry>,
-    pub(super) session_roots: BTreeMap<CustomSessionKey, String>,
     pub(super) events: BTreeMap<CustomEventKey, CustomEventCatalogEntry>,
     pub(super) copied_origins: BTreeMap<CustomEventKey, ValidatedCopiedFrom>,
     pub(super) event_spool: File,

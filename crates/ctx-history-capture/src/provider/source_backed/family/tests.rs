@@ -74,6 +74,7 @@ fn active_source_family_contract_documented_storage_families_cover_routed_provid
     let routes = crate::provider::source_backed::source_backed_route_inventory();
     let routed = routes
         .iter()
+        .filter(|route| route.unsupported_reason.is_none())
         .filter(|route| route.provider != ctx_history_core::CaptureProvider::Custom)
         .filter(|route| {
             route.automatic

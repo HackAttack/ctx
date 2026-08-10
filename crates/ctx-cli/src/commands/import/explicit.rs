@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use anyhow::{bail, Context, Result};
-use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult};
+use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult, ProviderSourceStatus};
 use serde_json::json;
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::{
+    automatic_source_refresh::unsupported_source_import_report,
     catalog::source_stats,
     core_refresh::{wait_for_import_core_refresh, ImportCoreRefreshRequest},
     explicit_source_for_import, relocate_explicit_source, relocation_authority_for_import,
@@ -37,6 +38,9 @@ pub(crate) fn run_explicit_source_catalog_import(
 ) -> Result<ImportReport> {
     let source = explicit_source_for_import(context.args)?
         .context("explicit source catalog import requires --path")?;
+    if source.status == ProviderSourceStatus::Unsupported {
+        return unsupported_source_import_report(context.args.resume, &source);
+    }
     let stats = source_stats(&source.path)
         .with_context(|| format!("inspect explicit source {}", source.path.display()))?;
     let mut progress = ProgressReporter::new(

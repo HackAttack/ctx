@@ -268,8 +268,31 @@ fn render_result(
 }
 
 fn render_copied_lineage(document: &mut Document, context: &RenderContext, result: &Value) {
-    let lineage = &result["copied_lineage"];
+    let Some(lineage) = result
+        .get("copied_lineage")
+        .filter(|value| value.is_object())
+    else {
+        return;
+    };
     let observed = lineage["observed_count"].as_u64().unwrap_or(0);
+    let resolution = lineage["resolution"]["state"].as_str();
+    let selected_depth = lineage["selected_depth"].as_u64().unwrap_or(0);
+    if let Some(resolution) = resolution.filter(|state| *state != "resolved" || selected_depth != 0)
+    {
+        push_field(
+            document,
+            context,
+            CARD_INDENT,
+            "Lineage",
+            CARD_LABEL_WIDTH,
+            &format!("{resolution} at depth {selected_depth}"),
+            if resolution == "resolved" {
+                Token::Text
+            } else {
+                Token::Warning
+            },
+        );
+    }
     if observed == 0 {
         return;
     }

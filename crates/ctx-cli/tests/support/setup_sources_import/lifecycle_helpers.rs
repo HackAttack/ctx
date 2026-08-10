@@ -140,7 +140,7 @@ pub(super) fn write_large_codex_setup_sessions(
         .repeat(payload_bytes / "provider source checkpoint bounded lexical generation ".len() + 1);
     for session_index in 0..sessions {
         let session_id = format!("codex-setup-history-{session_index}");
-        let path = sessions_dir.join(format!("rollout-{session_id}.jsonl"));
+        let path = sessions_dir.join(format!("{session_id}.jsonl"));
         let mut file = fs::File::create(path).unwrap();
         writeln!(
             file,

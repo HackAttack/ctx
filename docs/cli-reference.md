@@ -279,7 +279,6 @@ ctx import --provider mux
 ctx import --provider rovodev
 ctx import --provider junie
 ctx import --provider openclaw
-ctx import --provider hermes
 ctx import --provider nanoclaw --path /path/to/nanoclaw-project
 ctx import --provider astrbot --path /path/to/data/data_v4.db
 ctx import --provider shelley --path ~/.config/shelley/shelley.db
@@ -307,6 +306,11 @@ ctx import --no-daemon
 ctx import --format json
 ctx import --progress json --format json
 ```
+
+`hermes` remains a recognized provider selector for stable diagnostics, but
+current Hermes `state.db` schemas are unsupported. Automatic and exact-path
+requests return a source-scoped `unsupported_schema` result and do not modify
+the database; the selector is not an override.
 
 `import` explicitly rebuilds Core history from provider sources. The
 normal first-run path is `ctx setup`, which already imports discovered native
@@ -890,8 +894,11 @@ timestamps never re-sort results. `--verbose` additionally renders the stored
 event sequence and available workspace/working-directory, branch, agent, and
 parent/root lineage without repeating equal values.
 Canonical search hits also summarize bounded copied-event lineage after ranking
-is complete: at most three inherited-session follow-ups, an exact total when
-the reverse walk completes, or an `at least` lower bound when work is capped.
+is complete. The query reports the selected claim as `resolved`, `unresolved`,
+or `cyclic`; an absent copied-event target is an ordinary unresolved reference,
+and reverse results can still include sessions that directly claim it. Search
+renders at most three inherited-session follow-ups, an exact total when the
+reverse walk completes, or an `at least` lower bound when work is capped.
 `ctx show event` automatically renders up to 20 occurrence details. There is no
 lineage flag or exhaustive cursor.
 Custom history imports can be filtered by canonical

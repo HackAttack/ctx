@@ -300,8 +300,10 @@ pub enum IndexError {
         "copied-event lineage posting-visit limit must be between 1 and {maximum}, requested {requested}"
     )]
     InvalidCopiedEventLineagePostingVisitLimit { requested: usize, maximum: usize },
-    #[error("copied-event lineage exact event-identity lookup exceeded {maximum} posting visits")]
-    CopiedEventLineageExactIdentityPostingVisitLimitExceeded { maximum: usize },
+    #[error(
+        "copied-event lineage exact event-and-session identity lookup exceeded {maximum} posting visits"
+    )]
+    CopiedEventLineageEventAndSessionIdentityPostingVisitLimitExceeded { maximum: usize },
     #[error("content scope {scope} cannot be combined with an exact event_type filter")]
     ContentScopeEventTypeConflict { scope: &'static str },
     #[error(

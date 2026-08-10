@@ -8,12 +8,12 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const SOURCE_GENERATION_POLICY_VERSION: u32 = 11;
+pub const SOURCE_GENERATION_POLICY_VERSION: u32 = 12;
 pub const SOURCE_ROUTE_SNAPSHOT_REVISION: u32 = 1;
 pub const AUTOMATIC_ROUTE_DELETION_GRACE_OBSERVATIONS: u32 = 3;
-pub const LEXICAL_SCHEMA_REVISION: u32 = 19;
+pub const LEXICAL_SCHEMA_REVISION: u32 = 20;
 pub const LEXICAL_TOKENIZER_REVISION: u32 = 2;
-pub const SOURCE_EVENT_PROJECTOR_REVISION: u32 = 6;
+pub const SOURCE_EVENT_PROJECTOR_REVISION: u32 = 7;
 pub const LEXICAL_INDEXED_BODY_LIMIT: LexicalIndexedBodyLimit =
     LexicalIndexedBodyLimit::ProviderValidatedFullText;
 pub const SEMANTIC_ELIGIBILITY_REVISION: u32 = 4;
@@ -279,13 +279,13 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("core_repository_association_policy_revision"));
-        assert_eq!(first.policy_version, 11);
-        assert_eq!(first.lexical.event_projector_revision, 6);
-        assert_eq!(first.lexical.schema_revision, 19);
+        assert_eq!(first.policy_version, 12);
+        assert_eq!(first.lexical.event_projector_revision, 7);
+        assert_eq!(first.lexical.schema_revision, 20);
         assert_eq!(first.lexical.tokenizer_revision, 2);
         assert_eq!(
             first.canonical_sha256().unwrap(),
-            "9443a5b1495b0cb62453b1c642bd4da15d61ee188d1e51d1a97b8df12296416f"
+            "4b40caf3bb25bb9f373632b416d6b04058f17a626d10cabf1af36acf4eff18e4"
         );
     }
 

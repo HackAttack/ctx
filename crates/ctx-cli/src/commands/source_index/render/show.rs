@@ -60,15 +60,24 @@ pub(in crate::commands::source_index) fn render_show_document(
 }
 
 fn render_copied_lineage(document: &mut Document, context: &RenderContext, value: &Value) {
-    let lineage = &value["copied_lineage"];
+    let Some(lineage) = value
+        .get("copied_lineage")
+        .filter(|value| value.is_object())
+    else {
+        return;
+    };
     let observed = lineage["observed_count"].as_u64().unwrap_or(0);
-    if observed == 0 {
+    let resolution = lineage["resolution"]["state"].as_str();
+    let selected_depth = lineage["selected_depth"].as_u64().unwrap_or(0);
+    if observed == 0 && resolution.is_none_or(|state| state == "resolved") && selected_depth == 0 {
         return;
     }
     let truncated = lineage["truncated"].as_bool().unwrap_or(true);
     document.push_blank();
     let noun = if observed == 1 { "session" } else { "sessions" };
-    let heading = if truncated {
+    let heading = if observed == 0 {
+        "Copied lineage".to_owned()
+    } else if truncated {
         format!("Inherited by at least {observed} {noun}")
     } else {
         format!("Inherited by {observed} {noun}")
@@ -82,6 +91,21 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, value
             Token::Heading
         },
     );
+    if let Some(resolution) = resolution {
+        push_field(
+            document,
+            context,
+            2,
+            "Resolution",
+            LINEAGE_EVENT_LABEL_WIDTH,
+            &format!("{resolution} at depth {selected_depth}"),
+            if resolution == "resolved" {
+                Token::Text
+            } else {
+                Token::Warning
+            },
+        );
+    }
 
     if let Some(counts) = lineage["relationship_counts"].as_object() {
         let summary = counts
@@ -124,7 +148,7 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, value
             ("Copied from session", "copied_from_ctx_session_id"),
             ("Copied from event", "copied_from_ctx_event_id"),
             ("Parent", "parent_ctx_session_id"),
-            ("Root", "root_ctx_session_id"),
+            ("Claimed root", "claimed_root_ctx_session_id"),
         ] {
             if let Some(reference) = occurrence[key].as_str() {
                 push_field(

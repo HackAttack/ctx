@@ -14,7 +14,6 @@ use ctx_history_capture::{
     automatic_source_backed_route_identity, explicit_source_catalog_lineage,
     provider_source_for_path, register_custom_history_source_backed_route,
     register_forgecode_explicit_source_backed_route, register_goose_source_backed_route,
-    register_hermes_explicit_source_backed_route,
     register_landed_source_backed_route_with_data_root, register_lingma_source_backed_route,
     register_nanoclaw_source_backed_route_with_base_sources, register_warp_source_backed_route,
     source_backed_route_constructor, source_backed_route_inventory,
@@ -269,6 +268,11 @@ pub fn explicit_source_for_path(
             .context("ctx import --path requires --provider for native provider history")?;
         provider_source_for_path(provider, canonical)
     };
+    // Return unsupported sources to reporting callers without making them
+    // catalogable. Every catalog mutation validates the source again below.
+    if source.status == ProviderSourceStatus::Unsupported {
+        return Ok(source);
+    }
     validate_enabled_source(&source)?;
     validate_catalog_registration_support(&source)?;
     Ok(source)
@@ -590,12 +594,6 @@ fn register_enabled_catalog_route(
                     registry, source, data_root, lineage,
                 )?
             }
-            CaptureProvider::Hermes => register_hermes_explicit_source_backed_route(
-                registry,
-                source,
-                data_root,
-                SourceAnchor::CatalogLineage(lineage),
-            )?,
             _ => register_landed_source_backed_route_with_data_root(
                 registry,
                 source,

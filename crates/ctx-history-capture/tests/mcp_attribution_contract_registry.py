@@ -236,17 +236,6 @@ ROUTE_SCHEMA_CONTRACTS = (
         sha256="50bf882171d86e819e9cecb7102e13c1a986fb7b116c7862e59669362a5989d5",
     ),
     RouteSchemaContract(
-        provider="hermes",
-        route="native_import",
-        source_format="hermes_state_sqlite",
-        format_schema=_structural(1),
-        producer_domain=_discrete(_unversioned(1)),
-        path="crates/ctx-history-capture/tests/contracts/mcp-attribution/hermes/hermes_state_sqlite/shape-contract.json",
-        allowed_subtree="crates/ctx-history-capture/tests/contracts/mcp-attribution/hermes/hermes_state_sqlite",
-        classification=ROUTE_CONTRACT_CLASSIFICATION,
-        sha256="a8b8c0ac1c965c69ad04af96d617c1db3d3c3754717aa37cdb091d148188a9a6",
-    ),
-    RouteSchemaContract(
         provider="nanoclaw",
         route="native_import",
         source_format="nanoclaw_project",

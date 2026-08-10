@@ -5,7 +5,7 @@ use ctx_history_core::{
 };
 
 use super::*;
-use crate::commands::source_index::mcp_show_event;
+use crate::commands::source_index::{mcp_show_event, mcp_show_event_with_compact};
 
 const ARGUMENT_SEARCH_CANARY: &str = "zzargumentcanary8h63";
 const CALL_ID_SEARCH_CANARY: &str = "zzcallidcanary7g52";
@@ -267,6 +267,8 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
     let lineage = lineage.as_object().unwrap();
     for required in [
         "schema_version",
+        "resolution",
+        "selected_depth",
         "observed_count",
         "returned",
         "occurrences",
@@ -275,6 +277,9 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
     ] {
         assert!(lineage.contains_key(required), "missing {required}");
     }
+    assert_eq!(lineage["schema_version"], 2);
+    assert_eq!(lineage["resolution"]["state"], "resolved");
+    assert_eq!(lineage["selected_depth"], 0);
     assert_eq!(lineage["observed_count"], 1);
     assert_eq!(lineage["returned"], 1);
     assert_eq!(lineage["truncated"], false);
@@ -286,6 +291,10 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
         lineage["occurrences"][0]["ctx_session_id"],
         copied.session_id.as_uuid().to_string()
     );
+    assert_eq!(
+        lineage["occurrences"][0]["claimed_root_ctx_session_id"],
+        ancestor.session_id.as_uuid().to_string()
+    );
     assert!(lineage.get("more_available").is_none());
     let compact_result = &compact_results["results"][0];
     for reference in [
@@ -295,6 +304,12 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
             .as_str()
             .unwrap(),
         compact_result["copied_lineage"]["occurrences"][0]["ctx_session_id"]
+            .as_str()
+            .unwrap(),
+        compact_result["copied_lineage"]["occurrences"][0]["copied_from_ctx_event_id"]
+            .as_str()
+            .unwrap(),
+        compact_result["copied_lineage"]["occurrences"][0]["claimed_root_ctx_session_id"]
             .as_str()
             .unwrap(),
     ] {
@@ -346,4 +361,108 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
     assert_eq!(queried_event["session_relationship"], "forked");
     assert_eq!(queried_event["event_origin"], shown_event["event_origin"]);
     assert_eq!(queried_event["text"], COPIED_SEARCH_CANARY);
+}
+
+#[test]
+fn cli_and_mcp_lineage_contracts_report_unresolved_and_cyclic() {
+    let unresolved_root = tempdir().unwrap();
+    write_test_generation(unresolved_root.path());
+    let absent = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 99, 1);
+    let mut selected = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 100, 1);
+    selected.parent_session_id = Some(absent.session_id);
+    selected.root_session_id = absent.session_id;
+    selected.session_relationship = SessionRelationshipKind::Forked;
+    selected.event_origin = EventOrigin::CopiedFromAncestor {
+        ancestor_session_id: Box::new(absent.session_id),
+        ancestor_event_id: Box::new(absent.event_id),
+        proof: EventCopyProofKind::NativeEventIdentity,
+    };
+    let selected = fixture_core_event(&selected, "selected copied event with absent target");
+    append_fixture_session(unresolved_root.path(), std::slice::from_ref(&selected), 100);
+
+    let unresolved_index = open_index(unresolved_root.path()).unwrap();
+    let cli_unresolved = super::super::copied_lineage::copied_lineage_value(
+        &unresolved_index,
+        selected.event_id.as_uuid(),
+        ctx_history_index::SHOW_COPIED_EVENT_LINEAGE_POLICY,
+    )
+    .unwrap();
+    let (mcp_unresolved, compact_unresolved) = mcp_show_event_with_compact(
+        unresolved_root.path(),
+        &selected.event_id.as_uuid().to_string(),
+        0,
+        0,
+        None,
+        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    )
+    .unwrap();
+    assert_eq!(cli_unresolved["resolution"]["state"], "unresolved");
+    assert_eq!(cli_unresolved["selected_depth"], 1);
+    assert_eq!(
+        cli_unresolved["resolution"]["ctx_event_id"],
+        absent.event_id.as_uuid().to_string()
+    );
+    assert_eq!(mcp_unresolved["copied_lineage"], cli_unresolved);
+    assert_eq!(
+        compact_unresolved["copied_lineage"]["resolution"]["ctx_event_id"],
+        absent.event_id.as_uuid().to_string()
+    );
+    assert_eq!(
+        compact_unresolved["copied_lineage"]["occurrences"][0]["copied_from_ctx_event_id"],
+        absent.event_id.as_uuid().to_string()
+    );
+    assert!(crate::mcp::render_tool_text_for_test(&compact_unresolved)
+        .contains("resolution: unresolved, selected_depth=1"));
+
+    let cyclic_root = tempdir().unwrap();
+    write_test_generation(cyclic_root.path());
+    let claimed_root = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 101, 1);
+    let mut first = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 102, 1);
+    let mut second = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 103, 1);
+    first.parent_session_id = Some(second.session_id);
+    first.root_session_id = claimed_root.session_id;
+    first.session_relationship = SessionRelationshipKind::Forked;
+    first.event_origin = EventOrigin::CopiedFromAncestor {
+        ancestor_session_id: Box::new(second.session_id),
+        ancestor_event_id: Box::new(second.event_id),
+        proof: EventCopyProofKind::NativeEventIdentity,
+    };
+    second.parent_session_id = Some(first.session_id);
+    second.root_session_id = claimed_root.session_id;
+    second.session_relationship = SessionRelationshipKind::Forked;
+    second.event_origin = EventOrigin::CopiedFromAncestor {
+        ancestor_session_id: Box::new(first.session_id),
+        ancestor_event_id: Box::new(first.event_id),
+        proof: EventCopyProofKind::NativeEventIdentity,
+    };
+    let first = fixture_core_event(&first, "first cyclic copied event");
+    let second = fixture_core_event(&second, "second cyclic copied event");
+    append_fixture_session(cyclic_root.path(), std::slice::from_ref(&first), 102);
+    append_fixture_session(cyclic_root.path(), std::slice::from_ref(&second), 103);
+
+    let cyclic_index = open_index(cyclic_root.path()).unwrap();
+    let cli_cyclic = super::super::copied_lineage::copied_lineage_value(
+        &cyclic_index,
+        first.event_id.as_uuid(),
+        ctx_history_index::SHOW_COPIED_EVENT_LINEAGE_POLICY,
+    )
+    .unwrap();
+    let (mcp_cyclic, compact_cyclic) = mcp_show_event_with_compact(
+        cyclic_root.path(),
+        &first.event_id.as_uuid().to_string(),
+        0,
+        0,
+        None,
+        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    )
+    .unwrap();
+    assert_eq!(cli_cyclic["resolution"]["state"], "cyclic");
+    assert_eq!(cli_cyclic["selected_depth"], 2);
+    assert_eq!(mcp_cyclic["copied_lineage"], cli_cyclic);
+    assert_eq!(
+        compact_cyclic["copied_lineage"]["occurrences"][0]["claimed_root_ctx_session_id"],
+        claimed_root.session_id.as_uuid().to_string()
+    );
+    assert!(crate::mcp::render_tool_text_for_test(&compact_cyclic)
+        .contains("resolution: cyclic, selected_depth=2"));
 }

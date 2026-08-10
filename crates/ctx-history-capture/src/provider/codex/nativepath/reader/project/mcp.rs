@@ -2,7 +2,6 @@ use std::{borrow::Cow, collections::BTreeMap, fmt, mem::size_of};
 
 use super::*;
 
-const MAX_CODEX_MCP_TERMINAL_AUTHORITIES: usize = 4 * 1024;
 const MAX_MCP_RAW_CALL_IDS_PER_RECORD: usize = 8;
 const MCP_TERMINAL_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/mcp-terminal-call-id/v1\0";
 const RESULT_TERMINAL_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/result-terminal-call-id/v1\0";
@@ -37,11 +36,9 @@ pub(super) fn project_mcp_tool_call_attribution(
 #[derive(Debug, Clone, Copy, Default)]
 struct McpTerminalAuthorityState {
     candidates: u8,
-    in_certified_prefix: bool,
-    after_certified_prefix: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(in super::super) struct CodexMcpTerminalAuthority {
     mcp_call_ids: BTreeMap<[u8; 32], McpTerminalAuthorityState>,
     result_call_ids: BTreeMap<[u8; 32], McpTerminalAuthorityState>,
@@ -50,11 +47,88 @@ pub(in super::super) struct CodexMcpTerminalAuthority {
 }
 
 impl CodexMcpTerminalAuthority {
-    pub(in super::super) fn observe(
-        &mut self,
-        evidence: &McpRawRecordEvidence,
-        in_certified_prefix: bool,
-    ) {
+    pub(in super::super) fn from_checkpoint(checkpoint: &CodexTerminalAuthorityCheckpoint) -> Self {
+        fn entries(
+            checkpoint: &[CodexTerminalAuthorityEntry],
+        ) -> BTreeMap<[u8; 32], McpTerminalAuthorityState> {
+            checkpoint
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.call_id_sha256,
+                        McpTerminalAuthorityState {
+                            candidates: entry.candidates,
+                        },
+                    )
+                })
+                .collect()
+        }
+
+        Self {
+            mcp_call_ids: entries(&checkpoint.mcp_call_ids),
+            result_call_ids: entries(&checkpoint.result_call_ids),
+            mcp_exhausted: checkpoint.mcp_exhausted,
+            result_exhausted: checkpoint.result_exhausted,
+        }
+    }
+
+    pub(in super::super) fn checkpoint(&self) -> CodexTerminalAuthorityCheckpoint {
+        fn entries(
+            authority: &BTreeMap<[u8; 32], McpTerminalAuthorityState>,
+        ) -> Vec<CodexTerminalAuthorityEntry> {
+            authority
+                .iter()
+                .map(|(call_id_sha256, state)| CodexTerminalAuthorityEntry {
+                    call_id_sha256: *call_id_sha256,
+                    candidates: state.candidates,
+                })
+                .collect()
+        }
+
+        CodexTerminalAuthorityCheckpoint {
+            mcp_call_ids: entries(&self.mcp_call_ids),
+            result_call_ids: entries(&self.result_call_ids),
+            mcp_exhausted: self.mcp_exhausted,
+            result_exhausted: self.result_exhausted,
+        }
+    }
+
+    pub(in super::super) fn appended_suffix_invalidates(
+        &self,
+        combined: &CodexMcpTerminalAuthority,
+    ) -> bool {
+        fn invalidates(
+            prefix: &BTreeMap<[u8; 32], McpTerminalAuthorityState>,
+            prefix_exhausted: bool,
+            combined: &BTreeMap<[u8; 32], McpTerminalAuthorityState>,
+            combined_exhausted: bool,
+        ) -> bool {
+            if prefix_exhausted {
+                return false;
+            }
+            prefix.iter().any(|(digest, state)| {
+                state.candidates == 1
+                    && (combined_exhausted
+                        || combined
+                            .get(digest)
+                            .is_none_or(|combined| combined.candidates != 1))
+            })
+        }
+
+        invalidates(
+            &self.mcp_call_ids,
+            self.mcp_exhausted,
+            &combined.mcp_call_ids,
+            combined.mcp_exhausted,
+        ) || invalidates(
+            &self.result_call_ids,
+            self.result_exhausted,
+            &combined.result_call_ids,
+            combined.result_exhausted,
+        )
+    }
+
+    pub(in super::super) fn observe(&mut self, evidence: &McpRawRecordEvidence) {
         if self.mcp_exhausted || !evidence.is_terminal() {
             return;
         }
@@ -71,16 +145,10 @@ impl CodexMcpTerminalAuthority {
             }
             let state = self.mcp_call_ids.entry(*digest).or_default();
             state.candidates = state.candidates.saturating_add(1).min(2);
-            state.in_certified_prefix |= in_certified_prefix;
-            state.after_certified_prefix |= !in_certified_prefix;
         }
     }
 
-    pub(in super::super) fn observe_result_call_id(
-        &mut self,
-        call_id: &str,
-        in_certified_prefix: bool,
-    ) {
+    pub(in super::super) fn observe_result_call_id(&mut self, call_id: &str) {
         if self.result_exhausted {
             return;
         }
@@ -94,8 +162,6 @@ impl CodexMcpTerminalAuthority {
         }
         let state = self.result_call_ids.entry(digest).or_default();
         state.candidates = state.candidates.saturating_add(1).min(2);
-        state.in_certified_prefix |= in_certified_prefix;
-        state.after_certified_prefix |= !in_certified_prefix;
     }
 
     pub(in super::super) fn observe_ambiguous_result_terminal(&mut self) {
@@ -103,6 +169,16 @@ impl CodexMcpTerminalAuthority {
         self.result_exhausted = true;
     }
 
+    pub(in super::super) fn observe_ambiguous_terminal(&mut self) {
+        self.exhaust_mcp();
+        self.observe_ambiguous_result_terminal();
+    }
+
+    // Authority keys are the complete domain-separated SHA-256 identity used
+    // by the parser. The compact wire encodes every one of those 32 bytes and
+    // its exact multiplicity; no prefix, bucket, or probabilistic match can
+    // authorize attribution. Capacity exhaustion clears the domain and makes
+    // every query abstain, so absence can never be promoted to uniqueness.
     pub(super) fn is_unique(&self, call_id: &str) -> bool {
         !self.mcp_exhausted
             && self
@@ -117,17 +193,6 @@ impl CodexMcpTerminalAuthority {
                 .result_call_ids
                 .get(&result_terminal_call_id_digest(call_id))
                 .is_some_and(|state| state.candidates == 1)
-    }
-
-    pub(in super::super) fn append_requires_replacement(&self) -> bool {
-        self.mcp_exhausted
-            || self.result_exhausted
-            || self.mcp_call_ids.values().any(|state| {
-                state.in_certified_prefix && state.after_certified_prefix && state.candidates > 1
-            })
-            || self.result_call_ids.values().any(|state| {
-                state.in_certified_prefix && state.after_certified_prefix && state.candidates > 1
-            })
     }
 
     pub(in super::super) fn entry_count(&self) -> usize {
@@ -166,6 +231,69 @@ fn result_terminal_call_id_digest(call_id: &str) -> [u8; 32] {
     hasher.update(RESULT_TERMINAL_CALL_ID_DOMAIN);
     hasher.update(call_id.as_bytes());
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn compact_authority_uses_full_digests_and_restart_preserves_abstention() {
+        let mut prefixes = BTreeMap::<[u8; 2], String>::new();
+        let (first, second) = (0..100_000)
+            .find_map(|index| {
+                let call_id = format!("adversarial-authority-{index}");
+                let digest = result_terminal_call_id_digest(&call_id);
+                let prefix = [digest[0], digest[1]];
+                prefixes
+                    .insert(prefix, call_id.clone())
+                    .filter(|prior| result_terminal_call_id_digest(prior) != digest)
+                    .map(|prior| (prior, call_id))
+            })
+            .expect("the deterministic fixture must find a truncated-digest collision");
+
+        let mut authority = CodexMcpTerminalAuthority::default();
+        authority.observe_result_call_id(&first);
+        authority.observe_result_call_id(&second);
+        assert_ne!(
+            result_terminal_call_id_digest(&first),
+            result_terminal_call_id_digest(&second)
+        );
+        assert!(authority.is_unique_result(&first));
+        assert!(authority.is_unique_result(&second));
+
+        authority.observe_result_call_id(&first);
+        assert!(!authority.is_unique_result(&first));
+        assert!(authority.is_unique_result(&second));
+
+        let wire = serde_json::to_vec(&authority.checkpoint()).unwrap();
+        let checkpoint = serde_json::from_slice(&wire).unwrap();
+        let restarted = CodexMcpTerminalAuthority::from_checkpoint(&checkpoint);
+        assert!(!restarted.is_unique_result(&first));
+        assert!(restarted.is_unique_result(&second));
+    }
+
+    #[test]
+    fn compact_authority_capacity_exhaustion_is_durable_unknown() {
+        let mut authority = CodexMcpTerminalAuthority::default();
+        for index in 0..MAX_CODEX_MCP_TERMINAL_AUTHORITIES {
+            authority.observe_result_call_id(&format!("bounded-authority-{index}"));
+        }
+        assert!(authority.is_unique_result("bounded-authority-0"));
+
+        authority.observe_result_call_id("bounded-authority-overflow");
+        assert!(!authority.is_unique_result("bounded-authority-0"));
+        assert!(!authority.is_unique_result("bounded-authority-overflow"));
+        assert!(!authority.is_unique_result("never-observed"));
+
+        let checkpoint = authority.checkpoint();
+        assert!(serde_json::to_vec(&checkpoint).unwrap().len() < 16 * 1024);
+        let restarted = CodexMcpTerminalAuthority::from_checkpoint(&checkpoint);
+        assert!(!restarted.is_unique_result("bounded-authority-0"));
+        assert!(!restarted.is_unique_result("never-observed"));
+    }
 }
 
 #[derive(Default)]

@@ -1,16 +1,8 @@
 use super::*;
 
 #[cfg(test)]
-const CODEX_SESSION_TREE_UNION_INVENTORY_REVISION_KIND: &str =
-    "codex-session-tree-union-inventory-v0";
-#[cfg(test)]
-const CODEX_SESSION_TREE_UNION_DISCOVERY_REVISION: &str = "codex-session-tree-union-catalog-v0";
-
-#[cfg(test)]
 std::thread_local! {
     static AFTER_CODEX_METADATA_INVENTORY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-    static AFTER_CODEX_CATALOG_AUTHORITY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -33,30 +25,9 @@ fn run_after_codex_metadata_inventory_hook() {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn install_after_codex_catalog_authority_hook(hook: impl FnOnce() + 'static) {
-    AFTER_CODEX_CATALOG_AUTHORITY_HOOK.with(|slot| {
-        assert!(
-            slot.borrow().is_none(),
-            "Codex catalog-authority hook is already installed"
-        );
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-fn run_after_codex_catalog_authority_hook() {
-    let hook = AFTER_CODEX_CATALOG_AUTHORITY_HOOK.with(|slot| slot.borrow_mut().take());
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct CodexSessionTreeInventoryV0 {
     pub(crate) sources: Vec<(CodexCatalogSource, SourceKey, String)>,
-    #[cfg(test)]
-    pub(crate) certificate: CertifiedSourceInventory,
     #[cfg(test)]
     pub(crate) work: CodexCatalogWorkV0,
 }
@@ -67,7 +38,8 @@ pub(crate) struct CodexCatalogWorkV0 {
     pub(crate) source_observations: u64,
     #[cfg(test)]
     pub(crate) source_hash_reads: u64,
-    pub(crate) source_body_reads: u64,
+    pub(crate) source_metadata_opens: u64,
+    pub(crate) source_metadata_read_upper_bound_bytes: u64,
     pub(crate) session_meta_parses: u64,
 }
 
@@ -83,9 +55,12 @@ impl CodexCatalogWorkV0 {
                 .source_hash_reads
                 .saturating_add(other.source_hash_reads);
         }
-        self.source_body_reads = self
-            .source_body_reads
-            .saturating_add(other.source_body_reads);
+        self.source_metadata_opens = self
+            .source_metadata_opens
+            .saturating_add(other.source_metadata_opens);
+        self.source_metadata_read_upper_bound_bytes = self
+            .source_metadata_read_upper_bound_bytes
+            .saturating_add(other.source_metadata_read_upper_bound_bytes);
         self.session_meta_parses = self
             .session_meta_parses
             .saturating_add(other.session_meta_parses);
@@ -172,12 +147,6 @@ impl CodexExplicitSessionInventoryV0 {
             CodexExplicitSessionInventoryStateV0::Missing => None,
         }
     }
-
-    pub(crate) fn missing() -> Self {
-        Self {
-            state: CodexExplicitSessionInventoryStateV0::Missing,
-        }
-    }
 }
 
 pub(crate) fn observe_codex_explicit_session_source_backed_v0(
@@ -198,67 +167,6 @@ pub(crate) fn observe_codex_explicit_session_source_backed_v0(
         Err(error) => return Err(error),
     };
     Ok(CodexExplicitSessionInventoryV0 { state })
-}
-
-pub(crate) fn observe_codex_carried_explicit_session_source_backed_v0(
-    input: &CodexExplicitSessionSourceBackedInputV0,
-    base: &CertifiedSource,
-) -> CodexSourceBackedResultV0<CodexExplicitSessionInventoryV0> {
-    let Some(seed) = incremental_seed_from_certificate(base) else {
-        return Err(CodexSourceBackedErrorV0::InvalidCheckpoint);
-    };
-    let seed = seed?;
-    if !base
-        .observation()
-        .source()
-        .exact_descriptor_eq(input.source())
-        || seed.native_session_id != input.native_session_id
-    {
-        return Err(CodexSourceBackedErrorV0::InvalidCheckpoint);
-    }
-    let opened = match open_provider_source_file(input.path()) {
-        Ok(opened) => Arc::new(opened),
-        Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CodexExplicitSessionInventoryV0 {
-                state: CodexExplicitSessionInventoryStateV0::Missing,
-            });
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let observation = opened_codex_file_observation(input.path(), opened.file())?;
-    let prefix_sha256 = opened_file_prefix_sha256(opened.file(), observation.len)?;
-    let after = opened_codex_file_observation(input.path(), opened.file())?;
-    if observation != seed.observation
-        || after != observation
-        || prefix_sha256 != seed.prefix_sha256
-    {
-        return Ok(CodexExplicitSessionInventoryV0 {
-            state: CodexExplicitSessionInventoryStateV0::Missing,
-        });
-    }
-    opened.revalidate()?;
-    let plan = (
-        CodexCatalogSource {
-            source_root: input.path().display().to_string(),
-            source_path: input.path().to_path_buf(),
-            cataloged_at_ms: 0,
-            catalog_observation: observation,
-            catalog_prefix_sha256: Some(prefix_sha256),
-            catalog_native_session_id: Some(seed.native_session_id.clone()),
-            catalog_parent_native_session_id: seed.parent_native_session_id,
-            catalog_session_relationship: seed.session_relationship,
-            catalog_advisory_session_id: seed.advisory_session_id,
-            catalog_root_native_session_id: seed.root_native_session_id,
-            opened: Some(opened),
-            authority_root: None,
-            authority_relative_path: None,
-        },
-        input.source().clone(),
-        seed.native_session_id,
-    );
-    Ok(CodexExplicitSessionInventoryV0 {
-        state: CodexExplicitSessionInventoryStateV0::Present { plan },
-    })
 }
 
 fn open_codex_explicit_source_plan_v0(
@@ -346,73 +254,20 @@ pub(super) fn bind_source_keys(
     Ok(bound)
 }
 
-#[cfg(test)]
-pub(crate) fn discover_codex_session_tree_inventory_from_base_v0(
-    session_roots: &[PathBuf],
-    base_sources: &HashMap<SourceKey, CertifiedSource>,
-) -> CodexSourceBackedResultV0<CodexSessionTreeInventoryV0> {
-    let seeds = base_sources
-        .values()
-        .filter_map(incremental_seed_from_certificate)
-        .collect::<CodexSourceBackedResultV0<Vec<_>>>()?;
-    discover_codex_session_tree_inventory_incremental_v0(session_roots, &seeds, false)
-}
-
-pub(crate) fn discover_codex_carried_session_tree_inventory_v0(
-    session_roots: &[PathBuf],
-    base_sources: &HashMap<SourceKey, CertifiedSource>,
-) -> CodexSourceBackedResultV0<CodexSessionTreeInventoryV0> {
-    let seeds = base_sources
-        .values()
-        .filter_map(incremental_seed_from_certificate)
-        .collect::<CodexSourceBackedResultV0<Vec<_>>>()?;
-    discover_codex_session_tree_inventory_incremental_v0(session_roots, &seeds, true)
-}
-
 pub(crate) fn discover_codex_session_tree_inventory_v0(
     session_roots: &[PathBuf],
 ) -> CodexSourceBackedResultV0<CodexSessionTreeInventoryV0> {
-    discover_codex_session_tree_inventory_incremental_v0(session_roots, &[], false)
+    discover_codex_deferred_session_tree_inventory_v0(session_roots)
 }
 
-#[cfg(test)]
-pub(crate) fn discover_codex_session_tree_inventory_from_plans_v0(
+/// Discovers stable leaf identities and observations without opening provider
+/// bodies. The JSONL family later supplies each leaf's durable base
+/// certificate, so only a changed or parser-migrated leaf needs hydration from
+/// its own bytes.
+pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
     session_roots: &[PathBuf],
-    prior_inventory: &CodexSessionTreeInventoryV0,
 ) -> CodexSourceBackedResultV0<CodexSessionTreeInventoryV0> {
-    let seeds = prior_inventory
-        .sources
-        .iter()
-        .map(|(source, source_key, native_session_id)| {
-            let expected = codex_source_key(native_session_id)?;
-            if !expected.exact_descriptor_eq(source_key) {
-                return Err(CodexSourceBackedErrorV0::InvalidCheckpoint);
-            }
-            Ok(CodexIncrementalInventorySeedV0 {
-                native_session_id: native_session_id.clone(),
-                parent_native_session_id: source.catalog_parent_native_session_id.clone(),
-                session_relationship: source.catalog_session_relationship,
-                advisory_session_id: source.catalog_advisory_session_id.clone(),
-                root_native_session_id: source.catalog_root_native_session_id.clone(),
-                observation: source.catalog_observation.clone(),
-                prefix_sha256: source
-                    .catalog_prefix_sha256
-                    .ok_or(CodexSourceBackedErrorV0::InvalidCheckpoint)?,
-            })
-        })
-        .collect::<CodexSourceBackedResultV0<Vec<_>>>()?;
-    discover_codex_session_tree_inventory_incremental_v0(session_roots, &seeds, false)
-}
-
-#[derive(Debug, Clone)]
-struct CodexIncrementalInventorySeedV0 {
-    native_session_id: String,
-    parent_native_session_id: Option<String>,
-    session_relationship: SessionRelationshipKind,
-    advisory_session_id: Option<String>,
-    root_native_session_id: Option<String>,
-    observation: CodexFileObservation,
-    prefix_sha256: [u8; 32],
+    discover_codex_session_tree_metadata_inventory_v0(session_roots)
 }
 
 #[derive(Debug)]
@@ -421,63 +276,14 @@ struct CodexMetadataInventoryLeafV0 {
     source_path: PathBuf,
     relative_path: PathBuf,
     observation: CodexFileObservation,
-    prefix_sha256: [u8; 32],
     authority: ProviderSourceRoot,
 }
 
-fn incremental_seed_from_certificate(
-    certificate: &CertifiedSource,
-) -> Option<CodexSourceBackedResultV0<CodexIncrementalInventorySeedV0>> {
-    let source_key = certificate.observation().source();
-    if !managed_codex_session_source(source_key)
-        || certificate.parser_revision() != CODEX_PARSER_REVISION
-        || certificate.observation().revision_kind() != CODEX_SOURCE_REVISION_KIND
-    {
-        return None;
-    }
-    let SourceAnchor::ProviderNative { namespace, key } = source_key.anchor() else {
-        return None;
-    };
-    let TypedKey::Utf8(native_session_id) = key else {
-        return None;
-    };
-    if namespace != CODEX_SOURCE_ANCHOR_NAMESPACE {
-        return None;
-    }
-    let observation = match serde_json::from_slice::<CodexFileObservation>(
-        certificate.observation().revision(),
-    ) {
-        Ok(observation) => observation,
-        Err(error) => return Some(Err(error.into())),
-    };
-    let checkpoint = certificate
-        .frontier()
-        .filter(|frontier| frontier.checkpoint_kind() == CODEX_FRONTIER_KIND)
-        .and_then(|frontier| match frontier.checkpoint() {
-            TypedKey::Bytes(bytes) => CodexNativeCheckpoint::decode(bytes).ok(),
-            _ => None,
-        })
-        .filter(|checkpoint| checkpoint.owner.native_session_id == *native_session_id)?;
-    Some(Ok(CodexIncrementalInventorySeedV0 {
-        native_session_id: native_session_id.clone(),
-        parent_native_session_id: checkpoint.owner.parent_native_session_id,
-        session_relationship: checkpoint.owner.session_relationship,
-        advisory_session_id: checkpoint.owner.advisory_session_id,
-        root_native_session_id: checkpoint.owner.root_native_session_id,
-        observation,
-        prefix_sha256: checkpoint.full_revision_sha256,
-    }))
-}
-
-fn discover_codex_session_tree_inventory_incremental_v0(
+fn discover_codex_session_tree_metadata_inventory_v0(
     session_roots: &[PathBuf],
-    seeds: &[CodexIncrementalInventorySeedV0],
-    seed_only: bool,
 ) -> CodexSourceBackedResultV0<CodexSessionTreeInventoryV0> {
     let normalized_roots = normalized_session_roots(session_roots)?;
     let mut leaves = Vec::new();
-    #[cfg(test)]
-    let mut root_revisions = Vec::with_capacity(normalized_roots.len());
     let mut authorities = Vec::with_capacity(normalized_roots.len());
     let mut work = CodexCatalogWorkV0::default();
     for session_root in &normalized_roots {
@@ -488,72 +294,24 @@ fn discover_codex_session_tree_inventory_incremental_v0(
             leaves.len().saturating_add(root_leaves.len()),
         )?;
         leaves.append(&mut root_leaves);
-        #[cfg(test)]
-        root_revisions.push(codex_root_revision_v0(session_root)?);
         authorities.push(root);
     }
 
     #[cfg(test)]
     run_after_codex_metadata_inventory_hook();
 
-    let candidates = exact_seed_candidates(&leaves, seeds);
     let mut catalog_sources = Vec::with_capacity(leaves.len());
-    for (leaf, seed_index) in leaves.into_iter().zip(candidates) {
-        let source = match seed_index {
-            Some(seed_index) => catalog_source_from_seed(&leaf, &seeds[seed_index])?,
-            None if seed_only => continue,
-            None => {
-                work.source_body_reads = work.source_body_reads.saturating_add(1);
-                work.session_meta_parses = work.session_meta_parses.saturating_add(1);
-                let (source, _rehashed_prefix) = catalog_source_from_body(&leaf)?;
-                #[cfg(test)]
-                if _rehashed_prefix {
-                    work.source_hash_reads = work.source_hash_reads.saturating_add(1);
-                }
-                source
-            }
-        };
-        catalog_sources.push(source);
+    for leaf in leaves {
+        catalog_sources.push(catalog_source_from_path_hint(&leaf)?);
     }
-    #[cfg(test)]
-    run_after_codex_catalog_authority_hook();
     for authority in &authorities {
         authority.revalidate()?;
     }
 
     let mut sources = bind_source_keys(catalog_sources)?;
     sort_bound_sources(&mut sources);
-    #[cfg(test)]
-    let certificate = {
-        let observation = if let [session_root] = normalized_roots.as_slice() {
-            codex_inventory_observation_v0(session_root, &root_revisions[0], &sources)?
-        } else {
-            codex_session_tree_inventory_observation_v0(
-                &normalized_roots,
-                &root_revisions,
-                &sources,
-            )?
-        };
-        let discovery_revision = if normalized_roots.len() == 1 {
-            CODEX_DISCOVERY_REVISION
-        } else {
-            CODEX_SESSION_TREE_UNION_DISCOVERY_REVISION
-        };
-        let source_keys = sources
-            .iter()
-            .map(|(_, source_key, _)| source_key.clone())
-            .collect();
-        CertifiedSourceInventory::certify(
-            observation.clone(),
-            observation,
-            discovery_revision,
-            source_keys,
-        )?
-    };
     Ok(CodexSessionTreeInventoryV0 {
         sources,
-        #[cfg(test)]
-        certificate,
         #[cfg(test)]
         work,
     })
@@ -627,7 +385,6 @@ fn discover_codex_metadata_inventory_root_v0(
                 {
                     crate::provider::provider_path_identity(&source_path)?;
                     let observation = opened_codex_file_observation(&source_path, opened.file())?;
-                    let prefix_sha256 = opened_file_prefix_sha256(opened.file(), observation.len)?;
                     let after = opened_codex_file_observation(&source_path, opened.file())?;
                     if !observation.admits_append_only_growth(&after) {
                         return Err(CodexSourceBackedErrorV0::Capture(
@@ -640,7 +397,6 @@ fn discover_codex_metadata_inventory_root_v0(
                         source_path,
                         relative_path,
                         observation,
-                        prefix_sha256,
                         authority: authority.clone(),
                     });
                     crate::provider::codex::catalog::ensure_catalog_source_bound(leaves.len())?;
@@ -678,101 +434,54 @@ fn discover_codex_metadata_inventory_root_v0(
         CodexCatalogWorkV0 {
             inventory_walks: 1,
             source_observations,
-            #[cfg(test)]
-            source_hash_reads: source_observations,
             ..CodexCatalogWorkV0::default()
         },
     ))
 }
 
-fn exact_seed_candidates(
-    leaves: &[CodexMetadataInventoryLeafV0],
-    seeds: &[CodexIncrementalInventorySeedV0],
-) -> Vec<Option<usize>> {
-    let mut seeds_by_stable = HashMap::<[u8; 32], Vec<usize>>::new();
-    let mut leaves_by_stable = HashMap::<[u8; 32], Vec<usize>>::new();
-    let mut seeds_by_native_id = HashMap::<&str, Vec<usize>>::new();
-    for (index, seed) in seeds.iter().enumerate() {
-        if let Some(stable) = seed.observation.stable_token {
-            seeds_by_stable.entry(stable).or_default().push(index);
-        }
-        seeds_by_native_id
-            .entry(seed.native_session_id.as_str())
-            .or_default()
-            .push(index);
-    }
-    for (index, leaf) in leaves.iter().enumerate() {
-        if let Some(stable) = leaf.observation.stable_token {
-            leaves_by_stable.entry(stable).or_default().push(index);
-        }
-    }
-
-    let mut candidates = leaves
-        .iter()
-        .map(|leaf| {
-            let stable_candidate = leaf.observation.stable_token.and_then(|stable| {
-                match (
-                    seeds_by_stable.get(&stable).map(Vec::as_slice),
-                    leaves_by_stable.get(&stable).map(Vec::as_slice),
-                ) {
-                    (Some([seed_index]), Some([_]))
-                        if seeds[*seed_index].observation == leaf.observation =>
-                    {
-                        Some(*seed_index)
-                    }
-                    _ => None,
-                }
-            });
-            stable_candidate.or_else(|| {
-                let native_session_id = codex_native_session_id_path_hint(&leaf.source_path)?;
-                match seeds_by_native_id
-                    .get(native_session_id.as_str())
-                    .map(Vec::as_slice)
-                {
-                    Some([seed_index]) if seeds[*seed_index].observation == leaf.observation => {
-                        Some(*seed_index)
-                    }
-                    _ => None,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut candidate_counts = HashMap::<usize, usize>::new();
-    for seed_index in candidates.iter().flatten() {
-        *candidate_counts.entry(*seed_index).or_default() += 1;
-    }
-    for candidate in &mut candidates {
-        if candidate.is_some_and(|seed_index| candidate_counts.get(&seed_index) != Some(&1)) {
-            *candidate = None;
-        }
-    }
-    candidates
-}
-
-fn catalog_source_from_seed(
+fn catalog_source_from_path_hint(
     leaf: &CodexMetadataInventoryLeafV0,
-    seed: &CodexIncrementalInventorySeedV0,
 ) -> CodexSourceBackedResultV0<CodexCatalogSource> {
-    if leaf.prefix_sha256 != seed.prefix_sha256 {
-        return Err(CodexSourceBackedErrorV0::Capture(
-            CaptureError::SourceChangedDuringCapture,
-        ));
-    }
+    let native_session_id =
+        codex_native_session_id_path_hint(&leaf.source_path).ok_or_else(|| {
+            CodexSourceBackedErrorV0::MissingNativeSessionId {
+                path: leaf.source_path.clone(),
+            }
+        })?;
     Ok(CodexCatalogSource {
         source_root: leaf.source_root.clone(),
         source_path: leaf.source_path.clone(),
         cataloged_at_ms: 0,
         catalog_observation: leaf.observation.clone(),
-        catalog_prefix_sha256: Some(leaf.prefix_sha256),
-        catalog_native_session_id: Some(seed.native_session_id.clone()),
-        catalog_parent_native_session_id: seed.parent_native_session_id.clone(),
-        catalog_session_relationship: seed.session_relationship,
-        catalog_advisory_session_id: seed.advisory_session_id.clone(),
-        catalog_root_native_session_id: seed.root_native_session_id.clone(),
+        catalog_prefix_sha256: None,
+        catalog_native_session_id: Some(native_session_id.clone()),
+        catalog_parent_native_session_id: None,
+        catalog_session_relationship: SessionRelationshipKind::Root,
+        catalog_advisory_session_id: None,
+        catalog_root_native_session_id: Some(native_session_id),
         opened: None,
         authority_root: Some(leaf.authority.clone()),
         authority_relative_path: Some(leaf.relative_path.clone()),
     })
+}
+
+pub(super) fn set_child_local_root(
+    source: &mut CodexCatalogSource,
+    native_session_id: &str,
+) -> CodexSourceBackedResultV0<()> {
+    // A non-root source can certify only the direct-parent claim present in
+    // its own bytes. Resolving a generation-wide root would make the claim
+    // depend on another source and would reintroduce ancestor participation.
+    source.catalog_root_native_session_id = match source.catalog_session_relationship {
+        SessionRelationshipKind::Root => Some(native_session_id.to_owned()),
+        _ => Some(
+            source
+                .catalog_parent_native_session_id
+                .clone()
+                .ok_or(CodexSourceBackedErrorV0::InvalidCheckpoint)?,
+        ),
+    };
+    Ok(())
 }
 
 fn catalog_source_from_body(
@@ -786,19 +495,7 @@ fn catalog_source_from_body(
             CaptureError::SourceChangedDuringCapture,
         ));
     }
-    // Supported filesystems provide a stable object token plus a kernel change
-    // token. Only that exact unchanged observation can skip the duplicate body
-    // proof. Portable observations without a stable object token retain the
-    // full prefix hash even when their sampled fingerprint is unchanged.
-    let metadata_only_noop = admitted == leaf.observation && admitted.stable_token.is_some();
-    let rehashed_prefix = !metadata_only_noop;
-    if rehashed_prefix
-        && opened_file_prefix_sha256(opened.file(), leaf.observation.len)? != leaf.prefix_sha256
-    {
-        return Err(CodexSourceBackedErrorV0::Capture(
-            CaptureError::SourceChangedDuringCapture,
-        ));
-    }
+    let prefix_sha256 = opened_file_prefix_sha256(opened.file(), leaf.observation.len)?;
     // The catalog helper revalidates this retained authority before and after
     // its bounded session-meta read, so a mutation in that window fails closed.
     let mut catalog = catalog_codex_explicit_session_opened(&leaf.source_path, &opened)?;
@@ -834,11 +531,94 @@ fn catalog_source_from_body(
             CaptureError::SourceChangedDuringCapture,
         ));
     }
-    source.catalog_prefix_sha256 = Some(leaf.prefix_sha256);
+    source.catalog_prefix_sha256 = Some(prefix_sha256);
     source.catalog_observation = leaf.observation.clone();
     source.authority_root = Some(leaf.authority.clone());
     source.authority_relative_path = Some(leaf.relative_path.clone());
-    Ok((source, rehashed_prefix))
+    Ok((source, true))
+}
+
+pub(super) fn hydrate_codex_session_plan_v0(
+    plan: (CodexCatalogSource, SourceKey, String),
+    base: Option<&CertifiedSource>,
+) -> CodexSourceBackedResultV0<(
+    (CodexCatalogSource, SourceKey, String),
+    CodexCatalogWorkV0,
+    bool,
+)> {
+    let (mut source, source_key, native_session_id) = plan;
+    if let Some(proof) = base
+        .filter(|base| base.parser_revision() == CODEX_PARSER_REVISION)
+        .and_then(|base| decode_append_proof(&source, &source_key, base).ok())
+        .filter(|proof| proof.checkpoint.observation == source.catalog_observation)
+    {
+        if proof.checkpoint.owner.native_session_id != native_session_id {
+            return Err(CodexSourceBackedErrorV0::InvalidCheckpoint);
+        }
+        source.catalog_prefix_sha256 = Some(proof.checkpoint.full_revision_sha256);
+        source.catalog_parent_native_session_id =
+            proof.checkpoint.owner.parent_native_session_id.clone();
+        source.catalog_session_relationship = proof.checkpoint.owner.session_relationship;
+        source.catalog_advisory_session_id = proof.checkpoint.owner.advisory_session_id.clone();
+        set_child_local_root(&mut source, &native_session_id)?;
+        return Ok((
+            (source, source_key, native_session_id),
+            CodexCatalogWorkV0::default(),
+            true,
+        ));
+    }
+
+    if source.catalog_prefix_sha256.is_some() {
+        set_child_local_root(&mut source, &native_session_id)?;
+        return Ok((
+            (source, source_key, native_session_id),
+            CodexCatalogWorkV0::default(),
+            false,
+        ));
+    }
+
+    let authority = source
+        .authority_root
+        .clone()
+        .ok_or(CodexSourceBackedErrorV0::Capture(
+            CaptureError::SystemInvariant("Codex deferred source has no retained authority root"),
+        ))?;
+    let relative_path =
+        source
+            .authority_relative_path
+            .clone()
+            .ok_or(CodexSourceBackedErrorV0::Capture(
+                CaptureError::SystemInvariant(
+                    "Codex deferred source has no retained authority path",
+                ),
+            ))?;
+    let leaf = CodexMetadataInventoryLeafV0 {
+        source_root: source.source_root.clone(),
+        source_path: source.source_path.clone(),
+        relative_path,
+        observation: source.catalog_observation.clone(),
+        authority,
+    };
+    let (mut hydrated, _) = catalog_source_from_body(&leaf)?;
+    if hydrated.catalog_native_session_id.as_deref() != Some(native_session_id.as_str()) {
+        return Err(CodexSourceBackedErrorV0::ExplicitSourceIdentityChanged);
+    }
+    set_child_local_root(&mut hydrated, &native_session_id)?;
+    Ok((
+        (hydrated, source_key, native_session_id),
+        CodexCatalogWorkV0 {
+            source_metadata_opens: 1,
+            // The catalog helper reads only its bounded session-meta prefix;
+            // the frozen source length is a conservative read upper bound,
+            // not a claim that the transcript body was scanned.
+            source_metadata_read_upper_bound_bytes: leaf.observation.len,
+            session_meta_parses: 1,
+            #[cfg(test)]
+            source_hash_reads: 1,
+            ..CodexCatalogWorkV0::default()
+        },
+        false,
+    ))
 }
 
 pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
@@ -897,119 +677,4 @@ fn sort_bound_sources(sources: &mut [(CodexCatalogSource, SourceKey, String)]) {
             })
             .then_with(|| left.2.cmp(&right.2))
     });
-}
-
-#[cfg(test)]
-fn codex_inventory_observation_v0(
-    session_root: &Path,
-    root_revision: &[u8; 32],
-    sources: &[(CodexCatalogSource, SourceKey, String)],
-) -> CodexSourceBackedResultV0<SourceInventoryObservation> {
-    let root_identity = crate::provider::provider_path_identity(session_root)
-        .map_err(CodexSourceBackedErrorV0::Capture)?;
-    let authority_key: [u8; 32] = Sha256::digest(root_identity.as_bytes()).into();
-    let mut ordered = sources.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|(_, source_key, _)| source_key.identity().digest());
-
-    let mut revision = Sha256::new();
-    revision.update(b"ctx.codex-session-tree-inventory-v1\0");
-    revision.update(root_revision);
-    hash_inventory_field(&mut revision, root_identity.as_bytes());
-    revision.update((ordered.len() as u64).to_be_bytes());
-    for (source, source_key, native_session_id) in ordered {
-        revision.update(source_key.identity().digest());
-        revision.update(source_key.exact_descriptor_digest());
-        hash_inventory_field(&mut revision, source.source_root.as_bytes());
-        let path_identity = crate::provider::provider_path_identity(&source.source_path)?;
-        hash_inventory_field(&mut revision, path_identity.as_bytes());
-        hash_inventory_field(&mut revision, native_session_id.as_bytes());
-    }
-    Ok(SourceInventoryObservation::new(
-        CaptureProvider::Codex.as_str(),
-        CODEX_INVENTORY_AUTHORITY_NAMESPACE,
-        TypedKey::bytes(authority_key.to_vec())?,
-        CODEX_INVENTORY_REVISION_KIND,
-        revision.finalize().to_vec(),
-    )?)
-}
-
-#[cfg(test)]
-fn codex_session_tree_inventory_observation_v0(
-    session_roots: &[PathBuf],
-    root_revisions: &[[u8; 32]],
-    sources: &[(CodexCatalogSource, SourceKey, String)],
-) -> CodexSourceBackedResultV0<SourceInventoryObservation> {
-    if session_roots.len() != root_revisions.len() {
-        return Err(CodexSourceBackedErrorV0::Capture(
-            CaptureError::SystemInvariant(
-                "Codex session-tree root revisions did not match their roots",
-            ),
-        ));
-    }
-
-    let mut authority = Sha256::new();
-    authority.update(b"ctx.codex-session-tree-union-authority-v0\0");
-    authority.update((session_roots.len() as u64).to_be_bytes());
-    let mut revision = Sha256::new();
-    revision.update(b"ctx.codex-session-tree-union-inventory-v0\0");
-    revision.update((session_roots.len() as u64).to_be_bytes());
-    for (session_root, root_revision) in session_roots.iter().zip(root_revisions) {
-        let root_identity = crate::provider::provider_path_identity(session_root)?;
-        hash_inventory_field(&mut authority, root_identity.as_bytes());
-        hash_inventory_field(&mut revision, root_identity.as_bytes());
-        revision.update(root_revision);
-    }
-    let authority_key: [u8; 32] = authority.finalize().into();
-
-    revision.update((sources.len() as u64).to_be_bytes());
-    for (source, source_key, native_session_id) in sources {
-        revision.update(source_key.identity().digest());
-        revision.update(source_key.exact_descriptor_digest());
-        hash_inventory_field(&mut revision, source.source_root.as_bytes());
-        let path_identity = crate::provider::provider_path_identity(&source.source_path)?;
-        hash_inventory_field(&mut revision, path_identity.as_bytes());
-        hash_inventory_field(&mut revision, native_session_id.as_bytes());
-    }
-    Ok(SourceInventoryObservation::new(
-        CaptureProvider::Codex.as_str(),
-        CODEX_INVENTORY_AUTHORITY_NAMESPACE,
-        TypedKey::bytes(authority_key.to_vec())?,
-        CODEX_SESSION_TREE_UNION_INVENTORY_REVISION_KIND,
-        revision.finalize().to_vec(),
-    )?)
-}
-
-#[cfg(test)]
-fn hash_inventory_field(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update((value.len() as u64).to_be_bytes());
-    hasher.update(value);
-}
-
-#[cfg(test)]
-fn codex_root_revision_v0(session_root: &Path) -> CodexSourceBackedResultV0<[u8; 32]> {
-    let root_identity = crate::provider::provider_path_identity(session_root)?;
-    let mut revision = Sha256::new();
-    revision.update(b"ctx.codex-session-root-revision-v0\0");
-    hash_inventory_field(&mut revision, root_identity.as_bytes());
-    Ok(revision.finalize().into())
-}
-
-#[cfg(test)]
-pub(crate) fn writer_base_sources(
-    writer: &GenerationWriter,
-) -> HashMap<SourceKey, CertifiedSource> {
-    writer
-        .base_manifest()
-        .into_iter()
-        .flat_map(|manifest| manifest.sources.iter())
-        .cloned()
-        .map(|source| (source.observation().source().clone(), source))
-        .collect()
-}
-
-pub(crate) fn managed_codex_session_source(source: &SourceKey) -> bool {
-    source.provider() == CaptureProvider::Codex.as_str()
-        && source.source_format() == CODEX_SESSION_SOURCE_FORMAT
-        && source.schema_variant() == CODEX_SOURCE_SCHEMA_VARIANT
-        && source.provider_identity_version() == 1
 }

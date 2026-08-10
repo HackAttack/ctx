@@ -2,7 +2,6 @@ use super::publication::observation::{
     admitted_route_observations, run_after_capture_scan_before_metadata_hook,
 };
 use super::*;
-use sha2::{Digest as _, Sha256};
 
 mod catalog_witness;
 use catalog_witness::{reconcile_published_catalog_witness, retained_catalog_witness};

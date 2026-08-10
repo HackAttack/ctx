@@ -158,8 +158,8 @@ fn source_record_progress_resets_per_route_and_is_absent_outside_scans() {
         1,
     ));
     registry.register(fixture_route(
-        CaptureProvider::Hermes,
-        "hermes_state_sqlite",
+        CaptureProvider::Mux,
+        "mux_session_jsonl_tree",
         2,
     ));
     let temp = tempdir().unwrap();

@@ -15,15 +15,15 @@ use sha2::{Digest, Sha256};
 use super::source::{CodexCheckpointGeneration, CodexSourceIdentity};
 use super::{
     checkpoint::{
-        CodexNativeCheckpoint, CodexPendingToolAuthority, MAX_CODEX_CONTINUATION_CELL_ID_BYTES,
-        MAX_CODEX_TOOL_CALL_ID_BYTES, MAX_CODEX_TOOL_CONTEXTS,
+        CodexNativeCheckpoint, CodexPendingToolAuthority, CodexTerminalAuthorityCheckpoint,
+        CodexTerminalAuthorityEntry, MAX_CODEX_CONTINUATION_CELL_ID_BYTES,
+        MAX_CODEX_MCP_TERMINAL_AUTHORITIES, MAX_CODEX_TOOL_CALL_ID_BYTES, MAX_CODEX_TOOL_CONTEXTS,
     },
     record::{
         classify_codex_record, classify_mcp_terminal_after_selector_ambiguity,
-        codex_lineage_record_evidence, malformed_codex_lineage_record_evidence,
         parse_decoded_record, parse_session_meta, parse_turn_context_cwd, prefilter_codex_record,
-        CodexLineageRecordEvidence, CodexMalformedLineageRecordEvidence, CodexRecordAdmission,
-        CodexRecordClass, CodexRecordProbe, CodexResultKind, CodexSkipProjection,
+        CodexRecordAdmission, CodexRecordClass, CodexRecordProbe, CodexResultKind,
+        CodexSkipProjection,
     },
     rows::{
         build_source_backed_event_row, build_source_backed_sparse_output_row, encoded_json_len,
@@ -44,10 +44,6 @@ use crate::{
         MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
     },
     CaptureError, Result,
-};
-#[cfg(test)]
-pub(crate) use checkpoint::{
-    install_after_codex_prefix_hash_hook, install_after_codex_second_prefix_hash_hook,
 };
 const CHECKPOINT_READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_CODEX_PAGE_UNITS: usize = 64;
@@ -179,9 +175,10 @@ pub(crate) struct CodexSourceScan {
     pub(crate) next_raw_ordinal: u64,
     pub(crate) owner: Option<CodexSessionRow>,
     pending_tool_authorities: Vec<CodexPendingToolAuthority>,
+    terminal_authority: CodexTerminalAuthorityCheckpoint,
     pub(crate) incomplete_tail: Option<CodexIncompleteTail>,
     pub(crate) counters: CodexScanCounters,
-    pub(crate) lineage_facts: Option<CodexLineageFactsV0>,
+    pub(crate) local_turn_started: bool,
 }
 
 impl CodexSourceScan {
@@ -190,12 +187,8 @@ impl CodexSourceScan {
         self.incomplete_tail.is_none()
     }
 
-    pub(crate) fn checkpoint(
-        &self,
-        lineage_dependency_sha256: [u8; 32],
-        certified_lineage_facts: Option<super::checkpoint::CodexCertifiedLineageFactsV0>,
-    ) -> Option<CodexNativeCheckpoint> {
-        Some(CodexNativeCheckpoint::new(
+    pub(crate) fn checkpoint(&self) -> serde_json::Result<Option<CodexNativeCheckpoint>> {
+        Ok(Some(CodexNativeCheckpoint::new(
             self.after_observation.clone(),
             self.full_revision_sha256,
             self.complete_prefix_sha256,
@@ -205,10 +198,13 @@ impl CodexSourceScan {
                 .as_ref()
                 .map(|tail| (tail.byte_len, tail.sha256)),
             &self.pending_tool_authorities,
-            self.owner.clone()?,
-            lineage_dependency_sha256,
-            certified_lineage_facts,
-        ))
+            self.terminal_authority.clone(),
+            match self.owner.clone() {
+                Some(owner) => owner,
+                None => return Ok(None),
+            },
+            self.local_turn_started,
+        )?))
     }
 
     #[cfg(test)]
@@ -223,7 +219,8 @@ impl CodexSourceScan {
             self.source.source_path.clone(),
         )?;
         Ok(self
-            .checkpoint([0; 32], None)
+            .checkpoint()
+            .map_err(CaptureError::from)?
             .map(|checkpoint| CodexAppendProof::new(identity, generation, checkpoint)))
     }
 }
@@ -248,7 +245,7 @@ pub(crate) struct CodexNativeScanner {
     record_buffer: Vec<u8>,
     incomplete_tail: Option<CodexIncompleteTail>,
     counters: CodexScanCounters,
-    lineage_facts: Option<CodexLineageFactsV0>,
+    local_turn_started: bool,
     replay: Option<CodexSourceScan>,
     active_core_page: Option<CodexNativePage>,
     ready_core_page: Option<CodexNativePage>,
@@ -264,19 +261,11 @@ impl CodexNativeScanner {
         Self::new(source, proof)
     }
 
-    pub(crate) fn new_source_backed_with_lineage_v0(
-        source: CodexCatalogSource,
-        proof: Option<&CodexAppendProof>,
-        lineage_facts: CodexLineageFactsV0,
-    ) -> Result<Self> {
-        Self::new_with_lineage(source, proof, Some(lineage_facts))
-    }
-
-    pub(crate) fn new_source_backed_without_lineage_v0(
+    pub(crate) fn new_source_backed_child_local_v0(
         source: CodexCatalogSource,
         proof: Option<&CodexAppendProof>,
     ) -> Result<Self> {
-        Self::new_with_lineage(source, proof, None)
+        Self::new_retained(source, proof)
     }
 }
 
@@ -287,7 +276,7 @@ struct ScannerPosition {
     complete_hasher: Sha256,
     full_hasher: Sha256,
     counters: CodexScanCounters,
-    lineage_mark: Option<CodexLineageFactMarkV0>,
+    local_turn_started: bool,
 }
 
 #[derive(Default)]
@@ -321,14 +310,10 @@ enum CodexContextMutation {
 
 mod checkpoint;
 mod identity;
-mod lineage;
-pub(crate) use lineage::scan_codex_lineage_source_v0;
 mod page_builder;
 mod project;
 mod scanner;
 
-#[cfg(test)]
-pub(crate) use checkpoint::revalidate_codex_source_observation;
 use checkpoint::*;
 pub(crate) use checkpoint::{
     open_codex_source_capability, opened_file_observation as opened_codex_file_observation,
@@ -336,8 +321,3 @@ pub(crate) use checkpoint::{
     revalidate_codex_catalog_source_capability,
 };
 use identity::*;
-use lineage::CodexLineageFactMarkV0;
-pub(crate) use lineage::{
-    CodexLineageFactBudgetV0, CodexLineageFactPresenceV0, CodexLineageFactsSpillRecordV0,
-    CodexLineageFactsV0, CODEX_LINEAGE_EXHAUSTED_SENTINEL,
-};

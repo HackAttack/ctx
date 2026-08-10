@@ -146,6 +146,12 @@ impl<'index> CompactRefResolver<'index> {
         })
     }
 
+    pub(super) fn contains_exact(&self, namespace: CompactRefNamespace, id: Uuid) -> Result<bool> {
+        Ok(self
+            .matches_for_prefix(namespace, &id.simple().to_string())?
+            .contains(&id))
+    }
+
     /// Builds compact aliases only for the IDs the caller will render.
     /// Event and session IDs are abbreviated in independent namespaces.
     pub(super) fn compact_refs<EventIds, SessionIds>(

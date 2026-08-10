@@ -2,9 +2,12 @@
 fn search_refresh_codex_generation_covers_full_source_lifecycle() {
     let temp = tempdir();
     let sessions = temp.path().join(".codex").join("sessions");
-    let session = sessions.join("2026/07/29/lifecycle.jsonl");
-    let sibling_session = sessions.join("2026/07/29/sibling.jsonl");
     let native_session_id = "019fac90-0000-7000-8000-000000000001";
+    let sibling_native_session_id = "019fac90-0000-7000-8000-000000000002";
+    let session = sessions.join(format!("2026/07/29/rollout-{native_session_id}.jsonl"));
+    let sibling_session = sessions.join(format!(
+        "2026/07/29/rollout-{sibling_native_session_id}.jsonl"
+    ));
     let cold_query = "cold-source-lifecycle-oracle";
     write_codex_session(
         &session,
@@ -13,7 +16,7 @@ fn search_refresh_codex_generation_covers_full_source_lifecycle() {
     );
     write_codex_session(
         &sibling_session,
-        "019fac90-0000-7000-8000-000000000002",
+        sibling_native_session_id,
         &[(
             "2026-07-29T12:00:01.000Z",
             "assistant",
@@ -538,7 +541,6 @@ fn search_refresh_publishes_discovered_top_provider_sources() {
             install_default_claude_fixture as fn(&TempDir, &str),
         ),
         ("pi", "pi", install_default_pi_fixture),
-        ("hermes", "hermes", install_default_hermes_fixture),
         ("kilo", "kilo", install_default_kilo_fixture),
         ("astrbot", "astrbot", install_default_astrbot_fixture),
         ("continue", "continue", install_default_continue_fixture),
@@ -603,94 +605,6 @@ fn search_refresh_publishes_discovered_top_provider_sources() {
             "{cli_provider} republished an unchanged source: {unchanged_status:#}"
         );
     }
-}
-
-#[test]
-fn search_refresh_hermes_generation_detects_wal_only_append() {
-    let temp = tempdir();
-    let initial = "hermes-root-inventory-initial-oracle";
-    let appended = "hermes-root-inventory-appended-oracle";
-    install_default_hermes_fixture(&temp, initial);
-    let source = temp.path().join(".hermes/state.db");
-    let writer = Connection::open(&source).unwrap();
-    let journal_mode: String = writer
-        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(journal_mode, "wal");
-    writer
-        .execute_batch("PRAGMA wal_autocheckpoint = 0")
-        .unwrap();
-    let _daemon = start_source_refresh_daemon(&temp);
-
-    let first = json_output(ctx(&temp).args([
-        "search",
-        initial,
-        "--provider",
-        "hermes",
-        "--refresh",
-        "wait",
-        "--format=json",
-    ]));
-    assert_source_backed_search_show_oracle(&temp, &first, "hermes", initial, 1, "message");
-    let first_generation = assert_published_generation(&first, "wait");
-    let first_documents = first["retrieval"]["indexed_documents"].as_u64().unwrap();
-
-    let unchanged = json_output(ctx(&temp).args([
-        "search",
-        initial,
-        "--provider",
-        "hermes",
-        "--refresh",
-        "wait",
-        "--format=json",
-    ]));
-    assert_eq!(generation_id(&unchanged), first_generation, "{unchanged:#}");
-    let unchanged_status = assert_daemon_publication(&temp, &first_generation, 1, &["hermes"]);
-    assert_eq!(
-        unchanged_status["daemon"]["jobs"]["core_refresh"]["generation_changed"], false,
-        "{unchanged_status:#}"
-    );
-
-    let main_before = fs::metadata(&source).unwrap();
-    writer
-        .execute(
-            "INSERT INTO messages (session_id, role, content, timestamp)
-             VALUES (?1, 'user', ?2, 1782259203.0)",
-            ["hermes-cli-native", appended],
-        )
-        .unwrap();
-    assert!(source.with_extension("db-wal").is_file());
-    let main_after = fs::metadata(&source).unwrap();
-    assert_eq!(main_after.len(), main_before.len());
-    assert_eq!(
-        main_after.modified().unwrap(),
-        main_before.modified().unwrap()
-    );
-
-    let refreshed = json_output(ctx(&temp).args([
-        "search",
-        appended,
-        "--provider",
-        "hermes",
-        "--refresh",
-        "wait",
-        "--format=json",
-    ]));
-    assert_source_backed_search_show_oracle(&temp, &refreshed, "hermes", appended, 1, "message");
-    let refreshed_generation = assert_published_generation(&refreshed, "wait");
-    assert_ne!(refreshed_generation, first_generation);
-    assert!(
-        refreshed["retrieval"]["indexed_documents"]
-            .as_u64()
-            .unwrap()
-            > first_documents,
-        "{refreshed:#}"
-    );
-    // The changed generation and increased document count above are the
-    // durable append proofs. A periodic no-op may legitimately replace the
-    // daemon's latest-job receipt before this status read.
-    assert_daemon_publication(&temp, &refreshed_generation, 1, &["hermes"]);
-    drop(writer);
 }
 
 #[test]

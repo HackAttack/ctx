@@ -1,18 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-};
-
-#[cfg(test)]
-use std::{
-    panic::{catch_unwind, AssertUnwindSafe},
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
-        mpsc::{self, Receiver, SyncSender},
-    },
-    thread,
-    time::{Duration, Instant},
 };
 
 use ctx_history_core::{
@@ -22,38 +11,24 @@ use ctx_history_core::{
     SessionRelationshipKind, SourceAnchor, SourceFrontier, SourceKey, SourceObservation,
     StableEntityId, TypedKey,
 };
-#[cfg(test)]
-use ctx_history_core::{
-    CertifiedSourceDeletion, CertifiedSourceInventory, SourceInventoryObservation,
-};
 use ctx_history_index::{BaseEventIdentityLookup, IndexError};
-#[cfg(test)]
-use ctx_history_index::{
-    CommitReceipt, GenerationWriter, RevalidationTarget, VerifiedIndex, WriterOptions,
-};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::{
-    checkpoint::CodexCertifiedLineageFactsV0,
     discover_codex_catalog_sources,
     reader::{
         opened_file_prefix_sha256, reopen_codex_source_capability,
-        revalidate_codex_catalog_source_capability, CodexLineageFactBudgetV0,
-        CodexLineageFactsSpillRecordV0, CodexLineageFactsV0, CodexParseDisposition,
-        CodexScanCounters, CODEX_LINEAGE_EXHAUSTED_SENTINEL,
+        revalidate_codex_catalog_source_capability, CodexParseDisposition, CodexScanCounters,
     },
     rows::{
         CodexProviderEventIdentityKindV0, CodexProviderEventIdentityV0, CodexSourceBackedRowV0,
+        MAX_CODEX_DURABLE_METADATA_BYTES,
     },
     source::{CodexCatalogSource, CodexFileObservation, CodexSourceIdentity},
     CodexAppendProof, CodexCheckpointGeneration, CodexNativeCheckpoint, CodexNativeOwnedPage,
     CodexNativeScanner, CodexSessionRow, CodexSourceScan,
 };
-#[cfg(test)]
-use crate::provider::codex::catalog::discover_codex_session_catalog;
-#[cfg(test)]
-use crate::provider::codex::nativepath::revalidate_codex_source_observation;
 use crate::{
     common::io::{
         open_provider_source_file, OpenedProviderSourcePath, ProviderSourceRoot,
@@ -72,18 +47,8 @@ const CODEX_LOGICAL_SESSION_KIND: &str = "codex-session";
 const CODEX_LOGICAL_EVENT_KIND: &str = "codex-event";
 const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
 const CODEX_SOURCE_REVISION_KIND: &str = "codex-ordinary-file-observation-v1";
-const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v11";
-const CODEX_PARSER_REVISION: &str =
-    "codex-nativepath-core-record-v24-scoped-malformed-descendant-authority";
-const CODEX_GENERATION_LINEAGE_COMPONENTS_PER_WAVE: usize = 4;
-#[cfg(test)]
-const CODEX_INVENTORY_AUTHORITY_NAMESPACE: &str = "codex.sessions-root";
-#[cfg(test)]
-const CODEX_INVENTORY_REVISION_KIND: &str = "codex-session-tree-inventory-v1";
-#[cfg(test)]
-const CODEX_DISCOVERY_REVISION: &str = "codex-session-catalog-v1";
-#[cfg(test)]
-const MAX_CODEX_SCANNER_WORKERS: usize = 16;
+const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v14";
+const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-record-v27-bounded-exact-origin";
 
 #[derive(Debug, Error)]
 pub enum CodexSourceBackedErrorV0 {
@@ -103,8 +68,6 @@ pub enum CodexSourceBackedErrorV0 {
     IncompleteCatalog { rejected: usize, failed: usize },
     #[error("Codex catalog source {path:?} has no native session ID")]
     MissingNativeSessionId { path: PathBuf },
-    #[error("Codex native session ID {0:?} resolves to more than one source")]
-    DuplicateNativeSessionId(String),
     #[error("Codex source {0:?} is not a cold source or exact append")]
     UnsupportedLifecycle(String),
     #[error("Codex source certificate has no NativePath checkpoint frontier")]
@@ -121,106 +84,27 @@ pub enum CodexSourceBackedErrorV0 {
     ScanCountMismatch,
     #[error("Codex source count overflow")]
     CountOverflow,
-    #[error("Codex lineage working set exceeded its bounded task-local capacity")]
-    LineageWorkingSetExhausted,
-    #[error("Codex lineage working set is unavailable")]
-    LineageWorkingSetUnavailable,
-    #[cfg(test)]
-    #[error("Codex cold scanner lane {lane} disconnected before completing its sources")]
-    ColdLaneDisconnected { lane: usize },
-    #[cfg(test)]
-    #[error("Codex cold scanner lane {lane} panicked")]
-    ColdWorkerPanicked { lane: usize },
-    #[cfg(test)]
-    #[error("Codex cold scanner protocol mismatch: {0}")]
-    ColdProtocolMismatch(&'static str),
-    #[cfg(test)]
-    #[error("injected Codex cold scanner failure for native session {native_session_id}")]
-    InjectedColdWorkerFailure { native_session_id: String },
+    #[error("Codex generation participant count overflow")]
+    GenerationParticipantCountOverflow,
+    #[error("Codex generation coordinator is unavailable")]
+    GenerationCoordinatorUnavailable,
     #[error("Codex source-backed scanner emitted a legacy Core publication row")]
     UnexpectedLegacyRow,
     #[error("explicit Codex session source changed its native session identity")]
     ExplicitSourceIdentityChanged,
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct CodexTerminalSourceEvidenceV0 {
-    pub(crate) source: CodexCatalogSource,
-    pub(crate) observation: CodexFileObservation,
-    pub(crate) certified_len: u64,
-    pub(crate) full_revision_sha256: [u8; 32],
-}
-
-#[cfg(test)]
-impl CodexTerminalSourceEvidenceV0 {
-    pub(crate) fn new(
-        mut source: CodexCatalogSource,
-        observation: CodexFileObservation,
-        certified_len: u64,
-        full_revision_sha256: [u8; 32],
-    ) -> Self {
-        // The retained root plus relative route can reopen the same ordinary
-        // object without following links. Keeping one opened file per source
-        // until publication exhausts ordinary process descriptor limits on
-        // large provider trees.
-        source.opened = None;
-        Self {
-            source,
-            observation,
-            certified_len,
-            full_revision_sha256,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn revalidate(&self) -> bool {
-        self.revalidate_fallible().unwrap_or(false)
-    }
-
-    pub(crate) fn revalidate_fallible(&self) -> CodexSourceBackedResultV0<bool> {
-        match revalidate_codex_source_observation(
-            &self.source,
-            &self.observation,
-            self.certified_len,
-            self.full_revision_sha256,
-        ) {
-            Ok(()) => Ok(true),
-            Err(
-                CaptureError::InvalidPayload(_)
-                | CaptureError::InvalidProviderTranscriptPath { .. }
-                | CaptureError::SourceChangedDuringCapture,
-            ) => Ok(false),
-            Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(false)
-            }
-            Err(error) => Err(error.into()),
-        }
-    }
-}
-
 pub type CodexSourceBackedResultV0<T> = Result<T, CodexSourceBackedErrorV0>;
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CodexSourceBackedPhaseTimingsV0 {
-    pub discovery: Duration,
-    pub writer_open: Duration,
-    pub scan_and_stage: Duration,
-    pub scanner_worker_busy: Duration,
-    pub writer_add_document: Duration,
-    pub certification: Duration,
-    pub commit: Duration,
-    pub total: Duration,
-}
-
+#[cfg(any(test, ctx_codex_causal_qualification))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CodexSourceBackedCountersV0 {
     pub catalog_sources: u64,
     pub catalog_source_bytes: u64,
     pub inventory_walks: u64,
     pub inventory_source_observations: u64,
-    pub catalog_source_body_reads: u64,
+    pub catalog_source_metadata_opens: u64,
+    pub catalog_source_metadata_read_upper_bound_bytes: u64,
     pub catalog_session_meta_parses: u64,
     pub cold_sources: u64,
     pub appended_sources: u64,
@@ -230,6 +114,7 @@ pub struct CodexSourceBackedCountersV0 {
     pub writer_exact_replay_sources: u64,
     pub writer_mutated_sources: u64,
     pub scanner_workers: u64,
+    pub scanner_source_opens: u64,
     pub scanner_sources_started: u64,
     pub scanner_sources_completed: u64,
     pub peak_active_scanners: u64,
@@ -259,6 +144,7 @@ pub struct CodexSourceBackedCountersV0 {
     pub scanner_legacy_page_identity_row_json_serializations: u64,
 }
 
+#[cfg(any(test, ctx_codex_causal_qualification))]
 impl CodexSourceBackedCountersV0 {
     fn add_assign(&mut self, other: Self) {
         macro_rules! add {
@@ -271,7 +157,8 @@ impl CodexSourceBackedCountersV0 {
             catalog_source_bytes,
             inventory_walks,
             inventory_source_observations,
-            catalog_source_body_reads,
+            catalog_source_metadata_opens,
+            catalog_source_metadata_read_upper_bound_bytes,
             catalog_session_meta_parses,
             cold_sources,
             appended_sources,
@@ -282,6 +169,7 @@ impl CodexSourceBackedCountersV0 {
             writer_mutated_sources,
             scanner_sources_started,
             scanner_sources_completed,
+            scanner_source_opens,
             repository_full_git_certification_probes,
             staged_documents,
             complete_records_scanned,
@@ -290,6 +178,7 @@ impl CodexSourceBackedCountersV0 {
             ignored_records_scanned,
             scanner_bytes_read,
             checkpoint_validation_bytes,
+            mcp_terminal_authority_bytes_read,
             prefiltered_records,
             structural_json_parses,
             typed_json_parses,
@@ -306,17 +195,25 @@ impl CodexSourceBackedCountersV0 {
         );
         self.scanner_workers = self.scanner_workers.max(other.scanner_workers);
         self.peak_active_scanners = self.peak_active_scanners.max(other.peak_active_scanners);
+        self.peak_mcp_terminal_authority_entries = self
+            .peak_mcp_terminal_authority_entries
+            .max(other.peak_mcp_terminal_authority_entries);
+        self.peak_mcp_terminal_authority_bytes = self
+            .peak_mcp_terminal_authority_bytes
+            .max(other.peak_mcp_terminal_authority_bytes);
     }
 
-    #[cfg(test)]
     pub(crate) fn add_catalog_work(&mut self, work: CodexCatalogWorkV0) {
         self.inventory_walks = self.inventory_walks.saturating_add(work.inventory_walks);
         self.inventory_source_observations = self
             .inventory_source_observations
             .saturating_add(work.source_observations);
-        self.catalog_source_body_reads = self
-            .catalog_source_body_reads
-            .saturating_add(work.source_body_reads);
+        self.catalog_source_metadata_opens = self
+            .catalog_source_metadata_opens
+            .saturating_add(work.source_metadata_opens);
+        self.catalog_source_metadata_read_upper_bound_bytes = self
+            .catalog_source_metadata_read_upper_bound_bytes
+            .saturating_add(work.source_metadata_read_upper_bound_bytes);
         self.catalog_session_meta_parses = self
             .catalog_session_meta_parses
             .saturating_add(work.session_meta_parses);
@@ -388,51 +285,28 @@ impl CodexSourceBackedCountersV0 {
     }
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub struct CodexSourceBackedIngestReceiptV0 {
-    pub commit: CommitReceipt,
-    pub timings: CodexSourceBackedPhaseTimingsV0,
-    pub counters: CodexSourceBackedCountersV0,
-}
-
 mod catalog;
-#[cfg(test)]
-mod cold;
+#[cfg(any(test, ctx_codex_causal_qualification))]
+mod causal;
 mod generation;
 mod identity;
 mod ingestion;
 mod jsonl_family;
-mod lineage;
+mod origin;
 
-use lineage::{
-    map_lineage_capture_error, CodexLineageRejectedSourceV0, CodexOutcomeLineageAuthorityV0,
-    CodexOutcomeOriginV0,
-};
+use origin::CodexOutcomeOriginV0;
 
 use catalog::discover_codex_session_tree_inventory_v0;
+#[cfg(test)]
+pub(crate) use catalog::install_after_codex_metadata_inventory_hook;
+#[cfg(any(test, ctx_codex_causal_qualification))]
+use catalog::CodexCatalogWorkV0;
 pub(crate) use catalog::{
-    discover_codex_carried_session_tree_inventory_v0,
-    observe_codex_carried_explicit_session_source_backed_v0,
-    observe_codex_explicit_session_source_backed_v0, CodexExplicitSessionInventoryV0,
-    CodexExplicitSessionSourceBackedInputV0, CodexSessionTreeInventoryV0,
+    observe_codex_explicit_session_source_backed_v0, CodexExplicitSessionSourceBackedInputV0,
+    CodexSessionTreeInventoryV0,
 };
 #[cfg(test)]
-pub(crate) use catalog::{
-    discover_codex_session_tree_inventory_from_base_v0,
-    discover_codex_session_tree_inventory_from_plans_v0,
-    install_after_codex_catalog_authority_hook, install_after_codex_metadata_inventory_hook,
-    managed_codex_session_source, writer_base_sources, CodexCatalogWorkV0,
-};
-#[cfg(test)]
-use cold::{
-    cold_scanner_worker_count, ingest_codex_cold_parallel_v0, ColdIngestionTargetV0,
-    ColdParallelOptionsV0,
-};
-#[cfg(test)]
-use cold::{cold_scanner_worker_count_for_parallelism, take_cold_scanner_activity_v0};
-#[cfg(test)]
-pub(crate) use generation::install_after_codex_lineage_normalization_hook_v0;
+pub(crate) use causal::{install_after_codex_causal_stage_hook_v1, CodexCausalSourceObservationV1};
 pub(crate) use generation::{
     CodexGenerationCarriedRouteV0, CodexGenerationNormalizationCoordinatorV0,
     CodexGenerationRouteV0,
@@ -441,11 +315,8 @@ use identity::{
     certify_scan, codex_core_record, codex_session_identity, codex_source_key, decode_append_proof,
     validate_owner, CodexEventIdentityStateV0,
 };
-#[cfg(test)]
-use ingestion::{ingest_codex_source_backed_inner_v0, ingest_codex_source_backed_v0};
 use ingestion::{
-    prepare_generation_lineage_v0, prepare_replayed_lineage_v0, scan_codex_jsonl_family_leaf_v0,
-    CodexJsonlFamilyLeafContextV0, CodexJsonlFamilyPublicationV0,
+    scan_codex_jsonl_family_leaf_v0, CodexJsonlFamilyLeafContextV0, CodexJsonlFamilyPublicationV0,
 };
 pub(crate) use jsonl_family::{
     codex_session_root_rank, CodexExplicitSessionJsonlFamilyAdapterV0,
@@ -453,4 +324,25 @@ pub(crate) use jsonl_family::{
 };
 
 #[cfg(test)]
-mod tests;
+mod counter_tests {
+    use super::*;
+
+    #[test]
+    fn aggregation_sums_mcp_reads_and_takes_mcp_peaks() {
+        let mut total = CodexSourceBackedCountersV0 {
+            mcp_terminal_authority_bytes_read: 11,
+            peak_mcp_terminal_authority_entries: 7,
+            peak_mcp_terminal_authority_bytes: 70,
+            ..CodexSourceBackedCountersV0::default()
+        };
+        total.add_assign(CodexSourceBackedCountersV0 {
+            mcp_terminal_authority_bytes_read: 13,
+            peak_mcp_terminal_authority_entries: 5,
+            peak_mcp_terminal_authority_bytes: 90,
+            ..CodexSourceBackedCountersV0::default()
+        });
+        assert_eq!(total.mcp_terminal_authority_bytes_read, 24);
+        assert_eq!(total.peak_mcp_terminal_authority_entries, 7);
+        assert_eq!(total.peak_mcp_terminal_authority_bytes, 90);
+    }
+}

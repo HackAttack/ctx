@@ -193,38 +193,10 @@ fn automatic_registry_issue_route_identity(
     automatic_source_backed_route_identity(source).map_err(Into::into)
 }
 
-fn automatic_registry_issue_metadata(
-    source: &ctx_history_capture::ProviderSource,
-) -> Result<&'static ctx_history_capture::SourceBackedProviderRouteMetadata> {
-    source_backed_route_inventory()
-        .iter()
-        .find(|route| {
-            route.provider == source.provider && route.source_format == source.source_format
-        })
-        .filter(|route| route.automatic)
-        .ok_or_else(|| {
-            anyhow!(
-                "automatic registry issue for {}/{} has no prior executable route contract",
-                source.provider.as_str(),
-                source.source_format,
-            )
-        })
-}
-
 fn automatic_registry_issue_source_identity(
     source: &ctx_history_capture::ProviderSource,
 ) -> Result<String> {
-    let metadata = automatic_registry_issue_metadata(source)?;
-    let mut digest = Sha256::new();
-    digest.update(b"ctx.source-failure-identity-v1\0");
-    digest.update(source.provider.as_str().as_bytes());
-    digest.update([0]);
-    digest.update(metadata.certified_source_format.as_bytes());
-    digest.update([0]);
-    let path = source.path.as_os_str().as_encoded_bytes();
-    digest.update((path.len() as u64).to_be_bytes());
-    digest.update(path);
-    Ok(format!("{:x}", digest.finalize()))
+    ctx_history_capture::source_backed_source_failure_identity(source).map_err(Into::into)
 }
 
 pub(super) fn selected_registry_route_count(

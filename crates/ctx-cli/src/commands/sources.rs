@@ -280,19 +280,24 @@ fn render_sources_human(
         let reason = source
             .unsupported_reason
             .unwrap_or("this source format is unsupported");
-        let command = manual_path_guidance(source.provider);
+        let permanent_schema_gap = source.provider == CaptureProvider::Hermes;
+        let command = (!permanent_schema_gap).then(|| manual_path_guidance(source.provider));
         document.push_blank();
         document.append(diagnostic(
             context,
             Diagnostic {
                 level: DiagnosticLevel::Warning,
                 summary: &summary,
-                detail: Some("Choose a supported disk-backed history location."),
+                detail: Some(if permanent_schema_gap {
+                    "This Hermes schema has no safe import path in this ctx release."
+                } else {
+                    "Choose a supported disk-backed history location."
+                }),
                 fields: &[
                     Field::new("Location", &location),
                     Field::new("Reason", reason),
                 ],
-                action: Some(Action { command: &command }),
+                action: command.as_deref().map(|command| Action { command }),
             },
         ));
     }
@@ -649,6 +654,26 @@ mod ui_tests {
         assert!(rendered.contains("ctx import --provider codex --path <path>"));
         assert!(!rendered.as_bytes().contains(&0x1b));
         assert_fits(&document, &context);
+    }
+
+    #[test]
+    fn hermes_unsupported_schema_has_stable_reason_and_no_import_override() {
+        let mut hermes = source(ProviderSourceStatus::Unsupported, "/tmp/hermes/state.db");
+        hermes.provider = CaptureProvider::Hermes;
+        hermes.source_format = "hermes_state_sqlite";
+        hermes.source_kind = ProviderSourceKind::DetectionOnly;
+        hermes.import_support = ProviderImportSupport::Unsupported;
+        hermes.unsupported_reason = Some(ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON);
+
+        let context = context(100, ColorMode::Never);
+        let rendered =
+            render_sources_human(&context, &[hermes], &[], &[], &[], 0, None).render_plain();
+        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(rendered.contains("hermes history cannot be imported automatically"));
+        assert!(rendered.contains("no safe import path in this ctx release"));
+        assert!(normalized.contains(ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON));
+        assert!(!rendered.contains("ctx import --provider hermes"));
     }
 
     #[test]
