@@ -20,10 +20,13 @@ grep -F "std::env::var(\"${environment}\")" "${build_rs}" >/dev/null
 grep -F "cargo:rustc-cfg=${cfg}" "${build_rs}" >/dev/null
 
 # Bazel's native unit target compiles every capture source with cfg(test),
-# which selects the same qualification-only branches without reproducing the
-# Cargo environment switch in production builds.
+# while the qualification library compiles the non-test causal branch selected
+# by Cargo's build-script environment switch.
 grep -F 'RUST_SRCS = glob(["src/**/*.rs"])' "${bazel_build}" >/dev/null
 grep -F 'name = "unit_tests"' "${bazel_build}" >/dev/null
 grep -F 'srcs = RUST_SRCS' "${bazel_build}" >/dev/null
+grep -F 'name = "qualification_lib"' "${bazel_build}" >/dev/null
+grep -F -- "--check-cfg=cfg(${cfg})" "${bazel_build}" >/dev/null
+grep -F -- "--cfg=${cfg}" "${bazel_build}" >/dev/null
 
 printf 'ctx-history-capture build.rs/native Bazel cfg parity ok\n'
