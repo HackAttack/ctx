@@ -38,6 +38,7 @@ ALLOWED_CLI_SEMANTIC_SOURCES = {
     for path in """
 daemon.rs
 daemon/control.rs
+daemon/seam_tests.rs
 daemon_autostart.rs
 daemon_autostart/autostart.rs
 daemon_autostart/handoff.rs
@@ -71,6 +72,7 @@ runtime_limits.rs
 source_backed_pro_catch_up.rs
 source_backed_pro_catch_up/lease_reconciliation.rs
 source_backed_pro_catch_up/status.rs
+source_backed_pro_catch_up/tests.rs
 source_backed_refresh_coordinator.rs
 source_status.rs
 source_status_tests.rs
