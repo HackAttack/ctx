@@ -70,6 +70,8 @@ use autostart::{
     spawn_daemon_child_for_upgrade_handoff,
 };
 
+#[cfg(test)]
+use handoff::daemon_upgrade_handoff_is_active;
 pub(crate) use handoff::prepare_daemon_uninstall;
 pub(super) use handoff::{
     acknowledge_daemon_restart_requests, current_process_owns_daemon_upgrade_handoff,
@@ -82,11 +84,7 @@ pub(crate) use handoff::{
     finish_replacement_daemon_handoff, mark_replacement_helper_handoff,
     replacement_helper_owns_daemon_handoff, DaemonUpgradeHandoff,
 };
-use handoff::{
-    daemon_upgrade_handoff_fences_start, remove_daemon_restart_requests,
-};
-#[cfg(test)]
-use handoff::daemon_upgrade_handoff_is_active;
+use handoff::{daemon_upgrade_handoff_fences_start, remove_daemon_restart_requests};
 #[cfg(test)]
 use handoff::{read_daemon_upgrade_handoff, write_daemon_upgrade_handoff};
 

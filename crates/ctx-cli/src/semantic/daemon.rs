@@ -23,10 +23,10 @@ use crate::{
     DaemonTriggerCommandArg, FormatArgs,
 };
 
-#[cfg(test)]
-use crate::analytics::DaemonRuntimeObservationV1;
 #[cfg(unix)]
 use super::query_service::DaemonQueryEndpoint;
+#[cfg(test)]
+use crate::analytics::DaemonRuntimeObservationV1;
 
 use super::source_backed_refresh_coordinator::CoreRefreshEngine;
 

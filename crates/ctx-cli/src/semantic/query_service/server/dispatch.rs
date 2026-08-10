@@ -4,11 +4,11 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use ctx_semantic_model::{
-    SharedSemanticRuntime, semantic_model_cache_available, semantic_model_key,
+    semantic_model_cache_available, semantic_model_key, SharedSemanticRuntime,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::output::compact_json;
 use crate::semantic::{
@@ -23,12 +23,12 @@ use crate::semantic::{
 use crate::semantic::paths_status::{daemon_query_socket_path, daemon_root_path};
 
 use super::super::transport::{
-    DaemonIpcService, DaemonQueryEndpoint, daemon_service_endpoint_path,
+    daemon_service_endpoint_path, DaemonIpcService, DaemonQueryEndpoint,
 };
 use super::{
-    AuthenticatedRequest, AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+    start_ipc_service_with_request_timeout, AuthenticatedRequest, AuthenticatedRequestHandler,
     DaemonQueryService, DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore,
-    IpcServiceSpec, PostWriteAction, ServiceId, start_ipc_service_with_request_timeout,
+    IpcServiceSpec, PostWriteAction, ServiceId, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
 };
 
 struct CtxIpcEndpointStore {

@@ -13,16 +13,16 @@ use std::path::PathBuf;
 #[cfg(unix)]
 use std::{env, fs};
 
-use anyhow::{Context, Result, anyhow};
-use serde_json::{Value, json};
+use anyhow::{anyhow, Context, Result};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 #[cfg(windows)]
 use super::windows_security::WindowsDaemonQueryPipeSecurity;
 use super::{
-    AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_MAX_BYTES, DaemonQueryActivity,
-    DaemonQueryService, DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore,
-    IpcServiceSpec, PostWriteAction, ServiceId,
+    AuthenticatedRequestHandler, DaemonQueryActivity, DaemonQueryService, DaemonWakePort,
+    HandlerOutcome, IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec, PostWriteAction,
+    ServiceId, DAEMON_QUERY_REQUEST_MAX_BYTES,
 };
 
 /// The transport has bounded, parsed, and authenticated this value. Keeping
@@ -576,7 +576,7 @@ impl WindowsDaemonQueryRequestReader<'_> {
 impl std::io::Read for WindowsDaemonQueryRequestReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use windows_sys::Win32::Foundation::{
-            ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED, GetLastError,
+            GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
         };
         use windows_sys::Win32::Storage::FileSystem::ReadFile;
         use windows_sys::Win32::System::Pipes::PeekNamedPipe;
@@ -739,7 +739,7 @@ pub(in crate::semantic) fn create_windows_daemon_query_pipe(
 pub(in crate::semantic) fn connect_windows_daemon_query_pipe(
     stream: &WindowsDaemonQueryPipe,
 ) -> Result<()> {
-    use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_PIPE_CONNECTED};
     use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
 
     let ok = unsafe { ConnectNamedPipe(stream.handle, std::ptr::null_mut()) };

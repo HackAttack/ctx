@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use crate::compact_json;
 
 mod transport;
+#[cfg(all(not(test), unix))]
+pub(in crate::semantic) use transport::DaemonQueryEndpoint;
 #[cfg(test)]
 pub(in crate::semantic) use transport::*;
 #[cfg(not(test))]
@@ -17,8 +19,6 @@ pub(in crate::semantic) use transport::{
     daemon_query_request, daemon_service_endpoint_path, daemon_source_refresh_request,
     read_daemon_service_endpoint_identity, DaemonIpcService, DaemonSourceRefreshServiceUnavailable,
 };
-#[cfg(all(not(test), unix))]
-pub(in crate::semantic) use transport::DaemonQueryEndpoint;
 mod server;
 #[cfg(test)]
 pub(in crate::semantic) use server::*;

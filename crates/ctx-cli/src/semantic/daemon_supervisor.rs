@@ -8,11 +8,11 @@ use std::{
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::{fs, process::Command};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 #[cfg(any(test, windows))]
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ctx_history_core::managed_data_root;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::compact_json;
 #[cfg(unix)]
@@ -41,8 +41,8 @@ use coordination::SupervisorInstallationLock;
 #[cfg(target_os = "linux")]
 use environment::linux_systemd_unit_with_environment;
 use environment::{
-    SupervisorEnvironmentSnapshot, supervisor_environment_contract_report,
-    supervisor_environment_snapshot,
+    supervisor_environment_contract_report, supervisor_environment_snapshot,
+    SupervisorEnvironmentSnapshot,
 };
 #[cfg(any(test, windows))]
 use environment::{
@@ -59,9 +59,9 @@ use report::revalidated_supervisor_report_with;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use state::write_atomic_file;
 use state::{
-    SupervisorReceipt, native_supervisor_artifact_path, native_supervisor_kind,
-    native_supervisor_limitation, stored_supervisor_report, write_installed_receipt,
-    write_supervisor_receipt, write_supervisor_receipt_with_environment_snapshot,
+    native_supervisor_artifact_path, native_supervisor_kind, native_supervisor_limitation,
+    stored_supervisor_report, write_installed_receipt, write_supervisor_receipt,
+    write_supervisor_receipt_with_environment_snapshot, SupervisorReceipt,
 };
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use unsupported::*;
@@ -781,7 +781,7 @@ fn supervisor_process_executable(pid: u32) -> Option<PathBuf> {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
         },
     };
 
