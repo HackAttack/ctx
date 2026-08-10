@@ -1,5 +1,50 @@
 use super::*;
 
+#[cfg(test)]
+struct BeforeTerminalPhysicalRevalidationHook {
+    root: PathBuf,
+    hook: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+static BEFORE_TERMINAL_PHYSICAL_REVALIDATION_HOOKS: Mutex<
+    Vec<BeforeTerminalPhysicalRevalidationHook>,
+> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn set_before_jsonl_terminal_physical_revalidation_hook(
+    root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    let mut hooks = BEFORE_TERMINAL_PHYSICAL_REVALIDATION_HOOKS
+        .lock()
+        .expect("JSONL terminal physical-revalidation hook lock was poisoned");
+    assert!(
+        hooks.iter().all(|pending| pending.root != root),
+        "JSONL terminal physical-revalidation hook is already installed for {root:?}"
+    );
+    hooks.push(BeforeTerminalPhysicalRevalidationHook {
+        root,
+        hook: Box::new(hook),
+    });
+}
+
+#[cfg(test)]
+fn run_before_jsonl_terminal_physical_revalidation_hook(root: &Path) {
+    let hook = {
+        let mut hooks = BEFORE_TERMINAL_PHYSICAL_REVALIDATION_HOOKS
+            .lock()
+            .expect("JSONL terminal physical-revalidation hook lock was poisoned");
+        hooks
+            .iter()
+            .position(|pending| pending.root == root)
+            .map(|index| hooks.remove(index).hook)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 pub(super) fn reset_terminal(resident: &Mutex<FamilyResident>) -> SourceBackedRouteResult<()> {
     let mut resident = resident
         .lock()
@@ -92,6 +137,8 @@ pub(super) fn revalidate_complete_inventory(
     // only retained membership routes and their physical proofs; provider
     // discovery, identity probing, parsing, and content cataloging are admission
     // work and are never repeated here.
+    #[cfg(test)]
+    run_before_jsonl_terminal_physical_revalidation_hook(root);
     for evidence in expected_sources.values() {
         evidence
             .terminal_proof

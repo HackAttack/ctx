@@ -50,6 +50,8 @@ use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
 mod ownership;
 use ownership::base_sources_for_root;
 mod revalidation;
+#[cfg(test)]
+pub(crate) use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
 use revalidation::{
     binding_digest, inventory_observation, reset_terminal, revalidate_complete_inventory,
     revalidate_target,

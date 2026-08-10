@@ -4,8 +4,8 @@ use ctx_history_core::{CertifiedSource, SourceKey};
 use sha2::{Digest, Sha256};
 
 use super::super::{
-    observe_opened_file, revalidate_frozen_prefix, revalidate_frozen_prefix_sha256,
-    JsonlFileObservation,
+    observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
+    revalidate_frozen_prefix_sha256, JsonlFileObservation,
 };
 use super::{
     binding_digest, contract_error, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyLeaf,
@@ -205,7 +205,7 @@ impl JsonlFamilyTerminalProof {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
         let opened = leaf.authority.open_file(&leaf.authority_path)?;
-        let current = observe_opened_file(&leaf.source_path, &opened)?;
+        let current = observe_opened_file_allow_append(&leaf.source_path, &opened)?;
         if !leaf.observation.admits_frozen_prefix_in(&current) {
             return Err(CaptureError::SourceChangedDuringCapture);
         }

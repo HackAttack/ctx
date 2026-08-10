@@ -1,5 +1,9 @@
 #[cfg(test)]
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    sync::Mutex,
+};
 use std::{fs::File, io::Read, path::Path};
 
 use sha2::Sha256;
@@ -17,6 +21,16 @@ thread_local! {
     static AFTER_FINAL_PREFIX_HASH_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
 }
+
+#[cfg(test)]
+struct AppendObservationHook {
+    source_path: PathBuf,
+    hook: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
+static AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS: Mutex<Vec<AppendObservationHook>> =
+    Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(crate) fn reset_jsonl_prefix_hash_bytes() {
@@ -50,6 +64,26 @@ pub(crate) fn set_after_final_jsonl_prefix_hash_hook(hook: impl FnOnce() + 'stat
 }
 
 #[cfg(test)]
+pub(crate) fn set_after_jsonl_append_observation_route_binding_hook(
+    source_path: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    let mut hooks = AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS
+        .lock()
+        .expect("JSONL append-observation hook lock was poisoned");
+    assert!(
+        hooks
+            .iter()
+            .all(|pending| pending.source_path != source_path),
+        "JSONL append-observation hook is already installed for {source_path:?}"
+    );
+    hooks.push(AppendObservationHook {
+        source_path,
+        hook: Box::new(hook),
+    });
+}
+
+#[cfg(test)]
 fn run_after_jsonl_prefix_hash_hook() {
     AFTER_PREFIX_HASH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -76,6 +110,22 @@ fn run_after_final_jsonl_prefix_hash_hook() {
     });
 }
 
+#[cfg(test)]
+fn run_after_jsonl_append_observation_route_binding_hook(source_path: &Path) {
+    let hook = {
+        let mut hooks = AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS
+            .lock()
+            .expect("JSONL append-observation hook lock was poisoned");
+        hooks
+            .iter()
+            .position(|pending| pending.source_path == source_path)
+            .map(|index| hooks.remove(index).hook)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 pub(crate) fn observe_opened_file(
     source_path: &Path,
     opened: &OpenedProviderSourceFile,
@@ -83,6 +133,22 @@ pub(crate) fn observe_opened_file(
     opened.revalidate()?;
     let observation = observe_metadata(source_path, opened.file(), opened.metadata())?;
     opened.revalidate()?;
+    Ok(observation)
+}
+
+/// Observes current metadata for a retained append-only file while requiring
+/// its named route to keep identifying the same ordinary object. Callers must
+/// separately prove the exact bytes in their frozen publication prefix.
+pub(crate) fn observe_opened_file_allow_append(
+    source_path: &Path,
+    opened: &OpenedProviderSourceFile,
+) -> Result<JsonlFileObservation> {
+    opened.revalidate_same_object()?;
+    #[cfg(test)]
+    run_after_jsonl_append_observation_route_binding_hook(source_path);
+    let metadata = opened.file().metadata()?;
+    let observation = observe_metadata(source_path, opened.file(), &metadata)?;
+    opened.revalidate_same_object()?;
     Ok(observation)
 }
 
