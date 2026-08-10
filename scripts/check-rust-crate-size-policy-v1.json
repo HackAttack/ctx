@@ -7,25 +7,21 @@
     {
       "package": "ctx",
       "manifest": "crates/ctx-cli/Cargo.toml",
-      "admission_cloc": 201237,
       "ratchet": 201237
     },
     {
       "package": "ctx-history-capture",
       "manifest": "crates/ctx-history-capture/Cargo.toml",
-      "admission_cloc": 223701,
       "ratchet": 223701
     },
     {
       "package": "ctx-history-index",
       "manifest": "crates/ctx-history-index/Cargo.toml",
-      "admission_cloc": 36873,
       "ratchet": 36873
     },
     {
       "package": "ctx-history-refresh",
       "manifest": "crates/ctx-history-refresh/Cargo.toml",
-      "admission_cloc": 22106,
       "ratchet": 22106
     }
   ]

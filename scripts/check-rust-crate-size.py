@@ -11,8 +11,12 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 from typing import Any, Iterable
+
+if sys.version_info < (3, 11):
+    raise SystemExit("physical Rust crate-size preflight requires Python 3.11 or newer")
+
+import tomllib
 
 
 HARD_LIMIT = 20_000
@@ -135,16 +139,24 @@ def workspace_packages(root: Path) -> list[Package]:
     return sorted(packages, key=lambda package: package.name)
 
 
-def excluded_directory(relative: PurePosixPath) -> bool:
+def checkout_artifact_directory(relative: PurePosixPath) -> bool:
     name = relative.name
     if name in EXCLUDED_DIRECTORY_NAMES:
         return True
-    return len(relative.parts) == 1 and name.startswith("bazel-")
+    return len(relative.parts) == 1 and (name.startswith("bazel-") or name == ".buildkite-cache")
 
 
-def physical_repository_files(root: Path) -> tuple[set[str], set[str]]:
+def beneath_package(relative: PurePosixPath, package_roots: tuple[str, ...]) -> bool:
+    path = relative.as_posix()
+    return any(path == package_root or path.startswith(package_root + "/") for package_root in package_roots)
+
+
+def physical_repository_files(
+    root: Path, packages: list[Package]
+) -> tuple[set[str], set[str]]:
     rust_files: set[str] = set()
     manifests: set[str] = set()
+    package_roots = tuple(package.root for package in packages)
 
     def visit(directory: Path, relative: PurePosixPath) -> None:
         try:
@@ -154,16 +166,27 @@ def physical_repository_files(root: Path) -> tuple[set[str], set[str]]:
         for entry in entries:
             child_relative = relative / entry.name
             child_path = Path(entry.path)
+            package_owned = beneath_package(child_relative, package_roots)
             if entry.is_symlink():
                 if entry.name.endswith(".rs"):
                     raise GateError(f"symlinked Rust file is forbidden: {child_relative.as_posix()}")
                 if entry.name == "Cargo.toml":
                     raise GateError(f"symlinked Cargo.toml is forbidden: {child_relative.as_posix()}")
-                if entry.is_dir(follow_symlinks=True) and not excluded_directory(child_relative):
-                    raise GateError(f"symlinked repository directory is ambiguous: {child_relative.as_posix()}")
+                if package_owned and entry.is_dir(follow_symlinks=True):
+                    raise GateError(
+                        f"symlinked package directory is forbidden: {child_relative.as_posix()}"
+                    )
+                if (
+                    not package_owned
+                    and entry.is_dir(follow_symlinks=True)
+                    and not checkout_artifact_directory(child_relative)
+                ):
+                    raise GateError(
+                        f"symlinked repository directory is ambiguous: {child_relative.as_posix()}"
+                    )
                 continue
             if entry.is_dir(follow_symlinks=False):
-                if not excluded_directory(child_relative):
+                if package_owned or not checkout_artifact_directory(child_relative):
                     visit(child_path, child_relative)
                 continue
             if entry.name.endswith(".rs"):
@@ -354,7 +377,7 @@ def measure_packages(root: Path, packages: list[Package], sources: dict[str, lis
 
 def live_measurements(root: Path) -> list[Measurement]:
     packages = workspace_packages(root)
-    rust_files, manifests = physical_repository_files(root)
+    rust_files, manifests = physical_repository_files(root, packages)
     sources = assign_physical_sources(packages, rust_files, manifests)
     return measure_packages(root, packages, sources)
 
@@ -374,31 +397,18 @@ def parse_policy(value: dict[str, Any], label: str) -> dict[str, dict[str, Any]]
     names: list[str] = []
     result: dict[str, dict[str, Any]] = {}
     for entry in entries:
-        if not isinstance(entry, dict) or set(entry) != {
-            "package",
-            "manifest",
-            "admission_cloc",
-            "ratchet",
-        }:
+        if not isinstance(entry, dict) or set(entry) != {"package", "manifest", "ratchet"}:
             raise GateError(f"{label} offender entry is malformed")
         name = entry.get("package")
         manifest = entry.get("manifest")
-        admission_cloc = entry.get("admission_cloc")
         ratchet = entry.get("ratchet")
         if not isinstance(name, str) or not name:
             raise GateError(f"{label} offender package is malformed")
         normalized_relative_path(manifest, f"{label} manifest for {name}")
         if (
-            not isinstance(admission_cloc, int)
-            or isinstance(admission_cloc, bool)
-            or admission_cloc <= HARD_LIMIT
-        ):
-            raise GateError(f"{label} admission CLOC is malformed: {name}")
-        if (
             not isinstance(ratchet, int)
             or isinstance(ratchet, bool)
-            or ratchet < HARD_LIMIT
-            or ratchet > admission_cloc
+            or ratchet <= HARD_LIMIT
         ):
             raise GateError(f"{label} ratchet is malformed: {name}")
         names.append(name)
@@ -441,6 +451,16 @@ def previous_accepted_policy(root: Path) -> tuple[str, dict[str, Any] | None]:
         raise GateError(f"preflight requires the Git checkout root: {root}")
     head = isolated_git(root, "rev-parse", "HEAD").stdout.decode().strip()
     origin = isolated_git(root, "rev-parse", "refs/remotes/origin/main").stdout.decode().strip()
+    local_main_result = isolated_git(root, "rev-parse", "refs/heads/main", check=False)
+    if local_main_result.returncode == 0:
+        local_main = local_main_result.stdout.decode().strip()
+        origin_precedes_local_main = isolated_git(
+            root, "merge-base", "--is-ancestor", origin, local_main, check=False
+        ).returncode == 0
+        if local_main != origin and origin_precedes_local_main:
+            raise GateError(
+                f"origin/main is stale relative to local main: origin={origin}, local_main={local_main}"
+            )
     if head == origin:
         base = isolated_git(root, "rev-parse", "HEAD^1").stdout.decode().strip()
     else:
@@ -470,37 +490,47 @@ def validate_policy_transition(
     if previous is None:
         if candidate["admission_sha"] != base_sha:
             raise GateError(
-                f"bootstrap admission_sha must equal accepted base: policy={candidate['admission_sha']} base={base_sha}"
+                "bootstrap admission_sha must equal accepted base: "
+                f"policy={candidate['admission_sha']} base={base_sha}"
             )
         offenders = {name for name, item in measured.items() if item.cloc > HARD_LIMIT}
         if set(entries) != offenders:
             raise GateError(
-                f"bootstrap policy must contain exactly current offenders: missing={sorted(offenders-set(entries))}, "
+                "bootstrap policy must contain exactly current offenders: "
+                f"missing={sorted(offenders-set(entries))}, "
                 f"extra={sorted(set(entries)-offenders)}"
             )
         for name, entry in entries.items():
             item = measured[name]
             if entry["manifest"] != item.package.manifest:
                 raise GateError(f"bootstrap offender manifest mismatch: {name}")
-            if entry["admission_cloc"] != item.cloc or entry["ratchet"] != item.cloc:
+            if entry["ratchet"] != item.cloc:
                 raise GateError(
                     f"bootstrap offender must use exact current CLOC: package={name} count={item.cloc} "
-                    f"admission={entry['admission_cloc']} ratchet={entry['ratchet']}"
+                    f"ratchet={entry['ratchet']}"
                 )
         return entries
 
     previous_entries = parse_policy(previous, "previous accepted")
     if candidate["admission_sha"] != previous["admission_sha"]:
         raise GateError("immutable admission_sha changed from previous accepted policy")
-    if set(entries) != set(previous_entries):
+    added = set(entries) - set(previous_entries)
+    if added:
         raise GateError(
-            "offender entries are permanent: "
-            f"missing={sorted(set(previous_entries)-set(entries))}, extra={sorted(set(entries)-set(previous_entries))}"
+            f"new offender entries are forbidden after bootstrap: added={sorted(added)}"
         )
+    removed = set(previous_entries) - set(entries)
+    for name in sorted(removed):
+        item = measured.get(name)
+        if item is not None and item.cloc > HARD_LIMIT:
+            raise GateError(
+                f"active offender entry removal forbidden: package={name} count={item.cloc} "
+                f"limit={HARD_LIMIT} previous_ratchet={previous_entries[name]['ratchet']}"
+            )
     for name, entry in entries.items():
         old = previous_entries[name]
-        if entry["manifest"] != old["manifest"] or entry["admission_cloc"] != old["admission_cloc"]:
-            raise GateError(f"immutable offender admission changed: {name}")
+        if entry["manifest"] != old["manifest"]:
+            raise GateError(f"active offender manifest changed: {name}")
         if entry["ratchet"] > old["ratchet"]:
             count = measured[name].cloc if name in measured else 0
             raise GateError(
@@ -525,10 +555,17 @@ def measurement_failures(
             continue
         if entry["manifest"] != item.package.manifest:
             failures.append(
-                f"package={name} count={item.cloc} limit={HARD_LIMIT} ratchet={entry['ratchet']} manifest mismatch"
+                f"package={name} count={item.cloc} limit={HARD_LIMIT} "
+                f"ratchet={entry['ratchet']} manifest mismatch"
             )
             continue
-        expected = max(item.cloc, HARD_LIMIT)
+        if item.cloc <= HARD_LIMIT:
+            failures.append(
+                f"package={name} count={item.cloc} limit={HARD_LIMIT} ratchet={entry['ratchet']} "
+                "retired offender entry must be removed"
+            )
+            continue
+        expected = item.cloc
         if entry["ratchet"] != expected:
             reason = "growth forbidden" if item.cloc > entry["ratchet"] else "stale ratchet after shrink"
             failures.append(
@@ -537,11 +574,10 @@ def measurement_failures(
             )
     for name in sorted(set(entries) - set(measured)):
         entry = entries[name]
-        if entry["ratchet"] != HARD_LIMIT:
-            failures.append(
-                f"package={name} count=0 limit={HARD_LIMIT} ratchet={entry['ratchet']} "
-                f"expected_ratchet={HARD_LIMIT} stale ratchet after package removal"
-            )
+        failures.append(
+            f"package={name} count=0 limit={HARD_LIMIT} ratchet={entry['ratchet']} "
+            "retired offender entry must be removed"
+        )
     return failures
 
 
@@ -549,7 +585,7 @@ def format_failures(failures: list[str]) -> str:
     return (
         "physical Rust crate-size gate failed:\n  "
         + "\n  ".join(failures)
-        + "\nAfter legitimate shrink, update every ratchet atomically with exactly:\n  "
+        + "\nAfter legitimate shrink, update the active offender ledger atomically with exactly:\n  "
         + UPDATE_COMMAND
     )
 
@@ -579,8 +615,9 @@ def updated_policy(
     measured = {item.package.name: item for item in measurements}
     updated_entries = []
     for name, entry in sorted(entries.items()):
-        actual = measured[name].cloc if name in measured else 0
-        updated_entries.append({**entry, "ratchet": max(actual, HARD_LIMIT)})
+        item = measured.get(name)
+        if item is not None and item.cloc > HARD_LIMIT:
+            updated_entries.append({**entry, "ratchet": item.cloc})
     result = {**candidate, "offenders": updated_entries}
     validate_policy_transition(result, previous, base_sha, measurements)
     failures = measurement_failures(measurements, parse_policy(result, "updated"))
