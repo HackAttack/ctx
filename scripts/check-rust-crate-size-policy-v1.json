@@ -2,12 +2,12 @@
   "schema_version": 1,
   "metric": "physical-rust-cloc-v1",
   "hard_limit": 20000,
-  "admission_sha": "da4861f79faa8c1193f8bd6a11a9e958c946582f",
+  "admission_sha": "562c21c6d9d9ffedea93ddea30bbf0c11dc3aebe",
   "offenders": [
     {
       "package": "ctx",
       "manifest": "crates/ctx-cli/Cargo.toml",
-      "ratchet": 201237
+      "ratchet": 201233
     },
     {
       "package": "ctx-history-capture",
