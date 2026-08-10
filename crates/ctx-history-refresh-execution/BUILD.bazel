@@ -17,14 +17,12 @@ COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-history-refresh-execution",
 }
 
-CODEX_UNION_SRC = ["//crates/ctx-history-refresh:codex_union_source"]
-
-RUST_SRCS = glob(["src/**/*.rs"]) + CODEX_UNION_SRC
+RUST_SRCS = glob(["src/**/*.rs"])
 
 PROD_SRCS = glob(
     ["src/**/*.rs"],
     exclude = RUST_PROD_SRC_EXCLUDES,
-) + CODEX_UNION_SRC
+)
 
 CTX_HISTORY_REFRESH_EXECUTION_DEPS = [
     "//crates/ctx-history-capture:lib",

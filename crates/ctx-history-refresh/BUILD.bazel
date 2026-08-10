@@ -13,11 +13,6 @@ filegroup(
     srcs = glob(["**"], exclude = ["BUILD.bazel"]),
 )
 
-filegroup(
-    name = "codex_union_source",
-    srcs = ["src/explicit_source_catalog/codex_union.rs"],
-)
-
 COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-history-refresh",
 }

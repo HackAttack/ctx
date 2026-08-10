@@ -109,8 +109,6 @@ use publication::{
 const SOURCE_REFRESH_ATTEMPT_HISTORY: usize = 64;
 const SOURCE_REFRESH_ACTIVE_PENDING_LIMIT: usize = 8;
 const SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT: usize = 256;
-#[cfg(test)]
-const SOURCE_REFRESH_RECEIPT_JSON_BUDGET_BYTES: usize = 24 * 1024;
 const SOURCE_REFRESH_STARTUP_OBSERVATION_BUDGET: StdDuration = StdDuration::from_millis(250);
 const TERMINAL_COVERAGE_ERROR_CODE: &str = "all_provider_terminal_coverage_unavailable";
 
