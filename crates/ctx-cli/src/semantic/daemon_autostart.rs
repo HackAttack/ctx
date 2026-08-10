@@ -42,18 +42,20 @@ mod recovery;
 
 pub(super) use autostart::handoff_mismatched_daemon_owner;
 pub(crate) use autostart::{
-    autostart_daemon_and_wait, daemon_autostart_suppression_reason, maybe_autostart_daemon,
+    autostart_daemon_and_wait, autostart_daemon_for_setup_and_wait,
+    daemon_autostart_suppression_reason, maybe_autostart_daemon,
 };
 #[cfg(test)]
 use autostart::{
     complete_daemon_handoff_observation, daemon_autostart_allowed, daemon_handoff_observation_from,
-    daemon_live_endpoint_observation_from, daemon_owned_source_refresh_is_active,
+    daemon_handoff_observation_with_refresh_job_from, daemon_live_endpoint_observation_from,
+    daemon_owned_source_refresh_is_active, daemon_supervisor_launch_policy,
     recover_unusable_daemon_owner_with, wait_for_daemon_handoff_with,
 };
 use autostart::{
-    configured_daemon_autostart_command, daemon_autostart_command, daemon_restart_allowed,
-    daemon_restart_trigger, parse_daemon_trigger, request_daemon_autostart, spawn_daemon_child,
-    spawn_daemon_child_for_upgrade_handoff,
+    configured_daemon_autostart_command, configured_unsupervised_daemon_autostart_command,
+    daemon_autostart_command, daemon_restart_allowed, daemon_restart_trigger, parse_daemon_trigger,
+    request_daemon_autostart, spawn_daemon_child, spawn_daemon_child_for_upgrade_handoff,
 };
 #[cfg(test)]
 use autostart::{normalized_daemon_launch_for_test, spawn_detached_daemon_child};
@@ -142,12 +144,19 @@ pub(super) fn maybe_autostart_daemon_inner(
     if autostart::hosted_uninstall_fences_daemon_autostart() {
         return;
     }
-    if daemon_autostart_suppression_reason().is_none()
-        && super::daemon_supervisor::ensure_daemon_supervisor(data_root).is_err()
-    {
-        return;
-    }
-    let _ = request_daemon_autostart(data_root, config, trigger);
+    let bounded_unsupervised = if daemon_autostart_suppression_reason().is_none() {
+        match super::daemon_supervisor::ensure_daemon_supervisor(data_root) {
+            Ok(super::daemon_supervisor::DaemonSupervisorStart::Native) => false,
+            Ok(
+                super::daemon_supervisor::DaemonSupervisorStart::Fallback
+                | super::daemon_supervisor::DaemonSupervisorStart::ManagerUnavailable,
+            ) => true,
+            Err(_) => return,
+        }
+    } else {
+        false
+    };
+    let _ = request_daemon_autostart(data_root, config, trigger, bounded_unsupervised);
 }
 
 const DAEMON_UPGRADE_STOP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
@@ -165,11 +174,17 @@ const DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS: i64 = 30_000;
 const DAEMON_SETUP_HANDOFF_MAX_FUTURE_HEARTBEAT_MS: i64 = 5_000;
 const DAEMON_HEALTH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 const DAEMON_HEALTH_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
+const DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DaemonHandoff {
     pub(crate) pid: u32,
     pub(crate) heartbeat_at_ms: i64,
+}
+
+pub(crate) struct DaemonSetupHandoff {
+    pub(crate) handoff: DaemonHandoff,
+    pub(crate) requires_initial_refresh_wait: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

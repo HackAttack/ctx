@@ -62,11 +62,13 @@ pub(crate) use source_backed_refresh_coordinator::{
 mod daemon_autostart;
 #[allow(unused_imports)]
 pub(crate) use daemon_autostart::{
-    autostart_daemon_and_wait, begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,
+    autostart_daemon_and_wait, autostart_daemon_for_setup_and_wait,
+    begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,
     begin_legacy_daemon_upgrade_handoff, complete_replacement_daemon_handoff,
     daemon_autostart_suppression_reason, finish_replacement_daemon_handoff,
     mark_replacement_helper_handoff, maybe_autostart_daemon,
-    replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonUpgradeHandoff,
+    replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonSetupHandoff,
+    DaemonUpgradeHandoff,
 };
 mod health_search;
 #[cfg(test)]

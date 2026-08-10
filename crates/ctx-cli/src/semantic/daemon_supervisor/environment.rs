@@ -50,6 +50,9 @@ const SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST: &[&str] = &[
     "no_proxy",
 ];
 const PRO_CHANNEL_ENV: &str = "CTX_PRO_CHANNEL";
+pub(super) const HOSTED_INSTALLER_SETUP_ENV: &str = "CTX_HOSTED_INSTALLER_SETUP";
+const HOSTED_INSTALLER_TRANSIENT_POLICY_ENV: &[&str] =
+    &["CTX_SEARCH_SEMANTIC", "CTX_UPGRADE_CHANNEL"];
 #[cfg(any(test, target_os = "linux"))]
 pub(super) const SYSTEMD_UNIT_NAME: &str = "ctx.service";
 #[cfg(any(test, target_os = "macos"))]
@@ -88,11 +91,16 @@ impl SupervisorEnvironmentSnapshot {
 
 pub(super) fn supervisor_environment_snapshot() -> Result<SupervisorEnvironmentSnapshot> {
     let mut values = BTreeMap::new();
+    let hosted_installer_setup =
+        env::var_os(HOSTED_INSTALLER_SETUP_ENV).as_deref() == Some(std::ffi::OsStr::new("1"));
     for name in ctx_history_capture::provider_sources::DISCOVERY_ENV_ALLOWLIST
         .iter()
         .chain(SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST)
     {
         if *name == PRO_CHANNEL_ENV {
+            continue;
+        }
+        if hosted_installer_setup && HOSTED_INSTALLER_TRANSIENT_POLICY_ENV.contains(name) {
             continue;
         }
         let Some(value) = env::var_os(name) else {
@@ -275,6 +283,30 @@ fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    struct RestoreEnvironment(Vec<(&'static str, Option<OsString>)>);
+
+    impl RestoreEnvironment {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for RestoreEnvironment {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => env::set_var(name, value),
+                    None => env::remove_var(name),
+                }
+            }
+        }
+    }
+
     #[test]
     fn contract_is_narrow_nonsecret_and_rejects_controls() {
         let allowlist = supervisor_environment_allowlist_names();
@@ -286,6 +318,7 @@ mod tests {
             "CTX_LOCAL_USAGE_ENABLED",
             "CTX_ANALYTICS_ENABLED",
             "CTX_PRO_CHANNEL",
+            "CTX_SEARCH_SEMANTIC",
             "CTX_UPGRADE_AUTO",
             "CTX_UPGRADE_CHANNEL",
             "CTX_UPGRADE_INTERVAL_SECONDS",
@@ -352,5 +385,85 @@ mod tests {
                 "{error:#}"
             );
         }
+    }
+
+    #[test]
+    fn transient_invocation_controls_do_not_change_the_maintained_definition() -> Result<()> {
+        const NAMES: &[&str] = &[
+            HOSTED_INSTALLER_SETUP_ENV,
+            "CTX_SEARCH_SEMANTIC",
+            "CTX_UPGRADE_CHANNEL",
+            "SSL_CERT_FILE",
+        ];
+        let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestoreEnvironment::capture(NAMES);
+
+        env::set_var("CTX_SEARCH_SEMANTIC", "true");
+        env::set_var("CTX_UPGRADE_CHANNEL", "staging");
+        env::set_var("SSL_CERT_FILE", "/tmp/ctx-supervisor-ca-before.pem");
+        env::set_var(HOSTED_INSTALLER_SETUP_ENV, "1");
+        let installer_snapshot = supervisor_environment_snapshot()?;
+        let installer_unit = linux_systemd_unit_with_environment(
+            Path::new("/usr/local/bin/ctx"),
+            Path::new("/home/user/.local/share/ctx"),
+            &installer_snapshot,
+        )?;
+
+        env::remove_var("CTX_SEARCH_SEMANTIC");
+        env::remove_var("CTX_UPGRADE_CHANNEL");
+        env::remove_var(HOSTED_INSTALLER_SETUP_ENV);
+        let ordinary_shell_snapshot = supervisor_environment_snapshot()?;
+        let ordinary_shell_unit = linux_systemd_unit_with_environment(
+            Path::new("/usr/local/bin/ctx"),
+            Path::new("/home/user/.local/share/ctx"),
+            &ordinary_shell_snapshot,
+        )?;
+
+        assert_eq!(installer_snapshot.sha256, ordinary_shell_snapshot.sha256);
+        assert_eq!(installer_snapshot.values, ordinary_shell_snapshot.values);
+        assert_eq!(installer_unit, ordinary_shell_unit);
+        assert!(!installer_unit.contains("CTX_SEARCH_SEMANTIC"));
+        assert!(!installer_unit.contains("CTX_UPGRADE_CHANNEL"));
+
+        env::set_var("SSL_CERT_FILE", "/tmp/ctx-supervisor-ca-after.pem");
+        let persistent_environment_change = supervisor_environment_snapshot()?;
+        assert_ne!(
+            ordinary_shell_snapshot.sha256, persistent_environment_change.sha256,
+            "persistent daemon environment changes must remain verified"
+        );
+        assert_ne!(
+            ordinary_shell_snapshot.values,
+            persistent_environment_change.values
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_operator_policy_overrides_remain_in_the_supervisor_contract() -> Result<()> {
+        const NAMES: &[&str] = &[
+            HOSTED_INSTALLER_SETUP_ENV,
+            "CTX_SEARCH_SEMANTIC",
+            "CTX_UPGRADE_CHANNEL",
+        ];
+        let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestoreEnvironment::capture(NAMES);
+
+        env::remove_var(HOSTED_INSTALLER_SETUP_ENV);
+        env::set_var("CTX_SEARCH_SEMANTIC", "true");
+        env::set_var("CTX_UPGRADE_CHANNEL", "staging");
+        let snapshot = supervisor_environment_snapshot()?;
+        let unit = linux_systemd_unit_with_environment(
+            Path::new("/usr/local/bin/ctx"),
+            Path::new("/home/user/.local/share/ctx"),
+            &snapshot,
+        )?;
+
+        assert!(unit.contains("CTX_SEARCH_SEMANTIC=true"));
+        assert!(unit.contains("CTX_UPGRADE_CHANNEL=staging"));
+        Ok(())
     }
 }

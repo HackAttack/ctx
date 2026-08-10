@@ -68,6 +68,18 @@ pub(super) fn revalidated_supervisor_report_with(
         return report;
     }
 
+    match backend.probe_manager(data_root) {
+        Ok(SupervisorManagerOperability::Operational) => {}
+        Ok(SupervisorManagerOperability::Unavailable { reason }) => {
+            mark_supervisor_manager_unavailable(&mut report, reason);
+            return report;
+        }
+        Err(error) => {
+            mark_supervisor_manager_probe_failed(&mut report, format!("{error:#}"));
+            return report;
+        }
+    }
+
     let installation_lock = SupervisorInstallationLock::acquire(data_root);
     let executable = report
         .get("executable_path")
@@ -124,6 +136,48 @@ pub(super) fn revalidated_supervisor_report_with(
         );
     }
     report
+}
+
+fn mark_supervisor_manager_unavailable(report: &mut Value, reason: String) {
+    suppress_environment_restart_claim(report);
+    if let Some(object) = report.as_object_mut() {
+        object.insert("revalidated".to_owned(), Value::Bool(true));
+        object.insert("registration_verified".to_owned(), Value::Bool(false));
+        object.insert("live_owner_verified".to_owned(), Value::Bool(false));
+        object.insert("owner_pid".to_owned(), Value::Null);
+        object.insert("autostart_supported".to_owned(), Value::Bool(false));
+        object.insert("restart_supported".to_owned(), Value::Bool(false));
+        object.insert(
+            "status".to_owned(),
+            Value::String("manager_unavailable".to_owned()),
+        );
+        object.insert(
+            "limitation".to_owned(),
+            Value::String(native_supervisor_limitation().to_owned()),
+        );
+        object.insert("revalidation_error".to_owned(), Value::String(reason));
+    }
+}
+
+fn mark_supervisor_manager_probe_failed(report: &mut Value, error: String) {
+    suppress_environment_restart_claim(report);
+    if let Some(object) = report.as_object_mut() {
+        object.insert("revalidated".to_owned(), Value::Bool(true));
+        object.insert("registration_verified".to_owned(), Value::Bool(false));
+        object.insert("live_owner_verified".to_owned(), Value::Bool(false));
+        object.insert("owner_pid".to_owned(), Value::Null);
+        object.insert(
+            "status".to_owned(),
+            Value::String("manager_probe_failed".to_owned()),
+        );
+        object.insert("revalidation_error".to_owned(), Value::String(error));
+    }
+}
+
+fn suppress_environment_restart_claim(report: &mut Value) {
+    if let Some(restart_required) = report.pointer_mut("/environment_snapshot/restart_required") {
+        *restart_required = Value::Bool(false);
+    }
 }
 
 fn append_supervisor_environment_report(report: &mut Value) {

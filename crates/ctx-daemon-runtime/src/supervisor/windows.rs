@@ -1,5 +1,6 @@
 use super::*;
 use crate::NormalizedLaunch;
+#[cfg(windows)]
 use anyhow::Context as _;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use quick_xml::{
@@ -11,6 +12,25 @@ use quick_xml::{
 
 #[cfg(windows)]
 use std::fs;
+
+#[cfg(windows)]
+pub fn probe_windows_task_scheduler(
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<SupervisorManagerOperability> {
+    let mut command = windows_task_scheduler_probe_command(manager_environment);
+    // A user can own arbitrarily many tasks. Never buffer that enumeration or
+    // its diagnostics merely to establish manager operability.
+    probe_supervisor_manager_bounded(&mut command, "current-user Task Scheduler")
+}
+
+#[cfg(any(windows, test))]
+fn windows_task_scheduler_probe_command(
+    manager_environment: &SupervisorManagerEnvironment,
+) -> std::process::Command {
+    let mut command = supervisor_command("schtasks", manager_environment);
+    command.args(["/Query", "/FO", "CSV", "/NH"]);
+    command
+}
 
 #[cfg(windows)]
 pub fn install_windows_supervisor(
@@ -702,5 +722,26 @@ pub fn decode_supervisor_text(bytes: &[u8]) -> String {
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod manager_probe_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn task_scheduler_probe_is_read_only() {
+        let environment = SupervisorManagerEnvironment::new(BTreeMap::new());
+        let command = windows_task_scheduler_probe_command(&environment);
+        assert_eq!(command.get_program(), "schtasks");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["/Query", "/FO", "CSV", "/NH"]
+                .iter()
+                .map(std::ffi::OsStr::new)
+                .collect::<Vec<_>>()
+        );
     }
 }

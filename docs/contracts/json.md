@@ -48,10 +48,23 @@ or waited for daemon-owned Core publication. A completed `--wait` request
 also includes its request-bound terminal `receipt`; callers should use that
 receipt rather than a later periodic daemon job when reporting the setup run.
 
+If the platform's native current-user service manager is not operational,
+setup still starts the same daemon coordinator with a finite idle exit and
+waits for the initial Core refresh. `daemon_autostart.status` is then
+`"degraded"`, `persistent` is `false`, and `limitation.code` is
+`"continuous_refresh_unavailable"`; the nested supervisor report uses status
+`"manager_unavailable"` for a managed install. Existing native registration
+artifacts are preserved when the unavailable manager cannot verify or remove
+them. Ownership, identity, integrity, fencing, and security failures remain
+errors rather than degraded limitations.
+
 Setup does not perform a foreground provider import. `--wait` waits for the
 daemon-owned Core refresh; without it, setup requests a background Core
-refresh. The deprecated `--catalog-only` flag is reported by
-`deprecated_catalog_only_ignored` and does not change the persistent lifecycle.
+refresh. When that first request finds zero sources and no prior publication,
+setup attaches long enough to certify a verified empty Core generation instead
+of returning an uncertified pending state. The deprecated `--catalog-only` flag
+is reported by `deprecated_catalog_only_ignored` and does not change the
+persistent lifecycle.
 Use `ctx daemon status --format json` for the complete process and applied
 configuration state.
 
