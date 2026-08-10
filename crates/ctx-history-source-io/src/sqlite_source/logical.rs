@@ -14,7 +14,7 @@ const LOGICAL_REVISION_KIND: &str = "sqlite-logical-snapshot-v1";
 /// stable across checkpointing, sidecar removal, page-layout changes, and
 /// `VACUUM` when the relevant schema and rows are unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SqliteLogicalSnapshot {
+pub struct SqliteLogicalSnapshot {
     parser_revision: String,
     content_digest: [u8; 32],
     counts: ScannedSourceCounts,
@@ -22,7 +22,7 @@ pub(crate) struct SqliteLogicalSnapshot {
 }
 
 impl SqliteLogicalSnapshot {
-    pub(crate) fn new(
+    pub fn new(
         parser_revision: impl Into<String>,
         schema_evidence: &[u8],
         logical_row_digest: [u8; 32],
@@ -43,10 +43,7 @@ impl SqliteLogicalSnapshot {
         }
     }
 
-    pub(crate) fn certify(
-        &self,
-        source: SourceKey,
-    ) -> Result<CertifiedSource, ProjectionContractError> {
+    pub fn certify(&self, source: SourceKey) -> Result<CertifiedSource, ProjectionContractError> {
         let observation =
             SourceObservation::new(source, LOGICAL_REVISION_KIND, self.revision.to_vec())?;
         CertifiedSource::certify(
@@ -73,7 +70,7 @@ fn hash_bytes(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests {
     use ctx_history_core::{CaptureProvider, SourceAnchor, TypedKey};
 

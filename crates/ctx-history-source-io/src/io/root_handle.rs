@@ -29,7 +29,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{CaptureError, Result};
+use crate::{Result, SourceIoError};
 
 const ORDINARY_FILE_TOKEN_DOMAIN: &[u8] = b"ctx-ordinary-file-observation-v2\0";
 
@@ -73,13 +73,13 @@ struct ProviderSourceRootInner {
 /// Clones share the same opened directory handle. Dropping the final clone
 /// releases the authority.
 #[derive(Debug, Clone)]
-pub(crate) struct ProviderSourceRoot {
+pub struct ProviderSourceRoot {
     inner: Arc<ProviderSourceRootInner>,
 }
 
 /// One opened directory below a retained provider source root.
 #[derive(Debug)]
-pub(crate) struct ProviderSourceDirectory {
+pub struct ProviderSourceDirectory {
     root: ProviderSourceRoot,
     relative_path: PathBuf,
     directory: File,
@@ -88,7 +88,7 @@ pub(crate) struct ProviderSourceDirectory {
 
 /// One opened ordinary object beneath a provider source authority.
 #[derive(Debug)]
-pub(crate) enum OpenedProviderSourcePath {
+pub enum OpenedProviderSourcePath {
     File(OpenedProviderSourceFile),
     Directory(ProviderSourceDirectory),
 }
@@ -96,7 +96,7 @@ pub(crate) enum OpenedProviderSourcePath {
 impl OpenedProviderSourcePath {
     /// Fixed-width identity for comparing two no-follow opens of one named
     /// selector entry without retaining every child capability concurrently.
-    pub(crate) fn authority_fingerprint(&self) -> [u8; 32] {
+    pub fn authority_fingerprint(&self) -> [u8; 32] {
         match self {
             Self::File(file) => platform::object_fingerprint(&file.opened),
             Self::Directory(directory) => directory.authority_fingerprint(),
@@ -109,7 +109,7 @@ impl OpenedProviderSourcePath {
 /// The route is retained only for final same-object revalidation. Reads always
 /// use `file`, never the route pathname.
 #[derive(Debug)]
-pub(crate) struct OpenedProviderSourceFile {
+pub struct OpenedProviderSourceFile {
     route: ProviderSourceFileRoute,
     file: File,
     metadata: Metadata,
@@ -131,7 +131,7 @@ enum ProviderSourceFileRoute {
 )]
 impl ProviderSourceRoot {
     /// Opens and retains an absolute, local, ordinary directory root.
-    pub(crate) fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         match open_provider_source_path(path)? {
             OpenedProviderSourcePath::Directory(directory) => Ok(directory.root),
             OpenedProviderSourcePath::File(_) => Err(invalid_path(
@@ -141,24 +141,24 @@ impl ProviderSourceRoot {
         }
     }
 
-    pub(crate) fn named_path(&self) -> &Path {
+    pub fn named_path(&self) -> &Path {
         &self.inner.named_path
     }
 
     /// Fixed-width observation hint for the exact directory handle retained at
     /// construction. Callers must still use [`Self::revalidate`] as their
     /// terminal authority fence.
-    pub(crate) fn authority_fingerprint(&self) -> [u8; 32] {
+    pub fn authority_fingerprint(&self) -> [u8; 32] {
         platform::object_fingerprint(&self.inner.opened)
     }
 
     /// Compares the immutable object identity of two retained directory
     /// authorities while ignoring child-driven timestamp changes.
-    pub(crate) fn same_object_as(&self, other: &Self) -> bool {
+    pub fn same_object_as(&self, other: &Self) -> bool {
         platform::same_object(&self.inner.opened, &other.inner.opened)
     }
 
-    pub(crate) fn directory(&self) -> Result<ProviderSourceDirectory> {
+    pub fn directory(&self) -> Result<ProviderSourceDirectory> {
         let directory = self.inner.directory.try_clone()?;
         Ok(ProviderSourceDirectory {
             root: self.clone(),
@@ -168,7 +168,7 @@ impl ProviderSourceRoot {
         })
     }
 
-    pub(crate) fn open_path(&self, relative_path: &Path) -> Result<OpenedProviderSourcePath> {
+    pub fn open_path(&self, relative_path: &Path) -> Result<OpenedProviderSourcePath> {
         validate_relative_path(relative_path)?;
         let mut directory = self.directory()?;
         let mut components = relative_path.components().peekable();
@@ -194,7 +194,7 @@ impl ProviderSourceRoot {
         Ok(OpenedProviderSourcePath::Directory(directory))
     }
 
-    pub(crate) fn open_file(&self, relative_path: &Path) -> Result<OpenedProviderSourceFile> {
+    pub fn open_file(&self, relative_path: &Path) -> Result<OpenedProviderSourceFile> {
         match self.open_path(relative_path)? {
             OpenedProviderSourcePath::File(file) => Ok(file),
             OpenedProviderSourcePath::Directory(_) => Err(invalid_path(
@@ -204,7 +204,7 @@ impl ProviderSourceRoot {
         }
     }
 
-    pub(crate) fn open_directory(&self, relative_path: &Path) -> Result<ProviderSourceDirectory> {
+    pub fn open_directory(&self, relative_path: &Path) -> Result<ProviderSourceDirectory> {
         match self.open_path(relative_path)? {
             OpenedProviderSourcePath::Directory(directory) => Ok(directory),
             OpenedProviderSourcePath::File(_) => Err(invalid_path(
@@ -216,7 +216,7 @@ impl ProviderSourceRoot {
 
     /// Confirms both the retained directory and its current named route still
     /// identify the exact root admitted at construction.
-    pub(crate) fn revalidate(&self) -> Result<()> {
+    pub fn revalidate(&self) -> Result<()> {
         let current_metadata = self.inner.directory.metadata()?;
         let current = platform::object_stamp(&self.inner.directory, &current_metadata)?;
         if current != self.inner.opened {
@@ -238,7 +238,7 @@ impl ProviderSourceRoot {
     /// still identify the same root while allowing metadata changes caused by
     /// children being added, removed, or updated. Inventory owners use
     /// [`Self::revalidate`] separately when they require an exact tree fence.
-    pub(crate) fn revalidate_same_object(&self) -> Result<()> {
+    pub fn revalidate_same_object(&self) -> Result<()> {
         let current_metadata = self.inner.directory.metadata()?;
         let current = platform::object_stamp(&self.inner.directory, &current_metadata)?;
         if !platform::same_object(&current, &self.inner.opened) {
@@ -262,16 +262,16 @@ impl ProviderSourceRoot {
     reason = "provider adapters migrate to this shared authority API in follow-up slices"
 )]
 impl ProviderSourceDirectory {
-    pub(crate) fn authority_root(&self) -> ProviderSourceRoot {
+    pub fn authority_root(&self) -> ProviderSourceRoot {
         self.root.clone()
     }
 
-    pub(crate) fn relative_path(&self) -> &Path {
+    pub fn relative_path(&self) -> &Path {
         &self.relative_path
     }
 
     /// Fixed-width observation hint for this exact retained directory.
-    pub(crate) fn authority_fingerprint(&self) -> [u8; 32] {
+    pub fn authority_fingerprint(&self) -> [u8; 32] {
         platform::object_fingerprint(&self.opened)
     }
 
@@ -279,19 +279,19 @@ impl ProviderSourceDirectory {
     /// its pathname. Consumers such as the SQLite source VFS use the duplicate
     /// only to open admitted leaf names relative to the already-authorized
     /// directory.
-    pub(crate) fn try_clone_authority_handle(&self) -> io::Result<File> {
+    pub fn try_clone_authority_handle(&self) -> io::Result<File> {
         self.directory.try_clone()
     }
 
     /// Returns at most `maximum_entries` sorted child names from the retained
     /// directory handle.
-    pub(crate) fn entries(&self, maximum_entries: usize) -> Result<Vec<OsString>> {
+    pub fn entries(&self, maximum_entries: usize) -> Result<Vec<OsString>> {
         platform::directory_entries(&self.directory, maximum_entries)
             .map_err(|error| map_open_error(self.display_path(), error))
     }
 
     /// Opens one child relative to this exact directory handle.
-    pub(crate) fn open_child(&self, name: &OsStr) -> Result<OpenedProviderSourcePath> {
+    pub fn open_child(&self, name: &OsStr) -> Result<OpenedProviderSourcePath> {
         validate_child_name(name, self.display_path())?;
         let relative_path = self.relative_path.join(name);
         let opened = platform::open_child(&self.directory, name, &self.root.inner.filesystem)
@@ -333,7 +333,7 @@ impl ProviderSourceDirectory {
 
     /// Detects mutation of the directory while its children were enumerated
     /// and opened.
-    pub(crate) fn revalidate(&self) -> Result<()> {
+    pub fn revalidate(&self) -> Result<()> {
         let metadata = self.directory.metadata()?;
         let current = platform::object_stamp(&self.directory, &metadata)?;
         if current != self.opened {
@@ -356,25 +356,25 @@ impl ProviderSourceDirectory {
     reason = "provider adapters migrate to this shared authority API in follow-up slices"
 )]
 impl OpenedProviderSourceFile {
-    pub(crate) fn len(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         self.metadata.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub(crate) fn modified(&self) -> io::Result<SystemTime> {
+    pub fn modified(&self) -> io::Result<SystemTime> {
         self.metadata.modified()
     }
 
-    pub(crate) fn metadata(&self) -> &Metadata {
+    pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 
     /// Fixed-width observation hint for the exact file handle opened by the
     /// authority walk. This is not a substitute for [`Self::revalidate`].
-    pub(crate) fn authority_fingerprint(&self) -> [u8; 32] {
+    pub fn authority_fingerprint(&self) -> [u8; 32] {
         platform::object_fingerprint(&self.opened)
     }
 
@@ -382,18 +382,18 @@ impl OpenedProviderSourceFile {
     ///
     /// This performs no second filesystem observation; [`Self::revalidate_leaf`]
     /// is the proof that the stamp still describes the opened object and route.
-    pub(crate) fn ordinary_file_token(&self) -> [u8; 32] {
+    pub fn ordinary_file_token(&self) -> [u8; 32] {
         ordinary_file_token(&self.opened)
     }
 
     /// Strong token for the retained file's current metadata observation.
-    pub(crate) fn current_ordinary_file_token(&self) -> Result<[u8; 32]> {
+    pub fn current_ordinary_file_token(&self) -> Result<[u8; 32]> {
         let metadata = self.file.metadata()?;
         let current = platform::object_stamp(&self.file, &metadata)?;
         Ok(ordinary_file_token(&current))
     }
 
-    pub(crate) fn file(&self) -> &File {
+    pub fn file(&self) -> &File {
         &self.file
     }
 
@@ -403,7 +403,7 @@ impl OpenedProviderSourceFile {
     /// Unlike [`File::try_clone`], the returned handle has an independent file
     /// cursor. Callers that seek or stream concurrently must use this operation
     /// so one reader cannot move another reader's position.
-    pub(crate) fn reopen_same_object(&self) -> Result<File> {
+    pub fn reopen_same_object(&self) -> Result<File> {
         match &self.route {
             ProviderSourceFileRoute::Absolute(path) => {
                 let reopened = platform::open_absolute(path)
@@ -431,21 +431,21 @@ impl OpenedProviderSourceFile {
         }
     }
 
-    pub(crate) fn bounded_reader(&self, maximum_bytes: u64) -> Result<Take<File>> {
+    pub fn bounded_reader(&self, maximum_bytes: u64) -> Result<Take<File>> {
         if self.len() > maximum_bytes {
-            return Err(CaptureError::InvalidPayload(format!(
+            return Err(SourceIoError::InvalidPayload(format!(
                 "provider source file exceeds {maximum_bytes} bytes"
             )));
         }
         Ok(self.file.try_clone()?.take(self.len()))
     }
 
-    pub(crate) fn read_all_bounded(&self, maximum_bytes: usize) -> Result<Vec<u8>> {
+    pub fn read_all_bounded(&self, maximum_bytes: usize) -> Result<Vec<u8>> {
         let maximum_bytes_u64 = u64::try_from(maximum_bytes)
-            .map_err(|_| CaptureError::SystemInvariant("bounded read size exceeds u64"))?;
+            .map_err(|_| SourceIoError::SystemInvariant("bounded read size exceeds u64"))?;
         let mut reader = self.bounded_reader(maximum_bytes_u64)?;
         let capacity = usize::try_from(self.len()).map_err(|_| {
-            CaptureError::InvalidPayload("provider source file is too large".into())
+            SourceIoError::InvalidPayload("provider source file is too large".into())
         })?;
         let mut bytes = Vec::with_capacity(capacity);
         reader.read_to_end(&mut bytes)?;
@@ -456,24 +456,24 @@ impl OpenedProviderSourceFile {
         Ok(bytes)
     }
 
-    pub(crate) fn read_exact_range(
+    pub fn read_exact_range(
         &self,
         offset: u64,
         length: usize,
         maximum_bytes: usize,
     ) -> Result<Vec<u8>> {
         if length > maximum_bytes {
-            return Err(CaptureError::InvalidPayload(format!(
+            return Err(SourceIoError::InvalidPayload(format!(
                 "provider source range exceeds {maximum_bytes} bytes"
             )));
         }
         let length_u64 = u64::try_from(length)
-            .map_err(|_| CaptureError::SystemInvariant("range length exceeds u64"))?;
+            .map_err(|_| SourceIoError::SystemInvariant("range length exceeds u64"))?;
         let end = offset.checked_add(length_u64).ok_or_else(|| {
-            CaptureError::InvalidPayload("provider source range overflows".into())
+            SourceIoError::InvalidPayload("provider source range overflows".into())
         })?;
         if end > self.len() {
-            return Err(CaptureError::InvalidPayload(
+            return Err(SourceIoError::InvalidPayload(
                 "provider source range exceeds the opened file".into(),
             ));
         }
@@ -486,25 +486,25 @@ impl OpenedProviderSourceFile {
     /// Reads an exact range from an append-friendly source and permits only a
     /// same-object metadata change while the range is read. Callers must bind
     /// the returned bytes to their own digest and frozen-prefix evidence.
-    pub(crate) fn read_exact_range_allow_append(
+    pub fn read_exact_range_allow_append(
         &self,
         offset: u64,
         length: usize,
         maximum_bytes: usize,
     ) -> Result<Vec<u8>> {
         if length > maximum_bytes {
-            return Err(CaptureError::InvalidPayload(format!(
+            return Err(SourceIoError::InvalidPayload(format!(
                 "provider source range exceeds {maximum_bytes} bytes"
             )));
         }
         let length_u64 = u64::try_from(length)
-            .map_err(|_| CaptureError::SystemInvariant("range length exceeds u64"))?;
+            .map_err(|_| SourceIoError::SystemInvariant("range length exceeds u64"))?;
         let end = offset.checked_add(length_u64).ok_or_else(|| {
-            CaptureError::InvalidPayload("provider source range overflows".into())
+            SourceIoError::InvalidPayload("provider source range overflows".into())
         })?;
         let current_len = self.file.metadata()?.len();
         if end > current_len {
-            return Err(CaptureError::InvalidPayload(
+            return Err(SourceIoError::InvalidPayload(
                 "provider source range exceeds the opened file".into(),
             ));
         }
@@ -519,7 +519,7 @@ impl OpenedProviderSourceFile {
     ///
     /// Relative callers must perform one terminal [`ProviderSourceRoot::revalidate`]
     /// after all leaf checks before publishing aggregate evidence.
-    pub(crate) fn revalidate_leaf(&self) -> Result<()> {
+    pub fn revalidate_leaf(&self) -> Result<()> {
         let current_metadata = self.file.metadata()?;
         let current = platform::object_stamp(&self.file, &current_metadata)?;
         if current != self.opened {
@@ -553,7 +553,7 @@ impl OpenedProviderSourceFile {
 
     /// Confirms the route still names the same ordinary file while allowing
     /// append-only metadata changes on that object.
-    pub(crate) fn revalidate_same_object_leaf(&self) -> Result<()> {
+    pub fn revalidate_same_object_leaf(&self) -> Result<()> {
         let current_metadata = self.file.metadata()?;
         let current = platform::object_stamp(&self.file, &current_metadata)?;
         if !platform::same_object(&current, &self.opened) {
@@ -590,7 +590,7 @@ impl OpenedProviderSourceFile {
     /// Confirms same-object leaf identity and the retained root route. This is
     /// used only by append-friendly providers that separately freeze and hash
     /// the admitted byte prefix.
-    pub(crate) fn revalidate_same_object(&self) -> Result<()> {
+    pub fn revalidate_same_object(&self) -> Result<()> {
         self.revalidate_same_object_leaf()?;
         if let ProviderSourceFileRoute::Relative { root, .. } = &self.route {
             root.revalidate_same_object()?;
@@ -599,7 +599,7 @@ impl OpenedProviderSourceFile {
     }
 
     /// Confirms the leaf proof and, for a relative route, the current named root.
-    pub(crate) fn revalidate(&self) -> Result<()> {
+    pub fn revalidate(&self) -> Result<()> {
         self.revalidate_leaf()?;
         if let ProviderSourceFileRoute::Relative { root, .. } = &self.route {
             root.revalidate()?;
@@ -625,7 +625,7 @@ fn ordinary_file_token(stamp: &platform::ObjectStamp) -> [u8; 32] {
 
 /// Opens an ordinary provider file with a no-follow component walk and retains
 /// the exact opened handle for reads and final revalidation.
-pub(crate) fn open_provider_source_file(path: &Path) -> Result<OpenedProviderSourceFile> {
+pub fn open_provider_source_file(path: &Path) -> Result<OpenedProviderSourceFile> {
     match open_provider_source_path(path)? {
         OpenedProviderSourcePath::File(file) => Ok(file),
         OpenedProviderSourcePath::Directory(_) => Err(invalid_path(
@@ -635,7 +635,7 @@ pub(crate) fn open_provider_source_file(path: &Path) -> Result<OpenedProviderSou
     }
 }
 
-pub(crate) fn open_provider_source_path(path: &Path) -> Result<OpenedProviderSourcePath> {
+pub fn open_provider_source_path(path: &Path) -> Result<OpenedProviderSourcePath> {
     let path = platform::normalize_authority_path(path);
     ensure_absolute_traversal_free(&path)?;
     let opened = platform::open_absolute(&path).map_err(|error| map_open_error(&path, error))?;
@@ -719,14 +719,14 @@ fn validate_child_name(name: &OsStr, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn map_open_error(path: &Path, error: AuthorityOpenError) -> CaptureError {
+fn map_open_error(path: &Path, error: AuthorityOpenError) -> SourceIoError {
     match error {
         AuthorityOpenError::Io(error) => error.into(),
         AuthorityOpenError::Rejected(reason) => invalid_path(path, reason),
     }
 }
 
-fn map_changed_open_error(path: &Path, error: AuthorityOpenError) -> CaptureError {
+fn map_changed_open_error(path: &Path, error: AuthorityOpenError) -> SourceIoError {
     match error {
         AuthorityOpenError::Io(error)
             if matches!(
@@ -747,16 +747,16 @@ fn map_changed_open_error(path: &Path, error: AuthorityOpenError) -> CaptureErro
 /// file nor a directory (for example a Unix-domain socket, FIFO, or device
 /// node). Traversal callers can skip such entries safely without treating the
 /// enclosing provider source as unreadable.
-pub(crate) const NON_REGULAR_PROVIDER_SOURCE_REASON: &str =
+pub const NON_REGULAR_PROVIDER_SOURCE_REASON: &str =
     "provider source paths must be regular files or directories";
 
 /// True when `error` is the safe rejection of a non-regular special-file entry
 /// (see [`NON_REGULAR_PROVIDER_SOURCE_REASON`]), as opposed to a symlink
 /// rejection or a genuine IO failure that must fail the enclosing traversal.
-pub(crate) fn is_non_regular_source_rejection(error: &CaptureError) -> bool {
+pub fn is_non_regular_source_rejection(error: &SourceIoError) -> bool {
     matches!(
         error,
-        CaptureError::InvalidProviderTranscriptPath { reason, .. }
+        SourceIoError::InvalidProviderTranscriptPath { reason, .. }
             if *reason == NON_REGULAR_PROVIDER_SOURCE_REASON
     )
 }
@@ -767,41 +767,41 @@ pub(crate) fn is_non_regular_source_rejection(error: &CaptureError) -> bool {
 /// example Copilot CLI `session-state/<id>/files/` checkouts containing
 /// `CLAUDE.md -> AGENTS.md` links) can skip such entries safely: the link is
 /// never followed, so the no-follow security boundary is preserved.
-pub(crate) const SYMLINK_PROVIDER_SOURCE_REASON: &str =
+pub const SYMLINK_PROVIDER_SOURCE_REASON: &str =
     "symlinked provider source path components are rejected";
 
 /// Windows counterpart of [`SYMLINK_PROVIDER_SOURCE_REASON`].
-pub(crate) const REPARSE_PROVIDER_SOURCE_REASON: &str =
+pub const REPARSE_PROVIDER_SOURCE_REASON: &str =
     "reparse, offline, and cloud-placeholder provider sources are rejected";
 
 /// True when `error` is the safe rejection of a link-like entry that a
 /// traversal can skip without following it. The entry itself is never opened,
 /// so skipping it does not weaken the symlink boundary; transcript-shaped
 /// selections must still treat this rejection as fatal.
-pub(crate) fn is_symlink_source_rejection(error: &CaptureError) -> bool {
+pub fn is_symlink_source_rejection(error: &SourceIoError) -> bool {
     matches!(
         error,
-        CaptureError::InvalidProviderTranscriptPath { reason, .. }
+        SourceIoError::InvalidProviderTranscriptPath { reason, .. }
             if *reason == SYMLINK_PROVIDER_SOURCE_REASON
                 || *reason == REPARSE_PROVIDER_SOURCE_REASON
     )
 }
 
-fn invalid_path(path: &Path, reason: &'static str) -> CaptureError {
-    CaptureError::InvalidProviderTranscriptPath {
+fn invalid_path(path: &Path, reason: &'static str) -> SourceIoError {
+    SourceIoError::InvalidProviderTranscriptPath {
         path: path.to_path_buf(),
         reason,
     }
 }
 
-fn changed_path(path: &Path) -> CaptureError {
-    CaptureError::InvalidProviderTranscriptPath {
+fn changed_path(path: &Path) -> SourceIoError {
+    SourceIoError::InvalidProviderTranscriptPath {
         path: path.to_path_buf(),
         reason: "provider source changed while its authority handle was retained",
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests {
     use std::{fs, io::Read, time::Duration};
 
@@ -869,7 +869,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            CaptureError::InvalidProviderTranscriptPath { reason, .. }
+            SourceIoError::InvalidProviderTranscriptPath { reason, .. }
                 if reason.contains("symlinked provider source path components")
         ));
     }
@@ -885,7 +885,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            CaptureError::Io(error) if error.raw_os_error() == Some(libc::ENOTDIR)
+            SourceIoError::Io(error) if error.raw_os_error() == Some(libc::ENOTDIR)
         ));
     }
 

@@ -28,20 +28,15 @@ use ctx_history_core::platform_security::create_private_directory_all;
 use rusqlite::{config::DbConfig, ffi, Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+#[cfg(target_os = "linux")]
 use url::Url;
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 
 use crate::{
-    common::io::{
-        OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
-        ProviderSourceRoot,
-    },
-    provider::source_backed::{
-        SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-    },
-    CaptureError,
+    OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
+    ProviderSourceRoot, SourceIoError, SqliteSourceProgress, SqliteSourceProgressStage,
 };
 
 const EVIDENCE_DOMAIN: &[u8] = b"ctx-stock-sqlite-snapshot-v2\0";
@@ -53,33 +48,33 @@ const SQLITE_WAL_TOKEN_BYTES: usize = 64;
 const SQLITE_SHM_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 mod diagnostics;
-#[cfg(test)]
-pub(crate) use diagnostics::SqliteRetryDecision;
-pub(crate) use diagnostics::{
+#[cfg(any(test, feature = "test-support"))]
+pub use diagnostics::SqliteRetryDecision;
+pub use diagnostics::{
     resource_exhaustion_io_error, rusqlite_busy_or_locked, rusqlite_resource_failure,
     SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
     SqliteSourceComponent, SqliteSourceProgressError,
 };
 
-pub(crate) type SqliteSourceAccessResult<T> = Result<T, SqliteSourceAccessError>;
+pub type SqliteSourceAccessResult<T> = Result<T, SqliteSourceAccessError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SqliteValidationMeasurement {
-    pub(crate) pages: u64,
-    pub(crate) bytes: u64,
-    #[cfg(test)]
-    pub(crate) elapsed_ms: u64,
+pub struct SqliteValidationMeasurement {
+    pub pages: u64,
+    pub bytes: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    pub elapsed_ms: u64,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SqliteSnapshotCertification {
-    pub(crate) source: SqliteValidationMeasurement,
-    pub(crate) backup: SqliteValidationMeasurement,
+pub struct SqliteSnapshotCertification {
+    pub source: SqliteValidationMeasurement,
+    pub backup: SqliteValidationMeasurement,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SqliteSourceSnapshotStrategy {
+pub enum SqliteSourceSnapshotStrategy {
     #[cfg(target_os = "linux")]
     ImmutableMain,
     CopiedFamily,
@@ -104,23 +99,23 @@ enum SqliteSourceSnapshotPolicy {
 /// Content-free work and concurrency counters for one retained SQLite
 /// directory authority and all snapshots opened through its clones.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct SqliteSourceSnapshotCounters {
+pub struct SqliteSourceSnapshotCounters {
     immutable_snapshot_opens: u64,
     copied_snapshot_opens: u64,
     logical_online_backup_opens: u64,
     source_bytes_copied: u64,
     logical_online_backup_bytes: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     logical_projection_passes: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     logical_rows_projected: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     documents_staged: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     logical_noops: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     logical_replacements: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     logical_source_transition_retries: u64,
     terminal_fences: u64,
     terminal_revalidations: u64,
@@ -131,80 +126,80 @@ pub(crate) struct SqliteSourceSnapshotCounters {
 }
 
 impl SqliteSourceSnapshotCounters {
-    pub(crate) const fn immutable_snapshot_opens(self) -> u64 {
+    pub const fn immutable_snapshot_opens(self) -> u64 {
         self.immutable_snapshot_opens
     }
 
-    pub(crate) const fn copied_snapshot_opens(self) -> u64 {
+    pub const fn copied_snapshot_opens(self) -> u64 {
         self.copied_snapshot_opens
     }
 
-    pub(crate) const fn logical_online_backup_opens(self) -> u64 {
+    pub const fn logical_online_backup_opens(self) -> u64 {
         self.logical_online_backup_opens
     }
 
-    pub(crate) const fn source_bytes_copied(self) -> u64 {
+    pub const fn source_bytes_copied(self) -> u64 {
         self.source_bytes_copied
     }
 
-    #[cfg(test)]
-    pub(crate) const fn logical_online_backup_bytes(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn logical_online_backup_bytes(self) -> u64 {
         self.logical_online_backup_bytes
     }
 
-    #[cfg(test)]
-    pub(crate) const fn logical_projection_passes(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn logical_projection_passes(self) -> u64 {
         self.logical_projection_passes
     }
 
-    #[cfg(test)]
-    pub(crate) const fn logical_rows_projected(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn logical_rows_projected(self) -> u64 {
         self.logical_rows_projected
     }
 
-    #[cfg(test)]
-    pub(crate) const fn documents_staged(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn documents_staged(self) -> u64 {
         self.documents_staged
     }
 
-    #[cfg(test)]
-    pub(crate) const fn logical_noops(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn logical_noops(self) -> u64 {
         self.logical_noops
     }
 
-    #[cfg(test)]
-    pub(crate) const fn logical_replacements(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn logical_replacements(self) -> u64 {
         self.logical_replacements
     }
 
-    #[cfg(test)]
-    pub(crate) const fn logical_source_transition_retries(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn logical_source_transition_retries(self) -> u64 {
         self.logical_source_transition_retries
     }
 
-    pub(crate) const fn terminal_fences(self) -> u64 {
+    pub const fn terminal_fences(self) -> u64 {
         self.terminal_fences
     }
 
-    pub(crate) const fn terminal_revalidations(self) -> u64 {
+    pub const fn terminal_revalidations(self) -> u64 {
         self.terminal_revalidations
     }
 
-    pub(crate) const fn active_snapshots(self) -> u64 {
+    pub const fn active_snapshots(self) -> u64 {
         self.active_snapshots
     }
 
-    #[cfg(test)]
-    pub(crate) const fn active_snapshot_bytes(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn active_snapshot_bytes(self) -> u64 {
         self.active_snapshot_bytes
     }
 
-    pub(crate) const fn max_active_snapshots(self) -> u64 {
+    pub const fn max_active_snapshots(self) -> u64 {
         self.max_active_snapshots
     }
 
-    #[cfg(test)]
-    pub(crate) const fn max_active_snapshot_bytes(self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn max_active_snapshot_bytes(self) -> u64 {
         self.max_active_snapshot_bytes
     }
 }
@@ -237,7 +232,7 @@ impl SqliteSourceSnapshotContext {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_logical_source_transition_retry(&self) -> SqliteSourceAccessResult<()> {
         let mut counters = self.lock();
         counters.logical_source_transition_retries = checked_counter_add(
@@ -248,7 +243,7 @@ impl SqliteSourceSnapshotContext {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn record_logical_projection(
         &self,
         rows: u64,
@@ -373,7 +368,7 @@ fn checked_counter_add(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SqliteSourceEvidence {
+pub struct SqliteSourceEvidence {
     identity: [u8; 32],
     length: u64,
     wal_length: Option<u64>,
@@ -384,27 +379,27 @@ pub(crate) struct SqliteSourceEvidence {
 }
 
 impl SqliteSourceEvidence {
-    #[cfg(test)]
-    pub(crate) fn identity(&self) -> &[u8; 32] {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn identity(&self) -> &[u8; 32] {
         &self.identity
     }
 
-    #[cfg(test)]
-    pub(crate) fn length(&self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn length(&self) -> u64 {
         self.length
     }
 
-    pub(crate) fn revision(&self) -> &[u8; 32] {
+    pub fn revision(&self) -> &[u8; 32] {
         &self.revision
     }
 
-    #[cfg(test)]
-    pub(crate) fn wal_length(&self) -> Option<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wal_length(&self) -> Option<u64> {
         self.wal_length
     }
 
-    #[cfg(test)]
-    pub(crate) fn shared_memory_length(&self) -> Option<u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn shared_memory_length(&self) -> Option<u64> {
         self.shared_memory_length
     }
 }
@@ -414,7 +409,7 @@ impl SqliteSourceEvidence {
 /// `path` is retained only to certify the parent route and describe errors.
 /// SQLite family members are always opened relative to `directory`.
 #[derive(Debug, Clone)]
-pub(crate) struct SqliteSourceDirectoryAuthority {
+pub struct SqliteSourceDirectoryAuthority {
     directory: Arc<ProviderSourceDirectory>,
     path: PathBuf,
     identity: NativeFileIdentity,
@@ -474,14 +469,14 @@ impl SqliteSourceDirectoryAuthority {
         &self.snapshot_context.data_root
     }
 
-    pub(crate) fn snapshot_counters(&self) -> SqliteSourceSnapshotCounters {
+    pub fn snapshot_counters(&self) -> SqliteSourceSnapshotCounters {
         self.snapshot_context.snapshot()
     }
 
     /// Observes one bounded physical DB/WAL family revision without copying or
     /// opening a logical SQLite snapshot. The returned token is valid only for
     /// exact replay and must be observed again during terminal revalidation.
-    pub(crate) fn observe_physical_revision(
+    pub fn observe_physical_revision(
         &self,
         database_name: &OsStr,
     ) -> SqliteSourceAccessResult<[u8; 32]> {
@@ -491,8 +486,8 @@ impl SqliteSourceDirectoryAuthority {
         Ok(evidence.revision_token())
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_logical_online_backup_snapshot(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_logical_online_backup_snapshot(
         &self,
         database_name: &OsStr,
     ) -> SqliteSourceAccessResult<SqliteSourceReadSnapshot> {
@@ -503,10 +498,10 @@ impl SqliteSourceDirectoryAuthority {
         )
     }
 
-    pub(crate) fn open_logical_online_backup_snapshot_with_progress<E>(
+    pub fn open_logical_online_backup_snapshot_with_progress<E>(
         &self,
         database_name: &OsStr,
-        mut report_progress: impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+        mut report_progress: impl FnMut(SqliteSourceProgress) -> Result<(), E>,
     ) -> Result<SqliteSourceReadSnapshot, SqliteSourceProgressError<E>> {
         open_root_handle_sqlite_source_logical_snapshot_with_progress(
             self,
@@ -515,8 +510,8 @@ impl SqliteSourceDirectoryAuthority {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn record_logical_projection(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn record_logical_projection(
         &self,
         rows: u64,
         documents: u64,
@@ -526,7 +521,7 @@ impl SqliteSourceDirectoryAuthority {
             .record_logical_projection(rows, documents, unchanged)
     }
 
-    pub(crate) fn revalidate(&self) -> SqliteSourceAccessResult<()> {
+    pub fn revalidate(&self) -> SqliteSourceAccessResult<()> {
         let retained = self
             .directory
             .try_clone_authority_handle()
@@ -597,18 +592,18 @@ struct SqliteSourceTerminalFenceInner {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SqliteSourceTerminalFence {
+pub struct SqliteSourceTerminalFence {
     inner: Arc<SqliteSourceTerminalFenceInner>,
 }
 
 impl SqliteSourceTerminalFence {
-    pub(crate) fn evidence(&self) -> &SqliteSourceEvidence {
+    pub fn evidence(&self) -> &SqliteSourceEvidence {
         &self.inner.evidence
     }
 
     /// Revalidates the exact retained source family without opening SQLite or
     /// acquiring another source snapshot.
-    pub(crate) fn revalidate(&self) -> SqliteSourceAccessResult<()> {
+    pub fn revalidate(&self) -> SqliteSourceAccessResult<()> {
         let root = ProviderSourceRoot::open(&self.inner.approved_parent_path).map_err(|error| {
             map_provider_source_revalidation_error(
                 error,
@@ -691,7 +686,7 @@ impl SqliteSourceTerminalFenceSlot {
 /// A stock read-only SQLite connection with a pinned read transaction.
 #[must_use = "call seal() or finish() after provider queries and before publishing observations"]
 #[derive(Debug)]
-pub(crate) struct SqliteSourceReadSnapshot {
+pub struct SqliteSourceReadSnapshot {
     connection: Option<Connection>,
     family: Option<SqliteSourceFamily>,
     native_evidence: SqliteFamilyEvidence,
@@ -699,22 +694,22 @@ pub(crate) struct SqliteSourceReadSnapshot {
     evidence: SqliteSourceEvidence,
     policy: SqliteSourceSnapshotPolicy,
     admitted_revision_is_replay_safe: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     certification: Option<SqliteSnapshotCertification>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     strategy: SqliteSourceSnapshotStrategy,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     copied_bytes: u64,
     _snapshot_directory: Option<TempDir>,
     snapshot_activity: Option<SqliteSourceSnapshotActivity>,
     snapshot_context: Arc<SqliteSourceSnapshotContext>,
     terminal_fence_slot: Arc<SqliteSourceTerminalFenceSlot>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fail_next_cleanup: bool,
 }
 
 impl SqliteSourceReadSnapshot {
-    pub(crate) fn connection(&self) -> SqliteSourceAccessResult<&Connection> {
+    pub fn connection(&self) -> SqliteSourceAccessResult<&Connection> {
         let connection = self
             .connection
             .as_ref()
@@ -723,16 +718,16 @@ impl SqliteSourceReadSnapshot {
         Ok(connection)
     }
 
-    pub(crate) fn evidence(&self) -> &SqliteSourceEvidence {
+    pub fn evidence(&self) -> &SqliteSourceEvidence {
         &self.evidence
     }
 
-    pub(crate) fn admitted_revision_is_replay_safe(&self) -> bool {
+    pub fn admitted_revision_is_replay_safe(&self) -> bool {
         self.admitted_revision_is_replay_safe
     }
 
-    #[cfg(test)]
-    pub(crate) fn certification(&self) -> Option<SqliteSnapshotCertification> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn certification(&self) -> Option<SqliteSnapshotCertification> {
         self.certification
     }
 
@@ -740,33 +735,33 @@ impl SqliteSourceReadSnapshot {
     /// snapshot is passed to a scanner that closes it through [`Self::finish`].
     ///
     /// The callback fails closed until the snapshot has sealed successfully.
-    pub(crate) fn terminal_revalidator(
+    pub fn terminal_revalidator(
         &self,
     ) -> Box<dyn Fn() -> SqliteSourceAccessResult<()> + Send + Sync + 'static> {
         let slot = Arc::clone(&self.terminal_fence_slot);
         Box::new(move || slot.revalidate())
     }
 
-    #[cfg(test)]
-    pub(crate) fn strategy(&self) -> SqliteSourceSnapshotStrategy {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn strategy(&self) -> SqliteSourceSnapshotStrategy {
         self.strategy
     }
 
-    #[cfg(test)]
-    pub(crate) fn copied_bytes(&self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn copied_bytes(&self) -> u64 {
         self.copied_bytes
     }
 
-    #[cfg(test)]
-    pub(crate) fn family_revalidation_count(&self) -> u32 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn family_revalidation_count(&self) -> u32 {
         self.family
             .as_ref()
             .map(SqliteSourceFamily::revalidation_count)
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(crate) fn snapshot_directory(&self) -> Option<&Path> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn snapshot_directory(&self) -> Option<&Path> {
         self._snapshot_directory
             .as_ref()
             .map(tempfile::TempDir::path)
@@ -774,7 +769,7 @@ impl SqliteSourceReadSnapshot {
 
     /// Revalidates the pinned SQLite view and retained DB family without
     /// ending the read transaction.
-    pub(crate) fn revalidate(&self) -> SqliteSourceAccessResult<()> {
+    pub fn revalidate(&self) -> SqliteSourceAccessResult<()> {
         let connection = self.connection()?;
         let current_sqlite_evidence = capture_sqlite_evidence(connection)?;
         if current_sqlite_evidence != self.sqlite_evidence {
@@ -796,7 +791,7 @@ impl SqliteSourceReadSnapshot {
 
     /// Ends this read snapshot and retains its exact physical source-family
     /// authority for cheap commit-time revalidation.
-    pub(crate) fn seal(mut self) -> SqliteSourceAccessResult<SqliteSourceTerminalFence> {
+    pub fn seal(mut self) -> SqliteSourceAccessResult<SqliteSourceTerminalFence> {
         if let Err(error) = self.revalidate() {
             return match self.cleanup_snapshot_storage() {
                 Ok(()) => Err(error),
@@ -847,7 +842,7 @@ impl SqliteSourceReadSnapshot {
                 SqliteArtifactKind::ProviderDatabase
             }
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if std::mem::take(&mut self.fail_next_cleanup) {
             let path = self._snapshot_directory.as_ref().map_or_else(
                 || PathBuf::from("<injected-snapshot-cleanup>"),
@@ -883,7 +878,7 @@ impl SqliteSourceReadSnapshot {
     ///
     /// New shared lifecycles should keep the fence returned by [`Self::seal`]
     /// through commit-time physical revalidation.
-    pub(crate) fn finish(self) -> SqliteSourceAccessResult<SqliteSourceEvidence> {
+    pub fn finish(self) -> SqliteSourceAccessResult<SqliteSourceEvidence> {
         let fence = self.seal()?;
         Ok(fence.evidence().clone())
     }
@@ -952,15 +947,15 @@ use family::{
     NativeFileState, SqliteConnectionEvidence, SqliteFamilyEvidence, SqliteFamilyMember,
     SqliteSchemaEvidence, SqliteSnapshotEvidence, SqliteSourceFamily,
 };
-pub(crate) use logical::SqliteLogicalSnapshot;
-#[cfg(test)]
-pub(crate) use snapshot::fail_next_opened_snapshot_cleanup_for_test;
+pub use logical::SqliteLogicalSnapshot;
+#[cfg(any(test, feature = "test-support"))]
+pub use snapshot::fail_next_opened_snapshot_cleanup_for_test;
 use snapshot::open_root_handle_sqlite_source_logical_snapshot_with_progress;
-#[cfg(test)]
-pub(crate) use snapshot::open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+pub use snapshot::open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test;
+#[cfg(any(test, feature = "test-support"))]
 use snapshot::open_root_handle_sqlite_source_snapshot_with_policy;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use snapshot::{
     certify_root_handle_sqlite_source_snapshot_copy_budget_for_test,
     online_backup_contention_deadline_error_for_test,
@@ -973,9 +968,9 @@ use snapshot::{
     open_root_handle_sqlite_source_snapshot_for_test, retained_online_backup_retry_code_for_test,
     run_online_backup_with_deadline_for_test,
 };
-pub(crate) use snapshot::{
+pub use snapshot::{
     open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests;

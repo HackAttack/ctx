@@ -6,7 +6,7 @@ fn explicit_post_acquisition_abort_reports_cleanup_failure_without_an_artifact()
     let database = temp.path().join("provider.sqlite");
     let _writer = create_persistent_wal(&database);
     let parent = retain_parent(temp.path());
-    crate::provider_sources::fail_next_opened_snapshot_cleanup_for_test();
+    crate::fail_next_opened_snapshot_cleanup_for_test();
     let snapshot =
         open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite")).unwrap();
     let snapshot_directory = snapshot.snapshot_directory().unwrap().to_path_buf();

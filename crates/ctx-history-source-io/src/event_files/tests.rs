@@ -33,7 +33,7 @@ pub(super) struct EventFileIoAtomicCounts {
 pub(super) type EventFileIoCounter = Arc<EventFileIoAtomicCounts>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct EventFileIoCounts {
+pub struct EventFileIoCounts {
     pub inventory_opens: usize,
     pub inventory_walks: usize,
     pub body_reads: usize,
@@ -100,7 +100,7 @@ pub(super) fn note_handle_closed(kind: TransientHandleKind) {
     active.with(|active| active.set(active.get().saturating_sub(1)));
 }
 
-pub(crate) fn count_event_file_io<T>(operation: impl FnOnce() -> T) -> (T, EventFileIoCounts) {
+pub fn count_event_file_io<T>(operation: impl FnOnce() -> T) -> (T, EventFileIoCounts) {
     struct CounterScope(Option<EventFileIoCounter>);
 
     impl Drop for CounterScope {
@@ -148,7 +148,7 @@ fn limits() -> EventFileLimits {
     }
 }
 
-fn classify(path: &Path) -> Result<Option<EventFileCoordinates>> {
+fn classify(path: &Path) -> EventFileInventoryResult<Option<EventFileCoordinates>> {
     if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
         return Ok(None);
     }

@@ -64,6 +64,28 @@ impl SourceBackedCurrentSourceProgress {
     }
 }
 
+impl From<ctx_history_source_io::SqliteSourceProgress> for SourceBackedCurrentSourceProgress {
+    fn from(progress: ctx_history_source_io::SqliteSourceProgress) -> Self {
+        let stage = match progress.stage {
+            ctx_history_source_io::SqliteSourceProgressStage::SourceFamilyCopy => {
+                SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
+            }
+            ctx_history_source_io::SqliteSourceProgressStage::OnlineBackup => {
+                SourceBackedCurrentSourceProgressStage::OnlineBackup
+            }
+        };
+        Self {
+            stage,
+            snapshot_pages_completed: progress.snapshot_pages_completed,
+            snapshot_pages_total: progress.snapshot_pages_total,
+            snapshot_bytes_completed: progress.snapshot_bytes_completed,
+            snapshot_bytes_total: progress.snapshot_bytes_total,
+            logical_rows_scanned: None,
+            logical_certified_bytes: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceBackedDetailedRefreshProgress {
     pub progress: SourceBackedRefreshProgress,

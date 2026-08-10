@@ -7,7 +7,7 @@ pub(super) use native_file::{
 };
 use native_file::{validate_database_leaf, with_suffix};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug)]
@@ -22,7 +22,7 @@ pub(super) struct SqliteSourceFamily {
     wal_path: PathBuf,
     shared_memory_path: PathBuf,
     journal_path: PathBuf,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     revalidation_count: AtomicU32,
 }
 
@@ -89,7 +89,7 @@ impl SqliteSourceFamily {
             wal_path,
             shared_memory_path,
             journal_path,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             revalidation_count: AtomicU32::new(0),
         })
     }
@@ -171,7 +171,7 @@ impl SqliteSourceFamily {
         &self,
         expected: &SqliteFamilyEvidence,
     ) -> SqliteSourceAccessResult<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let _ =
             self.revalidation_count
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
@@ -256,7 +256,7 @@ impl SqliteSourceFamily {
         &self,
         expected: &SqliteFamilyEvidence,
     ) -> SqliteSourceAccessResult<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let _ =
             self.revalidation_count
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
@@ -274,7 +274,7 @@ impl SqliteSourceFamily {
         &self,
         expected: &SqliteFamilyEvidence,
     ) -> SqliteSourceAccessResult<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let _ =
             self.revalidation_count
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
@@ -344,7 +344,7 @@ impl SqliteSourceFamily {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn revalidation_count(&self) -> u32 {
         self.revalidation_count.load(Ordering::Relaxed)
     }
@@ -753,23 +753,23 @@ fn hash_optional_state(digest: &mut Sha256, state: Option<&NativeFileState>) {
 }
 
 pub(super) fn map_provider_source_error(
-    error: CaptureError,
+    error: SourceIoError,
     operation: &'static str,
     path: &Path,
 ) -> SqliteSourceAccessError {
     match error {
-        CaptureError::Io(source) => SqliteSourceAccessError::Io {
+        SourceIoError::Io(source) => SqliteSourceAccessError::Io {
             operation,
             path: path.to_path_buf(),
             source,
         },
-        CaptureError::InvalidProviderTranscriptPath { reason, .. } => {
+        SourceIoError::InvalidProviderTranscriptPath { reason, .. } => {
             SqliteSourceAccessError::UnsafeFile {
                 path: path.to_path_buf(),
                 reason,
             }
         }
-        CaptureError::SourceChangedDuringCapture => SqliteSourceAccessError::SourceChanged,
+        SourceIoError::SourceChangedDuringCapture => SqliteSourceAccessError::SourceChanged,
         error => SqliteSourceAccessError::SnapshotUnavailable {
             reason: format!("{operation} for {path:?} failed: {error}"),
         },
@@ -777,7 +777,7 @@ pub(super) fn map_provider_source_error(
 }
 
 pub(super) fn map_provider_source_revalidation_error(
-    error: CaptureError,
+    error: SourceIoError,
     operation: &'static str,
     path: &Path,
 ) -> SqliteSourceAccessError {

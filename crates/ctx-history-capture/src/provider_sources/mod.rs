@@ -1,19 +1,25 @@
 mod context;
 mod discovery;
-mod event_files;
 mod lingma;
-mod ordinary_file;
 mod probes;
 mod reasons;
 mod resolvers;
 mod selectors;
 mod specs;
-mod sqlite_source;
 mod types;
 mod warp;
 
 pub use context::{
     DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs, DISCOVERY_ENV_ALLOWLIST,
+};
+#[cfg(test)]
+pub(crate) use ctx_history_source_io::count_event_file_io;
+#[cfg(test)]
+pub(crate) use ctx_history_source_io::forbid_ordinary_file_content_open;
+pub use ctx_history_source_io::OrdinaryFileObservation;
+pub(crate) use ctx_history_source_io::{
+    EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
+    EventFileLimits,
 };
 pub use discovery::{
     discover_provider_sources, discover_provider_sources_for_provider,
@@ -24,40 +30,42 @@ pub use discovery::{
     discover_provider_sources_with_projects, provider_source_for_path,
     validate_provider_source_roots_outside_data_root, ProviderSourceRootBoundaryError,
 };
-#[cfg(test)]
-pub(crate) use event_files::count_event_file_io;
-pub(crate) use event_files::{
-    EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,
-    EventFileLimits,
-};
 pub use lingma::{
     discover_lingma_inventory_with_authority, resolve_lingma_discovery_authority,
     DiscoveredLingmaDatabase, LingmaDatabaseCatalogLineage, LingmaDiscoveredInventory,
     LingmaDiscoveryUnavailable, LingmaInventorySelector, LingmaVscodeClient, LingmaVscodeProfile,
 };
+
+pub(crate) fn open_ordinary_file_without_following(
+    path: &std::path::Path,
+) -> crate::Result<std::fs::File> {
+    ctx_history_source_io::open_ordinary_file_without_following(path).map_err(Into::into)
+}
+
+pub fn observe_ordinary_file(
+    path: impl AsRef<std::path::Path>,
+) -> crate::Result<OrdinaryFileObservation> {
+    ctx_history_source_io::observe_ordinary_file(path).map_err(Into::into)
+}
 #[cfg(test)]
-pub(crate) use ordinary_file::forbid_ordinary_file_content_open;
-pub(crate) use ordinary_file::open_ordinary_file_without_following;
-pub use ordinary_file::{observe_ordinary_file, OrdinaryFileObservation};
-pub(crate) use resolvers::PathPresence;
-pub(crate) use resolvers::{
-    path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
-    CrushProjectInventorySelectorError,
-};
-pub use specs::{provider_source_spec, provider_source_specs, HERMES_STATE_DB_UNSUPPORTED_REASON};
-#[cfg(test)]
-pub(crate) use sqlite_source::{
+pub(crate) use ctx_history_source_io::{
     fail_next_opened_snapshot_cleanup_for_test,
     open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test,
     SqliteRetryDecision, SqliteSourceSnapshotCounters,
 };
-pub(crate) use sqlite_source::{
+pub(crate) use ctx_history_source_io::{
     open_root_handle_sqlite_source_snapshot, resource_exhaustion_io_error,
     retain_sqlite_source_directory_authority, rusqlite_busy_or_locked, rusqlite_resource_failure,
     SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteLogicalSnapshot,
     SqliteSourceAccessError, SqliteSourceDirectoryAuthority, SqliteSourceEvidence,
     SqliteSourceProgressError, SqliteSourceReadSnapshot,
 };
+pub(crate) use resolvers::PathPresence;
+pub(crate) use resolvers::{
+    path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
+    CrushProjectInventorySelectorError,
+};
+pub use specs::{provider_source_spec, provider_source_specs, HERMES_STATE_DB_UNSUPPORTED_REASON};
 pub use types::{
     provider_source_status_reason, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport,
     ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport, ProviderSource,

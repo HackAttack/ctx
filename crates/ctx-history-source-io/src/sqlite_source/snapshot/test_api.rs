@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_snapshot_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_snapshot_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     before_sqlite_open: impl FnOnce(),
@@ -15,7 +15,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     )
 }
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_snapshot_after_database_copy_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_snapshot_after_database_copy_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     after_database_copy: impl FnOnce(),
@@ -30,7 +30,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     )
 }
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_snapshot_after_parent_certification_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_snapshot_after_parent_certification_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     after_parent_certification: impl FnOnce(),
@@ -45,7 +45,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     )
 }
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_online_backup_before_identity_check_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_online_backup_before_identity_check_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     after_source_pin: impl FnOnce(),
@@ -60,7 +60,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     )
 }
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_online_backup_after_database_copy_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_online_backup_after_database_copy_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     after_database_copy: impl FnOnce(),
@@ -75,7 +75,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     )
 }
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_online_backup_after_backup_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_online_backup_after_backup_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     after_online_backup: impl FnOnce(&Path),
@@ -99,7 +99,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     }
 }
 
-pub(crate) fn open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test(
+pub fn open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     after_private_source_copy: impl FnOnce(&Path),
@@ -123,7 +123,7 @@ pub(crate) fn open_root_handle_sqlite_source_online_backup_after_private_source_
     }
 }
 
-pub(in crate::provider_sources::sqlite_source) fn run_online_backup_with_deadline_for_test(
+pub(in crate::sqlite_source) fn run_online_backup_with_deadline_for_test(
     source: &Connection,
     destination: &Connection,
     deadline: Instant,
@@ -131,7 +131,7 @@ pub(in crate::provider_sources::sqlite_source) fn run_online_backup_with_deadlin
     super::backup_handle::run_online_backup_until(source, destination, deadline)
 }
 
-pub(in crate::provider_sources::sqlite_source) fn online_backup_contention_deadline_error_for_test(
+pub(in crate::sqlite_source) fn online_backup_contention_deadline_error_for_test(
     code: i32,
     completed_pages: u64,
     page_count: u64,
@@ -150,14 +150,14 @@ pub(in crate::provider_sources::sqlite_source) fn online_backup_contention_deadl
     )
 }
 
-pub(in crate::provider_sources::sqlite_source) fn retained_online_backup_retry_code_for_test(
+pub(in crate::sqlite_source) fn retained_online_backup_retry_code_for_test(
     previous: Option<i32>,
     code: i32,
 ) -> Option<i32> {
     super::retain_online_backup_retry_code(previous, code)
 }
 
-pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source_online_backup_with_scratch_limit_for_test(
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_online_backup_with_scratch_limit_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
     scratch_limit: u64,
@@ -166,7 +166,7 @@ pub(in crate::provider_sources::sqlite_source) fn open_root_handle_sqlite_source
     open_logical_online_backup_snapshot(authority, family, || {}, || {}, scratch_limit)
 }
 
-pub(in crate::provider_sources::sqlite_source) fn certify_root_handle_sqlite_source_snapshot_copy_budget_for_test(
+pub(in crate::sqlite_source) fn certify_root_handle_sqlite_source_snapshot_copy_budget_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
 ) -> SqliteSourceAccessResult<u64> {

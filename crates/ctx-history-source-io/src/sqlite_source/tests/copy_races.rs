@@ -24,7 +24,7 @@ fn assert_production_family_copy_race_retries(checkpoint: bool) {
         .open_logical_online_backup_snapshot_with_progress(
             OsStr::new("provider.sqlite"),
             |progress| {
-                if progress.stage == SourceBackedCurrentSourceProgressStage::SourceFamilyCopy {
+                if progress.stage == SqliteSourceProgressStage::SourceFamilyCopy {
                     if progress.snapshot_bytes_completed == Some(0) {
                         attempt_starts += 1;
                     }

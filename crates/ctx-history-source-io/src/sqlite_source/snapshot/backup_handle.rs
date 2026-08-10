@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn run_online_backup_until(
     source: &Connection,
     destination: &Connection,
@@ -92,7 +92,7 @@ pub(super) fn retain_online_backup_retry_code(previous: Option<i32>, code: i32) 
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn online_backup_contention_deadline_error(
     code: i32,
     completed_pages: u64,

@@ -92,7 +92,7 @@ pub(super) fn certify_sqlite_snapshot(
     Ok(SqliteValidationMeasurement {
         pages: bounds.page_count,
         bytes: bounds.bytes,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
 }

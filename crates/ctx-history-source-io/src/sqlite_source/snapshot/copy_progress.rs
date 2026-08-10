@@ -9,7 +9,7 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
     completed_bytes: &mut u64,
     last_reported_bytes: &mut u64,
     total_bytes: u64,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<[u8; 32], SqliteSourceProgressError<E>> {
     let mut source_file =
         member
@@ -97,13 +97,11 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
 }
 
 pub(super) fn report_source_family_copy_progress<E>(
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
     completed_bytes: u64,
     total_bytes: u64,
 ) -> Result<(), SqliteSourceProgressError<E>> {
-    let mut progress = SourceBackedCurrentSourceProgress::new(
-        SourceBackedCurrentSourceProgressStage::SourceFamilyCopy,
-    );
+    let mut progress = SqliteSourceProgress::new(SqliteSourceProgressStage::SourceFamilyCopy);
     progress.snapshot_bytes_completed = Some(completed_bytes);
     progress.snapshot_bytes_total = Some(total_bytes);
     report_progress(progress).map_err(SqliteSourceProgressError::Progress)

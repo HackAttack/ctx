@@ -81,3 +81,36 @@ pub enum CaptureError {
 }
 
 pub type Result<T> = std::result::Result<T, CaptureError>;
+
+impl From<ctx_history_source_io::SourceIoError> for CaptureError {
+    fn from(error: ctx_history_source_io::SourceIoError) -> Self {
+        use ctx_history_source_io::{SourceIoError, SourceIoJsonlInventoryLimit as SourceLimit};
+
+        match error {
+            SourceIoError::Io(error) => Self::Io(error),
+            SourceIoError::Json(error) => Self::Json(error),
+            SourceIoError::Sqlite(error) => Self::Sqlite(error),
+            SourceIoError::InvalidPayload(detail) => Self::InvalidPayload(detail),
+            SourceIoError::InvalidProviderTranscriptPath { path, reason } => {
+                Self::InvalidProviderTranscriptPath { path, reason }
+            }
+            SourceIoError::ProviderJsonlInventoryLimitExceeded {
+                limit,
+                maximum,
+                observed,
+            } => Self::ProviderJsonlInventoryLimitExceeded {
+                limit: match limit {
+                    SourceLimit::Directories => ProviderJsonlInventoryLimit::Directories,
+                    SourceLimit::Depth => ProviderJsonlInventoryLimit::Depth,
+                    SourceLimit::EligiblePaths => ProviderJsonlInventoryLimit::EligiblePaths,
+                    SourceLimit::MetadataEntries => ProviderJsonlInventoryLimit::MetadataEntries,
+                },
+                maximum,
+                observed,
+            },
+            SourceIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
+            SourceIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
+            SourceIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
+        }
+    }
+}

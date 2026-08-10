@@ -2,9 +2,9 @@ use super::*;
 
 pub(super) struct AcquiredSqliteConnection {
     pub(super) connection: Connection,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) strategy: SqliteSourceSnapshotStrategy,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) copied_bytes: u64,
     pub(super) snapshot_directory: Option<TempDir>,
     pub(super) snapshot_activity: SqliteSourceSnapshotActivity,
@@ -64,23 +64,23 @@ impl AcquiredSqliteConnection {
 impl SqliteSourceReadSnapshot {
     /// Explicitly closes a snapshot that cannot proceed to publication.
     /// Drop remains a defensive second attempt for unwind safety.
-    pub(crate) fn abort(mut self) -> SqliteSourceAccessResult<()> {
+    pub fn abort(mut self) -> SqliteSourceAccessResult<()> {
         self.cleanup_snapshot_storage()
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
-pub(crate) fn fail_next_opened_snapshot_cleanup_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_next_opened_snapshot_cleanup_for_test() {
     FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP.with(|fail| fail.set(true));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn take_opened_snapshot_cleanup_failure_for_test() -> bool {
     FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP.with(|fail| fail.replace(false))
 }
@@ -115,9 +115,9 @@ pub(super) fn acquire_sqlite_connection(
             };
             return Ok(AcquiredSqliteConnection {
                 connection,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 strategy: SqliteSourceSnapshotStrategy::ImmutableMain,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 copied_bytes: 0,
                 snapshot_directory: None,
                 snapshot_activity,
@@ -216,9 +216,9 @@ pub(super) fn acquire_sqlite_connection(
     };
     Ok(AcquiredSqliteConnection {
         connection,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         strategy: SqliteSourceSnapshotStrategy::CopiedFamily,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         copied_bytes,
         snapshot_directory: Some(snapshot_directory),
         snapshot_activity,
@@ -316,7 +316,7 @@ pub(super) fn copy_sqlite_family_to_ctx_with_progress<E>(
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
     after_database_copy: impl FnOnce(),
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<(TempDir, PathBuf, CopiedFamilyIntegrity), SqliteSourceProgressError<E>> {
     let total_bytes = enforce_snapshot_copy_bounds(family, evidence)?;
     let mut completed_bytes = 0;
@@ -401,7 +401,7 @@ pub(super) fn create_snapshot_directory(
     Ok(directory)
 }
 
-pub(crate) fn close_private_snapshot_directory(
+pub fn close_private_snapshot_directory(
     directory: TempDir,
     artifact: SqliteArtifactKind,
     copied_pages: u64,
@@ -424,7 +424,7 @@ pub(crate) fn close_private_snapshot_directory(
     })
 }
 
-pub(crate) fn close_private_sqlite_connection(
+pub fn close_private_sqlite_connection(
     connection: Connection,
     operation: &'static str,
     artifact: SqliteArtifactKind,

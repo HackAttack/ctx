@@ -4,28 +4,25 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{
-    common::io::{open_provider_source_file, OpenedProviderSourceFile},
-    Result,
-};
+use crate::{open_provider_source_file, OpenedProviderSourceFile, Result};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{LazyLock, Mutex},
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static FORBIDDEN_CONTENT_OPENS: LazyLock<Mutex<BTreeSet<PathBuf>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
-#[cfg(test)]
-pub(crate) struct ForbiddenOrdinaryFileContentOpen {
+#[cfg(any(test, feature = "test-support"))]
+pub struct ForbiddenOrdinaryFileContentOpen {
     path: PathBuf,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for ForbiddenOrdinaryFileContentOpen {
     fn drop(&mut self) {
         let mut paths = FORBIDDEN_CONTENT_OPENS
@@ -35,8 +32,8 @@ impl Drop for ForbiddenOrdinaryFileContentOpen {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn forbid_ordinary_file_content_open(path: &Path) -> ForbiddenOrdinaryFileContentOpen {
+#[cfg(any(test, feature = "test-support"))]
+pub fn forbid_ordinary_file_content_open(path: &Path) -> ForbiddenOrdinaryFileContentOpen {
     let path = path.to_path_buf();
     let mut paths = FORBIDDEN_CONTENT_OPENS
         .lock()
@@ -45,7 +42,7 @@ pub(crate) fn forbid_ordinary_file_content_open(path: &Path) -> ForbiddenOrdinar
     ForbiddenOrdinaryFileContentOpen { path }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn reject_forbidden_content_open(path: &Path) -> Result<()> {
     let paths = FORBIDDEN_CONTENT_OPENS
         .lock()
@@ -107,13 +104,13 @@ fn observe_ordinary_file_inner(
     before_open: impl FnOnce(),
 ) -> Result<OrdinaryFileObservation> {
     before_open();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     reject_forbidden_content_open(path)?;
     let opened = open_provider_source_file(path)?;
     observe_opened_ordinary_file(path, &opened)
 }
 
-pub(crate) fn observe_opened_ordinary_file(
+pub fn observe_opened_ordinary_file(
     _path: &Path,
     opened: &OpenedProviderSourceFile,
 ) -> Result<OrdinaryFileObservation> {
@@ -127,8 +124,8 @@ pub(crate) fn observe_opened_ordinary_file(
     })
 }
 
-pub(crate) fn open_ordinary_file_without_following(path: &Path) -> Result<File> {
-    #[cfg(test)]
+pub fn open_ordinary_file_without_following(path: &Path) -> Result<File> {
+    #[cfg(any(test, feature = "test-support"))]
     reject_forbidden_content_open(path)?;
     open_provider_source_file(path)?
         .file()
@@ -136,7 +133,7 @@ pub(crate) fn open_ordinary_file_without_following(path: &Path) -> Result<File> 
         .map_err(Into::into)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests {
     use std::{
         io::{Seek, SeekFrom, Write},

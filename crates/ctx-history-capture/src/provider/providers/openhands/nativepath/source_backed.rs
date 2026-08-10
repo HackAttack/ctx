@@ -352,19 +352,32 @@ pub(crate) fn openhands_route_error(error: OpenHandsSourceBackedErrorV2) -> Sour
     SourceBackedRouteError::new(kind, error.to_string())
 }
 
-fn classify_openhands_event(path: &Path) -> crate::Result<Option<EventFileCoordinates>> {
+fn classify_openhands_event(
+    path: &Path,
+) -> Result<Option<EventFileCoordinates>, EventFileInventoryError> {
     if !openhands_json_path_is_event(path) {
         return Ok(None);
     }
     let (conversation_id, conversation_root) =
-        conversation_coordinate(path).map_err(openhands_error_as_capture)?;
-    let relative_file_key =
-        relative_event_file_key(&conversation_root, path).map_err(openhands_error_as_capture)?;
+        conversation_coordinate(path).map_err(|error| event_classifier_error(path, error))?;
+    let relative_file_key = relative_event_file_key(&conversation_root, path)
+        .map_err(|error| event_classifier_error(path, error))?;
     Ok(Some(EventFileCoordinates {
         group_key: conversation_id,
-        group_instance_key: openhands_checked_path_text(&conversation_root)?,
+        group_instance_key: openhands_checked_path_text(&conversation_root)
+            .map_err(|error| event_classifier_error(path, error.into()))?,
         relative_file_key,
     }))
+}
+
+fn event_classifier_error(
+    path: &Path,
+    error: OpenHandsSourceBackedErrorV2,
+) -> EventFileInventoryError {
+    EventFileInventoryError::InvalidPath {
+        path: path.to_path_buf(),
+        detail: openhands_error_as_capture(error).to_string(),
+    }
 }
 
 fn openhands_error_as_capture(error: OpenHandsSourceBackedErrorV2) -> CaptureError {

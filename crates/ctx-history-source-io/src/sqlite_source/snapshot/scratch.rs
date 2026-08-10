@@ -11,7 +11,7 @@ impl SqliteSourceReadSnapshot {
     /// than requesting SQLite temporary tables or temp B-tree sorts. This
     /// database is the explicit spill authority; it and all of its sidecars
     /// are removed when the callback returns, including on error unwind.
-    pub(crate) fn with_private_scratch_database<T, E>(
+    pub fn with_private_scratch_database<T, E>(
         &self,
         prefix: &str,
         maximum_bytes: u64,
@@ -181,11 +181,8 @@ impl SqliteSourceReadSnapshot {
         }
     }
 
-    #[cfg(test)]
-    pub(in crate::provider_sources::sqlite_source) fn with_private_scratch_database_after_use_for_test<
-        T,
-        E,
-    >(
+    #[cfg(any(test, feature = "test-support"))]
+    pub(in crate::sqlite_source) fn with_private_scratch_database_after_use_for_test<T, E>(
         &self,
         prefix: &str,
         maximum_bytes: u64,

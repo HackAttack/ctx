@@ -2,12 +2,12 @@ use super::*;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SqliteSourceComponent {
+pub enum SqliteSourceComponent {
     RollbackJournal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SqliteFailurePhase {
+pub enum SqliteFailurePhase {
     SourceAcquisition,
     SourceValidation,
     OnlineBackup,
@@ -18,7 +18,7 @@ pub(crate) enum SqliteFailurePhase {
 }
 
 impl SqliteFailurePhase {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::SourceAcquisition => "source_acquisition",
             Self::SourceValidation => "source_validation",
@@ -32,7 +32,7 @@ impl SqliteFailurePhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SqliteArtifactKind {
+pub enum SqliteArtifactKind {
     ProviderDatabase,
     ProviderWal,
     ProviderSharedMemory,
@@ -42,7 +42,7 @@ pub(crate) enum SqliteArtifactKind {
 }
 
 impl SqliteArtifactKind {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ProviderDatabase => "provider_database",
             Self::ProviderWal => "provider_wal",
@@ -55,7 +55,7 @@ impl SqliteArtifactKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SqliteRetryDecision {
+pub enum SqliteRetryDecision {
     DoNotRetry,
     DoNotRetryCorrupt,
     RetryBusyOrLocked,
@@ -64,7 +64,7 @@ pub(crate) enum SqliteRetryDecision {
 }
 
 impl SqliteRetryDecision {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::DoNotRetry => "do_not_retry",
             Self::DoNotRetryCorrupt => "do_not_retry_corrupt",
@@ -76,14 +76,14 @@ impl SqliteRetryDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SqliteCleanupStatus {
+pub enum SqliteCleanupStatus {
     NotRequired,
     Succeeded,
     Failed,
 }
 
 impl SqliteCleanupStatus {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::NotRequired => "not_required",
             Self::Succeeded => "succeeded",
@@ -101,15 +101,15 @@ impl SqliteCleanupStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SqliteFailureDiagnostic {
-    pub(crate) phase: SqliteFailurePhase,
-    pub(crate) artifact: SqliteArtifactKind,
-    pub(crate) sqlite_primary_code: Option<i32>,
-    pub(crate) sqlite_extended_code: Option<i32>,
-    pub(crate) copied_pages: u64,
-    pub(crate) copied_bytes: u64,
-    pub(crate) retry: SqliteRetryDecision,
-    pub(crate) cleanup: SqliteCleanupStatus,
+pub struct SqliteFailureDiagnostic {
+    pub phase: SqliteFailurePhase,
+    pub artifact: SqliteArtifactKind,
+    pub sqlite_primary_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub copied_pages: u64,
+    pub copied_bytes: u64,
+    pub retry: SqliteRetryDecision,
+    pub cleanup: SqliteCleanupStatus,
 }
 
 impl std::fmt::Display for SqliteFailureDiagnostic {
@@ -138,7 +138,7 @@ impl std::fmt::Display for SqliteSourceComponent {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum SqliteSourceAccessError {
+pub enum SqliteSourceAccessError {
     #[error("{diagnostic}: {source}")]
     Diagnosed {
         diagnostic: SqliteFailureDiagnostic,
@@ -221,7 +221,7 @@ pub(crate) enum SqliteSourceAccessError {
 }
 
 #[derive(Debug)]
-pub(crate) enum SqliteSourceProgressError<E> {
+pub enum SqliteSourceProgressError<E> {
     Source(SqliteSourceAccessError),
     Progress(E),
 }
@@ -233,7 +233,7 @@ impl<E> From<SqliteSourceAccessError> for SqliteSourceProgressError<E> {
 }
 
 impl SqliteSourceAccessError {
-    pub(crate) fn acquisition_artifact(&self) -> SqliteArtifactKind {
+    pub fn acquisition_artifact(&self) -> SqliteArtifactKind {
         match self {
             Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } => {
                 source.acquisition_artifact()
@@ -257,7 +257,7 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn is_systemic_resource_failure(&self) -> bool {
+    pub fn is_systemic_resource_failure(&self) -> bool {
         matches!(
             self,
             Self::ResourceUnavailable { .. }
@@ -271,7 +271,7 @@ impl SqliteSourceAccessError {
             || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_systemic_resource_failure())
     }
 
-    pub(crate) fn is_ctx_owned_corruption(&self) -> bool {
+    pub fn is_ctx_owned_corruption(&self) -> bool {
         match self {
             Self::ProviderContentCorruption { .. } => false,
             Self::Diagnosed { diagnostic, source } => {
@@ -289,7 +289,7 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn is_provider_corruption(&self) -> bool {
+    pub fn is_provider_corruption(&self) -> bool {
         match self {
             Self::ProviderContentCorruption { source } => matches!(
                 source.sqlite_codes().0,
@@ -311,7 +311,7 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn is_provider_path_unavailable(&self) -> bool {
+    pub fn is_provider_path_unavailable(&self) -> bool {
         match self {
             Self::Io { source, .. }
                 if matches!(
@@ -328,14 +328,14 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn is_busy_or_locked(&self) -> bool {
+    pub fn is_busy_or_locked(&self) -> bool {
         matches!(
             self.sqlite_codes().0,
             Some(ffi::SQLITE_BUSY) | Some(ffi::SQLITE_LOCKED)
         )
     }
 
-    pub(crate) fn is_operational_failure(&self) -> bool {
+    pub fn is_operational_failure(&self) -> bool {
         matches!(
             self,
             Self::Io { .. }
@@ -353,7 +353,7 @@ impl SqliteSourceAccessError {
         ) || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_operational_failure())
     }
 
-    pub(crate) fn diagnostic(&self) -> Option<&SqliteFailureDiagnostic> {
+    pub fn diagnostic(&self) -> Option<&SqliteFailureDiagnostic> {
         match self {
             Self::Diagnosed { diagnostic, .. } => Some(diagnostic),
             Self::ProviderContentCorruption { source } => source.diagnostic(),
@@ -361,12 +361,12 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn is_source_changed(&self) -> bool {
+    pub fn is_source_changed(&self) -> bool {
         matches!(self, Self::SourceChanged)
             || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_source_changed())
     }
 
-    pub(crate) fn with_diagnostic(
+    pub fn with_diagnostic(
         self,
         phase: SqliteFailurePhase,
         artifact: SqliteArtifactKind,
@@ -403,7 +403,7 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn with_cleanup_status(self, cleanup: SqliteCleanupStatus) -> Self {
+    pub fn with_cleanup_status(self, cleanup: SqliteCleanupStatus) -> Self {
         match self {
             Self::Diagnosed {
                 mut diagnostic,
@@ -422,7 +422,7 @@ impl SqliteSourceAccessError {
         }
     }
 
-    pub(crate) fn with_exact_provider_content_provenance(self) -> Self {
+    pub fn with_exact_provider_content_provenance(self) -> Self {
         if matches!(
             self.sqlite_codes().0,
             Some(ffi::SQLITE_CORRUPT) | Some(ffi::SQLITE_NOTADB)
@@ -454,7 +454,7 @@ impl SqliteSourceAccessError {
         (extended.map(|code| code & 0xff), extended)
     }
 
-    pub(crate) fn private_scratch_sqlite(operation: &'static str, source: rusqlite::Error) -> Self {
+    pub fn private_scratch_sqlite(operation: &'static str, source: rusqlite::Error) -> Self {
         let resource_failure = matches!(
             &source,
             rusqlite::Error::SqliteFailure(error, _)
@@ -476,7 +476,7 @@ impl SqliteSourceAccessError {
 }
 
 impl SqliteSourceReadSnapshot {
-    pub(crate) fn diagnose_provider_query_error(
+    pub fn diagnose_provider_query_error(
         &self,
         operation: &'static str,
         source: rusqlite::Error,
@@ -508,14 +508,14 @@ impl SqliteSourceReadSnapshot {
     }
 }
 
-pub(crate) fn rusqlite_resource_failure(error: &rusqlite::Error) -> bool {
+pub fn rusqlite_resource_failure(error: &rusqlite::Error) -> bool {
     matches!(
         error,
         rusqlite::Error::SqliteFailure(error, _) if sqlite_resource_code(error.extended_code)
     )
 }
 
-pub(crate) fn rusqlite_busy_or_locked(error: &rusqlite::Error) -> bool {
+pub fn rusqlite_busy_or_locked(error: &rusqlite::Error) -> bool {
     matches!(
         error,
         rusqlite::Error::SqliteFailure(error, _)
@@ -538,7 +538,7 @@ fn sqlite_resource_code(code: i32) -> bool {
     )
 }
 
-pub(crate) fn resource_exhaustion_io_error(error: &std::io::Error) -> bool {
+pub fn resource_exhaustion_io_error(error: &std::io::Error) -> bool {
     if matches!(
         error.kind(),
         std::io::ErrorKind::OutOfMemory

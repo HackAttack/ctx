@@ -473,7 +473,7 @@ fn current_errno() -> libc::c_int {
     unsafe { *errno_location() }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests {
     #[test]
     fn eopnotsupp_is_classified_as_a_special_file_rejection() {

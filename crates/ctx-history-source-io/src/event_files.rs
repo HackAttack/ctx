@@ -18,20 +18,16 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    common::io::{
-        open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
-        ProviderSourceDirectory, ProviderSourceRoot,
-    },
-    CaptureError, Result,
+    observe_opened_ordinary_file, open_provider_source_path, OpenedProviderSourceFile,
+    OpenedProviderSourcePath, OrdinaryFileObservation, ProviderSourceDirectory, ProviderSourceRoot,
+    SourceIoError,
 };
-
-use super::ordinary_file::{observe_opened_ordinary_file, OrdinaryFileObservation};
 
 const GROUP_OBSERVATION_DOMAIN: &[u8] = b"ctx.event-files.group-observation.v1\0";
 const INVENTORY_OBSERVATION_DOMAIN: &[u8] = b"ctx.event-files.inventory-observation.v1\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EventFileLimits {
+pub struct EventFileLimits {
     pub max_depth: usize,
     pub max_entries: usize,
     pub max_path_bytes: usize,
@@ -39,14 +35,14 @@ pub(crate) struct EventFileLimits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EventFileCoordinates {
+pub struct EventFileCoordinates {
     pub group_key: String,
     pub group_instance_key: String,
     pub relative_file_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EventFileLimit {
+pub enum EventFileLimit {
     Depth,
     Entries,
     PathBytes,
@@ -63,7 +59,7 @@ impl std::fmt::Display for EventFileLimit {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub(crate) enum EventFileInventoryError {
+pub enum EventFileInventoryError {
     #[error("event-file source {path:?} is unavailable: {detail}")]
     Unavailable { path: PathBuf, detail: String },
     #[error("event-file source {path:?} changed while retained: {detail}")]
@@ -102,11 +98,11 @@ pub(crate) enum EventFileInventoryError {
     MissingGroup(String),
 }
 
-pub(crate) type EventFileInventoryResult<T> = std::result::Result<T, EventFileInventoryError>;
-type EventFileClassifier = fn(&Path) -> Result<Option<EventFileCoordinates>>;
+pub type EventFileInventoryResult<T> = std::result::Result<T, EventFileInventoryError>;
+type EventFileClassifier = fn(&Path) -> EventFileInventoryResult<Option<EventFileCoordinates>>;
 
 #[derive(Debug)]
-pub(crate) struct EventFileLeaf {
+pub struct EventFileLeaf {
     group_ordinal: usize,
     leaf_ordinal: usize,
     selected_relative_path: PathBuf,
@@ -117,27 +113,27 @@ pub(crate) struct EventFileLeaf {
 }
 
 impl EventFileLeaf {
-    pub(crate) fn group_ordinal(&self) -> usize {
+    pub fn group_ordinal(&self) -> usize {
         self.group_ordinal
     }
 
-    pub(crate) fn leaf_ordinal(&self) -> usize {
+    pub fn leaf_ordinal(&self) -> usize {
         self.leaf_ordinal
     }
 
-    pub(crate) fn selected_relative_path(&self) -> &Path {
+    pub fn selected_relative_path(&self) -> &Path {
         &self.selected_relative_path
     }
 
-    pub(crate) fn display_path(&self) -> &Path {
+    pub fn display_path(&self) -> &Path {
         &self.display_path
     }
 
-    pub(crate) fn coordinates(&self) -> &EventFileCoordinates {
+    pub fn coordinates(&self) -> &EventFileCoordinates {
         &self.coordinates
     }
 
-    pub(crate) fn metadata(&self) -> &Metadata {
+    pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 }
@@ -151,7 +147,7 @@ struct OwnedEventFileGroup {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct EventFileGroup<'inventory> {
+pub struct EventFileGroup<'inventory> {
     inventory: &'inventory EventFileInventory,
     index: usize,
 }
@@ -161,33 +157,33 @@ impl<'inventory> EventFileGroup<'inventory> {
         &self.inventory.groups[self.index]
     }
 
-    pub(crate) fn group_key(&self) -> &'inventory str {
+    pub fn group_key(&self) -> &'inventory str {
         &self.owned().group_key
     }
 
-    pub(crate) fn ordinal(&self) -> usize {
+    pub fn ordinal(&self) -> usize {
         self.owned().ordinal
     }
 
-    pub(crate) fn leaves(&self) -> &'inventory [EventFileLeaf] {
+    pub fn leaves(&self) -> &'inventory [EventFileLeaf] {
         &self.owned().leaves
     }
 
-    pub(crate) fn leaf_at(&self, leaf_ordinal: usize) -> Option<&'inventory EventFileLeaf> {
+    pub fn leaf_at(&self, leaf_ordinal: usize) -> Option<&'inventory EventFileLeaf> {
         self.owned().leaves.get(leaf_ordinal)
     }
 
-    pub(crate) fn observation_digest(&self) -> [u8; 32] {
+    pub fn observation_digest(&self) -> [u8; 32] {
         self.owned().observation_digest
     }
 
-    pub(crate) fn read_leaf_at(&self, leaf_ordinal: usize) -> EventFileInventoryResult<Vec<u8>> {
+    pub fn read_leaf_at(&self, leaf_ordinal: usize) -> EventFileInventoryResult<Vec<u8>> {
         self.inventory.read_leaf_at(self.index, leaf_ordinal)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct EventFileInventory {
+pub struct EventFileInventory {
     selected_path: PathBuf,
     selected_relative_path: PathBuf,
     selected_file: bool,
@@ -196,19 +192,19 @@ pub(crate) struct EventFileInventory {
     observation_digest: [u8; 32],
     limits: EventFileLimits,
     classify: EventFileClassifier,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     io_counter: Option<tests::EventFileIoCounter>,
 }
 
 impl EventFileInventory {
-    pub(crate) fn open(
+    pub fn open(
         selected: &Path,
         limits: EventFileLimits,
         classify: EventFileClassifier,
     ) -> EventFileInventoryResult<Self> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         tests::note_inventory_open();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let io_counter = tests::current_event_file_io_counter();
 
         let selected_path = normalized_absolute_path(selected)?;
@@ -280,30 +276,30 @@ impl EventFileInventory {
             observation_digest,
             limits,
             classify,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             io_counter,
         })
     }
 
-    pub(crate) fn selected_path(&self) -> &Path {
+    pub fn selected_path(&self) -> &Path {
         &self.selected_path
     }
 
-    #[cfg(test)]
-    pub(crate) fn selected_file(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn selected_file(&self) -> bool {
         self.selected_file
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.groups.is_empty()
     }
 
-    #[cfg(test)]
-    pub(crate) fn retained_authority_handles(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retained_authority_handles(&self) -> usize {
         1
     }
 
-    pub(crate) fn groups(
+    pub fn groups(
         &self,
     ) -> impl ExactSizeIterator<Item = EventFileGroup<'_>> + DoubleEndedIterator {
         (0..self.groups.len()).map(|index| EventFileGroup {
@@ -312,18 +308,18 @@ impl EventFileInventory {
         })
     }
 
-    pub(crate) fn group_at(&self, group_ordinal: usize) -> Option<EventFileGroup<'_>> {
+    pub fn group_at(&self, group_ordinal: usize) -> Option<EventFileGroup<'_>> {
         self.groups.get(group_ordinal).map(|_| EventFileGroup {
             inventory: self,
             index: group_ordinal,
         })
     }
 
-    pub(crate) fn observation_digest(&self) -> [u8; 32] {
+    pub fn observation_digest(&self) -> [u8; 32] {
         self.observation_digest
     }
 
-    pub(crate) fn revalidate_all(&self) -> EventFileInventoryResult<()> {
+    pub fn revalidate_all(&self) -> EventFileInventoryResult<()> {
         let current = discover_groups(
             &self.root,
             &self.selected_path,
@@ -354,7 +350,7 @@ impl EventFileInventory {
         group_ordinal: usize,
         leaf_ordinal: usize,
     ) -> EventFileInventoryResult<Vec<u8>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         tests::note_leaf_lookup(self.io_counter.as_ref());
         let group = self
             .groups
@@ -371,7 +367,7 @@ impl EventFileInventory {
         })?;
         let opened = self.open_verified_leaf(leaf)?;
         let _handle = transient_handle(TransientHandleKind::Leaf);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         tests::note_body_read(self.io_counter.as_ref());
         let bytes = opened
             .read_all_bounded(self.limits.max_record_bytes)
@@ -428,7 +424,7 @@ fn discover_groups(
     classify: EventFileClassifier,
     error_mode: DiscoveryErrorMode,
 ) -> EventFileInventoryResult<Vec<OwnedEventFileGroup>> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     tests::note_inventory_walk();
     let mut state = DiscoveryState {
         leaves: Vec::new(),
@@ -533,9 +529,7 @@ fn discover_directory(
             }
             OpenedProviderSourcePath::File(file) => {
                 let _handle = transient_handle(TransientHandleKind::Leaf);
-                let Some(coordinates) = classify(&display_path)
-                    .map_err(|error| invalid(&display_path, error.to_string()))?
-                else {
+                let Some(coordinates) = classify(&display_path)? else {
                     continue;
                 };
                 state.leaves.push(admit_leaf(
@@ -685,7 +679,7 @@ fn normalized_absolute_path(path: &Path) -> EventFileInventoryResult<PathBuf> {
         path.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|error| unavailable(path, CaptureError::Io(error)))?
+            .map_err(|error| unavailable(path, SourceIoError::Io(error)))?
             .join(path)
     };
     let mut normalized = PathBuf::new();
@@ -730,7 +724,7 @@ fn validate_path(path: &Path, maximum: usize) -> EventFileInventoryResult<()> {
 }
 
 fn group_observation_digest(group_key: &str, leaves: &[EventFileLeaf]) -> [u8; 32] {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     tests::note_group_digest_build();
     let mut digest = Sha256::new();
     digest.update(GROUP_OBSERVATION_DOMAIN);
@@ -746,7 +740,7 @@ fn group_observation_digest(group_key: &str, leaves: &[EventFileLeaf]) -> [u8; 3
 }
 
 fn inventory_observation_digest(groups: &[OwnedEventFileGroup]) -> [u8; 32] {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     tests::note_inventory_digest_build();
     let mut digest = Sha256::new();
     digest.update(INVENTORY_OBSERVATION_DOMAIN);
@@ -779,7 +773,7 @@ fn hash_system_time(digest: &mut Sha256, value: SystemTime) {
     }
 }
 
-fn unavailable(path: &Path, error: CaptureError) -> EventFileInventoryError {
+fn unavailable(path: &Path, error: SourceIoError) -> EventFileInventoryError {
     EventFileInventoryError::Unavailable {
         path: path.to_path_buf(),
         detail: error.to_string(),
@@ -788,13 +782,13 @@ fn unavailable(path: &Path, error: CaptureError) -> EventFileInventoryError {
 
 fn inventory_entries_error(
     path: &Path,
-    error: CaptureError,
+    error: SourceIoError,
     maximum: usize,
     error_mode: DiscoveryErrorMode,
 ) -> EventFileInventoryError {
     if matches!(
         &error,
-        CaptureError::InvalidProviderTranscriptPath { reason, .. }
+        SourceIoError::InvalidProviderTranscriptPath { reason, .. }
             if *reason == "provider source directory exceeds its bounded entry budget"
     ) {
         EventFileInventoryError::LimitExceeded {
@@ -810,7 +804,7 @@ fn inventory_entries_error(
 
 fn discovery_error(
     path: &Path,
-    error: CaptureError,
+    error: SourceIoError,
     error_mode: DiscoveryErrorMode,
 ) -> EventFileInventoryError {
     match error_mode {
@@ -819,7 +813,7 @@ fn discovery_error(
     }
 }
 
-fn changed(path: &Path, error: CaptureError) -> EventFileInventoryError {
+fn changed(path: &Path, error: SourceIoError) -> EventFileInventoryError {
     EventFileInventoryError::SourceChanged {
         path: path.to_path_buf(),
         detail: error.to_string(),
@@ -846,34 +840,34 @@ enum TransientHandleKind {
     Directory,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 struct TransientHandleGuard;
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn transient_handle(_kind: TransientHandleKind) -> TransientHandleGuard {
     TransientHandleGuard
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct TransientHandleGuard {
     kind: TransientHandleKind,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn transient_handle(kind: TransientHandleKind) -> TransientHandleGuard {
     tests::note_handle_opened(kind);
     TransientHandleGuard { kind }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TransientHandleGuard {
     fn drop(&mut self) {
         tests::note_handle_closed(self.kind);
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "event_files/tests.rs"]
 mod tests;
-#[cfg(test)]
-pub(crate) use tests::count_event_file_io;
+#[cfg(any(test, feature = "test-support"))]
+pub use tests::count_event_file_io;

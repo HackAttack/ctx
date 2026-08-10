@@ -16,7 +16,7 @@ use ctx_history_core::ScannedSourceCounts;
 use rusqlite::{config::DbConfig, ffi, params, Connection};
 use sha2::{Digest, Sha256};
 
-use crate::provider::source_backed::SourceBackedCurrentSourceProgressStage;
+use crate::SqliteSourceProgressStage;
 
 use super::{
     certify_root_handle_sqlite_source_snapshot_copy_budget_for_test, map_revalidation_error,
@@ -1070,7 +1070,7 @@ fn logical_online_backup_progress_is_monotonic_and_terminal() {
 
     let backup = progress
         .iter()
-        .filter(|update| update.stage == SourceBackedCurrentSourceProgressStage::OnlineBackup)
+        .filter(|update| update.stage == SqliteSourceProgressStage::OnlineBackup)
         .collect::<Vec<_>>();
     assert!(backup.len() >= 2);
     assert_eq!(backup[0].snapshot_pages_completed, Some(0));

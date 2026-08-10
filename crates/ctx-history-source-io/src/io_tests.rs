@@ -20,7 +20,7 @@ use super::{
     inventory_provider_regular_paths, open_provider_source_file, provider_regular_file_len,
     ProviderJsonlInventoryLimits, ProviderSourceRoot, PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
 };
-use crate::{CaptureError, ProviderJsonlInventoryLimit};
+use crate::{ProviderJsonlInventoryLimit, SourceIoError};
 
 #[cfg(target_os = "windows")]
 use super::{
@@ -46,7 +46,7 @@ fn bounded_jsonl_collection_stops_before_allocating_the_max_plus_one_path() {
     assert!(paths.is_empty());
     assert!(matches!(
         error,
-        CaptureError::ProviderJsonlInventoryLimitExceeded {
+        SourceIoError::ProviderJsonlInventoryLimitExceeded {
             limit: ProviderJsonlInventoryLimit::EligiblePaths,
             maximum: 3,
             observed: 4,
@@ -72,7 +72,7 @@ fn non_jsonl_entries_consume_the_metadata_budget() {
 
     assert!(matches!(
         error,
-        CaptureError::ProviderJsonlInventoryLimitExceeded {
+        SourceIoError::ProviderJsonlInventoryLimitExceeded {
             limit: ProviderJsonlInventoryLimit::MetadataEntries,
             maximum: 4,
             observed: 5,
@@ -100,7 +100,7 @@ fn iterative_provider_inventory_rejects_depth_beyond_the_explicit_bound() {
 
     assert!(matches!(
         error,
-        CaptureError::ProviderJsonlInventoryLimitExceeded {
+        SourceIoError::ProviderJsonlInventoryLimitExceeded {
             limit: ProviderJsonlInventoryLimit::Depth,
             maximum: 3,
             observed: 4,
@@ -126,7 +126,7 @@ fn wide_provider_inventory_rejects_too_many_directories() {
 
     assert!(matches!(
         error,
-        CaptureError::ProviderJsonlInventoryLimitExceeded {
+        SourceIoError::ProviderJsonlInventoryLimitExceeded {
             limit: ProviderJsonlInventoryLimit::Directories,
             maximum: 3,
             observed: 4,
@@ -221,7 +221,7 @@ fn regular_provider_inventory_applies_file_and_metadata_limits_to_non_jsonl_sour
     .unwrap_err();
     assert!(matches!(
         error,
-        CaptureError::ProviderJsonlInventoryLimitExceeded {
+        SourceIoError::ProviderJsonlInventoryLimitExceeded {
             limit: ProviderJsonlInventoryLimit::EligiblePaths,
             maximum: 2,
             observed: 3,
@@ -282,7 +282,7 @@ fn provider_inventory_rejects_overlong_encoded_paths_before_io() {
 
     let error =
         inventory_provider_jsonl_paths(&path, ProviderJsonlInventoryLimits::default()).unwrap_err();
-    assert!(matches!(error, CaptureError::InvalidPayload(_)));
+    assert!(matches!(error, SourceIoError::InvalidPayload(_)));
 }
 
 #[test]
@@ -381,10 +381,10 @@ fn source_root_safety_windows_reparse_parent_is_rejected() {
     target_os = "freebsd",
     target_os = "windows"
 ))]
-fn assert_retained_authority_changed(error: CaptureError) {
+fn assert_retained_authority_changed(error: SourceIoError) {
     assert!(matches!(
         error,
-        CaptureError::InvalidProviderTranscriptPath { reason, .. }
+        SourceIoError::InvalidProviderTranscriptPath { reason, .. }
             if reason.contains("changed while its authority handle was retained")
     ));
 }
@@ -551,7 +551,7 @@ fn source_root_safety_concurrent_descendant_symlink_swap_cannot_read_outside_roo
 
     assert!(matches!(
         authority.open_file(std::path::Path::new("nested/source.jsonl")),
-        Err(CaptureError::InvalidProviderTranscriptPath { .. })
+        Err(SourceIoError::InvalidProviderTranscriptPath { .. })
     ));
 }
 
@@ -561,7 +561,7 @@ fn source_root_safety_linux_virtual_and_unqualified_roots_fail_closed() {
     for path in [std::path::Path::new("/proc"), std::path::Path::new("/sys")] {
         assert!(matches!(
             ProviderSourceRoot::open(path),
-            Err(CaptureError::InvalidProviderTranscriptPath { .. })
+            Err(SourceIoError::InvalidProviderTranscriptPath { .. })
         ));
     }
 }
@@ -576,7 +576,7 @@ fn source_root_safety_windows_unc_network_and_device_roots_fail_closed() {
     ] {
         assert!(matches!(
             ProviderSourceRoot::open(path),
-            Err(CaptureError::InvalidProviderTranscriptPath { .. })
+            Err(SourceIoError::InvalidProviderTranscriptPath { .. })
         ));
     }
 }
@@ -622,6 +622,6 @@ fn source_root_safety_bsd_family_local_authority_fixture_reads_exact_bytes() {
 fn source_root_safety_unsupported_platform_fails_closed() {
     assert!(matches!(
         ProviderSourceRoot::open(std::path::Path::new("/provider")),
-        Err(CaptureError::InvalidProviderTranscriptPath { .. })
+        Err(SourceIoError::InvalidProviderTranscriptPath { .. })
     ));
 }

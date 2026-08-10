@@ -33,11 +33,11 @@ mod certification;
 mod copy_progress;
 mod scratch;
 mod source_copy;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod test_api;
-#[cfg(test)]
-pub(crate) use test_api::open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+pub use test_api::open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test;
+#[cfg(any(test, feature = "test-support"))]
 pub(super) use test_api::{
     certify_root_handle_sqlite_source_snapshot_copy_budget_for_test,
     online_backup_contention_deadline_error_for_test,
@@ -51,15 +51,15 @@ pub(super) use test_api::{
     run_online_backup_with_deadline_for_test,
 };
 
-#[cfg(test)]
-pub(crate) use acquisition::fail_next_opened_snapshot_cleanup_for_test;
+#[cfg(any(test, feature = "test-support"))]
+pub use acquisition::fail_next_opened_snapshot_cleanup_for_test;
 pub(super) use acquisition::{close_private_snapshot_directory, close_private_sqlite_connection};
 use copy_progress::{copy_sqlite_member_with_progress, report_source_family_copy_progress};
 use {acquisition::*, backup_handle::*, certification::*, source_copy::*};
 
 /// Retains an approved parent-directory handle together with the pathname that
 /// stock SQLite is allowed to open beneath it.
-pub(crate) fn retain_sqlite_source_directory_authority(
+pub fn retain_sqlite_source_directory_authority(
     data_root: &Path,
     authorized_parent: &File,
     approved_parent_path: &Path,
@@ -68,7 +68,7 @@ pub(crate) fn retain_sqlite_source_directory_authority(
 }
 
 /// Opens one approved SQLite leaf through stock rusqlite/SQLite behavior.
-pub(crate) fn open_root_handle_sqlite_source_snapshot(
+pub fn open_root_handle_sqlite_source_snapshot(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
 ) -> SqliteSourceAccessResult<SqliteSourceReadSnapshot> {
@@ -81,7 +81,7 @@ pub(crate) fn open_root_handle_sqlite_source_snapshot(
         || {},
     )
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn open_root_handle_sqlite_source_snapshot_with_policy(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
@@ -100,7 +100,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_policy(
 pub(super) fn open_root_handle_sqlite_source_logical_snapshot_with_progress<E>(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<SqliteSourceReadSnapshot, SqliteSourceProgressError<E>> {
     for attempt in 0..SQLITE_SOURCE_TRANSITION_ATTEMPTS {
         let family =
@@ -129,7 +129,7 @@ pub(super) fn open_root_handle_sqlite_source_logical_snapshot_with_progress<E>(
             Err(SqliteSourceProgressError::Source(error))
                 if error.is_source_changed() && attempt + 1 < SQLITE_SOURCE_TRANSITION_ATTEMPTS =>
             {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 authority
                     .snapshot_context
                     .record_logical_source_transition_retry()?;
@@ -206,9 +206,9 @@ fn open_root_handle_sqlite_source_snapshot_inner(
     let evidence = SqliteSourceEvidence::from_snapshot(&native_evidence, &sqlite_evidence);
     let AcquiredSqliteConnection {
         connection,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         strategy,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         copied_bytes,
         snapshot_directory,
         snapshot_activity,
@@ -221,17 +221,17 @@ fn open_root_handle_sqlite_source_snapshot_inner(
         evidence,
         policy,
         admitted_revision_is_replay_safe: true,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         certification: None,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         strategy,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         copied_bytes,
         _snapshot_directory: snapshot_directory,
         snapshot_activity: Some(snapshot_activity),
         snapshot_context: Arc::clone(&authority.snapshot_context),
         terminal_fence_slot: Arc::default(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fail_next_cleanup: take_opened_snapshot_cleanup_failure_for_test(),
     };
     Ok(snapshot)
@@ -278,7 +278,7 @@ fn open_logical_online_backup_snapshot_with_progress<
         AfterOnlineBackup,
     >,
     scratch_limit: u64,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<SqliteSourceReadSnapshot, SqliteSourceProgressError<E>>
 where
     AfterDatabaseCopy: FnOnce(),
@@ -651,7 +651,7 @@ where
             };
         }
     };
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = backup_certification;
     let evidence = SqliteSourceEvidence::from_snapshot(&native_evidence, &sqlite_evidence);
     let snapshot = SqliteSourceReadSnapshot {
@@ -662,20 +662,20 @@ where
         evidence,
         policy: SqliteSourceSnapshotPolicy::LogicalOnlineBackup,
         admitted_revision_is_replay_safe,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         certification: Some(SqliteSnapshotCertification {
             source: source_certification,
             backup: backup_certification,
         }),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         strategy: SqliteSourceSnapshotStrategy::LogicalOnlineBackup,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         copied_bytes: snapshot_bytes,
         _snapshot_directory: Some(snapshot_directory),
         snapshot_activity: Some(snapshot_activity),
         snapshot_context: Arc::clone(&authority.snapshot_context),
         terminal_fence_slot: Arc::default(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fail_next_cleanup: take_opened_snapshot_cleanup_failure_for_test(),
     };
     Ok(snapshot)
@@ -686,7 +686,7 @@ fn online_backup_to_ctx<E>(
     source: &Connection,
     scratch_limit: u64,
     bounds: OnlineBackupBounds,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<(TempDir, PathBuf, u64), SqliteSourceProgressError<E>> {
     let directory = create_snapshot_directory(data_root, "provider-sqlite-online-backup-")?;
     let snapshot_path = directory.path().join("source.sqlite");
@@ -816,7 +816,7 @@ fn run_online_backup_with_progress<E>(
     source: &Connection,
     destination: &Connection,
     bounds: OnlineBackupBounds,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<(), SqliteSourceProgressError<E>> {
     let deadline = Instant::now()
         .checked_add(SQLITE_ONLINE_BACKUP_DEADLINE)
@@ -948,7 +948,7 @@ fn report_online_backup_step<E>(
     bounds: OnlineBackupBounds,
     previous_completed: u64,
     terminal: bool,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<u64, SqliteSourceProgressError<E>> {
     let total = unsafe { ffi::sqlite3_backup_pagecount(backup.pointer()) };
     let remaining = unsafe { ffi::sqlite3_backup_remaining(backup.pointer()) };
@@ -981,15 +981,13 @@ fn report_online_backup_step<E>(
 fn online_backup_progress(
     completed_pages: u64,
     bounds: OnlineBackupBounds,
-) -> SqliteSourceAccessResult<SourceBackedCurrentSourceProgress> {
+) -> SqliteSourceAccessResult<SqliteSourceProgress> {
     let completed_bytes = completed_pages
         .checked_mul(bounds.page_size)
         .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
             reason: "the logical SQLite backup progress byte count overflowed".to_owned(),
         })?;
-    let mut progress = SourceBackedCurrentSourceProgress::new(
-        SourceBackedCurrentSourceProgressStage::OnlineBackup,
-    );
+    let mut progress = SqliteSourceProgress::new(SqliteSourceProgressStage::OnlineBackup);
     progress.snapshot_pages_completed = Some(completed_pages);
     progress.snapshot_pages_total = Some(bounds.page_count);
     progress.snapshot_bytes_completed = Some(completed_bytes);

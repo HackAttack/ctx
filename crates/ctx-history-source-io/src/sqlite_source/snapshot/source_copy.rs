@@ -64,7 +64,7 @@ pub(super) fn acquire_online_backup_source<E>(
     evidence: &SqliteFamilyEvidence,
     copy_hooks: (impl FnOnce(), impl FnOnce(&Path)),
     scratch_limit: u64,
-    report_progress: &mut impl FnMut(SourceBackedCurrentSourceProgress) -> Result<(), E>,
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<OnlineBackupSource, SqliteSourceProgressError<E>> {
     let (after_database_copy, after_private_source_copy) = copy_hooks;
     let committed_wal = evidence.wal.as_ref().is_some_and(|state| state.length != 0);
