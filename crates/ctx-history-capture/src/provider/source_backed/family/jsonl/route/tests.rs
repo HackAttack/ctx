@@ -309,7 +309,13 @@ impl JsonlFamilyAdapter for FrozenMultiRootTestAdapter {
             authorities.push(authority);
         }
         authorities.reverse();
-        JsonlFamilyInventory::present_multi(self.provider(), root, authorities, leaves)
+        JsonlFamilyInventory::present_multi_with_rejected(
+            self.provider(),
+            root,
+            authorities,
+            leaves,
+            Vec::new(),
+        )
     }
 
     fn projector(

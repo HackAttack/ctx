@@ -135,6 +135,18 @@ fn install_supervisor_command_probe(root: &Path) -> (PathBuf, PathBuf) {
     (probe_bin, log)
 }
 
+fn install_supervisor_command_stub(root: &Path) -> PathBuf {
+    let stub_bin = root.join("supervisor-stub-bin");
+    fs::create_dir_all(&stub_bin).unwrap();
+    let body = b"#!/bin/sh\ncase \"$*\" in\n  *is-enabled*|*is-active*|*print*) exit 1 ;;\n  *) exit 0 ;;\nesac\n";
+    for command in ["systemctl", "launchctl"] {
+        let path = stub_bin.join(command);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    stub_bin
+}
+
 fn assert_autostart_supervisor_is_fenced(
     binary: &Path,
     environment_root: &Path,
@@ -300,6 +312,7 @@ fn fresh_custom_root_daemon_cannot_enter_after_all_root_proof_before_helper_comm
     let temp = tempdir();
     let (supervisor_probe_bin, supervisor_probe_log) =
         install_supervisor_command_probe(temp.path());
+    let supervisor_stub_bin = install_supervisor_command_stub(temp.path());
     let install = copied_ctx_binary(&temp);
     let marker = install.with_file_name(format!(
         "{}.install.json",
@@ -339,12 +352,11 @@ fn fresh_custom_root_daemon_cannot_enter_after_all_root_proof_before_helper_comm
 
     let requested_root = temp.path().join("requested-custom-root");
     let mut teardown = isolated_command(&install, temp.path());
-    teardown.arg("--data-root").arg(&requested_root).args([
-        "daemon",
-        "disable",
-        "--prepare-uninstall",
-        "--format=json",
-    ]);
+    teardown
+        .env("PATH", &supervisor_stub_bin)
+        .arg("--data-root")
+        .arg(&requested_root)
+        .args(["daemon", "disable", "--prepare-uninstall", "--format=json"]);
     let proof = successful_json(teardown);
     assert_eq!(proof["installation_quiescent"], true);
     assert_eq!(proof["coordination_state_removed"], true);

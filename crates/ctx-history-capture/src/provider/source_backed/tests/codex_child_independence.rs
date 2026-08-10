@@ -227,6 +227,26 @@ fn write_session(
     fs::write(session_path(root, native_session_id), jsonl_bytes(records)).unwrap();
 }
 
+fn write_session_with_advisory(
+    root: &Path,
+    native_session_id: &str,
+    parent_native_session_id: &str,
+    advisory_session_id: &str,
+    marker: &str,
+) {
+    let mut meta = session_meta(
+        native_session_id,
+        SessionRelationshipKind::Delegated,
+        Some(parent_native_session_id),
+    );
+    meta["payload"]["session_id"] = serde_json::json!(advisory_session_id);
+    fs::write(
+        session_path(root, native_session_id),
+        jsonl_bytes([meta, message(marker)]),
+    )
+    .unwrap();
+}
+
 fn append_event(path: &Path, event: serde_json::Value) {
     let mut file = OpenOptions::new().append(true).open(path).unwrap();
     file.write_all(&jsonl_bytes([event])).unwrap();
@@ -422,13 +442,6 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
 
     write_session(
         &sessions,
-        parent,
-        SessionRelationshipKind::Root,
-        None,
-        [message("parent-initial-marker")],
-    );
-    write_session(
-        &sessions,
         child,
         SessionRelationshipKind::Delegated,
         Some(parent),
@@ -446,6 +459,17 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
     let initial = VerifiedIndex::open(&index_root).unwrap();
     let child_snapshot = source_snapshot(&initial, child, "child-stable-marker");
     let grandchild_snapshot = source_snapshot(&initial, grandchild, "grandchild-stable-marker");
+    drop(initial);
+
+    write_session(
+        &sessions,
+        parent,
+        SessionRelationshipKind::Root,
+        None,
+        [message("parent-initial-marker")],
+    );
+    let arrived = refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    assert_eq!(arrived.get(parent).unwrap().counters.cold_sources, 1);
 
     append_event(&parent_path, message("parent-append-marker"));
     let appended =
@@ -502,6 +526,124 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
     assert_eq!(
         source_snapshot(&final_index, grandchild, "grandchild-stable-marker"),
         grandchild_snapshot
+    );
+}
+
+#[test]
+fn source_local_conflict_retains_last_good_base_while_peer_publishes() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let parent = "019fb000-0000-7000-8000-000000000004";
+    let child = "019fb000-0000-7000-8000-000000000005";
+    let peer = "019fb000-0000-7000-8000-000000000006";
+    let advisory = "019fb000-0000-7000-8000-000000000007";
+    write_session(
+        &sessions,
+        parent,
+        SessionRelationshipKind::Root,
+        None,
+        [message("retention-parent-marker")],
+    );
+    write_session(
+        &sessions,
+        child,
+        SessionRelationshipKind::Delegated,
+        Some(parent),
+        [message("retention-last-good-marker")],
+    );
+    write_session(
+        &sessions,
+        peer,
+        SessionRelationshipKind::Root,
+        None,
+        [message("peeroldcontentuniqueabc")],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let initial = VerifiedIndex::open(&index_root).unwrap();
+    let child_snapshot = source_snapshot(&initial, child, "retention-last-good-marker");
+    drop(initial);
+
+    write_session_with_advisory(
+        &sessions,
+        child,
+        parent,
+        advisory,
+        "rejectedcontentuniquetokenxyz",
+    );
+    fs::remove_file(session_path(&sessions, parent)).unwrap();
+    write_session(
+        &sessions,
+        peer,
+        SessionRelationshipKind::Root,
+        None,
+        [message("peernewcontentuniquexyz")],
+    );
+    let assert_retained = |receipt: SourceBackedRefreshReceipt| {
+        let [failure] = receipt.logical_source_failures.failures() else {
+            panic!("one source-local conflict expected");
+        };
+        assert!(failure.carried_forward);
+        let retained = VerifiedIndex::open(&index_root).unwrap();
+        assert_eq!(
+            source_snapshot(&retained, child, "retention-last-good-marker"),
+            child_snapshot
+        );
+        assert!(retained
+            .search_event_candidates("rejectedcontentuniquetokenxyz", 8)
+            .unwrap()
+            .is_empty());
+        failure.detail.clone()
+    };
+    let refresh =
+        || refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let failure_detail = assert_retained(refresh());
+    assert!(failure_detail.contains(&format!("evidence_source_record=session_meta:{child}")));
+
+    write_session(
+        &sessions,
+        parent,
+        SessionRelationshipKind::Root,
+        None,
+        [message("retention-parent-arrived")],
+    );
+    assert_eq!(assert_retained(refresh()), failure_detail);
+    write_session(
+        &sessions,
+        advisory,
+        SessionRelationshipKind::Root,
+        None,
+        [message("retention-advisory-arrived")],
+    );
+    assert_eq!(assert_retained(refresh()), failure_detail);
+    write_session(
+        &sessions,
+        parent,
+        SessionRelationshipKind::Root,
+        None,
+        [message("retention-parent-rewritten")],
+    );
+    write_session(
+        &sessions,
+        advisory,
+        SessionRelationshipKind::Root,
+        None,
+        [message("retention-advisory-rewritten")],
+    );
+    assert_eq!(assert_retained(refresh()), failure_detail);
+    fs::remove_file(session_path(&sessions, parent)).unwrap();
+    fs::remove_file(session_path(&sessions, advisory)).unwrap();
+    assert_eq!(assert_retained(refresh()), failure_detail);
+
+    assert_eq!(
+        VerifiedIndex::open(&index_root)
+            .unwrap()
+            .search_event_candidates("peernewcontentuniquexyz", 8)
+            .unwrap()
+            .len(),
+        1
     );
 }
 

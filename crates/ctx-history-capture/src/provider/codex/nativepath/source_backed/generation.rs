@@ -38,17 +38,122 @@ impl CodexGenerationRouteV0 {
 pub(super) struct CodexPreparedRouteV0 {
     pub(super) missing: bool,
     pub(super) sources: Vec<CodexSessionPlanV0>,
-    #[cfg(test)]
+    pub(super) rejections: Vec<CodexRootConflictRejectedSourceV0>,
+    pub(super) prehydrated: bool,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    pub(super) catalog_observations: Vec<CodexPreparedCatalogObservationV0>,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
     pub(super) work: CodexCatalogWorkV0,
 }
 
-#[allow(
-    dead_code,
-    reason = "shared publication supplies carried route state, which child-local preparation intentionally leaves opaque"
-)]
 pub(crate) struct CodexGenerationCarriedRouteV0 {
     pub(crate) participant: usize,
     pub(crate) sources: HashMap<SourceKey, CertifiedSource>,
+}
+
+#[cfg(any(test, ctx_codex_causal_qualification))]
+#[derive(Clone)]
+pub(super) struct CodexPreparedCatalogObservationV0 {
+    pub(super) native_session_id: String,
+    pub(super) parent_native_session_id: Option<String>,
+    pub(super) work: CodexCatalogWorkV0,
+    pub(super) exact_replay: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(super) struct CodexRootConflictV0 {
+    computed_root_native_session_id: String,
+    conflicting_advisory_session_id: String,
+    evidence_source_record: String,
+    computed_root_source_record: String,
+    advisory_source_record: Option<String>,
+}
+
+impl CodexRootConflictV0 {
+    pub(super) fn diagnostic(&self) -> String {
+        format!(
+            "codex_lineage_root_conflict_v0 computed_root_native_session_id={} \
+             conflicting_advisory_session_id={} evidence_source_record={} \
+             computed_root_source_record={} advisory_source_record={}",
+            self.computed_root_native_session_id,
+            self.conflicting_advisory_session_id,
+            self.evidence_source_record,
+            self.computed_root_source_record,
+            self.advisory_source_record
+                .as_deref()
+                .unwrap_or("unavailable"),
+        )
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct CodexRootConflictRejectedSourceV0 {
+    pub(super) plan: CodexSessionPlanV0,
+    pub(super) conflict: CodexRootConflictV0,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CodexRootConflictWorkV0 {
+    source_claims_examined: u64,
+    advisory_claims_examined: u64,
+    identity_comparisons: u64,
+}
+
+fn advisory_contradicts_child_local_claim_v0(
+    native_session_id: &str,
+    child_local_root_native_session_id: &str,
+    advisory_session_id: &str,
+    work: &mut CodexRootConflictWorkV0,
+) -> bool {
+    work.advisory_claims_examined += 1;
+    work.identity_comparisons += 1;
+    if advisory_session_id == native_session_id {
+        return false;
+    }
+    work.identity_comparisons += 1;
+    advisory_session_id != child_local_root_native_session_id
+}
+
+fn quarantine_root_conflicts_v0(
+    sources: Vec<CodexSessionPlanV0>,
+) -> (
+    Vec<CodexSessionPlanV0>,
+    Vec<CodexRootConflictRejectedSourceV0>,
+    CodexRootConflictWorkV0,
+) {
+    let mut work = CodexRootConflictWorkV0::default();
+    let mut accepted = Vec::with_capacity(sources.len());
+    let mut rejected = Vec::new();
+    for plan in sources {
+        work.source_claims_examined += 1;
+        let conflict = plan
+            .0
+            .catalog_advisory_session_id
+            .as_deref()
+            .zip(plan.0.catalog_root_native_session_id.as_deref())
+            .filter(|(advisory, child_local_root)| {
+                advisory_contradicts_child_local_claim_v0(
+                    &plan.2,
+                    child_local_root,
+                    advisory,
+                    &mut work,
+                )
+            })
+            .map(|(advisory, child_local_root)| CodexRootConflictV0 {
+                computed_root_native_session_id: child_local_root.to_owned(),
+                conflicting_advisory_session_id: advisory.to_owned(),
+                evidence_source_record: format!("session_meta:{}", plan.2),
+                computed_root_source_record: format!("session_meta:{child_local_root}"),
+                // Target presence must never change this source's validity.
+                advisory_source_record: None,
+            });
+        if let Some(conflict) = conflict {
+            rejected.push(CodexRootConflictRejectedSourceV0 { plan, conflict });
+        } else {
+            accepted.push(plan);
+        }
+    }
+    (accepted, rejected, work)
 }
 
 struct CodexPreparedGenerationV0 {
@@ -120,12 +225,16 @@ impl CodexGenerationNormalizationCoordinatorV0 {
     pub(crate) fn prepare(
         &self,
         selected: &[usize],
-        _carried: Vec<CodexGenerationCarriedRouteV0>,
+        carried: Vec<CodexGenerationCarriedRouteV0>,
     ) -> CodexSourceBackedResultV0<()> {
         // Participant IDs encode registration order. Preserve that order when
         // overlapping automatic and explicit routes establish exact source
         // ownership, independent of HashMap randomization.
         let selected = selected.iter().copied().collect::<BTreeSet<_>>();
+        let carried = carried
+            .into_iter()
+            .map(|route| (route.participant, route.sources))
+            .collect::<HashMap<_, _>>();
         let participants = {
             let state = self
                 .state
@@ -152,27 +261,43 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 CodexGenerationParticipantV0::SessionTree { roots } => {
                     let inventory =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(&roots)?;
-                    #[cfg(test)]
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
                     let work = inventory.work;
-                    #[cfg(not(test))]
+                    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
                     let work = ();
                     (false, inventory.sources, work)
                 }
                 CodexGenerationParticipantV0::ExplicitSession { input } => {
                     let inventory = observe_codex_explicit_session_source_backed_v0(&input)?;
                     let plan = inventory.source_plan();
-                    #[cfg(test)]
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
                     let work = CodexCatalogWorkV0::default();
-                    #[cfg(not(test))]
+                    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
                     let work = ();
                     (plan.is_none(), plan.into_iter().collect(), work)
                 }
             };
-            #[cfg(not(test))]
+            #[cfg(not(any(test, ctx_codex_causal_qualification)))]
             let _ = work;
 
             let mut sources = Vec::with_capacity(discovered.len());
+            #[cfg(any(test, ctx_codex_causal_qualification))]
+            let mut catalog_observations = Vec::with_capacity(discovered.len());
             for plan in discovered {
+                let base = carried
+                    .get(&participant)
+                    .and_then(|sources| sources.get(&plan.1));
+                let (plan, hydration_work, exact_replay) =
+                    super::catalog::hydrate_codex_session_plan_v0(plan, base)?;
+                #[cfg(any(test, ctx_codex_causal_qualification))]
+                catalog_observations.push(CodexPreparedCatalogObservationV0 {
+                    native_session_id: plan.2.clone(),
+                    parent_native_session_id: plan.0.catalog_parent_native_session_id.clone(),
+                    work: hydration_work,
+                    exact_replay,
+                });
+                #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+                let _ = (hydration_work, exact_replay);
                 let descriptor = plan.1.exact_descriptor_digest();
                 if let Some((existing, native_session_id)) = descriptor_bindings.get(&descriptor) {
                     if !existing.exact_descriptor_eq(&plan.1) || native_session_id != &plan.2 {
@@ -199,12 +324,17 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 // same child-local tuple from its own checkpoint.
                 sources.push(plan);
             }
+            let (sources, rejections, _root_conflict_work) = quarantine_root_conflicts_v0(sources);
             routes.insert(
                 participant,
                 CodexPreparedRouteV0 {
                     missing,
                     sources,
-                    #[cfg(test)]
+                    rejections,
+                    prehydrated: true,
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
+                    catalog_observations,
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
                     work,
                 },
             );
@@ -226,5 +356,28 @@ impl CodexGenerationNormalizationCoordinatorV0 {
             .and_then(|prepared| prepared.routes.get(&participant))
             .cloned()
             .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
+    }
+}
+
+#[cfg(test)]
+mod root_conflict_tests {
+    use super::*;
+
+    #[test]
+    fn source_local_root_conflict_validation_is_linear_at_catalog_limit_for_deep_chain() {
+        const SOURCES: u64 = 131_072;
+        let mut work = CodexRootConflictWorkV0::default();
+        for index in 0..SOURCES {
+            let native = format!("session-{index}");
+            let parent = format!("session-{}", index.saturating_sub(1));
+            let advisory = if index == 0 { &native } else { &parent };
+            work.source_claims_examined += 1;
+            assert!(!advisory_contradicts_child_local_claim_v0(
+                &native, &parent, advisory, &mut work,
+            ));
+        }
+        assert_eq!(work.source_claims_examined, SOURCES);
+        assert_eq!(work.advisory_claims_examined, SOURCES);
+        assert_eq!(work.identity_comparisons, SOURCES * 2 - 1);
     }
 }

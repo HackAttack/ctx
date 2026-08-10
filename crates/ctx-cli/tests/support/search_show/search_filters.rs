@@ -84,7 +84,7 @@ fn search_refresh_off_requires_existing_core_generation_without_creating_one() {
 }
 
 #[test]
-fn file_only_search_returns_touched_file_matches() {
+fn file_only_search_does_not_grant_unknown_origin_file_attribution() {
     let temp = tempdir();
     let fixture = repository_backed_rich_fixture(&temp);
     json_output(ctx(&temp).args([
@@ -96,12 +96,17 @@ fn file_only_search_returns_touched_file_matches() {
         "--format=json",
     ]));
 
-    let search = json_output(ctx(&temp).args(["search", "--file", "src/main.rs", "--format=json"]));
-    assert_eq!(search["query"], "");
-    let results = search["results"].as_array().unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["provider"], "codex");
-    assert!(results[0].get("source_exists").is_none());
+    let broad = json_output(ctx(&temp).args(["search", "new_fixture", "--format=json"]));
+    assert_eq!(broad["results"][0]["event_origin"]["kind"], "unknown");
+    let event_id = broad["results"][0]["ctx_event_id"].as_str().unwrap();
+    let shown = json_output(ctx(&temp).args(["show", "event", event_id, "--format=json"]));
+    assert_eq!(shown["event"]["event_origin"]["kind"], "unknown");
+    assert_eq!(shown["event"]["touched_files"][0], "src/main.rs");
+
+    let filtered =
+        json_output(ctx(&temp).args(["search", "--file", "src/main.rs", "--format=json"]));
+    assert_eq!(filtered["query"], "");
+    assert!(filtered["results"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -166,13 +171,7 @@ fn search_trims_whitespace_padded_workspace_and_file_filters() {
         with_file["filters"],
     );
 
-    let results = with_file["results"].as_array().unwrap();
-    assert!(
-        !results.is_empty(),
-        "file-filtered search should return results with trimmed path"
-    );
-    assert_eq!(results[0]["provider"], "codex");
-    assert!(results[0].get("source_path").is_none());
+    assert!(with_file["results"].as_array().unwrap().is_empty());
 }
 
 fn repository_backed_rich_fixture(temp: &TempDir) -> String {

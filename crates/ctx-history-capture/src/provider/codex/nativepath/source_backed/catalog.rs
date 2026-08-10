@@ -302,7 +302,7 @@ fn discover_codex_session_tree_metadata_inventory_v0(
 
     let mut catalog_sources = Vec::with_capacity(leaves.len());
     for leaf in leaves {
-        catalog_sources.push(catalog_source_from_path_hint(&leaf)?);
+        catalog_sources.push(catalog_source_from_path_hint(&leaf, &mut work)?);
     }
     for authority in &authorities {
         authority.revalidate()?;
@@ -441,13 +441,33 @@ fn discover_codex_metadata_inventory_root_v0(
 
 fn catalog_source_from_path_hint(
     leaf: &CodexMetadataInventoryLeafV0,
+    work: &mut CodexCatalogWorkV0,
 ) -> CodexSourceBackedResultV0<CodexCatalogSource> {
-    let native_session_id =
-        codex_native_session_id_path_hint(&leaf.source_path).ok_or_else(|| {
-            CodexSourceBackedErrorV0::MissingNativeSessionId {
-                path: leaf.source_path.clone(),
+    let native_session_id = match codex_canonical_native_session_id_path_hint(&leaf.source_path) {
+        Some(native_session_id) => native_session_id,
+        None => {
+            let opened = leaf.authority.open_file(&leaf.relative_path)?;
+            let admitted = opened_codex_file_observation(&leaf.source_path, opened.file())?;
+            if !leaf.observation.admits_append_only_growth(&admitted) {
+                return Err(CodexSourceBackedErrorV0::Capture(
+                    CaptureError::SourceChangedDuringCapture,
+                ));
             }
-        })?;
+            let native_session_id =
+                crate::provider::codex::catalog::probe_codex_native_session_id(&opened)?
+                    .or_else(|| codex_native_session_id_path_hint(&leaf.source_path));
+            opened.revalidate_leaf()?;
+            work.add_assign(CodexCatalogWorkV0 {
+                source_metadata_opens: 1,
+                source_metadata_read_upper_bound_bytes: leaf.observation.len,
+                session_meta_parses: 1,
+                ..CodexCatalogWorkV0::default()
+            });
+            native_session_id.ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
+                path: leaf.source_path.clone(),
+            })?
+        }
+    };
     Ok(CodexCatalogSource {
         source_root: leaf.source_root.clone(),
         source_path: leaf.source_path.clone(),
@@ -621,7 +641,7 @@ pub(super) fn hydrate_codex_session_plan_v0(
     ))
 }
 
-pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
+fn codex_canonical_native_session_id_path_hint(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     if stem.len() >= 36 {
         let tail = &stem[stem.len() - 36..];
@@ -632,6 +652,14 @@ pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
             return Some(tail.to_owned());
         }
     }
+    None
+}
+
+pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
+    if let Some(native_session_id) = codex_canonical_native_session_id_path_hint(path) {
+        return Some(native_session_id);
+    }
+    let stem = path.file_stem()?.to_str()?;
     (!stem.trim().is_empty()).then(|| stem.to_owned())
 }
 

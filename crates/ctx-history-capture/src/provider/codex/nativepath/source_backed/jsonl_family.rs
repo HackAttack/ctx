@@ -13,8 +13,9 @@ use crate::{
             observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
             JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
             JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome,
-            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRootMissingMode,
-            JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlFileObservation,
+            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
+            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+            JsonlFileObservation,
         },
         SourceBackedRouteErrorKind,
     },
@@ -23,17 +24,54 @@ use crate::{
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 
+fn codex_root_conflict_rejected_leaf_v0(
+    rejected: super::generation::CodexRootConflictRejectedSourceV0,
+) -> Result<JsonlFamilyRejectedLeaf> {
+    let source = rejected.plan.1;
+    let catalog = rejected.plan.0;
+    let authority_path =
+        catalog
+            .authority_relative_path
+            .clone()
+            .ok_or(CaptureError::SystemInvariant(
+                "rejected Codex source has no retained authority path",
+            ))?;
+    let proof = TypedKey::bytes(serde_json::to_vec(&rejected.conflict)?)
+        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+    let diagnostic = rejected.conflict.diagnostic();
+    let terminal_source = catalog.clone();
+    let opened = reopen_codex_source_capability(&terminal_source)?;
+    revalidate_codex_catalog_source_capability(&terminal_source, &opened)?;
+    Ok(JsonlFamilyRejectedLeaf::bind_observed_with_terminal(
+        catalog.source_path,
+        authority_path,
+        proof,
+        1,
+        source,
+        move || {
+            let opened = reopen_codex_source_capability(&terminal_source)?;
+            revalidate_codex_catalog_source_capability(&terminal_source, &opened)
+        },
+        diagnostic,
+    ))
+}
+
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
 ) -> Result<JsonlFileObservation> {
     let opened = reopen_codex_source_capability(source)?;
     revalidate_codex_catalog_source_capability(source, &opened)?;
-    observe_opened_file(&source.source_path, &opened)
+    let observation = observe_opened_file(&source.source_path, &opened)?;
+    if observation.length() != source.catalog_observation.len {
+        return Err(CaptureError::SourceChangedDuringCapture);
+    }
+    Ok(observation)
 }
 
 #[derive(Default)]
 struct CodexSessionJsonlFamilyStateV0 {
     plans: HashMap<SourceKey, CodexSessionPlanV0>,
+    prehydrated: bool,
     #[cfg(any(test, ctx_codex_causal_qualification))]
     counters: CodexSourceBackedCountersV0,
     #[cfg(any(test, ctx_codex_causal_qualification))]
@@ -124,6 +162,9 @@ fn prepare_codex_session_jsonl_scans_v0(
         return Err(CaptureError::InvalidPayload(
             "Codex JSONL family selected an unplanned leaf".to_owned(),
         ));
+    }
+    if state.prehydrated {
+        return Ok(None);
     }
     let mut hydrated = HashMap::with_capacity(state.plans.len());
     for (_, plan) in std::mem::take(&mut state.plans) {
@@ -242,7 +283,11 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
                 CodexPreparedRouteV0 {
                     missing: false,
                     sources,
-                    #[cfg(test)]
+                    rejections: Vec::new(),
+                    prehydrated: false,
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
+                    catalog_observations: Vec::new(),
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
                     work: inventory.work,
                 }
             }
@@ -253,6 +298,11 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             ));
         }
         let normalized_sources = prepared.sources;
+        let rejected_leaves = prepared
+            .rejections
+            .into_iter()
+            .map(codex_root_conflict_rejected_leaf_v0)
+            .collect::<Result<Vec<_>>>()?;
         let mut ordered_sources = (0..normalized_sources.len()).collect::<Vec<_>>();
         ordered_sources.sort_by_key(|index| normalized_sources[*index].1.identity().digest());
         let mut authorities = BTreeMap::<PathBuf, Arc<ProviderSourceRoot>>::new();
@@ -300,11 +350,12 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             }
         }
         let authorities = authorities.into_values().collect();
-        let family_inventory = JsonlFamilyInventory::present_multi(
+        let family_inventory = JsonlFamilyInventory::present_multi_with_rejected(
             CaptureProvider::Codex,
             route_root,
             authorities,
             leaves,
+            rejected_leaves,
         )?;
         let mut state = self.state.lock().map_err(|_| {
             CaptureError::InvalidPayload("Codex JSONL family state lock was poisoned".to_owned())
@@ -314,14 +365,28 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             .cloned()
             .map(|plan| (plan.1.clone(), plan))
             .collect();
+        state.prehydrated = prepared.prehydrated;
         #[cfg(any(test, ctx_codex_causal_qualification))]
         {
             state.counters = CodexSourceBackedCountersV0::default();
             state.causal = CodexCausalLedgerV1::default();
+            state.counters.add_catalog_work(prepared.work);
+            for observation in prepared.catalog_observations {
+                state.counters.add_catalog_work(observation.work);
+                state.counters.writer_exact_replay_sources = state
+                    .counters
+                    .writer_exact_replay_sources
+                    .saturating_add(u64::from(observation.exact_replay));
+                state.causal.observe_catalog(
+                    &observation.native_session_id,
+                    observation.parent_native_session_id.as_deref(),
+                    observation.work,
+                    observation.exact_replay,
+                );
+            }
         }
         #[cfg(test)]
         {
-            state.counters.add_catalog_work(prepared.work);
             if normalized_sources.is_empty() && !_completed_stage {
                 state.stage_pending = true;
             }
@@ -520,6 +585,7 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
                 let Some(plan) = inventory.source_plan() else {
                     let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
                     state.plans.clear();
+                    state.prehydrated = false;
                     #[cfg(any(test, ctx_codex_causal_qualification))]
                     {
                         state.counters = CodexSourceBackedCountersV0::default();
@@ -537,7 +603,11 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
                 CodexPreparedRouteV0 {
                     missing: false,
                     sources: vec![plan],
-                    #[cfg(test)]
+                    rejections: Vec::new(),
+                    prehydrated: false,
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
+                    catalog_observations: Vec::new(),
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
                     work: CodexCatalogWorkV0::default(),
                 }
             }
@@ -545,6 +615,7 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
         if prepared.missing {
             let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
             state.plans.clear();
+            state.prehydrated = false;
             #[cfg(any(test, ctx_codex_causal_qualification))]
             {
                 state.counters = CodexSourceBackedCountersV0::default();
@@ -590,10 +661,25 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
             .cloned()
             .map(|plan| (plan.1.clone(), plan))
             .collect();
+        state.prehydrated = prepared.prehydrated;
         #[cfg(any(test, ctx_codex_causal_qualification))]
         {
             state.counters = CodexSourceBackedCountersV0::default();
             state.causal = CodexCausalLedgerV1::default();
+            state.counters.add_catalog_work(prepared.work);
+            for observation in prepared.catalog_observations {
+                state.counters.add_catalog_work(observation.work);
+                state.counters.writer_exact_replay_sources = state
+                    .counters
+                    .writer_exact_replay_sources
+                    .saturating_add(u64::from(observation.exact_replay));
+                state.causal.observe_catalog(
+                    &observation.native_session_id,
+                    observation.parent_native_session_id.as_deref(),
+                    observation.work,
+                    observation.exact_replay,
+                );
+            }
         }
         #[cfg(test)]
         if plans.is_empty() && !_completed_stage {

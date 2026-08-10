@@ -420,8 +420,8 @@ fn codex_root_conflict_cli_reports_path_safe_source_failure_and_publishes_peer()
     };
     assert_eq!(source["status"], "partial", "{report:#}");
     assert_eq!(source["failure_scope"], "source", "{report:#}");
-    assert_eq!(source["route_source_failure_total"], 2, "{report:#}");
-    assert_eq!(source["current_source_count"], 1, "{report:#}");
+    assert_eq!(source["route_source_failure_total"], 1, "{report:#}");
+    assert_eq!(source["current_source_count"], 2, "{report:#}");
     assert_eq!(source["current_rejected_records"], 0, "{report:#}");
     assert!(source["rejection_diagnostics"]
         .as_array()
@@ -436,7 +436,7 @@ fn codex_root_conflict_cli_reports_path_safe_source_failure_and_publishes_peer()
         format!("conflicting_advisory_session_id={root_b}"),
         format!("evidence_source_record=session_meta:{child_a}"),
         format!("computed_root_source_record=session_meta:{root_a}"),
-        format!("advisory_source_record=session_meta:{root_b}"),
+        "advisory_source_record=unavailable".to_owned(),
     ] {
         assert!(detail.contains(&expected), "{detail}");
     }
@@ -454,29 +454,37 @@ fn codex_root_conflict_cli_reports_path_safe_source_failure_and_publishes_peer()
         "--format=json",
     ]));
     assert_search_provider_oracle(&search, "codex", valid_marker, 1, "message");
+    let search = json_output(ctx(&temp).args([
+        "search",
+        private_root_marker,
+        "--provider",
+        "codex",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&search, "codex", private_root_marker, 1, "message");
 }
 
 #[test]
 fn codex_many_root_conflicts_cli_reports_exact_total_and_bounded_omission() {
     const CONFLICTING_CHILDREN: usize = 65;
-    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN + 1;
+    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN;
 
     let temp = finite_daemon_test_root();
     let sessions = temp.path().join(".codex/sessions/2026/08/07");
     let root_a = "019fc000-0000-7000-8000-000000003400";
     let root_b = "019fc000-0000-7000-8000-0000000034b0";
-    let evidence_child = "019fc000-0000-7000-8001-000000000000";
     let private_marker = "private bounded CLI root conflict content 328";
-    let valid_marker = "bounded CLI root conflict valid peer 328";
+    let valid_marker = "boundedcliconflictvalidpeerunique328";
     write_codex_lineage_rollout(&sessions, root_a, None, None, private_marker);
     for index in 0..CONFLICTING_CHILDREN {
         let child = format!("019fc000-0000-7000-8001-{index:012x}");
-        let advisory = if index == 0 { root_b } else { root_a };
         write_codex_lineage_rollout(
             &sessions,
             &child,
             Some(root_a),
-            Some(advisory),
+            Some(root_b),
             private_marker,
         );
     }
@@ -489,7 +497,7 @@ fn codex_many_root_conflicts_cli_reports_exact_total_and_bounded_omission() {
         "{report:#}"
     );
     assert_eq!(report["failure_scope"], "source", "{report:#}");
-    assert_eq!(report["totals"]["current_source_count"], 1, "{report:#}");
+    assert_eq!(report["totals"]["current_source_count"], 2, "{report:#}");
     assert_eq!(
         report["totals"]["current_rejected_records"], 0,
         "{report:#}"
@@ -514,12 +522,15 @@ fn codex_many_root_conflicts_cli_reports_exact_total_and_bounded_omission() {
         for expected in [
             format!("computed_root_native_session_id={root_a}"),
             format!("conflicting_advisory_session_id={root_b}"),
-            format!("evidence_source_record=session_meta:{evidence_child}"),
             format!("computed_root_source_record=session_meta:{root_a}"),
-            format!("advisory_source_record=session_meta:{root_b}"),
+            "advisory_source_record=unavailable".to_owned(),
         ] {
             assert!(detail.contains(&expected), "{detail}");
         }
+        assert!(
+            detail.contains("evidence_source_record=session_meta:"),
+            "{detail}"
+        );
         assert!(!detail.contains(sessions.to_str().unwrap()));
         assert!(!detail.contains(private_marker));
     }
@@ -544,7 +555,6 @@ fn codex_all_invalid_root_conflict_cli_failure_includes_typed_proof() {
     let child = "019fc000-0000-7000-8000-0000000032c1";
     let missing_advisory = "019fc000-0000-7000-8000-0000000032ff";
     let private_marker = "private all-invalid CLI message content";
-    write_codex_lineage_rollout(&sessions, root, None, None, private_marker);
     write_codex_lineage_rollout(
         &sessions,
         child,
