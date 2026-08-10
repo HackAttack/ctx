@@ -50,6 +50,12 @@ case "${platform}" in
     ;;
 esac
 
+if [[ "${platform}" == "macos-x64" \
+  && ( -z "${declared_llvm_readobj}" || -z "${declared_llvm_objdump}" ) ]]; then
+  echo "error: macos-x64 requires a declared LLVM reader and objdump pair" >&2
+  exit 2
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 

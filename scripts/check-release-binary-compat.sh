@@ -60,6 +60,10 @@ if [[ -n "${declared_llvm_readobj}" || -n "${declared_llvm_objdump}" ]]; then
   LLVM_READOBJ="${declared_llvm_readobj}"
   LLVM_OBJDUMP="${declared_llvm_objdump}"
 else
+  if [[ "${1:-}" == "macos-x64" ]]; then
+    echo "error: macos-x64 requires a declared LLVM reader and objdump pair" >&2
+    exit 2
+  fi
   LLVM_TOOL_ROOT="$(authoritative_llvm_root)"
   LLVM_READOBJ="${LLVM_TOOL_ROOT}/llvm-readobj"
   LLVM_OBJDUMP="${LLVM_TOOL_ROOT}/llvm-objdump"
