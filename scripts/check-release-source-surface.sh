@@ -50,6 +50,8 @@ failures=0
 
 check_file() {
   local path="$1"
+  # Fixture names retain their production path identity for exact allowlists.
+  local policy_path="${path%.fixture}"
 
   case "${path}" in
     scripts/audit-search-mvp-package.sh|scripts/check-release-source-surface.sh|scripts/check-docs.sh|scripts/check-buildkite-pipeline.sh|scripts/tests/fixtures/release-source-surface/*)
@@ -67,9 +69,9 @@ check_file() {
 
   # Local Pro intentionally retains this lifecycle implementation.
   # The same symbol anywhere else remains a retired top-level uninstall path.
-  if [[ "${path}" != "crates/ctx-cli/src/pro/lifecycle_commands.rs" ]] \
-    && [[ "${path}" != "crates/ctx-cli/src/pro/lifecycle_commands/tests.rs" ]] \
-    && [[ "${path}" != "crates/ctx-cli/src/pro/lifecycle_commands/uninstall.rs" ]] \
+  if [[ "${policy_path}" != "crates/ctx-cli/src/pro/lifecycle_commands.rs" ]] \
+    && [[ "${policy_path}" != "crates/ctx-cli/src/pro/lifecycle_commands/tests.rs" ]] \
+    && [[ "${policy_path}" != "crates/ctx-cli/src/pro/lifecycle_commands/uninstall.rs" ]] \
     && LC_ALL=C grep -n -E '(^|[^[:alnum:]_])run_uninstall([^[:alnum:]_]|$)' "${path}" >/dev/null 2>&1; then
     printf 'release source contains a removed top-level uninstall implementation: %s\n' "${path}" >&2
     failures=$((failures + 1))
