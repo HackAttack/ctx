@@ -62,18 +62,21 @@ if [[ -z "$(query 'somepath(//crates/ctx-cli:ctx, //crates/ctx-daemon-runtime:li
 fi
 
 expected_reverse_bazel="${tmp}/expected-reverse-bazel.txt"
-# The fixture binaries compile the CLI production source under controlled cfg
-# variants, so the complete binary/library reverse set is intentionally exact.
+# The fixture binaries compile the CLI production source against the test-only
+# qualification variant, so the complete binary/library reverse set across
+# both runtime variants is intentionally exact.
 printf '%s\n' \
   '//crates/ctx-cli:ctx' \
   '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
+  '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
   '//crates/ctx-cli:ctx_pro_test_host' \
   '//crates/ctx-cli:ctx_upgrade_test_harness' \
-  '//crates/ctx-daemon-runtime:lib' >"${expected_reverse_bazel}"
-query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib))' \
+  '//crates/ctx-daemon-runtime:lib' \
+  '//crates/ctx-daemon-runtime:qualification_lib' >"${expected_reverse_bazel}"
+query 'kind("rust_binary rule", rdeps(//crates/..., set(//crates/ctx-daemon-runtime:lib //crates/ctx-daemon-runtime:qualification_lib))) union kind("rust_library rule", rdeps(//crates/..., set(//crates/ctx-daemon-runtime:lib //crates/ctx-daemon-runtime:qualification_lib)))' \
   | LC_ALL=C sort -u >"${tmp}/actual-reverse-bazel.txt"
 if ! diff -u "${expected_reverse_bazel}" "${tmp}/actual-reverse-bazel.txt"; then
-  echo 'unexpected reverse production consumer of ctx-daemon-runtime' >&2
+  echo 'unexpected reverse production or qualification consumer of ctx-daemon-runtime' >&2
   exit 1
 fi
 
