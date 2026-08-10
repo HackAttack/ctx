@@ -265,11 +265,10 @@ fn write_target(target: &McpTarget, force: bool) -> Result<()> {
     .with_context(|| format!("write {}", path.display()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn update_preserves_existing_file_permissions() {
         use std::os::unix::fs::PermissionsExt as _;
