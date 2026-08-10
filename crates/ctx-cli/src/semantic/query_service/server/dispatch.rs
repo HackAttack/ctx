@@ -26,10 +26,9 @@ use super::super::transport::{
     DaemonIpcService, DaemonQueryEndpoint, daemon_service_endpoint_path,
 };
 use super::{
-    AfterWriteCompletion, AuthenticatedRequest, AuthenticatedRequestHandler,
-    DAEMON_QUERY_REQUEST_READ_TIMEOUT, DaemonQueryService, DaemonWakePort, HandlerOutcome,
-    IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec, ServiceId,
-    start_ipc_service_with_request_timeout,
+    AuthenticatedRequest, AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_READ_TIMEOUT,
+    DaemonQueryService, DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore,
+    IpcServiceSpec, PostWriteAction, ServiceId, start_ipc_service_with_request_timeout,
 };
 
 struct CtxIpcEndpointStore {
@@ -111,7 +110,7 @@ fn source_refresh_service_spec(data_root: &Path) -> Result<IpcServiceSpec> {
 
 pub(in crate::semantic) fn start_daemon_query_service(
     data_root: &Path,
-    handler: Arc<dyn AuthenticatedRequestHandler>,
+    handler: Arc<CtxAuthenticatedRequestHandler>,
     wakeup: Arc<DaemonWakeup>,
 ) -> Result<DaemonQueryService> {
     #[cfg(any(unix, windows))]
@@ -139,7 +138,7 @@ pub(in crate::semantic) fn start_daemon_query_service(
 #[cfg(test)]
 pub(in crate::semantic) fn start_daemon_query_service_with_request_timeout(
     data_root: &Path,
-    handler: Arc<dyn AuthenticatedRequestHandler>,
+    handler: Arc<CtxAuthenticatedRequestHandler>,
     request_read_timeout: std::time::Duration,
 ) -> Result<DaemonQueryService> {
     start_ipc_service_with_request_timeout(
@@ -156,7 +155,7 @@ pub(in crate::semantic) fn start_daemon_query_service_with_request_timeout(
 
 pub(in crate::semantic) fn start_daemon_source_refresh_service(
     data_root: &Path,
-    handler: Arc<dyn AuthenticatedRequestHandler>,
+    handler: Arc<CtxAuthenticatedRequestHandler>,
     wakeup: Arc<DaemonWakeup>,
 ) -> Result<DaemonQueryService> {
     #[cfg(any(unix, windows))]
@@ -184,7 +183,7 @@ pub(in crate::semantic) fn start_daemon_source_refresh_service(
 #[cfg(test)]
 pub(in crate::semantic) fn start_daemon_source_refresh_service_with_request_timeout(
     data_root: &Path,
-    handler: Arc<dyn AuthenticatedRequestHandler>,
+    handler: Arc<CtxAuthenticatedRequestHandler>,
     request_read_timeout: std::time::Duration,
 ) -> Result<DaemonQueryService> {
     start_ipc_service_with_request_timeout(
@@ -228,26 +227,33 @@ pub(in crate::semantic) fn ctx_authenticated_request_handler(
 }
 
 impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
+    type PostWriteAction<'a> = CtxPostWriteAction<'a>;
+
     fn handle<'a>(
         &'a self,
         service: &ServiceId,
         request: AuthenticatedRequest,
-    ) -> HandlerOutcome<'a> {
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
         let request = request.into_value();
         if service.as_str() == SOURCE_REFRESH_SERVICE_ID {
             return match self.handle_source_refresh(&request) {
                 Ok(SourceRefreshResponse::Wire(response)) => {
                     let (response, response_barrier) = response.into_parts();
-                    HandlerOutcome::with_after_write_completion(
+                    HandlerOutcome::with_post_write_action(
                         Ok(response),
-                        response_barrier,
-                        self,
+                        CtxPostWriteAction::source_refresh(response_barrier, self),
                     )
                 }
                 Ok(SourceRefreshResponse::Value(response)) => {
-                    HandlerOutcome::with_after_write_completion(Ok(response), None, self)
+                    HandlerOutcome::with_post_write_action(
+                        Ok(response),
+                        CtxPostWriteAction::source_refresh(None, self),
+                    )
                 }
-                Err(error) => HandlerOutcome::with_after_write_completion(Err(error), None, self),
+                Err(error) => HandlerOutcome::with_post_write_action(
+                    Err(error),
+                    CtxPostWriteAction::source_refresh(None, self),
+                ),
             };
         }
         if service.as_str() == SEMANTIC_QUERY_SERVICE_ID {
@@ -260,14 +266,54 @@ impl AuthenticatedRequestHandler for CtxAuthenticatedRequestHandler {
     }
 }
 
-impl AfterWriteCompletion for CtxAuthenticatedRequestHandler {
-    fn finish_after_response_write(
-        &self,
+/// Composition owns the concrete admission barrier and scheduler wake-up.
+/// The server/transport layer carries this inline token only through its
+/// neutral `PostWriteAction` contract.
+pub(in crate::semantic) struct CtxPostWriteAction<'a> {
+    kind: CtxPostWriteActionKind<'a>,
+}
+
+enum CtxPostWriteActionKind<'a> {
+    None,
+    SourceRefresh {
         response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
-    ) {
-        wire::finish_source_refresh_response(response_barrier, &self.source_refresh, || {
-            self.wakeup.signal_ipc()
-        });
+        handler: &'a CtxAuthenticatedRequestHandler,
+    },
+}
+
+impl Default for CtxPostWriteAction<'_> {
+    fn default() -> Self {
+        Self {
+            kind: CtxPostWriteActionKind::None,
+        }
+    }
+}
+
+impl<'a> CtxPostWriteAction<'a> {
+    fn source_refresh(
+        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
+        handler: &'a CtxAuthenticatedRequestHandler,
+    ) -> Self {
+        Self {
+            kind: CtxPostWriteActionKind::SourceRefresh {
+                response_barrier,
+                handler,
+            },
+        }
+    }
+}
+
+impl PostWriteAction for CtxPostWriteAction<'_> {
+    fn run(self) {
+        if let CtxPostWriteActionKind::SourceRefresh {
+            response_barrier,
+            handler,
+        } = self.kind
+        {
+            wire::finish_source_refresh_response(response_barrier, &handler.source_refresh, || {
+                handler.wakeup.signal_ipc()
+            });
+        }
     }
 }
 

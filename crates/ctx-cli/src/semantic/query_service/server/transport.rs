@@ -21,8 +21,8 @@ use uuid::Uuid;
 use super::windows_security::WindowsDaemonQueryPipeSecurity;
 use super::{
     AuthenticatedRequestHandler, DAEMON_QUERY_REQUEST_MAX_BYTES, DaemonQueryActivity,
-    DaemonQueryService, DaemonWakePort, HandlerOutcome,
-    IpcEndpointPublication, IpcEndpointStore, IpcServiceSpec, ServiceId,
+    DaemonQueryService, DaemonWakePort, HandlerOutcome, IpcEndpointPublication, IpcEndpointStore,
+    IpcServiceSpec, PostWriteAction, ServiceId,
 };
 
 /// The transport has bounded, parsed, and authenticated this value. Keeping
@@ -87,14 +87,17 @@ impl WindowsServerIoDeadline {
     }
 }
 
-pub(in crate::semantic) fn handle_authenticated_daemon_stream<S: std::io::Write>(
-    handler: &dyn AuthenticatedRequestHandler,
+pub(in crate::semantic) fn handle_authenticated_daemon_stream<
+    H: AuthenticatedRequestHandler + ?Sized,
+    S: std::io::Write,
+>(
+    handler: &H,
     service_id: &ServiceId,
     token: &str,
     mut stream: S,
     request: Result<String>,
 ) -> Result<()> {
-    let outcome = match request.and_then(|body| {
+    let outcome: HandlerOutcome<H::PostWriteAction<'_>> = match request.and_then(|body| {
         let parsed: Value = serde_json::from_str(&body).context("parse daemon query request")?;
         if parsed.get("token").and_then(Value::as_str) != Some(token) {
             return Err(anyhow!("daemon query authentication failed"));
@@ -284,10 +287,12 @@ pub(in crate::semantic) fn bind_daemon_service_listener(
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
+pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
+    H: AuthenticatedRequestHandler,
+>(
     spec: IpcServiceSpec,
     endpoint_store: Arc<dyn IpcEndpointStore>,
-    handler: Arc<dyn AuthenticatedRequestHandler>,
+    handler: Arc<H>,
     request_read_timeout: StdDuration,
     wakeup: Option<Arc<dyn DaemonWakePort>>,
 ) -> Result<DaemonQueryService> {
@@ -438,10 +443,12 @@ pub(in crate::semantic) fn configure_daemon_query_stream_unix(
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
+pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
+    H: AuthenticatedRequestHandler,
+>(
     spec: IpcServiceSpec,
     endpoint_store: Arc<dyn IpcEndpointStore>,
-    handler: Arc<dyn AuthenticatedRequestHandler>,
+    handler: Arc<H>,
     request_read_timeout: StdDuration,
     wakeup: Option<Arc<dyn DaemonWakePort>>,
 ) -> Result<DaemonQueryService> {
@@ -773,10 +780,12 @@ pub(in crate::semantic) fn wake_windows_daemon_query_pipe(pipe_name: &str) {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn start_ipc_service_with_request_timeout(
+pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
+    H: AuthenticatedRequestHandler,
+>(
     _spec: IpcServiceSpec,
     _endpoint_store: Arc<dyn IpcEndpointStore>,
-    _handler: Arc<dyn AuthenticatedRequestHandler>,
+    _handler: Arc<H>,
     _request_read_timeout: StdDuration,
     _wakeup: Option<Arc<dyn DaemonWakePort>>,
 ) -> Result<DaemonQueryService> {

@@ -113,71 +113,61 @@ impl IpcServiceSpec {
 pub(in crate::semantic) trait AuthenticatedRequestHandler:
     Send + Sync + 'static
 {
+    type PostWriteAction<'a>: PostWriteAction + Default
+    where
+        Self: 'a;
+
     fn handle<'a>(
         &'a self,
         service: &ServiceId,
         request: AuthenticatedRequest,
-    ) -> HandlerOutcome<'a>;
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>>;
 }
 
 pub(in crate::semantic) trait DaemonWakePort: Send + Sync + 'static {
     fn signal_ipc(&self);
 }
 
-/// A bounded, move-only action that runs after the response-write attempt.
-/// Completion stays borrowed from the handler, while the admission barrier is
-/// carried inline so no request path needs a box or refcount clone.
-pub(in crate::semantic) enum AfterWriteAction<'a> {
-    None,
-    Completion {
-        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
-        completion: &'a dyn AfterWriteCompletion,
-    },
+/// A bounded, move-only product action that runs after the response-write
+/// attempt. The transport knows only this neutral contract; composition owns
+/// concrete release and wake-up mechanics.
+pub(in crate::semantic) trait PostWriteAction {
+    fn run(self);
 }
 
-impl AfterWriteAction<'_> {
-    fn run(self) {
-        if let Self::Completion {
-            response_barrier,
-            completion,
-        } = self
-        {
-            completion.finish_after_response_write(response_barrier);
-        }
-    }
+/// The zero-sized default action keeps ordinary daemon requests allocation-
+/// and refcount-free after their response-write attempt.
+#[cfg(test)]
+#[derive(Default)]
+pub(in crate::semantic) struct NoPostWriteAction;
+
+#[cfg(test)]
+impl PostWriteAction for NoPostWriteAction {
+    fn run(self) {}
 }
 
-pub(in crate::semantic) trait AfterWriteCompletion: Sync {
-    fn finish_after_response_write(
-        &self,
-        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
-    );
-}
-
-pub(in crate::semantic) struct HandlerOutcome<'a> {
+pub(in crate::semantic) struct HandlerOutcome<A> {
     pub(in crate::semantic) response: Result<Value>,
-    pub(in crate::semantic) after_write_action: AfterWriteAction<'a>,
+    pub(in crate::semantic) after_write_action: A,
 }
 
-impl<'a> HandlerOutcome<'a> {
+impl<A: Default> HandlerOutcome<A> {
     pub(in crate::semantic) fn response(response: Result<Value>) -> Self {
         Self {
             response,
-            after_write_action: AfterWriteAction::None,
+            after_write_action: A::default(),
         }
     }
+}
 
-    pub(in crate::semantic) fn with_after_write_completion(
+impl<A> HandlerOutcome<A> {
+    pub(in crate::semantic) fn with_post_write_action(
         response: Result<Value>,
-        response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
-        completion: &'a dyn AfterWriteCompletion,
+        after_write_action: A,
     ) -> Self {
         Self {
             response,
-            after_write_action: AfterWriteAction::Completion {
-                response_barrier,
-                completion,
-            },
+            after_write_action,
         }
     }
 }

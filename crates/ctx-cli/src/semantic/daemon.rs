@@ -425,6 +425,12 @@ pub(super) fn run_daemon_inner(
         let mut observed_query_generation = 0;
         let mut observed_refresh_generation = 0;
         let mut next_safety_reconcile = Instant::now() + safety_interval;
+        // Recovery installs the coordinator once before IPC activation, and
+        // configuration reload only starts or stops services around that same
+        // coordinator. Retain one stable owner outside the hot scheduler loop
+        // so choosing the borrowed scheduler input does not refcount-clone on
+        // every iteration.
+        let source_refresh_coordinator = runtime.source_refresh_coordinator.clone();
         loop {
             // Hermetic callers may remove their complete temporary data root
             // while an explicitly finite test daemon is winding down. Treat
@@ -463,7 +469,7 @@ pub(super) fn run_daemon_inner(
                 &wakeup,
                 refresh_service
                     .as_ref()
-                    .and(runtime.source_refresh_coordinator.as_ref()),
+                    .and(source_refresh_coordinator.as_ref()),
             );
             if runtime.config.daemon.mode.runs_only_source_refresh() {
                 // A live mode change must not carry a previously prepared
@@ -474,7 +480,7 @@ pub(super) fn run_daemon_inner(
             }
             if let Some(source_refresh) = refresh_service
                 .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref())
+                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
                 .filter(|refresh| !refresh.watch_routes_initialized())
             {
                 watch_runtime.reconcile_catalog_and_route_authority(
@@ -535,7 +541,7 @@ pub(super) fn run_daemon_inner(
                 && daemon_retry_due(&runtime);
             let source_refresh_pending = refresh_service
                 .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref())
+                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator))
                 .is_some_and(|source_refresh| {
                     source_refresh.has_pending_request()
                         || source_refresh.has_scheduled_route_work()
@@ -580,8 +586,7 @@ pub(super) fn run_daemon_inner(
                 daemon_semantic_runtime_active(&runtime, query_service.as_ref());
             let source_refresh = refresh_service
                 .as_ref()
-                .and(runtime.source_refresh_coordinator.as_ref())
-                .cloned();
+                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator));
             let mut iteration = run_daemon_scheduler_cycle_with_activity(
                 &args,
                 data_root,
@@ -591,7 +596,7 @@ pub(super) fn run_daemon_inner(
                 query_service
                     .as_ref()
                     .map(|service| service.activity.as_ref()),
-                source_refresh.as_deref(),
+                source_refresh,
             )?;
             let continue_immediately = iteration.continue_immediately;
             let cycle_duration = cycle_started.elapsed();
@@ -639,7 +644,7 @@ pub(super) fn run_daemon_inner(
                 &runtime,
                 refresh_service
                     .as_ref()
-                    .and(runtime.source_refresh_coordinator.as_deref()),
+                    .and(daemon_scheduler_source_refresh(&source_refresh_coordinator)),
                 next_safety_reconcile,
                 idle_since,
                 idle_exit,
@@ -656,7 +661,7 @@ pub(super) fn run_daemon_inner(
             }
             let source_refresh = refresh_service
                 .as_ref()
-                .and(runtime.source_refresh_coordinator.as_deref());
+                .and(daemon_scheduler_source_refresh(&source_refresh_coordinator));
             let scheduled_refresh_wakeup_due = wake.timed_out
                 && !retry_wakeup_due
                 && daemon_scheduled_refresh_due(
@@ -879,6 +884,14 @@ pub(super) fn daemon_wait_duration(
         wait_for = wait_for.min(route_wait.max(cadence_wait));
     }
     wait_for
+}
+
+/// Scheduler callers borrow the stable owner retained outside the daemon loop;
+/// selecting an active refresh engine must not clone its `Arc` per cycle.
+fn daemon_scheduler_source_refresh(
+    source_refresh_coordinator: &Option<Arc<CoreRefreshEngine>>,
+) -> Option<&CoreRefreshEngine> {
+    source_refresh_coordinator.as_deref()
 }
 
 fn install_source_watch_ingress(

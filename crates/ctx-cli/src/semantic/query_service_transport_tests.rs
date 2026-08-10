@@ -79,12 +79,28 @@ fn wait_for_active_query(service: &DaemonQueryService) -> Result<()> {
 
 struct CountingAfterWrite(Arc<std::sync::atomic::AtomicUsize>);
 
-impl AfterWriteCompletion for CountingAfterWrite {
-    fn finish_after_response_write(
-        &self,
-        _response_barrier: Option<ctx_history_refresh::AdmissionResponseBarrier>,
-    ) {
+impl CountingAfterWrite {
+    fn run(&self) {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+enum CountingPostWriteAction<'a> {
+    None,
+    Completion(&'a CountingAfterWrite),
+}
+
+impl Default for CountingPostWriteAction<'_> {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl PostWriteAction for CountingPostWriteAction<'_> {
+    fn run(self) {
+        if let Self::Completion(completion) = self {
+            completion.run();
+        }
     }
 }
 
@@ -95,11 +111,13 @@ struct CountingAuthenticatedHandler {
 }
 
 impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
+    type PostWriteAction<'a> = CountingPostWriteAction<'a>;
+
     fn handle<'a>(
         &'a self,
         _service: &ServiceId,
         _request: AuthenticatedRequest,
-    ) -> HandlerOutcome<'a> {
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
         self.handled
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let response = if self.fail {
@@ -107,10 +125,9 @@ impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
         } else {
             Ok(json!({"ok": true, "schema_version": 1}))
         };
-        HandlerOutcome::with_after_write_completion(
+        HandlerOutcome::with_post_write_action(
             response,
-            None,
-            &self.after_write,
+            CountingPostWriteAction::Completion(&self.after_write),
         )
     }
 }
@@ -218,11 +235,13 @@ fn malformed_and_bad_token_requests_never_reach_handler_or_post_write_action() -
 struct RecordingServiceHandler(std::sync::Mutex<Vec<String>>);
 
 impl AuthenticatedRequestHandler for RecordingServiceHandler {
+    type PostWriteAction<'a> = NoPostWriteAction;
+
     fn handle<'a>(
         &'a self,
         service: &ServiceId,
         _request: AuthenticatedRequest,
-    ) -> HandlerOutcome<'a> {
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -234,17 +253,26 @@ impl AuthenticatedRequestHandler for RecordingServiceHandler {
 struct ParsedRequestHandler(std::sync::Mutex<Vec<Value>>);
 
 impl AuthenticatedRequestHandler for ParsedRequestHandler {
+    type PostWriteAction<'a> = NoPostWriteAction;
+
     fn handle<'a>(
         &'a self,
         _service: &ServiceId,
         request: AuthenticatedRequest,
-    ) -> HandlerOutcome<'a> {
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(request.into_value());
         HandlerOutcome::response(Ok(json!({"ok": true})))
     }
+}
+
+#[test]
+fn no_op_post_write_action_is_zero_sized_and_inline() {
+    assert_eq!(std::mem::size_of::<NoPostWriteAction>(), 0);
+    let outcome = HandlerOutcome::<NoPostWriteAction>::response(Ok(json!({"ok": true})));
+    assert_eq!(std::mem::size_of_val(&outcome.after_write_action), 0);
 }
 
 #[test]
