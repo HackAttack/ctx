@@ -677,6 +677,8 @@ struct CodexTurnContextEnvelope {
 #[derive(Debug, Deserialize)]
 struct CodexTurnContextPayload {
     cwd: String,
+    #[serde(default)]
+    turn_id: Option<String>,
 }
 
 pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
@@ -751,9 +753,17 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
     })
 }
 
-pub(super) fn parse_turn_context_cwd(line: &[u8]) -> Option<String> {
+pub(super) fn parse_turn_context(line: &[u8]) -> Option<(String, Option<String>)> {
     let envelope = serde_json::from_slice::<CodexTurnContextEnvelope>(line).ok()?;
-    bounded_nonempty(envelope.payload.cwd, MAX_CODEX_DURABLE_CWD_BYTES)
+    let cwd = bounded_nonempty(envelope.payload.cwd, MAX_CODEX_DURABLE_CWD_BYTES)?;
+    let turn_id = match envelope.payload.turn_id {
+        Some(turn_id) => Some(bounded_nonempty(
+            turn_id,
+            MAX_CODEX_DURABLE_SESSION_ID_BYTES,
+        )?),
+        None => None,
+    };
+    Some((cwd, turn_id))
 }
 
 fn nonempty(value: String) -> Option<String> {

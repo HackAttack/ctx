@@ -16,7 +16,8 @@ pub(crate) use retention::{
 pub(crate) use tool::codex_tool_output_outcome;
 pub(crate) use tool::{
     codex_exact_successful_function_output, codex_output_content, codex_result_content,
-    codex_result_value, exact_codex_exec_result_body, CodexToolCallContext,
+    codex_result_value, exact_codex_exec_result_body, CodexInvocationOriginV0,
+    CodexToolCallContext,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

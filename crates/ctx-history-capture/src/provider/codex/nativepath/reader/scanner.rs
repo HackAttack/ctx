@@ -1,9 +1,14 @@
-use super::project::{mcp_terminal_candidate_evidence, CodexMcpTerminalAuthority};
+use std::collections::BTreeSet;
+
+use super::project::{
+    mcp_terminal_candidate_evidence, CodexMcpTerminalAuthority, CodexRepositoryCandidateAuthority,
+};
 use super::*;
 use crate::provider::codex::nativepath::record::codex_record_class;
 
 struct McpTerminalAuthorityPreflight {
     authority: CodexMcpTerminalAuthority,
+    repository_candidate_authority: CodexRepositoryCandidateAuthority,
     bytes_read: u64,
     peak_record_bytes: usize,
 }
@@ -17,7 +22,10 @@ fn result_terminal_authority_is_ambiguous(record: &[u8]) -> bool {
     !crate::common::json::raw_object_keys_are_unique(record)
 }
 
-fn observe_result_terminal_call_id(authority: &mut CodexMcpTerminalAuthority, record: &[u8]) {
+fn observe_result_terminal_call_id<'a>(
+    authority: &mut CodexMcpTerminalAuthority,
+    record: &'a [u8],
+) -> Option<CodexRecordProbe<'a>> {
     if let Ok(probe) = classify_codex_record(record) {
         if matches!(probe.class, CodexRecordClass::ExcludedResult(_)) {
             if let Some(call_id) = probe
@@ -26,9 +34,9 @@ fn observe_result_terminal_call_id(authority: &mut CodexMcpTerminalAuthority, re
                 .filter(|call_id| !call_id.is_empty())
             {
                 authority.observe_result_call_id(call_id);
-                return;
             }
         }
+        return Some(probe);
     }
 
     // Projection can recover a bounded valid terminal after the strict
@@ -36,20 +44,20 @@ fn observe_result_terminal_call_id(authority: &mut CodexMcpTerminalAuthority, re
     // provider-recognized envelope here so uniqueness never depends on which
     // valid projection path retained the result.
     let Ok(envelope) = serde_json::from_slice::<Value>(record) else {
-        return;
+        return None;
     };
     let Some(record_type) = envelope.get("type").and_then(Value::as_str) else {
-        return;
+        return None;
     };
     let Some(payload) = envelope.get("payload") else {
-        return;
+        return None;
     };
     let item_type = payload.get("type").and_then(Value::as_str);
     if !matches!(
         codex_record_class(record_type, item_type),
         CodexRecordClass::ExcludedResult(_)
     ) {
-        return;
+        return None;
     }
     if let Some(call_id) = payload
         .get("call_id")
@@ -58,6 +66,7 @@ fn observe_result_terminal_call_id(authority: &mut CodexMcpTerminalAuthority, re
     {
         authority.observe_result_call_id(call_id);
     }
+    None
 }
 
 fn preflight_mcp_terminal_authority(
@@ -65,6 +74,8 @@ fn preflight_mcp_terminal_authority(
     start: u64,
     frozen_len: u64,
     mut authority: CodexMcpTerminalAuthority,
+    mut repository_candidate_authority: CodexRepositoryCandidateAuthority,
+    mut repository_candidate_cells: BTreeSet<String>,
 ) -> Result<McpTerminalAuthorityPreflight> {
     let mut reader = BufReader::new(opened.file().try_clone()?);
     reader.seek(SeekFrom::Start(start))?;
@@ -97,19 +108,82 @@ fn preflight_mcp_terminal_authority(
             // provider record. Conservatively exhaust both terminal domains:
             // it may contain either an MCP terminal or a result terminal.
             authority.observe_ambiguous_terminal();
+            repository_candidate_authority.observe_ambiguous_record();
             continue;
         }
         let record = trim_jsonl_terminator(&record_buffer[..record_read.stored_len]);
         if result_terminal_authority_is_ambiguous(record) {
             authority.observe_ambiguous_result_terminal();
+            repository_candidate_authority.observe_ambiguous_record();
         }
         if let Some(evidence) = mcp_terminal_candidate_evidence(record) {
             authority.observe(&evidence);
         }
-        observe_result_terminal_call_id(&mut authority, record);
+        let Some(probe) = observe_result_terminal_call_id(&mut authority, record) else {
+            continue;
+        };
+        match probe.class {
+            CodexRecordClass::Retained(super::super::record::CodexRetainedKind::ToolCall) => {
+                let Ok(envelope) = serde_json::from_slice::<Value>(record) else {
+                    repository_candidate_authority.observe_ambiguous_record();
+                    continue;
+                };
+                let Some(payload) = envelope.get("payload") else {
+                    continue;
+                };
+                let Some((call_id, context)) =
+                    crate::provider::codex::repository::repository_invocation_context(
+                        payload,
+                        // Candidate recognition is syntactic. Projection
+                        // retains the measured cwd for actual attribution.
+                        Some("/"),
+                    )
+                else {
+                    continue;
+                };
+                if crate::provider::codex::repository::repository_result_candidate(&context)
+                    || context
+                        .continuation_cell_id
+                        .as_ref()
+                        .is_some_and(|cell_id| repository_candidate_cells.contains(cell_id))
+                {
+                    repository_candidate_authority.observe_candidate_call(&call_id);
+                } else {
+                    repository_candidate_authority.observe_call_if_candidate(&call_id);
+                }
+            }
+            CodexRecordClass::ExcludedResult(_) => {
+                let Some(call_id) = probe
+                    .call_id
+                    .as_deref()
+                    .filter(|call_id| !call_id.is_empty())
+                else {
+                    continue;
+                };
+                if !repository_candidate_authority.observe_result_if_candidate(call_id) {
+                    continue;
+                }
+                let Ok(envelope) = serde_json::from_slice::<Value>(record) else {
+                    repository_candidate_authority.observe_ambiguous_record();
+                    continue;
+                };
+                if let Some(cell_id) = envelope.get("payload").and_then(|payload| {
+                    crate::provider::codex::repository::running_continuation_cell_id(payload)
+                }) {
+                    repository_candidate_cells.insert(cell_id);
+                }
+            }
+            CodexRecordClass::SessionMeta
+            | CodexRecordClass::TurnContext
+            | CodexRecordClass::DescendantActivity
+            | CodexRecordClass::DescendantStarted
+            | CodexRecordClass::Retained(_)
+            | CodexRecordClass::Ignored => {}
+        }
     }
     Ok(McpTerminalAuthorityPreflight {
         authority,
+        repository_candidate_authority,
         bytes_read: offset.saturating_sub(start),
         peak_record_bytes,
     })
@@ -181,6 +255,10 @@ impl CodexNativeScanner {
                 owner: Some(replay_owner),
                 pending_tool_authorities: proof.checkpoint.pending_tool_authorities().to_vec(),
                 terminal_authority: proof.checkpoint.terminal_authority().clone(),
+                repository_candidate_authority: proof
+                    .checkpoint
+                    .repository_candidate_authority()
+                    .clone(),
                 incomplete_tail,
                 counters: CodexScanCounters {
                     bytes_read: validated.bytes_read,
@@ -205,6 +283,9 @@ impl CodexNativeScanner {
                 mcp_terminal_authority: CodexMcpTerminalAuthority::from_checkpoint(
                     proof.checkpoint.terminal_authority(),
                 ),
+                repository_candidate_authority: CodexRepositoryCandidateAuthority::from_checkpoint(
+                    proof.checkpoint.repository_candidate_authority(),
+                ),
                 incomplete_tail: None,
                 counters: replay.counters,
                 local_turn_started: proof.checkpoint.local_turn_started(),
@@ -224,6 +305,13 @@ impl CodexNativeScanner {
             .map(|proof| {
                 CodexMcpTerminalAuthority::from_checkpoint(proof.checkpoint.terminal_authority())
             });
+        let repository_candidate_append_prefix = proof
+            .filter(|proof| before.len > proof.checkpoint.observation.len)
+            .map(|proof| {
+                CodexRepositoryCandidateAuthority::from_checkpoint(
+                    proof.checkpoint.repository_candidate_authority(),
+                )
+            });
         let authority_start = append_prefix
             .as_ref()
             .and_then(|_| proof.map(|proof| proof.checkpoint.complete_prefix_end()))
@@ -233,6 +321,30 @@ impl CodexNativeScanner {
             authority_start,
             before.len,
             append_prefix.clone().unwrap_or_default(),
+            repository_candidate_append_prefix
+                .clone()
+                .unwrap_or_default(),
+            validated
+                .as_ref()
+                .map(|validated| {
+                    validated
+                        .pending_continuations
+                        .iter()
+                        .filter_map(|(cell_id, origin_call_id)| {
+                            (!origin_call_id.is_empty()
+                                && validated
+                                    .pending_tool_contexts
+                                    .get(origin_call_id)
+                                    .is_some_and(|context| {
+                                        crate::provider::codex::repository::repository_result_candidate(
+                                            context,
+                                        )
+                                    }))
+                            .then(|| cell_id.clone())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         )?;
         if append_prefix.as_ref().is_some_and(|prefix| {
             prefix.appended_suffix_invalidates(&authority_preflight.authority)
@@ -241,8 +353,26 @@ impl CodexNativeScanner {
                 "an appended terminal invalidates certified native call authority",
             ));
         }
+        if repository_candidate_append_prefix
+            .as_ref()
+            .is_some_and(|prefix| {
+                prefix.appended_suffix_invalidates(
+                    &authority_preflight.repository_candidate_authority,
+                )
+            })
+        {
+            return Err(invalid_checkpoint_proof(
+                "an appended terminal invalidates certified repository candidate authority",
+            ));
+        }
         let authority_entries = authority_preflight.authority.entry_count();
         let authority_bytes = authority_preflight.authority.estimated_owned_bytes();
+        let repository_candidate_entries = authority_preflight
+            .repository_candidate_authority
+            .entry_count();
+        let repository_candidate_bytes = authority_preflight
+            .repository_candidate_authority
+            .estimated_owned_bytes();
 
         let (
             disposition,
@@ -328,6 +458,7 @@ impl CodexNativeScanner {
             tool_authorities,
             continuations,
             mcp_terminal_authority: authority_preflight.authority,
+            repository_candidate_authority: authority_preflight.repository_candidate_authority,
             incomplete_tail: None,
             counters: CodexScanCounters {
                 bytes_read: validation_bytes,
@@ -336,6 +467,8 @@ impl CodexNativeScanner {
                 mcp_terminal_authority_bytes_read: authority_preflight.bytes_read,
                 peak_mcp_terminal_authority_entries: authority_entries,
                 peak_mcp_terminal_authority_bytes: authority_bytes,
+                peak_repository_candidate_authority_entries: repository_candidate_entries,
+                peak_repository_candidate_authority_bytes: repository_candidate_bytes,
                 peak_line_buffer_bytes: authority_preflight.peak_record_bytes,
                 ..CodexScanCounters::default()
             },

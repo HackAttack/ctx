@@ -738,7 +738,7 @@ fn invalid_attribution_preserves_terminal_content_and_all_stable_identities() {
     );
     assert_eq!(
         exact.parser_revision,
-        "codex-nativepath-core-record-v27-bounded-exact-origin"
+        "codex-nativepath-core-record-v29-repository-candidate-exact-origin"
     );
     assert_eq!(exact.parser_revision, invalid.parser_revision);
     assert_eq!(

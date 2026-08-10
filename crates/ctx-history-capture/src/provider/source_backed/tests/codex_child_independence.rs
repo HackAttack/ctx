@@ -20,8 +20,9 @@ use crate::provider::source_backed::family::jsonl::{
     set_before_jsonl_terminal_physical_revalidation_hook,
 };
 
-const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-record-v27-bounded-exact-origin";
-const CURRENT_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v14";
+const CURRENT_PARSER_REVISION: &str =
+    "codex-nativepath-core-record-v29-repository-candidate-exact-origin";
+const CURRENT_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v16";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -104,10 +105,17 @@ fn message(marker: &str) -> serde_json::Value {
 }
 
 fn turn_context() -> serde_json::Value {
+    turn_context_with_id("019fb100-0000-7000-8000-000000000001")
+}
+
+fn turn_context_with_id(turn_id: &str) -> serde_json::Value {
     serde_json::json!({
         "timestamp": "2026-08-09T12:00:02Z",
         "type": "turn_context",
-        "payload": {"cwd": "/tmp/codex-child-independence"}
+        "payload": {
+            "turn_id": turn_id,
+            "cwd": "/tmp/codex-child-independence"
+        }
     })
 }
 
@@ -129,6 +137,13 @@ fn exec_call(call_id: &str) -> serde_json::Value {
 }
 
 fn exec_result(call_id: &str, marker: &str) -> serde_json::Value {
+    successful_result(
+        call_id,
+        format!("{marker}\n0123456789abcdef0123456789abcdef01234567\n"),
+    )
+}
+
+fn successful_result(call_id: &str, output: String) -> serde_json::Value {
     serde_json::json!({
         "timestamp": "2026-08-09T12:00:04Z",
         "type": "response_item",
@@ -136,7 +151,9 @@ fn exec_result(call_id: &str, marker: &str) -> serde_json::Value {
             "type": "function_call_output",
             "call_id": call_id,
             "status": "success",
-            "output": format!("{marker}\n0123456789abcdef0123456789abcdef01234567\n")
+            "output": format!(
+                "Chunk ID: abc123\nWall time: 0.125 seconds\nProcess exited with code 0\nFinal output:\n{output}"
+            )
         }
     })
 }
@@ -180,6 +197,22 @@ fn wait_call(call_id: &str, cell_id: &str) -> serde_json::Value {
             "name": "wait",
             "call_id": call_id,
             "arguments": serde_json::json!({"cell_id": cell_id}).to_string()
+        }
+    })
+}
+
+fn completed_wait_result(call_id: &str, output: impl AsRef<str>) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:06Z",
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "status": "success",
+            "output": format!(
+                "Script completed\nProcess exited with code 0\nFinal output:\n{}",
+                output.as_ref()
+            )
         }
     })
 }
@@ -353,6 +386,52 @@ fn records_for(index: &VerifiedIndex, native_session_id: &str) -> Vec<CoreRecord
         .collect::<Vec<_>>();
     records.sort_by_key(|record| record.event_sequence);
     records
+}
+
+fn assert_no_repository_causality(records: &[CoreRecord], markers: &[&str]) {
+    for marker in markers {
+        let matching = records
+            .iter()
+            .filter(|record| {
+                record
+                    .content
+                    .normalized_body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(marker))
+            })
+            .collect::<Vec<_>>();
+        assert!(!matching.is_empty(), "missing adversarial marker {marker}");
+        assert!(matching.iter().all(|record| {
+            record.event_origin == EventOrigin::Unknown
+                && record.repository_vcs_observations.is_empty()
+        }));
+    }
+}
+
+fn assert_exact_commit_causality(records: &[CoreRecord], markers: &[&str]) {
+    for marker in markers {
+        let record = records
+            .iter()
+            .find(|record| {
+                record
+                    .content
+                    .normalized_body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(marker))
+            })
+            .unwrap_or_else(|| panic!("missing exact marker {marker}"));
+        assert_eq!(record.event_origin, EventOrigin::UniqueToSession);
+        assert!(record
+            .repository_vcs_observations
+            .iter()
+            .any(|observation| {
+                matches!(
+                    observation.kind,
+                    ctx_history_core::RepositoryVcsObservationKind::Outcome(ref outcome)
+                        if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
+                )
+            }));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -915,11 +994,24 @@ fn selected_routes_process_child_only_and_never_abort_for_unselected_descendants
 }
 
 #[test]
-fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
+fn fork_invocation_boundary_separates_copied_and_unique_exact_outcomes() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
     fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
     let parent = "019fb000-0000-7000-8000-000000000021";
     let child = "019fb000-0000-7000-8000-000000000022";
     write_session(
@@ -928,8 +1020,11 @@ fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
         SessionRelationshipKind::Root,
         None,
         [
-            exec_call("copied-call"),
-            exec_result("copied-call", "positive-copied-result-marker"),
+            exec_call_in("copied-call", command, &repository),
+            successful_result(
+                "copied-call",
+                format!("positive-copied-result-marker\n[main abc1234] exact\n{oid}\n"),
+            ),
             message("origin-parent-marker"),
         ],
     );
@@ -939,11 +1034,18 @@ fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
         SessionRelationshipKind::Forked,
         Some(parent),
         [
-            exec_call("copied-call"),
-            exec_result("copied-call", "positive-copied-result-marker"),
+            turn_context_with_id("019fa000-0000-7000-8000-000000000001"),
+            exec_call_in("copied-call", command, &repository),
             turn_context(),
-            exec_call("local-call"),
-            exec_result("local-call", "unknown-local-result-marker"),
+            successful_result(
+                "copied-call",
+                format!("positive-copied-result-marker\n[main abc1234] exact\n{oid}\n"),
+            ),
+            exec_call_in("local-call", command, &repository),
+            successful_result(
+                "local-call",
+                format!("unique-local-result-marker\n[main abc1234] exact\n{oid}\n"),
+            ),
         ],
     );
     let registry = register_tree(&[&sessions]);
@@ -970,6 +1072,10 @@ fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
         copied.event_origin,
         EventOrigin::CopiedFromAncestor { .. }
     ));
+    assert!(copied.repository_vcs_observations.is_empty());
+    assert!(copied.repository_abstentions.iter().any(|abstention| {
+        abstention.detail.as_deref() == Some("copied_provider_history_has_ancestor_execution")
+    }));
     let local = records
         .iter()
         .find(|record| {
@@ -977,13 +1083,22 @@ fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
                 .content
                 .normalized_body
                 .as_deref()
-                .is_some_and(|body| body.contains("unknown-local-result-marker"))
+                .is_some_and(|body| body.contains("unique-local-result-marker"))
         })
         .expect("local result record");
-    assert_eq!(local.event_origin, EventOrigin::Unknown);
-    assert!(!records
+    assert_eq!(local.event_origin, EventOrigin::UniqueToSession);
+    assert!(local
+        .repository_vcs_observations
         .iter()
-        .any(|record| record.event_origin == EventOrigin::UniqueToSession));
+        .any(|observation| matches!(
+            &observation.kind,
+            ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
+                    && outcome.produced_object_ids.iter().any(|object_id| object_id.hex == oid)
+        )));
+    assert!(!local.repository_abstentions.iter().any(|abstention| {
+        abstention.detail.as_deref() == Some("provider_execution_origin_lineage_unproven")
+    }));
 
     append_event(
         &session_path(&sessions, parent),
@@ -1032,6 +1147,147 @@ fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
         restarted_copied.event_origin,
         EventOrigin::CopiedFromAncestor { .. }
     ));
+}
+
+#[test]
+fn root_owned_exact_commit_and_pr_203_share_certified_repository_origin() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    assert!(Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/ctxrs/ctx.git",
+        ])
+        .current_dir(&repository)
+        .status()
+        .unwrap()
+        .success());
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let native_session_id = "019fb000-0000-7000-8000-000000000024";
+    let pr_command = concat!(
+        "git push -u origin codex/exact-repository-origin\n",
+        "gh pr create --base main --head codex/exact-repository-origin ",
+        "--title 'exact repository origin' --body 'exact repository origin'"
+    );
+    let unrelated_terminals = (0..257).map(|index| {
+        serde_json::json!({
+            "timestamp": "2026-08-09T12:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": format!("unrelated-terminal-{index}")
+            }
+        })
+    });
+    let exact_events = [
+        exec_call_in(
+            "root-commit",
+            "git commit -m exact-root-commit && git rev-parse HEAD",
+            &repository,
+        ),
+        successful_result(
+            "root-commit",
+            format!("[main abc1234] exact-root-commit\n{oid}\n"),
+        ),
+        exec_call_in("root-pr-203", pr_command, &repository),
+        successful_result(
+            "root-pr-203",
+            "To https://github.com/ctxrs/ctx.git\nhttps://github.com/ctxrs/ctx/pull/203\n"
+                .to_owned(),
+        ),
+    ];
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        unrelated_terminals.chain(exact_events),
+    );
+
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    let records = records_for(&verified, native_session_id);
+    let commit = records
+        .iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("exact-root-commit"))
+                && !record.repository_vcs_observations.is_empty()
+        })
+        .expect("root exact commit record");
+    assert_eq!(commit.event_origin, EventOrigin::UniqueToSession);
+    let commit_outcome = commit
+        .repository_vcs_observations
+        .iter()
+        .find_map(|observation| match &observation.kind {
+            ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit =>
+            {
+                Some((observation, outcome.as_ref()))
+            }
+            _ => None,
+        })
+        .expect("certified exact commit outcome");
+    assert!(commit_outcome
+        .1
+        .produced_object_ids
+        .iter()
+        .any(|object_id| object_id.hex == oid));
+
+    let pull_request = records
+        .iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("https://github.com/ctxrs/ctx/pull/203"))
+        })
+        .expect("root PR #203 record");
+    assert_eq!(pull_request.event_origin, EventOrigin::UniqueToSession);
+    let (pr_observation, pr_outcome) = pull_request
+        .repository_vcs_observations
+        .iter()
+        .find_map(|observation| match &observation.kind {
+            ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                if outcome.kind == ctx_history_core::RepositoryOutcomeKind::PullRequestCreated =>
+            {
+                Some((observation, outcome.as_ref()))
+            }
+            _ => None,
+        })
+        .expect("certified PR #203 creation outcome");
+    let pr_identity = pr_outcome.pull_request.as_ref().expect("PR identity");
+    assert_eq!(pr_identity.number, 203);
+    let binding = pull_request
+        .repository_bindings
+        .iter()
+        .find(|binding| binding.binding_id == pr_observation.repository_binding_id)
+        .expect("PR #203 repository binding");
+    assert!(binding.accepts_pull_request(pr_identity));
+    assert_eq!(
+        commit_outcome.0.repository_binding_id,
+        pr_observation.repository_binding_id
+    );
 }
 
 #[test]
@@ -1108,6 +1364,424 @@ fn duplicate_pre_turn_provider_identity_is_unknown_on_cold_and_append_restart() 
     let cold_restart = VerifiedIndex::open(&cold_index_root).unwrap();
     assert_eq!(
         serde_json::to_vec(&certificate_for(&cold_restart, child)).unwrap(),
+        appended_certificate
+    );
+}
+
+#[test]
+fn unmatched_or_ambiguous_call_ids_suppress_exact_outcomes() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
+    let root = "019fb000-0000-7000-8000-000000000030";
+    write_session(
+        &sessions,
+        root,
+        SessionRelationshipKind::Root,
+        None,
+        [
+            exec_call_in("ambiguous-call", command, &repository),
+            exec_call_in("ambiguous-call", command, &repository),
+            successful_result(
+                "ambiguous-call",
+                format!("ambiguous-result-marker\n[main abc1234] exact\n{oid}\n"),
+            ),
+            exec_call_in("matched-call", command, &repository),
+            successful_result(
+                "mismatched-result-call",
+                format!("mismatched-result-marker\n[main abc1234] exact\n{oid}\n"),
+            ),
+        ],
+    );
+
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    let root_records = records_for(&verified, root);
+    let ambiguous = root_records
+        .iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("ambiguous-result-marker"))
+        })
+        .expect("ambiguous result record");
+    assert_eq!(ambiguous.event_origin, EventOrigin::Unknown);
+    assert!(ambiguous.repository_vcs_observations.is_empty());
+    let mismatched = root_records
+        .iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("mismatched-result-marker"))
+        })
+        .expect("mismatched result record");
+    assert_eq!(mismatched.event_origin, EventOrigin::Unknown);
+    assert!(mismatched.repository_vcs_observations.is_empty());
+}
+
+#[test]
+fn cold_direct_repository_results_require_exact_candidate_multiplicity() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
+    let native_session_id = "019fb000-0000-7000-8000-000000000033";
+    let mut events = (0..300)
+        .map(|index| {
+            serde_json::json!({
+                "timestamp": "2026-08-09T12:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": format!("direct-unrelated-prefix-{index}")
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    events.extend([
+        exec_call_in("direct-duplicate", command, &repository),
+        successful_result(
+            "direct-duplicate",
+            format!("direct-duplicate-same\n[main abc1234] exact\n{oid}\n"),
+        ),
+        successful_result(
+            "direct-duplicate",
+            format!("direct-duplicate-same\n[main abc1234] exact\n{oid}\n"),
+        ),
+        exec_call_in("direct-conflict", command, &repository),
+        successful_result(
+            "direct-conflict",
+            format!("direct-conflict-first\n[main abc1234] exact\n{oid}\n"),
+        ),
+        successful_result(
+            "direct-conflict",
+            "direct-conflict-second\n[main fffffff] conflict\nffffffffffffffffffffffffffffffffffffffff\n"
+                .to_owned(),
+        ),
+        exec_call_in("direct-serial", command, &repository),
+        successful_result(
+            "direct-serial",
+            format!("direct-serial-first\n[main abc1234] exact\n{oid}\n"),
+        ),
+        exec_call_in("direct-serial", command, &repository),
+        successful_result(
+            "direct-serial",
+            format!("direct-serial-second\n[main abc1234] exact\n{oid}\n"),
+        ),
+    ]);
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        events,
+    );
+
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    assert_no_repository_causality(
+        &records_for(&verified, native_session_id),
+        &[
+            "direct-duplicate-same",
+            "direct-conflict-first",
+            "direct-conflict-second",
+            "direct-serial-first",
+            "direct-serial-second",
+        ],
+    );
+}
+
+#[test]
+fn cold_continued_repository_results_require_exact_candidate_multiplicity() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
+    let native_session_id = "019fb000-0000-7000-8000-000000000034";
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [
+            exec_call_in("continued-duplicate-origin", command, &repository),
+            running_result("continued-duplicate-origin", "continued-duplicate-cell"),
+            wait_call("continued-duplicate-wait", "continued-duplicate-cell"),
+            completed_wait_result(
+                "continued-duplicate-wait",
+                format!("continued-duplicate-same\n[main abc1234] exact\n{oid}\n"),
+            ),
+            completed_wait_result(
+                "continued-duplicate-wait",
+                format!("continued-duplicate-same\n[main abc1234] exact\n{oid}\n"),
+            ),
+            exec_call_in("continued-conflict-origin", command, &repository),
+            running_result("continued-conflict-origin", "continued-conflict-cell"),
+            wait_call("continued-conflict-wait", "continued-conflict-cell"),
+            completed_wait_result(
+                "continued-conflict-wait",
+                format!("continued-conflict-first\n[main abc1234] exact\n{oid}\n"),
+            ),
+            completed_wait_result(
+                "continued-conflict-wait",
+                "continued-conflict-second\n[main fffffff] conflict\nffffffffffffffffffffffffffffffffffffffff\n",
+            ),
+            exec_call_in("continued-serial-origin", command, &repository),
+            running_result("continued-serial-origin", "continued-serial-cell"),
+            wait_call("continued-serial-wait", "continued-serial-cell"),
+            completed_wait_result(
+                "continued-serial-wait",
+                format!("continued-serial-first\n[main abc1234] exact\n{oid}\n"),
+            ),
+            wait_call("continued-serial-wait", "continued-serial-cell"),
+            completed_wait_result(
+                "continued-serial-wait",
+                format!("continued-serial-second\n[main abc1234] exact\n{oid}\n"),
+            ),
+        ],
+    );
+
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    assert_no_repository_causality(
+        &records_for(&verified, native_session_id),
+        &[
+            "continued-duplicate-same",
+            "continued-conflict-first",
+            "continued-conflict-second",
+            "continued-serial-first",
+            "continued-serial-second",
+        ],
+    );
+}
+
+#[test]
+fn append_restart_retracts_direct_and_continued_candidate_reuse_after_large_prefix() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let cold_index_root = temp.path().join("cold-index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
+    let native_session_id = "019fb000-0000-7000-8000-000000000035";
+    let path = session_path(&sessions, native_session_id);
+    let mut events = (0..300)
+        .map(|index| {
+            serde_json::json!({
+                "timestamp": "2026-08-09T12:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": format!("append-unrelated-prefix-{index}")
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for kind in ["duplicate", "conflict", "serial"] {
+        let call_id = format!("append-direct-{kind}");
+        events.push(exec_call_in(&call_id, command, &repository));
+        events.push(successful_result(
+            &call_id,
+            format!("append-direct-{kind}-initial\n[main abc1234] exact\n{oid}\n"),
+        ));
+    }
+    for kind in ["duplicate", "conflict", "serial"] {
+        let origin = format!("append-continued-{kind}-origin");
+        let cell = format!("append-continued-{kind}-cell");
+        let wait = format!("append-continued-{kind}-wait");
+        events.push(exec_call_in(&origin, command, &repository));
+        events.push(running_result(&origin, &cell));
+        events.push(wait_call(&wait, &cell));
+        events.push(completed_wait_result(
+            &wait,
+            format!("append-continued-{kind}-initial\n[main abc1234] exact\n{oid}\n"),
+        ));
+    }
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        events,
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let initial = VerifiedIndex::open(&index_root).unwrap();
+    assert_exact_commit_causality(
+        &records_for(&initial, native_session_id),
+        &[
+            "append-direct-duplicate-initial",
+            "append-direct-conflict-initial",
+            "append-direct-serial-initial",
+            "append-continued-duplicate-initial",
+            "append-continued-conflict-initial",
+            "append-continued-serial-initial",
+        ],
+    );
+    drop(initial);
+
+    append_event(
+        &path,
+        successful_result(
+            "append-direct-duplicate",
+            format!("append-direct-duplicate-again\n[main abc1234] exact\n{oid}\n"),
+        ),
+    );
+    append_event(
+        &path,
+        successful_result(
+            "append-direct-conflict",
+            "append-direct-conflict-again\n[main fffffff] conflict\nffffffffffffffffffffffffffffffffffffffff\n"
+                .to_owned(),
+        ),
+    );
+    append_event(
+        &path,
+        exec_call_in("append-direct-serial", command, &repository),
+    );
+    append_event(
+        &path,
+        successful_result(
+            "append-direct-serial",
+            format!("append-direct-serial-again\n[main abc1234] exact\n{oid}\n"),
+        ),
+    );
+    append_event(
+        &path,
+        completed_wait_result(
+            "append-continued-duplicate-wait",
+            format!("append-continued-duplicate-again\n[main abc1234] exact\n{oid}\n"),
+        ),
+    );
+    append_event(
+        &path,
+        completed_wait_result(
+            "append-continued-conflict-wait",
+            "append-continued-conflict-again\n[main fffffff] conflict\nffffffffffffffffffffffffffffffffffffffff\n",
+        ),
+    );
+    append_event(
+        &path,
+        wait_call(
+            "append-continued-serial-wait",
+            "append-continued-serial-cell",
+        ),
+    );
+    append_event(
+        &path,
+        completed_wait_result(
+            "append-continued-serial-wait",
+            format!("append-continued-serial-again\n[main abc1234] exact\n{oid}\n"),
+        ),
+    );
+
+    let observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert_eq!(
+        causal_by_id(&observed)
+            .get(native_session_id)
+            .unwrap()
+            .counters
+            .replaced_sources,
+        1
+    );
+    let appended = VerifiedIndex::open(&index_root).unwrap();
+    let appended_records = records_for(&appended, native_session_id);
+    assert_no_repository_causality(
+        &appended_records,
+        &[
+            "append-direct-duplicate-initial",
+            "append-direct-duplicate-again",
+            "append-direct-conflict-initial",
+            "append-direct-conflict-again",
+            "append-direct-serial-initial",
+            "append-direct-serial-again",
+            "append-continued-duplicate-initial",
+            "append-continued-duplicate-again",
+            "append-continued-conflict-initial",
+            "append-continued-conflict-again",
+            "append-continued-serial-initial",
+            "append-continued-serial-again",
+        ],
+    );
+    let appended_certificate =
+        serde_json::to_vec(&certificate_for(&appended, native_session_id)).unwrap();
+    drop(appended);
+
+    refresh_source_backed_generation(&cold_index_root, &registry, writer_options()).unwrap();
+    let restarted = VerifiedIndex::open(&cold_index_root).unwrap();
+    assert_no_repository_causality(
+        &records_for(&restarted, native_session_id),
+        &[
+            "append-direct-duplicate-initial",
+            "append-direct-conflict-initial",
+            "append-direct-serial-initial",
+            "append-continued-duplicate-initial",
+            "append-continued-conflict-initial",
+            "append-continued-serial-initial",
+        ],
+    );
+    assert_eq!(
+        serde_json::to_vec(&certificate_for(&restarted, native_session_id)).unwrap(),
         appended_certificate
     );
 }
@@ -1285,13 +1959,14 @@ fn direct_source_rewrite_delete_and_reappearance_replace_only_that_source() {
 }
 
 #[test]
-fn continuation_restart_preserves_exact_result_linkage_and_abstains_without_origin_proof() {
+fn missing_parent_local_continuation_restart_retains_exact_commit_origin() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index_root = temp.path().join("index");
     let repository = temp.path().join("repository");
     fs::create_dir_all(&sessions).unwrap();
     initialize_repository(&repository);
+    let missing_parent = "019fb000-0000-7000-8000-000000000028";
     let native_session_id = "019fb000-0000-7000-8000-000000000029";
     let path = session_path(&sessions, native_session_id);
     let oid = String::from_utf8(
@@ -1307,9 +1982,10 @@ fn continuation_restart_preserves_exact_result_linkage_and_abstains_without_orig
     write_session(
         &sessions,
         native_session_id,
-        SessionRelationshipKind::Root,
-        None,
+        SessionRelationshipKind::Forked,
+        Some(missing_parent),
         [
+            turn_context(),
             exec_call_in(
                 "continuation-origin",
                 "git commit -m exact && git rev-parse HEAD",
@@ -1359,8 +2035,23 @@ fn continuation_restart_preserves_exact_result_linkage_and_abstains_without_orig
                 .is_some_and(|body| body.contains(oid))
         })
         .unwrap();
-    assert!(result.repository_vcs_observations.is_empty());
-    assert!(result.repository_abstentions.iter().any(|abstention| {
+    assert_eq!(result.parent_session_id, Some(result.root_session_id));
+    assert_eq!(result.event_origin, EventOrigin::UniqueToSession);
+    assert!(result
+        .repository_vcs_observations
+        .iter()
+        .any(|observation| {
+            matches!(
+                &observation.kind,
+                ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                    if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
+                        && outcome
+                            .produced_object_ids
+                            .iter()
+                            .any(|object_id| object_id.hex == oid)
+            )
+        }));
+    assert!(!result.repository_abstentions.iter().any(|abstention| {
         abstention.detail.as_deref() == Some("provider_execution_origin_lineage_unproven")
     }));
     let activity = result
@@ -1441,7 +2132,7 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
             let old_certificate = CertifiedSource::certify_with_frontier(
                 certificate.observation().clone(),
                 certificate.observation().clone(),
-                "codex-nativepath-core-record-v26-child-independent-origin",
+                "codex-nativepath-core-record-v27-bounded-exact-origin",
                 *certificate.content_digest(),
                 certificate.counts(),
                 certificate.frontier().cloned(),
@@ -1523,7 +2214,7 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
             panic!("Codex checkpoint must be byte keyed");
         };
         let wire = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
-        assert_eq!(wire["version"], 14);
+        assert_eq!(wire["version"], 16);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());
     }

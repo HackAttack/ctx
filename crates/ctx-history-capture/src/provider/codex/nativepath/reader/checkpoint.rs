@@ -4,6 +4,7 @@ use crate::provider::source_backed::family::jsonl::{
     read_bounded_record_unhashed as read_shared_bounded_record_unhashed, retained_file_identity,
     JsonlBoundedRecordRead as BoundedRecordRead, JsonlFileIdentityPolicy, JsonlRecordFraming,
 };
+use ctx_history_core::SessionRelationshipKind;
 
 pub(super) fn read_bounded_record_unhashed(
     reader: &mut BufReader<File>,
@@ -39,7 +40,42 @@ pub(super) fn decode_pending_tool_authority(
     record: &[u8],
     authority: &CodexPendingToolAuthority,
     owner: &CodexSessionRow,
+    local_turn_started: bool,
 ) -> Result<(String, CodexToolCallContext)> {
+    match authority.invocation_origin() {
+        CodexInvocationOriginV0::UniqueToSession
+            if owner.session_relationship == SessionRelationshipKind::RelatedUnknown =>
+        {
+            return Err(invalid_checkpoint_proof(
+                "pending tool-call authority claims unique origin for unknown lineage",
+            ));
+        }
+        CodexInvocationOriginV0::UniqueToSession
+            if matches!(
+                owner.session_relationship,
+                SessionRelationshipKind::Forked | SessionRelationshipKind::ResumedFrom
+            ) && !local_turn_started =>
+        {
+            return Err(invalid_checkpoint_proof(
+                "pending tool-call authority claims unique origin before a local turn",
+            ));
+        }
+        CodexInvocationOriginV0::CopiedFromAncestor {
+            ancestor_native_session_id,
+        } if !matches!(
+            owner.session_relationship,
+            SessionRelationshipKind::Forked | SessionRelationshipKind::ResumedFrom
+        ) || owner.parent_native_session_id.as_deref()
+            != Some(ancestor_native_session_id.as_str()) =>
+        {
+            return Err(invalid_checkpoint_proof(
+                "pending tool-call copied origin does not match source ownership",
+            ));
+        }
+        CodexInvocationOriginV0::UniqueToSession
+        | CodexInvocationOriginV0::CopiedFromAncestor { .. }
+        | CodexInvocationOriginV0::Unproven => {}
+    }
     // The surrounding checkpoint walk has already matched this authority to
     // an exact JSONL boundary. The current scanner scratch omits the delimiter;
     // the pending-authority scratch includes it.
@@ -108,6 +144,9 @@ pub(super) fn decode_pending_tool_authority(
     context.continuation_call_id_sha256 = authority.continuation_call_id_sha256().to_vec();
     context.continuation_capacity_exceeded = authority.continuation_capacity_exceeded();
     context.correlation_ambiguous = authority.correlation_ambiguous();
+    context
+        .invocation_origin
+        .clone_from(authority.invocation_origin());
     Ok((call_id, bound_tool_context(context)))
 }
 
@@ -208,6 +247,7 @@ pub(super) fn validate_checkpoint_source(
                                 pending_tool_record.as_slice(),
                                 authority,
                                 &checkpoint.owner,
+                                checkpoint.local_turn_started(),
                             )?;
                             if pending_tool_contexts
                                 .insert(call_id.clone(), context)
@@ -347,6 +387,7 @@ pub(super) fn validate_checkpoint_source(
             context.continuation_call_id_sha256 = origin.continuation_call_id_sha256;
             context.continuation_capacity_exceeded = origin.continuation_capacity_exceeded;
             context.correlation_ambiguous = origin.correlation_ambiguous;
+            context.invocation_origin = origin.invocation_origin;
         }
     }
 

@@ -15,13 +15,16 @@ use sha2::{Digest, Sha256};
 use super::source::{CodexCheckpointGeneration, CodexSourceIdentity};
 use super::{
     checkpoint::{
-        CodexNativeCheckpoint, CodexPendingToolAuthority, CodexTerminalAuthorityCheckpoint,
-        CodexTerminalAuthorityEntry, MAX_CODEX_CONTINUATION_CELL_ID_BYTES,
-        MAX_CODEX_MCP_TERMINAL_AUTHORITIES, MAX_CODEX_TOOL_CALL_ID_BYTES, MAX_CODEX_TOOL_CONTEXTS,
+        CodexNativeCheckpoint, CodexPendingToolAuthority,
+        CodexRepositoryCandidateAuthorityCheckpoint, CodexRepositoryCandidateAuthorityEntry,
+        CodexTerminalAuthorityCheckpoint, CodexTerminalAuthorityEntry,
+        MAX_CODEX_CONTINUATION_CELL_ID_BYTES, MAX_CODEX_MCP_TERMINAL_AUTHORITIES,
+        MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES, MAX_CODEX_TOOL_CALL_ID_BYTES,
+        MAX_CODEX_TOOL_CONTEXTS,
     },
     record::{
         classify_codex_record, classify_mcp_terminal_after_selector_ambiguity,
-        parse_decoded_record, parse_session_meta, parse_turn_context_cwd, prefilter_codex_record,
+        parse_decoded_record, parse_session_meta, parse_turn_context, prefilter_codex_record,
         CodexRecordAdmission, CodexRecordClass, CodexRecordProbe, CodexResultKind,
         CodexSkipProjection,
     },
@@ -37,7 +40,7 @@ use crate::{
     common::io::{open_provider_source_file, OpenedProviderSourceFile},
     provider::codex::events::{
         codex_exact_successful_function_output, codex_output_content, codex_result_value,
-        CodexToolCallContext,
+        CodexInvocationOriginV0, CodexToolCallContext,
     },
     provider::file_touches::{
         event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
@@ -110,6 +113,8 @@ pub(crate) struct CodexScanCounters {
     pub(crate) mcp_terminal_authority_bytes_read: u64,
     pub(crate) peak_mcp_terminal_authority_entries: usize,
     pub(crate) peak_mcp_terminal_authority_bytes: usize,
+    pub(crate) peak_repository_candidate_authority_entries: usize,
+    pub(crate) peak_repository_candidate_authority_bytes: usize,
     pub(crate) retained_json_parses: u64,
     pub(crate) retained_body_bytes: u64,
     pub(crate) retained_hashes_created: u64,
@@ -179,6 +184,7 @@ pub(crate) struct CodexSourceScan {
     pub(crate) owner: Option<CodexSessionRow>,
     pending_tool_authorities: Vec<CodexPendingToolAuthority>,
     terminal_authority: CodexTerminalAuthorityCheckpoint,
+    repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
     pub(crate) incomplete_tail: Option<CodexIncompleteTail>,
     pub(crate) counters: CodexScanCounters,
     pub(crate) local_turn_started: bool,
@@ -202,6 +208,7 @@ impl CodexSourceScan {
                 .map(|tail| (tail.byte_len, tail.sha256)),
             &self.pending_tool_authorities,
             self.terminal_authority.clone(),
+            self.repository_candidate_authority.clone(),
             match self.owner.clone() {
                 Some(owner) => owner,
                 None => return Ok(None),
@@ -240,6 +247,7 @@ pub(crate) struct CodexNativeScanner {
     tool_authorities: BTreeMap<String, CodexPendingToolAuthority>,
     continuations: BTreeMap<String, String>,
     mcp_terminal_authority: project::CodexMcpTerminalAuthority,
+    repository_candidate_authority: project::CodexRepositoryCandidateAuthority,
     incomplete_tail: Option<CodexIncompleteTail>,
     counters: CodexScanCounters,
     local_turn_started: bool,

@@ -3,7 +3,8 @@ use std::fs::OpenOptions;
 use super::*;
 use crate::provider::codex::nativepath::{
     checkpoint::{
-        CodexPendingToolAuthority, CodexTerminalAuthorityCheckpoint, CodexTerminalAuthorityEntry,
+        CodexPendingToolAuthority, CodexRepositoryCandidateAuthorityCheckpoint,
+        CodexTerminalAuthorityCheckpoint, CodexTerminalAuthorityEntry,
         MAX_CODEX_MCP_TERMINAL_AUTHORITIES, MAX_CODEX_NATIVE_CHECKPOINT_BYTES,
     },
     rows::{
@@ -471,7 +472,7 @@ fn checkpoint_round_trip_contains_control_state_but_no_event_body() {
     assert!(!wire.contains("command"));
     assert!(!wire.contains("arguments_preview"));
     let decoded_wire = serde_json::from_str::<Value>(&wire).unwrap();
-    assert_eq!(decoded_wire["version"], 14);
+    assert_eq!(decoded_wire["version"], 16);
     assert!(decoded_wire.get("lineage_dependency_sha256").is_none());
     assert!(decoded_wire.get("certified_lineage_facts").is_none());
     assert_eq!(
@@ -483,8 +484,18 @@ fn checkpoint_round_trip_contains_control_state_but_no_event_body() {
     );
     assert_eq!(CodexNativeCheckpoint::decode(&encoded).unwrap(), checkpoint);
 
+    let mut forked_pre_boundary_unique = decoded_wire.clone();
+    forked_pre_boundary_unique["owner"]["session_relationship"] = json!("forked");
+    forked_pre_boundary_unique["owner"]["parent_native_session_id"] =
+        json!("019fb000-0000-7000-8000-000000000099");
+    forked_pre_boundary_unique["local_turn_started"] = json!(false);
+    assert!(CodexNativeCheckpoint::decode(
+        &serde_json::to_vec(&forked_pre_boundary_unique).unwrap()
+    )
+    .is_err());
+
     let mut old_version = decoded_wire.clone();
-    old_version["version"] = json!(13);
+    old_version["version"] = json!(15);
     assert!(CodexNativeCheckpoint::decode(&serde_json::to_vec(&old_version).unwrap()).is_err());
 
     let mut invalid_terminal_authority = decoded_wire.clone();
@@ -570,6 +581,7 @@ fn reachable_worst_case_checkpoint_sheds_only_pending_evidence_to_fit_frontier()
             (authority_index * 2) as u64,
             (authority_index * 2 + 1) as u64,
             authority_index as u64,
+            crate::provider::codex::events::CodexInvocationOriginV0::Unproven,
         );
         authority.assign_continuation(&format!("{}-{authority_index}", "c".repeat(1000)));
         for continuation_index in 0..MAX_CODEX_TOOL_CONTEXTS {
@@ -608,6 +620,7 @@ fn reachable_worst_case_checkpoint_sheds_only_pending_evidence_to_fit_frontier()
         None,
         &pending,
         terminal,
+        CodexRepositoryCandidateAuthorityCheckpoint::default(),
         owner,
         true,
     )

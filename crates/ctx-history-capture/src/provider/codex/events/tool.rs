@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[cfg(test)]
@@ -11,6 +11,17 @@ use crate::provider::normalization::provider_output_event_is_failure;
 use crate::{OutputOutcome, OutputOutcomeMetadata};
 
 const MAX_CODEX_EXEC_RESULT_ENVELOPE_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum CodexInvocationOriginV0 {
+    UniqueToSession,
+    CopiedFromAncestor {
+        ancestor_native_session_id: String,
+    },
+    #[default]
+    Unproven,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CodexToolCallContext {
@@ -28,6 +39,7 @@ pub(crate) struct CodexToolCallContext {
     pub(crate) continuation_call_id_sha256: Vec<[u8; 32]>,
     pub(crate) continuation_capacity_exceeded: bool,
     pub(crate) correlation_ambiguous: bool,
+    pub(crate) invocation_origin: CodexInvocationOriginV0,
 }
 
 /// Proves the exact native `function_call_output` shape and Codex's successful

@@ -6,8 +6,9 @@ use sha2::{Digest, Sha256};
 
 use super::rows::CodexSessionRow;
 use super::source::CodexFileObservation;
+use crate::provider::codex::events::CodexInvocationOriginV0;
 
-const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 14;
+const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 16;
 const CODEX_PENDING_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/pending-call-id/v1\0";
 const MAX_CODEX_PENDING_TOOL_RECORD_BYTES: u64 = 16 * 1024 * 1024 + 1;
 // SourceFrontier encodes a TypedKey::Bytes as one tag byte, one four-byte
@@ -18,6 +19,7 @@ pub(crate) const MAX_CODEX_TOOL_CONTEXTS: usize = 24;
 pub(super) const MAX_CODEX_TOOL_CALL_ID_BYTES: usize = 1024;
 pub(super) const MAX_CODEX_CONTINUATION_CELL_ID_BYTES: usize = 1024;
 pub(super) const MAX_CODEX_MCP_TERMINAL_AUTHORITIES: usize = 256;
+pub(super) const MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CodexTerminalAuthorityEntry {
@@ -102,6 +104,85 @@ mod terminal_authority_entries_wire {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CodexRepositoryCandidateAuthorityEntry {
+    pub(super) call_id_sha256: [u8; 32],
+    pub(super) calls: u8,
+    pub(super) results: u8,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CodexRepositoryCandidateAuthorityCheckpoint {
+    #[serde(with = "repository_candidate_authority_entries_wire")]
+    pub(super) entries: Vec<CodexRepositoryCandidateAuthorityEntry>,
+    pub(super) exhausted: bool,
+}
+
+impl CodexRepositoryCandidateAuthorityCheckpoint {
+    fn validate_wire_state(&self) -> bool {
+        self.entries.len() <= MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES
+            && self
+                .entries
+                .iter()
+                .all(|entry| matches!(entry.calls, 1 | 2) && entry.results <= 2)
+            && self
+                .entries
+                .windows(2)
+                .all(|entries| entries[0].call_id_sha256 < entries[1].call_id_sha256)
+            && (!self.exhausted || self.entries.is_empty())
+    }
+}
+
+mod repository_candidate_authority_entries_wire {
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+
+    use super::*;
+
+    const ENTRY_BYTES: usize = 34;
+
+    pub(super) fn serialize<S>(
+        entries: &[CodexRepositoryCandidateAuthorityEntry],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut packed = Vec::with_capacity(entries.len().saturating_mul(ENTRY_BYTES));
+        for entry in entries {
+            packed.push(entry.calls);
+            packed.push(entry.results);
+            packed.extend_from_slice(&entry.call_id_sha256);
+        }
+        serializer.serialize_str(&BASE64_STANDARD.encode(packed))
+    }
+
+    pub(super) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Vec<CodexRepositoryCandidateAuthorityEntry>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        let packed = BASE64_STANDARD.decode(encoded).map_err(D::Error::custom)?;
+        if packed.len() % ENTRY_BYTES != 0 {
+            return Err(D::Error::custom(
+                "Codex repository candidate authority has an incomplete packed entry",
+            ));
+        }
+        packed
+            .chunks_exact(ENTRY_BYTES)
+            .map(|entry| {
+                Ok(CodexRepositoryCandidateAuthorityEntry {
+                    call_id_sha256: entry[2..].try_into().map_err(D::Error::custom)?,
+                    calls: entry[0],
+                    results: entry[1],
+                })
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CodexPendingToolAuthority {
@@ -116,6 +197,7 @@ pub(super) struct CodexPendingToolAuthority {
     continuation_call_id_sha256: Vec<[u8; 32]>,
     continuation_capacity_exceeded: bool,
     correlation_ambiguous: bool,
+    invocation_origin: CodexInvocationOriginV0,
 }
 
 mod sha256_wire {
@@ -183,7 +265,13 @@ mod sha256_vec_wire {
 }
 
 impl CodexPendingToolAuthority {
-    pub(super) fn new(call_id: &str, record_start: u64, record_end: u64, raw_ordinal: u64) -> Self {
+    pub(super) fn new(
+        call_id: &str,
+        record_start: u64,
+        record_end: u64,
+        raw_ordinal: u64,
+        invocation_origin: CodexInvocationOriginV0,
+    ) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(CODEX_PENDING_CALL_ID_DOMAIN);
         hasher.update(call_id.as_bytes());
@@ -197,6 +285,7 @@ impl CodexPendingToolAuthority {
             continuation_call_id_sha256: Vec::new(),
             continuation_capacity_exceeded: false,
             correlation_ambiguous: false,
+            invocation_origin,
         }
     }
 
@@ -206,6 +295,7 @@ impl CodexPendingToolAuthority {
             self.record_start,
             self.record_end,
             self.raw_ordinal,
+            CodexInvocationOriginV0::Unproven,
         )
         .call_id_sha256
             == self.call_id_sha256
@@ -278,6 +368,14 @@ impl CodexPendingToolAuthority {
     pub(super) fn correlation_ambiguous(&self) -> bool {
         self.correlation_ambiguous
     }
+
+    pub(super) fn invocation_origin(&self) -> &CodexInvocationOriginV0 {
+        &self.invocation_origin
+    }
+
+    pub(super) fn set_invocation_origin(&mut self, origin: CodexInvocationOriginV0) {
+        self.invocation_origin = origin;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,6 +402,7 @@ pub(crate) struct CodexNativeCheckpoint {
     complete_record_count: u64,
     pending_tool_authorities: Vec<CodexPendingToolAuthority>,
     terminal_authority: CodexTerminalAuthorityCheckpoint,
+    repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
     pub(crate) owner: CodexSessionRow,
     local_turn_started: bool,
 }
@@ -322,6 +421,7 @@ impl CodexNativeCheckpoint {
         incomplete_tail: Option<(u64, [u8; 32])>,
         pending_tool_authorities: &[CodexPendingToolAuthority],
         terminal_authority: CodexTerminalAuthorityCheckpoint,
+        repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
         owner: CodexSessionRow,
         local_turn_started: bool,
     ) -> serde_json::Result<Self> {
@@ -346,6 +446,7 @@ impl CodexNativeCheckpoint {
             complete_record_count,
             pending_tool_authorities: pending_tool_authorities.to_vec(),
             terminal_authority,
+            repository_candidate_authority,
             owner,
             local_turn_started,
         };
@@ -414,6 +515,12 @@ impl CodexNativeCheckpoint {
         &self.terminal_authority
     }
 
+    pub(super) fn repository_candidate_authority(
+        &self,
+    ) -> &CodexRepositoryCandidateAuthorityCheckpoint {
+        &self.repository_candidate_authority
+    }
+
     pub(crate) fn local_turn_started(&self) -> bool {
         self.local_turn_started
     }
@@ -451,9 +558,23 @@ impl CodexNativeCheckpoint {
                 "Codex NativePath checkpoint terminal authority is invalid",
             ));
         }
+        if !self.repository_candidate_authority.validate_wire_state() {
+            return Err(serde::de::Error::custom(
+                "Codex NativePath checkpoint repository candidate authority is invalid",
+            ));
+        }
         if self.pending_tool_authorities.len() > MAX_CODEX_TOOL_CONTEXTS
             || self.pending_tool_authorities.iter().any(|authority| {
-                authority.record_start >= authority.record_end
+                (matches!(
+                    self.owner.session_relationship,
+                    ctx_history_core::SessionRelationshipKind::Forked
+                        | ctx_history_core::SessionRelationshipKind::ResumedFrom
+                ) && !self.local_turn_started
+                    && matches!(
+                        authority.invocation_origin(),
+                        CodexInvocationOriginV0::UniqueToSession
+                    ))
+                    || authority.record_start >= authority.record_end
                     || authority.record_end > self.complete_prefix_end()
                     || authority.record_end.saturating_sub(authority.record_start)
                         > MAX_CODEX_PENDING_TOOL_RECORD_BYTES

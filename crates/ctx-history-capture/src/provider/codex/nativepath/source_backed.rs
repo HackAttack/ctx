@@ -36,7 +36,8 @@ use crate::{
         PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES, PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
     },
     provider::codex::{
-        catalog::catalog_codex_explicit_session_opened, nativepath::opened_codex_file_observation,
+        catalog::catalog_codex_explicit_session_opened, events::CodexInvocationOriginV0,
+        nativepath::opened_codex_file_observation,
     },
     CaptureError, CODEX_SESSION_SOURCE_FORMAT,
 };
@@ -47,8 +48,9 @@ const CODEX_LOGICAL_SESSION_KIND: &str = "codex-session";
 const CODEX_LOGICAL_EVENT_KIND: &str = "codex-event";
 const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
 const CODEX_SOURCE_REVISION_KIND: &str = "codex-ordinary-file-observation-v1";
-const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v14";
-const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-record-v27-bounded-exact-origin";
+const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v16";
+const CODEX_PARSER_REVISION: &str =
+    "codex-nativepath-core-record-v29-repository-candidate-exact-origin";
 
 #[derive(Debug, Error)]
 pub enum CodexSourceBackedErrorV0 {
@@ -129,6 +131,8 @@ pub struct CodexSourceBackedCountersV0 {
     pub mcp_terminal_authority_bytes_read: u64,
     pub peak_mcp_terminal_authority_entries: usize,
     pub peak_mcp_terminal_authority_bytes: usize,
+    pub peak_repository_candidate_authority_entries: usize,
+    pub peak_repository_candidate_authority_bytes: usize,
     pub prefiltered_records: u64,
     pub structural_json_parses: u64,
     pub typed_json_parses: u64,
@@ -201,6 +205,12 @@ impl CodexSourceBackedCountersV0 {
         self.peak_mcp_terminal_authority_bytes = self
             .peak_mcp_terminal_authority_bytes
             .max(other.peak_mcp_terminal_authority_bytes);
+        self.peak_repository_candidate_authority_entries = self
+            .peak_repository_candidate_authority_entries
+            .max(other.peak_repository_candidate_authority_entries);
+        self.peak_repository_candidate_authority_bytes = self
+            .peak_repository_candidate_authority_bytes
+            .max(other.peak_repository_candidate_authority_bytes);
     }
 
     pub(crate) fn add_catalog_work(&mut self, work: CodexCatalogWorkV0) {
@@ -248,6 +258,12 @@ impl CodexSourceBackedCountersV0 {
         self.peak_mcp_terminal_authority_bytes = self
             .peak_mcp_terminal_authority_bytes
             .max(scan.peak_mcp_terminal_authority_bytes);
+        self.peak_repository_candidate_authority_entries = self
+            .peak_repository_candidate_authority_entries
+            .max(scan.peak_repository_candidate_authority_entries);
+        self.peak_repository_candidate_authority_bytes = self
+            .peak_repository_candidate_authority_bytes
+            .max(scan.peak_repository_candidate_authority_bytes);
         self.prefiltered_records = self
             .prefiltered_records
             .saturating_add(scan.prefiltered_records);
@@ -292,10 +308,6 @@ mod generation;
 mod identity;
 mod ingestion;
 mod jsonl_family;
-mod origin;
-
-use origin::CodexOutcomeOriginV0;
-
 use catalog::discover_codex_session_tree_inventory_v0;
 #[cfg(test)]
 pub(crate) use catalog::install_after_codex_metadata_inventory_hook;
