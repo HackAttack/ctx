@@ -139,6 +139,80 @@ case "${mode}" in
       CTX_LOC_SCC="${loc_scc}" \
       bash scripts/check-loc.sh
     ;;
+  rust_crate_size_check)
+    crate_scc="${2:-}"
+    crate_manifest="${3:-}"
+    [[ -n "${crate_scc}" && -x "${crate_scc}" ]] || \
+      fail 'rust_crate_size_check requires the pinned scc runfile'
+    [[ -n "${crate_manifest}" && -f "${crate_manifest}" ]] || \
+      fail 'rust_crate_size_check requires the declared crate source manifest'
+    crate_manifest="$(cd "$(dirname "${crate_manifest}")" && pwd -P)/$(basename "${crate_manifest}")"
+    [[ -n "${TEST_SRCDIR:-}" && -n "${TEST_WORKSPACE:-}" ]] || \
+      fail 'rust_crate_size_check requires the Bazel runfiles repository root'
+    crate_root="${TEST_SRCDIR}/${TEST_WORKSPACE}"
+    run env \
+      CTX_CRATE_LOC_PATHS_MANIFEST="${crate_manifest}" \
+      CTX_CRATE_LOC_ROOT="${crate_root}" \
+      CTX_CRATE_LOC_SCC="${crate_scc}" \
+      python3 scripts/check-rust-crate-size.py
+    ;;
+  rust_crate_size_bazel_authority_check)
+    authority_build="${2:-}"
+    authority_manifest="${3:-}"
+    authority_inventory="${4:-}"
+    authority_cargo="${5:-}"
+    [[ -n "${authority_build}" && -f "${authority_build}" ]] || \
+      fail 'rust_crate_size_bazel_authority_check requires the root BUILD runfile'
+    [[ -n "${authority_manifest}" && -f "${authority_manifest}" ]] || \
+      fail 'rust_crate_size_bazel_authority_check requires the declared source manifest'
+    [[ -n "${authority_inventory}" && -f "${authority_inventory}" ]] || \
+      fail 'rust_crate_size_bazel_authority_check requires the checked census'
+    [[ -n "${authority_cargo}" && -x "${authority_cargo}" ]] || \
+      fail 'rust_crate_size_bazel_authority_check requires the pinned Cargo runfile'
+    authority_build="$(readlink -f "${authority_build}")"
+    authority_manifest="$(readlink -f "${authority_manifest}")"
+    authority_inventory="$(readlink -f "${authority_inventory}")"
+    authority_cargo="$(readlink -f "${authority_cargo}")"
+    authority_root="$(dirname "${authority_build}")"
+    authority_tmp="$(mktemp -d "${TEST_TMPDIR:-/tmp}/ctx-rust-authority.XXXXXX")"
+    trap 'rm -rf -- "${authority_tmp}"' EXIT
+    mkdir -p "${authority_tmp}/home"
+    printf '%s\n' '==> cargo metadata --locked --offline --no-deps --format-version 1' >&2
+    "${authority_cargo}" metadata \
+      --manifest-path "${authority_root}/Cargo.toml" \
+      --locked \
+      --offline \
+      --no-deps \
+      --format-version 1 >"${authority_tmp}/cargo.json"
+    rust_rules='kind("rust_(binary|library|proc_macro|test) rule", //...)'
+    env -u BUILD_WORKSPACE_DIRECTORY \
+      HOME="${authority_tmp}/home" \
+      BAZEL_OUTPUT_USER_ROOT="${authority_tmp}/bazel-output" \
+      CTX_BAZEL_SANDBOX_BASE="${authority_tmp}/bazel-sandboxes" \
+      CTX_BAZEL_WORKSPACE="${authority_root}" \
+      "${authority_root}/scripts/bazelw" query \
+      "${rust_rules} union deps(labels(\"srcs\", ${rust_rules})) union labels(\"crate_root\", ${rust_rules})" \
+      --output=xml >"${authority_tmp}/bazel.xml"
+    python3 "${authority_root}/tools/bazel/check_rust_target_inventory.py" \
+      --labels "${authority_inventory}" >"${authority_tmp}/inventory-labels.txt"
+    authority_labels="$(tr '\n' ' ' <"${authority_tmp}/inventory-labels.txt")"
+    env -u BUILD_WORKSPACE_DIRECTORY \
+      HOME="${authority_tmp}/home" \
+      BAZEL_OUTPUT_USER_ROOT="${authority_tmp}/bazel-output" \
+      CTX_BAZEL_SANDBOX_BASE="${authority_tmp}/bazel-sandboxes" \
+      CTX_BAZEL_WORKSPACE="${authority_root}" \
+      "${authority_root}/scripts/bazelw" query \
+      "set(${authority_labels})" --output=label_kind >"${authority_tmp}/labels.txt"
+    run python3 "${authority_root}/tools/bazel/check_rust_target_inventory.py" \
+      --live \
+      "${authority_root}" \
+      "${authority_inventory}" \
+      "${authority_manifest}" \
+      "${authority_tmp}/cargo.json" \
+      "${authority_tmp}/bazel.xml" \
+      "${authority_tmp}/labels.txt" \
+      "${authority_cargo}"
+    ;;
   public_control_surface_check)
     run bash scripts/tests/check-public-control-surface-test.sh
     run python3 scripts/check-public-control-surface.py
