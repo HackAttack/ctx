@@ -34,18 +34,29 @@ fi
 
 cat > "${tmp}/llvm-readobj" <<'EOF'
 #!/bin/sh
+if [ "${1:-}" = --version ]; then
+  printf 'Homebrew LLVM version %s\n' "${FAKE_LLVM_VERSION:-22.1.8}"
+  exit 0
+fi
 case " $* " in *' --sections '*) ;; *) exit 64 ;; esac
 case " $* " in *' --symbols '*) ;; *) exit 64 ;; esac
 cat "$FAKE_READOBJ_OUTPUT"
 EOF
-printf '#!/bin/sh\ncat "$FAKE_OBJDUMP_OUTPUT"\n' > "${tmp}/llvm-objdump"
+cat > "${tmp}/llvm-objdump" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then
+  printf 'Homebrew LLVM version %s\n' "${FAKE_LLVM_OBJDUMP_VERSION:-${FAKE_LLVM_VERSION:-22.1.8}}"
+  exit 0
+fi
+cat "$FAKE_OBJDUMP_OUTPUT"
+EOF
 chmod +x "${tmp}/llvm-readobj" "${tmp}/llvm-objdump"
 printf 'not a real binary\n' > "${tmp}/candidate"
 : > "${tmp}/empty"
 
 # Parser fixtures execute only through this disposable checker copy. The
-# production checker retains its fixed package-root resolution and has no
-# caller-selected tool path.
+# production checker retains fixed package-root resolution unless the release
+# packager passes an explicit platform-constrained tool declaration.
 fixture_checker="${tmp}/check-release-binary-compat-fixture.sh"
 sed \
   "s#^  LLVM_TOOL_ROOT=.*#  LLVM_TOOL_ROOT=\"${tmp}\"#" \
@@ -412,11 +423,53 @@ grep -Fq 'expected exactly one GNU_RELRO program header' \
 
 if "${checker}" linux-x64 "${tmp}/candidate" "${tmp}/llvm-readobj" \
   >"${tmp}/declared-linux.out" 2>"${tmp}/declared-linux.err"; then
-  echo "non-Windows checker accepted a declared LLVM reader" >&2
+  echo "non-macOS/non-Windows checker accepted declared LLVM tools" >&2
   exit 1
 fi
-grep -Fq 'a declared LLVM reader is supported only for windows-x64' \
+grep -Fq 'declared LLVM tools are supported only for macos-x64 and windows-x64' \
   "${tmp}/declared-linux.err"
+
+if "${checker}" macos-arm64 "${tmp}/candidate" \
+  "${tmp}/llvm-readobj" "${tmp}/llvm-objdump" \
+  >"${tmp}/declared-macos-arm64.out" \
+  2>"${tmp}/declared-macos-arm64.err"; then
+  echo "macos-arm64 checker accepted the x64 LLVM bottle authority" >&2
+  exit 1
+fi
+grep -Fq 'declared LLVM tools are supported only for macos-x64 and windows-x64' \
+  "${tmp}/declared-macos-arm64.err"
+
+if "${checker}" macos-x64 "${tmp}/candidate" "${tmp}/llvm-readobj" \
+  >"${tmp}/declared-macos-incomplete.out" \
+  2>"${tmp}/declared-macos-incomplete.err"; then
+  echo "macOS checker accepted an incomplete declared LLVM tool pair" >&2
+  exit 1
+fi
+grep -Fq 'macos-x64 requires a declared LLVM reader and objdump pair' \
+  "${tmp}/declared-macos-incomplete.err"
+
+if FAKE_READOBJ_OUTPUT="${mac_x64_readobj}" \
+  FAKE_OBJDUMP_OUTPUT="${mac_objdump}" \
+  "${checker}" macos-x64 "${tmp}/candidate" \
+  "${tmp}/llvm-readobj" "${tmp}/llvm-objdump" \
+  >"${tmp}/declared-macos-arbitrary.out" \
+  2>"${tmp}/declared-macos-arbitrary.err"; then
+  echo "macOS checker accepted arbitrary matching-version LLVM tools" >&2
+  exit 1
+fi
+grep -Fq 'not in the approved snapshot layout' \
+  "${tmp}/declared-macos-arbitrary.err"
+
+if FAKE_READOBJ_OUTPUT="${mac_x64_readobj}" \
+  FAKE_OBJDUMP_OUTPUT="${mac_objdump}" \
+  "${checker}" macos-x64 "${tmp}/candidate" \
+  "${tmp}/llvm-objdump" "${tmp}/llvm-readobj" \
+  >"${tmp}/declared-macos-swapped.out" \
+  2>"${tmp}/declared-macos-swapped.err"; then
+  echo "macOS checker accepted swapped declared LLVM identities" >&2
+  exit 1
+fi
+grep -Fq 'not in the approved snapshot layout' "${tmp}/declared-macos-swapped.err"
 
 missing_symbols="${tmp}/missing-symbols.txt"
 sed '/^Symbols \[$/,/^\]$/d' "${linux_x64}" > "${missing_symbols}"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/check-public-cli-artifact.sh PLATFORM [ARTIFACT_DIR] [DECLARED_LLVM_READOBJ]
+Usage: scripts/check-public-cli-artifact.sh PLATFORM [ARTIFACT_DIR] [DECLARED_LLVM_READOBJ [DECLARED_LLVM_OBJDUMP]]
 
 Checks one locally staged public ctx CLI artifact. This validates construction
 outputs: artifact presence, SHA-256 consistency, the construction-time version
@@ -15,7 +15,8 @@ USAGE
 platform="${1:-}"
 artifact_dir="${2:-target/public-cli-artifacts}"
 declared_llvm_readobj="${3:-}"
-if [[ $# -gt 3 ]]; then
+declared_llvm_objdump="${4:-}"
+if [[ $# -gt 4 ]]; then
   usage
   exit 2
 fi
@@ -149,9 +150,9 @@ case "${actual_version}" in
     ;;
 esac
 
-if [[ -n "${declared_llvm_readobj}" ]]; then
+if [[ -n "${declared_llvm_readobj}" || -n "${declared_llvm_objdump}" ]]; then
   bash scripts/check-release-binary-compat.sh \
-    "${platform}" "${artifact}" "${declared_llvm_readobj}"
+    "${platform}" "${artifact}" "${declared_llvm_readobj}" "${declared_llvm_objdump}"
 else
   bash scripts/check-release-binary-compat.sh "${platform}" "${artifact}"
 fi
