@@ -305,6 +305,7 @@ fn metadata_manages_hash(metadata: Option<&SkillMetadata>, hash: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn force_update_preserves_unrelated_skill_files() {
         let root = tempfile::tempdir().unwrap();

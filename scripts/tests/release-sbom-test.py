@@ -698,7 +698,7 @@ repository = "https://example.invalid/{name}"
                 for item in component.get("properties", [])
             )
         ]
-        self.assertEqual(len(cargo_components), 14)
+        self.assertEqual(len(cargo_components), 15)
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
         )

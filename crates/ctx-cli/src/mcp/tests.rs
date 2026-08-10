@@ -5,7 +5,10 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use ctx_history_core::platform_security::restrict_private_directory;
+use ctx_agent_integrations::tool_backend::{
+    ToolBackendError, ToolExecutionError, ToolOperation, ToolOutcome, ToolUsageFacts,
+};
+use ctx_history_core::{platform_security::restrict_private_directory, CaptureProvider};
 
 use super::*;
 
@@ -350,16 +353,32 @@ fn run_one_status_response(
                 structured: json!({"access_state": "test"}),
                 compact: None,
                 usage: ToolUsageFacts::default(),
-                product_observation: Some(crate::tool_backend::ToolProductObservation {
-                    operation: crate::analytics::ProHostOperationV1::Status(
-                        crate::analytics::ProStatusTelemetryV1::new(
-                            crate::analytics::ProSurfaceV1::Mcp,
-                        ),
-                    ),
+                integration_receipt: Some(ToolIntegrationReceipt {
+                    facts: ToolTransportFacts::ProStatus {
+                        access_state: Some("test".to_owned()),
+                        helper_connected: true,
+                        error_code: None,
+                    },
                     success: true,
                     duration: std::time::Duration::ZERO,
                 }),
             })
+        }
+
+        fn invalid_blame_request(&self) -> ToolBackendError {
+            panic!("pro_status test must not parse blame")
+        }
+
+        fn render_text(&self, value: &Value) -> String {
+            text::render_tool_text(value)
+        }
+
+        fn parse_provider(&self, _value: &str) -> Option<CaptureProvider> {
+            None
+        }
+
+        fn provider_names(&self) -> Vec<&'static str> {
+            Vec::new()
         }
     }
 

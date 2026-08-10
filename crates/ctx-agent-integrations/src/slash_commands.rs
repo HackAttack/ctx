@@ -762,6 +762,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn managed_file_is_idempotent_and_refreshes_stale_content() {
         let root = tempfile::tempdir().unwrap();
@@ -801,6 +802,7 @@ mod tests {
         assert!(refreshed.results[0].updated);
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn local_command_edits_require_force_and_unrelated_files_survive() {
         let root = tempfile::tempdir().unwrap();

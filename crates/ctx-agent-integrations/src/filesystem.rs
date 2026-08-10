@@ -537,6 +537,7 @@ fn sync_directory(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn update_is_atomic_and_rejects_symlinks() {
         let root = tempfile::tempdir().unwrap();

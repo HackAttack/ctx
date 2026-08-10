@@ -265,7 +265,7 @@ fn write_target(target: &McpTarget, force: bool) -> Result<()> {
     .with_context(|| format!("write {}", path.display()))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
 

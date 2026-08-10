@@ -602,7 +602,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn update_preserves_existing_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
