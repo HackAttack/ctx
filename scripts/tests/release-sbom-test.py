@@ -33,6 +33,7 @@ WORKSPACE_PACKAGES = (
     ("ctx-agent-integrations", "crates/ctx-agent-integrations"),
     ("ctx-client-observability", "crates/ctx-client-observability"),
     ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
+    ("ctx-daemon-service", "crates/ctx-daemon-service"),
     ("ctx-history-core", "crates/ctx-history-core"),
     ("ctx-history-index-format", "crates/ctx-history-index-format"),
     ("ctx-history-index", "crates/ctx-history-index"),
@@ -147,6 +148,7 @@ members = [
   "crates/ctx-agent-integrations",
   "crates/ctx-client-observability",
   "crates/ctx-daemon-runtime",
+  "crates/ctx-daemon-service",
   "crates/ctx-history-core",
   "crates/ctx-history-index-format",
   "crates/ctx-history-index",
@@ -177,6 +179,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
                     "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
+                    "ctx-daemon-service = { path = \"../ctx-daemon-service\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
@@ -200,6 +203,15 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-history-index-format = { path = \"../ctx-history-index-format\" }\n"
                     "tantivy.workspace = true"
                 ),
+                "ctx-daemon-service": (
+                    "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
+                    "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-index = { path = \"../ctx-history-index\" }\n"
+                    "ctx-semantic-index = { path = \"../ctx-semantic-index\" }\n"
+                    "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
+                    "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
+                ),
                 "ctx-semantic-model": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
@@ -212,7 +224,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             )
             version = (
                 'version = "1.0.0"'
-                if name == "ctx-daemon-runtime"
+                if name in {"ctx-daemon-runtime", "ctx-daemon-service"}
                 else "version.workspace = true"
             )
             manifest.write_text(
@@ -258,6 +270,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-agent-integrations:ctx_agent_integrations",
             "@@//crates/ctx-client-observability:ctx_client_observability",
             "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
+            "@@//crates/ctx-daemon-service:ctx_daemon_service",
             "@@//crates/ctx-history-core:ctx_history_core",
             "@@//crates/ctx-history-index-format:ctx_history_index_format",
             "@@//crates/ctx-history-index:ctx_history_index",
@@ -349,6 +362,7 @@ repository = "https://example.invalid/{name}"
                     "ctx-client-observability",
                     "ctx-history-core",
                     "ctx-daemon-runtime 1.0.0",
+                    "ctx-daemon-service 1.0.0",
                     "ctx-history-index",
                     "ctx-semantic-index",
                     "ctx-semantic-model",
@@ -370,6 +384,19 @@ repository = "https://example.invalid/{name}"
                 "ctx-daemon-runtime",
                 "1.0.0",
                 ("ctx-history-core",),
+            ),
+            self.package(
+                "ctx-daemon-service",
+                "1.0.0",
+                (
+                    "ctx-client-observability",
+                    "ctx-daemon-runtime 1.0.0",
+                    "ctx-history-core",
+                    "ctx-history-index",
+                    "ctx-semantic-index",
+                    "ctx-semantic-model",
+                    "ctx-upgrade-engine",
+                ),
             ),
             self.package(
                 "ctx-history-index",
@@ -740,7 +767,9 @@ repository = "https://example.invalid/{name}"
                 for item in component.get("properties", [])
             )
         ]
-        self.assertEqual(len(cargo_components), 17)
+        self.assertEqual(
+            len(cargo_components), len(WORKSPACE_PACKAGES) + len(EXTERNAL_PACKAGES)
+        )
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
         )

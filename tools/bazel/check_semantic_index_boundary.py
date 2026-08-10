@@ -75,6 +75,7 @@ daemon_wakeup/event_routing.rs
 daemon_wakeup/tests.rs
 daemon_worker.rs
 daemon_worker_tests.rs
+daemon_service_ports.rs
 health_search.rs
 model_config.rs
 model_config_tests.rs
@@ -121,6 +122,24 @@ tests.rs
 tests/lifecycle.rs
 tests/locking.rs
 tests/workflow.rs
+""".splitlines()
+    if path.strip()
+}
+
+ALLOWED_DAEMON_SERVICE_SEMANTIC_SOURCES = {
+    path.strip()
+    for path in """
+daemon.rs
+daemon/config_reload.rs
+daemon_retry.rs
+daemon_scheduler.rs
+daemon_worker.rs
+lib.rs
+ports.rs
+query_service/server/dispatch.rs
+resource_policy.rs
+source_backed_refresh_coordinator/restart_recovery_tests.rs
+test_support.rs
 """.splitlines()
     if path.strip()
 }
@@ -222,10 +241,26 @@ def validate_cli_partition(repo_root: Path) -> None:
         )
 
 
+def validate_daemon_service_partition(repo_root: Path) -> None:
+    service_root = repo_root / "crates/ctx-daemon-service/src"
+    semantic_sources = set()
+    for source in service_root.rglob("*.rs"):
+        text = source.read_text(encoding="utf-8")
+        if "ctx_semantic_index::" in text or "ctx_semantic_model::" in text:
+            semantic_sources.add(source.relative_to(service_root).as_posix())
+    violations = sorted(semantic_sources - ALLOWED_DAEMON_SERVICE_SEMANTIC_SOURCES)
+    if violations:
+        raise BoundaryError(
+            "unreviewed semantic dependency appeared in ctx-daemon-service: "
+            + ", ".join(violations)
+        )
+
+
 def validate(repo_root: Path) -> None:
     validate_manifest(repo_root / "crates/ctx-semantic-index/Cargo.toml")
     validate_build(repo_root / "crates/ctx-semantic-index/BUILD.bazel")
     validate_cli_partition(repo_root)
+    validate_daemon_service_partition(repo_root)
 
 
 def main() -> int:
