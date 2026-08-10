@@ -16,6 +16,7 @@ mod security_metadata;
 struct ObservedTarget {
     body: Vec<u8>,
     identity: FileIdentity,
+    security: security_metadata::SecurityMetadata,
 }
 
 #[cfg(unix)]
@@ -66,6 +67,7 @@ pub(crate) fn atomic_update(
     {
         return Ok(());
     }
+    ensure_existing_publication_supported(existing.as_ref())?;
 
     let stage = stage_path(path)?;
     publish(path, &stage, existing.as_ref(), &replacement)
@@ -97,6 +99,13 @@ fn publish(
         let current = verify_target_unchanged(path, existing)?;
         security_metadata::copy_existing_security(&current, &file)
             .with_context(|| format!("preserve security metadata for {}", path.display()))?;
+        #[cfg(unix)]
+        if security_metadata::snapshot(&file)? != existing.security {
+            return Err(anyhow!(
+                "staged security metadata does not match {}",
+                path.display()
+            ));
+        }
         file.sync_all()
             .with_context(|| format!("sync staged metadata {}", stage.display()))?;
     }
@@ -158,7 +167,13 @@ fn open_observed_target(path: &Path) -> Result<Option<ObservedTarget>> {
     let mut body = Vec::new();
     file.read_to_end(&mut body)
         .with_context(|| format!("read {}", path.display()))?;
-    Ok(Some(ObservedTarget { body, identity }))
+    let security = security_metadata::snapshot(&file)
+        .with_context(|| format!("inspect security metadata for {}", path.display()))?;
+    Ok(Some(ObservedTarget {
+        body,
+        identity,
+        security,
+    }))
 }
 
 fn verify_target_unchanged(path: &Path, existing: &ObservedTarget) -> Result<File> {
@@ -166,7 +181,13 @@ fn verify_target_unchanged(path: &Path, existing: &ObservedTarget) -> Result<Fil
         .with_context(|| format!("reopen target before publish {}", path.display()))?;
     let identity = file_identity(&current)
         .with_context(|| format!("identify target before publish {}", path.display()))?;
-    if identity != existing.identity || !contents_equal(&mut current, &existing.body)? {
+    let contents_match =
+        identity == existing.identity && contents_equal(&mut current, &existing.body)?;
+    let security_match = contents_match
+        && security_metadata::snapshot(&current)
+            .with_context(|| format!("inspect security metadata for {}", path.display()))?
+            == existing.security;
+    if !security_match {
         return Err(anyhow!(
             "refusing to overwrite concurrently changed target {}",
             path.display()
@@ -283,6 +304,21 @@ fn lock_path(path: &Path) -> Result<PathBuf> {
         ".{}.ctx-agent-integrations.lock",
         name.to_string_lossy()
     )))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn ensure_existing_publication_supported(_existing: Option<&ObservedTarget>) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn ensure_existing_publication_supported(existing: Option<&ObservedTarget>) -> Result<()> {
+    if existing.is_some() {
+        return Err(anyhow!(
+            "atomic replacement of an existing integration file is unsupported on this platform"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -431,17 +467,12 @@ fn replace_existing_file(
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn replace_existing_file(
-    source: &Path,
-    target: &Path,
-    existing: &ObservedTarget,
+    _source: &Path,
+    _target: &Path,
+    _existing: &ObservedTarget,
     _stage_cleanup: &mut StageCleanup<'_>,
 ) -> Result<()> {
-    // These targets lack an atomic path-exchange primitive in libc. Retain the
-    // identity/content check and existing atomic-rename behavior, while the
-    // exchange-capable platforms additionally close the final path-swap race.
-    verify_target_unchanged(target, existing)?;
-    fs::rename(source, target)?;
-    Ok(())
+    unreachable!("unsupported existing-target publication must fail before staging")
 }
 
 #[cfg(not(test))]
@@ -525,6 +556,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn concurrent_content_edit_is_detected_without_losing_external_bytes() {
         let root = tempfile::tempdir().unwrap();
@@ -541,6 +573,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"external edit");
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn concurrent_path_swap_is_detected_without_overwriting_replacement() {
         let root = tempfile::tempdir().unwrap();
@@ -561,6 +594,123 @@ mod tests {
         assert!(format!("{:#}", result.unwrap_err()).contains("concurrently changed"));
         assert_eq!(fs::read(&path).unwrap(), b"external replacement");
         assert_eq!(fs::read(&displaced).unwrap(), b"original");
+    }
+
+    #[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn concurrent_mode_change_is_detected_and_preserved() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        fs::write(&path, b"original").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let external_path = path.clone();
+
+        let result = with_before_publish_hook(
+            move |_| {
+                fs::set_permissions(&external_path, fs::Permissions::from_mode(0o600)).unwrap();
+            },
+            || atomic_update(&path, |_| Ok(b"ctx replacement".to_vec())),
+        );
+
+        assert!(format!("{:#}", result.unwrap_err()).contains("concurrently changed"));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn concurrent_acl_only_change_is_detected_and_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let expected_path = root.path().join("expected.json");
+        fs::write(&path, b"original").unwrap();
+        fs::write(&expected_path, b"expected").unwrap();
+        set_linux_test_acl(&path, 0o4);
+        set_linux_test_acl(&expected_path, 0o5);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions(),
+            fs::metadata(&expected_path).unwrap().permissions()
+        );
+        let expected_security =
+            security_metadata::snapshot(&File::open(&expected_path).unwrap()).unwrap();
+        let external_path = path.clone();
+
+        let result = with_before_publish_hook(
+            move |_| set_linux_test_acl(&external_path, 0o5),
+            || atomic_update(&path, |_| Ok(b"ctx replacement".to_vec())),
+        );
+
+        assert!(format!("{:#}", result.unwrap_err()).contains("concurrently changed"));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(
+            security_metadata::snapshot(&File::open(&path).unwrap()).unwrap(),
+            expected_security
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_linux_test_acl(path: &Path, named_user_permissions: u16) {
+        const ACL_UNDEFINED_ID: u32 = u32::MAX;
+        let named_user = unsafe { libc::geteuid() }.saturating_add(1);
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, permissions, id) in [
+            (0x01_u16, 0o6, ACL_UNDEFINED_ID),
+            (0x02_u16, named_user_permissions, named_user),
+            (0x04_u16, 0o4, ACL_UNDEFINED_ID),
+            (0x10_u16, 0o5, ACL_UNDEFINED_ID),
+            (0x20_u16, 0o4, ACL_UNDEFINED_ID),
+        ] {
+            acl.extend_from_slice(&tag.to_le_bytes());
+            acl.extend_from_slice(&permissions.to_le_bytes());
+            acl.extend_from_slice(&id.to_le_bytes());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let result = unsafe {
+            libc::fsetxattr(
+                std::os::fd::AsRawFd::as_raw_fd(&file),
+                c"system.posix_acl_access".as_ptr(),
+                acl.as_ptr().cast(),
+                acl.len(),
+                0,
+            )
+        };
+        assert_eq!(result, 0, "{}", io::Error::last_os_error());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[test]
+    fn existing_target_update_fails_closed_without_atomic_exchange() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        fs::write(&path, b"original").unwrap();
+        let publication_reached = Arc::new(AtomicBool::new(false));
+        let hook_flag = Arc::clone(&publication_reached);
+
+        let error = with_before_publish_hook(
+            move |_| hook_flag.store(true, Ordering::SeqCst),
+            || atomic_update(&path, |_| Ok(b"ctx replacement".to_vec())),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("atomic replacement"));
+        assert!(!publication_reached.load(Ordering::SeqCst));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            2,
+            "only the target and stable ctx lock may exist"
+        );
     }
 
     #[test]

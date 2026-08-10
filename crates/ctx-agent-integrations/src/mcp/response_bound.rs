@@ -187,18 +187,14 @@ fn bounded_protocol_error(
         return bounded;
     }
 
-    let data = bounded
+    bounded
         .get_mut("error")
         .and_then(Value::as_object_mut)
         .and_then(|error| error.remove("data"));
-    if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
-        return bounded;
-    }
-
-    bounded["id"] = Value::Null;
-    if let Some(data) = data {
-        bounded["error"]["data"] = data;
-    }
+    // Every accepted request ID is capped so this smallest correlated error
+    // fits the production blame bound (and therefore the larger show/query
+    // bounds). Correlation is never discarded to satisfy an ad hoc lower
+    // internal limit.
     bounded
 }
 
