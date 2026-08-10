@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: bazel run --config=release //:ctx_release_<target> -- [--output-dir PATH] [--private-symbols-dir PATH] [--build-info PATH]
+Usage: bazel run --config=release //:ctx_release_<target> -- [--output-dir PATH] [--private-symbols-dir PATH] [--build-info PATH] [--macos-llvm-task-root PATH]
 
 Packages the exact target-configured //crates/ctx-cli:ctx Bazel output declared
 by the selected release route. The tool never builds, publishes, or invokes
@@ -11,6 +11,16 @@ Cargo. It extracts detached symbols from the exact linked artifact, strips and
 signs the shipping copy, and writes symbols outside the public candidate
 directory. Linux requires build-info from the pinned builder because only that
 builder can author its provenance.
+
+macOS x64 LLVM inspector authority:
+  provenance: homebrew-core/llvm 22.1.8 sonoma x86_64 bottle
+  bottle sha256: 2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48
+  llvm-readobj sha256: 48fb9e586252d630b18df7075dd1a79380d76917e41a8a76d982a71e191d7d30
+  llvm-objdump sha256: 0e59712106328915251a3e26f1ac3d42da4d38debfa2b59c63eb1a9de206724d
+  macos-x64 requires --macos-llvm-task-root. It accepts only the pinned task
+  layout and snapshots its complete verified closure.
+  It does not accept caller-selected tool paths.
+  It does not fall back to ambient /usr/local LLVM tools.
 USAGE
 }
 
@@ -124,6 +134,7 @@ advisory_gate_runfile=""
 artifact_runfile=""
 rustc_runfile=""
 llvm_readobj_runfile=""
+macos_llvm_task_root=""
 sbom_tool_runfile=""
 sbom_inventory_runfile=""
 license_materials_runfile=""
@@ -137,6 +148,7 @@ seen_advisory_gate=0
 seen_artifact=0
 seen_rustc=0
 seen_llvm_readobj=0
+seen_macos_llvm_task_root=0
 seen_sbom_tool=0
 seen_sbom_inventory=0
 seen_license_materials=0
@@ -181,6 +193,14 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 && -n "$1" ]] || usage_error "${option} requires a value"
       llvm_readobj_runfile="$1"
+      ;;
+    --macos-llvm-task-root)
+      seen_macos_llvm_task_root=$((seen_macos_llvm_task_root + 1))
+      [[ "${seen_macos_llvm_task_root}" == "1" ]] \
+        || usage_error "duplicate argument: ${option}"
+      shift
+      [[ $# -gt 0 && -n "$1" ]] || usage_error "${option} requires a value"
+      macos_llvm_task_root="$1"
       ;;
     --declared-sbom-tool-runfile)
       seen_sbom_tool=$((seen_sbom_tool + 1))
@@ -266,6 +286,17 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+case "${target_id}" in
+  macos-x64)
+    [[ "${seen_macos_llvm_task_root}" == "1" ]] \
+      || usage_error "macos-x64 requires --macos-llvm-task-root"
+    ;;
+  *)
+    [[ "${seen_macos_llvm_task_root}" == "0" ]] \
+      || usage_error "--macos-llvm-task-root is reserved for macos-x64"
+    ;;
+esac
+
 [[ "${seen_advisory_gate}:${seen_artifact}:${seen_rustc}:${seen_sbom_tool}:${seen_sbom_inventory}:${seen_license_materials}:${seen_cargo_lock}:${seen_target_matrix}:${seen_target}" \
   == "1:1:1:1:1:1:1:1:1" ]] || usage_error "release route declarations are incomplete"
 
@@ -278,6 +309,7 @@ rustc="$(resolve_declared_runfile "${rustc_runfile}")" \
 sbom_tool="$(resolve_declared_runfile "${sbom_tool_runfile}")" \
   || die "declared Bazel SBOM tool runfile is unavailable"
 llvm_readobj=""
+llvm_objdump=""
 if [[ "${target_id}" == "windows-x64" ]]; then
   [[ "${seen_llvm_readobj}" == "1" ]] \
     || usage_error "windows-x64 requires --declared-llvm-readobj-runfile"
@@ -426,10 +458,23 @@ python3 -B "${repo_root}/scripts/install-public-cli-candidate.py" \
   "${preflight_args[@]}"
 
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/ctx-bazel-release.XXXXXX")"
+# mktemp has created this owner-private directory, so resolve only this
+# packager-owned path to its physical spelling. Caller-supplied task roots stay
+# lexical and are still rejected when any ancestor is a symlink.
+stage_dir="$(cd "${stage_dir}" && pwd -P)"
+stage_parent="$(dirname "${stage_dir}")"
+macos_llvm_snapshot=""
 cleanup() {
+  if [[ -n "${macos_llvm_snapshot:-}" \
+    && "${macos_llvm_snapshot}" == "${stage_dir:-}/.macos-llvm-authority" \
+    && -d "${macos_llvm_snapshot}" && ! -L "${macos_llvm_snapshot}" ]]; then
+    chmod -R u+w "${macos_llvm_snapshot}" 2>/dev/null || true
+  fi
   if [[ -n "${stage_dir:-}" \
-    && "${stage_dir}" == "${TMPDIR:-/tmp}/ctx-bazel-release."* \
-    && -d "${stage_dir}" ]]; then
+    && -n "${stage_parent:-}" \
+    && "${stage_dir}" == "${stage_parent}/ctx-bazel-release."* \
+    && "$(dirname "${stage_dir}")" == "${stage_parent}" \
+    && -d "${stage_dir}" && ! -L "${stage_dir}" ]]; then
     rm -rf -- "${stage_dir}"
   fi
   if [[ -n "${symbols_install:-}" \
@@ -440,6 +485,16 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+if [[ "${seen_macos_llvm_task_root}" == "1" ]]; then
+  macos_llvm_snapshot="${stage_dir}/.macos-llvm-authority"
+  python3 -B "${repo_root}/scripts/release/macos_llvm_authority.py" snapshot \
+    --task-root "${macos_llvm_task_root}" \
+    --snapshot-root "${macos_llvm_snapshot}" \
+    || die "approved macOS LLVM task authority could not be snapshotted"
+  llvm_readobj="${macos_llvm_snapshot}/bin/llvm-readobj"
+  llvm_objdump="${macos_llvm_snapshot}/bin/llvm-objdump"
+fi
 
 staged_advisory="${stage_dir}/${binary_name}.dependency-advisory.json"
 "${advisory_gate}" \
@@ -565,7 +620,12 @@ if [[ "${CTX_PUBLIC_TARGET_OS}" != "linux" ]]; then
     || die "native candidate smoke did not record a pass"
 fi
 
-if [[ -n "${llvm_readobj}" ]]; then
+if [[ -n "${llvm_objdump}" ]]; then
+  CTX_PUBLIC_CLI_EXPECTED_VERSION="${version}" \
+    "${repo_root}/scripts/check-public-cli-artifact.sh" \
+    "${CTX_PUBLIC_TARGET_PLATFORM}" "${stage_dir}" \
+    "${llvm_readobj}" "${llvm_objdump}"
+elif [[ -n "${llvm_readobj}" ]]; then
   CTX_PUBLIC_CLI_EXPECTED_VERSION="${version}" \
     "${repo_root}/scripts/check-public-cli-artifact.sh" \
     "${CTX_PUBLIC_TARGET_PLATFORM}" "${stage_dir}" "${llvm_readobj}"

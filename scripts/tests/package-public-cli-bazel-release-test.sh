@@ -603,6 +603,75 @@ grep -Fq -- \
   '--declared-llvm-readobj-runfile is reserved for windows-x64' \
   "${test_root}/linux-forged-llvm.stderr"
 
+if package --output-dir out-linux-macos-llvm \
+  --macos-llvm-task-root "${test_root}/unused-llvm-root" \
+  >"${test_root}/linux-macos-llvm.stdout" \
+  2>"${test_root}/linux-macos-llvm.stderr"; then
+  echo "Linux route unexpectedly accepted a macOS LLVM tool root" >&2
+  exit 1
+fi
+grep -Fq -- '--macos-llvm-task-root is reserved for macos-x64' \
+  "${test_root}/linux-macos-llvm.stderr"
+
+if "${source_root}/scripts/package-public-cli-bazel-release.sh" \
+  --declared-target macos-x64 \
+  >"${test_root}/macos-x64-llvm-omitted.stdout" \
+  2>"${test_root}/macos-x64-llvm-omitted.stderr"; then
+  echo "macos-x64 route unexpectedly accepted omitted pinned LLVM authority" >&2
+  exit 1
+fi
+grep -Fq -- 'macos-x64 requires --macos-llvm-task-root' \
+  "${test_root}/macos-x64-llvm-omitted.stderr"
+
+if "${source_root}/scripts/package-public-cli-bazel-release.sh" \
+  --declared-target macos-arm64 \
+  --macos-llvm-task-root "${test_root}/unused-llvm-root" \
+  >"${test_root}/macos-arm64-x64-llvm.stdout" \
+  2>"${test_root}/macos-arm64-x64-llvm.stderr"; then
+  echo "macos-arm64 route unexpectedly accepted the x64 LLVM bottle" >&2
+  exit 1
+fi
+grep -Fq -- '--macos-llvm-task-root is reserved for macos-x64' \
+  "${test_root}/macos-arm64-x64-llvm.stderr"
+
+if package --output-dir out-duplicate-macos-llvm \
+  --macos-llvm-task-root "${test_root}/unused-llvm-root" \
+  --macos-llvm-task-root "${test_root}/unused-llvm-root" \
+  >"${test_root}/duplicate-macos-llvm.stdout" \
+  2>"${test_root}/duplicate-macos-llvm.stderr"; then
+  echo "duplicate macOS LLVM tool root unexpectedly passed" >&2
+  exit 1
+fi
+grep -Fq 'duplicate argument: --macos-llvm-task-root' \
+  "${test_root}/duplicate-macos-llvm.stderr"
+
+if package --output-dir out-retired-macos-llvm \
+  --macos-llvm-tool-root "${test_root}/unused-llvm-root" \
+  >"${test_root}/retired-macos-llvm.stdout" \
+  2>"${test_root}/retired-macos-llvm.stderr"; then
+  echo "retired arbitrary macOS LLVM tool-root option unexpectedly passed" >&2
+  exit 1
+fi
+grep -Fq 'unknown argument: --macos-llvm-tool-root' \
+  "${test_root}/retired-macos-llvm.stderr"
+
+macos_llvm_help="$("${source_root}/scripts/package-public-cli-bazel-release.sh" --help 2>&1)"
+for authority_contract in \
+  '--macos-llvm-task-root PATH' \
+  'homebrew-core/llvm 22.1.8 sonoma x86_64 bottle' \
+  '2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48' \
+  '48fb9e586252d630b18df7075dd1a79380d76917e41a8a76d982a71e191d7d30' \
+  '0e59712106328915251a3e26f1ac3d42da4d38debfa2b59c63eb1a9de206724d' \
+  'macos-x64 requires --macos-llvm-task-root' \
+  'does not accept caller-selected tool paths' \
+  'does not fall back to ambient /usr/local LLVM tools'; do
+  grep -Fq -- "${authority_contract}" <<<"${macos_llvm_help}" || {
+    printf 'packager help omits macOS LLVM authority contract: %s\n' \
+      "${authority_contract}" >&2
+    exit 1
+  }
+done
+
 if package --output-dir out-duplicate-rustc \
   --declared-rustc-runfile ctx_release_routes/linux-x64/rustc \
   >"${test_root}/duplicate-rustc.stdout" \

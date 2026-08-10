@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 checker="${repo_root}/scripts/check-release-binary-compat.sh"
+artifact_checker="${repo_root}/scripts/check-public-cli-artifact.sh"
+published_checker="${repo_root}/scripts/check-github-release-assets.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ctx-binary-compat-test.XXXXXX")"
 trap 'rm -rf "${tmp}"' EXIT
 
@@ -34,31 +36,66 @@ fi
 
 cat > "${tmp}/llvm-readobj" <<'EOF'
 #!/bin/sh
+if [ "${1:-}" = --version ]; then
+  printf 'Homebrew LLVM version %s\n' "${FAKE_LLVM_VERSION:-22.1.8}"
+  exit 0
+fi
 case " $* " in *' --sections '*) ;; *) exit 64 ;; esac
 case " $* " in *' --symbols '*) ;; *) exit 64 ;; esac
 cat "$FAKE_READOBJ_OUTPUT"
 EOF
-printf '#!/bin/sh\ncat "$FAKE_OBJDUMP_OUTPUT"\n' > "${tmp}/llvm-objdump"
+cat > "${tmp}/llvm-objdump" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then
+  printf 'Homebrew LLVM version %s\n' "${FAKE_LLVM_OBJDUMP_VERSION:-${FAKE_LLVM_VERSION:-22.1.8}}"
+  exit 0
+fi
+cat "$FAKE_OBJDUMP_OUTPUT"
+EOF
 chmod +x "${tmp}/llvm-readobj" "${tmp}/llvm-objdump"
 printf 'not a real binary\n' > "${tmp}/candidate"
 : > "${tmp}/empty"
 
 # Parser fixtures execute only through this disposable checker copy. The
-# production checker retains its fixed package-root resolution and has no
-# caller-selected tool path.
+# production checker retains fixed package-root resolution unless the release
+# packager passes an explicit platform-constrained tool declaration.
 fixture_checker="${tmp}/check-release-binary-compat-fixture.sh"
 sed \
   "s#^  LLVM_TOOL_ROOT=.*#  LLVM_TOOL_ROOT=\"${tmp}\"#" \
   "${checker}" > "${fixture_checker}"
 chmod 700 "${fixture_checker}"
+fixture_snapshot="${tmp}/approved-snapshot"
+mkdir -p "${fixture_snapshot}/bin" "${tmp}/release"
+cp "${tmp}/llvm-readobj" "${fixture_snapshot}/bin/llvm-readobj"
+cp "${tmp}/llvm-objdump" "${fixture_snapshot}/bin/llvm-objdump"
+cat >"${tmp}/release/macos_llvm_authority.py" <<'PY'
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[sys.argv.index("--snapshot-root") + 1])
+tool = sys.argv[sys.argv.index("--tool") + 1]
+separator = sys.argv.index("--")
+executable = root / "bin" / ("llvm-readobj" if tool == "readobj" else "llvm-objdump")
+os.execv(executable, [str(executable), *sys.argv[separator + 1 :]])
+PY
 
 run_check() {
   local platform="$1"
   local readobj="$2"
   local objdump="${3:-${tmp}/empty}"
-  FAKE_READOBJ_OUTPUT="${readobj}" \
-    FAKE_OBJDUMP_OUTPUT="${objdump}" \
-    "${fixture_checker}" "${platform}" "${tmp}/candidate"
+  if [[ "${platform}" == "macos-x64" ]]; then
+    FAKE_READOBJ_OUTPUT="${readobj}" \
+      FAKE_OBJDUMP_OUTPUT="${objdump}" \
+      "${fixture_checker}" "${platform}" "${tmp}/candidate" \
+      "${fixture_snapshot}/bin/llvm-readobj" \
+      "${fixture_snapshot}/bin/llvm-objdump"
+  else
+    FAKE_READOBJ_OUTPUT="${readobj}" \
+      FAKE_OBJDUMP_OUTPUT="${objdump}" \
+      "${fixture_checker}" "${platform}" "${tmp}/candidate"
+  fi
 }
 
 run_declared_windows_check() {
@@ -412,11 +449,70 @@ grep -Fq 'expected exactly one GNU_RELRO program header' \
 
 if "${checker}" linux-x64 "${tmp}/candidate" "${tmp}/llvm-readobj" \
   >"${tmp}/declared-linux.out" 2>"${tmp}/declared-linux.err"; then
-  echo "non-Windows checker accepted a declared LLVM reader" >&2
+  echo "non-macOS/non-Windows checker accepted declared LLVM tools" >&2
   exit 1
 fi
-grep -Fq 'a declared LLVM reader is supported only for windows-x64' \
+grep -Fq 'declared LLVM tools are supported only for macos-x64 and windows-x64' \
   "${tmp}/declared-linux.err"
+
+if "${checker}" macos-arm64 "${tmp}/candidate" \
+  "${tmp}/llvm-readobj" "${tmp}/llvm-objdump" \
+  >"${tmp}/declared-macos-arm64.out" \
+  2>"${tmp}/declared-macos-arm64.err"; then
+  echo "macos-arm64 checker accepted the x64 LLVM bottle authority" >&2
+  exit 1
+fi
+grep -Fq 'declared LLVM tools are supported only for macos-x64 and windows-x64' \
+  "${tmp}/declared-macos-arm64.err"
+
+if "${checker}" macos-x64 "${tmp}/candidate" \
+  >"${tmp}/macos-omitted.out" 2>"${tmp}/macos-omitted.err"; then
+  echo "macos-x64 compatibility checker accepted omitted pinned LLVM tools" >&2
+  exit 1
+fi
+grep -Fq 'macos-x64 requires a declared LLVM reader and objdump pair' \
+  "${tmp}/macos-omitted.err"
+
+if "${artifact_checker}" macos-x64 "${tmp}/missing-artifacts" \
+  >"${tmp}/artifact-macos-omitted.out" \
+  2>"${tmp}/artifact-macos-omitted.err"; then
+  echo "macos-x64 public artifact checker accepted omitted pinned LLVM tools" >&2
+  exit 1
+fi
+grep -Fq 'macos-x64 requires a declared LLVM reader and objdump pair' \
+  "${tmp}/artifact-macos-omitted.err"
+
+if "${checker}" macos-x64 "${tmp}/candidate" "${tmp}/llvm-readobj" \
+  >"${tmp}/declared-macos-incomplete.out" \
+  2>"${tmp}/declared-macos-incomplete.err"; then
+  echo "macOS checker accepted an incomplete declared LLVM tool pair" >&2
+  exit 1
+fi
+grep -Fq 'macos-x64 requires a declared LLVM reader and objdump pair' \
+  "${tmp}/declared-macos-incomplete.err"
+
+if FAKE_READOBJ_OUTPUT="${mac_x64_readobj}" \
+  FAKE_OBJDUMP_OUTPUT="${mac_objdump}" \
+  "${checker}" macos-x64 "${tmp}/candidate" \
+  "${tmp}/llvm-readobj" "${tmp}/llvm-objdump" \
+  >"${tmp}/declared-macos-arbitrary.out" \
+  2>"${tmp}/declared-macos-arbitrary.err"; then
+  echo "macOS checker accepted arbitrary matching-version LLVM tools" >&2
+  exit 1
+fi
+grep -Fq 'not in the approved snapshot layout' \
+  "${tmp}/declared-macos-arbitrary.err"
+
+if FAKE_READOBJ_OUTPUT="${mac_x64_readobj}" \
+  FAKE_OBJDUMP_OUTPUT="${mac_objdump}" \
+  "${checker}" macos-x64 "${tmp}/candidate" \
+  "${tmp}/llvm-objdump" "${tmp}/llvm-readobj" \
+  >"${tmp}/declared-macos-swapped.out" \
+  2>"${tmp}/declared-macos-swapped.err"; then
+  echo "macOS checker accepted swapped declared LLVM identities" >&2
+  exit 1
+fi
+grep -Fq 'not in the approved snapshot layout' "${tmp}/declared-macos-swapped.err"
 
 missing_symbols="${tmp}/missing-symbols.txt"
 sed '/^Symbols \[$/,/^\]$/d' "${linux_x64}" > "${missing_symbols}"
@@ -577,5 +673,176 @@ mutate_and_fail freebsd_liblzma_major freebsd-x64 "${freebsd}" \
   's/liblzma.so.5/liblzma.so.6/' 'unexpected DT_NEEDED libraries'
 mutate_and_fail freebsd_needed freebsd-x64 "${freebsd}" 's/libthr.so.3/libutil.so.9/'
 mutate_and_fail freebsd_rpath freebsd-x64 "${freebsd}" 's/NeededLibraries \[/RUNPATH: \/tmp\nNeededLibraries [/'
+
+# The no-Buildkite local runner validates published bytes through this public
+# command. Its contract must provision the pinned task root, materialize an
+# owner-private snapshot, and pass both approved tools to the macOS x64 check.
+published_root="${tmp}/published-checker"
+published_bin="${tmp}/published-bin"
+published_task_root="${tmp}/published-task-root"
+published_calls="${tmp}/published-compat-calls.tsv"
+published_snapshot_record="${tmp}/published-snapshot.txt"
+published_gh_marker="${tmp}/published-gh-called"
+mkdir -p \
+  "${published_root}/scripts/release" \
+  "${published_bin}" \
+  "${published_task_root}"
+cp "${published_checker}" "${published_root}/scripts/check-github-release-assets.sh"
+cat >"${published_root}/scripts/release/macos_llvm_authority.py" <<'PY'
+#!/usr/bin/env python3
+from pathlib import Path
+import os
+import sys
+
+if sys.argv[1:2] != ["snapshot"]:
+    raise SystemExit("unexpected authority command")
+task_root = Path(sys.argv[sys.argv.index("--task-root") + 1])
+snapshot_root = Path(sys.argv[sys.argv.index("--snapshot-root") + 1])
+if task_root != Path(os.environ["EXPECTED_TASK_ROOT"]):
+    raise SystemExit("published checker passed the wrong task root")
+(snapshot_root / "bin").mkdir(parents=True)
+for name in ("llvm-readobj", "llvm-objdump"):
+    tool = snapshot_root / "bin" / name
+    tool.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    tool.chmod(0o500)
+Path(os.environ["SNAPSHOT_RECORD"]).write_text(str(snapshot_root), encoding="utf-8")
+PY
+cat >"${published_root}/scripts/check-release-binary-compat.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' "$1" >>"${COMPAT_CALLS}"
+for argument in "${@:2}"; do
+  printf '\t%s' "${argument}" >>"${COMPAT_CALLS}"
+done
+printf '\n' >>"${COMPAT_CALLS}"
+if [[ "$1" == "macos-x64" ]]; then
+  [[ $# == 4 ]]
+  snapshot="$(cat "${SNAPSHOT_RECORD}")"
+  [[ "$3" == "${snapshot}/bin/llvm-readobj" ]]
+  [[ "$4" == "${snapshot}/bin/llvm-objdump" ]]
+else
+  [[ $# == 2 ]]
+fi
+EOF
+cat >"${published_bin}/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+touch "${GH_CALL_MARKER}"
+case "${1:-}:${2:-}" in
+  release:view)
+    cat <<'ASSETS'
+ctx-freebsd-x64
+ctx-freebsd-x64.cdx.json
+ctx-freebsd-x64.third-party-notices.txt
+ctx-linux-aarch64
+ctx-linux-aarch64.cdx.json
+ctx-linux-aarch64.third-party-notices.txt
+ctx-linux-x64
+ctx-linux-x64.cdx.json
+ctx-linux-x64.third-party-notices.txt
+ctx-macos-arm64
+ctx-macos-arm64.cdx.json
+ctx-macos-arm64.third-party-notices.txt
+ctx-macos-x64
+ctx-macos-x64.cdx.json
+ctx-macos-x64.third-party-notices.txt
+ctx-onnxruntime-freebsd-x64.tar.gz
+ctx-onnxruntime-linux-aarch64.tar.gz
+ctx-onnxruntime-linux-x64.tar.gz
+ctx-onnxruntime-macos-arm64.tar.gz
+ctx-onnxruntime-macos-x64.tar.gz
+ctx-onnxruntime-windows-x64.zip
+ctx-windows-x64.exe
+ctx-windows-x64.exe.cdx.json
+ctx-windows-x64.exe.third-party-notices.txt
+SHA256SUMS
+ASSETS
+    ;;
+  release:download)
+    shift 2
+    output_dir=""
+    pattern=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --dir) output_dir="$2"; shift 2 ;;
+        --pattern) pattern="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ -n "${output_dir}" && -n "${pattern}" ]]
+    if [[ "${pattern}" == "SHA256SUMS" ]]; then
+      (
+        cd "${output_dir}"
+        for asset in *; do
+          [[ "${asset}" == "SHA256SUMS" ]] && continue
+          sha256sum "${asset}"
+        done
+      ) >"${output_dir}/SHA256SUMS"
+    else
+      printf 'published fixture: %s\n' "${pattern}" >"${output_dir}/${pattern}"
+    fi
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+EOF
+chmod 700 \
+  "${published_root}/scripts/check-github-release-assets.sh" \
+  "${published_root}/scripts/check-release-binary-compat.sh" \
+  "${published_bin}/gh"
+
+if PATH="${published_bin}:/usr/bin:/bin" \
+  GH_CALL_MARKER="${published_gh_marker}" \
+  "${published_root}/scripts/check-github-release-assets.sh" \
+  v1.0.0 ctxrs/ctx \
+  >"${tmp}/published-omitted.out" 2>"${tmp}/published-omitted.err"; then
+  echo "published macos-x64 checker accepted an omitted task authority" >&2
+  exit 1
+fi
+grep -Fq \
+  'published macos-x64 validation requires --macos-llvm-task-root' \
+  "${tmp}/published-omitted.err"
+[[ ! -e "${published_gh_marker}" ]] || {
+  echo "published checker reached GitHub before rejecting omitted authority" >&2
+  exit 1
+}
+
+PATH="${published_bin}:/usr/bin:/bin" \
+  EXPECTED_TASK_ROOT="${published_task_root}" \
+  SNAPSHOT_RECORD="${published_snapshot_record}" \
+  COMPAT_CALLS="${published_calls}" \
+  GH_CALL_MARKER="${published_gh_marker}" \
+  "${published_root}/scripts/check-github-release-assets.sh" \
+  --macos-llvm-task-root "${published_task_root}" \
+  v1.0.0 ctxrs/ctx \
+  >"${tmp}/published.out" 2>"${tmp}/published.err"
+grep -Fq 'GitHub release assets ok: ctxrs/ctx v1.0.0' "${tmp}/published.out"
+python3 - "${published_calls}" <<'PY'
+from pathlib import Path
+import sys
+
+calls = [line.split("\t") for line in Path(sys.argv[1]).read_text().splitlines()]
+assert [call[0] for call in calls] == [
+    "linux-aarch64",
+    "linux-x64",
+    "macos-arm64",
+    "macos-x64",
+    "windows-x64",
+    "freebsd-x64",
+]
+macos = calls[3]
+assert len(macos) == 4, macos
+snapshot = Path(macos[2]).parent.parent
+assert snapshot.name == ".macos-llvm-authority"
+assert macos[2] == str(snapshot / "bin/llvm-readobj")
+assert macos[3] == str(snapshot / "bin/llvm-objdump")
+assert not any(
+    marker in value
+    for call in calls
+    for value in call[2:]
+    for marker in ("/usr/local", "/opt/homebrew", "/usr/bin/llvm")
+)
+PY
 
 printf 'release binary compatibility tests passed\n'

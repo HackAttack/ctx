@@ -31,17 +31,39 @@ authoritative_llvm_root() {
   esac
 }
 
-# Release construction owns these package roots. In particular, Linux checks
-# run in the pinned inspector image; caller PATH never selects an ABI parser.
+# Release construction owns the default package roots. An explicit macOS tool
+# pair is accepted only through the packager's validated task-local root;
+# caller PATH and environment variables never select an ABI parser.
 declared_llvm_readobj="${3:-}"
-if [[ -n "${declared_llvm_readobj}" ]]; then
-  [[ "${2:-}" != "" && "${1:-}" == "windows-x64" ]] || {
-    echo "error: a declared LLVM reader is supported only for windows-x64" >&2
-    exit 2
-  }
+declared_llvm_objdump="${4:-}"
+declared_macos_llvm=0
+if [[ -n "${declared_llvm_readobj}" || -n "${declared_llvm_objdump}" ]]; then
+  case "${1:-}" in
+    windows-x64)
+      [[ -n "${declared_llvm_readobj}" && -z "${declared_llvm_objdump}" ]] || {
+        echo "error: windows-x64 requires exactly one declared LLVM reader" >&2
+        exit 2
+      }
+      ;;
+    macos-x64)
+      [[ -n "${declared_llvm_readobj}" && -n "${declared_llvm_objdump}" ]] || {
+        echo "error: macos-x64 requires a declared LLVM reader and objdump pair" >&2
+        exit 2
+      }
+      declared_macos_llvm=1
+      ;;
+    *)
+      echo "error: declared LLVM tools are supported only for macos-x64 and windows-x64" >&2
+      exit 2
+      ;;
+  esac
   LLVM_READOBJ="${declared_llvm_readobj}"
-  LLVM_OBJDUMP=""
+  LLVM_OBJDUMP="${declared_llvm_objdump}"
 else
+  if [[ "${1:-}" == "macos-x64" ]]; then
+    echo "error: macos-x64 requires a declared LLVM reader and objdump pair" >&2
+    exit 2
+  fi
   LLVM_TOOL_ROOT="$(authoritative_llvm_root)"
   LLVM_READOBJ="${LLVM_TOOL_ROOT}/llvm-readobj"
   LLVM_OBJDUMP="${LLVM_TOOL_ROOT}/llvm-objdump"
@@ -49,7 +71,7 @@ fi
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/check-release-binary-compat.sh PLATFORM BINARY [DECLARED_LLVM_READOBJ]
+Usage: scripts/check-release-binary-compat.sh PLATFORM BINARY [DECLARED_LLVM_READOBJ [DECLARED_LLVM_OBJDUMP]]
 
 Checks the executable format, architecture, loader, shared-library, ABI,
 minimum-OS, exploit-mitigation, and stripped-symbol contract for one public
@@ -61,7 +83,7 @@ USAGE
 
 platform="${1:-}"
 binary="${2:-}"
-if [[ -z "${platform}" || -z "${binary}" || "${platform}" == "-h" || "${platform}" == "--help" ]]; then
+if [[ $# -gt 4 || -z "${platform}" || -z "${binary}" || "${platform}" == "-h" || "${platform}" == "--help" ]]; then
   usage
   exit 2
 fi
@@ -92,6 +114,55 @@ fail() {
   printf 'release binary compatibility failed for %s: %s\n' "${platform}" "$1" >&2
   exit 1
 }
+
+macos_llvm_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/release/macos_llvm_authority.py"
+macos_llvm_snapshot_root=""
+
+llvm_tool_identity_version() {
+  local kind="$1"
+  local tool="$2"
+  local name version_output version
+  name="$(basename "${tool}")"
+  case "${kind}:${name}" in
+    readobj:llvm-readobj|readobj:llvm-readobj.exe|objdump:llvm-objdump) ;;
+    *) fail "declared LLVM ${kind} has the wrong executable identity: ${tool}" ;;
+  esac
+  version_output="$(run_llvm_tool "${kind}" "${tool}" --version 2>&1)" \
+    || fail "LLVM ${kind} identity command failed: ${tool}"
+  version="$(sed -nE \
+    's/^[[:space:]]*([^[:space:]]+[[:space:]]+)?LLVM version ([0-9]+(\.[0-9]+){1,3})([^0-9].*)?$/\2/p' \
+    <<<"${version_output}")"
+  [[ "${version}" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] \
+    || fail "LLVM ${kind} did not report one parseable LLVM version: ${tool}"
+  printf '%s\n' "${version}"
+}
+
+bind_approved_macos_llvm_snapshot() {
+  local readobj_suffix="/bin/llvm-readobj"
+  [[ "${LLVM_READOBJ}" == /*"${readobj_suffix}" ]] \
+    || fail "declared macOS LLVM reader is not in the approved snapshot layout"
+  macos_llvm_snapshot_root="${LLVM_READOBJ%${readobj_suffix}}"
+  [[ "${LLVM_OBJDUMP}" == "${macos_llvm_snapshot_root}/bin/llvm-objdump" ]] \
+    || fail "declared macOS LLVM objdump is not in the approved snapshot layout"
+}
+
+run_llvm_tool() {
+  local kind="$1"
+  local tool="$2"
+  shift 2
+  if [[ "${declared_macos_llvm}" == "1" ]]; then
+    python3 -B "${macos_llvm_helper}" run-verified \
+      --snapshot-root "${macos_llvm_snapshot_root}" \
+      --tool "${kind}" -- "$@"
+  else
+    "${tool}" "$@"
+  fi
+}
+
+if [[ "${declared_macos_llvm}" == "1" ]]; then
+  bind_approved_macos_llvm_snapshot
+  binary="$(cd "$(dirname "${binary}")" && pwd -P)/$(basename "${binary}")"
+fi
 
 version_le() {
   local lhs="$1"
@@ -476,10 +547,18 @@ libthr.so.3"
   check_no_elf_search_path
 }
 
-require_tool "${LLVM_READOBJ}"
+if [[ "${declared_macos_llvm}" != "1" ]]; then
+  require_tool "${LLVM_READOBJ}"
+fi
+llvm_readobj_version=""
+if [[ "${declared_macos_llvm}" == "1" ]]; then
+  llvm_readobj_version="$(llvm_tool_identity_version readobj "${LLVM_READOBJ}")"
+  [[ "${llvm_readobj_version}" == "22.1.8" ]] \
+    || fail "approved macOS LLVM reader did not report version 22.1.8"
+fi
 case "${platform}" in
   linux-x64|linux-aarch64|freebsd-x64)
-    readobj_output="$("${LLVM_READOBJ}" \
+    readobj_output="$(run_llvm_tool readobj "${LLVM_READOBJ}" \
       --file-headers \
       --program-headers \
       --dynamic-table \
@@ -492,11 +571,13 @@ case "${platform}" in
       "${binary}")" || fail "llvm-readobj could not inspect the binary"
     ;;
   macos-arm64|macos-x64)
-    readobj_output="$("${LLVM_READOBJ}" --file-headers --sections --symbols "${binary}")" \
+    readobj_output="$(run_llvm_tool readobj "${LLVM_READOBJ}" \
+      --file-headers --sections --symbols "${binary}")" \
       || fail "llvm-readobj could not inspect the binary"
     ;;
   windows-x64)
-    readobj_output="$("${LLVM_READOBJ}" --file-headers --coff-imports --sections --symbols "${binary}")" \
+    readobj_output="$(run_llvm_tool readobj "${LLVM_READOBJ}" \
+      --file-headers --coff-imports --sections --symbols "${binary}")" \
       || fail "llvm-readobj could not inspect the binary"
     ;;
 esac
@@ -504,9 +585,18 @@ esac
 check_stripped_symbols
 
 objdump_output=""
+llvm_objdump_version=""
 if [[ "${platform}" == macos-* ]]; then
-  require_tool "${LLVM_OBJDUMP}"
-  objdump_output="$("${LLVM_OBJDUMP}" --macho --private-headers "${binary}")" \
+  if [[ "${declared_macos_llvm}" != "1" ]]; then
+    require_tool "${LLVM_OBJDUMP}"
+  fi
+  if [[ "${declared_macos_llvm}" == "1" ]]; then
+    llvm_objdump_version="$(llvm_tool_identity_version objdump "${LLVM_OBJDUMP}")"
+    [[ "${llvm_objdump_version}" == "22.1.8" ]] \
+      || fail "approved macOS LLVM objdump did not report version 22.1.8"
+  fi
+  objdump_output="$(run_llvm_tool objdump "${LLVM_OBJDUMP}" \
+    --macho --private-headers "${binary}")" \
     || fail "llvm-objdump could not inspect Mach-O load commands"
 fi
 
@@ -518,6 +608,9 @@ case "${platform}" in
 esac
 
 scanner_authority="authoritative-package-root:${LLVM_TOOL_ROOT:-declared-release-runfile}"
+if [[ "${declared_macos_llvm}" == "1" ]]; then
+  scanner_authority="approved-task-snapshot:homebrew-core/llvm-22.1.8-sonoma-x86_64@sha256:2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48"
+fi
 scanner_inputs="llvm-readobj=${LLVM_READOBJ}"
 if [[ -n "${LLVM_OBJDUMP}" ]]; then
   scanner_inputs="${scanner_inputs},llvm-objdump=${LLVM_OBJDUMP}"
