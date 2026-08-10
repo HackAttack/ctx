@@ -113,34 +113,37 @@ fn successful_codex_route_derives_rejected_records_from_committed_core_sources()
 }
 
 #[test]
-fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
+fn codex_nested_root_advisory_is_admitted_from_each_childs_own_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
-    let root = temp.path().join("private-codex-sessions");
-    let root_a = "019fb600-0000-7000-8000-0000000032a0";
-    let child_a = "019fb600-0000-7000-8000-0000000032a1";
-    let sibling_a = "019fb600-0000-7000-8000-0000000032a2";
-    let descendant_a = "019fb600-0000-7000-8000-0000000032a3";
-    let root_b = "019fb600-0000-7000-8000-0000000032b0";
-    let private_root_marker = "privaterootacanary328";
-    let private_child_marker = "privatechildacanary328";
-    let sibling_marker = "healthysiblingacanary328";
-    let descendant_marker = "healthydescendantacanary328";
-    let valid_marker = "validrootbpublicationmarker";
+    let sessions = temp.path().join("codex-nested-sessions");
+    let root = "019fb600-0000-7000-8000-0000000032a0";
+    let child = "019fb600-0000-7000-8000-0000000032a1";
+    let grandchild = "019fb600-0000-7000-8000-0000000032a2";
+    let great_grandchild = "019fb600-0000-7000-8000-0000000032a3";
+    let root_marker = "nestedrootcanary328";
+    let child_marker = "nestedchildcanary328";
+    let grandchild_marker = "nestedgrandchildcanary328";
+    let great_grandchild_marker = "nestedgreatgrandchildcanary328";
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&cwd).unwrap();
-    write_codex_rollout(&root, root_a, private_root_marker);
-    write_codex_root_conflict_rollout(&root, child_a, root_a, root_b, private_child_marker);
-    write_codex_related_rollout(&root, sibling_a, root_a, sibling_marker);
-    write_codex_related_rollout(&root, descendant_a, child_a, descendant_marker);
-    write_codex_rollout(&root, root_b, valid_marker);
+    write_codex_rollout_with_lineage(&sessions, root, None, Some(root), root_marker);
+    write_codex_root_advisory_rollout(&sessions, child, root, root, child_marker);
+    write_codex_root_advisory_rollout(&sessions, grandchild, child, root, grandchild_marker);
+    write_codex_root_advisory_rollout(
+        &sessions,
+        great_grandchild,
+        grandchild,
+        root,
+        great_grandchild_marker,
+    );
     let report = DiscoveryReport {
         sources: vec![provider_source_for_path(
             CaptureProvider::Codex,
-            root.clone(),
+            sessions.clone(),
         )],
         issues: Vec::new(),
     };
@@ -170,71 +173,99 @@ fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, 1);
-    assert_eq!(result.source_failures.len(), 1);
+    assert_eq!(result.source_failure_total, 0);
+    assert!(result.source_failures.is_empty());
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
     assert_eq!(publication.current.source_count, 4);
+    assert_eq!(publication.certified_source_count, 4);
     assert_eq!(publication.current.rejected_records, 0);
     let verified = VerifiedIndex::open(&index_root).unwrap();
     let records = codex_core_records(&verified);
     assert_eq!(records.len(), 4);
-    assert_eq!(
-        verified
-            .search_event_candidates(valid_marker, 10)
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        verified
-            .search_event_candidates(private_root_marker, 10)
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        verified
-            .search_event_candidates(private_child_marker, 10)
-            .unwrap()
-            .len(),
-        0
-    );
-    for marker in [sibling_marker, descendant_marker] {
+    for marker in [
+        root_marker,
+        child_marker,
+        grandchild_marker,
+        great_grandchild_marker,
+    ] {
         assert_eq!(
             verified.search_event_candidates(marker, 10).unwrap().len(),
             1
         );
     }
+    let by_marker = |marker: &str| {
+        records
+            .iter()
+            .find(|record| record.content.normalized_body.as_deref() == Some(marker))
+            .unwrap()
+    };
+    let root_record = by_marker(root_marker);
+    let child_record = by_marker(child_marker);
+    let grandchild_record = by_marker(grandchild_marker);
+    let great_grandchild_record = by_marker(great_grandchild_marker);
+    assert_eq!(root_record.provider_session_id.as_deref(), Some(root));
+    assert_eq!(root_record.root_session_id, root_record.session_id);
+    assert!(root_record.parent_session_id.is_none());
+    assert_eq!(child_record.provider_session_id.as_deref(), Some(child));
+    assert_eq!(child_record.parent_session_id, Some(root_record.session_id));
+    assert_eq!(child_record.root_session_id, root_record.session_id);
+    assert_eq!(
+        grandchild_record.provider_session_id.as_deref(),
+        Some(grandchild)
+    );
+    assert_eq!(
+        grandchild_record.parent_session_id,
+        Some(child_record.session_id)
+    );
+    assert_eq!(grandchild_record.root_session_id, child_record.session_id);
+    assert_ne!(grandchild_record.root_session_id, root_record.session_id);
+    assert_eq!(
+        great_grandchild_record.provider_session_id.as_deref(),
+        Some(great_grandchild)
+    );
+    assert_eq!(
+        great_grandchild_record.parent_session_id,
+        Some(grandchild_record.session_id)
+    );
+    assert_eq!(
+        great_grandchild_record.root_session_id,
+        grandchild_record.session_id
+    );
 }
 
 #[test]
-fn codex_root_conflicts_fail_closed_with_bounded_failure_receipts() {
-    const CONFLICTING_CHILDREN: usize = 65;
-    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN;
+fn codex_deep_root_advisory_chain_has_exact_linear_cardinality() {
+    const DESCENDANTS: usize = 65;
+    const SOURCES: usize = DESCENDANTS + 1;
 
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
-    let root = temp.path().join("private-bounded-codex-conflicts");
-    let root_a = "019fb600-0000-7000-8000-000000003400";
-    let root_b = "019fb600-0000-7000-8000-0000000034b0";
-    let private_marker = "private bounded root conflict content 328";
-    let valid_marker = "bounded root conflict valid peer 328";
+    let sessions = temp.path().join("deep-codex-lineage");
+    let root = "019fb600-0000-7000-8000-000000003400";
+    let root_marker = "deeprootadvisoryuniquetoken328";
+    let deepest_marker = "deepestrootadvisoryuniquetokenxyz328";
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&cwd).unwrap();
-    write_codex_rollout(&root, root_a, private_marker);
-    for index in 0..CONFLICTING_CHILDREN {
+    write_codex_rollout_with_lineage(&sessions, root, None, Some(root), root_marker);
+    let mut parent = root.to_owned();
+    for index in 0..DESCENDANTS {
         let child = format!("019fb600-0000-7000-8001-{index:012x}");
-        write_codex_root_conflict_rollout(&root, &child, root_a, root_b, private_marker);
+        let marker = if index + 1 == DESCENDANTS {
+            deepest_marker
+        } else {
+            "intermediaterootadvisorytoken328"
+        };
+        write_codex_root_advisory_rollout(&sessions, &child, &parent, root, marker);
+        parent = child;
     }
-    write_codex_rollout(&root, root_b, valid_marker);
     let report = DiscoveryReport {
         sources: vec![provider_source_for_path(
             CaptureProvider::Codex,
-            root.clone(),
+            sessions.clone(),
         )],
         issues: Vec::new(),
     };
@@ -264,53 +295,31 @@ fn codex_root_conflicts_fail_closed_with_bounded_failure_receipts() {
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, REJECTED_SOURCES);
-    assert!(!result.source_failures.is_empty());
+    assert_eq!(result.source_failure_total, 0);
+    assert!(result.source_failures.is_empty());
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, 2);
+    assert_eq!(publication.current.source_count, SOURCES);
+    assert_eq!(publication.certified_source_count, SOURCES);
     assert_eq!(publication.current.rejected_records, 0);
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    let records = codex_core_records(&verified);
+    assert_eq!(records.len(), SOURCES);
     assert_eq!(
-        codex_core_records(&VerifiedIndex::open(&index_root).unwrap()).len(),
-        2
+        records
+            .iter()
+            .filter_map(|record| record.provider_session_id.as_deref())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        SOURCES
     );
-
-    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
-        None,
-        publication.generation_id.clone(),
-        &publication,
-    )
-    .unwrap();
-    assert_eq!(receipt.terminal_outcome(), "completed_with_source_failures");
-    assert_eq!(receipt.source_failure_total(), REJECTED_SOURCES);
-    assert!(receipt.source_failure_diagnostic_count() > 0);
     assert_eq!(
-        receipt.source_failures_omitted(),
-        REJECTED_SOURCES - receipt.source_failure_diagnostic_count()
+        verified
+            .search_event_candidates(deepest_marker, 10)
+            .unwrap()
+            .len(),
+        1
     );
-    assert_eq!(receipt.rejected_record_total(), 0);
-
-    let envelope = receipt.to_json();
-    assert_eq!(envelope["source_failure_total"], REJECTED_SOURCES);
-    assert_eq!(envelope["rejected_record_total"], 0);
-    let route = envelope["route_results"]
-        .as_object()
-        .and_then(|routes| routes.values().next())
-        .and_then(Value::as_array)
-        .expect("one compact route receipt");
-    assert_eq!(route.len(), 6);
-    assert_eq!(
-        envelope["source_failures_omitted"],
-        REJECTED_SOURCES - receipt.source_failure_diagnostic_count()
-    );
-    assert!(
-        serde_json::to_vec(&envelope).unwrap().len() <= SOURCE_REFRESH_RECEIPT_JSON_BUDGET_BYTES
-    );
-    assert!(!VerifiedIndex::open(&index_root)
-        .unwrap()
-        .search_event_candidates(valid_marker, 10)
-        .unwrap()
-        .is_empty());
 }
 
 #[test]
@@ -739,7 +748,7 @@ fn write_codex_related_rollout(
     )
 }
 
-fn write_codex_root_conflict_rollout(
+fn write_codex_root_advisory_rollout(
     root: &Path,
     native_session_id: &str,
     parent_native_session_id: &str,

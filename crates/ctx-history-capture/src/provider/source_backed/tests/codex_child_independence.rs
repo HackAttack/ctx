@@ -230,21 +230,15 @@ fn write_session(
 fn write_session_with_advisory(
     root: &Path,
     native_session_id: &str,
-    parent_native_session_id: &str,
+    relationship: SessionRelationshipKind,
+    parent_native_session_id: Option<&str>,
     advisory_session_id: &str,
-    marker: &str,
+    events: impl IntoIterator<Item = serde_json::Value>,
 ) {
-    let mut meta = session_meta(
-        native_session_id,
-        SessionRelationshipKind::Delegated,
-        Some(parent_native_session_id),
-    );
+    let mut meta = session_meta(native_session_id, relationship, parent_native_session_id);
     meta["payload"]["session_id"] = serde_json::json!(advisory_session_id);
-    fs::write(
-        session_path(root, native_session_id),
-        jsonl_bytes([meta, message(marker)]),
-    )
-    .unwrap();
+    let records = std::iter::once(meta).chain(events);
+    fs::write(session_path(root, native_session_id), jsonl_bytes(records)).unwrap();
 }
 
 fn append_event(path: &Path, event: serde_json::Value) {
@@ -389,14 +383,14 @@ fn causal_by_id(
 fn assert_exact_zero_work(
     sources: &BTreeMap<String, CodexCausalSourceObservationV1>,
     native_session_id: &str,
-    parent_native_session_id: &str,
+    parent_native_session_id: Option<&str>,
 ) {
     let source = sources
         .get(native_session_id)
         .unwrap_or_else(|| panic!("missing causal source {native_session_id}"));
     assert_eq!(
         source.parent_provider_session_id.as_deref(),
-        Some(parent_native_session_id)
+        parent_native_session_id
     );
     let counters = source.counters;
     assert_eq!(counters.catalog_source_metadata_opens, 0);
@@ -417,15 +411,16 @@ fn assert_exact_zero_work(
 fn refresh_and_assert_descendants(
     index_root: &Path,
     registry: &SourceBackedProviderRegistry,
-    child: &str,
-    parent: &str,
-    grandchild: &str,
+    descendants: &[(&str, &str)],
 ) -> BTreeMap<String, CodexCausalSourceObservationV1> {
     let observed = capture_causal_stage();
-    refresh_source_backed_generation(index_root, registry, writer_options()).unwrap();
+    let receipt = refresh_source_backed_generation(index_root, registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
     let sources = causal_by_id(&observed);
-    assert_exact_zero_work(&sources, child, parent);
-    assert_exact_zero_work(&sources, grandchild, child);
+    for (descendant, parent) in descendants {
+        assert_exact_zero_work(&sources, descendant, Some(parent));
+    }
     sources
 }
 
@@ -438,28 +433,68 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
     let parent = "019fb000-0000-7000-8000-000000000001";
     let child = "019fb000-0000-7000-8000-000000000002";
     let grandchild = "019fb000-0000-7000-8000-000000000003";
+    let great_grandchild = "019fb000-0000-7000-8000-000000000004";
     let parent_path = session_path(&sessions, parent);
 
-    write_session(
+    write_session_with_advisory(
         &sessions,
         child,
         SessionRelationshipKind::Delegated,
         Some(parent),
+        parent,
         [message("child-stable-marker")],
     );
-    write_session(
+    write_session_with_advisory(
         &sessions,
         grandchild,
         SessionRelationshipKind::Delegated,
         Some(child),
+        parent,
         [message("grandchild-stable-marker")],
     );
+    write_session_with_advisory(
+        &sessions,
+        great_grandchild,
+        SessionRelationshipKind::Delegated,
+        Some(grandchild),
+        parent,
+        [message("great-grandchild-stable-marker")],
+    );
     let registry = register_tree(&[&sessions]);
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let initial_receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(initial_receipt.failed_routes.is_empty());
+    assert!(initial_receipt.logical_source_failures.is_empty());
     let initial = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(initial.manifest().sources.len(), 3);
     let child_snapshot = source_snapshot(&initial, child, "child-stable-marker");
     let grandchild_snapshot = source_snapshot(&initial, grandchild, "grandchild-stable-marker");
+    let great_grandchild_snapshot =
+        source_snapshot(&initial, great_grandchild, "great-grandchild-stable-marker");
+    let child_records = records_for(&initial, child);
+    let grandchild_records = records_for(&initial, grandchild);
+    let great_grandchild_records = records_for(&initial, great_grandchild);
+    assert!(child_records.iter().all(|record| {
+        record.provider_session_id.as_deref() == Some(child)
+            && record.parent_session_id.is_some()
+            && record.parent_session_id == Some(record.root_session_id)
+    }));
+    assert!(grandchild_records.iter().all(|record| {
+        record.provider_session_id.as_deref() == Some(grandchild)
+            && record.parent_session_id.is_some()
+            && record.parent_session_id == Some(record.root_session_id)
+    }));
+    assert!(great_grandchild_records.iter().all(|record| {
+        record.provider_session_id.as_deref() == Some(great_grandchild)
+            && record.parent_session_id.is_some()
+            && record.parent_session_id == Some(record.root_session_id)
+    }));
     drop(initial);
+    let descendants = [
+        (child, parent),
+        (grandchild, child),
+        (great_grandchild, grandchild),
+    ];
 
     write_session(
         &sessions,
@@ -468,12 +503,11 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
         None,
         [message("parent-initial-marker")],
     );
-    let arrived = refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    let arrived = refresh_and_assert_descendants(&index_root, &registry, &descendants);
     assert_eq!(arrived.get(parent).unwrap().counters.cold_sources, 1);
 
     append_event(&parent_path, message("parent-append-marker"));
-    let appended =
-        refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    let appended = refresh_and_assert_descendants(&index_root, &registry, &descendants);
     let parent_append = &appended.get(parent).unwrap().counters;
     assert_eq!(parent_append.appended_sources, 1);
     assert_eq!(parent_append.scanner_sources_started, 1);
@@ -488,8 +522,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
             "x".repeat(1_024)
         ))],
     );
-    let rewritten =
-        refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    let rewritten = refresh_and_assert_descendants(&index_root, &registry, &descendants);
     assert_eq!(rewritten.get(parent).unwrap().counters.replaced_sources, 1);
 
     write_session(
@@ -499,12 +532,11 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
         None,
         [message("parent-truncated")],
     );
-    let truncated =
-        refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    let truncated = refresh_and_assert_descendants(&index_root, &registry, &descendants);
     assert_eq!(truncated.get(parent).unwrap().counters.replaced_sources, 1);
 
     fs::remove_file(&parent_path).unwrap();
-    let deleted = refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    let deleted = refresh_and_assert_descendants(&index_root, &registry, &descendants);
     assert!(!deleted.contains_key(parent));
 
     write_session(
@@ -514,8 +546,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
         None,
         [message("parent-reappeared-marker")],
     );
-    let reappeared =
-        refresh_and_assert_descendants(&index_root, &registry, child, parent, grandchild);
+    let reappeared = refresh_and_assert_descendants(&index_root, &registry, &descendants);
     assert_eq!(reappeared.get(parent).unwrap().counters.cold_sources, 1);
 
     let final_index = VerifiedIndex::open(&index_root).unwrap();
@@ -527,124 +558,122 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
         source_snapshot(&final_index, grandchild, "grandchild-stable-marker"),
         grandchild_snapshot
     );
+    assert_eq!(
+        source_snapshot(
+            &final_index,
+            great_grandchild,
+            "great-grandchild-stable-marker"
+        ),
+        great_grandchild_snapshot
+    );
 }
 
 #[test]
-fn source_local_conflict_retains_last_good_base_while_peer_publishes() {
+fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index_root = temp.path().join("index");
     fs::create_dir_all(&sessions).unwrap();
-    let parent = "019fb000-0000-7000-8000-000000000004";
-    let child = "019fb000-0000-7000-8000-000000000005";
-    let peer = "019fb000-0000-7000-8000-000000000006";
-    let advisory = "019fb000-0000-7000-8000-000000000007";
+    let root = "019fb000-0000-7000-8000-000000000005";
+    let parent = "019fb000-0000-7000-8000-000000000006";
+    let child = "019fb000-0000-7000-8000-000000000007";
     write_session(
         &sessions,
-        parent,
+        root,
         SessionRelationshipKind::Root,
         None,
-        [message("retention-parent-marker")],
+        [message("nestedrootuniquetokenaaa")],
     );
-    write_session(
+    write_session_with_advisory(
+        &sessions,
+        parent,
+        SessionRelationshipKind::Delegated,
+        Some(root),
+        root,
+        [message("nestedparentuniquetokenbbb")],
+    );
+    write_session_with_advisory(
         &sessions,
         child,
         SessionRelationshipKind::Delegated,
         Some(parent),
-        [message("retention-last-good-marker")],
-    );
-    write_session(
-        &sessions,
-        peer,
-        SessionRelationshipKind::Root,
-        None,
-        [message("peeroldcontentuniqueabc")],
+        root,
+        [message("nestedchildinitialuniquetokenccc")],
     );
     let registry = register_tree(&[&sessions]);
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    assert!(cold.logical_source_failures.is_empty());
     let initial = VerifiedIndex::open(&index_root).unwrap();
-    let child_snapshot = source_snapshot(&initial, child, "retention-last-good-marker");
+    assert_eq!(initial.manifest().sources.len(), 3);
+    assert_eq!(
+        initial
+            .search_event_candidates("nestedchildinitialuniquetokenccc", 8)
+            .unwrap()
+            .len(),
+        1
+    );
+    let parent_session_id = records_for(&initial, parent)[0].session_id;
+    let child_records = records_for(&initial, child);
+    assert!(child_records.iter().all(|record| {
+        record.provider_session_id.as_deref() == Some(child)
+            && record.parent_session_id == Some(parent_session_id)
+            && record.root_session_id == parent_session_id
+    }));
     drop(initial);
 
     write_session_with_advisory(
         &sessions,
         child,
-        parent,
-        advisory,
-        "rejectedcontentuniquetokenxyz",
+        SessionRelationshipKind::Delegated,
+        Some(parent),
+        root,
+        [message("nestedchildrewrittenuniquetokenddd")],
     );
-    fs::remove_file(session_path(&sessions, parent)).unwrap();
-    write_session(
-        &sessions,
-        peer,
-        SessionRelationshipKind::Root,
-        None,
-        [message("peernewcontentuniquexyz")],
-    );
-    let assert_retained = |receipt: SourceBackedRefreshReceipt| {
-        let [failure] = receipt.logical_source_failures.failures() else {
-            panic!("one source-local conflict expected");
-        };
-        assert!(failure.carried_forward);
-        let retained = VerifiedIndex::open(&index_root).unwrap();
-        assert_eq!(
-            source_snapshot(&retained, child, "retention-last-good-marker"),
-            child_snapshot
-        );
-        assert!(retained
-            .search_event_candidates("rejectedcontentuniquetokenxyz", 8)
-            .unwrap()
-            .is_empty());
-        failure.detail.clone()
-    };
-    let refresh =
-        || refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    let failure_detail = assert_retained(refresh());
-    assert!(failure_detail.contains(&format!("evidence_source_record=session_meta:{child}")));
-
-    write_session(
-        &sessions,
-        parent,
-        SessionRelationshipKind::Root,
-        None,
-        [message("retention-parent-arrived")],
-    );
-    assert_eq!(assert_retained(refresh()), failure_detail);
-    write_session(
-        &sessions,
-        advisory,
-        SessionRelationshipKind::Root,
-        None,
-        [message("retention-advisory-arrived")],
-    );
-    assert_eq!(assert_retained(refresh()), failure_detail);
-    write_session(
-        &sessions,
-        parent,
-        SessionRelationshipKind::Root,
-        None,
-        [message("retention-parent-rewritten")],
-    );
-    write_session(
-        &sessions,
-        advisory,
-        SessionRelationshipKind::Root,
-        None,
-        [message("retention-advisory-rewritten")],
-    );
-    assert_eq!(assert_retained(refresh()), failure_detail);
-    fs::remove_file(session_path(&sessions, parent)).unwrap();
-    fs::remove_file(session_path(&sessions, advisory)).unwrap();
-    assert_eq!(assert_retained(refresh()), failure_detail);
-
+    let observed = capture_causal_stage();
+    let rewritten =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(rewritten.failed_routes.is_empty());
+    assert!(rewritten.logical_source_failures.is_empty());
+    let sources = causal_by_id(&observed);
+    assert_exact_zero_work(&sources, root, None);
+    assert_exact_zero_work(&sources, parent, Some(root));
+    let child_counters = sources.get(child).unwrap().counters;
+    assert_eq!(child_counters.scanner_source_opens, 1);
+    assert_eq!(child_counters.scanner_sources_started, 1);
+    assert_eq!(child_counters.scanner_sources_completed, 1);
+    assert!(child_counters.scanner_bytes_read > 0);
+    assert!(child_counters.typed_json_parses > 0);
+    assert_eq!(child_counters.replaced_sources, 1);
+    assert_eq!(child_counters.writer_mutated_sources, 1);
     assert_eq!(
-        VerifiedIndex::open(&index_root)
-            .unwrap()
-            .search_event_candidates("peernewcontentuniquexyz", 8)
+        sources
+            .iter()
+            .filter(|(_, source)| source.counters.scanner_sources_started != 0)
+            .map(|(native_session_id, _)| native_session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![child]
+    );
+
+    let current = VerifiedIndex::open(&index_root).unwrap();
+    assert!(current
+        .search_event_candidates("nestedchildinitialuniquetokenccc", 8)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        current
+            .search_event_candidates("nestedchildrewrittenuniquetokenddd", 8)
             .unwrap()
             .len(),
         1
     );
+    assert!(records_for(&current, child).iter().any(|record| {
+        record
+            .content
+            .normalized_body
+            .as_deref()
+            .is_some_and(|body| body.contains("nestedchildrewrittenuniquetokenddd"))
+    }));
 }
 
 #[test]
@@ -934,7 +963,7 @@ fn child_local_positive_copy_proof_stays_copied_and_absence_stays_unknown() {
     let observed = capture_causal_stage();
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let sources = causal_by_id(&observed);
-    assert_exact_zero_work(&sources, child, parent);
+    assert_exact_zero_work(&sources, child, Some(parent));
     assert_eq!(
         source_snapshot(
             &VerifiedIndex::open(&index_root).unwrap(),
