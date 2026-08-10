@@ -2,8 +2,8 @@ use super::super::rows::{build_event_row, tool_context_from_row};
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
     read_bounded_record as read_shared_bounded_record,
-    read_bounded_record_unhashed as read_shared_bounded_record_unhashed,
-    JsonlBoundedRecordRead as BoundedRecordRead, JsonlRecordFraming,
+    read_bounded_record_unhashed as read_shared_bounded_record_unhashed, retained_file_identity,
+    JsonlBoundedRecordRead as BoundedRecordRead, JsonlFileIdentityPolicy, JsonlRecordFraming,
 };
 
 pub(super) fn read_bounded_record(
@@ -622,14 +622,16 @@ pub(crate) fn opened_file_observation(path: &Path, file: &File) -> Result<CodexF
     if !metadata.file_type().is_file() {
         return Err(source_changed_during_scan());
     }
-    let platform_before = opened_file_platform_tokens(path, file, &metadata)?;
+    let platform_before =
+        retained_file_identity(path, file, &metadata, JsonlFileIdentityPolicy::OrdinaryV2)?;
     let content_fingerprint = if platform_before.is_some() {
         None
     } else {
         Some(opened_file_content_fingerprint(file, &metadata)?)
     };
     let current = file.metadata()?;
-    let platform_after = opened_file_platform_tokens(path, file, &current)?;
+    let platform_after =
+        retained_file_identity(path, file, &current, JsonlFileIdentityPolicy::OrdinaryV2)?;
     if current.len() != metadata.len()
         || current.modified().ok() != metadata.modified().ok()
         || platform_after != platform_before
@@ -639,119 +641,12 @@ pub(crate) fn opened_file_observation(path: &Path, file: &File) -> Result<CodexF
     Ok(CodexFileObservation::from_parts(
         metadata.len(),
         metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
-        platform_before.map(|tokens| tokens.stable),
+        platform_before.map(|tokens| tokens.stable()),
         combine_opened_file_token(
-            platform_before.map(|tokens| tokens.change),
+            platform_before.map(|tokens| tokens.change()),
             content_fingerprint,
         ),
     ))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OpenedFilePlatformTokens {
-    stable: [u8; 32],
-    change: [u8; 32],
-}
-
-#[cfg(unix)]
-fn opened_file_platform_tokens(
-    _path: &Path,
-    _file: &File,
-    metadata: &std::fs::Metadata,
-) -> Result<Option<OpenedFilePlatformTokens>> {
-    use std::os::unix::fs::MetadataExt;
-
-    let mut stable = Sha256::new();
-    stable.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    stable.update(b"unix-stable\0");
-    stable.update(metadata.dev().to_le_bytes());
-    stable.update(metadata.ino().to_le_bytes());
-    stable.update(metadata.mode().to_le_bytes());
-    let mut change = Sha256::new();
-    change.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    change.update(b"unix-change\0");
-    change.update(metadata.dev().to_le_bytes());
-    change.update(metadata.ino().to_le_bytes());
-    change.update(metadata.ctime().to_le_bytes());
-    change.update(metadata.ctime_nsec().to_le_bytes());
-    Ok(Some(OpenedFilePlatformTokens {
-        stable: stable.finalize().into(),
-        change: change.finalize().into(),
-    }))
-}
-
-#[cfg(target_os = "windows")]
-fn opened_file_platform_tokens(
-    path: &Path,
-    file: &File,
-    metadata: &std::fs::Metadata,
-) -> Result<Option<OpenedFilePlatformTokens>> {
-    use std::{mem::size_of, os::windows::io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_BASIC_INFO, FILE_ID_INFO,
-    };
-
-    let handle = file.as_raw_handle();
-    let mut basic_info = FILE_BASIC_INFO::default();
-    let basic_result = unsafe {
-        GetFileInformationByHandleEx(
-            handle,
-            FileBasicInfo,
-            &mut basic_info as *mut FILE_BASIC_INFO as *mut std::ffi::c_void,
-            size_of::<FILE_BASIC_INFO>() as u32,
-        )
-    };
-    if basic_result == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    if basic_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(CaptureError::InvalidProviderTranscriptPath {
-            path: path.to_path_buf(),
-            reason: "reparse-point provider transcript files are rejected",
-        });
-    }
-
-    let mut id_info = FILE_ID_INFO::default();
-    let id_result = unsafe {
-        GetFileInformationByHandleEx(
-            handle,
-            FileIdInfo,
-            &mut id_info as *mut FILE_ID_INFO as *mut std::ffi::c_void,
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    };
-    if id_result == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    let mut stable = Sha256::new();
-    stable.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    stable.update(b"windows-stable\0");
-    stable.update(id_info.VolumeSerialNumber.to_le_bytes());
-    stable.update(id_info.FileId.Identifier);
-    stable.update(basic_info.CreationTime.to_le_bytes());
-    let mut change = Sha256::new();
-    change.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    change.update(b"windows-change\0");
-    change.update(id_info.VolumeSerialNumber.to_le_bytes());
-    change.update(id_info.FileId.Identifier);
-    change.update(basic_info.ChangeTime.to_le_bytes());
-    change.update(basic_info.LastWriteTime.to_le_bytes());
-    change.update(metadata.len().to_le_bytes());
-    Ok(Some(OpenedFilePlatformTokens {
-        stable: stable.finalize().into(),
-        change: change.finalize().into(),
-    }))
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn opened_file_platform_tokens(
-    _path: &Path,
-    _file: &File,
-    _metadata: &std::fs::Metadata,
-) -> Result<Option<OpenedFilePlatformTokens>> {
-    Ok(None)
 }
 
 fn combine_opened_file_token(
