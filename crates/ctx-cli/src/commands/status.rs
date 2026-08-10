@@ -75,6 +75,10 @@ pub(crate) fn status_read_model_authorized(
     })
 }
 
+// Dispatch assembles these independently borrowed authorities and output sinks.
+// Bundling them would only move this call boundary into `dispatch.rs` without
+// simplifying status orchestration or ownership.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_status_authorized(
     args: StatusArgs,
     data_root: &Path,
