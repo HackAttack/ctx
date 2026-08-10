@@ -246,6 +246,7 @@ fn supervisor_waiter_rechecks_uninstall_fence_after_installation_lock() {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&installation_lock_path)
         .unwrap();
     installation_lock.lock_exclusive().unwrap();
