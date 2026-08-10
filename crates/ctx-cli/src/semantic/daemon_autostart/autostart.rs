@@ -803,7 +803,11 @@ impl DetachedDaemonLaunch {
     ) -> io::Result<Self> {
         let mut environment = daemon_child_environment();
         environment.extend(overrides);
-        Self::normalized(program, args, normalize_daemon_launch_environment(environment)?)
+        Self::normalized(
+            program,
+            args,
+            normalize_daemon_launch_environment(environment)?,
+        )
     }
 
     #[cfg(test)]

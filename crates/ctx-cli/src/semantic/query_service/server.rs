@@ -24,8 +24,8 @@ mod windows_security;
 pub(in crate::semantic) use dispatch::bind_daemon_query_listener;
 #[allow(unused_imports)]
 pub(in crate::semantic) use dispatch::{
-    CtxAuthenticatedRequestHandler, ctx_authenticated_request_handler, start_daemon_query_service,
-    start_daemon_source_refresh_service,
+    ctx_authenticated_request_handler, start_daemon_query_service,
+    start_daemon_source_refresh_service, CtxAuthenticatedRequestHandler,
 };
 #[cfg(test)]
 pub(in crate::semantic) use dispatch::{
@@ -86,10 +86,7 @@ impl IpcServiceSpec {
     }
 
     #[cfg(not(unix))]
-    pub(in crate::semantic) fn new(
-        service_id: ServiceId,
-        wake_when_idle: bool,
-    ) -> Result<Self> {
+    pub(in crate::semantic) fn new(service_id: ServiceId, wake_when_idle: bool) -> Result<Self> {
         Ok(Self {
             service_id,
             wake_when_idle,

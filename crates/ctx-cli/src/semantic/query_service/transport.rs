@@ -580,7 +580,7 @@ pub(in crate::semantic) fn open_windows_daemon_query_pipe(
     deadline: &WindowsIoDeadline,
 ) -> Result<WindowsQueryHandle> {
     use windows_sys::Win32::Foundation::{
-        ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, GetLastError,
+        GetLastError, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE,
         INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Storage::FileSystem::{
@@ -742,10 +742,10 @@ where
     F: FnOnce(*mut u32, *mut windows_sys::Win32::System::IO::OVERLAPPED) -> windows_sys::core::BOOL,
 {
     use windows_sys::Win32::Foundation::{
-        ERROR_IO_PENDING, GetLastError, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        GetLastError, ERROR_IO_PENDING, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
-    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
     use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() {
@@ -908,13 +908,13 @@ pub(in crate::semantic) fn read_daemon_query_request<S: std::io::Read>(
     super::server::read_bounded_daemon_request(stream, max_bytes)
 }
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use ctx_history_core::platform_security::verify_private_directory;
 #[cfg(not(windows))]
 use ctx_history_core::platform_security::verify_private_file;
 #[cfg(windows)]
 use ctx_history_core::platform_security::verify_private_file_handle;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 #[cfg(windows)]
 use uuid::Uuid;
 #[cfg(windows)]

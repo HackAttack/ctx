@@ -161,16 +161,14 @@ fn authenticated_transport_finalizes_once_after_success_error_and_disconnect() -
             fail,
         };
         if disconnected {
-            assert!(
-                handle_authenticated_daemon_stream(
-                    &handler,
-                    &ServiceId::new("test-service")?,
-                    TOKEN,
-                    DisconnectedResponseWriter,
-                    request(),
-                )
-                .is_err()
-            );
+            assert!(handle_authenticated_daemon_stream(
+                &handler,
+                &ServiceId::new("test-service")?,
+                TOKEN,
+                DisconnectedResponseWriter,
+                request(),
+            )
+            .is_err());
         } else {
             let mut response = Vec::new();
             handle_authenticated_daemon_stream(
@@ -325,20 +323,10 @@ fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping()
     let service_id = ServiceId::new("opaque-service-7")?;
     #[cfg(unix)]
     {
-        let constructor: fn(ServiceId, PathBuf, bool) -> Result<IpcServiceSpec> = IpcServiceSpec::new;
-        assert!(
-            constructor(
-                service_id.clone(),
-                PathBuf::from("/"),
-                false,
-            )
-            .is_err()
-        );
-        let spec = constructor(
-            service_id.clone(),
-            PathBuf::from("/tmp/opaque.sock"),
-            false,
-        )?;
+        let constructor: fn(ServiceId, PathBuf, bool) -> Result<IpcServiceSpec> =
+            IpcServiceSpec::new;
+        assert!(constructor(service_id.clone(), PathBuf::from("/"), false,).is_err());
+        let spec = constructor(service_id.clone(), PathBuf::from("/tmp/opaque.sock"), false)?;
         assert_eq!(spec.unix_socket_path(), Path::new("/tmp/opaque.sock"));
     }
     #[cfg(not(unix))]
@@ -649,11 +637,9 @@ fn partial_unix_response_preserves_one_aggregate_byte_limit() -> Result<()> {
     let error = read_daemon_query_response_unix(&mut client, 8, StdDuration::from_secs(1))
         .expect_err("split response above the aggregate limit must fail");
 
-    assert!(
-        error
-            .downcast_ref::<DaemonQueryResponseTooLarge>()
-            .is_some()
-    );
+    assert!(error
+        .downcast_ref::<DaemonQueryResponseTooLarge>()
+        .is_some());
     writer.join().expect("query response writer panicked")?;
     Ok(())
 }
@@ -982,11 +968,9 @@ fn stale_unix_endpoint_is_sanitized_and_removed() -> Result<()> {
     .expect_err("missing socket should be unavailable");
     let message = format!("{error:#}");
 
-    assert!(
-        error
-            .downcast_ref::<DaemonQueryServiceUnavailable>()
-            .is_some()
-    );
+    assert!(error
+        .downcast_ref::<DaemonQueryServiceUnavailable>()
+        .is_some());
     assert!(message.len() < 256, "{message}");
     assert!(!message.contains(&socket_path.display().to_string()));
     assert!(!message.contains("Connection refused"));
@@ -1018,11 +1002,9 @@ fn closed_unix_listener_is_sanitized_and_removed() -> Result<()> {
     )
     .expect_err("closed listener should be unavailable");
     let message = format!("{error:#}");
-    assert!(
-        error
-            .downcast_ref::<DaemonQueryServiceUnavailable>()
-            .is_some()
-    );
+    assert!(error
+        .downcast_ref::<DaemonQueryServiceUnavailable>()
+        .is_some());
     assert!(!message.contains(&socket_path.display().to_string()));
     assert!(!message.contains("Connection refused"));
     assert!(!message.contains("os error"));

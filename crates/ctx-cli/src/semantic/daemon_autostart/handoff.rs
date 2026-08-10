@@ -135,7 +135,9 @@ pub(in crate::semantic) fn daemon_upgrade_handoff_blocks_current_process(data_ro
     match daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)) {
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => false,
         DaemonUpgradeHandoffState::CorruptOrUnreadable => true,
-        DaemonUpgradeHandoffState::Active => !current_process_owns_daemon_upgrade_handoff(data_root),
+        DaemonUpgradeHandoffState::Active => {
+            !current_process_owns_daemon_upgrade_handoff(data_root)
+        }
     }
 }
 
@@ -479,10 +481,14 @@ fn begin_daemon_upgrade_handoff_with(
     } = input;
     match daemon_upgrade_handoff_state_at(&handoff_path) {
         DaemonUpgradeHandoffState::Active => {
-            return Err(anyhow!("another ctx upgrade owns the daemon lifecycle handoff"));
+            return Err(anyhow!(
+                "another ctx upgrade owns the daemon lifecycle handoff"
+            ));
         }
         DaemonUpgradeHandoffState::CorruptOrUnreadable => {
-            return Err(anyhow!("daemon upgrade handoff state is corrupt or unreadable"));
+            return Err(anyhow!(
+                "daemon upgrade handoff state is corrupt or unreadable"
+            ));
         }
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => {}
     }
@@ -786,28 +792,30 @@ fn begin_current_daemon_upgrade_handoff_with(
     }
     match daemon_upgrade_handoff_state_at(&handoff_path) {
         DaemonUpgradeHandoffState::CorruptOrUnreadable => {
-            return Err(anyhow!("daemon upgrade handoff state is corrupt or unreadable"));
-        }
-        DaemonUpgradeHandoffState::Active => {
-        let current = read_daemon_upgrade_handoff_at(&handoff_path)
-            .ok_or_else(|| anyhow!("active daemon handoff disappeared"))?;
-        if current.get("handoff_id").and_then(Value::as_str) != Some(handoff_id.as_str())
-            || !current_process_owns_daemon_upgrade_handoff_at(
-                &handoff_path,
-                current_handoff_token.as_deref(),
-            )
-        {
             return Err(anyhow!(
-                "another ctx upgrade owns the daemon lifecycle handoff"
+                "daemon upgrade handoff state is corrupt or unreadable"
             ));
         }
-        return Ok(DaemonUpgradeHandoff {
-            data_root,
-            handoff_id,
-            installation_executable,
-            persisted_restart_label: Some(persisted_restart_label),
-            release_on_drop: true,
-        });
+        DaemonUpgradeHandoffState::Active => {
+            let current = read_daemon_upgrade_handoff_at(&handoff_path)
+                .ok_or_else(|| anyhow!("active daemon handoff disappeared"))?;
+            if current.get("handoff_id").and_then(Value::as_str) != Some(handoff_id.as_str())
+                || !current_process_owns_daemon_upgrade_handoff_at(
+                    &handoff_path,
+                    current_handoff_token.as_deref(),
+                )
+            {
+                return Err(anyhow!(
+                    "another ctx upgrade owns the daemon lifecycle handoff"
+                ));
+            }
+            return Ok(DaemonUpgradeHandoff {
+                data_root,
+                handoff_id,
+                installation_executable,
+                persisted_restart_label: Some(persisted_restart_label),
+                release_on_drop: true,
+            });
         }
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => {}
     }
@@ -1241,7 +1249,10 @@ mod seam_tests {
 
         let (path, trigger) = read_daemon_restart_request(temp.path())
             .expect("first recognized trigger must be selected");
-        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("000-first.json"));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("000-first.json")
+        );
         assert_eq!(trigger.as_str(), DaemonTriggerCommandArg::Search.as_str());
         Ok(())
     }

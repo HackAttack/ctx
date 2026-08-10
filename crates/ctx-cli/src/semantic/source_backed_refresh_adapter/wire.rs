@@ -10,9 +10,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::output::compact_json;
-use crate::semantic::{
-    source_backed_refresh_coordinator::CoreRefreshEngine,
-};
+use crate::semantic::source_backed_refresh_coordinator::CoreRefreshEngine;
 
 const SOURCE_REFRESH_REQUEST_OP: &str = "source_refresh_request";
 const SOURCE_REFRESH_STATUS_OP: &str = "source_refresh_status";
