@@ -6,7 +6,6 @@
 //! capability rather than reopening a canonicalized pathname.
 
 use std::{
-    io::BufReader,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -30,11 +29,11 @@ use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::source_backed::{
         family::jsonl::{
-            read_bounded_record, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
-            JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-            JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector, JsonlFamilyPublication,
-            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
-            JsonlRecordFraming,
+            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
+            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome,
+            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRootMissingMode,
+            JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlPhysicalDigest,
+            JsonlPhysicalStream, JsonlRecordFraming,
         },
         SourceBackedRouteErrorKind,
     },
@@ -48,8 +47,8 @@ use path::absolute_lexical_path;
 use projection::{core_record, retained_record_bytes};
 use snapshot::{
     decode_checkpoint, exact_ordinary_file_observation_matches, observation_wire,
-    opened_file_from_start, stable_current_ordinary_file_observation, terminal_prefix,
-    verify_frozen_prefix, CheckpointV0, CodexPromptHistoryFrozenSnapshotV0,
+    stable_current_ordinary_file_observation, terminal_prefix, verify_frozen_prefix, CheckpointV0,
+    CodexPromptHistoryFrozenSnapshotV0,
 };
 
 const SOURCE_FORMAT: &str = "codex_history_jsonl";
@@ -846,11 +845,15 @@ fn walk_complete_records(
     prefix_boundary: Option<u64>,
     mut retained: impl FnMut(&RetainedPromptRecord) -> CodexPromptHistorySourceBackedResultV0<()>,
 ) -> CodexPromptHistorySourceBackedResultV0<ScanAnalysis> {
-    let mut reader = BufReader::new(opened_file_from_start(source)?);
-    let mut whole = Sha256::new();
-    let mut complete = Sha256::new();
-    let mut offset = 0_u64;
-    let mut ordinal = 0_u64;
+    let mut stream = JsonlPhysicalStream::open(
+        source.file().try_clone()?,
+        frozen_len,
+        0,
+        0,
+        JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES, false),
+        JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
+        || CaptureError::SourceChangedDuringCapture,
+    )?;
     let mut retained_records = 0_u64;
     let mut rejected_records = 0_u64;
     let mut ignored_records = 0_u64;
@@ -859,54 +862,38 @@ fn walk_complete_records(
         let digest: [u8; 32] = Sha256::new().finalize().into();
         digest
     });
-    let mut terminal = true;
-
-    while offset < frozen_len {
-        let record_offset = offset;
-        let mut bytes = Vec::new();
-        let record = read_bounded_record(
-            &mut reader,
-            &mut bytes,
-            &mut whole,
-            &mut complete,
-            frozen_len.saturating_sub(offset),
-            JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES, false),
-            || CaptureError::SourceChangedDuringCapture,
-        )?
-        .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
-        offset = offset
-            .checked_add(record.byte_len)
-            .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
+    while let Some(record) = stream.next_record()? {
         if !record.complete {
-            terminal = false;
             break;
         }
 
-        let classification =
-            if record.byte_len > u64::try_from(MAX_PROVIDER_JSONL_LINE_BYTES).unwrap_or(u64::MAX) {
-                RecordClassification::Rejected
+        let classification = if record.byte_len()
+            > u64::try_from(MAX_PROVIDER_JSONL_LINE_BYTES).unwrap_or(u64::MAX)
+        {
+            RecordClassification::Rejected
+        } else {
+            let bytes = stream.record_bytes(record);
+            let body = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+            if body.iter().all(u8::is_ascii_whitespace) {
+                RecordClassification::Ignored
             } else {
-                let body = bytes.strip_suffix(b"\r").unwrap_or(&bytes);
-                if body.iter().all(u8::is_ascii_whitespace) {
-                    RecordClassification::Ignored
-                } else {
-                    match serde_json::from_slice::<PromptLine>(body) {
-                        Ok(line)
-                            if !line.session_id.trim().is_empty()
-                                && chrono::DateTime::from_timestamp(line.ts, 0).is_some() =>
-                        {
-                            RecordClassification::Retained(line)
-                        }
-                        _ => RecordClassification::Rejected,
+                match serde_json::from_slice::<PromptLine>(body) {
+                    Ok(line)
+                        if !line.session_id.trim().is_empty()
+                            && chrono::DateTime::from_timestamp(line.ts, 0).is_some() =>
+                    {
+                        RecordClassification::Retained(line)
                     }
+                    _ => RecordClassification::Rejected,
                 }
-            };
+            }
+        };
         match classification {
             RecordClassification::Retained(line) => {
                 retained(&RetainedPromptRecord {
                     line,
-                    byte_offset: record_offset,
-                    physical_ordinal: ordinal,
+                    byte_offset: record.byte_start,
+                    physical_ordinal: record.physical_ordinal,
                 })?;
                 retained_records = retained_records
                     .checked_add(1)
@@ -923,27 +910,32 @@ fn walk_complete_records(
                     .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
             }
         }
-        ordinal = ordinal
-            .checked_add(1)
-            .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
-        certified_bytes = offset;
+        certified_bytes = stream.complete_prefix_end();
         if prefix_boundary == Some(certified_bytes) {
-            prior_prefix_digest = Some(complete.clone().finalize().into());
+            prior_prefix_digest = Some(stream.digest().complete_hasher().clone().finalize().into());
         }
     }
 
-    if offset != frozen_len {
+    if stream.offset() != frozen_len {
         return Err(CodexPromptHistorySourceBackedErrorV0::SourceChanged);
     }
     source.revalidate_same_object()?;
+    let complete_records = stream.next_physical_ordinal();
+    let terminal = stream.terminal();
     let counts = ScannedSourceCounts {
-        complete_records: ordinal,
+        complete_records,
         retained_records,
         rejected_records,
         ignored_records,
         indexed_documents: retained_records,
         certified_bytes,
     };
+    let complete = stream.digest().complete_hasher().clone();
+    let whole = stream
+        .digest()
+        .full_hasher()
+        .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?
+        .clone();
     Ok(ScanAnalysis {
         counts,
         content_digest: complete.finalize().into(),

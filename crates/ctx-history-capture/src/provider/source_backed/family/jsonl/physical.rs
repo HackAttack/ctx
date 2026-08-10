@@ -6,14 +6,18 @@ use std::{
 use sha2::Sha256;
 
 use super::{
-    read_bounded_record_complete_and_prefix_sha256, read_bounded_record_complete_sha256,
-    JsonlRecordFraming,
+    read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
+    read_bounded_record_complete_sha256, JsonlRecordFraming,
 };
 use crate::{CaptureError, Result};
 
 #[derive(Debug, Clone)]
 pub(crate) enum JsonlPhysicalDigest {
     Complete {
+        complete: Sha256,
+    },
+    FullAndComplete {
+        full: Sha256,
         complete: Sha256,
     },
     CompleteAndBoundedPrefix {
@@ -40,11 +44,22 @@ impl JsonlPhysicalDigest {
         }
     }
 
+    pub(crate) fn full_and_complete(full: Sha256, complete: Sha256) -> Self {
+        Self::FullAndComplete { full, complete }
+    }
+
     pub(crate) fn complete_hasher(&self) -> &Sha256 {
         match self {
-            Self::Complete { complete } | Self::CompleteAndBoundedPrefix { complete, .. } => {
-                complete
-            }
+            Self::Complete { complete }
+            | Self::FullAndComplete { complete, .. }
+            | Self::CompleteAndBoundedPrefix { complete, .. } => complete,
+        }
+    }
+
+    pub(crate) fn full_hasher(&self) -> Option<&Sha256> {
+        match self {
+            Self::FullAndComplete { full, .. } => Some(full),
+            _ => None,
         }
     }
 
@@ -148,6 +163,15 @@ impl JsonlPhysicalStream {
                 self.framing,
                 self.source_changed,
             )?,
+            JsonlPhysicalDigest::FullAndComplete { full, complete } => read_bounded_record(
+                &mut self.reader,
+                &mut self.record_buffer,
+                full,
+                complete,
+                remaining,
+                self.framing,
+                self.source_changed,
+            )?,
             JsonlPhysicalDigest::CompleteAndBoundedPrefix {
                 complete,
                 bounded_prefix,
@@ -225,6 +249,10 @@ impl JsonlPhysicalStream {
         self.complete_prefix_end
     }
 
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
     pub(crate) fn next_physical_ordinal(&self) -> u64 {
         self.next_physical_ordinal
     }
@@ -256,7 +284,7 @@ mod tests {
             0,
             0,
             JsonlRecordFraming::ordinary(),
-            JsonlPhysicalDigest::complete(Sha256::new()),
+            JsonlPhysicalDigest::full_and_complete(Sha256::new(), Sha256::new()),
             || CaptureError::SourceChangedDuringCapture,
         )
         .unwrap();
@@ -279,5 +307,8 @@ mod tests {
         let complete: [u8; 32] = digest.complete_hasher().clone().finalize().into();
         let expected_complete: [u8; 32] = Sha256::digest(&contents[..8]).into();
         assert_eq!(complete, expected_complete);
+        let full: [u8; 32] = digest.full_hasher().unwrap().clone().finalize().into();
+        let expected_full: [u8; 32] = Sha256::digest(contents).into();
+        assert_eq!(full, expected_full);
     }
 }
