@@ -25,7 +25,8 @@ impl RouteLessRegistryBlockers {
 
 /// Rejects only registry issues whose unsafe root makes route-local execution
 /// incapable of establishing a safe publication boundary.
-pub(in super::super) fn reject_blocking_automatic_registry_issues(
+#[doc(hidden)]
+pub fn reject_blocking_automatic_registry_issues(
     issues: &[SourceBackedAutomaticRegistryIssue],
 ) -> Result<()> {
     let mut blocker_count = 0usize;
@@ -65,7 +66,8 @@ pub(in super::super) fn reject_blocking_automatic_registry_issues(
     ))
 }
 
-pub(in super::super) fn automatic_registry_route_failures(
+#[doc(hidden)]
+pub fn automatic_registry_route_failures(
     issues: &[SourceBackedAutomaticRegistryIssue],
     retained_generation: Option<&VerifiedIndex>,
 ) -> Result<Vec<ctx_history_capture::SourceBackedFailedRoute>> {

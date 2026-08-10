@@ -35,20 +35,11 @@ use durable_queue::{
 };
 use generation_authority::CoreRefreshTerminalSuccess;
 pub use generation_authority::PinnedCorePublication;
+pub use progress_model::SourceBackedRefreshProgress;
 use progress_model::{status_progress_total_sources_known, SourceBackedRefreshState};
-pub use progress_model::{
-    SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-    SourceBackedRefreshProgress, SourceBackedRefreshTimings,
-};
 use read_model::{
-    projected_job_json, projected_status_json, source_backed_route_retry_disposition,
-    SourceBackedRefreshAttempt, SourceBackedRefreshFailureOutcome,
-};
-pub(super) use read_model::{refresh_scope_from_json, refresh_scope_json};
-pub use read_model::{
-    SourceBackedRefreshCatalogRouteOutcome, SourceBackedRefreshReceipt,
-    SourceBackedRefreshRecordRejection, SourceBackedRefreshRouteOutcome,
-    SourceBackedRefreshRouteResult, SourceBackedRefreshSourceFailure,
+    projected_job_json, projected_status_json, SourceBackedRefreshAttempt,
+    SourceBackedRefreshFailureOutcome,
 };
 use runtime_metadata::{canonical_daemon_mode, SourceRefreshRuntimeMetadata};
 pub use runtime_metadata::{RefreshRuntime, RefreshRuntimeMetadata};
@@ -57,11 +48,10 @@ use startup_observation::startup_routes_requiring_refresh;
 pub(crate) use test_support::TestRefreshJournal;
 #[cfg(test)]
 use test_support::{
-    daemon_source_backed_refresh_job_path, open_test_published_generation,
-    pin_test_active_verified_generation, pin_test_published_generation, read_daemon_job_status,
-    status_value, test_refresh_engine, test_refresh_engine_with_executor,
-    test_refresh_engine_with_status_writer, test_refresh_runtime, test_refresh_submission,
-    write_daemon_job_status,
+    daemon_source_backed_refresh_job_path, pin_test_active_verified_generation,
+    pin_test_published_generation, read_daemon_job_status, status_value, test_refresh_engine,
+    test_refresh_engine_with_executor, test_refresh_engine_with_status_writer,
+    test_refresh_runtime, test_refresh_submission, write_daemon_job_status,
 };
 
 pub(crate) struct SourceBackedRefreshProgressUpdate {
@@ -73,95 +63,6 @@ pub(crate) struct SourceBackedRefreshProgressUpdate {
     pub(super) completed_records: Option<u64>,
     pub(super) completed_bytes: Option<u64>,
     pub(super) current_source_progress: Option<SourceBackedCurrentSourceProgress>,
-}
-
-/// Daemon-owned execution context passed to the capture refresh callback.
-///
-/// The callback owns source/provider discovery and publication. The daemon
-/// owns request serialization, progress persistence, and publication
-/// verification.
-#[allow(dead_code)] // All fields are part of the capture-coordinator callback seam.
-pub struct SourceBackedRefreshExecution<'a> {
-    pub data_root: &'a Path,
-    pub index_root: &'a Path,
-    pub request_id: &'a str,
-    pub operation: RefreshOperation,
-    pub explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
-    pub scope: SourceBackedRefreshScope,
-    pub covered_route_ids: BTreeSet<SourceRouteIdentity>,
-    pub covered_publication: SourceBackedRefreshCoveredPublication,
-    pub discovery_context: &'a DiscoveryContext,
-    pub journal: &'a dyn RefreshJournal,
-    pub(super) report_progress: &'a dyn Fn(SourceBackedRefreshProgressUpdate) -> Result<()>,
-}
-
-impl SourceBackedRefreshExecution<'_> {
-    pub fn report_progress(
-        &self,
-        phase: &str,
-        completed_sources: usize,
-        total_sources: usize,
-        current_source: Option<String>,
-        completed_records: Option<u64>,
-        completed_bytes: Option<u64>,
-    ) -> Result<()> {
-        self.report_detailed_progress(
-            phase,
-            completed_sources,
-            total_sources,
-            current_source,
-            completed_records,
-            completed_bytes,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn report_detailed_progress(
-        &self,
-        phase: &str,
-        completed_sources: usize,
-        total_sources: usize,
-        current_source: Option<String>,
-        completed_records: Option<u64>,
-        completed_bytes: Option<u64>,
-        current_source_progress: Option<SourceBackedCurrentSourceProgress>,
-    ) -> Result<()> {
-        self.report_detailed_progress_with_total_state(
-            phase,
-            completed_sources,
-            total_sources,
-            true,
-            current_source,
-            completed_records,
-            completed_bytes,
-            current_source_progress,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn report_detailed_progress_with_total_state(
-        &self,
-        phase: &str,
-        completed_sources: usize,
-        total_sources: usize,
-        total_sources_known: bool,
-        current_source: Option<String>,
-        completed_records: Option<u64>,
-        completed_bytes: Option<u64>,
-        current_source_progress: Option<SourceBackedCurrentSourceProgress>,
-    ) -> Result<()> {
-        (self.report_progress)(SourceBackedRefreshProgressUpdate {
-            phase: phase.to_owned(),
-            completed_sources,
-            total_sources,
-            total_sources_known,
-            current_source,
-            completed_records,
-            completed_bytes,
-            current_source_progress,
-        })
-    }
 }
 
 /// Provider-neutral callback boundary for one daemon-serialized refresh.
@@ -199,7 +100,7 @@ impl SourceBackedRefreshExecutor for CaptureOwnedSourceBackedRefreshExecutor {
         &self,
         execution: SourceBackedRefreshExecution<'_>,
     ) -> Result<SourceBackedRefreshPublication> {
-        execute_capture_owned_refresh(execution)
+        ctx_history_refresh_execution::execute_refresh(execution)
     }
 }
 

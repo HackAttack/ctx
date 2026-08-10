@@ -2,7 +2,8 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl ExplicitSourceCatalogAuthority {
-    pub(crate) fn carries_request(&self, requested: &Self) -> bool {
+    #[doc(hidden)]
+    pub fn carries_request(&self, requested: &Self) -> bool {
         if requested.entries.is_empty() {
             return self == requested;
         }

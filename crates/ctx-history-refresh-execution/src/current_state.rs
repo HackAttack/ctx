@@ -48,7 +48,8 @@ impl SourceBackedRefreshCurrent {
         Ok(())
     }
 
-    pub(super) fn to_json(self) -> Value {
+    #[doc(hidden)]
+    pub fn to_json(self) -> Value {
         json!({
             "current_source_count": self.source_count,
             "current_indexed_documents": self.indexed_documents,

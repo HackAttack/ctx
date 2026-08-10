@@ -13,60 +13,46 @@ filegroup(
     srcs = glob(["**"], exclude = ["BUILD.bazel"]),
 )
 
-filegroup(
-    name = "codex_union_source",
-    srcs = ["src/explicit_source_catalog/codex_union.rs"],
-)
-
 COMMON_RUSTC_ENV = {
-    "CARGO_MANIFEST_DIR": "crates/ctx-history-refresh",
+    "CARGO_MANIFEST_DIR": "crates/ctx-history-refresh-execution",
 }
 
-RUST_SRCS = glob(["src/**/*.rs"])
+CODEX_UNION_SRC = ["//crates/ctx-history-refresh:codex_union_source"]
+
+RUST_SRCS = glob(["src/**/*.rs"]) + CODEX_UNION_SRC
 
 PROD_SRCS = glob(
     ["src/**/*.rs"],
     exclude = RUST_PROD_SRC_EXCLUDES,
-)
+) + CODEX_UNION_SRC
 
-CTX_HISTORY_REFRESH_DEPS = [
+CTX_HISTORY_REFRESH_EXECUTION_DEPS = [
     "//crates/ctx-history-capture:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-index:lib",
-    "//crates/ctx-history-refresh-execution:lib",
-]
-
-CTX_HISTORY_REFRESH_TEST_DEPS = [
-    "//crates/ctx-history-capture:lib",
-    "//crates/ctx-history-core:lib",
-    "//crates/ctx-history-index:lib",
-    "//crates/ctx-history-refresh-execution:test_support_lib",
 ]
 
 rust_library(
     name = "lib",
     srcs = PROD_SRCS,
-    crate_name = "ctx_history_refresh",
+    crate_name = "ctx_history_refresh_execution",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + CTX_HISTORY_REFRESH_DEPS,
+    deps = all_crate_deps(normal = True) + CTX_HISTORY_REFRESH_EXECUTION_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
 )
 
-# CLI unit tests still exercise the extracted state machine through their old
-# adapter-facing harness. Keep those seams out of the release library while
-# the tests are migrated to their final crate owners.
 rust_library(
     name = "test_support_lib",
     testonly = True,
     srcs = PROD_SRCS,
-    crate_name = "ctx_history_refresh",
+    crate_name = "ctx_history_refresh_execution",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + CTX_HISTORY_REFRESH_TEST_DEPS,
+    deps = all_crate_deps(normal = True) + CTX_HISTORY_REFRESH_EXECUTION_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
     rustc_flags = ['--cfg=feature="test-support"'],
@@ -75,11 +61,11 @@ rust_library(
 ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_SRCS,
-    crate_name = "ctx_history_refresh",
+    crate_name = "ctx_history_refresh_execution",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_HISTORY_REFRESH_TEST_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_HISTORY_REFRESH_EXECUTION_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
 )

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(any(test, feature = "test-support"))]
+use std::cell::RefCell;
 
 /// Samples exact provider-neutral targets before parsing begins.
 ///
@@ -24,16 +26,15 @@ pub(crate) fn admitted_route_observations(
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static AFTER_CAPTURE_SCAN_BEFORE_METADATA_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
 }
 
-#[cfg(test)]
-pub(crate) fn install_after_capture_scan_before_metadata_hook_for_test(
-    hook: impl FnOnce() + 'static,
-) {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn install_after_capture_scan_before_metadata_hook_for_test(hook: impl FnOnce() + 'static) {
     AFTER_CAPTURE_SCAN_BEFORE_METADATA_HOOK.with(|slot| {
         let previous = slot.replace(Some(Box::new(hook)));
         assert!(
@@ -43,7 +44,7 @@ pub(crate) fn install_after_capture_scan_before_metadata_hook_for_test(
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn run_after_capture_scan_before_metadata_hook() {
     AFTER_CAPTURE_SCAN_BEFORE_METADATA_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -52,5 +53,5 @@ pub(crate) fn run_after_capture_scan_before_metadata_hook() {
     });
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub(crate) fn run_after_capture_scan_before_metadata_hook() {}

@@ -1,3 +1,4 @@
+#[path = "../../ctx-history-refresh/src/explicit_source_catalog/codex_union.rs"]
 mod codex_union;
 mod generation_witness;
 mod source_helpers;

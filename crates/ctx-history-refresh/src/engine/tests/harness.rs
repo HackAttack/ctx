@@ -2,7 +2,6 @@ use super::*;
 
 pub(super) const SOURCE_REFRESH_REQUEST_OP: &str = "source_refresh_request";
 const SOURCE_REFRESH_STATUS_OP: &str = "source_refresh_status";
-pub(super) const SOURCE_REFRESH_RESPONSE_MAX_BYTES: u64 = 64 * 1024;
 
 pub(super) struct CoreRefreshEngine(pub(super) super::super::CoreRefreshEngine);
 
@@ -174,8 +173,4 @@ pub(super) fn pin_active_verified_generation(
     data_root: &Path,
 ) -> Result<PinnedSourceBackedGeneration> {
     pin_test_active_verified_generation(data_root)
-}
-
-pub(super) fn open_published_generation(data_root: &Path) -> Result<Option<VerifiedIndex>> {
-    open_test_published_generation(data_root)
 }

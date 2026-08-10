@@ -1,28 +1,19 @@
-//! Settings-upgrade coverage owned by the refresh engine.
+//! Physical settings-upgrade coverage owned by refresh execution.
 
 use super::*;
 
 #[test]
-fn automatic_refresh_replaces_a_zstd_settings_generation() {
+fn automatic_execution_replaces_an_incompatible_settings_generation() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&cwd).unwrap();
-    let discovery = DiscoveryContext::new(
-        &home,
-        &cwd,
-        DiscoveryPlatform::Linux,
-        DiscoveryPlatformDirs::default(),
-    );
-    let empty_codex_sessions = temp.path().join("empty-codex-sessions");
-    std::fs::create_dir_all(&empty_codex_sessions).unwrap();
+    let (_, _, discovery) = discovery_fixture(temp.path());
+    let empty_sessions = temp.path().join("empty-sessions");
+    std::fs::create_dir_all(&empty_sessions).unwrap();
     let report = DiscoveryReport {
         sources: vec![
-            provider_source_for_path(CaptureProvider::Codex, empty_codex_sessions),
+            provider_source_for_path(CaptureProvider::Codex, empty_sessions),
             ProviderSource {
                 provider: CaptureProvider::Warp,
                 path: temp.path().join("missing-unsupported.sqlite"),
@@ -50,20 +41,7 @@ fn automatic_refresh_replaces_a_zstd_settings_generation() {
             },
         ],
     };
-    let mut progress =
-        |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
-    let baseline = refresh_all_provider_sources(
-        &discovery,
-        report.clone(),
-        StdDuration::ZERO,
-        &data_root,
-        &index_root,
-        None,
-        SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
-        &mut progress,
-    )
-    .unwrap();
+    let baseline = run_report(&discovery, report.clone(), &data_root, &index_root).unwrap();
     let pointer_path = index_root.join("active-generation.json");
     let pointer_before = std::fs::read(&pointer_path).unwrap();
     let pointer: Value = serde_json::from_slice(&pointer_before).unwrap();
@@ -79,47 +57,14 @@ fn automatic_refresh_replaces_a_zstd_settings_generation() {
         VerifiedIndex::open(&index_root),
         Err(IndexError::IndexSettingsMismatch(_))
     ));
-    assert!(open_published_generation(&data_root).unwrap().is_none());
 
-    let coordinator = CoreRefreshEngine::new();
-    let queued = coordinator.enqueue_periodic(&data_root).unwrap();
-    assert!(queued["previous_generation"].is_null());
-    let run = coordinator
-        .run_next_with(
-            |_, _| {
-                let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| {
-                    Ok::<(), SourceBackedRouteError>(())
-                };
-                refresh_all_provider_sources(
-                    &discovery,
-                    report,
-                    StdDuration::ZERO,
-                    &data_root,
-                    &index_root,
-                    None,
-                    SourceBackedRefreshScope::All,
-                    &BTreeSet::new(),
-                    &mut progress,
-                )
-            },
-            || {
-                Ok(open_published_generation(&data_root)?
-                    .map(|index| index.generation_id().to_owned()))
-            },
-            |_| Ok(()),
-            |_| Ok(()),
-        )
-        .expect("queued automatic rebuild");
+    let rebuilt = run_report(&discovery, report, &data_root, &index_root).unwrap();
 
-    assert!(!run.failed);
-    assert!(run.did_work);
-    assert_eq!(run.job["published_generation"], baseline.generation_id);
+    assert_eq!(rebuilt.generation_id, baseline.generation_id);
     assert_ne!(std::fs::read(&pointer_path).unwrap(), pointer_before);
     assert!(!old_generation_path.exists());
     assert_eq!(
-        pin_active_verified_generation(&data_root)
-            .unwrap()
-            .generation_id(),
+        VerifiedIndex::open(&index_root).unwrap().generation_id(),
         baseline.generation_id
     );
 }

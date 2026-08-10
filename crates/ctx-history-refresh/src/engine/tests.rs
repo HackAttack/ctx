@@ -6,6 +6,11 @@ use std::{
     },
 };
 
+use super::*;
+use crate::{
+    orchestration::refresh_all_provider_sources,
+    publication::observation::install_after_capture_scan_before_metadata_hook_for_test,
+};
 use ctx_history_capture::{
     provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, ProviderCatalogSupport,
     ProviderImportSupport, ProviderSource, ProviderSourceKind, SourceBackedFailedRoute,
@@ -16,37 +21,13 @@ use ctx_history_core::{
     SourceKey, SourceObservation, TypedKey,
 };
 use ctx_history_index::SourceRouteIdentity;
-use rusqlite::Connection;
-
-use super::*;
-use crate::{
-    orchestration::{
-        automatic_registry_route_failures, exclusive_scan_stage_duration,
-        execute_capture_owned_refresh_with, refresh_all_provider_sources,
-        refresh_all_provider_sources_route_local, reject_blocking_automatic_registry_issues,
-        source_backed_requested_route_observations,
-    },
-    publication::observation::install_after_capture_scan_before_metadata_hook_for_test,
-};
-
-#[test]
-fn refresh_scan_timing_excludes_the_separately_reported_commit_interval() {
-    assert_eq!(
-        exclusive_scan_stage_duration(StdDuration::from_micros(700), StdDuration::from_micros(250),),
-        StdDuration::from_micros(450),
-    );
-    assert_eq!(
-        exclusive_scan_stage_duration(StdDuration::from_micros(100), StdDuration::from_micros(250),),
-        StdDuration::ZERO,
-    );
-}
+use ctx_history_refresh_execution::source_backed_requested_route_observations;
 
 #[path = "tests/harness.rs"]
 mod harness;
 use harness::{
-    load_explicit_source_catalog_authority, open_published_generation,
-    pin_active_verified_generation, pin_published_generation, CoreRefreshEngine,
-    SOURCE_REFRESH_REQUEST_OP, SOURCE_REFRESH_RESPONSE_MAX_BYTES,
+    load_explicit_source_catalog_authority, pin_active_verified_generation,
+    pin_published_generation, CoreRefreshEngine, SOURCE_REFRESH_REQUEST_OP,
 };
 
 #[test]
@@ -94,74 +75,6 @@ fn read_model_source_count_uses_request_routes_not_global_or_diagnostic_counts()
         assert_eq!(job["progress"]["total_sources"], route_inventory, "{name}");
     }
 }
-
-#[test]
-fn receipt_source_count_intersects_request_routes_with_certified_generation_routes() {
-    let temp = tempfile::tempdir().unwrap();
-    let requested_route = SourceRouteIdentity::from_sha256("a1".repeat(32)).unwrap();
-    let unrelated_route = SourceRouteIdentity::from_sha256("a2".repeat(32)).unwrap();
-    let absent_route = SourceRouteIdentity::from_sha256("a3".repeat(32)).unwrap();
-    let requested_source = publication_pin_source_with_anchor(0xa1);
-    let unrelated_source = publication_pin_source_with_anchor(0xa2);
-    let mut writer =
-        ctx_history_index::GenerationWriter::open(temp.path(), WriterOptions::default())
-            .unwrap()
-            .into_writer()
-            .unwrap();
-    for source in [&requested_source, &unrelated_source] {
-        writer.begin_source(source.clone()).unwrap();
-        writer
-            .add_core_record(publication_pin_record(source))
-            .unwrap();
-        writer
-            .certify_source(publication_pin_certificate(source))
-            .unwrap();
-    }
-    writer
-        .set_present_source_routes(vec![
-            ctx_history_index::SourceRouteSnapshot::present(
-                requested_route.clone(),
-                vec![requested_source],
-            )
-            .unwrap(),
-            ctx_history_index::SourceRouteSnapshot::present(
-                unrelated_route,
-                vec![unrelated_source],
-            )
-            .unwrap(),
-        ])
-        .unwrap();
-    let generation = writer.commit(|_| true).unwrap().generation_id;
-    let verified = VerifiedIndex::open(temp.path()).unwrap();
-    let receipt = SourceBackedRefreshReceipt {
-        zero_source_authority: Vec::new(),
-        previous_generation: None,
-        published_generation: generation,
-        generation_changed: true,
-        published_explicit_source_catalog: None,
-        current: SourceBackedRefreshCurrent {
-            source_count: 2,
-            ..SourceBackedRefreshCurrent::default()
-        },
-        route_results: vec![
-            SourceBackedRefreshRouteResult::succeeded(requested_route.as_str().to_owned(), true),
-            SourceBackedRefreshRouteResult::succeeded(absent_route.as_str().to_owned(), false),
-        ],
-        catalog_route_bindings: Vec::new(),
-    };
-
-    assert_eq!(receipt.source_count(&verified), 1);
-    let mut failed_carried = receipt;
-    failed_carried.route_results = vec![SourceBackedRefreshRouteResult::failed(
-        requested_route.as_str().to_owned(),
-        "unavailable".to_owned(),
-        true,
-    )];
-    assert_eq!(failed_carried.source_count(&verified), 0);
-}
-
-#[path = "tests/registry_policy.rs"]
-mod registry_policy;
 
 #[path = "tests/observation_fence.rs"]
 mod observation_fence;
@@ -264,49 +177,6 @@ fn add_complete_empty_authority(
         route_identity: route,
         kind: SourceBackedZeroSourceAuthorityKind::CompleteEmptyInventory,
     }];
-}
-
-#[test]
-fn maximum_route_authoritative_empty_receipt_fits_the_durable_bound() {
-    let generation_id = "44".repeat(32);
-    let mut publication = empty_test_publication(generation_id.clone());
-    let routes = (0_u16..SOURCE_REFRESH_TERMINAL_ROUTE_LIMIT as u16)
-        .map(|index| {
-            SourceRouteIdentity::from_sha256(format!("{index:064x}"))
-                .expect("bounded route identity")
-        })
-        .collect::<Vec<_>>();
-    publication.route_results = routes
-        .iter()
-        .map(|route| SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), false))
-        .collect();
-    publication.zero_source_authority = routes
-        .iter()
-        .enumerate()
-        .map(|(index, route)| SourceBackedZeroSourceAuthority {
-            generation_id: generation_id.clone(),
-            route_identity: route.clone(),
-            kind: if index % 2 == 0 {
-                SourceBackedZeroSourceAuthorityKind::CompleteEmptyInventory
-            } else {
-                SourceBackedZeroSourceAuthorityKind::ConfirmedDeletion
-            },
-        })
-        .collect();
-
-    let receipt =
-        SourceBackedRefreshReceipt::from_verified_publication(None, generation_id, &publication)
-            .expect("the full bounded route set fits its terminal receipt");
-    let value = receipt.to_json();
-    let encoded = serde_json::to_vec(&value).unwrap();
-    assert!(encoded.len() <= SOURCE_REFRESH_RECEIPT_JSON_BUDGET_BYTES);
-    let decoded_routes = required_route_results(value.get("route_results")).unwrap();
-    let decoded_authority = crate::publication::parse_zero_source_authority(
-        value.get("zero_source_authority"),
-        &decoded_routes,
-    )
-    .unwrap();
-    assert_eq!(decoded_authority, publication.zero_source_authority);
 }
 
 fn request_id(response: &Value) -> String {
@@ -1702,175 +1572,15 @@ fn production_run_persists_discovering_before_executor_entry() {
 }
 
 #[test]
-fn default_executor_without_overlay_keeps_automatic_discovery_and_maps_progress() {
+fn default_executor_uses_capture_owned_execution() {
     let coordinator = CoreRefreshEngine::new();
     assert_eq!(
         coordinator.executor.implementation_name(),
         std::any::type_name::<CaptureOwnedSourceBackedRefreshExecutor>()
     );
-
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    let index_root = source_backed_index_root(&data_root);
-    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
-    std::fs::create_dir_all(home.join(".forge")).unwrap();
-    std::fs::create_dir_all(&cwd).unwrap();
-    let forge = home.join(".forge/.forge.db");
-    let forge_writer = Connection::open(&forge).unwrap();
-    forge_writer
-        .pragma_update(None, "journal_mode", "wal")
-        .unwrap();
-    forge_writer
-        .pragma_update(None, "wal_autocheckpoint", 0)
-        .unwrap();
-    forge_writer
-        .execute_batch("create table conversations (id text primary key);")
-        .unwrap();
-    let discovery = DiscoveryContext::new(
-        &home,
-        &cwd,
-        DiscoveryPlatform::Linux,
-        DiscoveryPlatformDirs::default(),
-    );
-    let updates = Mutex::new(Vec::new());
-    let report_progress = |update: SourceBackedRefreshProgressUpdate| {
-        updates.lock().unwrap().push((
-            update.phase,
-            update.completed_sources,
-            update.total_sources,
-            update.current_source,
-            update.completed_records,
-            update.completed_bytes,
-        ));
-        Ok(())
-    };
-    let execution = SourceBackedRefreshExecution {
-        data_root: &data_root,
-        index_root: &index_root,
-        request_id: "all-provider-request",
-        operation: SourceBackedRefreshOperation::Refresh,
-        explicit_source_catalog: None,
-        scope: SourceBackedRefreshScope::All,
-        covered_route_ids: BTreeSet::new(),
-        covered_publication: SourceBackedRefreshCoveredPublication::default(),
-        discovery_context: &discovery,
-        journal: &TestRefreshJournal::default(),
-        report_progress: &report_progress,
-    };
-    let mut provider_wide_calls = 0;
-
-    let publication = execute_capture_owned_refresh_with(
-        execution,
-        &discovery,
-        |observed_discovery,
-         observed_report,
-         observed_discovery_duration,
-         observed_request_id,
-         observed_operation,
-         observed_data_root,
-         observed_index_root,
-         observed_explicit_source_catalog,
-         observed_scope,
-         observed_covered_route_ids,
-         observed_covered_publication,
-         _observed_journal,
-         progress| {
-            provider_wide_calls += 1;
-            assert_eq!(observed_discovery.home(), discovery.home());
-            assert_eq!(observed_discovery.cwd(), discovery.cwd());
-            assert_eq!(observed_discovery.data_root(), Some(data_root.as_path()));
-            assert!(observed_report.sources.iter().any(|source| {
-                source.provider == CaptureProvider::ForgeCode
-                    && source.path == forge
-                    && source.status == ProviderSourceStatus::Available
-            }));
-            assert_ne!(observed_discovery_duration, StdDuration::ZERO);
-            assert_eq!(observed_request_id, "all-provider-request");
-            assert_eq!(observed_operation, SourceBackedRefreshOperation::Refresh);
-            assert_eq!(observed_data_root, data_root);
-            assert_eq!(observed_index_root, index_root);
-            assert!(observed_explicit_source_catalog.is_none());
-            assert_eq!(observed_scope, SourceBackedRefreshScope::All);
-            assert!(observed_covered_route_ids.is_empty());
-            assert!(observed_covered_publication.route_results.is_empty());
-            progress(CaptureSourceBackedDetailedRefreshProgress {
-                progress: CaptureSourceBackedRefreshProgress {
-                    phase: "discovering",
-                    completed_sources: 0,
-                    total_sources: 2,
-                    current_source: None,
-                    completed_records: None,
-                    completed_bytes: None,
-                    stage_duration: StdDuration::ZERO,
-                    elapsed: StdDuration::ZERO,
-                    certified_source_count: None,
-                    certified_source_bytes: None,
-                },
-                current_source_progress: None,
-            })?;
-            progress(CaptureSourceBackedDetailedRefreshProgress {
-                progress: CaptureSourceBackedRefreshProgress {
-                    phase: "refreshing",
-                    completed_sources: 1,
-                    total_sources: 2,
-                    current_source: Some("provider-wide-route".to_owned()),
-                    completed_records: Some(11),
-                    completed_bytes: Some(4_096),
-                    stage_duration: StdDuration::ZERO,
-                    elapsed: StdDuration::ZERO,
-                    certified_source_count: None,
-                    certified_source_bytes: None,
-                },
-                current_source_progress: None,
-            })?;
-            progress(CaptureSourceBackedDetailedRefreshProgress {
-                progress: CaptureSourceBackedRefreshProgress {
-                    phase: "verifying",
-                    completed_sources: 2,
-                    total_sources: 2,
-                    current_source: None,
-                    completed_records: None,
-                    completed_bytes: None,
-                    stage_duration: StdDuration::ZERO,
-                    elapsed: StdDuration::ZERO,
-                    certified_source_count: None,
-                    certified_source_bytes: None,
-                },
-                current_source_progress: None,
-            })?;
-            Ok(test_publication("all-provider-generation"))
-        },
-    )
-    .unwrap();
-    drop(forge_writer);
-
-    assert_eq!(provider_wide_calls, 1);
-    assert_eq!(publication.generation_id, "all-provider-generation");
-    assert_eq!(
-        updates.into_inner().unwrap(),
-        vec![
-            ("discovering".to_owned(), 0, 0, None, None, None),
-            ("discovering".to_owned(), 0, 2, None, None, None),
-            (
-                "refreshing".to_owned(),
-                1,
-                2,
-                Some("provider-wide-route".to_owned()),
-                Some(11),
-                Some(4_096),
-            ),
-            ("verifying".to_owned(), 2, 2, None, None, None),
-        ]
-    );
 }
-
 #[path = "tests/unsupported_refresh.rs"]
 mod unsupported_refresh;
-
-#[path = "tests/settings_upgrade.rs"]
-mod settings_upgrade;
 
 #[path = "tests/codex_union.rs"]
 mod codex_union_tests;

@@ -1,41 +1,6 @@
 use super::*;
 
-/// The caller's requested Core operation, independent of its process or wire transport.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum RefreshOperation {
-    Refresh,
-    Import,
-}
-
-impl RefreshOperation {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Refresh => "refresh",
-            Self::Import => "import",
-        }
-    }
-
-    pub(crate) fn from_request_json(request: &Value) -> Result<Self> {
-        request
-            .get("operation")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("daemon source refresh request operation is missing"))
-            .and_then(str::parse)
-    }
-}
-
-impl std::str::FromStr for RefreshOperation {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "refresh" => Ok(Self::Refresh),
-            "import" => Ok(Self::Import),
-            operation => Err(anyhow!("invalid source refresh operation `{operation}`")),
-        }
-    }
-}
-
+pub use ctx_history_refresh_execution::RefreshOperation;
 pub(crate) type SourceBackedRefreshOperation = RefreshOperation;
 
 macro_rules! string_enum {
