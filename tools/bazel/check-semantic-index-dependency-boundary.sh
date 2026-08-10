@@ -21,6 +21,8 @@ query() {
     "${repo_root}/scripts/bazelw" query "$1" --output=label
 }
 
+python3 "${repo_root}/tools/bazel/check_semantic_index_boundary.py" "${repo_root}"
+
 for target in lib test_support_lib; do
   expected_internal="${tmp}/${target}-expected-internal.txt"
   printf '%s\n' \
@@ -32,6 +34,36 @@ for target in lib test_support_lib; do
     | LC_ALL=C sort -u >"${tmp}/${target}-internal.txt"
   if ! diff -u "${expected_internal}" "${tmp}/${target}-internal.txt"; then
     echo "unexpected internal dependency closure for ctx-semantic-index:${target}" >&2
+    exit 1
+  fi
+done
+
+write_expected_external() {
+  cat <<'EOF'
+@crates//anyhow-1.0.103:anyhow-1.0.103
+@crates//fs2-0.4.3:fs2-0.4.3
+@crates//memmap2-0.9.11:memmap2-0.9.11
+@crates//rusqlite-0.32.1:rusqlite-0.32.1
+@crates//serde-1.0.228:serde-1.0.228
+@crates//serde_json-1.0.150:serde_json-1.0.150
+@crates//sha2-0.10.9:sha2-0.10.9
+@crates//thiserror-1.0.69:thiserror-1.0.69
+@crates//uuid-1.23.4:uuid-1.23.4
+EOF
+}
+
+for target in lib test_support_lib unit_tests; do
+  write_expected_external >"${tmp}/${target}-expected-external.txt"
+  if [[ "${target}" == unit_tests ]]; then
+    printf '%s\n' '@crates//tempfile-3.27.0:tempfile-3.27.0' \
+      >>"${tmp}/${target}-expected-external.txt"
+  fi
+  LC_ALL=C sort -u -o "${tmp}/${target}-expected-external.txt" \
+    "${tmp}/${target}-expected-external.txt"
+  query "deps(//crates/ctx-semantic-index:${target}, 1)" \
+    | grep '^@crates//' | LC_ALL=C sort -u >"${tmp}/${target}-external.txt"
+  if ! diff -u "${tmp}/${target}-expected-external.txt" "${tmp}/${target}-external.txt"; then
+    echo "Cargo/Bazel external dependency inventory drift for ctx-semantic-index:${target}" >&2
     exit 1
   fi
 done
@@ -69,10 +101,35 @@ fi
 production_sources="${tmp}/production-sources.txt"
 while IFS= read -r source; do
   case "${source}" in
-    *_tests.rs|*/tests.rs|*/tests/*|*/test_support.rs|*/test_support/*) continue ;;
+    *_tests.rs|*/tests.rs|*/tests/*|*/test_support*.rs|*/test_support/*) continue ;;
   esac
   printf '%s\n' "${source}" >>"${production_sources}"
 done < <(find "${index_root}/src" -type f -name '*.rs' | LC_ALL=C sort)
+
+expected_source_labels() {
+  local source relative
+  while IFS= read -r source; do
+    relative="${source#${index_root}/}"
+    printf '%s\n' "//crates/ctx-semantic-index:${relative}"
+  done <"$1"
+}
+
+all_sources="${tmp}/all-sources.txt"
+find "${index_root}/src" -type f -name '*.rs' | LC_ALL=C sort >"${all_sources}"
+for target in lib test_support_lib unit_tests; do
+  expected_input="${production_sources}"
+  if [[ "${target}" == unit_tests ]]; then
+    expected_input="${all_sources}"
+  fi
+  expected_source_labels "${expected_input}" | LC_ALL=C sort -u \
+    >"${tmp}/${target}-expected-sources.txt"
+  query "filter(\"^//crates/ctx-semantic-index:\", kind(\"source file\", deps(//crates/ctx-semantic-index:${target}, 1)))" \
+    | LC_ALL=C sort -u >"${tmp}/${target}-sources.txt"
+  if ! diff -u "${tmp}/${target}-expected-sources.txt" "${tmp}/${target}-sources.txt"; then
+    echo "Cargo/Bazel source inventory drift for ctx-semantic-index:${target}" >&2
+    exit 1
+  fi
+done
 
 expected_model_imports="${tmp}/expected-model-imports.txt"
 printf '%s\n' \
@@ -130,14 +187,5 @@ if xargs grep -En \
   echo 'ctx-semantic-index must accept embeddings through its adapter, never implement one' >&2
   exit 1
 fi
-
-for old_module in \
-  document.rs indexing.rs query_index.rs vector_store.rs \
-  vector_store_schema.rs vector_store_search.rs vector_store_state.rs; do
-  if [[ -e "${repo_root}/crates/ctx-cli/src/semantic/${old_module}" ]]; then
-    echo "duplicate semantic index authority remains in ctx-cli: ${old_module}" >&2
-    exit 1
-  fi
-done
 
 printf 'ctx-semantic-index dependency and no-model-execution boundary ok\n'
