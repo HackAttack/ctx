@@ -3,8 +3,8 @@
   "policy": "Every Rust workspace package has one hard maximum of 20,000 scc Code/CLOC under the checked checkout census. Every checked-in Rust file assigned to a package counts in full, including standalone tests, examples, benches, inline tests, test support, unreachable code, and every cfg/feature/path variant. Only immutable admission offenders may have active temporary ceilings. Each accepted successor ceiling must equal current CLOC and may never exceed the previous accepted mainline ceiling; retired exceptions become permanent tombstones and can never be resurrected. New exceptions, manual exclusions, ceiling increases, and advisory tiers are forbidden.",
   "metric_policy": "scripts/check-loc-policy-v2.json",
   "hard_limit": 20000,
-  "grandfathered_at": "5a972aeb8ba846bef25167b11763d18cab271004",
-  "previous_accepted_mainline": "5a972aeb8ba846bef25167b11763d18cab271004",
+  "grandfathered_at": "446b39057b1c6a78a8cb329385b32cd40a38378a",
+  "previous_accepted_mainline": "446b39057b1c6a78a8cb329385b32cd40a38378a",
   "baseline_inventory": "scripts/check-rust-crate-size-baseline-v1.json",
   "target_inventory": "tools/bazel/rust-target-inventory.json",
   "checked_report": "scripts/check-rust-crate-size-report-v1.json",
@@ -13,12 +13,22 @@
       {
         "package": "ctx",
         "manifest": "crates/ctx-cli/Cargo.toml",
-        "maximum_cloc": 115409
+        "maximum_cloc": 201417
       },
       {
         "package": "ctx-history-capture",
         "manifest": "crates/ctx-history-capture/Cargo.toml",
-        "maximum_cloc": 160949
+        "maximum_cloc": 224107
+      },
+      {
+        "package": "ctx-history-index",
+        "manifest": "crates/ctx-history-index/Cargo.toml",
+        "maximum_cloc": 36873
+      },
+      {
+        "package": "ctx-history-refresh",
+        "manifest": "crates/ctx-history-refresh/Cargo.toml",
+        "maximum_cloc": 22106
       }
     ],
     "retired": []

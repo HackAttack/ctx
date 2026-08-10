@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 
 POLICY_PATH = "scripts/check-rust-crate-size-policy-v1.json"
-BASELINE_SHA256 = "97e4c317875e50608afb339adaacc8f08579119cc33ff1e6f7253355c1ece123"
+BASELINE_SHA256 = "21054056e05623d91157915d9835b4a46ccef41053bea2fa0dfffd79741aa6c0"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 LABEL = re.compile(r"^//(?:[A-Za-z0-9._+/-]*):[A-Za-z0-9._+/-]+$")

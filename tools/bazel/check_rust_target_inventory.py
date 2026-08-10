@@ -117,6 +117,13 @@ def parse_bazel_query_xml(gate, raw: bytes) -> tuple[list[dict[str, Any]], bytes
         if len(root_sources) != 1:
             raise gate.GateError(f"Bazel Rust crate_root must resolve to exactly one source: {label}")
         crate_root = bazel_label_path(gate, next(iter(root_sources)))
+        crate_names = [
+            child.get("value", "")
+            for child in rule
+            if child.tag == "string" and child.get("name") == "crate_name"
+        ]
+        if len(crate_names) != 1 or not crate_names[0]:
+            raise gate.GateError(f"Bazel Rust target must declare exactly one crate_name: {label}")
         source_labels = labels_from_rule(rule, "srcs") + crate_root_labels
         expanded: set[str] = set()
         for source in source_labels:
@@ -124,7 +131,15 @@ def parse_bazel_query_xml(gate, raw: bytes) -> tuple[list[dict[str, Any]], bytes
         sources = sorted(bazel_label_path(gate, source) for source in expanded)
         if not sources:
             raise gate.GateError(f"Bazel Rust target has no resolved checked-in Rust source: {label}")
-        records.append({"label": label, "kind": kind, "crate_root": crate_root, "sources": sources})
+        records.append(
+            {
+                "label": label,
+                "kind": kind,
+                "crate_name": crate_names[0],
+                "crate_root": crate_root,
+                "sources": sources,
+            }
+        )
     if not records:
         raise gate.GateError("Bazel query found no Rust targets")
     return records, gate.canonical_bytes(records)
@@ -139,6 +154,20 @@ def expected_rule_kinds(target) -> set[str]:
         "example": {"rust_binary"},
         "bench": {"rust_test"},
     }[target.kind]
+
+
+def expected_bazel_identity(package, target) -> tuple[str, set[str]]:
+    cargo_name = target.name.replace("-", "_")
+    if target.kind in {"lib", "proc-macro"}:
+        bazel_name = "lib"
+        crate_names = {cargo_name}
+    elif target.kind in {"test", "bench"}:
+        bazel_name = f"{cargo_name}_tests"
+        crate_names = {cargo_name, bazel_name}
+    else:
+        bazel_name = cargo_name
+        crate_names = {cargo_name}
+    return f"//{package['root']}:{bazel_name}", crate_names
 
 
 def package_for_bazel_target(gate, packages: list[dict[str, Any]], label: str) -> dict[str, Any]:
@@ -182,19 +211,20 @@ def derive_cargo_bazel_targets(gate, package, target_records, records_by_label) 
     for key, target in sorted(target_records.items()):
         if target.kind == "custom-build":
             continue
-        matches = [
-            record
-            for record in records_by_label.values()
-            if record["owner"] == package["package"]
-            and record["crate_root"] == target.root
-            and record["kind"] in expected_rule_kinds(target)
-        ]
-        if len(matches) != 1:
+        expected_label, expected_crate_names = expected_bazel_identity(package, target)
+        record = records_by_label.get(expected_label)
+        if record is None or (
+            record["owner"] != package["package"]
+            or record["crate_root"] != target.root
+            or record["kind"] not in expected_rule_kinds(target)
+            or record["crate_name"] not in expected_crate_names
+        ):
             raise gate.GateError(
-                f"Cargo target must derive exactly one Bazel identity from owner/kind/crate_root: "
-                f"{package['package']} {key} -> {[record['label'] for record in matches]}"
+                "Cargo target must match its live Bazel owner/kind/crate_name/crate_root identity: "
+                f"{package['package']} {key} -> {expected_label} "
+                f"({sorted(expected_crate_names)}); fact={record}"
             )
-        label = matches[0]["label"]
+        label = record["label"]
         if label in used:
             raise gate.GateError(f"Cargo/Bazel target identity is not one-to-one: {label}")
         used.add(label)

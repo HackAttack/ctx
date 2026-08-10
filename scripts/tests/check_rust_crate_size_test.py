@@ -115,14 +115,17 @@ def rust_rule(
     label: str,
     sources: list[str],
     *,
+    crate_name: str | None = None,
     crate_root: str | None = None,
     testonly: bool = False,
 ) -> str:
     testonly_xml = "<boolean name='testonly' value='true'/>" if testonly else ""
     labels = "".join(f"<label value='{item}'/>" for item in sources)
     root = crate_root or sources[0]
+    name = crate_name or label.rsplit(":", 1)[1]
     return (
         f"<rule class='{kind}' name='{label}'>{testonly_xml}"
+        f"<string name='crate_name' value='{name}'/>"
         f"<list name='srcs'>{labels}</list><label name='crate_root' value='{root}'/></rule>"
     )
 
@@ -267,6 +270,7 @@ class RustCrateSizeAuthorityTest(unittest.TestCase):
                 {
                     "label": "//crate:lib",
                     "kind": "rust_library",
+                    "crate_name": "lib",
                     "crate_root": "crate/src/default.rs",
                     "sources": ["crate/src/default.rs", "crate/src/windows.rs"],
                 }
@@ -282,6 +286,7 @@ class RustCrateSizeAuthorityTest(unittest.TestCase):
             {
                 "label": "//outside:lib",
                 "kind": "rust_library",
+                "crate_name": "lib",
                 "crate_root": "crate/src/bazel_only.rs",
                 "sources": ["crate/src/bazel_only.rs"],
             }
@@ -295,6 +300,7 @@ class RustCrateSizeAuthorityTest(unittest.TestCase):
             {
                 "label": "//one:lib",
                 "kind": "rust_library",
+                "crate_name": "one",
                 "crate_root": "one/src/lib.rs",
                 "sources": ["one/src/lib.rs", "two/src/stolen.rs"],
             }
@@ -342,13 +348,23 @@ class RustCrateSizeAuthorityTest(unittest.TestCase):
                 "label": "//crate:lib",
                 "owner": "fixture",
                 "kind": "rust_library",
+                "crate_name": "fixture",
                 "crate_root": "crate/src/lib.rs",
                 "sources": ["crate/src/lib.rs"],
             },
-            "//crate:unit": {
-                "label": "//crate:unit",
+            "//crate:integration_tests": {
+                "label": "//crate:integration_tests",
                 "owner": "fixture",
                 "kind": "rust_test",
+                "crate_name": "integration_tests",
+                "crate_root": "crate/tests/integration.rs",
+                "sources": ["crate/tests/integration.rs"],
+            },
+            "//crate:integration_harness": {
+                "label": "//crate:integration_harness",
+                "owner": "fixture",
+                "kind": "rust_test",
+                "crate_name": "integration_tests",
                 "crate_root": "crate/tests/integration.rs",
                 "sources": ["crate/tests/integration.rs"],
             },
@@ -356,6 +372,7 @@ class RustCrateSizeAuthorityTest(unittest.TestCase):
                 "label": "//crate:arbitrary",
                 "owner": "fixture",
                 "kind": "rust_library",
+                "crate_name": "fixture",
                 "crate_root": "crate/src/other.rs",
                 "sources": ["crate/src/other.rs"],
             },
@@ -365,13 +382,11 @@ class RustCrateSizeAuthorityTest(unittest.TestCase):
 
         self.assertEqual(
             derived,
-            {"lib:fixture": "//crate:lib", "test:integration": "//crate:unit"},
+            {"lib:fixture": "//crate:lib", "test:integration": "//crate:integration_tests"},
         )
-        duplicate = dict(targets)
-        duplicate["bin:alias"] = gate.CargoTarget("bin:alias", "bin", "alias", "crate/src/lib.rs")
-        facts["//crate:lib"]["kind"] = "rust_binary"
-        with self.assertRaisesRegex(gate.GateError, "derive exactly one Bazel identity"):
-            authority.derive_cargo_bazel_targets(gate, pkg, duplicate, facts)
+        facts["//crate:lib"]["crate_root"] = "crate/src/forged.rs"
+        with self.assertRaisesRegex(gate.GateError, "live Bazel owner/kind/crate_name/crate_root"):
+            authority.derive_cargo_bazel_targets(gate, pkg, targets, facts)
 
     def test_symlinked_rust_source_is_not_a_hermetic_checked_input(self) -> None:
         self.fixture.write("outside.rs")
