@@ -16,6 +16,7 @@ use crate::{
 mod checkpoint;
 mod framing;
 mod identity;
+mod occurrence;
 mod pending_exchange;
 mod physical;
 mod revalidation;
@@ -32,6 +33,7 @@ pub(crate) use framing::{
 };
 use identity::observe_metadata;
 pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
+pub(crate) use occurrence::{JsonlAppendOccurrenceState, JsonlOrderedAppendOccurrenceState};
 pub(crate) use pending_exchange::{
     ordered_pending_exchange_entries, remember_pending_exchange,
     restore_hash_pending_exchange_entries, restore_ordered_pending_exchange_entries,

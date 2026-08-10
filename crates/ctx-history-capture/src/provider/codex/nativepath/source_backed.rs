@@ -6,10 +6,9 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
-    CoreRecord, CoreRecordAnnotation, CoreRecordError, EventIdentityInput, NativeItemKey,
-    NativeSessionKey, ProjectionContractError, ScannedSourceCounts, SessionIdentityInput,
-    SessionRelationshipKind, SourceAnchor, SourceFrontier, SourceKey, SourceObservation,
-    StableEntityId, TypedKey,
+    CoreRecord, CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey,
+    ProjectionContractError, ScannedSourceCounts, SessionIdentityInput, SessionRelationshipKind,
+    SourceAnchor, SourceFrontier, SourceKey, SourceObservation, StableEntityId, TypedKey,
 };
 use ctx_history_index::{BaseEventIdentityLookup, IndexError};
 use sha2::{Digest, Sha256};
@@ -29,6 +28,7 @@ use super::{
     CodexAppendProof, CodexCheckpointGeneration, CodexNativeCheckpoint, CodexNativeOwnedPage,
     CodexNativeScanner, CodexSessionRow, CodexSourceScan,
 };
+use crate::repository_attribution::{apply_annotation, merge_repository_annotation};
 use crate::{
     common::io::{
         open_provider_source_file, OpenedProviderSourcePath, ProviderSourceRoot,
