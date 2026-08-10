@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read as _, Seek as _, Write as _},
+    io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -11,15 +11,18 @@ use anyhow::{anyhow, Context, Result};
 use fs2::FileExt as _;
 use uuid::Uuid;
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod security_metadata;
 
 struct ObservedTarget {
     body: Vec<u8>,
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     identity: FileIdentity,
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     security: security_metadata::SecurityMetadata,
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {
     device: u64,
@@ -32,10 +35,6 @@ struct FileIdentity {
     volume: u32,
     index: u64,
 }
-
-#[cfg(not(any(unix, windows)))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileIdentity;
 
 pub(crate) fn atomic_update(
     path: &Path,
@@ -95,6 +94,7 @@ fn publish(
     file.sync_all()
         .with_context(|| format!("sync staged file {}", stage.display()))?;
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(existing) = existing {
         let current = verify_target_unchanged(path, existing)?;
         security_metadata::copy_existing_security(&current, &file)
@@ -162,20 +162,25 @@ fn open_observed_target(path: &Path) -> Result<Option<ObservedTarget>> {
 
     let mut file = open_regular_nofollow(path)
         .with_context(|| format!("open existing target {}", path.display()))?;
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let identity = file_identity(&file)
         .with_context(|| format!("identify existing target {}", path.display()))?;
     let mut body = Vec::new();
     file.read_to_end(&mut body)
         .with_context(|| format!("read {}", path.display()))?;
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let security = security_metadata::snapshot(&file)
         .with_context(|| format!("inspect security metadata for {}", path.display()))?;
     Ok(Some(ObservedTarget {
         body,
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         identity,
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         security,
     }))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn verify_target_unchanged(path: &Path, existing: &ObservedTarget) -> Result<File> {
     let mut current = open_regular_nofollow(path)
         .with_context(|| format!("reopen target before publish {}", path.display()))?;
@@ -196,7 +201,10 @@ fn verify_target_unchanged(path: &Path, existing: &ObservedTarget) -> Result<Fil
     Ok(current)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn contents_equal(file: &mut File, expected: &[u8]) -> io::Result<bool> {
+    use std::io::Seek as _;
+
     file.rewind()?;
     let mut offset = 0;
     let mut buffer = [0_u8; 8 * 1024];
@@ -237,7 +245,7 @@ fn open_regular_nofollow(path: &Path) -> io::Result<File> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn file_identity(file: &File) -> io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt as _;
 
@@ -263,11 +271,6 @@ fn file_identity(file: &File) -> io::Result<FileIdentity> {
         volume: information.dwVolumeSerialNumber,
         index: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
     })
-}
-
-#[cfg(not(any(unix, windows)))]
-fn file_identity(_file: &File) -> io::Result<FileIdentity> {
-    Ok(FileIdentity)
 }
 
 fn reject_unsafe_target(path: &Path) -> Result<()> {
