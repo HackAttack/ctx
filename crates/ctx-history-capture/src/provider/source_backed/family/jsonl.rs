@@ -16,6 +16,7 @@ use crate::{
 mod checkpoint;
 mod framing;
 mod identity;
+mod pending_exchange;
 mod physical;
 mod revalidation;
 mod route;
@@ -31,6 +32,10 @@ pub(crate) use framing::{
 };
 use identity::observe_metadata;
 pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
+pub(crate) use pending_exchange::{
+    remember_pending_exchange, take_pending_exchange, JsonlPendingExchangeLookup,
+    JsonlPendingExchangeRemember, JsonlPendingExchangeState,
+};
 pub(crate) use physical::{JsonlPhysicalDigest, JsonlPhysicalStream, JsonlPhysicalStreamPosition};
 use revalidation::hash_prefix;
 #[cfg(test)]

@@ -27,15 +27,14 @@ impl OpenClawProjector {
                 StateBucket::Pending => &mut self.pending_calls,
                 StateBucket::Running => &mut self.running_processes,
             };
-            if let Some(existing) = states.get_mut(identity) {
-                *existing = PendingCallState::Ambiguous;
-                return;
+            match remember_pending_exchange(states, identity, state, capacity) {
+                JsonlPendingExchangeRemember::Inserted => {}
+                JsonlPendingExchangeRemember::BecameAmbiguous => return,
+                JsonlPendingExchangeRemember::CapacityExceeded => {
+                    self.linkage_capacity_exceeded = true;
+                    return;
+                }
             }
-            if states.len() >= capacity {
-                self.linkage_capacity_exceeded = true;
-                return;
-            }
-            states.insert(identity.to_owned(), state);
         }
         if !projector_checkpoint_fits(self) {
             match bucket {
