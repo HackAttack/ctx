@@ -71,15 +71,20 @@ pub(super) fn bound_query_events_mcp_response(
             "recommendation": "lower `limit` and retry with content=text or content=none",
         },
     });
-    let bounded = success_response(response_id, result);
+    let mut bounded = success_response(response_id, result);
     if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
         bounded
     } else {
-        error_response(
-            Value::Null,
+        let response_id = bounded
+            .get_mut("id")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
+        bounded_protocol_error(
+            response_id,
+            output_limit_bytes,
             -32603,
             "query_events response too large",
-            Some(json!({ "error": "output_limit_exceeded" })),
+            json!({ "error": "output_limit_exceeded" }),
         )
     }
 }
@@ -106,15 +111,20 @@ pub(super) fn bound_blame_mcp_response(
             "retryable": true,
         },
     });
-    let bounded = success_response(response_id, result);
+    let mut bounded = success_response(response_id, result);
     if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
         bounded
     } else {
-        error_response(
-            Value::Null,
+        let response_id = bounded
+            .get_mut("id")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
+        bounded_protocol_error(
+            response_id,
+            output_limit_bytes,
             -32603,
             "Blame response too large",
-            Some(json!({ "error": "invalid_response" })),
+            json!({ "error": "invalid_response" }),
         )
     }
 }
@@ -147,17 +157,49 @@ pub(super) fn bound_show_mcp_response(
             },
         }),
     };
-    let bounded = success_response(response_id, result);
+    let mut bounded = success_response(response_id, result);
     if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
         bounded
     } else {
-        error_response(
-            Value::Null,
+        let response_id = bounded
+            .get_mut("id")
+            .map(Value::take)
+            .unwrap_or(Value::Null);
+        bounded_protocol_error(
+            response_id,
+            output_limit_bytes,
             -32603,
             "Show response too large",
-            Some(json!({ "error": "output_limit_exceeded" })),
+            json!({ "error": "output_limit_exceeded" }),
         )
     }
+}
+
+fn bounded_protocol_error(
+    response_id: Value,
+    output_limit_bytes: usize,
+    code: i64,
+    message: &str,
+    data: Value,
+) -> Value {
+    let mut bounded = error_response(response_id, code, message, Some(data));
+    if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
+        return bounded;
+    }
+
+    let data = bounded
+        .get_mut("error")
+        .and_then(Value::as_object_mut)
+        .and_then(|error| error.remove("data"));
+    if serialized_json_line_bytes(&bounded).is_ok_and(|bytes| bytes <= output_limit_bytes) {
+        return bounded;
+    }
+
+    bounded["id"] = Value::Null;
+    if let Some(data) = data {
+        bounded["error"]["data"] = data;
+    }
+    bounded
 }
 
 fn response_show_event_id(response: &Value) -> Option<Uuid> {

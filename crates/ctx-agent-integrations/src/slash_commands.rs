@@ -436,6 +436,7 @@ impl CommandFileTarget {
 struct StatusResult {
     status: SlashCommandInstallStatus,
     metadata: Option<SlashCommandMetadata>,
+    installed_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,7 +502,8 @@ fn install_file_target(
     product_version: &str,
 ) -> Result<SlashCommandInstallResult> {
     let previous = status_file_target(target)?;
-    if previous.status == SlashCommandInstallStatus::Current {
+    let bundled_hash = target.bundled_hash();
+    if previous.installed_hash.as_deref() == Some(bundled_hash.as_str()) {
         if !metadata_is_current(target, previous.metadata.as_ref()) {
             write_metadata(target, product_version)?;
         }
@@ -569,7 +571,13 @@ fn status_file_target(target: &CommandFileTarget) -> Result<StatusResult> {
     let status = match installed_hash.as_deref() {
         None if command_path.exists() => SlashCommandInstallStatus::Modified,
         None => SlashCommandInstallStatus::Missing,
-        Some(hash) if hash == target.bundled_hash() => SlashCommandInstallStatus::Current,
+        Some(hash)
+            if hash == target.bundled_hash()
+                && metadata_manages_hash(target, metadata.as_ref(), hash) =>
+        {
+            SlashCommandInstallStatus::Current
+        }
+        Some(hash) if hash == target.bundled_hash() => SlashCommandInstallStatus::Stale,
         Some(hash) => match metadata
             .as_ref()
             .and_then(|metadata| metadata.files.get(&target.filename))
@@ -578,7 +586,11 @@ fn status_file_target(target: &CommandFileTarget) -> Result<StatusResult> {
             _ => SlashCommandInstallStatus::Modified,
         },
     };
-    Ok(StatusResult { status, metadata })
+    Ok(StatusResult {
+        status,
+        metadata,
+        installed_hash,
+    })
 }
 
 fn write_command_file(target: &CommandFileTarget, product_version: &str) -> Result<()> {
@@ -606,6 +618,15 @@ fn metadata_is_current(
     target: &CommandFileTarget,
     metadata: Option<&SlashCommandMetadata>,
 ) -> bool {
+    let hash = target.bundled_hash();
+    metadata_manages_hash(target, metadata, &hash)
+}
+
+fn metadata_manages_hash(
+    target: &CommandFileTarget,
+    metadata: Option<&SlashCommandMetadata>,
+    hash: &str,
+) -> bool {
     metadata.is_some_and(|metadata| {
         metadata.schema_version == 1
             && metadata.installer == "ctx-cli"
@@ -613,7 +634,7 @@ fn metadata_is_current(
             && metadata
                 .files
                 .get(&target.filename)
-                .is_some_and(|hash| hash == &target.bundled_hash())
+                .is_some_and(|metadata_hash| metadata_hash == hash)
     })
 }
 
@@ -836,5 +857,38 @@ mod tests {
             SlashCommandInstallStatus::SkillOnly
         );
         assert!(!root.path().join(".codex").join("prompts").exists());
+    }
+
+    #[test]
+    fn interrupted_content_then_metadata_publication_is_stale_and_recoverable() {
+        let root = tempfile::tempdir().unwrap();
+        let context = PathContext::for_tests(root.path().to_owned(), root.path().to_owned());
+        let request = request(SlashCommandAgent::OpenCode);
+        let target = match SlashCommandAgent::OpenCode.install_plan(true, &context) {
+            SlashCommandPlan::File(target) => target,
+            _ => unreachable!(),
+        };
+        fs::create_dir_all(&target.base_dir).unwrap();
+        fs::create_dir(target.base_dir.join(METADATA_FILE)).unwrap();
+
+        let error = execute_install(request.clone(), &context).unwrap_err();
+        assert!(format!("{error:#}").contains("non-regular file"));
+        assert_eq!(
+            fs::read(target.command_path()).unwrap(),
+            target.body.as_bytes()
+        );
+        assert_eq!(
+            status_file_target(&target).unwrap().status,
+            SlashCommandInstallStatus::Stale
+        );
+
+        fs::remove_dir(target.base_dir.join(METADATA_FILE)).unwrap();
+        let repaired = execute_install(request, &context).unwrap();
+        assert!(repaired.results[0].already_installed);
+        assert!(!repaired.results[0].updated);
+        assert_eq!(
+            status_file_target(&target).unwrap().status,
+            SlashCommandInstallStatus::Current
+        );
     }
 }

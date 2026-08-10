@@ -167,7 +167,8 @@ pub fn install_target(
 ) -> Result<InstallResult> {
     ensure_safe_skill_directory(target)?;
     let previous = status_target(target)?;
-    if previous.status == SkillInstallStatus::Current {
+    let bundled_hash = bundled_hash();
+    if previous.installed_hash.as_deref() == Some(bundled_hash.as_str()) {
         if !metadata_is_current(previous.metadata.as_ref(), product_version) {
             write_metadata(target, product_version)?;
         }
@@ -225,7 +226,10 @@ pub fn status_target(target: &SkillTarget) -> Result<StatusResult> {
     };
     let status = match installed_hash.as_deref() {
         None => SkillInstallStatus::Missing,
-        Some(hash) if hash == bundled_hash() => SkillInstallStatus::Current,
+        Some(hash) if hash == bundled_hash() && metadata_manages_hash(metadata.as_ref(), hash) => {
+            SkillInstallStatus::Current
+        }
+        Some(hash) if hash == bundled_hash() => SkillInstallStatus::Stale,
         Some(hash) if LEGACY_BUNDLED_SKILL_HASHES.contains(&hash) => SkillInstallStatus::Stale,
         Some(hash) => match metadata.as_ref() {
             Some(metadata) if metadata.skill_hash == hash => SkillInstallStatus::Stale,
@@ -283,12 +287,17 @@ fn read_metadata(skill_dir: &Path) -> Option<SkillMetadata> {
 }
 
 fn metadata_is_current(metadata: Option<&SkillMetadata>, product_version: &str) -> bool {
+    let hash = bundled_hash();
+    metadata_manages_hash(metadata, &hash)
+        && metadata.is_some_and(|metadata| metadata.ctx_cli_version == product_version)
+}
+
+fn metadata_manages_hash(metadata: Option<&SkillMetadata>, hash: &str) -> bool {
     metadata.is_some_and(|metadata| {
         metadata.schema_version == 1
             && metadata.installer == "ctx-cli"
             && metadata.skill_name == BUNDLED_SKILL_NAME
-            && metadata.skill_hash == bundled_hash()
-            && metadata.ctx_cli_version == product_version
+            && metadata.skill_hash == hash
     })
 }
 
@@ -315,6 +324,39 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.skill_dir.join("notes.txt")).unwrap(),
             "keep"
+        );
+    }
+
+    #[test]
+    fn interrupted_content_then_metadata_publication_is_stale_and_recoverable() {
+        let root = tempfile::tempdir().unwrap();
+        let context = super::super::PathContext::for_tests(
+            root.path().join("home"),
+            root.path().join("repo"),
+        );
+        let target =
+            super::super::single_target(super::super::SkillAgentArg::Universal, true, &context)
+                .unwrap();
+        fs::create_dir_all(target.skill_dir.join(METADATA_FILE)).unwrap();
+
+        let error = install_target(&target, false, true, "1.0.0").unwrap_err();
+        assert!(error.to_string().contains("non-regular file"));
+        assert_eq!(
+            fs::read(target.skill_dir.join("SKILL.md")).unwrap(),
+            BUNDLED_SKILL_BODY.as_bytes()
+        );
+        assert_eq!(
+            status_target(&target).unwrap().status,
+            SkillInstallStatus::Stale
+        );
+
+        fs::remove_dir(target.skill_dir.join(METADATA_FILE)).unwrap();
+        let repaired = install_target(&target, false, true, "1.0.0").unwrap();
+        assert!(repaired.already_installed);
+        assert!(!repaired.updated);
+        assert_eq!(
+            status_target(&target).unwrap().status,
+            SkillInstallStatus::Current
         );
     }
 }

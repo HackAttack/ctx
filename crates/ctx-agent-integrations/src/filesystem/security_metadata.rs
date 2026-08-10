@@ -1,9 +1,9 @@
-use std::{fs::File, io, path::Path};
+use std::{fs::File, io};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
 
-pub(super) fn copy_existing_security(source: &Path, destination: &File) -> io::Result<()> {
+pub(super) fn copy_existing_security(source: &File, destination: &File) -> io::Result<()> {
     #[cfg(unix)]
     {
         copy_unix_security(source, destination)
@@ -25,14 +25,9 @@ pub(super) fn copy_existing_security(source: &Path, destination: &File) -> io::R
 }
 
 #[cfg(unix)]
-fn copy_unix_security(source: &Path, destination: &File) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+fn copy_unix_security(source: &File, destination: &File) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
 
-    let mut options = std::fs::OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    let source = options.open(source)?;
     let metadata = source.metadata()?;
     let destination_fd = destination.as_raw_fd();
     if unsafe { libc::fchown(destination_fd, metadata.uid(), metadata.gid()) } != 0 {
@@ -44,7 +39,7 @@ fn copy_unix_security(source: &Path, destination: &File) -> io::Result<()> {
     if unsafe { libc::fchmod(destination_fd, mode) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    copy_platform_acl(&source, destination)
+    copy_platform_acl(source, destination)
 }
 
 #[cfg(target_os = "linux")]
