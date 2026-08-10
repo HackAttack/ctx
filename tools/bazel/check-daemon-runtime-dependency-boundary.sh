@@ -21,6 +21,30 @@ query() {
     "${repo_root}/scripts/bazelw" query "$1" --output=label
 }
 
+workspace_members="${tmp}/workspace-members.txt"
+sed -n '/^members = \[/,/^\]/p' "${repo_root}/Cargo.toml" \
+  | sed -nE 's/^[[:space:]]*"(crates\/[^"[:space:]]+)",?[[:space:]]*$/\1/p' \
+  | LC_ALL=C sort -u >"${workspace_members}"
+if [[ ! -s "${workspace_members}" ]]; then
+  echo 'Cargo workspace crate inventory is empty or unreadable' >&2
+  exit 1
+fi
+
+visible_manifests="${tmp}/visible-manifests.txt"
+find "${repo_root}/crates" -mindepth 2 -maxdepth 2 -name Cargo.toml -type f -printf '%h\n' \
+  | sed "s#^${repo_root}/##" \
+  | LC_ALL=C sort -u >"${visible_manifests}"
+if ! diff -u "${workspace_members}" "${visible_manifests}"; then
+  echo 'boundary runfiles do not expose the complete Cargo workspace crate inventory' >&2
+  exit 1
+fi
+while IFS= read -r member; do
+  if [[ ! -f "${repo_root}/${member}/BUILD.bazel" ]]; then
+    echo "boundary runfiles omit the Bazel BUILD graph for ${member}" >&2
+    exit 1
+  fi
+done <"${workspace_members}"
+
 expected_internal="${tmp}/expected-internal.txt"
 printf '%s\n' \
   '//crates/ctx-daemon-runtime:lib' \
@@ -84,4 +108,5 @@ if grep -REn --include='*.rs' \
   exit 1
 fi
 
-printf 'ctx-daemon-runtime dependency and composition boundary ok\n'
+printf 'ctx-daemon-runtime dependency and composition boundary ok: workspace_crates=%s\n' \
+  "$(wc -l <"${workspace_members}")"
