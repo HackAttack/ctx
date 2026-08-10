@@ -28,7 +28,7 @@ fn run_after_codex_metadata_inventory_hook() {
 #[derive(Debug, Clone)]
 pub(crate) struct CodexSessionTreeInventoryV0 {
     pub(crate) sources: Vec<(CodexCatalogSource, SourceKey, String)>,
-    #[cfg(test)]
+    #[cfg(any(test, ctx_codex_causal_qualification))]
     pub(crate) work: CodexCatalogWorkV0,
 }
 
@@ -312,7 +312,7 @@ fn discover_codex_session_tree_metadata_inventory_v0(
     sort_bound_sources(&mut sources);
     Ok(CodexSessionTreeInventoryV0 {
         sources,
-        #[cfg(test)]
+        #[cfg(any(test, ctx_codex_causal_qualification))]
         work,
     })
 }
