@@ -1,5 +1,4 @@
-mod codex;
-mod codex_active_contracts;
+mod codex_child_independence;
 mod copilot;
 mod inventory;
 mod registry;
@@ -34,46 +33,6 @@ fn fixture_source(
         SourceAnchor::CatalogLineage([lineage; 32]),
     )
     .unwrap()
-}
-
-fn codex_rollout_bytes(native_session_id: &str, messages: &[&str]) -> Vec<u8> {
-    let mut records = vec![serde_json::json!({
-        "timestamp": "2026-07-29T12:00:00Z",
-        "type": "session_meta",
-        "payload": {
-            "id": native_session_id,
-            "timestamp": "2026-07-29T12:00:00Z",
-            "cwd": "/tmp/explicit-codex-source",
-            "originator": "codex_cli_rs",
-            "cli_version": "0.1.0",
-            "source": "cli",
-            "model_provider": "openai"
-        }
-    })];
-    records.extend(messages.iter().enumerate().map(|(index, message)| {
-        serde_json::json!({
-            "timestamp": format!("2026-07-29T12:00:{:02}Z", index.saturating_add(1)),
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": if index == 0 { "user" } else { "assistant" },
-                "content": [{
-                    "type": "input_text",
-                    "text": message
-                }]
-            }
-        })
-    }));
-    let mut bytes = records
-        .into_iter()
-        .flat_map(|record| {
-            let mut line = serde_json::to_vec(&record).unwrap();
-            line.push(b'\n');
-            line
-        })
-        .collect::<Vec<_>>();
-    bytes.shrink_to_fit();
-    bytes
 }
 
 fn fixture_session_id(source: &SourceKey) -> ctx_history_core::StableEntityId {

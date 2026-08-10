@@ -13,11 +13,9 @@ use crate::{
 use super::*;
 
 mod crush;
-mod hermes;
 mod shared;
 
 pub use crush::register_crush_source_backed_route;
-pub use hermes::register_hermes_explicit_source_backed_route;
 use shared::{
     sqlite_inventory_authority_fingerprint, SqliteInventoryCatalog, SqliteInventoryCatalogLeaf,
     SqliteInventoryDocumentAdapter, SqliteInventoryProvider,

@@ -7,6 +7,7 @@ mod search;
 mod shared;
 mod show;
 
+pub(crate) use copied_lineage::copied_lineage_summary;
 pub(crate) use locate::run_locate;
 #[cfg(test)]
 use search::mcp_search;
@@ -20,7 +21,7 @@ pub(crate) use search::{
 };
 pub(crate) use shared::generation_query_authority_error_json;
 #[cfg(test)]
-pub(crate) use show::mcp_show_event;
+pub(crate) use show::{mcp_show_event, mcp_show_event_with_compact};
 pub(crate) use show::{
     mcp_show_event_application, mcp_show_session_application, run_show, ShowApplicationError,
 };

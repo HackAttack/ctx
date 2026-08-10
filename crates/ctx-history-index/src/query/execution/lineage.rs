@@ -14,8 +14,9 @@ use crate::{fields_from_schema, hex, Fields, IndexError, Result, VerifiedIndex};
 
 use super::super::{
     CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
-    CopiedEventLineageRelationshipCount, MAX_COPIED_EVENT_LINEAGE_DEPTH,
-    MAX_COPIED_EVENT_LINEAGE_EXACT_IDENTITY_POSTING_VISITS,
+    CopiedEventLineageRelationshipCount, CopiedEventLineageResolution,
+    MAX_COPIED_EVENT_LINEAGE_DEPTH,
+    MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS,
 };
 
 #[derive(Debug, Clone)]
@@ -23,7 +24,7 @@ struct LineageEvent {
     event_id: StableEntityId,
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
+    claimed_root_session_id: StableEntityId,
     session_relationship: SessionRelationshipKind,
     event_origin: EventOrigin,
     event_sequence: u64,
@@ -47,8 +48,48 @@ impl LineageEvent {
     fn session_lineage(&self) -> SessionLineage {
         SessionLineage {
             parent_session_id: self.parent_session_id,
-            root_session_id: self.root_session_id,
+            claimed_root_session_id: self.claimed_root_session_id,
             session_relationship: self.session_relationship,
+        }
+    }
+
+    fn target(&self) -> LineageTarget {
+        LineageTarget {
+            event_id: self.event_id.as_uuid(),
+            exact_event_id: Some(self.event_id),
+            session_id: Some(self.session_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LineageTarget {
+    event_id: Uuid,
+    exact_event_id: Option<StableEntityId>,
+    session_id: Option<StableEntityId>,
+}
+
+impl LineageTarget {
+    fn requested(event_id: Uuid) -> Self {
+        Self {
+            event_id,
+            exact_event_id: None,
+            session_id: None,
+        }
+    }
+
+    fn claimed(session_id: StableEntityId, event_id: StableEntityId) -> Self {
+        Self {
+            event_id: event_id.as_uuid(),
+            exact_event_id: Some(event_id),
+            session_id: Some(session_id),
+        }
+    }
+
+    fn unresolved(self) -> CopiedEventLineageResolution {
+        CopiedEventLineageResolution::Unresolved {
+            event_id: self.event_id,
+            session_id: self.session_id,
         }
     }
 }
@@ -56,8 +97,22 @@ impl LineageEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionLineage {
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
+    claimed_root_session_id: StableEntityId,
     session_relationship: SessionRelationshipKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionAncestryResolution {
+    Resolved,
+    Unresolved,
+    Cyclic,
+}
+
+struct ForwardResolution {
+    selected_session_id: Option<StableEntityId>,
+    anchor: LineageTarget,
+    resolution: CopiedEventLineageResolution,
+    selected_depth: usize,
 }
 
 #[derive(Deserialize)]
@@ -74,40 +129,39 @@ struct StoredLineageProjection {
 }
 
 impl VerifiedIndex {
-    /// Resolves one selected event to its ultimate non-copy origin, then walks
-    /// exact reverse copied-event edges breadth-first within the caller's
+    /// Resolves one selected event's explicit copied-event chain, then walks
+    /// exact reverse copied-event claims breadth-first within the caller's
     /// explicit work and retention ceilings.
     ///
-    /// `observed_count` and every relationship count are exact only when the
-    /// returned result is not truncated. A missing selected event returns
-    /// `None`; malformed stored or indexed lineage fails closed.
+    /// Missing selected events, missing targets, and cycles are ordinary
+    /// query results. Durable parent, root, and copied-from claims are never
+    /// treated as publication-time graph authority.
     pub fn copied_event_lineage(
         &self,
         selected_event_id: Uuid,
         policy: CopiedEventLineagePolicy,
-    ) -> Result<Option<CopiedEventLineage>> {
+    ) -> Result<CopiedEventLineage> {
         policy.validate()?;
         let fields = fields_from_schema(self.searcher.schema())?;
         let mut exact_identity_posting_visits = 0_usize;
-        let Some(selected) = self.lineage_event_by_uuid(
+        let selected = self.lineage_event_by_uuid(
             selected_event_id,
             fields,
             &mut exact_identity_posting_visits,
-        )?
-        else {
-            return Ok(None);
-        };
-        let (canonical, selected_depth) = self.resolve_canonical_event(
-            selected.clone(),
+        )?;
+        let forward = self.resolve_selected_lineage(
+            selected,
+            selected_event_id,
             fields,
             &mut exact_identity_posting_visits,
         )?;
 
         let mut visited_events = HashSet::new();
-        visited_events.insert(canonical.event_id);
+        if let Some(event_id) = forward.anchor.exact_event_id {
+            visited_events.insert(event_id);
+        }
         let mut visited_sessions = HashMap::new();
-        visited_sessions.insert(canonical.session_id, canonical.session_lineage());
-        let mut frontier = vec![canonical.clone()];
+        let mut frontier = vec![forward.anchor];
         let mut frontier_depth = 0_usize;
         let mut posting_visits = 0_usize;
         let mut observed_count = 0_u64;
@@ -121,9 +175,9 @@ impl VerifiedIndex {
                 .ok_or(IndexError::CountOverflow)?;
             let mut children = Vec::new();
             let mut inverse_complete = true;
-            for ancestor in &frontier {
+            for target in &frontier {
                 if !self.inverse_lineage_children(
-                    ancestor,
+                    *target,
                     fields,
                     policy.maximum_posting_visits,
                     &mut posting_visits,
@@ -146,16 +200,14 @@ impl VerifiedIndex {
             let mut next_frontier = Vec::with_capacity(children.len());
             for child in children {
                 if !visited_events.insert(child.event_id) {
-                    return Err(IndexError::InvalidEventOriginGraph(
-                        "cycle or duplicate event in reverse copied-event lineage",
-                    ));
+                    continue;
                 }
 
                 let session_lineage = child.session_lineage();
                 match visited_sessions.get(&child.session_id) {
                     Some(existing) if *existing != session_lineage => {
                         return Err(IndexError::InvalidSessionRelationshipGraph(
-                            "one session has inconsistent stored lineage",
+                            "one session has inconsistent stored lineage claims",
                         ));
                     }
                     Some(_) => {}
@@ -181,14 +233,14 @@ impl VerifiedIndex {
                                 copied_from_event_id,
                                 copied_from_session_id,
                                 parent_session_id: child.parent_session_id,
-                                root_session_id: child.root_session_id,
+                                claimed_root_session_id: child.claimed_root_session_id,
                                 session_relationship: child.session_relationship,
                                 depth: child_depth,
                             });
                         }
                     }
                 }
-                next_frontier.push(child);
+                next_frontier.push(child.target());
             }
 
             if !inverse_complete || next_frontier.is_empty() {
@@ -209,68 +261,165 @@ impl VerifiedIndex {
             })
             .collect::<Vec<_>>();
         let returned = occurrences.len();
-        Ok(Some(CopiedEventLineage {
+        Ok(CopiedEventLineage {
             generation_id: self.generation_id.clone(),
-            selected_event_id: selected.event_id,
-            selected_session_id: selected.session_id,
-            canonical_event_id: canonical.event_id,
-            canonical_session_id: canonical.session_id,
-            selected_depth,
+            selected_event_id,
+            selected_session_id: forward.selected_session_id,
+            resolution: forward.resolution,
+            selected_depth: forward.selected_depth,
             observed_count,
             returned,
             occurrences,
             relationship_counts,
             truncated,
-        }))
+        })
     }
 
-    fn resolve_canonical_event(
+    fn resolve_selected_lineage(
         &self,
-        selected: LineageEvent,
+        selected: Option<LineageEvent>,
+        selected_event_id: Uuid,
         fields: Fields,
         exact_identity_posting_visits: &mut usize,
-    ) -> Result<(LineageEvent, usize)> {
-        let mut current = selected;
+    ) -> Result<ForwardResolution> {
+        let Some(mut current) = selected else {
+            let anchor = LineageTarget::requested(selected_event_id);
+            return Ok(ForwardResolution {
+                selected_session_id: None,
+                anchor,
+                resolution: anchor.unresolved(),
+                selected_depth: 0,
+            });
+        };
+        let selected_session_id = Some(current.session_id);
         let mut depth = 0_usize;
         let mut visited = HashSet::new();
         visited.insert(current.event_id);
-        while let Some((ancestor_session_id, ancestor_event_id)) = current.copied_from() {
-            if depth == MAX_COPIED_EVENT_LINEAGE_DEPTH {
-                return Err(IndexError::InvalidEventOriginGraph(
-                    "copied-event origin exceeds maximum depth",
-                ));
+
+        loop {
+            let Some((ancestor_session_id, ancestor_event_id)) = current.copied_from() else {
+                return Ok(ForwardResolution {
+                    selected_session_id,
+                    anchor: current.target(),
+                    resolution: CopiedEventLineageResolution::Resolved {
+                        event_id: current.event_id,
+                        session_id: current.session_id,
+                    },
+                    selected_depth: depth,
+                });
+            };
+            depth = depth.checked_add(1).ok_or(IndexError::CountOverflow)?;
+            let target = LineageTarget::claimed(ancestor_session_id, ancestor_event_id);
+            if depth > MAX_COPIED_EVENT_LINEAGE_DEPTH {
+                return Ok(ForwardResolution {
+                    selected_session_id,
+                    anchor: target,
+                    resolution: target.unresolved(),
+                    selected_depth: depth,
+                });
             }
-            if current.session_relationship == SessionRelationshipKind::Root {
-                return Err(IndexError::InvalidEventOriginGraph(
-                    "a copied event cannot belong to a root session",
-                ));
+
+            match self.session_ancestry_resolution(
+                &current,
+                ancestor_session_id,
+                fields,
+                exact_identity_posting_visits,
+            )? {
+                SessionAncestryResolution::Resolved => {}
+                SessionAncestryResolution::Unresolved => {
+                    return Ok(ForwardResolution {
+                        selected_session_id,
+                        anchor: target,
+                        resolution: target.unresolved(),
+                        selected_depth: depth,
+                    });
+                }
+                SessionAncestryResolution::Cyclic => {
+                    return Ok(ForwardResolution {
+                        selected_session_id,
+                        anchor: current.target(),
+                        resolution: CopiedEventLineageResolution::Cyclic {
+                            event_id: current.event_id,
+                            session_id: current.session_id,
+                        },
+                        selected_depth: depth,
+                    });
+                }
             }
-            let ancestor = self
-                .lineage_event_by_uuid(
-                    ancestor_event_id.as_uuid(),
-                    fields,
-                    exact_identity_posting_visits,
-                )?
-                .ok_or(IndexError::InvalidEventOriginGraph(
-                    "declared origin event does not exist",
-                ))?;
-            if ancestor.event_id != ancestor_event_id
-                || ancestor.session_id != ancestor_session_id
-                || ancestor.root_session_id != current.root_session_id
+
+            let Some(ancestor) = self.lineage_event_by_uuid(
+                ancestor_event_id.as_uuid(),
+                fields,
+                exact_identity_posting_visits,
+            )?
+            else {
+                return Ok(ForwardResolution {
+                    selected_session_id,
+                    anchor: target,
+                    resolution: target.unresolved(),
+                    selected_depth: depth,
+                });
+            };
+            if ancestor.event_id != ancestor_event_id || ancestor.session_id != ancestor_session_id
             {
-                return Err(IndexError::InvalidEventOriginGraph(
-                    "declared origin event identity or session is inconsistent",
-                ));
+                return Ok(ForwardResolution {
+                    selected_session_id,
+                    anchor: target,
+                    resolution: target.unresolved(),
+                    selected_depth: depth,
+                });
             }
             if !visited.insert(ancestor.event_id) {
-                return Err(IndexError::InvalidEventOriginGraph(
-                    "cycle in copied-event origin graph",
-                ));
+                return Ok(ForwardResolution {
+                    selected_session_id,
+                    anchor: ancestor.target(),
+                    resolution: CopiedEventLineageResolution::Cyclic {
+                        event_id: ancestor.event_id,
+                        session_id: ancestor.session_id,
+                    },
+                    selected_depth: depth,
+                });
             }
             current = ancestor;
-            depth = depth.checked_add(1).ok_or(IndexError::CountOverflow)?;
         }
-        Ok((current, depth))
+    }
+
+    fn session_ancestry_resolution(
+        &self,
+        child: &LineageEvent,
+        ancestor_session_id: StableEntityId,
+        fields: Fields,
+        exact_identity_posting_visits: &mut usize,
+    ) -> Result<SessionAncestryResolution> {
+        let mut current_session_id = child.session_id;
+        let mut current_lineage = child.session_lineage();
+        let mut visited = HashSet::new();
+        visited.insert(current_session_id);
+
+        loop {
+            let Some(parent_session_id) = current_lineage.parent_session_id else {
+                return Ok(SessionAncestryResolution::Unresolved);
+            };
+            if parent_session_id == ancestor_session_id {
+                return Ok(SessionAncestryResolution::Resolved);
+            }
+            if !visited.insert(parent_session_id) {
+                return Ok(SessionAncestryResolution::Cyclic);
+            }
+            let Some(parent_lineage) = self.session_lineage_by_id(
+                parent_session_id,
+                fields,
+                exact_identity_posting_visits,
+            )?
+            else {
+                return Ok(SessionAncestryResolution::Unresolved);
+            };
+            current_session_id = parent_session_id;
+            current_lineage = parent_lineage;
+            if current_session_id == ancestor_session_id {
+                return Ok(SessionAncestryResolution::Resolved);
+            }
+        }
     }
 
     fn lineage_event_by_uuid(
@@ -290,18 +439,7 @@ impl VerifiedIndex {
                 inverted.read_postings_from_terminfo(&term_info, IndexRecordOption::Basic)?;
             let mut doc_id = postings.doc();
             while doc_id != TERMINATED {
-                if *exact_identity_posting_visits
-                    == MAX_COPIED_EVENT_LINEAGE_EXACT_IDENTITY_POSTING_VISITS
-                {
-                    return Err(
-                        IndexError::CopiedEventLineageExactIdentityPostingVisitLimitExceeded {
-                            maximum: MAX_COPIED_EVENT_LINEAGE_EXACT_IDENTITY_POSTING_VISITS,
-                        },
-                    );
-                }
-                *exact_identity_posting_visits = (*exact_identity_posting_visits)
-                    .checked_add(1)
-                    .ok_or(IndexError::CountOverflow)?;
+                note_exact_identity_posting(exact_identity_posting_visits)?;
                 if !segment.is_deleted(doc_id) {
                     if found.is_some() {
                         return Err(IndexError::DuplicateEventIdentity(event_id.to_string()));
@@ -324,20 +462,52 @@ impl VerifiedIndex {
         Ok(found)
     }
 
+    fn session_lineage_by_id(
+        &self,
+        session_id: StableEntityId,
+        fields: Fields,
+        exact_identity_posting_visits: &mut usize,
+    ) -> Result<Option<SessionLineage>> {
+        let term = Term::from_field_text(fields.session_id, &session_id.as_uuid().to_string());
+        for (segment_ord, segment) in self.searcher.segment_readers().iter().enumerate() {
+            let inverted = segment.inverted_index(fields.session_id)?;
+            let Some(term_info) = inverted.get_term_info(&term)? else {
+                continue;
+            };
+            let mut postings =
+                inverted.read_postings_from_terminfo(&term_info, IndexRecordOption::Basic)?;
+            let mut doc_id = postings.doc();
+            while doc_id != TERMINATED {
+                note_exact_identity_posting(exact_identity_posting_visits)?;
+                if !segment.is_deleted(doc_id) {
+                    let segment_ord =
+                        u32::try_from(segment_ord).map_err(|_| IndexError::CountOverflow)?;
+                    let record = stored_lineage_event(
+                        &self.searcher,
+                        DocAddress::new(segment_ord, doc_id),
+                        fields,
+                    )?;
+                    if record.session_id == session_id {
+                        return Ok(Some(record.session_lineage()));
+                    }
+                }
+                doc_id = postings.advance();
+            }
+        }
+        Ok(None)
+    }
+
     fn inverse_lineage_children(
         &self,
-        ancestor: &LineageEvent,
+        target: LineageTarget,
         fields: Fields,
         maximum_posting_visits: usize,
         posting_visits: &mut usize,
         children: &mut Vec<LineageEvent>,
     ) -> Result<bool> {
-        let term = Term::from_field_text(
-            fields.origin_event_identity_digest,
-            &hex(&ancestor.event_id.digest()),
-        );
+        let term = Term::from_field_text(fields.origin_event_id, &target.event_id.to_string());
         for (segment_ord, segment) in self.searcher.segment_readers().iter().enumerate() {
-            let inverted = segment.inverted_index(fields.origin_event_identity_digest)?;
+            let inverted = segment.inverted_index(fields.origin_event_id)?;
             let Some(term_info) = inverted.get_term_info(&term)? else {
                 continue;
             };
@@ -365,18 +535,20 @@ impl VerifiedIndex {
                             "inverse posting does not identify a copied event",
                         ));
                     };
-                    if copied_from_event_id != ancestor.event_id
-                        || copied_from_session_id != ancestor.session_id
-                        || child.root_session_id != ancestor.root_session_id
-                    {
+                    if copied_from_event_id.as_uuid() != target.event_id {
                         return Err(IndexError::InvalidEventOriginGraph(
-                            "inverse posting disagrees with the exact stored origin",
+                            "inverse posting disagrees with the stored origin event",
                         ));
                     }
-                    if child.session_relationship == SessionRelationshipKind::Root {
-                        return Err(IndexError::InvalidEventOriginGraph(
-                            "a copied event cannot belong to a root session",
-                        ));
+                    if target
+                        .exact_event_id
+                        .is_some_and(|id| copied_from_event_id != id)
+                        || target
+                            .session_id
+                            .is_some_and(|id| copied_from_session_id != id)
+                    {
+                        doc_id = postings.advance();
+                        continue;
                     }
                     children.push(child);
                 }
@@ -385,6 +557,20 @@ impl VerifiedIndex {
         }
         Ok(true)
     }
+}
+
+fn note_exact_identity_posting(posting_visits: &mut usize) -> Result<()> {
+    if *posting_visits == MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS {
+        return Err(
+            IndexError::CopiedEventLineageEventAndSessionIdentityPostingVisitLimitExceeded {
+                maximum: MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS,
+            },
+        );
+    }
+    *posting_visits = (*posting_visits)
+        .checked_add(1)
+        .ok_or(IndexError::CountOverflow)?;
+    Ok(())
 }
 
 fn stored_lineage_event(
@@ -403,7 +589,7 @@ fn stored_lineage_event(
         event_id: projection.event_id,
         session_id: projection.session_id,
         parent_session_id: projection.parent_session_id,
-        root_session_id: projection.root_session_id,
+        claimed_root_session_id: projection.root_session_id,
         session_relationship: projection.session_relationship,
         event_origin: projection.event_origin,
         event_sequence: projection.event_sequence,
@@ -555,9 +741,9 @@ fn validate_indexed_lineage_projection(
         validate_text_posting(
             segment,
             address.doc_id,
-            fields.origin_event_identity_digest,
-            &hex(&ancestor_event_id.digest()),
-            "origin_event_identity_digest",
+            fields.origin_event_id,
+            &ancestor_event_id.as_uuid().to_string(),
+            "origin_event_id",
         )?;
     }
     validate_u64_posting(

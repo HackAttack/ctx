@@ -703,27 +703,37 @@ Each result can include:
 - `copied_lineage`;
 - `visibility`.
 
-`copied_lineage` is the same schema-v1 object on each search result and on an
-event-window envelope. Its current required fields are listed below;
-schema-v1 readers must ignore additional fields:
+`copied_lineage` is the same schema-v2 object on each search result and on an
+event-window envelope. It is an explicit query-time view; its resolution does
+not affect publication. Its current required fields are listed below;
+schema-v2 readers must ignore additional fields:
 
-- `schema_version: 1`;
+- `schema_version: 2`;
+- `resolution`, with `state` equal to `resolved`, `unresolved`, or `cyclic`,
+  the target `ctx_event_id`, and a nullable `ctx_session_id` when the target
+  session is not known;
+- `selected_depth`, the number of forward copied-from edges examined;
 - `observed_count`, exact when `truncated` is false and otherwise a lower bound;
 - numeric `returned`, the number of retained occurrence rows;
 - `occurrences[]`, each with full `ctx_event_id`, `ctx_session_id`, direct
-  `copied_from_ctx_event_id` and `copied_from_ctx_session_id`, parent/root
-  session IDs, `session_relationship`, and BFS `depth`;
+  `copied_from_ctx_event_id` and `copied_from_ctx_session_id`, parent and
+  child-claimed-root session IDs, `session_relationship`, and BFS `depth`;
 - `relationship_counts`, keyed by relationship kind and subject to the same
   exact-versus-lower-bound rule;
 - `truncated`.
 
+Missing parent/copy targets are unresolved references, and cycles are cyclic
+answers. Reverse lookup can return direct child claims even when the selected
+target event is absent. Neither condition invalidates the immutable generation.
+
 Search retains at most three occurrences after at most 64 reverse posting
 visits. Show event retains at most 20 after at most 4,096 visits. Both stop at
-depth 1,024. Selected-event and forward-origin resolution independently visits
-at most 2,048 exact event-identity postings, counting live and deleted rows,
-and fails with a typed bound error if more work would be required. The complete
-object is limited to 64 KiB. Preview retention alone does not make an otherwise
-complete count truncated. The current writer does not emit `more_available`,
+depth 1,024. Selected-event, forward-origin, and session-ancestry resolution
+share at most 2,048 exact event-and-session identity posting visits, counting
+live and deleted rows. The query fails with a typed bound error if more work
+would be required. The complete object is limited to 64 KiB. Preview retention
+alone does not make an otherwise complete count truncated. The current writer does
+not emit `more_available`,
 compact-ID fields, or an exhaustive cursor. CLI JSON and MCP structured content
 always use full UUIDs; compact aliases exist only in the separately rendered
 human/MCP text projection.

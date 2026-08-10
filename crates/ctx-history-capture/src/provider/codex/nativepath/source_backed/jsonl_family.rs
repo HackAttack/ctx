@@ -2,6 +2,8 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 use chrono::{DateTime, Utc};
 
+#[cfg(any(test, ctx_codex_causal_qualification))]
+use super::causal::CodexCausalLedgerV1;
 use super::generation::CodexPreparedRouteV0;
 use super::*;
 use crate::{
@@ -11,9 +13,8 @@ use crate::{
             observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
             JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
             JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome,
-            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
-            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
-            JsonlFileObservation,
+            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRootMissingMode,
+            JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlFileObservation,
         },
         SourceBackedRouteErrorKind,
     },
@@ -21,11 +22,6 @@ use crate::{
 };
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
-type CodexReplayLineageV0 = (CodexCatalogSource, CodexAppendProof, String);
-const CODEX_LINEAGE_EXHAUSTED_DETAIL: &str =
-    "Codex lineage working set exceeded its bounded task-local capacity";
-const CODEX_LINEAGE_UNAVAILABLE_DETAIL: &str = "Codex lineage working set is unavailable";
-const CODEX_GENERATION_TERMINAL_PARTITION_V0: u64 = u64::MAX;
 
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
@@ -35,44 +31,14 @@ fn observe_generation_source_capability_v0(
     observe_opened_file(&source.source_path, &opened)
 }
 
-fn codex_lineage_rejected_leaf_v0(
-    rejected: CodexLineageRejectedSourceV0,
-    authority_path: PathBuf,
-) -> Result<JsonlFamilyRejectedLeaf> {
-    let native_session_id = rejected.source.catalog_native_session_id.as_deref().ok_or(
-        CaptureError::SystemInvariant(
-            "rejected Codex lineage source has no native session identity",
-        ),
-    )?;
-    let source = codex_source_key(native_session_id)
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-    let diagnostic = rejected.proof.root_conflict_diagnostic_detail();
-    let proof_bytes = serde_json::to_vec(&rejected.proof)?;
-    let proof = TypedKey::bytes(proof_bytes)
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-    let terminal_source = rejected.source.clone();
-    let opened = reopen_codex_source_capability(&terminal_source)?;
-    revalidate_codex_catalog_source_capability(&terminal_source, &opened)?;
-    Ok(JsonlFamilyRejectedLeaf::bind_observed_with_terminal(
-        rejected.source.source_path,
-        authority_path,
-        proof,
-        1,
-        source,
-        move || {
-            let opened = reopen_codex_source_capability(&terminal_source)?;
-            revalidate_codex_catalog_source_capability(&terminal_source, &opened)
-        },
-        diagnostic,
-    ))
-}
-
 #[derive(Default)]
 struct CodexSessionJsonlFamilyStateV0 {
     plans: HashMap<SourceKey, CodexSessionPlanV0>,
-    outcome_lineage: Option<Arc<CodexOutcomeLineageAuthorityV0>>,
-    replay_lineage: BTreeMap<u64, Vec<CodexReplayLineageV0>>,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
     counters: CodexSourceBackedCountersV0,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    causal: CodexCausalLedgerV1,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
     stage_pending: bool,
 }
 
@@ -81,34 +47,25 @@ fn scan_codex_session_jsonl_leaf_v0(
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaf: &JsonlFamilyLeaf,
     base: Option<&CertifiedSource>,
-    collect_lineage_facts: bool,
     base_event_lookup: &BaseEventIdentityLookup,
     worker: &mut JsonlFamilyWorkerContext,
     emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
 ) -> Result<JsonlFamilyOptimizedLeafOutcome> {
-    let (mut plan, outcome_lineage) = {
+    let plan = {
         let state = state.lock().map_err(|_| codex_family_state_error())?;
-        let plan = state.plans.get(leaf.source()).cloned().ok_or_else(|| {
+        state.plans.get(leaf.source()).cloned().ok_or_else(|| {
             CaptureError::InvalidPayload(
                 "Codex JSONL family leaf has no native source plan".to_owned(),
             )
-        })?;
-        let outcome_lineage = state.outcome_lineage.clone().ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex JSONL family has no opening lineage authority".to_owned(),
-            )
-        })?;
-        (plan, outcome_lineage)
+        })?
     };
     if plan.0.source_path != leaf.source_path() {
         return Err(CaptureError::SourceChangedDuringCapture);
     }
-    // Generation preparation retains root authority and route observations,
-    // while each scheduled worker holds only its own exact leaf capability.
-    plan.0.opened = Some(leaf.open_for_optimized_scan()?);
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    let causal_native_session_id = plan.2.clone();
     let mut scan_context = CodexJsonlFamilyLeafContextV0 {
         base_event_lookup,
-        outcome_lineage: &outcome_lineage,
         repository_attributor: worker.repository_attributor(),
     };
     let outcome = scan_codex_jsonl_family_leaf_v0(
@@ -116,7 +73,6 @@ fn scan_codex_session_jsonl_leaf_v0(
         plan.1,
         plan.2,
         base,
-        collect_lineage_facts,
         &mut scan_context,
         |publication, completed_bytes, records| {
             let publication = match publication {
@@ -139,9 +95,15 @@ fn scan_codex_session_jsonl_leaf_v0(
         Some(append) => JsonlFamilyOptimizedLeafOutcome::append(append, terminal_proof),
         None => JsonlFamilyOptimizedLeafOutcome::replacement(outcome.certificate, terminal_proof),
     };
-    let mut state = state.lock().map_err(|_| codex_family_state_error())?;
-    state.counters.add_assign(outcome.counters);
-    state.stage_pending = true;
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    {
+        let mut state = state.lock().map_err(|_| codex_family_state_error())?;
+        state.counters.add_assign(outcome.counters);
+        state
+            .causal
+            .observe_scan(&causal_native_session_id, outcome.counters);
+        state.stage_pending = true;
+    }
     Ok(family_outcome)
 }
 
@@ -153,266 +115,59 @@ fn prepare_codex_session_jsonl_scans_v0(
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &[JsonlFamilyLeaf],
     bases: &HashMap<[u8; 32], &CertifiedSource>,
-    generation_prepared_lineage: bool,
 ) -> Result<Option<usize>> {
-    if leaves.is_empty() {
-        state
-            .lock()
-            .map_err(|_| codex_family_state_error())?
-            .replay_lineage
-            .clear();
-        return Ok(None);
-    }
-    let (plans, outcome_lineage) = {
-        let state = state.lock().map_err(|_| codex_family_state_error())?;
-        let outcome_lineage = state.outcome_lineage.clone().ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex JSONL family has no opening lineage authority".to_owned(),
-            )
-        })?;
-        (state.plans.clone(), outcome_lineage)
-    };
-    let selected = leaves
+    let mut state = state.lock().map_err(|_| codex_family_state_error())?;
+    if leaves
         .iter()
-        .map(|leaf| leaf.source().exact_descriptor_digest())
-        .collect::<HashSet<_>>();
-    let selected_native_session_ids = plans
-        .iter()
-        .filter(|(source_key, _)| selected.contains(&source_key.exact_descriptor_digest()))
-        .map(|(_, (_, _, native_session_id))| native_session_id.clone())
-        .collect::<HashSet<_>>();
-    if generation_prepared_lineage {
-        // Generation preparation already scanned each selected ancestor once
-        // and spilled its sealed facts. Route-local exact replay must not
-        // register those facts a second time; partition leases hydrate them.
-        state
-            .lock()
-            .map_err(|_| codex_family_state_error())?
-            .replay_lineage
-            .clear();
-        return Ok(None);
+        .any(|leaf| !state.plans.contains_key(leaf.source()))
+    {
+        return Err(CaptureError::InvalidPayload(
+            "Codex JSONL family selected an unplanned leaf".to_owned(),
+        ));
     }
-    outcome_lineage
-        .bind_route_sources(&selected_native_session_ids)
-        .map_err(codex_family_capture_error)?;
-    let mut replay_sources = Vec::new();
-    let mut changed_ids = HashSet::new();
-    for (source_key, (source, _, native_session_id)) in &plans {
-        if !selected.contains(&source_key.exact_descriptor_digest()) {
-            continue;
-        }
+    let mut hydrated = HashMap::with_capacity(state.plans.len());
+    for (_, plan) in std::mem::take(&mut state.plans) {
         let base = bases
-            .get(&source_key.exact_descriptor_digest())
+            .get(&plan.1.exact_descriptor_digest())
             .copied()
-            .filter(|base| base.observation().source().exact_descriptor_eq(source_key));
-        let lineage_dependency_sha256 = outcome_lineage.dependency_digest(native_session_id);
-        let proof = base
-            .filter(|base| base.parser_revision() == CODEX_PARSER_REVISION)
-            .and_then(|base| decode_append_proof(source, source_key, base).ok())
-            .filter(|proof| {
-                proof.checkpoint.lineage_dependency_sha256 == lineage_dependency_sha256
-            });
-        let replay_needed = outcome_lineage
-            .needs_descendant_facts(native_session_id)
+            .filter(|base| base.observation().source().exact_descriptor_eq(&plan.1));
+        let (plan, work, exact_replay) = super::catalog::hydrate_codex_session_plan_v0(plan, base)
             .map_err(codex_family_capture_error)?;
-        match proof.filter(|proof| proof.checkpoint.observation == source.catalog_observation) {
-            Some(proof) if replay_needed => {
-                replay_sources.push((source.clone(), proof, native_session_id.clone()));
-            }
-            Some(_) => {}
-            None => {
-                changed_ids.insert(native_session_id.clone());
-            }
+        #[cfg(any(test, ctx_codex_causal_qualification))]
+        {
+            state.counters.add_catalog_work(work);
+            state.counters.writer_exact_replay_sources = state
+                .counters
+                .writer_exact_replay_sources
+                .saturating_add(u64::from(exact_replay));
+            state.causal.observe_catalog(
+                &plan.2,
+                plan.0.catalog_parent_native_session_id.as_deref(),
+                work,
+                exact_replay,
+            );
         }
+        #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+        let _ = (work, exact_replay);
+        hydrated.insert(plan.1.clone(), plan);
     }
-    let changed_partitions = changed_ids
-        .iter()
-        .filter_map(|native_session_id| outcome_lineage.component_partition(native_session_id))
-        .collect::<HashSet<_>>();
-    let mut replay_lineage = BTreeMap::<u64, Vec<CodexReplayLineageV0>>::new();
-    if !changed_partitions.is_empty() {
-        for replay in replay_sources {
-            let partition = outcome_lineage
-                .component_partition(&replay.2)
-                .ok_or_else(|| {
-                    CaptureError::InvalidPayload(
-                        "Codex replay source has no lineage partition".to_owned(),
-                    )
-                })?;
-            if changed_partitions.contains(&partition) {
-                replay_lineage.entry(partition).or_default().push(replay);
-            }
-        }
+    state.plans = hydrated;
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    {
+        state.stage_pending = true;
     }
-    for replay_sources in replay_lineage.values_mut() {
-        replay_sources.sort_by(|left, right| {
-            outcome_lineage
-                .depth(&left.2)
-                .cmp(&outcome_lineage.depth(&right.2))
-                .then_with(|| left.2.cmp(&right.2))
-                .then_with(|| left.0.source_path.cmp(&right.0.source_path))
-        });
-    }
-    state
-        .lock()
-        .map_err(|_| codex_family_state_error())?
-        .replay_lineage = replay_lineage;
     Ok(None)
 }
 
-fn codex_session_jsonl_scan_partition_v0(
-    state: &Mutex<CodexSessionJsonlFamilyStateV0>,
-    leaf: &JsonlFamilyLeaf,
-    generation: bool,
-) -> Result<Option<u64>> {
-    let state = state.lock().map_err(|_| codex_family_state_error())?;
-    let outcome_lineage = state.outcome_lineage.as_ref().ok_or_else(|| {
-        CaptureError::InvalidPayload(
-            "Codex JSONL family has no opening lineage authority".to_owned(),
-        )
-    })?;
-    let (_, _, native_session_id) = state.plans.get(leaf.source()).ok_or_else(|| {
-        CaptureError::InvalidPayload("Codex JSONL family leaf has no native source plan".to_owned())
-    })?;
-    let component = outcome_lineage
-        .component_partition(native_session_id)
-        .ok_or_else(|| {
-            CaptureError::InvalidPayload("Codex lineage partition is absent".to_owned())
-        })?;
-    if generation
-        && !outcome_lineage
-            .generation_component_has_spilled_facts(component)
-            .map_err(codex_family_capture_error)?
-    {
-        return Ok(Some(CODEX_GENERATION_TERMINAL_PARTITION_V0));
-    }
-    Ok(Some(component))
-}
-
-fn begin_codex_session_jsonl_scan_partition_v0(
-    state: &Mutex<CodexSessionJsonlFamilyStateV0>,
-    partition: u64,
-    generation: bool,
-) -> Result<()> {
-    let (replay_sources, outcome_lineage) = {
-        let state = state.lock().map_err(|_| codex_family_state_error())?;
-        let outcome_lineage = state.outcome_lineage.clone().ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex JSONL family has no opening lineage authority".to_owned(),
-            )
-        })?;
-        (
-            state
-                .replay_lineage
-                .get(&partition)
-                .cloned()
-                .unwrap_or_default(),
-            outcome_lineage,
-        )
-    };
-    if generation {
-        if partition == CODEX_GENERATION_TERMINAL_PARTITION_V0 {
-            return Ok(());
-        }
-        outcome_lineage
-            .lease_generation_component(partition)
-            .map_err(codex_family_capture_error)
-    } else {
-        prepare_replayed_lineage_v0(&replay_sources, &outcome_lineage)
-            .map_err(codex_family_capture_error)
-    }
-}
-
-fn finish_codex_session_jsonl_scan_partition_v0(
-    state: &Mutex<CodexSessionJsonlFamilyStateV0>,
-    partition: u64,
-    generation: bool,
-) -> Result<()> {
-    let outcome_lineage = {
-        let mut state = state.lock().map_err(|_| codex_family_state_error())?;
-        state.replay_lineage.remove(&partition);
-        state.outcome_lineage.clone().ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex JSONL family has no opening lineage authority".to_owned(),
-            )
-        })?
-    };
-    if generation {
-        if partition == CODEX_GENERATION_TERMINAL_PARTITION_V0 {
-            return Ok(());
-        }
-        outcome_lineage
-            .release_generation_component(partition)
-            .map_err(codex_family_capture_error)
-    } else {
-        outcome_lineage
-            .release_component(partition)
-            .map_err(codex_family_capture_error)
-    }
-}
-
-fn codex_session_jsonl_scan_phase_v0(
-    state: &Mutex<CodexSessionJsonlFamilyStateV0>,
-    leaf: &JsonlFamilyLeaf,
-) -> Result<usize> {
-    let state = state.lock().map_err(|_| codex_family_state_error())?;
-    let outcome_lineage = state.outcome_lineage.as_ref().ok_or_else(|| {
-        CaptureError::InvalidPayload(
-            "Codex JSONL family has no opening lineage authority".to_owned(),
-        )
-    })?;
-    let (_, _, native_session_id) = state.plans.get(leaf.source()).ok_or_else(|| {
-        CaptureError::InvalidPayload("Codex JSONL family leaf has no native source plan".to_owned())
-    })?;
-    Ok(outcome_lineage.depth(native_session_id))
-}
-
 fn order_codex_session_jsonl_scans_v0(
-    state: &Mutex<CodexSessionJsonlFamilyStateV0>,
+    _state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &mut [JsonlFamilyLeaf],
 ) -> Result<()> {
-    if leaves.is_empty() {
-        return Ok(());
-    }
-    let state = state.lock().map_err(|_| codex_family_state_error())?;
-    let outcome_lineage = state.outcome_lineage.as_ref().ok_or_else(|| {
-        CaptureError::InvalidPayload(
-            "Codex JSONL family has no opening lineage authority".to_owned(),
-        )
-    })?;
-    let mut depths = HashMap::with_capacity(leaves.len());
-    for leaf in leaves.iter() {
-        let (_, _, native_session_id) = state.plans.get(leaf.source()).ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex JSONL family leaf has no native source plan".to_owned(),
-            )
-        })?;
-        depths.insert(
-            leaf.source().exact_descriptor_digest(),
-            outcome_lineage.depth(native_session_id),
-        );
-    }
     leaves.sort_by(|left, right| {
-        let left_depth = depths
-            .get(&left.source().exact_descriptor_digest())
-            .copied()
-            .unwrap_or(usize::MAX);
-        let right_depth = depths
-            .get(&right.source().exact_descriptor_digest())
-            .copied()
-            .unwrap_or(usize::MAX);
-        left_depth
-            .cmp(&right_depth)
-            // The retained native runner first orders by source-identity
-            // digest and then stable-sorts by lineage depth. Reproduce that
-            // equal-depth order so shared scheduling and writer admission do
-            // not acquire a provider-specific tail-latency difference.
-            .then_with(|| {
-                left.source()
-                    .identity()
-                    .digest()
-                    .cmp(&right.source().identity().digest())
-            })
+        left.source()
+            .identity()
+            .digest()
+            .cmp(&right.source().identity().digest())
     });
     Ok(())
 }
@@ -426,8 +181,6 @@ pub(crate) struct CodexSessionTreeJsonlFamilyAdapterV0 {
     roots: Arc<[PathBuf]>,
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     generation: Option<CodexGenerationRouteV0>,
-    #[cfg(test)]
-    lineage_budget_override: Option<Arc<CodexLineageFactBudgetV0>>,
     #[cfg(test)]
     after_stage: Option<fn(CodexSourceBackedCountersV0)>,
 }
@@ -451,8 +204,6 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             state: Arc::new(Mutex::new(CodexSessionJsonlFamilyStateV0::default())),
             generation: None,
             #[cfg(test)]
-            lineage_budget_override: None,
-            #[cfg(test)]
             after_stage: None,
         })
     }
@@ -471,18 +222,6 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_lineage_budget_limits(
-        mut self,
-        byte_limit: usize,
-        fact_limit: usize,
-    ) -> Self {
-        self.lineage_budget_override = Some(Arc::new(CodexLineageFactBudgetV0::with_limits(
-            byte_limit, fact_limit,
-        )));
-        self
-    }
-
     pub(crate) fn roots(&self) -> &[PathBuf] {
         &self.roots
     }
@@ -492,7 +231,8 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
     }
 
     fn discover_family(&self, route_root: &Path) -> Result<JsonlFamilyInventory> {
-        let _completed_stage = self.run_pending_stage_observer();
+        #[cfg(test)]
+        let _completed_stage = false;
         // The shared family invokes this first discovery only after route
         // admission and before starting leaf workers. That opening inventory is
         // frozen by the shared lifecycle; construction and registration remain
@@ -501,23 +241,18 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             Some(generation) => generation.prepared().map_err(codex_family_capture_error)?,
             None => {
                 let inventory = self.discover().map_err(codex_family_capture_error)?;
-                #[cfg(test)]
-                let normalized = match self.lineage_budget_override.as_ref() {
-                    Some(budget) => CodexOutcomeLineageAuthorityV0::normalize_sources_with_budget(
-                        &inventory.sources,
-                        Arc::clone(budget),
-                    ),
-                    None => CodexOutcomeLineageAuthorityV0::normalize_sources(&inventory.sources),
-                };
-                #[cfg(not(test))]
-                let normalized =
-                    CodexOutcomeLineageAuthorityV0::normalize_sources(&inventory.sources);
-                let normalized = normalized.map_err(codex_family_capture_error)?;
+                let sources = inventory
+                    .sources
+                    .into_iter()
+                    .map(|mut plan| {
+                        super::catalog::set_child_local_root(&mut plan.0, &plan.2)?;
+                        Ok(plan)
+                    })
+                    .collect::<CodexSourceBackedResultV0<Vec<_>>>()
+                    .map_err(codex_family_capture_error)?;
                 CodexPreparedRouteV0 {
                     missing: false,
-                    sources: normalized.sources,
-                    rejections: normalized.rejections,
-                    authority: Arc::new(normalized.authority),
+                    sources,
                     #[cfg(test)]
                     work: inventory.work,
                 }
@@ -528,19 +263,9 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
                 "Codex session-tree generation partition is missing",
             ));
         }
-        let outcome_lineage = prepared.authority;
         let normalized_sources = prepared.sources;
-        let mut rejected_leaves = Vec::with_capacity(prepared.rejections.len());
-        for rejected in prepared.rejections {
-            let authority_path = rejected.source.authority_relative_path.clone().ok_or(
-                CaptureError::SystemInvariant(
-                    "rejected Codex catalog source has no authority path",
-                ),
-            )?;
-            rejected_leaves.push(codex_lineage_rejected_leaf_v0(rejected, authority_path)?);
-        }
         let mut ordered_sources = (0..normalized_sources.len()).collect::<Vec<_>>();
-        ordered_sources.sort_by_key(|index| outcome_lineage.depth(&normalized_sources[*index].2));
+        ordered_sources.sort_by_key(|index| normalized_sources[*index].1.identity().digest());
         let mut authorities = BTreeMap::<PathBuf, Arc<ProviderSourceRoot>>::new();
         let mut leaves = Vec::with_capacity(normalized_sources.len());
         for index in ordered_sources {
@@ -586,22 +311,12 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             }
         }
         let authorities = authorities.into_values().collect();
-        let family_inventory = if rejected_leaves.is_empty() {
-            JsonlFamilyInventory::present_multi(
-                CaptureProvider::Codex,
-                route_root,
-                authorities,
-                leaves,
-            )?
-        } else {
-            JsonlFamilyInventory::present_multi_with_rejected(
-                CaptureProvider::Codex,
-                route_root,
-                authorities,
-                leaves,
-                rejected_leaves,
-            )?
-        };
+        let family_inventory = JsonlFamilyInventory::present_multi(
+            CaptureProvider::Codex,
+            route_root,
+            authorities,
+            leaves,
+        )?;
         let mut state = self.state.lock().map_err(|_| {
             CaptureError::InvalidPayload("Codex JSONL family state lock was poisoned".to_owned())
         })?;
@@ -610,9 +325,11 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
             .cloned()
             .map(|plan| (plan.1.clone(), plan))
             .collect();
-        state.outcome_lineage = Some(outcome_lineage);
-        state.replay_lineage.clear();
-        state.counters = CodexSourceBackedCountersV0::default();
+        #[cfg(any(test, ctx_codex_causal_qualification))]
+        {
+            state.counters = CodexSourceBackedCountersV0::default();
+            state.causal = CodexCausalLedgerV1::default();
+        }
         #[cfg(test)]
         {
             state.counters.add_catalog_work(prepared.work);
@@ -623,22 +340,33 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
         Ok(family_inventory)
     }
 
-    fn run_pending_stage_observer(&self) -> bool {
-        #[cfg(test)]
-        {
-            let counters = self.state.lock().ok().and_then(|mut state| {
-                state.stage_pending.then(|| {
-                    state.stage_pending = false;
-                    state.counters
-                })
-            });
-            if let (Some(observer), Some(counters)) = (self.after_stage, counters) {
-                observer(counters);
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    fn run_pending_stage_observer(&self) -> Result<bool> {
+        let (counters, causal) = {
+            let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
+            if !state.stage_pending {
+                return Ok(false);
             }
-            counters.is_some()
+            state.stage_pending = false;
+            (state.counters, std::mem::take(&mut state.causal))
+        };
+        #[cfg(test)]
+        if let Some(observer) = self.after_stage {
+            observer(counters);
         }
         #[cfg(not(test))]
-        false
+        let _ = counters;
+        #[cfg(test)]
+        causal.run_test_observer();
+        causal
+            .write_qualification_receipt()
+            .map_err(codex_family_capture_error)?;
+        Ok(true)
+    }
+
+    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+    fn run_pending_stage_observer(&self) -> Result<bool> {
+        Ok(false)
     }
 }
 
@@ -680,7 +408,7 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         _root: &Path,
         opening: &JsonlFamilyInventory,
     ) -> Result<JsonlFamilyMembershipObservation> {
-        self.run_pending_stage_observer();
+        self.run_pending_stage_observer()?;
         let mut observation = JsonlFamilyMembershipObservation::observe_authorities(opening)?;
         let candidates = observation
             .unbound_routes()
@@ -722,45 +450,10 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         leaves: &[JsonlFamilyLeaf],
         bases: &HashMap<[u8; 32], &CertifiedSource>,
     ) -> Result<Option<usize>> {
-        prepare_codex_session_jsonl_scans_v0(&self.state, leaves, bases, self.generation.is_some())
-    }
-
-    fn leaf_scan_phase(&self, leaf: &JsonlFamilyLeaf) -> Result<usize> {
-        codex_session_jsonl_scan_phase_v0(&self.state, leaf)
-    }
-
-    fn leaf_scan_partition(&self, leaf: &JsonlFamilyLeaf) -> Result<Option<u64>> {
-        codex_session_jsonl_scan_partition_v0(&self.state, leaf, self.generation.is_some())
-    }
-
-    fn leaf_scan_partition_wave_limit(&self) -> usize {
-        if self.generation.is_some() {
-            CODEX_GENERATION_LINEAGE_COMPONENTS_PER_WAVE
-        } else {
-            16
-        }
-    }
-
-    fn begin_leaf_scan_partition(&self, partition: u64) -> Result<()> {
-        begin_codex_session_jsonl_scan_partition_v0(
-            &self.state,
-            partition,
-            self.generation.is_some(),
-        )
-    }
-
-    fn finish_leaf_scan_partition(&self, partition: u64) -> Result<()> {
-        finish_codex_session_jsonl_scan_partition_v0(
-            &self.state,
-            partition,
-            self.generation.is_some(),
-        )
+        prepare_codex_session_jsonl_scans_v0(&self.state, leaves, bases)
     }
 
     fn finish_leaf_scans(&self) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
-        state.replay_lineage.clear();
-        state.outcome_lineage = None;
         Ok(())
     }
 
@@ -783,16 +476,11 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         worker: &mut JsonlFamilyWorkerContext,
         emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
-        #[cfg(test)]
-        if let Some(generation) = self.generation.as_ref() {
-            generation.record_worker_start();
-        }
         scan_codex_session_jsonl_leaf_v0(
             self,
             &self.state,
             leaf,
             base,
-            self.generation.is_none(),
             base_event_lookup,
             worker,
             emit_page,
@@ -847,7 +535,7 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
     }
 
     fn discover_family(&self, route_path: &Path) -> Result<JsonlFamilyInventory> {
-        let _completed_stage = self.run_pending_stage_observer();
+        let _completed_stage = self.run_pending_stage_observer()?;
         if route_path != self.input.path() {
             return Err(CaptureError::InvalidPayload(
                 "explicit Codex JSONL route path changed".to_owned(),
@@ -861,21 +549,23 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
                 let Some(plan) = inventory.source_plan() else {
                     let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
                     state.plans.clear();
-                    state.outcome_lineage = None;
-                    state.counters = CodexSourceBackedCountersV0::default();
+                    #[cfg(any(test, ctx_codex_causal_qualification))]
+                    {
+                        state.counters = CodexSourceBackedCountersV0::default();
+                        state.causal = CodexCausalLedgerV1::default();
+                    }
                     #[cfg(test)]
                     if !_completed_stage {
                         state.stage_pending = true;
                     }
                     return JsonlFamilyInventory::missing(CaptureProvider::Codex, route_path);
                 };
-                let normalized = CodexOutcomeLineageAuthorityV0::normalize_sources(&[plan])
+                let mut plan = plan;
+                super::catalog::set_child_local_root(&mut plan.0, &plan.2)
                     .map_err(codex_family_capture_error)?;
                 CodexPreparedRouteV0 {
                     missing: false,
-                    sources: normalized.sources,
-                    rejections: normalized.rejections,
-                    authority: Arc::new(normalized.authority),
+                    sources: vec![plan],
                     #[cfg(test)]
                     work: CodexCatalogWorkV0::default(),
                 }
@@ -884,8 +574,11 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
         if prepared.missing {
             let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
             state.plans.clear();
-            state.outcome_lineage = None;
-            state.counters = CodexSourceBackedCountersV0::default();
+            #[cfg(any(test, ctx_codex_causal_qualification))]
+            {
+                state.counters = CodexSourceBackedCountersV0::default();
+                state.causal = CodexCausalLedgerV1::default();
+            }
             #[cfg(test)]
             if !_completed_stage {
                 state.stage_pending = true;
@@ -899,7 +592,6 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
             CaptureError::InvalidPayload("explicit Codex JSONL path has no filename".to_owned())
         })?;
         let authority = Arc::new(ProviderSourceRoot::open(parent)?);
-        let outcome_lineage = prepared.authority;
         let plans = prepared.sources;
         let mut leaves = Vec::with_capacity(plans.len());
         for plan in &plans {
@@ -919,26 +611,19 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
                 observation,
             ));
         }
-        let rejected_leaves = prepared
-            .rejections
-            .into_iter()
-            .map(|rejected| codex_lineage_rejected_leaf_v0(rejected, authority_path.clone()))
-            .collect::<Result<Vec<_>>>()?;
-        let family_inventory = JsonlFamilyInventory::present_with_rejected(
-            CaptureProvider::Codex,
-            route_path,
-            authority,
-            leaves,
-            rejected_leaves,
-        )?;
+        let family_inventory =
+            JsonlFamilyInventory::present(CaptureProvider::Codex, route_path, authority, leaves)?;
         let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
         state.plans = plans
             .iter()
             .cloned()
             .map(|plan| (plan.1.clone(), plan))
             .collect();
-        state.outcome_lineage = Some(outcome_lineage);
-        state.counters = CodexSourceBackedCountersV0::default();
+        #[cfg(any(test, ctx_codex_causal_qualification))]
+        {
+            state.counters = CodexSourceBackedCountersV0::default();
+            state.causal = CodexCausalLedgerV1::default();
+        }
         #[cfg(test)]
         if plans.is_empty() && !_completed_stage {
             state.stage_pending = true;
@@ -946,22 +631,33 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
         Ok(family_inventory)
     }
 
-    fn run_pending_stage_observer(&self) -> bool {
-        #[cfg(test)]
-        {
-            let counters = self.state.lock().ok().and_then(|mut state| {
-                state.stage_pending.then(|| {
-                    state.stage_pending = false;
-                    state.counters
-                })
-            });
-            if let (Some(observer), Some(counters)) = (self.after_stage, counters) {
-                observer(counters);
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    fn run_pending_stage_observer(&self) -> Result<bool> {
+        let (counters, causal) = {
+            let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
+            if !state.stage_pending {
+                return Ok(false);
             }
-            counters.is_some()
+            state.stage_pending = false;
+            (state.counters, std::mem::take(&mut state.causal))
+        };
+        #[cfg(test)]
+        if let Some(observer) = self.after_stage {
+            observer(counters);
         }
         #[cfg(not(test))]
-        false
+        let _ = counters;
+        #[cfg(test)]
+        causal.run_test_observer();
+        causal
+            .write_qualification_receipt()
+            .map_err(codex_family_capture_error)?;
+        Ok(true)
+    }
+
+    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+    fn run_pending_stage_observer(&self) -> Result<bool> {
+        Ok(false)
     }
 }
 
@@ -1007,7 +703,7 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         root: &Path,
         opening: &JsonlFamilyInventory,
     ) -> Result<JsonlFamilyMembershipObservation> {
-        self.run_pending_stage_observer();
+        self.run_pending_stage_observer()?;
         JsonlFamilyMembershipObservation::observe(root, opening)
     }
 
@@ -1028,39 +724,7 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         leaves: &[JsonlFamilyLeaf],
         bases: &HashMap<[u8; 32], &CertifiedSource>,
     ) -> Result<Option<usize>> {
-        prepare_codex_session_jsonl_scans_v0(&self.state, leaves, bases, self.generation.is_some())
-    }
-
-    fn leaf_scan_phase(&self, leaf: &JsonlFamilyLeaf) -> Result<usize> {
-        codex_session_jsonl_scan_phase_v0(&self.state, leaf)
-    }
-
-    fn leaf_scan_partition(&self, leaf: &JsonlFamilyLeaf) -> Result<Option<u64>> {
-        codex_session_jsonl_scan_partition_v0(&self.state, leaf, self.generation.is_some())
-    }
-
-    fn leaf_scan_partition_wave_limit(&self) -> usize {
-        if self.generation.is_some() {
-            CODEX_GENERATION_LINEAGE_COMPONENTS_PER_WAVE
-        } else {
-            16
-        }
-    }
-
-    fn begin_leaf_scan_partition(&self, partition: u64) -> Result<()> {
-        begin_codex_session_jsonl_scan_partition_v0(
-            &self.state,
-            partition,
-            self.generation.is_some(),
-        )
-    }
-
-    fn finish_leaf_scan_partition(&self, partition: u64) -> Result<()> {
-        finish_codex_session_jsonl_scan_partition_v0(
-            &self.state,
-            partition,
-            self.generation.is_some(),
-        )
+        prepare_codex_session_jsonl_scans_v0(&self.state, leaves, bases)
     }
 
     fn projector(
@@ -1082,16 +746,11 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         worker: &mut JsonlFamilyWorkerContext,
         emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
-        #[cfg(test)]
-        if let Some(generation) = self.generation.as_ref() {
-            generation.record_worker_start();
-        }
         scan_codex_session_jsonl_leaf_v0(
             self,
             &self.state,
             leaf,
             base,
-            self.generation.is_none(),
             base_event_lookup,
             worker,
             emit_page,
@@ -1100,10 +759,6 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
     }
 
     fn finish_leaf_scans(&self) -> Result<()> {
-        self.state
-            .lock()
-            .map_err(|_| codex_family_state_error())?
-            .outcome_lineage = None;
         Ok(())
     }
 
@@ -1149,12 +804,6 @@ fn codex_scan_error_kind(error: &CaptureError) -> SourceBackedRouteErrorKind {
 
 fn codex_systemic_error_kind(error: &CaptureError) -> Option<SourceBackedRouteErrorKind> {
     match error {
-        CaptureError::InvalidPayload(detail) if detail == CODEX_LINEAGE_EXHAUSTED_DETAIL => {
-            Some(SourceBackedRouteErrorKind::ResourceUnavailable)
-        }
-        CaptureError::InvalidPayload(detail) if detail == CODEX_LINEAGE_UNAVAILABLE_DETAIL => {
-            Some(SourceBackedRouteErrorKind::Internal)
-        }
         CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         CaptureError::Io(_) | CaptureError::SystemIo { .. } => {
             Some(SourceBackedRouteErrorKind::ResourceUnavailable)
@@ -1171,221 +820,5 @@ pub(crate) fn codex_session_root_rank(root: &Path) -> u8 {
         Some("sessions") => 0,
         Some("archived_sessions") => 1,
         _ => 2,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{fs, io::Write};
-
-    use super::*;
-
-    fn write_session(root: &Path, native_session_id: &str) {
-        write_session_with_parent(root, native_session_id, None);
-    }
-
-    fn write_session_with_parent(
-        root: &Path,
-        native_session_id: &str,
-        parent_native_session_id: Option<&str>,
-    ) {
-        let record = serde_json::json!({
-            "timestamp": "2026-08-03T12:00:00Z",
-            "type": "session_meta",
-            "payload": {
-                "id": native_session_id,
-                "timestamp": "2026-08-03T12:00:00Z",
-                "cwd": "/tmp/jsonl-family-adapter",
-                "originator": "codex_cli_rs",
-                "cli_version": "0.1.0",
-                "source": "cli",
-                "forked_from_id": parent_native_session_id,
-                "model_provider": "openai"
-            }
-        });
-        fs::write(
-            root.join(format!("rollout-{native_session_id}.jsonl")),
-            format!("{record}\n"),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn adapter_preserves_sessions_and_archived_union_inventory() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = temp.path().join("sessions");
-        let archived = temp.path().join("archived_sessions");
-        fs::create_dir_all(&sessions).unwrap();
-        fs::create_dir_all(&archived).unwrap();
-        write_session(&sessions, "019facf0-4000-7777-8888-000000000001");
-        write_session(&archived, "019facf0-4000-7777-8888-000000000002");
-
-        let adapter = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![
-            archived.clone(),
-            sessions.clone(),
-            archived.clone(),
-        ])
-        .unwrap();
-        assert_eq!(adapter.roots(), &[sessions, archived]);
-
-        let inventory = adapter.discover().unwrap();
-        assert_eq!(inventory.sources.len(), 2);
-        assert_eq!(inventory.work.inventory_walks, 2);
-        assert_eq!(inventory.work.source_observations, 2);
-        let expected_hash_reads = if cfg!(any(unix, target_os = "windows")) {
-            2
-        } else {
-            4
-        };
-        assert_eq!(inventory.work.source_hash_reads, expected_hash_reads);
-        assert_eq!(inventory.work.source_body_reads, 2);
-        assert_eq!(inventory.work.session_meta_parses, 2);
-    }
-
-    #[test]
-    #[cfg(any(unix, target_os = "windows"))]
-    fn adapter_rehashes_the_frozen_prefix_only_after_observed_growth() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = temp.path().join("sessions");
-        fs::create_dir_all(&sessions).unwrap();
-        let native_session_id = "019facf0-4000-7777-8888-000000000020";
-        write_session(&sessions, native_session_id);
-        let source = sessions.join(format!("rollout-{native_session_id}.jsonl"));
-
-        crate::provider::codex::nativepath::install_after_codex_metadata_inventory_hook(
-            move || {
-                let mut file = fs::OpenOptions::new().append(true).open(source).unwrap();
-                file.write_all(b"\n").unwrap();
-                file.sync_all().unwrap();
-            },
-        );
-
-        let inventory = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![sessions])
-            .unwrap()
-            .discover()
-            .unwrap();
-        assert_eq!(inventory.sources.len(), 1);
-        assert_eq!(inventory.work.source_hash_reads, 2);
-    }
-
-    #[test]
-    #[cfg(any(unix, target_os = "windows"))]
-    fn adapter_rejects_rewrite_plus_growth_after_metadata_inventory() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = temp.path().join("sessions");
-        fs::create_dir_all(&sessions).unwrap();
-        let native_session_id = "019facf0-4000-7777-8888-000000000021";
-        write_session(&sessions, native_session_id);
-        let source = sessions.join(format!("rollout-{native_session_id}.jsonl"));
-
-        crate::provider::codex::nativepath::install_after_codex_metadata_inventory_hook(
-            move || {
-                let mut bytes = fs::read(&source).unwrap();
-                let marker = b"codex_cli_rs";
-                let offset = bytes
-                    .windows(marker.len())
-                    .position(|window| window == marker)
-                    .unwrap();
-                bytes[offset + marker.len() - 1] = b'x';
-                bytes.push(b'\n');
-                fs::write(source, bytes).unwrap();
-            },
-        );
-
-        let error = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![sessions])
-            .unwrap()
-            .discover()
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            CodexSourceBackedErrorV0::Capture(CaptureError::SourceChangedDuringCapture)
-        ));
-    }
-
-    #[test]
-    fn adapter_rejects_an_empty_multi_root_authority() {
-        let error = CodexSessionTreeJsonlFamilyAdapterV0::new(Vec::new())
-            .err()
-            .expect("empty roots must be rejected");
-        assert!(error
-            .to_string()
-            .contains("Codex session-tree authority has no roots"));
-    }
-
-    #[test]
-    fn adapter_captures_new_files_only_when_family_discovery_executes() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = temp.path().join("sessions");
-        fs::create_dir_all(&sessions).unwrap();
-        let adapter = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![sessions.clone()]).unwrap();
-
-        write_session(&sessions, "019facf0-4000-7777-8888-000000000003");
-
-        let inventory = JsonlFamilyAdapter::discover(&adapter, &sessions).unwrap();
-        assert_eq!(inventory.leaves().len(), 1);
-        assert!(adapter.state.lock().unwrap().outcome_lineage.is_some());
-        JsonlFamilyAdapter::finish_leaf_scans(&adapter).unwrap();
-        assert!(adapter.state.lock().unwrap().outcome_lineage.is_none());
-    }
-
-    #[test]
-    fn dependency_tree_uses_parallel_depth_phases_instead_of_a_global_worker_cap() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = temp.path().join("sessions");
-        fs::create_dir_all(&sessions).unwrap();
-        let root = "019facf0-4000-7777-8888-000000000010";
-        let first_child = "019facf0-4000-7777-8888-000000000011";
-        let second_child = "019facf0-4000-7777-8888-000000000012";
-        let grandchild = "019facf0-4000-7777-8888-000000000013";
-        write_session_with_parent(&sessions, root, None);
-        write_session_with_parent(&sessions, first_child, Some(root));
-        write_session_with_parent(&sessions, second_child, Some(root));
-        write_session_with_parent(&sessions, grandchild, Some(first_child));
-
-        let adapter = CodexSessionTreeJsonlFamilyAdapterV0::new(vec![sessions.clone()]).unwrap();
-        let opening = JsonlFamilyAdapter::discover(&adapter, &sessions).unwrap();
-        let mut leaves = opening.leaves().to_vec();
-        JsonlFamilyAdapter::order_leaf_scans(&adapter, &mut leaves).unwrap();
-        assert_eq!(
-            JsonlFamilyAdapter::prepare_leaf_scans(&adapter, &leaves, &HashMap::new()).unwrap(),
-            None,
-            "one dependency must not serialize the whole JSONL family"
-        );
-        let phases = leaves
-            .iter()
-            .map(|leaf| JsonlFamilyAdapter::leaf_scan_phase(&adapter, leaf).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(phases, vec![0, 1, 1, 2]);
-        let partitions = leaves
-            .iter()
-            .map(|leaf| {
-                JsonlFamilyAdapter::leaf_scan_partition(&adapter, leaf)
-                    .unwrap()
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        assert!(partitions
-            .iter()
-            .all(|partition| *partition == partitions[0]));
-    }
-
-    #[test]
-    fn lineage_resource_failures_remain_route_systemic() {
-        let exhausted =
-            codex_family_capture_error(CodexSourceBackedErrorV0::LineageWorkingSetExhausted);
-        assert_eq!(
-            codex_scan_error_kind(&exhausted),
-            SourceBackedRouteErrorKind::ResourceUnavailable
-        );
-        let unavailable =
-            codex_family_capture_error(CodexSourceBackedErrorV0::LineageWorkingSetUnavailable);
-        assert_eq!(
-            codex_scan_error_kind(&unavailable),
-            SourceBackedRouteErrorKind::Internal
-        );
-        assert_eq!(
-            codex_scan_error_kind(&CaptureError::Io(std::io::Error::from_raw_os_error(24))),
-            SourceBackedRouteErrorKind::ResourceUnavailable
-        );
     }
 }

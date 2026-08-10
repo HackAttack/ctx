@@ -1,54 +1,6 @@
 use super::super::rows::{build_event_row, tool_context_from_row};
 use super::*;
 
-#[cfg(test)]
-std::thread_local! {
-    static AFTER_CODEX_PREFIX_HASH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-    static AFTER_CODEX_SECOND_PREFIX_HASH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn install_after_codex_prefix_hash_hook(hook: impl FnOnce() + 'static) {
-    AFTER_CODEX_PREFIX_HASH_HOOK.with(|slot| {
-        assert!(
-            slot.borrow().is_none(),
-            "Codex prefix-hash hook is already installed"
-        );
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn install_after_codex_second_prefix_hash_hook(hook: impl FnOnce() + 'static) {
-    AFTER_CODEX_SECOND_PREFIX_HASH_HOOK.with(|slot| {
-        assert!(
-            slot.borrow().is_none(),
-            "Codex second prefix-hash hook is already installed"
-        );
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-fn run_after_codex_prefix_hash_hook() {
-    AFTER_CODEX_PREFIX_HASH_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
-#[cfg(test)]
-fn run_after_codex_second_prefix_hash_hook() {
-    AFTER_CODEX_SECOND_PREFIX_HASH_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
 pub(super) struct BoundedRecordRead {
     pub(super) complete: bool,
     pub(super) terminal_nul_padding: bool,
@@ -58,8 +10,8 @@ pub(super) struct BoundedRecordRead {
     pub(super) sha256: [u8; 32],
 }
 
-// Static dispatch gives authority preflight and dedicated lineage their exact
-// digest policies without adding a per-chunk branch to any scan.
+// Static dispatch gives scanning and authority preflight their exact digest
+// policies without adding a per-chunk branch to either path.
 trait BoundedRecordDigest {
     fn update(&mut self, chunk: &[u8]);
     fn finish(self) -> [u8; 32];
@@ -90,27 +42,6 @@ impl BoundedRecordDigest for Sha256BoundedRecordDigest<'_> {
     fn finish_incomplete(self) -> [u8; 32] {
         *self.complete_hasher = self.complete_before_record;
         self.record_hasher.finalize().into()
-    }
-}
-
-struct FullSha256BoundedRecordDigest<'a> {
-    full_hasher: &'a mut Sha256,
-}
-
-impl BoundedRecordDigest for FullSha256BoundedRecordDigest<'_> {
-    #[inline(always)]
-    fn update(&mut self, chunk: &[u8]) {
-        self.full_hasher.update(chunk);
-    }
-
-    #[inline(always)]
-    fn finish(self) -> [u8; 32] {
-        [0; 32]
-    }
-
-    #[inline(always)]
-    fn finish_incomplete(self) -> [u8; 32] {
-        [0; 32]
     }
 }
 
@@ -147,19 +78,6 @@ pub(super) fn read_bounded_record(
         complete_hasher,
         record_hasher: Sha256::new(),
     };
-    read_bounded_record_with_digest(reader, storage, maximum_bytes, digest)
-}
-
-pub(super) fn read_bounded_record_full_sha256(
-    reader: &mut BufReader<File>,
-    storage: &mut Vec<u8>,
-    full_hasher: &mut Sha256,
-    maximum_bytes: u64,
-) -> Result<Option<BoundedRecordRead>> {
-    if maximum_bytes == 0 {
-        return Ok(None);
-    }
-    let digest = FullSha256BoundedRecordDigest { full_hasher };
     read_bounded_record_with_digest(reader, storage, maximum_bytes, digest)
 }
 
@@ -285,13 +203,10 @@ mod bounded_record_tests {
         let path = temp.path().join("bounded-record.jsonl");
         std::fs::write(&path, contents).unwrap();
         let mut hashed_reader = BufReader::with_capacity(8 * 1024, File::open(&path).unwrap());
-        let mut full_only_reader = BufReader::with_capacity(32 * 1024, File::open(&path).unwrap());
         let mut unhashed_reader = BufReader::with_capacity(64 * 1024, File::open(&path).unwrap());
         let mut hashed_storage = Vec::new();
-        let mut full_only_storage = Vec::new();
         let mut unhashed_storage = Vec::new();
         let mut full_hasher = Sha256::new();
-        let mut full_only_hasher = Sha256::new();
         let mut complete_hasher = Sha256::new();
         let mut offset = 0_u64;
         let mut complete_end = 0_u64;
@@ -306,14 +221,6 @@ mod bounded_record_tests {
             )
             .unwrap()
             .unwrap();
-            let full_only = read_bounded_record_full_sha256(
-                &mut full_only_reader,
-                &mut full_only_storage,
-                &mut full_only_hasher,
-                frozen_len.saturating_sub(offset),
-            )
-            .unwrap()
-            .unwrap();
             let unhashed = read_bounded_record_unhashed(
                 &mut unhashed_reader,
                 &mut unhashed_storage,
@@ -322,19 +229,12 @@ mod bounded_record_tests {
             .unwrap()
             .unwrap();
 
-            assert_eq!(full_only.complete, hashed.complete);
-            assert_eq!(full_only.terminal_nul_padding, hashed.terminal_nul_padding);
-            assert_eq!(full_only.oversized, hashed.oversized);
-            assert_eq!(full_only.stored_len, hashed.stored_len);
-            assert_eq!(full_only.byte_len, hashed.byte_len);
-            assert_eq!(full_only.sha256, [0; 32]);
             assert_eq!(unhashed.complete, hashed.complete);
             assert_eq!(unhashed.terminal_nul_padding, hashed.terminal_nul_padding);
             assert_eq!(unhashed.oversized, hashed.oversized);
             assert_eq!(unhashed.stored_len, hashed.stored_len);
             assert_eq!(unhashed.byte_len, hashed.byte_len);
             assert_eq!(unhashed.sha256, [0; 32]);
-            assert_eq!(full_only_storage, hashed_storage);
             assert_eq!(unhashed_storage, hashed_storage);
 
             let record_end = offset.saturating_add(hashed.byte_len);
@@ -358,10 +258,6 @@ mod bounded_record_tests {
         assert_eq!(offset, frozen_len);
         assert_eq!(
             <[u8; 32]>::from(full_hasher.finalize()),
-            <[u8; 32]>::from(Sha256::digest(&contents[..frozen_end]))
-        );
-        assert_eq!(
-            <[u8; 32]>::from(full_only_hasher.finalize()),
             <[u8; 32]>::from(Sha256::digest(&contents[..frozen_end]))
         );
         assert_eq!(
@@ -393,13 +289,10 @@ mod bounded_record_tests {
         let path = temp.path().join("truncated.jsonl");
         std::fs::write(&path, b"complete\n").unwrap();
         let mut hashed_reader = BufReader::new(File::open(&path).unwrap());
-        let mut full_only_reader = BufReader::new(File::open(&path).unwrap());
         let mut unhashed_reader = BufReader::new(File::open(&path).unwrap());
         let mut hashed_storage = Vec::new();
-        let mut full_only_storage = Vec::new();
         let mut unhashed_storage = Vec::new();
         let mut full_hasher = Sha256::new();
-        let mut full_only_hasher = Sha256::new();
         let mut complete_hasher = Sha256::new();
 
         read_bounded_record(
@@ -407,13 +300,6 @@ mod bounded_record_tests {
             &mut hashed_storage,
             &mut full_hasher,
             &mut complete_hasher,
-            10,
-        )
-        .unwrap();
-        read_bounded_record_full_sha256(
-            &mut full_only_reader,
-            &mut full_only_storage,
-            &mut full_only_hasher,
             10,
         )
         .unwrap();
@@ -428,22 +314,12 @@ mod bounded_record_tests {
             Err(error) => error,
             Ok(_) => panic!("hashed reader accepted missing frozen bytes"),
         };
-        let full_only_error = match read_bounded_record_full_sha256(
-            &mut full_only_reader,
-            &mut full_only_storage,
-            &mut full_only_hasher,
-            1,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("full-only reader accepted missing frozen bytes"),
-        };
         let unhashed_error =
             match read_bounded_record_unhashed(&mut unhashed_reader, &mut unhashed_storage, 1) {
                 Err(error) => error,
                 Ok(_) => panic!("unhashed reader accepted missing frozen bytes"),
             };
 
-        assert_eq!(full_only_error.to_string(), hashed_error.to_string());
         assert_eq!(unhashed_error.to_string(), hashed_error.to_string());
         assert!(unhashed_error
             .to_string()
@@ -473,8 +349,8 @@ pub(super) fn decode_pending_tool_authority(
     owner: &CodexSessionRow,
 ) -> Result<(String, CodexToolCallContext)> {
     // The surrounding checkpoint walk has already matched this authority to
-    // an exact JSONL boundary. The shared lineage scratch omits the delimiter;
-    // the legacy pending-only scratch includes it.
+    // an exact JSONL boundary. The current scanner scratch omits the delimiter;
+    // the pending-authority scratch includes it.
     let record = record.strip_suffix(b"\n").unwrap_or(record);
     let record = trim_jsonl_terminator(record);
     let probe = classify_codex_record(record).map_err(|_| {
@@ -547,7 +423,6 @@ pub(super) fn validate_checkpoint_source(
     reader: &mut BufReader<File>,
     checkpoint: &CodexNativeCheckpoint,
     append_replay: bool,
-    mut lineage_facts: Option<&mut CodexLineageFactsV0>,
 ) -> Result<ValidatedCheckpoint> {
     // The prefix proof is the sole read pass over checkpointed bytes. On
     // append, only the at-most-24 authority spans are retained long enough to
@@ -573,8 +448,6 @@ pub(super) fn validate_checkpoint_source(
     let mut authority_index = 0_usize;
     let mut current_record_start = 0_u64;
     let mut pending_tool_record = Vec::new();
-    let mut lineage_record = Vec::new();
-    let mut lineage_record_oversized = false;
     let mut pending_tool_contexts = BTreeMap::new();
     let mut pending_tool_authorities = BTreeMap::new();
     let mut pending_continuations = BTreeMap::new();
@@ -610,28 +483,12 @@ pub(super) fn validate_checkpoint_source(
                         "Codex checkpoint record offset exceeds u64",
                     ))?;
                 if append_replay
-                    && lineage_facts.is_none()
                     && authorities.get(authority_index).is_some_and(|authority| {
                         absolute_offset >= authority.record_start
                             && absolute_offset < authority.record_end
                     })
                 {
                     pending_tool_record.push(*byte);
-                }
-                if lineage_facts.is_some() && *byte != b'\n' {
-                    if lineage_record.len() < MAX_CODEX_RECORD_BYTES {
-                        if lineage_record.len() == lineage_record.capacity() {
-                            let growth = 8 * 1024;
-                            lineage_record.try_reserve_exact(growth).map_err(|_| {
-                                CaptureError::InvalidPayload(
-                                    CODEX_LINEAGE_EXHAUSTED_SENTINEL.to_owned(),
-                                )
-                            })?;
-                        }
-                        lineage_record.push(*byte);
-                    } else {
-                        lineage_record_oversized = true;
-                    }
                 }
                 if *byte != b'\n' {
                     terminal_suffix_all_nul &= *byte == 0;
@@ -655,13 +512,8 @@ pub(super) fn validate_checkpoint_source(
                             ));
                         }
                         if append_replay {
-                            let authority_record = if lineage_facts.is_some() {
-                                lineage_record.as_slice()
-                            } else {
-                                pending_tool_record.as_slice()
-                            };
                             let (call_id, context) = decode_pending_tool_authority(
-                                authority_record,
+                                pending_tool_record.as_slice(),
                                 authority,
                                 &checkpoint.owner,
                             )?;
@@ -680,16 +532,6 @@ pub(super) fn validate_checkpoint_source(
                         }
                         authority_index = authority_index.saturating_add(1);
                     }
-                }
-                if let Some(facts) = lineage_facts.as_deref_mut() {
-                    let _ = record_checkpoint_lineage(
-                        facts,
-                        &lineage_record,
-                        lineage_record_oversized,
-                        complete_records,
-                    )?;
-                    lineage_record.clear();
-                    lineage_record_oversized = false;
                 }
                 current_record_start = record_end;
                 complete_records = complete_records.saturating_add(1);
@@ -742,22 +584,6 @@ pub(super) fn validate_checkpoint_source(
             ));
         }
     }
-    if !append_replay && checkpoint.incomplete_tail().is_some() {
-        if let Some(facts) = lineage_facts {
-            // A fresh bounded scan records every unterminated tail as
-            // unattributed relationship ambiguity. Exact checkpoint replay
-            // must rederive that same fact from the certified boundary; the
-            // tail bytes were hashed above but intentionally never parsed as
-            // a complete JSONL record. Append replay resumes at that boundary,
-            // so the primary scanner derives replacement evidence from the
-            // tail's now-current bytes instead of retaining this old fact.
-            facts.record_at(
-                CodexLineageRecordEvidence::UnattributedAmbiguity,
-                complete_records,
-            )?;
-        }
-    }
-
     if append_replay {
         for (call_id, authority) in &pending_tool_authorities {
             if let Some(cell_id) = authority.continuation_cell_id() {
@@ -842,36 +668,6 @@ pub(super) fn validate_checkpoint_source(
     })
 }
 
-pub(super) fn record_checkpoint_lineage(
-    facts: &mut CodexLineageFactsV0,
-    record: &[u8],
-    oversized: bool,
-    raw_ordinal: u64,
-) -> Result<Option<CodexSessionRow>> {
-    if oversized {
-        facts.record_at(
-            CodexLineageRecordEvidence::UnattributedAmbiguity,
-            raw_ordinal,
-        )?;
-        return Ok(None);
-    }
-    if record
-        .iter()
-        .all(|byte| *byte == 0 || byte.is_ascii_whitespace())
-    {
-        return Ok(None);
-    }
-    let record = trim_jsonl_terminator(record);
-    let Some(probe) =
-        super::project::classify_and_record_codex_lineage(record, raw_ordinal, Some(facts))?
-    else {
-        return Ok(None);
-    };
-    Ok(matches!(probe.class, CodexRecordClass::SessionMeta)
-        .then(|| parse_session_meta(record))
-        .flatten())
-}
-
 pub(super) fn invalid_checkpoint_proof(reason: &str) -> CaptureError {
     CaptureError::InvalidPayload(format!("invalid Codex append proof: {reason}"))
 }
@@ -896,9 +692,9 @@ pub(super) fn observed_opened_file(
     if current == source.catalog_observation {
         return Ok(source.catalog_observation.clone());
     }
-    let expected_prefix = source.catalog_prefix_sha256.ok_or_else(|| {
-        CaptureError::SystemInvariant("Codex catalog prefix digest is unavailable")
-    })?;
+    let expected_prefix = source
+        .catalog_prefix_sha256
+        .ok_or(CaptureError::SourceChangedDuringCapture)?;
     revalidate_opened_prefix(
         opened.file(),
         source.catalog_observation.len,
@@ -909,46 +705,6 @@ pub(super) fn observed_opened_file(
     // EOF. Growth after that observation is deferred to the next refresh;
     // broadening the boundary here would give one source two authorities.
     Ok(source.catalog_observation.clone())
-}
-
-#[cfg(test)]
-pub(crate) fn revalidate_codex_source_observation(
-    source: &CodexCatalogSource,
-    certified: &CodexFileObservation,
-    certified_len: u64,
-    certified_sha256: [u8; 32],
-) -> Result<()> {
-    let opened = open_codex_source_capability(source)?;
-    let current = opened_file_observation(&source.source_path, opened.file())?;
-    opened.revalidate_same_object()?;
-    if !certified.admits_append_only_growth(&current) {
-        return Err(source_changed_during_scan());
-    }
-    if current != *certified {
-        revalidate_opened_prefix(opened.file(), certified_len, certified_sha256)?;
-        run_after_codex_prefix_hash_hook();
-        let middle = opened_file_observation(&source.source_path, opened.file())?;
-        opened.revalidate_same_object()?;
-        if !current.admits_append_only_growth(&middle) {
-            return Err(source_changed_during_scan());
-        }
-        // Hash the certified prefix again after observing the object. Exact
-        // prefix equality plus monotonic same-object observations is enough to
-        // admit a continuously appended JSONL file; waiting for a quiescent
-        // metadata window makes an active session impossible to import.
-        revalidate_opened_prefix(opened.file(), certified_len, certified_sha256)?;
-        run_after_codex_second_prefix_hash_hook();
-        let after = opened_file_observation(&source.source_path, opened.file())?;
-        opened.revalidate_same_object()?;
-        if !middle.admits_append_only_growth(&after) {
-            return Err(source_changed_during_scan());
-        }
-        // End on content proof. The preceding observation establishes
-        // monotonic same-object growth and this final hash rejects a
-        // rewrite-plus-append that raced after the prior proof.
-        revalidate_opened_prefix(opened.file(), certified_len, certified_sha256)?;
-    }
-    Ok(())
 }
 
 pub(super) fn revalidate_opened_prefix(
@@ -984,7 +740,7 @@ pub(crate) fn open_codex_source_capability(
 /// Reopens the authority-relative directory entry instead of consulting a
 /// previously retained leaf capability. Generation preparation uses this to
 /// prove that the path still names the cataloged ordinary file before any
-/// route worker can consume prepared lineage facts.
+/// route worker can consume its child-local source plan.
 pub(crate) fn reopen_codex_source_capability(
     source: &CodexCatalogSource,
 ) -> Result<Arc<OpenedProviderSourceFile>> {

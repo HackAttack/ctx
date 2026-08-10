@@ -427,7 +427,20 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         DiscoveredWinner
     ),
-    sqlite_route!(Hermes, "hermes_state_sqlite", true, true, DiscoveredWinner),
+    // Keep the released automatic/manual selector contract so unsupported
+    // discovery maps to the same historical route identity and can retain a
+    // same-epoch last-good route. The reason makes this row non-executable.
+    SourceBackedProviderRouteMetadata {
+        provider: CaptureProvider::Hermes,
+        source_format: "hermes_state_sqlite",
+        certified_source_format: "hermes_state_sqlite",
+        automatic: true,
+        explicit_manual: true,
+        selector_authority: SourceBackedSelectorAuthority::DiscoveredWinner,
+        unsupported_reason: Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON),
+        constructor: SourceBackedRouteConstructor::ProviderSource,
+        watch_target_kind: SourceBackedWatchTargetKind::SqliteDatabase,
+    },
     route!(
         NanoClaw,
         "nanoclaw_project",
@@ -592,7 +605,7 @@ Mux|mux_session_jsonl_tree|mux_session_jsonl|true|true|DiscoveredWinner|none|Pro
 Mux|mux_session_jsonl|mux_session_jsonl|false|true|ExplicitPath|none|ProviderSource
 RovoDev|rovodev_session_json_tree|rovodev_session_json_tree|true|true|DiscoveredWinner|none|ProviderSource
 OpenClaw|openclaw_session_jsonl_tree|openclaw_session_jsonl_tree|true|true|DiscoveredWinner|none|ProviderSource
-Hermes|hermes_state_sqlite|hermes_state_sqlite|true|true|DiscoveredWinner|none|ProviderSource
+Hermes|hermes_state_sqlite|hermes_state_sqlite|true|true|DiscoveredWinner|current Hermes state.db schemas are unsupported because they lack a provider-owned, transactionally maintained per-session content revision; ctx did not modify the database; retry only with a ctx release that explicitly supports a revision-bearing Hermes schema|ProviderSource
 NanoClaw|nanoclaw_project|nanoclaw_project|true|true|CatalogLineage|none|CatalogLineage
 AstrBot|astrbot_data_v4_sqlite|astrbot_data_v4_sqlite|true|true|DiscoveredWinner|none|DiscoveryContext
 Shelley|shelley_sqlite|shelley_sqlite|true|false|ExactCwd|none|ExactCwd

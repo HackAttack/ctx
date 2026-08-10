@@ -155,6 +155,7 @@ def minimal_matrix(provider: str = "fixture", source_format: str = "fixture_json
                 "event_origin": "unknown",
             },
         },
+        "detected_unsupported_sources": [],
         "providers": [
             {
                 "id": provider,

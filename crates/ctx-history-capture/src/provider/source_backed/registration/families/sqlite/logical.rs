@@ -58,40 +58,6 @@ pub(super) fn register_opencode_family_route(
     )
 }
 
-pub(super) fn register_hermes_route(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    data_root: &Path,
-) -> SourceBackedCoordinatorResult<()> {
-    if selection != SourceBackedRouteSelection::Automatic {
-        return Err(invalid_route(
-            source.provider,
-            "manual Hermes registration requires a persistent explicit SourceAnchor",
-        ));
-    }
-    let candidate = HermesSourceCandidate::automatic(data_root, source.clone())
-        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
-    register_hermes_candidate(
-        registry,
-        source,
-        selection,
-        candidate,
-        SourceBackedSelectorAuthority::DiscoveredWinner,
-    )
-}
-
-pub(super) fn register_hermes_candidate(
-    registry: &mut SourceBackedProviderRegistry,
-    source: ProviderSource,
-    selection: SourceBackedRouteSelection,
-    candidate: HermesSourceCandidate,
-    authority: SourceBackedSelectorAuthority,
-) -> SourceBackedCoordinatorResult<()> {
-    register_replacement_document_tree_route_with_authority(
-        registry, source, selection, authority, candidate,
-    )
-}
 pub(super) fn register_trae_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,

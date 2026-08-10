@@ -189,7 +189,6 @@ impl RovoDevTreeAuthority {
             provider_session_id: header.provider_session_id,
             session_id: header.session_id,
             parent_session_id,
-            root_session_id: leaf.root_session_id,
             unique_message_ids: unique_message_ids(snapshot),
         })
     }
@@ -226,7 +225,7 @@ fn document_header(
     })
 }
 
-fn probe_document_header(
+pub(super) fn probe_document_header(
     source: &RovoDevOpenedSource,
 ) -> RovoDevSourceBackedResult<RovoDevDocumentHeader> {
     let files = source.open_files()?;
@@ -294,126 +293,6 @@ fn probe_document_header(
     );
     files.revalidate()?;
     document_header(provider_session_id, parent_provider_session_id)
-}
-
-fn register_document_header(
-    lineage: &mut RovoDevLineageCache,
-    source_index: usize,
-    header: RovoDevDocumentHeader,
-) -> RovoDevSourceBackedResult<()> {
-    let selected = lineage
-        .headers
-        .get_mut(source_index)
-        .ok_or(RovoDevSourceBackedError::CountMismatch)?;
-    if let Some(existing) = selected.as_ref() {
-        if existing == &header {
-            return Ok(());
-        }
-        return Err(CaptureError::SourceChangedDuringCapture.into());
-    }
-    let source_digest = header.source_key.identity().digest();
-    if let Some(existing) = lineage.source_owners.insert(source_digest, source_index) {
-        if existing != source_index {
-            return Err(RovoDevSourceBackedError::DuplicateSession(
-                header.provider_session_id,
-            ));
-        }
-    }
-    *selected = Some(header);
-    Ok(())
-}
-
-pub(super) fn ensure_document_header(
-    lineage: &mut RovoDevLineageCache,
-    sources: &[RovoDevOpenedSource],
-    source_index: usize,
-) -> RovoDevSourceBackedResult<RovoDevDocumentHeader> {
-    if let Some(header) = lineage.headers.get(source_index).and_then(Option::as_ref) {
-        return Ok(header.clone());
-    }
-    let source = sources
-        .get(source_index)
-        .ok_or(RovoDevSourceBackedError::CountMismatch)?;
-    let header = probe_document_header(source)?;
-    register_document_header(lineage, source_index, header.clone())?;
-    Ok(header)
-}
-
-fn find_document_header(
-    lineage: &mut RovoDevLineageCache,
-    sources: &[RovoDevOpenedSource],
-    provider_session_id: &str,
-) -> RovoDevSourceBackedResult<Option<RovoDevDocumentHeader>> {
-    let source = rovodev_source_key(provider_session_id)?;
-    if let Some(index) = lineage
-        .source_owners
-        .get(&source.identity().digest())
-        .copied()
-    {
-        return lineage
-            .headers
-            .get(index)
-            .and_then(Option::as_ref)
-            .cloned()
-            .map(Some)
-            .ok_or(RovoDevSourceBackedError::CountMismatch);
-    }
-
-    let directory_candidates = lineage
-        .directory_owners
-        .get(provider_session_id)
-        .cloned()
-        .unwrap_or_default();
-    for index in directory_candidates {
-        if lineage.headers.get(index).is_some_and(Option::is_none) {
-            let header = ensure_document_header(lineage, sources, index)?;
-            if header.provider_session_id == provider_session_id {
-                return Ok(Some(header));
-            }
-        }
-    }
-    while lineage.next_unprobed < sources.len() {
-        let index = lineage.next_unprobed;
-        lineage.next_unprobed = lineage.next_unprobed.saturating_add(1);
-        let header = ensure_document_header(lineage, sources, index)?;
-        if header.provider_session_id == provider_session_id {
-            return Ok(Some(header));
-        }
-    }
-    Ok(None)
-}
-
-pub(super) fn resolve_root_session(
-    lineage: &mut RovoDevLineageCache,
-    sources: &[RovoDevOpenedSource],
-    provider_session_id: &str,
-) -> RovoDevSourceBackedResult<StableEntityId> {
-    if let Some(root) = lineage.roots.get(provider_session_id).copied() {
-        return Ok(root);
-    }
-    let mut path = Vec::new();
-    let mut visited = HashSet::new();
-    let mut cursor = provider_session_id.to_owned();
-    let root = loop {
-        if let Some(root) = lineage.roots.get(&cursor).copied() {
-            break root;
-        }
-        if !visited.insert(cursor.clone()) {
-            return Err(RovoDevSourceBackedError::LineageCycle(cursor));
-        }
-        path.push(cursor.clone());
-        let Some(header) = find_document_header(lineage, sources, &cursor)? else {
-            break provider_thread_session_identity(&cursor)?;
-        };
-        let Some(parent) = header.parent_provider_session_id else {
-            break header.session_id;
-        };
-        cursor = parent;
-    };
-    for session in path {
-        lineage.roots.insert(session, root);
-    }
-    Ok(root)
 }
 
 #[derive(Debug)]
@@ -818,12 +697,7 @@ fn core_record(
             }),
         })
     });
-    let is_primary = document.parent_provider_session_id.is_none();
-    let agent_type = if is_primary {
-        AgentType::Primary
-    } else {
-        AgentType::Subagent
-    };
+    let agent_type = AgentType::Primary;
     let mut record = CoreRecord::new_selected(
         event_id,
         bound.session_id,
@@ -836,14 +710,7 @@ fn core_record(
         PARSER_REVISION,
         body,
     )?;
-    if let Some(parent_session_id) = bound.parent_session_id {
-        let kind = if is_primary {
-            ctx_history_core::SessionRelationshipKind::RelatedUnknown
-        } else {
-            ctx_history_core::SessionRelationshipKind::Delegated
-        };
-        record.set_session_relationship(kind, Some(parent_session_id), bound.root_session_id)?;
-    }
+    apply_direct_session_relationship(&mut record, bound.parent_session_id)?;
     record.provider_session_id = Some(bound.provider_session_id.clone());
     record.native_event_id = Some(native_event_id);
     record.occurred_at_unix_ms = Some(event.occurred_at.timestamp_millis());

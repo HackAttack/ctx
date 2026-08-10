@@ -947,6 +947,32 @@ pub fn automatic_source_backed_route_identity(
     )
 }
 
+/// Derives the stable source-scoped failure identity used by refresh receipts
+/// and direct unsupported-source diagnostics.
+pub fn source_backed_source_failure_identity(
+    source: &ProviderSource,
+) -> SourceBackedCoordinatorResult<String> {
+    let known = landed_format_route(source.provider, source.source_format).ok_or_else(|| {
+        invalid_route(
+            source.provider,
+            format!(
+                "source format {:?} has no landed route",
+                source.source_format
+            ),
+        )
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(b"ctx.source-failure-identity-v1\0");
+    digest.update(source.provider.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(known.certified_source_format.as_bytes());
+    digest.update([0]);
+    let path = source.path.as_os_str().as_encoded_bytes();
+    digest.update((path.len() as u64).to_be_bytes());
+    digest.update(path);
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 fn source_backed_route_identity(
     source: &ProviderSource,
     certified_source_format: &str,

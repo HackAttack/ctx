@@ -35,11 +35,7 @@ fn write_session(root: &Path, native_session_id: &str, events: &[Value]) {
         .collect::<Vec<_>>()
         .join("\n");
     contents.push('\n');
-    fs::write(
-        root.join(format!("rollout-{native_session_id}.jsonl")),
-        contents,
-    )
-    .unwrap();
+    fs::write(root.join(format!("{native_session_id}.jsonl")), contents).unwrap();
 }
 
 fn publish_codex_sessions(session_root: &Path, index_root: &Path) -> SourceBackedRefreshReceipt {
@@ -339,7 +335,7 @@ fn redacted_real_shape_fixture_is_admitted_with_linkage_and_metadata() {
     let index = temp.path().join("global-index");
     fs::create_dir_all(&sessions).unwrap();
     fs::write(
-        sessions.join("rollout-redacted-mcp-direct-result.jsonl"),
+        sessions.join("redacted-mcp-direct-result.jsonl"),
         include_str!(
             "../src/provider/codex/nativepath/tests/fixtures/mcp_tool_call_end_direct_result.jsonl"
         ),
@@ -437,7 +433,7 @@ fn exact_error_attribution_and_ambiguous_pair_abstention_survive_publication() {
     let index = temp.path().join("global-index");
     fs::create_dir_all(&sessions).unwrap();
     fs::write(
-        sessions.join("rollout-redacted-mcp-attribution.jsonl"),
+        sessions.join("redacted-mcp-attribution.jsonl"),
         include_str!(
             "../src/provider/codex/nativepath/tests/fixtures/mcp_tool_call_attribution_adversarial.jsonl"
         ),
@@ -742,7 +738,7 @@ fn invalid_attribution_preserves_terminal_content_and_all_stable_identities() {
     );
     assert_eq!(
         exact.parser_revision,
-        "codex-nativepath-core-record-v24-scoped-malformed-descendant-authority"
+        "codex-nativepath-core-record-v27-bounded-exact-origin"
     );
     assert_eq!(exact.parser_revision, invalid.parser_revision);
     assert_eq!(
@@ -861,7 +857,7 @@ fn appended_duplicate_terminal_retracts_prior_attribution_and_preserves_ids() {
     assert!(initial_core.mcp_tool_call.is_some());
     drop(initial);
 
-    let path = sessions.join(format!("rollout-{native_session_id}.jsonl"));
+    let path = sessions.join(format!("{native_session_id}.jsonl"));
     let duplicate = mcp_result_with_invocation(
         call_id,
         json!({"server": "second", "tool": "write", "arguments": {}}),
@@ -923,7 +919,7 @@ fn appended_malformed_duplicate_retracts_attribution_without_touching_neighbor_i
     assert!(initial_neighbor.mcp_tool_call.is_some());
     drop(initial);
 
-    let path = sessions.join(format!("rollout-{native_session_id}.jsonl"));
+    let path = sessions.join(format!("{native_session_id}.jsonl"));
     let malformed = [
         mcp_result(call_id, json!({"Ok": {"content": malformed_result_marker}})),
         mcp_result_with_duration(

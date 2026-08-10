@@ -813,10 +813,18 @@ fn render_show_markdown(value: &Value) -> String {
 }
 
 fn append_copied_lineage_text(output: &mut String, value: &Value) {
-    let lineage = &value["copied_lineage"];
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
-    if observed == 0 {
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::copied_lineage::copied_lineage_summary(value)
+    else {
         return;
+    };
+    if observed == 0 && resolution.is_none_or(|state| state == "resolved") && selected_depth == 0 {
+        return;
+    }
+    if let Some(resolution) = resolution {
+        output.push_str(&format!(
+            "lineage_resolution: {resolution} selected_depth={selected_depth}\n"
+        ));
     }
     let truncated = lineage["truncated"].as_bool().unwrap_or(true);
     let summary = if truncated {
@@ -848,8 +856,19 @@ fn append_copied_lineage_text(output: &mut String, value: &Value) {
 }
 
 fn append_copied_lineage_markdown(output: &mut String, value: &Value) {
-    let lineage = &value["copied_lineage"];
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::copied_lineage::copied_lineage_summary(value)
+    else {
+        return;
+    };
+    if observed == 0 && resolution.is_none_or(|state| state == "resolved") && selected_depth == 0 {
+        return;
+    }
+    if let Some(resolution) = resolution {
+        output.push_str(&format!(
+            "\n## Copied lineage\n\nResolution: `{resolution}` at selected depth {selected_depth}.\n"
+        ));
+    }
     if observed == 0 {
         return;
     }
@@ -859,7 +878,7 @@ fn append_copied_lineage_markdown(output: &mut String, value: &Value) {
     } else {
         observed.to_string()
     };
-    output.push_str(&format!("\n## Inherited by {count} sessions\n"));
+    output.push_str(&format!("\n### Inherited by {count} sessions\n"));
     let command_prefix = value["_command_prefix"].as_str().unwrap_or("ctx");
     for occurrence in lineage["occurrences"]
         .as_array()

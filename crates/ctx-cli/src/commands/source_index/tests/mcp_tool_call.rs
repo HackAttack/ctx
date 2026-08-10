@@ -1,7 +1,6 @@
 use ctx_history_core::McpToolCallAttribution;
 
 use super::*;
-use crate::commands::source_index::mcp_show_event;
 
 #[test]
 fn exact_show_surfaces_omit_absence_and_keep_tool_outputs_log_only() {
@@ -84,28 +83,12 @@ fn exact_show_surfaces_omit_absence_and_keep_tool_outputs_log_only() {
         mcp_session["events"][1]["mcp_tool_call"],
         serde_json::to_value(&exact).unwrap()
     );
-    let mcp_event = mcp_show_event(
-        temp.path(),
-        &tool_output.event_id.as_uuid().to_string(),
-        0,
-        0,
-        None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    )
-    .unwrap();
+    let mcp_event = mcp_fixture_show_event(temp.path(), &tool_output);
     assert_eq!(
         mcp_event["event"]["mcp_tool_call"],
         serde_json::to_value(&exact).unwrap()
     );
 
-    let absent_event = mcp_show_event(
-        temp.path(),
-        &message.event_id.as_uuid().to_string(),
-        0,
-        0,
-        None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    )
-    .unwrap();
+    let absent_event = mcp_fixture_show_event(temp.path(), &message);
     assert!(absent_event["event"].get("mcp_tool_call").is_none());
 }

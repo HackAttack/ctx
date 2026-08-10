@@ -268,27 +268,33 @@ fn render_result(
 }
 
 fn render_copied_lineage(document: &mut Document, context: &RenderContext, result: &Value) {
-    let lineage = &result["copied_lineage"];
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::super::copied_lineage::copied_lineage_summary(result)
+    else {
+        return;
+    };
+    if let Some(resolution) = resolution.filter(|state| *state != "resolved" || selected_depth != 0)
+    {
+        push_field(
+            document,
+            context,
+            CARD_INDENT,
+            "Lineage",
+            CARD_LABEL_WIDTH,
+            &format!("{resolution} at depth {selected_depth}"),
+            if resolution == "resolved" {
+                Token::Text
+            } else {
+                Token::Warning
+            },
+        );
+    }
     if observed == 0 {
         return;
     }
     let truncated = lineage["truncated"].as_bool().unwrap_or(true);
-    let relationship_summary = lineage["relationship_counts"]
-        .as_object()
-        .map(|counts| {
-            counts
-                .iter()
-                .filter_map(|(relationship, count)| {
-                    count
-                        .as_u64()
-                        .filter(|count| *count != 0)
-                        .map(|count| format!("{relationship} {count}"))
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .filter(|summary| !summary.is_empty());
+    let relationship_summary =
+        super::super::copied_lineage::copied_lineage_relationship_summary(lineage);
     let noun = if observed == 1 { "session" } else { "sessions" };
     let mut summary = if truncated {
         format!("at least {observed} {noun}")

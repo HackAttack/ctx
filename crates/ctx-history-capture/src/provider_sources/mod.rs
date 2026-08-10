@@ -44,7 +44,7 @@ pub(crate) use resolvers::{
     path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
     CrushProjectInventorySelectorError,
 };
-pub use specs::{provider_source_spec, provider_source_specs};
+pub use specs::{provider_source_spec, provider_source_specs, HERMES_STATE_DB_UNSUPPORTED_REASON};
 #[cfg(test)]
 pub(crate) use sqlite_source::{
     fail_next_opened_snapshot_cleanup_for_test,

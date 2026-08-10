@@ -1,9 +1,6 @@
 //! Bounded emission from the invocation-local Custom History spool.
 
-use std::{
-    collections::BTreeMap,
-    io::{BufReader, Read, Seek, SeekFrom, Write},
-};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 
 use ctx_history_core::{
     derive_event_id, CoreRecord, EventIdentityInput, EventOrigin, NativeItemKey, SourceKey,
@@ -15,10 +12,9 @@ use super::source_backed::record_custom_history_work;
 use super::source_backed::{
     custom_event_typed_key_parts, custom_session_identity, CustomHistorySourceBackedError,
     CustomHistorySourceBackedPage, CustomHistorySourceBackedResult, CustomSessionCatalogEntry,
-    CustomSessionKey, CustomSourceCatalogEntry, ParsedProjection, SpooledCustomEvent,
-    ValidatedCopiedFrom, CUSTOM_EVENT_KEY_NAMESPACE, CUSTOM_LOGICAL_EVENT_KIND,
-    CUSTOM_PAGE_MAX_DOCUMENTS, CUSTOM_PAGE_MAX_RETAINED_BYTES,
-    CUSTOM_SOURCE_BACKED_PARSER_REVISION,
+    CustomSourceCatalogEntry, ParsedProjection, SpooledCustomEvent, ValidatedCopiedFrom,
+    CUSTOM_EVENT_KEY_NAMESPACE, CUSTOM_LOGICAL_EVENT_KIND, CUSTOM_PAGE_MAX_DOCUMENTS,
+    CUSTOM_PAGE_MAX_RETAINED_BYTES, CUSTOM_SOURCE_BACKED_PARSER_REVISION,
 };
 use crate::provider::custom_history_jsonl::{
     custom_history_internal_session_id, CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES,
@@ -135,7 +131,6 @@ pub(super) fn emit_projection_pages(
             .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
         let record = core_record(
             source,
-            &projection.session_roots,
             source_record,
             session,
             projection.copied_origins.get(&key),
@@ -186,7 +181,6 @@ fn record_resident_event_body_bytes(bytes: usize) {
 #[allow(clippy::too_many_arguments)]
 fn core_record(
     source: &SourceKey,
-    session_roots: &BTreeMap<CustomSessionKey, String>,
     source_record: &CustomSourceCatalogEntry,
     session: &CustomSessionCatalogEntry,
     copied_from: Option<&ValidatedCopiedFrom>,
@@ -211,23 +205,6 @@ fn core_record(
             )
         })
         .transpose()?;
-    #[cfg(test)]
-    record_custom_history_work(|work| {
-        work.event_root_lookups = work.event_root_lookups.saturating_add(1);
-    });
-    let root_native_session_id = session_roots
-        .get(&(session.source_id.clone(), session.session_id.clone()))
-        .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
-    let root_session_id = if root_native_session_id == &session.session_id {
-        session_id
-    } else {
-        custom_session_identity(
-            source,
-            &source_record.provider_key,
-            &event.source_id,
-            root_native_session_id,
-        )?
-    };
     let event_key = custom_event_typed_key_parts(event.event_id.as_deref(), event.event_index)?;
     let native_item_key = NativeItemKey::native_id(CUSTOM_EVENT_KEY_NAMESPACE, event_key.clone())?;
     let event_selector = event.event_id.as_ref().map_or_else(
@@ -264,7 +241,7 @@ fn core_record(
             .session_relationship
             .unwrap_or(ctx_history_core::SessionRelationshipKind::RelatedUnknown);
         record
-            .set_session_relationship(kind, Some(parent_session_id), root_session_id)
+            .set_session_relationship(kind, Some(parent_session_id), parent_session_id)
             .map_err(core_contract)?;
     }
     record.provider_session_id = Some(custom_history_internal_session_id(
@@ -282,10 +259,10 @@ fn core_record(
         )?;
         let ancestor_native_item_key = NativeItemKey::native_id(
             CUSTOM_EVENT_KEY_NAMESPACE,
-            custom_event_typed_key_parts(
-                Some(&copied_from.ancestor_event_id),
-                copied_from.ancestor_event_index,
-            )?,
+            // A copied claim always carries an exact native event selector, so
+            // the positional fallback is intentionally irrelevant. This keeps
+            // unresolved origin identity independent of target presence.
+            custom_event_typed_key_parts(Some(&copied_from.ancestor_event_id), 0)?,
         )?;
         let ancestor_event_id = derive_event_id(EventIdentityInput {
             source,

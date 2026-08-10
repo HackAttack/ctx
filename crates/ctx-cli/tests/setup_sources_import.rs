@@ -57,7 +57,7 @@ fn write_codex_setup_session(temp: &TempDir) {
         .join("2026/06/24");
     fs::create_dir_all(&sessions).unwrap();
     fs::write(
-        sessions.join("rollout-2026-06-24T10-00-00-codex-session-setup.jsonl"),
+        sessions.join("codex-session-setup.jsonl"),
         concat!(
             r#"{"timestamp":"2026-06-24T10:00:00.000Z","type":"session_meta","payload":{"id":"codex-session-setup","timestamp":"2026-06-24T10:00:00.000Z","cwd":"/repo/app","originator":"codex-cli","cli_version":"0.200.0","source":"cli","model_provider":"openai"}}"#,
             "\n",

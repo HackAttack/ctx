@@ -718,6 +718,44 @@ fn hermes_selects_only_sticky_profile_for_ordinary_operation() {
     let report = report(&context(&home, &cwd), CaptureProvider::Hermes);
     assert_eq!(report.sources.len(), 1);
     assert_eq!(report.sources[0].path, root.join("profiles/work/state.db"));
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Unsupported);
+    assert_eq!(
+        report.sources[0].unsupported_reason,
+        Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON)
+    );
+}
+
+#[test]
+fn hermes_discovery_and_explicit_selection_never_probe_database_content() {
+    let temp = tempdir();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let database = home.join(".hermes/state.db");
+    fs::create_dir_all(&cwd).unwrap();
+    write(&database, "not a sqlite database and must not be parsed");
+    super::super::super::probes::reset_default_location_probe_calls();
+
+    let discovered = report(&context(&home, &cwd), CaptureProvider::Hermes);
+    let [source] = discovered.sources.as_slice() else {
+        panic!("one stable Hermes discovery route expected: {discovered:#?}");
+    };
+    assert_eq!(source.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
+    assert_eq!(source.source_kind, ProviderSourceKind::DetectionOnly);
+    assert_eq!(
+        source.unsupported_reason,
+        Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON)
+    );
+    assert_eq!(
+        super::super::super::probes::default_location_probe_calls(),
+        0
+    );
+
+    let explicit = provider_source_for_path(CaptureProvider::Hermes, database);
+    assert_eq!(explicit.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(explicit.import_support, ProviderImportSupport::Unsupported);
+    assert_eq!(explicit.source_kind, ProviderSourceKind::DetectionOnly);
+    assert_eq!(explicit.unsupported_reason, source.unsupported_reason);
 }
 
 #[cfg(unix)]

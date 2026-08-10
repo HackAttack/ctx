@@ -63,14 +63,14 @@ const LOGICAL_SESSION_KIND: &str = "rovodev-session";
 const LOGICAL_EVENT_KIND: &str = "rovodev-event";
 const SOURCE_SCHEMA_VARIANT: &str = "rovodev-session-json-tree-v1";
 const SOURCE_REVISION_KIND: &str = "rovodev-session-tree-revision-v1";
-const PARSER_REVISION: &str = "rovodev-source-backed-v3";
+const PARSER_REVISION: &str = "rovodev-source-backed-v4-direct-lineage";
 const RELATIVE_CONTEXT_FILE: &str = "session_context.json";
 const MESSAGE_OBJECT_KIND: &str = "message_history";
 const FILE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const SOURCE_BACKED_MAX_JSON_DEPTH: usize = 128;
 const SOURCE_BACKED_MAX_COLLECTION_ELEMENTS: usize = 65_536;
 const SOURCE_BACKED_MAX_FAILURE_BYTES: usize = 4 * 1024;
-const LEAF_FINGERPRINT_DOMAIN: &[u8] = b"ctx.rovodev.document-leaf.v3\0";
+const LEAF_FINGERPRINT_DOMAIN: &[u8] = b"ctx.rovodev.document-leaf.v4.direct-lineage\0";
 const TREE_FINGERPRINT_DOMAIN: &[u8] = b"ctx.rovodev.document-tree.v1\0";
 
 #[derive(Debug, Error)]
@@ -87,8 +87,6 @@ pub(crate) enum RovoDevSourceBackedError {
     NonAuthoritativeRoot,
     #[error("Rovo Dev authoritative inventory contains duplicate session identity {0:?}")]
     DuplicateSession(String),
-    #[error("Rovo Dev session lineage contains a cycle at provider thread {0:?}")]
-    LineageCycle(String),
     #[error("Rovo Dev source-backed scan counts do not reconcile")]
     CountMismatch,
     #[error("Rovo Dev source-backed event coordinate exceeds its supported range")]
@@ -520,7 +518,6 @@ pub(crate) struct RovoDevDocumentLeaf {
     source_index: usize,
     proof: RovoDevDocumentProof,
     header: RovoDevDocumentHeader,
-    root_session_id: StableEntityId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,36 +534,7 @@ struct RovoDevBoundDocument {
     provider_session_id: String,
     session_id: StableEntityId,
     parent_session_id: Option<StableEntityId>,
-    root_session_id: StableEntityId,
     unique_message_ids: HashSet<String>,
-}
-
-#[derive(Debug)]
-struct RovoDevLineageCache {
-    headers: Vec<Option<RovoDevDocumentHeader>>,
-    source_owners: HashMap<[u8; 32], usize>,
-    directory_owners: HashMap<String, Vec<usize>>,
-    roots: HashMap<String, StableEntityId>,
-    next_unprobed: usize,
-}
-
-impl RovoDevLineageCache {
-    fn new(sources: &[RovoDevOpenedSource]) -> Self {
-        let mut directory_owners = HashMap::<String, Vec<usize>>::new();
-        for (index, source) in sources.iter().enumerate() {
-            directory_owners
-                .entry(source.source.provider_session_id.clone())
-                .or_default()
-                .push(index);
-        }
-        Self {
-            headers: vec![None; sources.len()],
-            source_owners: HashMap::with_capacity(sources.len()),
-            directory_owners,
-            roots: HashMap::with_capacity(sources.len()),
-            next_unprobed: 0,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -651,30 +619,19 @@ fn bind_document_tree(
         sources.push(opened);
     }
     authority.revalidate()?;
-    // Resolve the complete transitive lineage before replay admission. A
-    // leaf's projected root_session_id depends on ancestor headers outside
-    // that leaf, so the resolved root identity is part of its durable replay
-    // fingerprint rather than mutable scan-order context.
-    let mut lineage = RovoDevLineageCache::new(&sources);
+    // Each leaf owns only the relationship claim carried by that session's
+    // files. Parent presence and transitive ancestry are deliberately not
+    // replay inputs for the child logical source.
     let mut observed = Vec::with_capacity(sources.len());
-    for source_index in 0..sources.len() {
-        document::ensure_document_header(&mut lineage, &sources, source_index)?;
-    }
+    let mut source_owners = HashSet::with_capacity(sources.len());
     for (source_index, source) in sources.iter().enumerate() {
-        let header = lineage
-            .headers
-            .get(source_index)
-            .and_then(Option::as_ref)
-            .cloned()
-            .ok_or(RovoDevSourceBackedError::CountMismatch)?;
-        let root_session_id =
-            document::resolve_root_session(&mut lineage, &sources, &header.provider_session_id)?;
-        observed.push(observed_rovodev_leaf(
-            source_index,
-            source,
-            header,
-            root_session_id,
-        )?);
+        let header = document::probe_document_header(source)?;
+        if !source_owners.insert(header.source_key.identity().digest()) {
+            return Err(RovoDevSourceBackedError::DuplicateSession(
+                header.provider_session_id,
+            ));
+        }
+        observed.push(observed_rovodev_leaf(source_index, source, header)?);
     }
     let tree_fingerprint = rovodev_tree_fingerprint(&authority, &observed);
     Ok(CompleteDocumentTree::new(
@@ -754,7 +711,6 @@ fn observed_rovodev_leaf(
     source_index: usize,
     source: &RovoDevOpenedSource,
     header: RovoDevDocumentHeader,
-    root_session_id: StableEntityId,
 ) -> RovoDevSourceBackedResult<ObservedDocumentLeaf<RovoDevDocumentLeaf>> {
     let proof = source.proof()?;
     let mut digest = Sha256::new();
@@ -769,16 +725,21 @@ fn observed_rovodev_leaf(
     }
     digest.update(proof.opening.revision_authority());
     digest.update(proof.certified_bytes.to_be_bytes());
-    let encoded_root = root_session_id.encode_canonical()?;
-    digest.update((encoded_root.len() as u64).to_be_bytes());
-    digest.update(encoded_root);
+    digest.update(header.source_key.identity().digest());
+    match &header.parent_provider_session_id {
+        Some(parent) => {
+            digest.update([1]);
+            digest.update((parent.len() as u64).to_be_bytes());
+            digest.update(parent.as_bytes());
+        }
+        None => digest.update([0]),
+    }
     Ok(ObservedDocumentLeaf::new(
         DocumentLeafFingerprint::new(digest.finalize().into()),
         RovoDevDocumentLeaf {
             source_index,
             proof,
             header,
-            root_session_id,
         },
     ))
 }
@@ -801,6 +762,20 @@ fn hash_path(digest: &mut Sha256, path: &Path) {
     let bytes = path.as_os_str().as_encoded_bytes();
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
+}
+
+fn apply_direct_session_relationship(
+    record: &mut CoreRecord,
+    parent_session_id: Option<StableEntityId>,
+) -> RovoDevSourceBackedResult<()> {
+    if let Some(parent_session_id) = parent_session_id {
+        record.set_session_relationship(
+            ctx_history_core::SessionRelationshipKind::RelatedUnknown,
+            Some(parent_session_id),
+            parent_session_id,
+        )?;
+    }
+    Ok(())
 }
 
 fn unique_message_ids(snapshot: &RovoDevSnapshot) -> HashSet<String> {

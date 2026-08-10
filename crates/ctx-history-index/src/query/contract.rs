@@ -94,14 +94,16 @@ pub const MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS: usize = 101;
 /// Maximum copied-event occurrences retained by one bounded lineage query.
 pub const MAX_COPIED_EVENT_LINEAGE_OCCURRENCES: usize = 20;
 
-/// Maximum exact origin-digest postings visited by one bounded lineage query.
+/// Maximum inverse copied-event origin UUID postings visited by one query.
 pub const MAX_COPIED_EVENT_LINEAGE_POSTING_VISITS: usize = 4_096;
 
-/// Absolute maximum exact event-identity postings visited by one lineage query.
+/// Absolute maximum exact event-and-session identity postings visited by one
+/// lineage query.
 ///
 /// This independent ceiling covers both live and deleted postings while the
-/// selected event and its forward origin chain are resolved.
-pub const MAX_COPIED_EVENT_LINEAGE_EXACT_IDENTITY_POSTING_VISITS: usize = 2_048;
+/// selected event, its forward copied-event chain, and session ancestry are
+/// resolved.
+pub const MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS: usize = 2_048;
 
 /// Maximum number of copied-event edges traversed from the canonical event.
 pub const MAX_COPIED_EVENT_LINEAGE_DEPTH: usize = 1_024;
@@ -633,11 +635,12 @@ pub struct EventRecord {
     pub touched_files: Vec<String>,
 }
 
-/// One inherited-session occurrence reached from a canonical event.
+/// One inherited-session claim reached from a copied-event target.
 ///
 /// All identities are full stable IDs from the same stored Core record. The
 /// direct copied-from pair identifies the exact event edge, while the parent,
-/// root, and relationship fields describe the occurrence's session lineage.
+/// claimed root, and relationship fields preserve that child session's own
+/// direct durable claims. They are not publication-time graph authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopiedEventLineageOccurrence {
     pub event_id: StableEntityId,
@@ -645,9 +648,39 @@ pub struct CopiedEventLineageOccurrence {
     pub copied_from_event_id: StableEntityId,
     pub copied_from_session_id: StableEntityId,
     pub parent_session_id: Option<StableEntityId>,
-    pub root_session_id: StableEntityId,
+    pub claimed_root_session_id: StableEntityId,
     pub session_relationship: SessionRelationshipKind,
     pub depth: usize,
+}
+
+/// Query-time resolution of one selected copied-event chain.
+///
+/// Missing targets and cycles are ordinary lineage answers. They never imply
+/// that the containing immutable generation was invalid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopiedEventLineageResolution {
+    Resolved {
+        event_id: StableEntityId,
+        session_id: StableEntityId,
+    },
+    Unresolved {
+        event_id: Uuid,
+        session_id: Option<StableEntityId>,
+    },
+    Cyclic {
+        event_id: StableEntityId,
+        session_id: StableEntityId,
+    },
+}
+
+impl CopiedEventLineageResolution {
+    pub const fn state_str(&self) -> &'static str {
+        match self {
+            Self::Resolved { .. } => "resolved",
+            Self::Unresolved { .. } => "unresolved",
+            Self::Cyclic { .. } => "cyclic",
+        }
+    }
 }
 
 /// Observed inherited-session count for one relationship kind.
@@ -663,10 +696,9 @@ pub struct CopiedEventLineageRelationshipCount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopiedEventLineage {
     pub generation_id: String,
-    pub selected_event_id: StableEntityId,
-    pub selected_session_id: StableEntityId,
-    pub canonical_event_id: StableEntityId,
-    pub canonical_session_id: StableEntityId,
+    pub selected_event_id: Uuid,
+    pub selected_session_id: Option<StableEntityId>,
+    pub resolution: CopiedEventLineageResolution,
     pub selected_depth: usize,
     /// Exact when `truncated` is false; otherwise a lower bound.
     pub observed_count: u64,

@@ -538,6 +538,16 @@ pub(crate) fn json_output(command: &mut Command) -> Value {
     serde_json::from_slice(&output).unwrap()
 }
 
+pub(crate) fn failure_json_output(command: &mut Command) -> Value {
+    let output = command.assert().failure().get_output().stdout.clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+pub(crate) fn success_stdout(command: &mut Command) -> String {
+    let output = command.assert().success().get_output().stdout.clone();
+    String::from_utf8(output).unwrap()
+}
+
 pub(crate) fn failure_stderr(command: &mut Command) -> String {
     let stderr = command.assert().failure().get_output().stderr.clone();
     String::from_utf8(stderr).unwrap()

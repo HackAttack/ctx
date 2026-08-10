@@ -113,7 +113,7 @@ fn successful_codex_route_derives_rejected_records_from_committed_core_sources()
 }
 
 #[test]
-fn codex_root_conflict_projects_source_failures_while_valid_peer_publishes() {
+fn codex_advisory_root_conflict_preserves_child_owned_lineage_and_all_sources() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
@@ -164,28 +164,35 @@ fn codex_root_conflict_projects_source_failures_while_valid_peer_publishes() {
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, 2);
-    assert_eq!(result.source_failures.len(), 2);
+    assert_eq!(result.source_failure_total, 0);
+    assert!(result.source_failures.is_empty());
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, 1);
+    assert_eq!(publication.current.source_count, 3);
     assert_eq!(publication.current.rejected_records, 0);
-    for failure in &result.source_failures {
-        assert!(failure.source_selector.starts_with("logical-source:"));
-        for expected in [
-            format!("computed_root_native_session_id={root_a}"),
-            format!("conflicting_advisory_session_id={root_b}"),
-            format!("evidence_source_record=session_meta:{child_a}"),
-            format!("computed_root_source_record=session_meta:{root_a}"),
-            format!("advisory_source_record=session_meta:{root_b}"),
-        ] {
-            assert!(failure.detail.contains(&expected), "{}", failure.detail);
-        }
-        assert!(!failure.detail.contains(root.to_str().unwrap()));
-        assert!(!failure.detail.contains(private_root_marker));
-        assert!(!failure.detail.contains(private_child_marker));
-    }
     let verified = VerifiedIndex::open(&index_root).unwrap();
+    let records = codex_core_records(&verified);
+    assert_eq!(records.len(), 3);
+    let parent = records
+        .iter()
+        .find(|record| record.content.normalized_body.as_deref() == Some(private_root_marker))
+        .unwrap();
+    let child = records
+        .iter()
+        .find(|record| record.content.normalized_body.as_deref() == Some(private_child_marker))
+        .unwrap();
+    assert_eq!(parent.session_relationship.as_str(), "root");
+    assert_eq!(child.session_relationship.as_str(), "forked");
+    assert_eq!(child.parent_session_id, Some(parent.session_id));
+    assert_eq!(child.root_session_id, parent.session_id);
+    assert_ne!(
+        child.root_session_id,
+        records
+            .iter()
+            .find(|record| record.content.normalized_body.as_deref() == Some(valid_marker))
+            .unwrap()
+            .session_id
+    );
     assert_eq!(
         verified
             .search_event_candidates(valid_marker, 10)
@@ -193,20 +200,26 @@ fn codex_root_conflict_projects_source_failures_while_valid_peer_publishes() {
             .len(),
         1
     );
-    assert!(verified
-        .search_event_candidates(private_root_marker, 10)
-        .unwrap()
-        .is_empty());
-    assert!(verified
-        .search_event_candidates(private_child_marker, 10)
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        verified
+            .search_event_candidates(private_root_marker, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        verified
+            .search_event_candidates(private_child_marker, 10)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
-fn codex_root_conflict_receipt_keeps_exact_total_and_bounded_path_safe_diagnostics() {
+fn codex_advisory_root_conflicts_publish_without_failure_receipt_inflation() {
     const CONFLICTING_CHILDREN: usize = 65;
-    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN + 1;
+    const PUBLISHED_SOURCES: usize = CONFLICTING_CHILDREN + 2;
 
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -216,7 +229,6 @@ fn codex_root_conflict_receipt_keeps_exact_total_and_bounded_path_safe_diagnosti
     let root = temp.path().join("private-bounded-codex-conflicts");
     let root_a = "019fb600-0000-7000-8000-000000003400";
     let root_b = "019fb600-0000-7000-8000-0000000034b0";
-    let evidence_child = "019fb600-0000-7000-8001-000000000000";
     let private_marker = "private bounded root conflict content 328";
     let valid_marker = "bounded root conflict valid peer 328";
     fs::create_dir_all(&home).unwrap();
@@ -264,28 +276,16 @@ fn codex_root_conflict_receipt_keeps_exact_total_and_bounded_path_safe_diagnosti
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, REJECTED_SOURCES);
-    let bounded_diagnostics = result.source_failures.len();
-    assert!((1..=64).contains(&bounded_diagnostics));
-    assert!(bounded_diagnostics < REJECTED_SOURCES);
+    assert_eq!(result.source_failure_total, 0);
+    assert!(result.source_failures.is_empty());
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, 1);
+    assert_eq!(publication.current.source_count, PUBLISHED_SOURCES);
     assert_eq!(publication.current.rejected_records, 0);
-    for failure in &result.source_failures {
-        assert!(failure.source_selector.starts_with("logical-source:"));
-        for expected in [
-            format!("computed_root_native_session_id={root_a}"),
-            format!("conflicting_advisory_session_id={root_b}"),
-            format!("evidence_source_record=session_meta:{evidence_child}"),
-            format!("computed_root_source_record=session_meta:{root_a}"),
-            format!("advisory_source_record=session_meta:{root_b}"),
-        ] {
-            assert!(failure.detail.contains(&expected), "{}", failure.detail);
-        }
-        assert!(!failure.detail.contains(root.to_str().unwrap()));
-        assert!(!failure.detail.contains(private_marker));
-    }
+    assert_eq!(
+        codex_core_records(&VerifiedIndex::open(&index_root).unwrap()).len(),
+        PUBLISHED_SOURCES
+    );
 
     let receipt = SourceBackedRefreshReceipt::from_verified_publication(
         None,
@@ -293,46 +293,30 @@ fn codex_root_conflict_receipt_keeps_exact_total_and_bounded_path_safe_diagnosti
         &publication,
     )
     .unwrap();
-    assert_eq!(receipt.terminal_outcome(), "completed_with_source_failures");
-    assert_eq!(receipt.source_failure_total(), REJECTED_SOURCES);
-    assert_eq!(
-        receipt.source_failure_diagnostic_count(),
-        bounded_diagnostics
-    );
-    assert_eq!(
-        receipt.source_failures_omitted(),
-        REJECTED_SOURCES - bounded_diagnostics
-    );
+    assert_eq!(receipt.terminal_outcome(), "completed");
+    assert_eq!(receipt.source_failure_total(), 0);
+    assert_eq!(receipt.source_failure_diagnostic_count(), 0);
+    assert_eq!(receipt.source_failures_omitted(), 0);
     assert_eq!(receipt.rejected_record_total(), 0);
 
     let envelope = receipt.to_json();
-    assert_eq!(envelope["source_failure_total"], REJECTED_SOURCES);
+    assert_eq!(envelope["source_failure_total"], 0);
     assert_eq!(envelope["rejected_record_total"], 0);
     let route = envelope["route_results"]
         .as_object()
         .and_then(|routes| routes.values().next())
         .and_then(Value::as_array)
         .expect("one compact route receipt");
-    let transmitted = route[3]
-        .as_array()
-        .expect("bounded source failure diagnostics")
-        .len();
-    assert!(transmitted <= bounded_diagnostics);
-    assert_eq!(
-        envelope["source_failures_omitted"],
-        REJECTED_SOURCES - transmitted
-    );
+    assert_eq!(route.len(), 2);
+    assert_eq!(envelope["source_failures_omitted"], 0);
     assert!(
         serde_json::to_vec(&envelope).unwrap().len() <= SOURCE_REFRESH_RECEIPT_JSON_BUDGET_BYTES
     );
-    assert_eq!(
-        VerifiedIndex::open(&index_root)
-            .unwrap()
-            .search_event_candidates(valid_marker, 10)
-            .unwrap()
-            .len(),
-        1
-    );
+    assert!(!VerifiedIndex::open(&index_root)
+        .unwrap()
+        .search_event_candidates(valid_marker, 10)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -594,7 +578,7 @@ fn automatic_parent_and_explicit_file_child_normalize_in_one_generation() {
 }
 
 #[test]
-fn explicit_child_without_selected_parent_is_rejected_and_never_rerooted() {
+fn explicit_child_without_selected_parent_publishes_unresolved_and_never_reroots() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
@@ -660,39 +644,43 @@ fn explicit_child_without_selected_parent_is_rejected_and_never_rerooted() {
     let [binding] = publication.catalog_route_bindings.as_slice() else {
         panic!("one explicit child route binding expected");
     };
-    let failed_child_route = publication
+    let child_route = publication
         .route_results
         .iter()
         .find(|result| result.route_identity == binding.route_identity)
         .unwrap();
-    assert!(failed_child_route.outcome.is_failure());
-    assert_eq!(
-        failed_child_route.outcome.failure_class(),
-        Some("unreadable")
-    );
-    assert_eq!(failed_child_route.source_failure_total, 1);
-    assert_eq!(
-        publication
-            .route_results
-            .iter()
-            .filter(|result| result.outcome.is_success())
-            .count(),
-        1
-    );
+    assert!(child_route.outcome.is_success());
+    assert_eq!(child_route.source_failure_total, 0);
+    assert!(publication
+        .route_results
+        .iter()
+        .all(|result| result.outcome.is_success()));
     let records = codex_core_records(&VerifiedIndex::open(&index_root).unwrap());
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].session_relationship.as_str(), "root");
-    assert_eq!(records[0].root_session_id, records[0].session_id);
-    assert!(records[0].parent_session_id.is_none());
-    assert_eq!(
-        records[0].content.normalized_body.as_deref(),
-        Some("selectedunrelatedrootmarker")
-    );
+    assert_eq!(records.len(), 2);
+    let selected = records
+        .iter()
+        .find(|record| {
+            record.content.normalized_body.as_deref() == Some("selectedunrelatedrootmarker")
+        })
+        .unwrap();
+    let child = records
+        .iter()
+        .find(|record| {
+            record.content.normalized_body.as_deref() == Some("missingparentchildmarker")
+        })
+        .unwrap();
+    assert_eq!(selected.session_relationship.as_str(), "root");
+    assert_eq!(selected.root_session_id, selected.session_id);
+    assert!(selected.parent_session_id.is_none());
+    assert_eq!(child.session_relationship.as_str(), "forked");
+    let unresolved_parent = child.parent_session_id.expect("direct parent claim");
+    assert_eq!(child.root_session_id, unresolved_parent);
+    assert_ne!(unresolved_parent, selected.session_id);
+    assert!(records
+        .iter()
+        .all(|record| record.session_id != unresolved_parent));
     assert!(records.iter().all(|record| {
-        !matches!(
-            record.content.normalized_body.as_deref(),
-            Some("missingparentchildmarker" | "unselectedparentmarker")
-        )
+        record.content.normalized_body.as_deref() != Some("unselectedparentmarker")
     }));
 }
 

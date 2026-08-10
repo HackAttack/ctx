@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use ctx_history_capture::{
-    discover_provider_sources, validate_provider_source_roots_outside_data_root,
-    DiscoveryIssueKind, ProviderImportWorkResult, ProviderSourceStatus,
+    discover_provider_sources, source_backed_source_failure_identity,
+    validate_provider_source_roots_outside_data_root, DiscoveryIssueKind, ProviderImportWorkResult,
+    ProviderSource, ProviderSourceStatus, HERMES_STATE_DB_UNSUPPORTED_REASON,
 };
 use ctx_history_core::platform_security::establish_private_data_root;
 use serde_json::json;
@@ -58,6 +59,26 @@ pub(super) fn run_automatic_source_refresh_import(
     let sources = discover_provider_sources(&home);
     validate_provider_source_roots_outside_data_root(&context.data_root, sources.iter())
         .context("validate provider roots before initializing ctx state")?;
+    let hermes = sources.iter().find(|source| {
+        source.provider == ctx_history_core::CaptureProvider::Hermes
+            && source.exists
+            && source.status == ProviderSourceStatus::Unsupported
+    });
+    let has_importable_source = sources.iter().any(|source| {
+        source.exists
+            && source.status == ProviderSourceStatus::Available
+            && source.import_support.is_importable()
+    });
+    let data_root_exists = context
+        .data_root
+        .try_exists()
+        .context("inspect ctx data root before unsupported-source reporting")?;
+    if let Some(hermes) = hermes.filter(|_| !has_importable_source && !data_root_exists) {
+        // A cold Hermes-only invocation cannot publish a generation. Return
+        // the same typed source evidence as explicit selection without
+        // creating ctx state or dispatching a provider parser.
+        return unsupported_source_import_report(context.args.resume, hermes);
+    }
     establish_private_data_root(&context.data_root)
         .context("protect ctx data root before provider refresh")?;
     let refresh = wait_for_import_core_refresh(
@@ -231,7 +252,7 @@ pub(super) fn run_automatic_source_refresh_import(
     })
 }
 
-fn source_failure_report_row(
+pub(super) fn source_failure_report_row(
     source_identity: &str,
     provider: &str,
     class: &str,
@@ -260,6 +281,35 @@ fn source_failure_report_row(
     }))
 }
 
+pub(super) fn unsupported_source_import_report(
+    resume: bool,
+    source: &ProviderSource,
+) -> Result<ImportReport> {
+    let detail = source
+        .unsupported_reason
+        .unwrap_or("the selected provider source is unsupported");
+    let source_identity = source_backed_source_failure_identity(source)
+        .map_err(anyhow::Error::from)
+        .context("derive unsupported source identity")?;
+    Ok(ImportReport {
+        resume,
+        totals: ImportTotals {
+            terminal_route_counts_available: true,
+            failed_sources: 1,
+            work_result: ProviderImportWorkResult::NoOp,
+            ..ImportTotals::default()
+        },
+        sources: vec![source_failure_report_row(
+            &source_identity,
+            source.provider.as_str(),
+            "incompatible",
+            false,
+            &source.path.display().to_string(),
+            detail,
+        )],
+    })
+}
+
 fn validate_selected_provider(args: &ImportArgs) -> Result<()> {
     let Some(provider) = args.provider.map(|provider| provider.capture_provider()) else {
         return Ok(());
@@ -271,6 +321,17 @@ fn validate_selected_provider(args: &ImportArgs) -> Result<()> {
         return Ok(());
     }
     let provider_name = crate::provider_sources::provider_cli_name(provider);
+    if provider == ctx_history_core::CaptureProvider::Hermes {
+        if report.sources.iter().any(|source| source.exists) {
+            // Let the provider refresh lifecycle emit the canonical
+            // source-scoped unsupported_schema row. This is not an import
+            // override and does not dispatch a parser.
+            return Ok(());
+        }
+        bail!(
+            "Hermes import is unavailable in this ctx release: {HERMES_STATE_DB_UNSUPPORTED_REASON}"
+        );
+    }
     let guidance = manual_path_guidance(provider);
     if let Some(source) = report
         .sources
@@ -319,29 +380,6 @@ mod tests {
                 "automatic source refresh contains forbidden legacy dependency `{forbidden}`"
             );
         }
-    }
-
-    #[test]
-    fn source_failure_rows_follow_schema_v2_and_are_bounded() {
-        let source_identity = "22".repeat(32);
-        let row = source_failure_report_row(
-            &source_identity,
-            "codex",
-            "source_changed",
-            true,
-            "/tmp/codex-history",
-            "source changed during refresh",
-        );
-        assert_eq!(row["status"], "failure");
-        assert_eq!(row["failure_scope"], "source");
-        assert_eq!(row["failure_type"], "other");
-        assert_eq!(row["source_failure_class"], "source_changed");
-        assert_eq!(row["source_selector"], "/tmp/codex-history");
-        assert_eq!(row["detail"], row["error"]);
-        for unsupported in ["imported_sessions", "imported_events"] {
-            assert!(row.get(unsupported).is_none(), "{row:#}");
-        }
-        assert_eq!(MAX_REPORTED_SOURCE_FAILURES, 3);
     }
 
     #[test]

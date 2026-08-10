@@ -17,7 +17,7 @@ pub(crate) struct Fields {
     pub(crate) root_session_id: Field,
     pub(crate) session_relationship_kind: Field,
     pub(crate) event_origin_kind: Field,
-    pub(crate) origin_event_identity_digest: Field,
+    pub(crate) origin_event_id: Field,
     pub(crate) source_key: Field,
     pub(crate) provider: Field,
     pub(crate) source_format: Field,
@@ -65,7 +65,7 @@ pub(crate) fn lexical_schema() -> Schema {
     builder.add_text_field("root_session_id", STRING);
     builder.add_text_field("session_relationship_kind", STRING);
     builder.add_text_field("event_origin_kind", STRING);
-    builder.add_text_field("origin_event_identity_digest", STRING);
+    builder.add_text_field("origin_event_id", STRING);
     builder.add_text_field("source_key", STRING | FAST);
     builder.add_text_field("provider", STRING);
     builder.add_text_field("source_format", STRING);
@@ -113,7 +113,7 @@ pub(crate) fn fields_from_schema(schema: &Schema) -> Result<Fields> {
         root_session_id: required_field(schema, "root_session_id")?,
         session_relationship_kind: required_field(schema, "session_relationship_kind")?,
         event_origin_kind: required_field(schema, "event_origin_kind")?,
-        origin_event_identity_digest: required_field(schema, "origin_event_identity_digest")?,
+        origin_event_id: required_field(schema, "origin_event_id")?,
         source_key: required_field(schema, "source_key")?,
         provider: required_field(schema, "provider")?,
         source_format: required_field(schema, "source_format")?,
@@ -174,7 +174,7 @@ mod tests {
         for name in [
             "session_relationship_kind",
             "event_origin_kind",
-            "origin_event_identity_digest",
+            "origin_event_id",
         ] {
             let entry = schema.get_field_entry(schema.get_field(name).unwrap());
             assert!(entry.is_indexed(), "{name} is not indexed");

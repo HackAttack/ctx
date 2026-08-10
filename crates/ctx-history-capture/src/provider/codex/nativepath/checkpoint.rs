@@ -1,90 +1,185 @@
 use std::collections::BTreeSet;
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::rows::CodexSessionRow;
 use super::source::CodexFileObservation;
 
-const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 11;
-pub(crate) const MAX_CODEX_CERTIFIED_LINEAGE_FACTS: usize = 16;
+const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 14;
 const CODEX_PENDING_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/pending-call-id/v1\0";
 const MAX_CODEX_PENDING_TOOL_RECORD_BYTES: u64 = 16 * 1024 * 1024 + 1;
+// SourceFrontier encodes a TypedKey::Bytes as one tag byte, one four-byte
+// length, and this payload. Keeping the payload five bytes below Core's fixed
+// 64 KiB source-checkpoint ceiling makes the entire encoded frontier key fit.
+pub(crate) const MAX_CODEX_NATIVE_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
 pub(crate) const MAX_CODEX_TOOL_CONTEXTS: usize = 24;
 pub(super) const MAX_CODEX_TOOL_CALL_ID_BYTES: usize = 1024;
 pub(super) const MAX_CODEX_CONTINUATION_CELL_ID_BYTES: usize = 1024;
+pub(super) const MAX_CODEX_MCP_TERMINAL_AUTHORITIES: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CodexCertifiedLineageFactKindV0 {
-    Call,
-    Result,
-    Ambiguous,
-    DescendantStarted,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CodexTerminalAuthorityEntry {
+    pub(super) call_id_sha256: [u8; 32],
+    pub(super) candidates: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CodexCertifiedLineageFactV0 {
-    pub(crate) call_id_sha256: [u8; 32],
-    pub(crate) kind: CodexCertifiedLineageFactKindV0,
-    pub(crate) raw_ordinal: u64,
+pub(super) struct CodexTerminalAuthorityCheckpoint {
+    #[serde(with = "terminal_authority_entries_wire")]
+    pub(super) mcp_call_ids: Vec<CodexTerminalAuthorityEntry>,
+    #[serde(with = "terminal_authority_entries_wire")]
+    pub(super) result_call_ids: Vec<CodexTerminalAuthorityEntry>,
+    pub(super) mcp_exhausted: bool,
+    pub(super) result_exhausted: bool,
 }
 
-/// Small exact lineage authority carried by an authenticated source frontier.
-///
-/// Larger sources deliberately omit this capsule and use the existing bounded
-/// one-pass fact scanner. Keeping the capsule exact avoids probabilistic
-/// publication changes while bounding aggregate manifest growth.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CodexCertifiedLineageFactsV0 {
-    pub(crate) facts: Vec<CodexCertifiedLineageFactV0>,
-    pub(crate) has_unattributed_ambiguity: bool,
-    pub(crate) earliest_unattributed_ambiguity_raw_ordinal: Option<u64>,
+impl CodexTerminalAuthorityCheckpoint {
+    fn validate_wire_state(&self) -> bool {
+        fn entries_are_valid(entries: &[CodexTerminalAuthorityEntry]) -> bool {
+            entries.len() <= MAX_CODEX_MCP_TERMINAL_AUTHORITIES
+                && entries
+                    .iter()
+                    .all(|entry| matches!(entry.candidates, 1 | 2))
+                && entries
+                    .windows(2)
+                    .all(|entries| entries[0].call_id_sha256 < entries[1].call_id_sha256)
+        }
+
+        entries_are_valid(&self.mcp_call_ids)
+            && entries_are_valid(&self.result_call_ids)
+            && (!self.mcp_exhausted || self.mcp_call_ids.is_empty())
+            && (!self.result_exhausted || self.result_call_ids.is_empty())
+    }
 }
 
-impl CodexCertifiedLineageFactsV0 {
-    fn validate_wire_state(
-        &self,
-        complete_record_count: u64,
-        has_incomplete_tail: bool,
-    ) -> serde_json::Result<()> {
-        if self.facts.len() > MAX_CODEX_CERTIFIED_LINEAGE_FACTS
-            || self.facts.windows(2).any(|pair| pair[0] >= pair[1])
-            || self
-                .facts
-                .iter()
-                .any(|fact| fact.raw_ordinal >= complete_record_count)
-            || self.has_unattributed_ambiguity
-                != self.earliest_unattributed_ambiguity_raw_ordinal.is_some()
-            || self
-                .earliest_unattributed_ambiguity_raw_ordinal
-                .is_some_and(|ordinal| {
-                    ordinal > complete_record_count
-                        || (ordinal == complete_record_count && !has_incomplete_tail)
-                })
-        {
-            return Err(serde::de::Error::custom(
-                "Codex certified lineage fact authority is invalid",
+mod terminal_authority_entries_wire {
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+
+    use super::*;
+
+    const ENTRY_BYTES: usize = 33;
+
+    pub(super) fn serialize<S>(
+        entries: &[CodexTerminalAuthorityEntry],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut packed = Vec::with_capacity(entries.len().saturating_mul(ENTRY_BYTES));
+        for entry in entries {
+            packed.push(entry.candidates);
+            packed.extend_from_slice(&entry.call_id_sha256);
+        }
+        serializer.serialize_str(&BASE64_STANDARD.encode(packed))
+    }
+
+    pub(super) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Vec<CodexTerminalAuthorityEntry>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        let packed = BASE64_STANDARD.decode(encoded).map_err(D::Error::custom)?;
+        if packed.len() % ENTRY_BYTES != 0 {
+            return Err(D::Error::custom(
+                "Codex terminal authority has an incomplete packed entry",
             ));
         }
-        Ok(())
+        packed
+            .chunks_exact(ENTRY_BYTES)
+            .map(|entry| {
+                Ok(CodexTerminalAuthorityEntry {
+                    call_id_sha256: entry[1..].try_into().map_err(D::Error::custom)?,
+                    candidates: entry[0],
+                })
+            })
+            .collect()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CodexPendingToolAuthority {
+    #[serde(with = "sha256_wire")]
     call_id_sha256: [u8; 32],
     pub(super) record_start: u64,
     pub(super) record_end: u64,
     pub(super) raw_ordinal: u64,
     continuation_cell_id: Option<String>,
     continuation_conflicted: bool,
+    #[serde(with = "sha256_vec_wire")]
     continuation_call_id_sha256: Vec<[u8; 32]>,
     continuation_capacity_exceeded: bool,
     correlation_ambiguous: bool,
+}
+
+mod sha256_wire {
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+
+    use super::*;
+
+    pub(super) fn serialize<S>(digest: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&BASE64_STANDARD.encode(digest))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        BASE64_STANDARD
+            .decode(encoded)
+            .map_err(D::Error::custom)?
+            .try_into()
+            .map_err(|bytes: Vec<u8>| {
+                D::Error::custom(format!(
+                    "Codex pending authority digest has {} bytes, expected 32",
+                    bytes.len()
+                ))
+            })
+    }
+}
+
+mod sha256_vec_wire {
+    use serde::{de::Error as _, Deserialize, Deserializer, Serializer};
+
+    use super::*;
+
+    pub(super) fn serialize<S>(digests: &[[u8; 32]], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut packed = Vec::with_capacity(digests.len().saturating_mul(32));
+        for digest in digests {
+            packed.extend_from_slice(digest);
+        }
+        serializer.serialize_str(&BASE64_STANDARD.encode(packed))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<[u8; 32]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        let packed = BASE64_STANDARD.decode(encoded).map_err(D::Error::custom)?;
+        if packed.len() % 32 != 0 {
+            return Err(D::Error::custom(
+                "Codex pending authority has an incomplete packed digest",
+            ));
+        }
+        packed
+            .chunks_exact(32)
+            .map(|digest| digest.try_into().map_err(D::Error::custom))
+            .collect()
+    }
 }
 
 impl CodexPendingToolAuthority {
@@ -208,10 +303,9 @@ pub(crate) struct CodexNativeCheckpoint {
     boundary: CodexCheckpointBoundary,
     complete_record_count: u64,
     pending_tool_authorities: Vec<CodexPendingToolAuthority>,
+    terminal_authority: CodexTerminalAuthorityCheckpoint,
     pub(crate) owner: CodexSessionRow,
-    pub(crate) lineage_dependency_sha256: [u8; 32],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    certified_lineage_facts: Option<CodexCertifiedLineageFactsV0>,
+    local_turn_started: bool,
 }
 
 impl CodexNativeCheckpoint {
@@ -227,10 +321,10 @@ impl CodexNativeCheckpoint {
         complete_record_count: u64,
         incomplete_tail: Option<(u64, [u8; 32])>,
         pending_tool_authorities: &[CodexPendingToolAuthority],
+        terminal_authority: CodexTerminalAuthorityCheckpoint,
         owner: CodexSessionRow,
-        lineage_dependency_sha256: [u8; 32],
-        certified_lineage_facts: Option<CodexCertifiedLineageFactsV0>,
-    ) -> Self {
+        local_turn_started: bool,
+    ) -> serde_json::Result<Self> {
         let boundary = match incomplete_tail {
             Some((incomplete_tail_len, incomplete_tail_sha256)) => {
                 CodexCheckpointBoundary::Incomplete {
@@ -243,7 +337,7 @@ impl CodexNativeCheckpoint {
                 complete_eof: complete_prefix_end,
             },
         };
-        Self {
+        let mut checkpoint = Self {
             version: CODEX_NATIVE_CHECKPOINT_VERSION,
             observation,
             full_revision_sha256,
@@ -251,17 +345,37 @@ impl CodexNativeCheckpoint {
             boundary,
             complete_record_count,
             pending_tool_authorities: pending_tool_authorities.to_vec(),
+            terminal_authority,
             owner,
-            lineage_dependency_sha256,
-            certified_lineage_facts,
+            local_turn_started,
+        };
+        loop {
+            let encoded = serde_json::to_vec(&checkpoint)?;
+            if encoded.len() <= MAX_CODEX_NATIVE_CHECKPOINT_BYTES {
+                return Ok(checkpoint);
+            }
+            // Pending invocations are optional future-correlation evidence.
+            // Shedding one can only make a later result unjoined/Unknown; it
+            // cannot create a positive attribution. Terminal multiplicities
+            // and owner identity are never shed.
+            if checkpoint.pending_tool_authorities.pop().is_none() {
+                return Err(checkpoint_size_error(encoded.len()));
+            }
         }
     }
 
     pub(crate) fn encode(&self) -> serde_json::Result<Vec<u8>> {
-        serde_json::to_vec(self)
+        let encoded = serde_json::to_vec(self)?;
+        if encoded.len() > MAX_CODEX_NATIVE_CHECKPOINT_BYTES {
+            return Err(checkpoint_size_error(encoded.len()));
+        }
+        Ok(encoded)
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
+        if bytes.len() > MAX_CODEX_NATIVE_CHECKPOINT_BYTES {
+            return Err(checkpoint_size_error(bytes.len()));
+        }
         let checkpoint = serde_json::from_slice::<Self>(bytes)?;
         checkpoint.validate_wire_state()?;
         Ok(checkpoint)
@@ -296,8 +410,12 @@ impl CodexNativeCheckpoint {
         &self.pending_tool_authorities
     }
 
-    pub(crate) fn certified_lineage_facts(&self) -> Option<&CodexCertifiedLineageFactsV0> {
-        self.certified_lineage_facts.as_ref()
+    pub(super) fn terminal_authority(&self) -> &CodexTerminalAuthorityCheckpoint {
+        &self.terminal_authority
+    }
+
+    pub(crate) fn local_turn_started(&self) -> bool {
+        self.local_turn_started
     }
 
     fn validate_wire_state(&self) -> serde_json::Result<()> {
@@ -328,6 +446,11 @@ impl CodexNativeCheckpoint {
         let mut record_spans = BTreeSet::new();
         let mut raw_ordinals = BTreeSet::new();
         let mut continuation_cells = BTreeSet::new();
+        if !self.terminal_authority.validate_wire_state() {
+            return Err(serde::de::Error::custom(
+                "Codex NativePath checkpoint terminal authority is invalid",
+            ));
+        }
         if self.pending_tool_authorities.len() > MAX_CODEX_TOOL_CONTEXTS
             || self.pending_tool_authorities.iter().any(|authority| {
                 authority.record_start >= authority.record_end
@@ -335,6 +458,7 @@ impl CodexNativeCheckpoint {
                     || authority.record_end.saturating_sub(authority.record_start)
                         > MAX_CODEX_PENDING_TOOL_RECORD_BYTES
                     || authority.raw_ordinal >= self.complete_record_count
+                    || authority.call_id_sha256 == [0; 32]
                     || !call_ids.insert(authority.call_id_sha256)
                     || !record_spans.insert((authority.record_start, authority.record_end))
                     || !raw_ordinals.insert(authority.raw_ordinal)
@@ -368,12 +492,12 @@ impl CodexNativeCheckpoint {
                 "Codex NativePath checkpoint pending-tool authority is invalid",
             ));
         }
-        if let Some(facts) = self.certified_lineage_facts.as_ref() {
-            facts.validate_wire_state(
-                self.complete_record_count,
-                self.incomplete_tail().is_some(),
-            )?;
-        }
         Ok(())
     }
+}
+
+fn checkpoint_size_error(actual: usize) -> serde_json::Error {
+    <serde_json::Error as serde::ser::Error>::custom(format!(
+        "Codex NativePath checkpoint payload has {actual} bytes, maximum is {MAX_CODEX_NATIVE_CHECKPOINT_BYTES}"
+    ))
 }

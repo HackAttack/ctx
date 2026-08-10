@@ -374,6 +374,8 @@ fn provider_native_lineage_contract_projects_exact_relationship_and_copy() {
     let copy = &documents[1];
     assert_eq!(copy.session_relationship, SessionRelationshipKind::Forked);
     assert!(copy.is_primary);
+    assert_eq!(copy.parent_session_id, Some(original.session_id));
+    assert_eq!(copy.root_session_id, original.session_id);
     assert_eq!(
         copy.event_origin,
         EventOrigin::CopiedFromAncestor {
@@ -433,7 +435,7 @@ fn legacy_or_unstable_copy_claims_remain_unknown() {
 }
 
 #[test]
-fn copy_claim_requires_a_fully_typed_ancestor_chain() {
+fn copy_claim_does_not_walk_beyond_the_direct_parent() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("partially-typed-chain.jsonl");
     let mut root = session("root", None, true);
@@ -471,6 +473,97 @@ fn copy_claim_requires_a_fully_typed_ancestor_chain() {
     present(outcome);
     assert_eq!(documents.len(), 2);
     assert_eq!(documents[1].event_origin, EventOrigin::Unknown);
+    assert_eq!(
+        documents[1].session_relationship,
+        SessionRelationshipKind::RelatedUnknown
+    );
+    assert_eq!(
+        documents[1].parent_session_id,
+        Some(documents[1].root_session_id)
+    );
+    assert_ne!(documents[1].root_session_id, documents[0].session_id);
+}
+
+#[test]
+fn missing_direct_copy_target_preserves_proven_origin_and_resolves_later() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("absent-copy-target.jsonl");
+    let mut child = session("child", Some("missing-parent"), true);
+    child["native_session_id"] = json!("native-child");
+    child["session_relationship"] = json!("forked");
+    let mut copied = event(0, "native-child-event", "child", "preserved child");
+    copied["copied_from"] = json!({
+        "ancestor_native_session_id": "native-missing-parent",
+        "ancestor_event_id": "native-missing-event",
+        "proof": "native_copied_from_field",
+    });
+    write_records(
+        &path,
+        &[lineage_manifest(), source(), child.clone(), copied.clone()],
+    );
+
+    let input = CustomHistorySourceBackedInput::explicit(&path, [34; 32]);
+    let (outcome, missing_documents, _) = collect(&input, None);
+    present(outcome);
+    assert_eq!(missing_documents.len(), 1);
+    let missing_child = &missing_documents[0];
+    assert_eq!(body(missing_child), "preserved child");
+    assert_eq!(
+        missing_child.session_relationship,
+        SessionRelationshipKind::Forked
+    );
+    assert_eq!(
+        missing_child.parent_session_id,
+        Some(missing_child.root_session_id)
+    );
+    let unresolved_origin = missing_child.event_origin.clone();
+    let EventOrigin::CopiedFromAncestor {
+        ancestor_session_id,
+        ancestor_event_id,
+        proof,
+    } = &unresolved_origin
+    else {
+        panic!("durably proven missing-target copy must retain its origin claim");
+    };
+    assert_eq!(**ancestor_session_id, missing_child.root_session_id);
+    assert_ne!(**ancestor_event_id, missing_child.event_id);
+    assert_eq!(*proof, EventCopyProofKind::NativeCopiedFromField);
+    missing_child.validate_contract().unwrap();
+
+    let mut parent = session("missing-parent", None, true);
+    parent["native_session_id"] = json!("native-missing-parent");
+    parent["session_relationship"] = json!("root");
+    let target = event(
+        0,
+        "native-missing-event",
+        "missing-parent",
+        "reappeared target",
+    );
+    write_records(
+        &path,
+        &[lineage_manifest(), source(), parent, child, target, copied],
+    );
+
+    let (outcome, resolved_documents, _) = collect(&input, None);
+    present(outcome);
+    assert_eq!(resolved_documents.len(), 2);
+    let resolved_child = resolved_documents
+        .iter()
+        .find(|record| body(record) == "preserved child")
+        .unwrap();
+    let resolved_target = resolved_documents
+        .iter()
+        .find(|record| body(record) == "reappeared target")
+        .unwrap();
+    assert_eq!(resolved_child.event_origin, unresolved_origin);
+    assert_eq!(
+        resolved_child.event_origin,
+        EventOrigin::CopiedFromAncestor {
+            ancestor_session_id: Box::new(resolved_target.session_id),
+            ancestor_event_id: Box::new(resolved_target.event_id),
+            proof: EventCopyProofKind::NativeCopiedFromField,
+        }
+    );
 }
 
 #[test]
@@ -948,7 +1041,7 @@ fn structural_manifest_failures_retain_the_published_generation_and_restore() {
 }
 
 #[test]
-fn deep_chain_session_catalog_and_event_roots_are_linear() {
+fn deep_chain_session_catalog_projects_only_direct_relationships() {
     const SESSIONS: usize = 1_000;
     const EVENTS: usize = 1_000;
 
@@ -984,9 +1077,6 @@ fn deep_chain_session_catalog_and_event_roots_are_linear() {
     assert_eq!(work.source_read_passes, 1);
     assert_eq!(work.provider_records_parsed, 2 + SESSIONS + EVENTS);
     assert_eq!(work.session_nodes, SESSIONS);
-    assert_eq!(work.session_dependencies, SESSIONS - 1);
-    assert_eq!(work.session_root_nodes, SESSIONS);
-    assert_eq!(work.event_root_lookups, EVENTS);
     assert_eq!(work.resident_event_body_bytes, 0);
 }
 

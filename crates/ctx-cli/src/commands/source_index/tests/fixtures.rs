@@ -93,6 +93,23 @@ fn fixture_event(
     }
 }
 
+fn fixture_copied_event(
+    lineage: u8,
+    ancestor: &EventRecord,
+    claimed_root: &EventRecord,
+) -> EventRecord {
+    let mut event = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", lineage, 1);
+    event.parent_session_id = Some(ancestor.session_id);
+    event.root_session_id = claimed_root.session_id;
+    event.session_relationship = SessionRelationshipKind::Forked;
+    event.event_origin = EventOrigin::CopiedFromAncestor {
+        ancestor_session_id: Box::new(ancestor.session_id),
+        ancestor_event_id: Box::new(ancestor.event_id),
+        proof: EventCopyProofKind::NativeEventIdentity,
+    };
+    event
+}
+
 fn fixture_core_event(event: &EventRecord, body: impl Into<String>) -> CoreEventRecord {
     let mut core_record = CoreRecord::new_selected(
         event.event_id,
@@ -132,6 +149,18 @@ fn fixture_core_event(event: &EventRecord, body: impl Into<String>) -> CoreEvent
         event: projected_event,
         core_record,
     }
+}
+
+fn mcp_fixture_show_event(root: &Path, event: &CoreEventRecord) -> Value {
+    mcp_show_event(
+        root,
+        &event.event_id.as_uuid().to_string(),
+        0,
+        0,
+        None,
+        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    )
+    .unwrap()
 }
 
 fn fixture_search_presentation<'event>(

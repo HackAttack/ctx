@@ -163,62 +163,6 @@ fn setup_semantic_clean_cache_queues_daemon_without_foreground_download() {
 }
 
 #[test]
-fn setup_wait_indexes_committed_provider_sqlite_wal_content() {
-    let temp = tempdir();
-    install_default_hermes_fixture(&temp, "provider sqlite canonical content");
-    let provider_db = temp.path().join(".hermes/state.db");
-    let writer = Connection::open(&provider_db).unwrap();
-    let journal_mode: String = writer
-        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(journal_mode, "wal");
-    writer
-        .execute_batch("PRAGMA wal_autocheckpoint = 0")
-        .unwrap();
-    let main_before = fs::metadata(&provider_db).unwrap();
-    writer
-        .execute(
-            "INSERT INTO messages (session_id, role, content, timestamp)
-             VALUES ('hermes-cli-native', 'user', ?1, 1782259203.0)",
-            ["provider sqlite committed wal lifecycle oracle"],
-        )
-        .unwrap();
-    assert!(provider_db.with_extension("db-wal").is_file());
-    let main_after = fs::metadata(&provider_db).unwrap();
-    assert_eq!(main_after.len(), main_before.len());
-    assert_eq!(
-        main_after.modified().unwrap(),
-        main_before.modified().unwrap()
-    );
-
-    let _daemon = start_full_source_refresh_daemon(&temp);
-    let setup = ready_setup(&temp);
-    assert_eq!(setup["schema_version"], 2, "{setup:#}");
-    assert_eq!(setup["mode"], "ready", "{setup:#}");
-    let generation = setup["lexical"]["generation_id"].as_str().unwrap();
-    let _status = wait_for_core_generation(&temp, generation);
-    assert!(
-        provider_core_counts(&data_root(&temp), "hermes").1 >= 3,
-        "committed provider WAL records must be included in Core"
-    );
-    assert!(!data_root(&temp).join("relational.sqlite").exists());
-
-    let search = json_output(ctx(&temp).args([
-        "search",
-        "provider sqlite committed wal lifecycle oracle",
-        "--provider",
-        "hermes",
-        "--refresh",
-        "off",
-        "--format=json",
-    ]));
-    assert_eq!(search["retrieval"]["index"], "core", "{search:#}");
-    assert_eq!(search["retrieval"]["generation_id"], generation);
-    assert_eq!(search["results"].as_array().unwrap().len(), 1, "{search:#}");
-    drop(writer);
-}
-
-#[test]
 fn malformed_present_config_fails_before_setup_and_analytics_side_effects() {
     let temp = tempdir();
     let state = temp.path().join("state");
@@ -296,15 +240,7 @@ fn status_missing_source_epoch_is_read_only_and_does_not_initialize_files() {
     assert!(status.get("relational").is_none(), "{status:#}");
     assert!(status.get("prior_epoch").is_none());
 
-    let output = ctx(&temp)
-        .arg("status")
-        .env("CTX_DATA_ROOT", &data_root)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let output = String::from_utf8(output).unwrap();
+    let output = success_stdout(ctx(&temp).arg("status").env("CTX_DATA_ROOT", &data_root));
     assert!(output.contains("History status: failed"), "{output}");
     assert!(
         output.contains("history has not been indexed yet"),
@@ -538,14 +474,8 @@ fn setup_background_refresh_and_wait_publish_the_same_codex_source() {
 
     let human_temp = tempdir();
     write_codex_setup_session(&human_temp);
-    let human_setup = ctx(&human_temp)
-        .args(["setup", "--wait", "--progress", "none"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let human_setup = String::from_utf8(human_setup).unwrap();
+    let human_setup =
+        success_stdout(ctx(&human_temp).args(["setup", "--wait", "--progress", "none"]));
     assert!(human_setup.contains("History is ready to search"));
     assert!(human_setup.contains("  ctx search \"test failure\""));
 }
@@ -622,14 +552,8 @@ fn setup_no_daemon_is_one_run_opt_out_and_keeps_semantic_disabled() {
     assert_eq!(status["semantic"]["reason"], "semantic_disabled");
     assert!(!data_root(&temp).join("config.toml").exists());
 
-    let human_setup = ctx(&temp)
-        .args(["setup", "--no-daemon", "--progress", "none"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let human_setup = String::from_utf8(human_setup).unwrap();
+    let human_setup =
+        success_stdout(ctx(&temp).args(["setup", "--no-daemon", "--progress", "none"]));
     assert!(
         human_setup.contains("Background  skipped because --no-daemon was used"),
         "{human_setup}"
@@ -896,7 +820,7 @@ fn foreground_import_rejections_complete_and_preserve_diagnostics() {
     fs::create_dir_all(&sessions).unwrap();
     fs::copy(
         provider_history_fixture("codex-malformed-session.jsonl"),
-        sessions.join("rollout-malformed.jsonl"),
+        sessions.join("codex-malformed-session.jsonl"),
     )
     .unwrap();
     ctx_from_binary(&temp, &binary)
@@ -963,7 +887,7 @@ fn foreground_import_rejection_diagnostics_survive_a_noop_source_cycle() {
     fs::create_dir_all(&sessions).unwrap();
     fs::copy(
         provider_history_fixture("codex-malformed-session.jsonl"),
-        sessions.join("rollout-malformed.jsonl"),
+        sessions.join("codex-malformed-session.jsonl"),
     )
     .unwrap();
     fs::write(
@@ -1177,35 +1101,12 @@ fn setup_inventories_and_imports_claude_sources_by_default() {
 }
 
 #[test]
-fn setup_inventories_whole_source_sqlite_providers() {
-    let temp = tempdir();
-    install_default_hermes_fixture(&temp, "setup should inventory hermes");
-
-    let setup =
-        json_output(ctx(&temp).args(["setup", "--wait", "--format=json", "--progress", "none"]));
-    assert_eq!(setup["mode"], "ready", "{setup:#}");
-    assert_eq!(setup["lexical"]["certified_sources"], 1, "{setup:#}");
-    assert!(
-        setup["lexical"]["indexed_documents"]
-            .as_u64()
-            .is_some_and(|count| count >= 2),
-        "{setup:#}"
-    );
-
-    let generation = setup["lexical"]["generation_id"].as_str().unwrap();
-    let status = wait_for_core_generation(&temp, generation);
-    assert_eq!(status["lexical"]["status"], "ready", "{status:#}");
-    let (sessions, events) = provider_core_counts(&data_root(&temp), "hermes");
-    assert_eq!(sessions, 1);
-    assert!(events >= 2);
-    assert!(!data_root(&temp).join("relational.sqlite").exists());
-}
-
-#[test]
-fn clean_multisource_setup_preserves_core_identity() {
+fn clean_multisource_setup_continues_past_unsupported_hermes() {
     let temp = tempdir();
     write_large_codex_setup_sessions(&temp, 40, 4, 4 * 1024);
     write_large_hermes_setup_db(&temp, 130, 8 * 1024);
+    let hermes_db = temp.path().join(".hermes/state.db");
+    let hermes_before = fs::read(&hermes_db).unwrap();
     let _daemon = start_full_source_refresh_daemon(&temp);
     let setup = ready_setup(&temp);
     let generation = setup["lexical"]["generation_id"]
@@ -1223,7 +1124,8 @@ fn clean_multisource_setup_preserves_core_identity() {
         provider_core_counts(&data_root(&temp), "hermes"),
     );
     assert!((core_counts.0).1 > 0);
-    assert!((core_counts.1).1 > 0);
+    assert_eq!(core_counts.1, (0, 0));
+    assert_eq!(fs::read(&hermes_db).unwrap(), hermes_before);
     assert!(!data_root(&temp).join("relational.sqlite").exists());
 
     let codex_search = json_output(ctx(&temp).args([
@@ -1237,18 +1139,6 @@ fn clean_multisource_setup_preserves_core_identity() {
     ]));
     assert_eq!(codex_search["retrieval"]["generation_id"], generation);
     assert!(!codex_search["results"].as_array().unwrap().is_empty());
-    let hermes_search = json_output(ctx(&temp).args([
-        "search",
-        "hermes setup current",
-        "--provider",
-        "hermes",
-        "--refresh",
-        "off",
-        "--format=json",
-    ]));
-    assert_eq!(hermes_search["retrieval"]["generation_id"], generation);
-    assert!(!hermes_search["results"].as_array().unwrap().is_empty());
-
     let replay = ready_setup(&temp);
     assert_eq!(replay["lexical"]["generation_id"], generation, "{replay:#}");
     wait_for_core_generation(&temp, &generation);
@@ -1260,4 +1150,5 @@ fn clean_multisource_setup_preserves_core_identity() {
         core_counts
     );
     assert!(!data_root(&temp).join("relational.sqlite").exists());
+    assert_eq!(fs::read(&hermes_db).unwrap(), hermes_before);
 }

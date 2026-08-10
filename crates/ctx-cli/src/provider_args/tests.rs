@@ -11,9 +11,15 @@ fn importable_provider_names() -> BTreeSet<&'static str> {
 }
 
 #[test]
-fn cli_provider_enums_are_the_exact_41_semantic_providers_plus_custom() {
+fn cli_provider_enums_keep_41_recognized_providers_while_only_40_are_importable() {
     let importable = importable_provider_names();
-    assert_eq!(importable.len(), 41, "semantic provider count changed");
+    assert_eq!(importable.len(), 40, "importable provider count changed");
+    assert!(!importable.contains(CaptureProvider::Hermes.as_str()));
+    let recognized = ctx_history_capture::provider_source_specs()
+        .iter()
+        .map(|spec| spec.provider.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(recognized.len(), 41, "recognized provider count changed");
 
     let native_variants = NativeProviderArg::value_variants();
     let native_providers = native_variants
@@ -25,14 +31,14 @@ fn cli_provider_enums_are_the_exact_41_semantic_providers_plus_custom() {
         native_variants.len(),
         "native CLI enum maps multiple values to one CaptureProvider"
     );
-    assert_eq!(native_providers, importable);
+    assert_eq!(native_providers, recognized);
 
     let public_variants = ProviderArg::value_variants();
     let public_providers = public_variants
         .iter()
         .map(|provider| provider.capture_provider().as_str())
         .collect::<BTreeSet<_>>();
-    let mut expected_public = importable.clone();
+    let mut expected_public = recognized;
     assert!(expected_public.insert(CaptureProvider::Custom.as_str()));
     assert_eq!(public_variants.len(), 42, "public provider count changed");
     assert_eq!(

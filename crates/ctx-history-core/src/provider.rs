@@ -342,7 +342,6 @@ mod tests {
             ProviderId::GeminiCli,
             ProviderId::Tabnine,
             ProviderId::Goose,
-            ProviderId::Hermes,
             ProviderId::Kilo,
             ProviderId::KiroCli,
             ProviderId::KimiCodeCli,

@@ -188,8 +188,8 @@ fn publication_activity_keeps_cold_scrub_and_uses_incremental_identity_audit_for
     );
     assert_eq!(
         crate::publication::candidate_lineage_verification_activity(),
-        (4, 1),
-        "one tiny append must spill only itself and decode only its changed/retained session edge"
+        (2, 2),
+        "one tiny append must verify only the changed session's local claims"
     );
 }
 
@@ -272,7 +272,7 @@ fn unrelated_append_does_not_replay_retained_copy_lineage() {
     );
     assert_eq!(
         crate::publication::candidate_lineage_verification_activity(),
-        (4, 1),
+        (2, 2),
         "the delta verifier must not decode or spill the retained copy corpus"
     );
 }

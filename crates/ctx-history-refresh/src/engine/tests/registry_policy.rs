@@ -1,14 +1,20 @@
 //! Registry-policy coverage owned by the refresh engine.
 
+use super::unsupported_refresh::{discovery_fixture, run_report};
 use super::*;
 use sha2::{Digest, Sha256};
 
-fn registry_policy_warp_source(path: PathBuf, exists: bool) -> ProviderSource {
+fn registry_policy_source(
+    provider: CaptureProvider,
+    path: PathBuf,
+    source_format: &'static str,
+    exists: bool,
+) -> ProviderSource {
     ProviderSource {
-        provider: CaptureProvider::Warp,
+        provider,
         path,
         exists,
-        source_format: "warp_sqlite",
+        source_format,
         source_kind: ProviderSourceKind::NativeHistory,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::Native,
@@ -21,18 +27,12 @@ fn registry_policy_warp_source(path: PathBuf, exists: bool) -> ProviderSource {
     }
 }
 
+fn registry_policy_warp_source(path: PathBuf, exists: bool) -> ProviderSource {
+    registry_policy_source(CaptureProvider::Warp, path, "warp_sqlite", exists)
+}
+
 fn registry_policy_nanoclaw_source(path: PathBuf) -> ProviderSource {
-    ProviderSource {
-        provider: CaptureProvider::NanoClaw,
-        path,
-        exists: true,
-        source_format: "nanoclaw_project",
-        source_kind: ProviderSourceKind::NativeHistory,
-        import_support: ProviderImportSupport::Native,
-        catalog_support: ProviderCatalogSupport::Native,
-        status: ProviderSourceStatus::Available,
-        unsupported_reason: None,
-    }
+    registry_policy_source(CaptureProvider::NanoClaw, path, "nanoclaw_project", true)
 }
 
 fn registry_policy_automatic_route_identity(source: &ProviderSource) -> SourceRouteIdentity {
@@ -87,17 +87,12 @@ fn only_unscopable_registry_safety_issues_block_globally() {
 #[test]
 fn registry_failure_identity_uses_the_canonical_certified_format() {
     let path = PathBuf::from("/detected/codex-sessions");
-    let source = ProviderSource {
-        provider: CaptureProvider::Codex,
-        path: path.clone(),
-        exists: true,
-        source_format: "codex_session_jsonl_tree",
-        source_kind: ProviderSourceKind::NativeHistory,
-        import_support: ProviderImportSupport::Native,
-        catalog_support: ProviderCatalogSupport::Native,
-        status: ProviderSourceStatus::Available,
-        unsupported_reason: None,
-    };
+    let source = registry_policy_source(
+        CaptureProvider::Codex,
+        path.clone(),
+        "codex_session_jsonl_tree",
+        true,
+    );
     let issue = SourceBackedAutomaticRegistryIssue::Unavailable {
         source,
         reason: SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable {
@@ -184,45 +179,28 @@ fn distinct_nanoclaw_registry_failures_match_retained_automatic_routes() {
 }
 
 #[test]
-fn mixed_valid_and_invalid_registry_routes_publish_with_a_typed_failure() {
+fn mixed_codex_and_unsupported_hermes_routes_continue_with_typed_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
+    let (home, _, discovery) = discovery_fixture(temp.path());
     let codex_root = temp.path().join("codex-sessions");
-    let invalid_warp = temp.path().join("unselected-warp.sqlite");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&cwd).unwrap();
+    let hermes = home.join(".hermes/state.db");
     write_registry_policy_codex_rollout(&codex_root);
-    std::fs::write(&invalid_warp, b"not selected by Warp discovery").unwrap();
-    let discovery = DiscoveryContext::new(
-        &home,
-        &cwd,
-        DiscoveryPlatform::Linux,
-        DiscoveryPlatformDirs::default(),
-    );
-    let report = DiscoveryReport {
-        sources: vec![
-            provider_source_for_path(CaptureProvider::Codex, codex_root),
-            registry_policy_warp_source(invalid_warp, true),
-        ],
-        issues: Vec::new(),
-    };
-    let mut progress =
-        |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
-
-    let publication = refresh_all_provider_sources(
+    std::fs::create_dir_all(hermes.parent().unwrap()).unwrap();
+    std::fs::write(&hermes, b"Hermes content must not be parsed").unwrap();
+    let publication = run_report(
         &discovery,
-        report,
-        StdDuration::ZERO,
+        DiscoveryReport {
+            sources: vec![
+                provider_source_for_path(CaptureProvider::Codex, codex_root),
+                provider_source_for_path(CaptureProvider::Hermes, hermes),
+            ],
+            issues: Vec::new(),
+        },
         &data_root,
         &index_root,
-        None,
-        SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
-        &mut progress,
     )
     .unwrap();
 
@@ -244,9 +222,13 @@ fn mixed_valid_and_invalid_registry_routes_publish_with_a_typed_failure() {
         .collect::<Vec<_>>();
     assert_eq!(failures.len(), 1);
     let failure = failures[0];
-    assert_eq!(failure.provider, "warp");
+    assert_eq!(failure.provider, "hermes");
     assert_eq!(failure.class, "incompatible");
     assert!(!failure.carried_forward);
+    assert_eq!(
+        failure.detail,
+        ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON
+    );
     assert!(is_sha256_identity(&failure.route_identity));
     assert!(is_sha256_identity(&failure.source_identity));
     let verified = VerifiedIndex::open(&index_root).unwrap();
@@ -261,40 +243,102 @@ fn mixed_valid_and_invalid_registry_routes_publish_with_a_typed_failure() {
 }
 
 #[test]
+fn unsupported_hermes_preserves_same_epoch_last_good_route_as_stale() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (home, _, discovery) = discovery_fixture(temp.path());
+    let database = home.join(".hermes/state.db");
+    std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+    std::fs::write(&database, b"not a database and must not be opened").unwrap();
+    let source = provider_source_for_path(CaptureProvider::Hermes, database);
+    let route_identity = automatic_source_backed_route_identity(&source).unwrap();
+
+    let retained_source = SourceKey::derive(
+        CaptureProvider::Hermes.as_str(),
+        "hermes_state_sqlite",
+        "session",
+        1,
+        SourceAnchor::CatalogLineage([0x8d; 32]),
+    )
+    .unwrap();
+    let mut writer =
+        ctx_history_index::GenerationWriter::open(&index_root, WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+    writer.begin_source(retained_source.clone()).unwrap();
+    writer
+        .add_core_record(publication_pin_record(&retained_source))
+        .unwrap();
+    writer
+        .certify_source(publication_pin_certificate(&retained_source))
+        .unwrap();
+    writer
+        .set_present_source_routes(vec![ctx_history_index::SourceRouteSnapshot::present(
+            route_identity.clone(),
+            vec![retained_source],
+        )
+        .unwrap()])
+        .unwrap();
+    let retained_generation = writer.commit(|_| true).unwrap().generation_id;
+
+    let publication = run_report(
+        &discovery,
+        DiscoveryReport {
+            sources: vec![source],
+            issues: Vec::new(),
+        },
+        &data_root,
+        &index_root,
+    )
+    .unwrap();
+
+    assert_eq!(publication.generation_id, retained_generation);
+    let [result] = publication.route_results.as_slice() else {
+        panic!("one Hermes route result expected: {publication:#?}");
+    };
+    assert_eq!(result.route_identity, route_identity.as_str());
+    assert_eq!(result.outcome.failure_class(), Some("incompatible"));
+    let [failure] = result.source_failures.as_slice() else {
+        panic!("one Hermes source failure expected: {result:#?}");
+    };
+    assert!(failure.carried_forward);
+    assert_eq!(
+        failure.detail,
+        ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON
+    );
+    let retained = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(retained.generation_id(), retained_generation);
+    assert!(retained.manifest().source_route(&route_identity).is_some());
+    assert_eq!(retained.manifest().sources.len(), 1);
+    assert_eq!(
+        retained.manifest().sources[0]
+            .observation()
+            .source()
+            .provider(),
+        CaptureProvider::Hermes.as_str()
+    );
+}
+
+#[test]
 fn registry_issue_only_cold_refresh_retains_the_all_fail_guard() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
-    let home = temp.path().join("home");
-    let cwd = temp.path().join("cwd");
+    let (_, _, discovery) = discovery_fixture(temp.path());
     let invalid_warp = temp.path().join("unselected-warp.sqlite");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&cwd).unwrap();
     std::fs::write(&invalid_warp, b"not selected by Warp discovery").unwrap();
-    let discovery = DiscoveryContext::new(
-        &home,
-        &cwd,
-        DiscoveryPlatform::Linux,
-        DiscoveryPlatformDirs::default(),
-    );
-    let report = DiscoveryReport {
-        sources: vec![registry_policy_warp_source(invalid_warp, true)],
-        issues: Vec::new(),
-    };
-    let mut progress =
-        |_: CaptureSourceBackedDetailedRefreshProgress| Ok::<(), SourceBackedRouteError>(());
-
-    let error = refresh_all_provider_sources(
+    let error = run_report(
         &discovery,
-        report,
-        StdDuration::ZERO,
+        DiscoveryReport {
+            sources: vec![registry_policy_warp_source(invalid_warp, true)],
+            issues: Vec::new(),
+        },
         &data_root,
         &index_root,
-        None,
-        SourceBackedRefreshScope::All,
-        &BTreeSet::new(),
-        &mut progress,
     )
     .unwrap_err();
     let failed_routes = error

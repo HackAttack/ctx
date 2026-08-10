@@ -8,22 +8,42 @@ use uuid::Uuid;
 
 use crate::transcript::normalize_uuid_prefix;
 
-use super::compact_ref::{CompactRefMap, CompactRefResolver, MAX_COMPACT_REF_HEX_LEN};
+use super::compact_ref::{
+    CompactRefMap, CompactRefNamespace, CompactRefResolver, MAX_COMPACT_REF_HEX_LEN,
+};
 
-const EVENT_ID_FIELDS: &[&str] = &[
-    "ctx_event_id",
-    "event_id",
-    "ancestor_event_id",
-    "copied_from_ctx_event_id",
-];
-const SESSION_ID_FIELDS: &[&str] = &[
-    "ctx_session_id",
-    "session_id",
-    "parent_ctx_session_id",
-    "root_ctx_session_id",
-    "ancestor_session_id",
-    "copied_from_ctx_session_id",
-];
+#[derive(Clone, Copy)]
+enum IdKind {
+    Event,
+    Session,
+}
+
+fn id_field(field: &str) -> Option<(IdKind, bool)> {
+    Some(match field {
+        "ctx_event_id" | "event_id" => (IdKind::Event, false),
+        "ancestor_event_id" | "copied_from_ctx_event_id" => (IdKind::Event, true),
+        "ctx_session_id" | "session_id" => (IdKind::Session, false),
+        "parent_ctx_session_id"
+        | "root_ctx_session_id"
+        | "claimed_root_ctx_session_id"
+        | "ancestor_session_id"
+        | "copied_from_ctx_session_id" => (IdKind::Session, true),
+        _ => return None,
+    })
+}
+
+#[derive(Default)]
+struct IdSet {
+    rendered: BTreeSet<Uuid>,
+    optional: BTreeSet<Uuid>,
+    preserved: BTreeSet<Uuid>,
+}
+
+#[derive(Default)]
+struct RenderedIds {
+    events: IdSet,
+    sessions: IdSet,
+}
 
 /// Owns the two-generation namespace used by one human-facing render pass.
 ///
@@ -66,14 +86,29 @@ impl<'index> CompactPresentation<'index> {
     }
 
     pub(super) fn project(&self, value: &Value) -> Result<Value> {
-        let mut event_ids = BTreeSet::new();
-        let mut session_ids = BTreeSet::new();
-        collect_rendered_ids(value, None, &mut event_ids, &mut session_ids);
-        let references = self
-            .resolver()
-            .compact_refs(event_ids.iter().copied(), session_ids.iter().copied())?;
+        let mut rendered_ids = RenderedIds::default();
+        collect_rendered_ids(value, None, &mut rendered_ids);
+        let resolver = self.resolver();
+        for (ids, namespace) in [
+            (&mut rendered_ids.events, CompactRefNamespace::Event),
+            (&mut rendered_ids.sessions, CompactRefNamespace::Session),
+        ] {
+            for id in &ids.preserved {
+                ids.rendered.remove(id);
+            }
+            for id in &ids.optional {
+                if !resolver.contains_exact(namespace, *id)? {
+                    ids.rendered.remove(id);
+                    ids.preserved.insert(*id);
+                }
+            }
+        }
+        let references = resolver.compact_refs(
+            rendered_ids.events.rendered.iter().copied(),
+            rendered_ids.sessions.rendered.iter().copied(),
+        )?;
         let mut projected = value.clone();
-        project_rendered_ids(&mut projected, None, &references, &event_ids, &session_ids)?;
+        project_rendered_ids(&mut projected, None, &references, &rendered_ids)?;
         Ok(projected)
     }
 }
@@ -85,76 +120,103 @@ pub(super) fn reference_needs_retained_peer(reference: &str) -> bool {
             .is_ok_and(|prefix| prefix.len() <= MAX_COMPACT_REF_HEX_LEN)
 }
 
-fn collect_rendered_ids(
-    value: &Value,
-    field: Option<&str>,
-    event_ids: &mut BTreeSet<Uuid>,
-    session_ids: &mut BTreeSet<Uuid>,
-) {
-    if let Some(id) = value.as_str().and_then(|value| Uuid::parse_str(value).ok()) {
-        if field.is_some_and(|field| EVENT_ID_FIELDS.contains(&field)) {
-            event_ids.insert(id);
-        } else if field.is_some_and(|field| SESSION_ID_FIELDS.contains(&field)) {
-            session_ids.insert(id);
+fn collect_rendered_ids(value: &Value, field: Option<&str>, rendered_ids: &mut RenderedIds) {
+    if let Some((id, (kind, optional))) = value
+        .as_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .zip(field.and_then(id_field))
+    {
+        let ids = match kind {
+            IdKind::Event => &mut rendered_ids.events,
+            IdKind::Session => &mut rendered_ids.sessions,
+        };
+        ids.rendered.insert(id);
+        if optional {
+            ids.optional.insert(id);
         }
     }
     match value {
         Value::Array(values) => {
             for value in values {
-                collect_rendered_ids(value, field, event_ids, session_ids);
+                collect_rendered_ids(value, field, rendered_ids);
             }
         }
         Value::Object(object) => {
+            if field == Some("resolution")
+                && object.get("state").and_then(Value::as_str) == Some("unresolved")
+            {
+                for (field, ids) in [
+                    ("ctx_event_id", &mut rendered_ids.events),
+                    ("ctx_session_id", &mut rendered_ids.sessions),
+                ] {
+                    if let Some(id) = uuid_member(object, field) {
+                        ids.preserved.insert(id);
+                    }
+                }
+            }
             for (field, value) in object {
-                collect_rendered_ids(value, Some(field), event_ids, session_ids);
+                collect_rendered_ids(value, Some(field), rendered_ids);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 
+fn uuid_member(object: &serde_json::Map<String, Value>, field: &str) -> Option<Uuid> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+}
+
 fn project_rendered_ids(
     value: &mut Value,
     field: Option<&str>,
     references: &CompactRefMap,
-    event_ids: &BTreeSet<Uuid>,
-    session_ids: &BTreeSet<Uuid>,
+    ids: &RenderedIds,
 ) -> Result<()> {
     if let Value::String(text) = value {
-        if let Ok(id) = Uuid::parse_str(text) {
-            let replacement = if field.is_some_and(|field| EVENT_ID_FIELDS.contains(&field)) {
-                Some(references.event(id)?)
-            } else if field.is_some_and(|field| SESSION_ID_FIELDS.contains(&field)) {
-                Some(references.session(id)?)
-            } else {
-                None
+        if let Some((id, (kind, _))) = Uuid::parse_str(&*text).ok().zip(field.and_then(id_field)) {
+            let id_set = match kind {
+                IdKind::Event => &ids.events,
+                IdKind::Session => &ids.sessions,
             };
-            if let Some(replacement) = replacement {
-                *text = replacement.to_owned();
-                return Ok(());
+            if !id_set.preserved.contains(&id) {
+                *text = compact_reference(references, kind, id)?.to_owned();
             }
+            return Ok(());
         }
         if field == Some("suggested_next_commands") {
-            for id in event_ids {
-                *text = text.replace(&id.to_string(), references.event(*id)?);
-            }
-            for id in session_ids {
-                *text = text.replace(&id.to_string(), references.session(*id)?);
+            for (kind, id_set) in [
+                (IdKind::Event, &ids.events),
+                (IdKind::Session, &ids.sessions),
+            ] {
+                for id in &id_set.rendered {
+                    *text =
+                        text.replace(&id.to_string(), compact_reference(references, kind, *id)?);
+                }
             }
         }
     }
     match value {
         Value::Array(values) => {
             for value in values {
-                project_rendered_ids(value, field, references, event_ids, session_ids)?;
+                project_rendered_ids(value, field, references, ids)?;
             }
         }
         Value::Object(object) => {
             for (field, value) in object {
-                project_rendered_ids(value, Some(field), references, event_ids, session_ids)?;
+                project_rendered_ids(value, Some(field), references, ids)?;
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
     Ok(())
+}
+
+fn compact_reference(references: &CompactRefMap, kind: IdKind, id: Uuid) -> Result<&str> {
+    match kind {
+        IdKind::Event => references.event(id),
+        IdKind::Session => references.session(id),
+    }
 }

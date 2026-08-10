@@ -4,7 +4,7 @@ fn search_refresh_exact_noop_and_repeated_tiny_appends_stay_bounded() {
     let fixture = PathBuf::from(provider_history_fixture("codex-sessions"));
     let sessions = temp.path().join(".codex/sessions");
     copy_dir_all(&fixture, &sessions);
-    let appended_source = sessions.join("2026/06/23/root.jsonl");
+    let appended_source = sessions.join("2026/06/23/codex-session-root.jsonl");
     let _daemon = start_source_refresh_daemon(&temp);
 
     let initial = json_output(ctx(&temp).args([
@@ -394,6 +394,7 @@ fn query_authority_default_background_search_show_and_locate_use_typed_json() {
 #[test]
 fn persistent_daemon_passively_publishes_appended_source_without_foreground_command() {
     let temp = tempdir();
+    let native_session_id = "019c08d7-0000-7000-8000-000000000001";
     let source = temp
         .path()
         .join(".codex")
@@ -401,10 +402,10 @@ fn persistent_daemon_passively_publishes_appended_source_without_foreground_comm
         .join("2026")
         .join("07")
         .join("29")
-        .join("watch.jsonl");
+        .join(format!("rollout-{native_session_id}.jsonl"));
     write_codex_session(
         &source,
-        "019c08d7-0000-7000-8000-000000000001",
+        native_session_id,
         &[(
             "2026-07-29T12:00:00Z",
             "user",
@@ -944,7 +945,7 @@ fn search_refresh_imports_fresh_work_after_large_source_backed_generation() {
     let fixture = PathBuf::from(provider_history_fixture("codex-sessions"));
     let discovered = temp.path().join(".codex").join("sessions");
     copy_dir_all(&fixture, &discovered);
-    let root_session = discovered.join("2026/06/23/root.jsonl");
+    let root_session = discovered.join("2026/06/23/codex-session-root.jsonl");
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(&root_session)

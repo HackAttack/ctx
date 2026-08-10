@@ -452,6 +452,7 @@ def _matrix_inventory(
             "scope",
             "lineage_capability_values",
             "custom_history_lineage_support",
+            "detected_unsupported_sources",
             "providers",
         },
         "matrix",

@@ -23,6 +23,7 @@ pub use provider_sources::{
     ProviderSourceRootBoundaryError, ProviderSourceSpec, ProviderSourceStatus,
     ProviderSourceStatusReason, WarpDiscoveryUnavailable, WarpInstalledPlatform,
     WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface, DISCOVERY_ENV_ALLOWLIST,
+    HERMES_STATE_DB_UNSUPPORTED_REASON,
 };
 
 pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
@@ -43,7 +44,6 @@ pub(crate) const KIRO_SQLITE_SOURCE_FORMAT: &str = "kiro_cli_sqlite";
 pub(crate) const CRUSH_SQLITE_SOURCE_FORMAT: &str = "crush_sqlite";
 pub(crate) const GOOSE_SESSIONS_SQLITE_SOURCE_FORMAT: &str = "goose_sessions_sqlite";
 pub(crate) const OPENCLAW_SOURCE_FORMAT: &str = "openclaw_session_jsonl_tree";
-pub(crate) const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
 pub(crate) const NANOCLAW_SOURCE_FORMAT: &str = "nanoclaw_project";
 pub(crate) const ASTRBOT_SQLITE_SOURCE_FORMAT: &str = "astrbot_data_v4_sqlite";
 pub(crate) const SHELLEY_SQLITE_SOURCE_FORMAT: &str = "shelley_sqlite";
@@ -117,12 +117,12 @@ pub use provider::source_backed::{
     register_codex_prompt_history_source_backed_route, register_crush_source_backed_route,
     register_cursor_source_backed_route, register_custom_history_source_backed_route,
     register_forgecode_explicit_source_backed_route, register_gemini_source_backed_route,
-    register_goose_source_backed_route, register_hermes_explicit_source_backed_route,
-    register_landed_source_backed_route, register_landed_source_backed_route_with_data_root,
-    register_lingma_source_backed_route, register_nanoclaw_source_backed_route,
-    register_shelley_source_backed_route, register_warp_source_backed_route,
-    source_backed_refresh_work_budget, source_backed_refresh_writer_options,
-    source_backed_route_constructor, source_backed_route_inventory, CrushProjectDatabaseV0,
+    register_goose_source_backed_route, register_landed_source_backed_route,
+    register_landed_source_backed_route_with_data_root, register_lingma_source_backed_route,
+    register_nanoclaw_source_backed_route, register_shelley_source_backed_route,
+    register_warp_source_backed_route, source_backed_refresh_work_budget,
+    source_backed_refresh_writer_options, source_backed_route_constructor,
+    source_backed_route_inventory, source_backed_source_failure_identity, CrushProjectDatabaseV0,
     CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0, RouteObservation,
     SourceBackedAutomaticRegistryBuild, SourceBackedAutomaticRegistryIssue,
     SourceBackedAutomaticUnavailableReason, SourceBackedCertifiedRemoval,

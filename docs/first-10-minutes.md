@@ -50,7 +50,7 @@ ctx sources --format json
 ```
 
 Expect rows for supported local import providers such as Codex, Pi,
-Antigravity, Claude, OpenCode, Kilo Code, OpenClaw, Hermes, Gemini, Cursor,
+Antigravity, Claude, OpenCode, Kilo Code, OpenClaw, Gemini, Cursor,
 Zed, Copilot CLI, Factory AI Droid, and Warp Terminal restoration SQLite.
 NanoClaw is supported from an exact project CWD or official launchd/systemd
 service registration; AstrBot appears as supported when a bounded `data_v4.db`
@@ -66,6 +66,9 @@ failure, or an authentication/encryption boundary. Inspect `status_reason` and
 or non-plaintext Trae database reports
 `status_reason: "blocked_auth_or_encryption"`.
 
+Hermes `state.db` locations are still discovered, but current schemas appear as
+`status: "unsupported"` and `importable: false`; no path override is available.
+
 ## 4. Re-Run Or Target Imports
 
 ```bash
@@ -80,7 +83,6 @@ ctx import --provider codex --path ~/.codex/sessions
 ctx import --provider pi --path ~/.pi/agent/sessions
 ctx import --provider cursor --path ~/.cursor/projects
 ctx import --provider zed --path ~/.local/share/zed/threads/threads.db
-ctx import --provider hermes --path ~/.hermes/state.db
 ctx import --provider nanoclaw --path /path/to/nanoclaw-project
 ctx import --provider astrbot --path /path/to/data/data_v4.db
 ctx import --provider shelley --path ~/.config/shelley/shelley.db

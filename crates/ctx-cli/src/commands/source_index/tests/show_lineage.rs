@@ -83,15 +83,7 @@ fn machine_show_contract_keeps_lineage_in_existing_nested_fields() {
 #[test]
 fn copied_event_show_list_and_search_models_share_typed_lineage() {
     let ancestor = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 54, 1);
-    let mut copied = fixture_event(CaptureProvider::Codex, "codex_session_jsonl", 55, 1);
-    copied.parent_session_id = Some(ancestor.session_id);
-    copied.root_session_id = ancestor.session_id;
-    copied.session_relationship = SessionRelationshipKind::Forked;
-    copied.event_origin = EventOrigin::CopiedFromAncestor {
-        ancestor_session_id: Box::new(ancestor.session_id),
-        ancestor_event_id: Box::new(ancestor.event_id),
-        proof: EventCopyProofKind::NativeEventIdentity,
-    };
+    let copied = fixture_copied_event(55, &ancestor, &ancestor);
     let copied = fixture_core_event(&copied, "copied body remains directly visible");
 
     let shown = render_event_value(&copied);

@@ -440,8 +440,8 @@ fn expected_query_projection_delta(
     } = &core.event_origin
     {
         add(Term::from_field_text(
-            fields.origin_event_identity_digest,
-            &hex(&ancestor_event_id.digest()),
+            fields.origin_event_id,
+            &ancestor_event_id.to_string(),
         ));
     }
     add(Term::from_field_text(
@@ -497,14 +497,21 @@ fn expected_query_projection_delta(
     if let Some(role) = &core.role {
         add(Term::from_field_text(fields.role, role));
     }
-    for observation in &core.repository_vcs_observations {
-        if let ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome) = &observation.kind
-        {
-            for object_id in &outcome.produced_object_ids {
-                add(Term::from_field_text(
-                    fields.repository_produced_object_id,
-                    &object_id.hex,
-                ));
+    let repository_attribution_eligible = matches!(
+        &core.event_origin,
+        ctx_history_core::EventOrigin::UniqueToSession
+    );
+    if repository_attribution_eligible {
+        for observation in &core.repository_vcs_observations {
+            if let ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome) =
+                &observation.kind
+            {
+                for object_id in &outcome.produced_object_ids {
+                    add(Term::from_field_text(
+                        fields.repository_produced_object_id,
+                        &object_id.hex,
+                    ));
+                }
             }
         }
     }
@@ -520,16 +527,18 @@ fn expected_query_projection_delta(
             &cwd.to_lowercase(),
         ));
     }
-    for observation in &core.repository_file_observations {
-        add(Term::from_field_text(
-            fields.touched_file_filter,
-            &observation.relative_path.to_lowercase(),
-        ));
-        if let Some(prior_relative_path) = &observation.prior_relative_path {
+    if repository_attribution_eligible {
+        for observation in &core.repository_file_observations {
             add(Term::from_field_text(
                 fields.touched_file_filter,
-                &prior_relative_path.to_lowercase(),
+                &observation.relative_path.to_lowercase(),
             ));
+            if let Some(prior_relative_path) = &observation.prior_relative_path {
+                add(Term::from_field_text(
+                    fields.touched_file_filter,
+                    &prior_relative_path.to_lowercase(),
+                ));
+            }
         }
     }
     add(Term::from_field_bytes(
@@ -783,7 +792,7 @@ fn remaining_query_projection_fields(fields: crate::Fields) -> [Field; 25] {
         fields.event_identity_digest,
         fields.session_relationship_kind,
         fields.event_origin_kind,
-        fields.origin_event_identity_digest,
+        fields.origin_event_id,
         fields.source_key,
         fields.provider,
         fields.source_format,

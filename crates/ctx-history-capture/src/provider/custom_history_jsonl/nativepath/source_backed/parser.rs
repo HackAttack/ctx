@@ -564,15 +564,13 @@ fn finish_projection(
     catalog.touch_keys.clear();
     catalog.edge_keys.clear();
 
-    let mut session_roots;
     let copied_origins;
     {
-        let resolution =
-            session_catalog(&catalog.sources, &catalog.sessions, &mut catalog.summary)?;
+        let valid_sessions =
+            session_catalog(&catalog.sources, &catalog.sessions, &mut catalog.summary);
         catalog
             .sessions
-            .retain(|key, _| resolution.valid.contains(key));
-        session_roots = resolution.roots;
+            .retain(|key, _| valid_sessions.contains(key));
 
         let mut invalid_events = Vec::new();
         catalog.events.retain(|key, event| {
@@ -662,7 +660,7 @@ fn finish_projection(
             }
         }
 
-        let mut required = catalog
+        let required = catalog
             .events
             .keys()
             .map(|key| (key.0.clone(), key.1.clone()))
@@ -678,26 +676,7 @@ fn finish_projection(
                 ]
             }))
             .collect::<BTreeSet<_>>();
-        let mut pending = required.iter().cloned().collect::<Vec<_>>();
-        while let Some(key) = pending.pop() {
-            let Some(session) = catalog.sessions.get(&key) else {
-                continue;
-            };
-            for dependency in [
-                session.parent_session_id.as_ref(),
-                session.root_session_id.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let dependency_key = (session.source_id.clone(), dependency.clone());
-                if required.insert(dependency_key.clone()) {
-                    pending.push(dependency_key);
-                }
-            }
-        }
         catalog.sessions.retain(|key, _| required.contains(key));
-        session_roots.retain(|key, _| required.contains(key));
     }
 
     let mut rejected_lines = catalog
@@ -756,7 +735,6 @@ fn finish_projection(
     Ok(ParsedProjection {
         sources: catalog.sources,
         sessions: catalog.sessions,
-        session_roots,
         events: catalog.events,
         copied_origins,
         event_spool,
@@ -801,14 +779,13 @@ fn apply_session_lineage_contract(catalog: &mut ProjectionCatalog) {
             | SessionRelationshipKind::ResumedFrom
             | SessionRelationshipKind::WorkflowChild
             | SessionRelationshipKind::RelatedUnknown => {
-                session
-                    .parent_session_id
-                    .as_deref()
-                    .is_some_and(|parent| parent != session.session_id)
-                    && session
-                        .root_session_id
-                        .as_deref()
-                        .is_none_or(|root| root != session.session_id)
+                session.parent_session_id.as_deref().is_some_and(|parent| {
+                    parent != session.session_id
+                        && session
+                            .root_session_id
+                            .as_deref()
+                            .is_none_or(|root| root == parent)
+                })
             }
         };
         if !valid {
@@ -894,43 +871,44 @@ fn validate_copied_origins(
                 .and_then(|entry| *entry)
                 .is_some_and(|(event_index, _)| event_index == key.2)
         });
-        let ancestor_session_id = native_sessions
-            .get(&(key.0.clone(), selector.ancestor_native_session_id.clone()))
-            .and_then(Option::as_deref);
-        let ancestor_event = ancestor_session_id.and_then(|ancestor_session_id| {
-            native_events
-                .get(&(
-                    key.0.clone(),
-                    ancestor_session_id.to_owned(),
-                    selector.ancestor_event_id.clone(),
-                ))
-                .and_then(|entry| *entry)
-                .map(|(event_index, _)| (ancestor_session_id, event_index))
+        let direct_parent_session_id = child_session.and_then(|session| {
+            matches!(
+                session.session_relationship,
+                Some(
+                    SessionRelationshipKind::Delegated
+                        | SessionRelationshipKind::Forked
+                        | SessionRelationshipKind::ResumedFrom
+                        | SessionRelationshipKind::WorkflowChild
+                        | SessionRelationshipKind::RelatedUnknown
+                )
+            )
+            .then_some(session.parent_session_id.as_deref())
+            .flatten()
         });
-        let has_typed_relationship = child_session
-            .and_then(|session| session.session_relationship)
-            .is_some();
         let proof_identity_is_exact = !matches!(
             selector.proof,
             CtxHistoryJsonlCopyProofKind::NativeEventIdentity
         ) || event.event_id.as_deref()
             == Some(selector.ancestor_event_id.as_str());
-        let ancestor_event = ancestor_event.filter(|(ancestor_session_id, _)| {
-            session_has_ancestor(sessions, &child_session_key, ancestor_session_id)
-        });
 
-        let Some((ancestor_session_id, ancestor_event_index)) = ancestor_event.filter(|_| {
-            child_native_session_is_exact
-                && child_event_is_exact
-                && has_typed_relationship
-                && proof_identity_is_exact
-        }) else {
+        if !child_native_session_is_exact
+            || !child_event_is_exact
+            || direct_parent_session_id.is_none()
+            || !proof_identity_is_exact
+        {
             push_provider_import_failure(
                 summary,
                 event.line_number,
-                "copied_from requires unique stable child/ancestor native session and event IDs, a typed ancestor relationship, and proof-consistent identity"
+                "copied_from requires unique stable child native session/event IDs, a direct typed parent relationship, and proof-consistent identity"
                     .to_owned(),
             );
+            continue;
+        }
+        // The typed relationship and copied selector are child-owned proof.
+        // Derive the durable unresolved IDs from them without consulting the
+        // mutable target catalog; target presence is resolution state, not
+        // claim validity.
+        let Some(ancestor_session_id) = direct_parent_session_id else {
             continue;
         };
         let proof = match selector.proof {
@@ -949,7 +927,6 @@ fn validate_copied_origins(
             ValidatedCopiedFrom {
                 ancestor_session_id: ancestor_session_id.to_owned(),
                 ancestor_event_id: selector.ancestor_event_id.clone(),
-                ancestor_event_index,
                 proof,
             },
         );
@@ -963,197 +940,35 @@ fn stable_lineage_identifier(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-fn session_has_ancestor(
-    sessions: &BTreeMap<CustomSessionKey, CustomSessionCatalogEntry>,
-    child: &CustomSessionKey,
-    ancestor_session_id: &str,
-) -> bool {
-    let mut current = child.clone();
-    for _ in 0..sessions.len() {
-        let Some(session) = sessions.get(&current) else {
-            return false;
-        };
-        if !matches!(
-            session.session_relationship,
-            Some(
-                SessionRelationshipKind::Delegated
-                    | SessionRelationshipKind::Forked
-                    | SessionRelationshipKind::ResumedFrom
-                    | SessionRelationshipKind::WorkflowChild
-                    | SessionRelationshipKind::RelatedUnknown
-            )
-        ) {
-            return false;
-        }
-        let Some(parent) = session.parent_session_id.as_ref() else {
-            return false;
-        };
-        if parent == ancestor_session_id {
-            return true;
-        }
-        current = (child.0.clone(), parent.clone());
-    }
-    false
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionVisit {
-    Visiting,
-    Valid,
-    Invalid,
-}
-
-struct SessionFrame {
-    key: CustomSessionKey,
-    next_dependency: usize,
-    valid: bool,
-}
-
-struct SessionResolution {
-    valid: BTreeSet<CustomSessionKey>,
-    roots: BTreeMap<CustomSessionKey, String>,
-}
-
 fn session_catalog(
     sources: &BTreeMap<String, CustomSourceCatalogEntry>,
     sessions: &BTreeMap<CustomSessionKey, CustomSessionCatalogEntry>,
     summary: &mut ProviderImportSummary,
-) -> CustomHistorySourceBackedResult<SessionResolution> {
-    let mut visits = HashMap::<CustomSessionKey, SessionVisit>::with_capacity(sessions.len());
-    for start in sessions.keys() {
-        if visits.contains_key(start) {
-            continue;
-        }
-        visits.insert(start.clone(), SessionVisit::Visiting);
+) -> BTreeSet<CustomSessionKey> {
+    let mut valid = BTreeSet::new();
+    for (key, session) in sessions {
         #[cfg(test)]
         record_custom_history_work(|work| {
             work.session_nodes = work.session_nodes.saturating_add(1);
         });
-        let mut stack = vec![SessionFrame {
-            key: start.clone(),
-            next_dependency: 0,
-            valid: sources.contains_key(&start.0),
-        }];
-        while let Some(frame) = stack.last_mut() {
-            let session = sessions
-                .get(&frame.key)
-                .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
-            let dependency = match frame.next_dependency {
-                0 => session.parent_session_id.as_ref(),
-                1 => session.root_session_id.as_ref(),
-                _ => None,
-            };
-            if frame.next_dependency < 2 {
-                frame.next_dependency = frame.next_dependency.saturating_add(1);
-                let Some(dependency) = dependency else {
-                    continue;
-                };
-                if dependency == &session.session_id {
-                    continue;
-                }
-                #[cfg(test)]
-                record_custom_history_work(|work| {
-                    work.session_dependencies = work.session_dependencies.saturating_add(1);
-                });
-                let dependency_key = (session.source_id.clone(), dependency.clone());
-                match visits.get(&dependency_key).copied() {
-                    Some(SessionVisit::Valid) => {}
-                    Some(SessionVisit::Invalid | SessionVisit::Visiting) => {
-                        frame.valid = false;
-                    }
-                    None if !sessions.contains_key(&dependency_key) => {
-                        frame.valid = false;
-                    }
-                    None => {
-                        visits.insert(dependency_key.clone(), SessionVisit::Visiting);
-                        #[cfg(test)]
-                        record_custom_history_work(|work| {
-                            work.session_nodes = work.session_nodes.saturating_add(1);
-                        });
-                        stack.push(SessionFrame {
-                            key: dependency_key.clone(),
-                            next_dependency: 0,
-                            valid: sources.contains_key(&dependency_key.0),
-                        });
-                    }
-                }
-                continue;
-            }
-            let completed = stack
-                .pop()
-                .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
-            let state = if completed.valid {
-                SessionVisit::Valid
-            } else {
-                SessionVisit::Invalid
-            };
-            visits.insert(completed.key, state);
-            if state == SessionVisit::Invalid {
-                if let Some(parent) = stack.last_mut() {
-                    parent.valid = false;
-                }
-            }
-        }
-    }
-
-    let mut valid = BTreeSet::new();
-    for key in sessions.keys() {
-        if visits.get(key) == Some(&SessionVisit::Valid) {
+        let source_exists = sources.contains_key(&key.0);
+        let has_self_parent = session.parent_session_id.as_deref() == Some(&session.session_id);
+        if source_exists && !has_self_parent {
             valid.insert(key.clone());
             continue;
         }
-        let line = sessions
-            .get(key)
-            .ok_or(CustomHistorySourceBackedError::CountMismatch)?
-            .line_number;
+        let detail = if has_self_parent {
+            "declares itself as its direct parent"
+        } else {
+            "references an unknown source"
+        };
         push_provider_import_failure(
             summary,
-            line,
-            format!(
-                "session `{}` in source `{}` has an invalid or cyclic source/parent/root relationship",
-                key.1, key.0
-            ),
+            session.line_number,
+            format!("session `{}` in source `{}` {detail}", key.1, key.0,),
         );
     }
-
-    let mut roots = BTreeMap::<CustomSessionKey, String>::new();
-    for start in &valid {
-        if roots.contains_key(start) {
-            continue;
-        }
-        let mut chain = Vec::<CustomSessionKey>::new();
-        let mut current = start.clone();
-        let root = loop {
-            if let Some(root) = roots.get(&current) {
-                break root.clone();
-            }
-            #[cfg(test)]
-            record_custom_history_work(|work| {
-                work.session_root_nodes = work.session_root_nodes.saturating_add(1);
-            });
-            let session = sessions
-                .get(&current)
-                .ok_or(CustomHistorySourceBackedError::CountMismatch)?;
-            chain.push(current.clone());
-            if let Some(root) = &session.root_session_id {
-                break root.clone();
-            }
-            let Some(parent) = &session.parent_session_id else {
-                break session.session_id.clone();
-            };
-            if parent == &session.session_id {
-                break session.session_id.clone();
-            }
-            current = (session.source_id.clone(), parent.clone());
-            if !valid.contains(&current) {
-                return Err(CustomHistorySourceBackedError::CountMismatch);
-            }
-        };
-        for key in chain {
-            roots.insert(key, root.clone());
-        }
-    }
-    Ok(SessionResolution { valid, roots })
+    valid
 }
 
 fn new_prefix_hasher() -> Sha256 {

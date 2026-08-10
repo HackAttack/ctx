@@ -68,10 +68,6 @@ impl CodexNativeScanner {
                 )?;
                 self.opened.revalidate_same_object()?;
             }
-            if let Some(mut lineage_facts) = self.lineage_facts.take() {
-                lineage_facts.seal();
-                replay.lineage_facts = Some(lineage_facts);
-            }
             replay.after_observation = replay.before_observation.clone();
             return Ok(replay);
         }
@@ -88,9 +84,6 @@ impl CodexNativeScanner {
             validate_catalog_owner(&self.source, owner.clone())?;
         }
 
-        if let Some(lineage_facts) = self.lineage_facts.as_mut() {
-            lineage_facts.seal();
-        }
         Ok(CodexSourceScan {
             source: self.source,
             before_observation: self.before.clone(),
@@ -106,9 +99,10 @@ impl CodexNativeScanner {
             next_raw_ordinal: self.raw_ordinal,
             owner: self.owner,
             pending_tool_authorities: self.tool_authorities.into_values().collect(),
+            terminal_authority: self.mcp_terminal_authority.checkpoint(),
             incomplete_tail: self.incomplete_tail,
             counters: self.counters,
-            lineage_facts: self.lineage_facts,
+            local_turn_started: self.local_turn_started,
         })
     }
 
@@ -120,7 +114,7 @@ impl CodexNativeScanner {
             complete_hasher: self.complete_hasher.clone(),
             full_hasher: self.full_hasher.clone(),
             counters: self.counters,
-            lineage_mark: self.lineage_facts.as_ref().map(CodexLineageFactsV0::mark),
+            local_turn_started: self.local_turn_started,
         }
     }
 
@@ -140,11 +134,7 @@ impl CodexNativeScanner {
         self.complete_hasher = position.complete_hasher;
         self.full_hasher = position.full_hasher;
         self.counters = position.counters;
-        if let (Some(lineage_facts), Some(mark)) =
-            (self.lineage_facts.as_mut(), position.lineage_mark)
-        {
-            lineage_facts.restore(mark);
-        }
+        self.local_turn_started = position.local_turn_started;
         (
             self.counters.prefiltered_records,
             self.counters.structural_json_parses,
