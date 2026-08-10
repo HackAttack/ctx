@@ -1,8 +1,31 @@
+use std::io;
+
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::response::{error_response, success_response, tool_error_result};
-use crate::presentation_limit::serialized_json_line_bytes;
+
+#[derive(Default)]
+struct SerializedByteCounter {
+    bytes: usize,
+}
+
+impl io::Write for SerializedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_json_line_bytes(value: &Value) -> serde_json::Result<usize> {
+    let mut counter = SerializedByteCounter::default();
+    serde_json::to_writer(&mut counter, value)?;
+    Ok(counter.bytes.saturating_add(1))
+}
 
 #[cfg(test)]
 pub(super) fn is_show_tool_call(message: &Value) -> bool {

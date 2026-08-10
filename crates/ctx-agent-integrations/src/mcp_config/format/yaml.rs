@@ -3,7 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use super::super::SERVER_NAME;
 use super::{server_command, ConfigStatus};
 
-pub(super) fn status_continue(body: &str) -> Result<ConfigStatus> {
+pub fn status_continue(body: &str) -> Result<ConfigStatus> {
     let doc: serde_yaml::Value = serde_yaml::from_str(body).context("parse YAML config")?;
     let Some(servers) = mapping_get(&doc, "mcpServers") else {
         return Ok(ConfigStatus::Missing);
@@ -21,7 +21,7 @@ pub(super) fn status_continue(body: &str) -> Result<ConfigStatus> {
     })
 }
 
-pub(super) fn upsert_continue(body: &str, force: bool) -> Result<String> {
+pub fn upsert_continue(body: &str, force: bool) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         let mut mapping = serde_yaml::Mapping::new();
         mapping.insert(
@@ -66,7 +66,7 @@ pub(super) fn upsert_continue(body: &str, force: bool) -> Result<String> {
     render(&doc)
 }
 
-pub(super) fn status_goose(body: &str) -> Result<ConfigStatus> {
+pub fn status_goose(body: &str) -> Result<ConfigStatus> {
     let doc: serde_yaml::Value = serde_yaml::from_str(body).context("parse YAML config")?;
     let Some(extensions) = mapping_get(&doc, "extensions") else {
         return Ok(ConfigStatus::Missing);
@@ -81,7 +81,7 @@ pub(super) fn status_goose(body: &str) -> Result<ConfigStatus> {
     })
 }
 
-pub(super) fn upsert_goose(body: &str, force: bool) -> Result<String> {
+pub fn upsert_goose(body: &str, force: bool) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         serde_yaml::Value::Mapping(Default::default())
     } else {

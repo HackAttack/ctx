@@ -1,132 +1,41 @@
 use std::io::{self, IsTerminal, Write};
 
 use anyhow::{anyhow, Context, Result};
+use ctx_agent_integrations::skill::{
+    default_agent_selection, detected_agents, explicit_agent_selection, parse_picker_selection,
+    picker_agent_selection, SkillAgentSelection,
+};
 
 use super::{
-    agents::{agent_from_name, picker_agents, SkillAgentArg},
+    agents::{picker_agents, SkillAgentArg},
     paths::PathContext,
     target::single_target,
     SkillInstallArgs, SkillStatusArgs, BUNDLED_SKILL_NAME,
 };
 
-#[cfg(test)]
-pub(super) fn explicit_selected_agents(
-    agents: &[SkillAgentArg],
-    all_agents: bool,
-) -> Option<Vec<SkillAgentArg>> {
-    if all_agents {
-        Some(SkillAgentArg::ALL.to_vec())
-    } else if agents.is_empty() {
-        None
-    } else {
-        Some(dedupe_agents(agents.iter().copied()))
-    }
-}
-
-fn dedupe_agents(agents: impl IntoIterator<Item = SkillAgentArg>) -> Vec<SkillAgentArg> {
-    let mut deduped = Vec::new();
-    for agent in agents {
-        if !deduped.contains(&agent) {
-            deduped.push(agent);
-        }
-    }
-    deduped
-}
-
-pub(super) fn detected_agents(context: &PathContext) -> Vec<SkillAgentArg> {
-    picker_agents()
-        .iter()
-        .copied()
-        .filter(|agent| context.agent_detected(*agent))
-        .collect()
-}
-
-fn detected_agent_specific_agents(context: &PathContext) -> Vec<SkillAgentArg> {
-    detected_agents(context)
-        .into_iter()
-        .filter(|agent| agent.needs_agent_specific_default())
-        .collect()
-}
-
-pub(super) fn default_noninteractive_agents(
-    context: &PathContext,
-) -> (Vec<SkillAgentArg>, SkillSelectionSource) {
-    let mut agents = vec![SkillAgentArg::Universal];
-    let detected_specific = detected_agent_specific_agents(context);
-    let source = if detected_specific.is_empty() {
-        SkillSelectionSource::Fallback
-    } else {
-        agents.extend(detected_specific);
-        SkillSelectionSource::Detected
-    };
-    (agents, source)
-}
-
 pub(super) fn default_picker_agents(context: &PathContext) -> Vec<SkillAgentArg> {
-    let (agents, _) = default_noninteractive_agents(context);
-    agents
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SkillSelectionSource {
-    Explicit,
-    All,
-    Picker,
-    Detected,
-    Fallback,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct SkillAgentSelection {
-    pub(super) agents: Vec<SkillAgentArg>,
-    pub(super) source: SkillSelectionSource,
+    default_agent_selection(context).agents
 }
 
 pub(super) fn install_agent_selection(
     args: &SkillInstallArgs,
     context: &PathContext,
 ) -> Result<SkillAgentSelection> {
-    if args.all_agents {
-        return Ok(SkillAgentSelection {
-            agents: SkillAgentArg::ALL.to_vec(),
-            source: SkillSelectionSource::All,
-        });
-    }
-    if !args.agent.is_empty() {
-        return Ok(SkillAgentSelection {
-            agents: dedupe_agents(args.agent.iter().copied()),
-            source: SkillSelectionSource::Explicit,
-        });
+    if let Some(selection) = explicit_agent_selection(&args.agent, args.all_agents) {
+        return Ok(selection);
     }
     if args.format.is_json() || !can_prompt() {
-        let (agents, source) = default_noninteractive_agents(context);
-        return Ok(SkillAgentSelection { agents, source });
+        return Ok(default_agent_selection(context));
     }
-    let agents = prompt_for_agents(context)?;
-    Ok(SkillAgentSelection {
-        agents,
-        source: SkillSelectionSource::Picker,
-    })
+    Ok(picker_agent_selection(prompt_for_agents(context)?))
 }
 
 pub(super) fn status_agent_selection(
     args: &SkillStatusArgs,
     context: &PathContext,
 ) -> SkillAgentSelection {
-    if args.all_agents {
-        return SkillAgentSelection {
-            agents: SkillAgentArg::ALL.to_vec(),
-            source: SkillSelectionSource::All,
-        };
-    }
-    if !args.agent.is_empty() {
-        return SkillAgentSelection {
-            agents: dedupe_agents(args.agent.iter().copied()),
-            source: SkillSelectionSource::Explicit,
-        };
-    }
-    let (agents, source) = default_noninteractive_agents(context);
-    SkillAgentSelection { agents, source }
+    explicit_agent_selection(&args.agent, args.all_agents)
+        .unwrap_or_else(|| default_agent_selection(context))
 }
 
 fn can_prompt() -> bool {
@@ -195,38 +104,6 @@ fn picker_prompt_lines(
         ));
     }
     Ok(lines)
-}
-
-pub(super) fn parse_picker_selection(
-    input: &str,
-    options: &[SkillAgentArg],
-) -> Result<Vec<SkillAgentArg>> {
-    let input = input.trim();
-    if input.eq_ignore_ascii_case("all") {
-        return Ok(options.to_vec());
-    }
-    let mut selected = Vec::new();
-    for raw in input
-        .split([',', ' ', '\t'])
-        .filter(|part| !part.trim().is_empty())
-    {
-        let token = raw.trim();
-        let agent = if let Ok(index) = token.parse::<usize>() {
-            options
-                .get(index.saturating_sub(1))
-                .copied()
-                .ok_or_else(|| anyhow!("invalid selection {token}: choose 1-{}", options.len()))?
-        } else {
-            agent_from_name(token).ok_or_else(|| anyhow!("unknown agent: {token}"))?
-        };
-        if !selected.contains(&agent) {
-            selected.push(agent);
-        }
-    }
-    if selected.is_empty() {
-        return Err(anyhow!("choose at least one install target"));
-    }
-    Ok(selected)
 }
 
 #[cfg(test)]

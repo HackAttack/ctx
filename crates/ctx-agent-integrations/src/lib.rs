@@ -1,0 +1,8 @@
+//! Headless coding-agent integration protocols and installers.
+
+pub mod mcp;
+pub mod mcp_config;
+pub mod skill;
+pub mod tool_backend;
+
+mod filesystem;

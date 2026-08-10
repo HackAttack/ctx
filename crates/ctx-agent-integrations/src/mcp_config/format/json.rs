@@ -7,7 +7,7 @@ use super::super::SERVER_NAME;
 use super::{server_command, ConfigStatus, ServerCommand};
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::integrations::mcp) enum JsonRoot {
+pub enum JsonRoot {
     McpServers,
     Mcp,
     ContextServers,
@@ -24,7 +24,7 @@ impl JsonRoot {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::integrations::mcp) enum JsonServerShape {
+pub enum JsonServerShape {
     Plain,
     StdioType,
     OpenCodeLocal,
@@ -32,7 +32,7 @@ pub(in crate::integrations::mcp) enum JsonServerShape {
     ClineLocal,
 }
 
-pub(super) fn status(
+pub fn status(
     body: &str,
     root: JsonRoot,
     shape: JsonServerShape,
@@ -58,7 +58,7 @@ pub(super) fn status(
     })
 }
 
-pub(super) fn upsert(
+pub fn upsert(
     body: &str,
     root: JsonRoot,
     shape: JsonServerShape,

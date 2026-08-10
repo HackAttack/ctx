@@ -1,15 +1,15 @@
-use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{invalid_tool_request, optional_string, optional_usize};
-use crate::{
-    commands::list::events::DEFAULT_EVENT_QUERY_LIMIT,
-    presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    tool_backend::{
-        QueryEventFilters, QueryEventsRequest, ToolBackendError, ToolEventContent, ToolOperation,
-    },
+use super::{
+    invalid_tool_request, optional_string, optional_usize, MCP_PRESENTATION_MAX_OUTPUT_BYTES,
 };
+use crate::tool_backend::{
+    QueryEventFilters, QueryEventsRequest, ToolBackendError, ToolEventContent,
+    ToolEventRangeDirection, ToolEventRangeScope, ToolOperation,
+};
+
+const DEFAULT_EVENT_QUERY_LIMIT: u64 = 10_000;
 
 pub(super) fn query_events_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
     let providers = optional_strings(arguments, "providers")?;
@@ -101,21 +101,21 @@ fn parse_optional_uuid(
         .transpose()
 }
 
-fn optional_scope(arguments: &Value) -> Result<CoreEventRangeScope, ToolBackendError> {
+fn optional_scope(arguments: &Value) -> Result<ToolEventRangeScope, ToolBackendError> {
     match optional_string(arguments, "scope")?.as_deref() {
-        None | Some("all") => Ok(CoreEventRangeScope::All),
-        Some("primary") => Ok(CoreEventRangeScope::Primary),
-        Some("subagent") => Ok(CoreEventRangeScope::Subagent),
+        None | Some("all") => Ok(ToolEventRangeScope::All),
+        Some("primary") => Ok(ToolEventRangeScope::Primary),
+        Some("subagent") => Ok(ToolEventRangeScope::Subagent),
         Some(_) => Err(invalid_tool_request(
             "scope must be one of all, primary, subagent",
         )),
     }
 }
 
-fn optional_direction(arguments: &Value) -> Result<CoreEventRangeDirection, ToolBackendError> {
+fn optional_direction(arguments: &Value) -> Result<ToolEventRangeDirection, ToolBackendError> {
     match optional_string(arguments, "direction")?.as_deref() {
-        None | Some("ascending") => Ok(CoreEventRangeDirection::Ascending),
-        Some("descending") => Ok(CoreEventRangeDirection::Descending),
+        None | Some("ascending") => Ok(ToolEventRangeDirection::Ascending),
+        Some("descending") => Ok(ToolEventRangeDirection::Descending),
         Some(_) => Err(invalid_tool_request(
             "direction must be one of ascending, descending",
         )),

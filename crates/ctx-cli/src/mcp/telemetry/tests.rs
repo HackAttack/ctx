@@ -6,7 +6,7 @@ use serde_json::json;
 use super::*;
 
 #[test]
-fn raw_message_classification_stays_in_cli_and_maps_to_content_free_facts() {
+fn protocol_classification_maps_to_content_free_product_facts() {
     for (message, expected_descriptor, expected_observation) in [
         (
             json!({
@@ -16,7 +16,7 @@ fn raw_message_classification_stays_in_cli_and_maps_to_content_free_facts() {
                 "params": {"name": "search"}
             }),
             RequestDescriptor::ToolCall {
-                operation: McpOperationKind::Search,
+                operation: McpToolKind::Search,
             },
             McpRequestObservation::ToolCall(McpObservedTool::Product(
                 crate::operation_descriptor::ObservedMcpProductOperation::Search,
@@ -30,14 +30,14 @@ fn raw_message_classification_stays_in_cli_and_maps_to_content_free_facts() {
                 "params": {"name": "private-tool-never-retained"}
             }),
             RequestDescriptor::ToolCall {
-                operation: McpOperationKind::Unknown,
+                operation: McpToolKind::Unknown,
             },
             McpRequestObservation::ToolCall(McpObservedTool::Unknown),
         ),
         (
             json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {}}),
             RequestDescriptor::ToolCall {
-                operation: McpOperationKind::Missing,
+                operation: McpToolKind::Missing,
             },
             McpRequestObservation::ToolCall(McpObservedTool::Missing),
         ),
@@ -49,7 +49,7 @@ fn raw_message_classification_stays_in_cli_and_maps_to_content_free_facts() {
     ] {
         let descriptor = RequestDescriptor::from_message(&message);
         assert_eq!(descriptor, expected_descriptor);
-        assert_eq!(descriptor.observation(), expected_observation);
+        assert_eq!(request_observation(descriptor), expected_observation);
     }
 }
 
@@ -66,7 +66,7 @@ fn query_events_uses_only_bounded_page_metadata() {
         }
     });
 
-    let metadata = result_metadata(McpOperationKind::QueryEvents, &response);
+    let metadata = result_metadata(McpToolKind::QueryEvents, &response);
 
     assert_eq!(
         metadata.result_count,
@@ -98,7 +98,7 @@ fn raw_error_text_and_pro_payload_dimensions_are_not_observed() {
             }
         }
     });
-    for operation in [McpOperationKind::Blame, McpOperationKind::ProStatus] {
+    for operation in [McpToolKind::Blame, McpToolKind::ProStatus] {
         assert_eq!(
             result_metadata(operation, &response),
             McpResultMetadataV1::default()
@@ -138,7 +138,7 @@ fn startup_and_dynamic_opt_out_precede_identity_marker_and_delivery() {
     fs::write(&config, "[analytics]\nenabled = false\n").unwrap();
     telemetry.record_delivered(
         RequestDescriptor::ToolCall {
-            operation: McpOperationKind::Status,
+            operation: McpToolKind::Status,
         },
         Some(&json!({"result": {"structuredContent": {}}})),
         Duration::ZERO,

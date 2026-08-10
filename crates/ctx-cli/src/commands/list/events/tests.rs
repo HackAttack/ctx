@@ -901,7 +901,7 @@ fn full_projection_admits_a_valid_oversized_singleton_under_the_wire_cap() {
 fn mcp_rejects_near_limit_escape_heavy_record_with_typed_error() {
     let temp = tempfile::tempdir().unwrap();
     let hard_cap = mcp_event_query_core_record_bytes(
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     );
     let body = "\0".repeat(hard_cap / 6);
     let encoded_core_bytes = test_record(&test_source(), 0, &body)
@@ -913,8 +913,7 @@ fn mcp_rejects_near_limit_escape_heavy_record_with_typed_error() {
     publish_fixture(temp.path(), std::slice::from_ref(&body));
 
     let error = crate::mcp::query_events_for_test(&json!({}), temp.path()).unwrap_err();
-    let error = error.downcast_ref::<EventQueryError>().unwrap();
-    let value = event_query_error_value(error);
+    let value: Value = serde_json::from_str(&error.to_string()).unwrap();
     assert_eq!(value["error_code"], "output_limit_exceeded");
     assert_eq!(value["retryable"], true);
     assert_eq!(

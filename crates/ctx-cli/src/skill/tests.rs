@@ -4,18 +4,31 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ctx_agent_integrations::skill::{
+    default_noninteractive_agents, detected_agents, explicit_agent_selection, install_target,
+    parse_picker_selection, picker_agents, resolve_targets_for_agents, sanitize_skill_name,
+    sha256_hex, status_target, PathContext, SkillAgentArg, SkillInstallStatus, SkillMetadata,
+    SkillSelectionSource,
+};
+
 use super::{
-    agents::{picker_agents, SkillAgentArg},
-    install::{status_target, write_skill_dir, SkillInstallStatus, SkillMetadata},
-    paths::{ensure_path_inside, sanitize_skill_name, sha256_hex, PathContext},
-    selection::{
-        default_noninteractive_agents, default_picker_agents, detected_agents,
-        install_agent_selection, parse_picker_selection, SkillSelectionSource,
-    },
-    target::resolve_targets,
+    paths::ensure_path_inside,
+    selection::{default_picker_agents, install_agent_selection},
     SkillInstallArgs, METADATA_FILE,
 };
 use crate::analytics::{IntegrationScope, IntegrationTelemetry, TargetSelection};
+
+fn resolve_targets(
+    agents: &[SkillAgentArg],
+    all_agents: bool,
+    project: bool,
+    context: &PathContext,
+) -> anyhow::Result<Vec<ctx_agent_integrations::skill::SkillTarget>> {
+    let selected = explicit_agent_selection(agents, all_agents)
+        .map(|selection| selection.agents)
+        .unwrap_or_else(|| vec![SkillAgentArg::Universal]);
+    resolve_targets_for_agents(&selected, project, context)
+}
 
 #[test]
 fn default_target_is_global_canonical_agents_dir() {
@@ -205,7 +218,7 @@ fn status_distinguishes_current_stale_modified_and_missing() {
         SkillInstallStatus::Missing
     );
 
-    write_skill_dir(&target).unwrap();
+    install_target(&target, true, true, env!("CARGO_PKG_VERSION")).unwrap();
     assert_eq!(
         status_target(&target).unwrap().status,
         SkillInstallStatus::Current
@@ -213,7 +226,7 @@ fn status_distinguishes_current_stale_modified_and_missing() {
 
     fs::write(target.skill_dir.join("SKILL.md"), "old bundled content\n").unwrap();
     let old_hash = sha256_hex(b"old bundled content\n");
-    let mut metadata = SkillMetadata::current();
+    let mut metadata = SkillMetadata::current(env!("CARGO_PKG_VERSION"));
     metadata.skill_hash = old_hash;
     fs::write(
         target.skill_dir.join(METADATA_FILE),

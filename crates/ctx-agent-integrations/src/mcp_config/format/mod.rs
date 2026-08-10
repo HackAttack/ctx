@@ -8,34 +8,34 @@ mod json;
 mod toml;
 mod yaml;
 
-pub(super) use json::{JsonRoot, JsonServerShape};
+pub use json::{JsonRoot, JsonServerShape};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ServerCommand<'a> {
+pub struct ServerCommand<'a> {
     executable: &'a str,
     args: &'a [&'a str],
 }
 
 impl<'a> ServerCommand<'a> {
-    pub(super) const fn new(executable: &'a str, args: &'a [&'a str]) -> Self {
+    pub const fn new(executable: &'a str, args: &'a [&'a str]) -> Self {
         Self { executable, args }
     }
 
-    pub(super) const fn executable(self) -> &'a str {
+    pub const fn executable(self) -> &'a str {
         self.executable
     }
 
-    pub(super) const fn args(self) -> &'a [&'a str] {
+    pub const fn args(self) -> &'a [&'a str] {
         self.args
     }
 
-    pub(super) fn argv(self) -> Vec<&'a str> {
+    pub fn argv(self) -> Vec<&'a str> {
         std::iter::once(self.executable)
             .chain(self.args.iter().copied())
             .collect()
     }
 
-    pub(super) fn render_for_host(self) -> String {
+    pub fn render_for_host(self) -> String {
         self.render(CommandShell::host())
     }
 
@@ -55,7 +55,7 @@ impl<'a> ServerCommand<'a> {
     }
 }
 
-pub(super) const fn server_command() -> ServerCommand<'static> {
+pub const fn server_command() -> ServerCommand<'static> {
     ServerCommand::new(SERVER_COMMAND, SERVER_ARGS)
 }
 
@@ -99,7 +99,7 @@ fn is_bare_arg(value: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum ConfigKind {
+pub enum ConfigKind {
     CodexToml,
     GooseYaml,
     ContinueYaml,
@@ -110,7 +110,7 @@ pub(super) enum ConfigKind {
 }
 
 impl ConfigKind {
-    pub(super) fn opencode_json() -> Self {
+    pub fn opencode_json() -> Self {
         Self::Json {
             root: JsonRoot::Mcp,
             server: JsonServerShape::OpenCodeLocal,
@@ -119,7 +119,7 @@ impl ConfigKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ConfigStatus {
+pub enum ConfigStatus {
     Current,
     Missing,
     Conflict,
@@ -128,7 +128,7 @@ pub(super) enum ConfigStatus {
 }
 
 impl ConfigStatus {
-    pub(super) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Current => "current",
             Self::Missing => "missing",
@@ -139,7 +139,7 @@ impl ConfigStatus {
     }
 }
 
-pub(super) fn status(body: &str, kind: ConfigKind, path: &Path) -> Result<ConfigStatus> {
+pub fn status(body: &str, kind: ConfigKind, path: &Path) -> Result<ConfigStatus> {
     match kind {
         ConfigKind::CodexToml => toml::status(body),
         ConfigKind::GooseYaml => yaml::status_goose(body),
@@ -148,7 +148,7 @@ pub(super) fn status(body: &str, kind: ConfigKind, path: &Path) -> Result<Config
     }
 }
 
-pub(super) fn upsert(body: &str, kind: ConfigKind, force: bool, path: &Path) -> Result<String> {
+pub fn upsert(body: &str, kind: ConfigKind, force: bool, path: &Path) -> Result<String> {
     match kind {
         ConfigKind::CodexToml => toml::upsert(body, force),
         ConfigKind::GooseYaml => yaml::upsert_goose(body, force),

@@ -5,7 +5,6 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 pub(crate) const CLI_PRESENTATION_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MCP_PRESENTATION_MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
 struct SerializedByteCounter {
@@ -67,10 +66,6 @@ pub(crate) fn enforce_presentation_cli_output_limit(
         writes_stdout && !rendered_output.ends_with('\n'),
     ));
     enforce_presentation_output_limit(serialized_output_bytes, output_limit_bytes, event_id)
-}
-
-pub(crate) fn serialized_json_line_bytes(value: &Value) -> serde_json::Result<usize> {
-    Ok(serialized_json_bytes(value)?.saturating_add(1))
 }
 
 pub(crate) fn serialized_json_bytes<T>(value: &T) -> serde_json::Result<usize>

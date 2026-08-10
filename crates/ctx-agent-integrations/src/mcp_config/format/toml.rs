@@ -6,7 +6,7 @@ use toml_edit::{
 use super::super::SERVER_NAME;
 use super::{server_command, ConfigStatus};
 
-pub(super) fn status(body: &str) -> Result<ConfigStatus> {
+pub fn status(body: &str) -> Result<ConfigStatus> {
     let doc = body.parse::<DocumentMut>().context("parse TOML config")?;
     let Some(server) = doc
         .get("mcp_servers")
@@ -23,7 +23,7 @@ pub(super) fn status(body: &str) -> Result<ConfigStatus> {
     })
 }
 
-pub(super) fn upsert(body: &str, force: bool) -> Result<String> {
+pub fn upsert(body: &str, force: bool) -> Result<String> {
     let mut doc = if body.trim().is_empty() {
         DocumentMut::new()
     } else {

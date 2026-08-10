@@ -1,6 +1,13 @@
+#[cfg(test)]
 use std::{fs, io, path::Path};
 
-use anyhow::{anyhow, Context, Result};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::{anyhow, Result};
+use ctx_agent_integrations::mcp_config::{
+    execute_install, execute_status, McpInstallRequest, McpInstallResult, McpStatusRequest,
+    McpStatusResult,
+};
 use serde_json::{json, Value};
 
 use crate::{
@@ -12,63 +19,13 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+use super::format::ConfigKind;
 use super::{
-    format::{self, ConfigKind, ConfigStatus},
-    registry::{project_detection_path, McpTarget},
+    format::{self, ConfigStatus},
+    registry::McpTarget,
     McpAgentArg, McpInstallArgs, McpPathContext, McpStatusArgs, SERVER_NAME,
 };
-
-#[derive(Debug)]
-struct McpInstallResult {
-    target: McpTarget,
-    success: bool,
-    previous_status: ConfigStatus,
-    status: ConfigStatus,
-    already_installed: bool,
-    modified: bool,
-    error: Option<String>,
-}
-
-impl McpInstallResult {
-    fn to_json(&self) -> Value {
-        json!({
-            "agent": self.target.agent.id(),
-            "agent_display_name": self.target.agent.display_name(),
-            "scope": self.target.scope.as_str(),
-            "path": self.target.path,
-            "detected": self.target.detected,
-            "supported": self.target.unsupported_reason.is_none(),
-            "success": self.success,
-            "previous_status": self.previous_status.as_str(),
-            "status": self.status.as_str(),
-            "already_installed": self.already_installed,
-            "modified": self.modified,
-            "error": self.error,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct McpStatusResult {
-    target: McpTarget,
-    status: ConfigStatus,
-    error: Option<String>,
-}
-
-impl McpStatusResult {
-    fn to_json(&self) -> Value {
-        json!({
-            "agent": self.target.agent.id(),
-            "agent_display_name": self.target.agent.display_name(),
-            "scope": self.target.scope.as_str(),
-            "path": self.target.path,
-            "detected": self.target.detected,
-            "supported": self.target.unsupported_reason.is_none(),
-            "status": self.status.as_str(),
-            "error": self.error,
-        })
-    }
-}
 
 pub(super) fn run_install(
     args: McpInstallArgs,
@@ -76,26 +33,22 @@ pub(super) fn run_install(
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
-    let agents = selected_install_agents(&args, context);
-    insert_selection_analytics(telemetry, &agents);
-    let targets = agents
-        .iter()
-        .copied()
-        .map(|agent| agent.target(args.project, context))
-        .collect::<Vec<_>>();
-    let results = targets
-        .iter()
-        .map(|target| install_target(target, args.force))
-        .collect::<Vec<_>>();
-    let failed = results.iter().filter(|result| !result.success).count();
-    telemetry.result = Some(if failed == 0 {
+    let receipt = execute_install(
+        McpInstallRequest {
+            agents: args.agent.clone(),
+            all_agents: args.all_agents,
+            project: args.project,
+            force: args.force,
+        },
+        context,
+    );
+    telemetry.resolved_agents = Some(count_bucket(receipt.selected_agents as u64));
+    telemetry.result = Some(if receipt.failed == 0 {
         IntegrationResult::Ok
     } else {
         IntegrationResult::PartialError
     });
-    telemetry.modified_targets = Some(count_bucket(
-        results.iter().filter(|result| result.modified).count() as u64,
-    ));
+    telemetry.modified_targets = Some(count_bucket(receipt.modified as u64));
     if args.format.is_json() {
         let command = format::server_command();
         println!(
@@ -107,23 +60,24 @@ pub(super) fn run_install(
                     "command": command.executable(),
                     "args": command.args(),
                 },
-                "scope": if args.project { "project" } else { "global" },
-                "results": results.iter().map(McpInstallResult::to_json).collect::<Vec<_>>(),
+                "scope": if receipt.project { "project" } else { "global" },
+                "results": receipt.results.iter().map(mcp_install_result_json).collect::<Vec<_>>(),
             })
         );
     } else {
-        let document = render_install_results(ui.stdout_context(), &results);
+        let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;
-        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &results) {
+        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &receipt.results) {
             ui.write_stderr(&diagnostics)?;
         }
     }
-    if failed > 0 {
+    if receipt.failed > 0 {
         if !args.format.is_json() {
             return Err(crate::dispatch::rendered_cli_error());
         }
         return Err(anyhow!(
-            "failed to install MCP integration for {failed} target(s)"
+            "failed to install MCP integration for {} target(s)",
+            receipt.failed
         ));
     }
     Ok(())
@@ -135,14 +89,16 @@ pub(super) fn run_status(
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
-    let agents = selected_status_agents(&args, context);
-    insert_selection_analytics(telemetry, &agents);
-    let targets = agents
-        .iter()
-        .copied()
-        .map(|agent| agent.target(args.project, context))
-        .collect::<Vec<_>>();
-    let results = targets.iter().map(status_target).collect::<Vec<_>>();
+    let receipt = execute_status(
+        McpStatusRequest {
+            agents: args.agent.clone(),
+            all_agents: args.all_agents,
+            project: args.project,
+        },
+        context,
+    );
+    telemetry.resolved_agents = Some(count_bucket(receipt.selected_agents as u64));
+    let results = &receipt.results;
     let status_count = |status| {
         results
             .iter()
@@ -174,8 +130,8 @@ pub(super) fn run_status(
                     "command": command.executable(),
                     "args": command.args(),
                 },
-                "scope": if args.project { "project" } else { "global" },
-                "results": results.iter().map(McpStatusResult::to_json).collect::<Vec<_>>(),
+                "scope": if receipt.request.project { "project" } else { "global" },
+                "results": results.iter().map(mcp_status_result_json).collect::<Vec<_>>(),
             })
         );
     } else {
@@ -187,70 +143,11 @@ pub(super) fn run_status(
     Ok(())
 }
 
-fn insert_selection_analytics(telemetry: &mut IntegrationTelemetry, agents: &[McpAgentArg]) {
-    telemetry.resolved_agents = Some(count_bucket(agents.len() as u64));
-}
-
-fn selected_install_agents(args: &McpInstallArgs, context: &McpPathContext) -> Vec<McpAgentArg> {
-    if args.all_agents {
-        return if args.project {
-            McpAgentArg::PROJECT_CAPABLE.to_vec()
-        } else {
-            McpAgentArg::ALL.to_vec()
-        };
-    }
-    if !args.agent.is_empty() {
-        return dedupe_agents(args.agent.iter().copied());
-    }
-    if args.project {
-        return detected_project_agents(context);
-    }
-    detected_agents(context)
-}
-
-fn selected_status_agents(args: &McpStatusArgs, context: &McpPathContext) -> Vec<McpAgentArg> {
-    if args.all_agents {
-        return if args.project {
-            McpAgentArg::PROJECT_CAPABLE.to_vec()
-        } else {
-            McpAgentArg::ALL.to_vec()
-        };
-    }
-    if !args.agent.is_empty() {
-        return dedupe_agents(args.agent.iter().copied());
-    }
-    if args.project {
-        return detected_project_agents(context);
-    }
-    detected_agents(context)
-}
-
 fn dedupe_agents(agents: impl IntoIterator<Item = McpAgentArg>) -> Vec<McpAgentArg> {
-    let mut deduped = Vec::new();
-    for agent in agents {
-        if !deduped.contains(&agent) {
-            deduped.push(agent);
-        }
-    }
-    deduped
+    ctx_agent_integrations::mcp_config::dedupe_agents(agents)
 }
 
-fn detected_agents(context: &McpPathContext) -> Vec<McpAgentArg> {
-    McpAgentArg::ALL
-        .iter()
-        .copied()
-        .filter(|agent| agent.detected(context))
-        .collect()
-}
-
-fn detected_project_agents(context: &McpPathContext) -> Vec<McpAgentArg> {
-    McpAgentArg::PROJECT_CAPABLE
-        .iter()
-        .copied()
-        .filter(|agent| project_detection_path(*agent, context).exists())
-        .collect()
-}
-
+#[cfg(test)]
 fn install_target(target: &McpTarget, force: bool) -> McpInstallResult {
     let previous = status_target(target);
     if previous.status == ConfigStatus::Current {
@@ -315,6 +212,7 @@ fn install_target(target: &McpTarget, force: bool) -> McpInstallResult {
     }
 }
 
+#[cfg(test)]
 fn status_target(target: &McpTarget) -> McpStatusResult {
     let Some(path) = target.path.as_ref() else {
         return McpStatusResult {
@@ -344,6 +242,7 @@ fn status_target(target: &McpTarget) -> McpStatusResult {
     }
 }
 
+#[cfg(test)]
 fn read_target_status(path: &Path, kind: ConfigKind) -> Result<ConfigStatus> {
     let body = match fs::read_to_string(path) {
         Ok(body) => body,
@@ -356,6 +255,7 @@ fn read_target_status(path: &Path, kind: ConfigKind) -> Result<ConfigStatus> {
     format::status(&body, kind, path)
 }
 
+#[cfg(test)]
 fn write_target(target: &McpTarget, force: bool) -> Result<()> {
     let path = target
         .path
@@ -374,6 +274,36 @@ fn write_target(target: &McpTarget, force: bool) -> Result<()> {
     };
     let body = format::upsert(&existing, kind, force, path)?;
     fs::write(path, body).with_context(|| format!("write {}", path.display()))
+}
+
+fn mcp_install_result_json(result: &McpInstallResult) -> Value {
+    json!({
+        "agent": result.target.agent.id(),
+        "agent_display_name": result.target.agent.display_name(),
+        "scope": result.target.scope.as_str(),
+        "path": result.target.path,
+        "detected": result.target.detected,
+        "supported": result.target.unsupported_reason.is_none(),
+        "success": result.success,
+        "previous_status": result.previous_status.as_str(),
+        "status": result.status.as_str(),
+        "already_installed": result.already_installed,
+        "modified": result.modified,
+        "error": result.error,
+    })
+}
+
+fn mcp_status_result_json(result: &McpStatusResult) -> Value {
+    json!({
+        "agent": result.target.agent.id(),
+        "agent_display_name": result.target.agent.display_name(),
+        "scope": result.target.scope.as_str(),
+        "path": result.target.path,
+        "detected": result.target.detected,
+        "supported": result.target.unsupported_reason.is_none(),
+        "status": result.status.as_str(),
+        "error": result.error,
+    })
 }
 
 fn render_install_results(context: &RenderContext, results: &[McpInstallResult]) -> Document {

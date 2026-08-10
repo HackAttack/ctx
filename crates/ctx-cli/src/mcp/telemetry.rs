@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+use ctx_agent_integrations::mcp::{McpToolKind, RequestDescriptor};
 use serde_json::Value;
 
 use crate::{
@@ -8,88 +9,33 @@ use crate::{
         PublicEventV1,
     },
     config::AppConfig,
-    operation_descriptor::McpOperationKind,
+    operation_descriptor::observed_mcp_product_operation,
 };
 use ctx_client_observability::mcp_observation::{
     McpDeliveredResponse, McpObservation, McpObservedTool, McpRequestObservation,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RequestDescriptor {
-    Initialize,
-    Ping,
-    ToolsList,
-    ToolCall { operation: McpOperationKind },
-    UnknownRequest,
-    MissingRequest,
-    InitializedNotification,
-    UnknownNotification,
-    InvalidJson,
-    InvalidUtf8,
-    LineTooLarge,
-}
-
-impl RequestDescriptor {
-    pub(super) fn from_message(message: &Value) -> Self {
-        let Some(object) = message.as_object() else {
-            return Self::MissingRequest;
-        };
-        let method = object.get("method").and_then(Value::as_str);
-        if !object.contains_key("id") {
-            return if method == Some("notifications/initialized") {
-                Self::InitializedNotification
-            } else {
-                Self::UnknownNotification
-            };
+fn request_observation(descriptor: RequestDescriptor) -> McpRequestObservation {
+    match descriptor {
+        RequestDescriptor::Initialize => McpRequestObservation::Initialize,
+        RequestDescriptor::Ping => McpRequestObservation::Ping,
+        RequestDescriptor::ToolsList => McpRequestObservation::ToolsList,
+        RequestDescriptor::ToolCall { operation } => {
+            McpRequestObservation::ToolCall(match observed_mcp_product_operation(operation) {
+                Some(operation) => McpObservedTool::Product(operation),
+                None if operation == McpToolKind::Unknown => McpObservedTool::Unknown,
+                None => McpObservedTool::Missing,
+            })
         }
-        match method {
-            Some("initialize") => Self::Initialize,
-            Some("ping") => Self::Ping,
-            Some("tools/list") => Self::ToolsList,
-            Some("tools/call") => Self::ToolCall {
-                operation: McpOperationKind::from_tool_name(
-                    message.pointer("/params/name").and_then(Value::as_str),
-                ),
-            },
-            Some(_) => Self::UnknownRequest,
-            None => Self::MissingRequest,
+        RequestDescriptor::UnknownRequest => McpRequestObservation::UnknownRequest,
+        RequestDescriptor::MissingRequest => McpRequestObservation::MissingRequest,
+        RequestDescriptor::InitializedNotification => {
+            McpRequestObservation::InitializedNotification
         }
-    }
-
-    fn observation(self) -> McpRequestObservation {
-        match self {
-            Self::Initialize => McpRequestObservation::Initialize,
-            Self::Ping => McpRequestObservation::Ping,
-            Self::ToolsList => McpRequestObservation::ToolsList,
-            Self::ToolCall { operation } => {
-                McpRequestObservation::ToolCall(match operation.observed() {
-                    Some(operation) => McpObservedTool::Product(operation),
-                    None if operation == McpOperationKind::Unknown => McpObservedTool::Unknown,
-                    None => McpObservedTool::Missing,
-                })
-            }
-            Self::UnknownRequest => McpRequestObservation::UnknownRequest,
-            Self::MissingRequest => McpRequestObservation::MissingRequest,
-            Self::InitializedNotification => McpRequestObservation::InitializedNotification,
-            Self::UnknownNotification => McpRequestObservation::UnknownNotification,
-            Self::InvalidJson => McpRequestObservation::InvalidJson,
-            Self::InvalidUtf8 => McpRequestObservation::InvalidUtf8,
-            Self::LineTooLarge => McpRequestObservation::LineTooLarge,
-        }
-    }
-}
-
-pub(super) struct McpHandled<T> {
-    pub(super) value: T,
-    pub(super) pro_event: Option<PublicEventV1>,
-}
-
-impl<T> McpHandled<T> {
-    pub(super) fn plain(value: T) -> Self {
-        Self {
-            value,
-            pro_event: None,
-        }
+        RequestDescriptor::UnknownNotification => McpRequestObservation::UnknownNotification,
+        RequestDescriptor::InvalidJson => McpRequestObservation::InvalidJson,
+        RequestDescriptor::InvalidUtf8 => McpRequestObservation::InvalidUtf8,
+        RequestDescriptor::LineTooLarge => McpRequestObservation::LineTooLarge,
     }
 }
 
@@ -137,7 +83,7 @@ impl McpTelemetry {
             return;
         };
         let delivered = response.map(|response| delivered_response(descriptor, response));
-        observation.record_delivered(descriptor.observation(), delivered, duration);
+        observation.record_delivered(request_observation(descriptor), delivered, duration);
     }
 
     pub(super) fn record_response_failure(
@@ -147,7 +93,7 @@ impl McpTelemetry {
         class: McpErrorClassV1,
     ) {
         if let Some(observation) = &mut self.observation {
-            observation.record_response_failure(descriptor.observation(), duration, class);
+            observation.record_response_failure(request_observation(descriptor), duration, class);
         }
     }
 
@@ -193,7 +139,7 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     if matches!(
         descriptor,
         RequestDescriptor::ToolCall {
-            operation: McpOperationKind::Missing
+            operation: McpToolKind::Missing
         }
     ) {
         return McpErrorClassV1::MissingTool;
@@ -201,7 +147,7 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     if matches!(
         descriptor,
         RequestDescriptor::ToolCall {
-            operation: McpOperationKind::Unknown
+            operation: McpToolKind::Unknown
         }
     ) {
         return McpErrorClassV1::UnknownTool;
@@ -216,13 +162,13 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     }
 }
 
-fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMetadataV1 {
+fn result_metadata(operation: McpToolKind, response: &Value) -> McpResultMetadataV1 {
     let Some(result) = response.pointer("/result/structuredContent") else {
         return McpResultMetadataV1::default();
     };
     let mut metadata = McpResultMetadataV1::default();
     match operation {
-        McpOperationKind::Sources => {
+        McpToolKind::Sources => {
             if let Some(count) = result
                 .get("sources")
                 .and_then(Value::as_array)
@@ -231,7 +177,7 @@ fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMe
                 metadata = metadata.with_result_count(count);
             }
         }
-        McpOperationKind::Search => {
+        McpToolKind::Search => {
             if let Some(count) = result
                 .get("results")
                 .and_then(Value::as_array)
@@ -251,7 +197,7 @@ fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMe
                 (None, None) => None,
             };
         }
-        McpOperationKind::ShowSession | McpOperationKind::ShowEvent => {
+        McpToolKind::ShowSession | McpToolKind::ShowEvent => {
             if let Some(count) = result.get("events").and_then(Value::as_array).map(Vec::len) {
                 metadata = metadata.with_result_count(count);
             }
@@ -269,7 +215,7 @@ fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMe
                 );
             }
         }
-        McpOperationKind::QueryEvents => {
+        McpToolKind::QueryEvents => {
             if let Some(count) = result.get("events").and_then(Value::as_array).map(Vec::len) {
                 metadata = metadata.with_result_count(count);
             }
@@ -286,11 +232,11 @@ fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMe
                 );
             }
         }
-        McpOperationKind::Blame
-        | McpOperationKind::ProStatus
-        | McpOperationKind::Status
-        | McpOperationKind::Unknown
-        | McpOperationKind::Missing => {}
+        McpToolKind::Blame
+        | McpToolKind::ProStatus
+        | McpToolKind::Status
+        | McpToolKind::Unknown
+        | McpToolKind::Missing => {}
     }
     metadata
 }

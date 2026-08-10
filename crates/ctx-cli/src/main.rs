@@ -76,9 +76,8 @@ pub(crate) use cli::{
 pub(crate) use commands::locate::LocateTarget;
 pub(crate) use commands::search::RefreshArg;
 pub(crate) use output::compact_json;
-pub(crate) use provider_args::{cli_supported_provider, parse_provider_arg, ProviderArg};
+pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};
-pub(crate) use search_filters::{search_has_intent, SearchIntentInput, SourceIdentityFilterArgs};
 pub(crate) use transcript::TranscriptMode;
 pub(crate) use value_parsers::parse_event_window_limit;
 

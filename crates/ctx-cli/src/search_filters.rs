@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration, Utc};
 
@@ -28,29 +26,6 @@ impl SourceIdentityFilters {
             && self.source_id.is_none()
             && self.source_format.is_none()
     }
-}
-
-pub(crate) struct SearchIntentInput<'a> {
-    pub(crate) query: Option<&'a str>,
-    pub(crate) terms: &'a [String],
-    pub(crate) file: Option<&'a Path>,
-}
-
-pub(crate) fn search_has_intent(input: SearchIntentInput<'_>) -> bool {
-    input.query.is_some_and(has_search_token)
-        || input.terms.iter().any(|term| has_search_token(term))
-        || input
-            .file
-            .and_then(|path| path.to_str())
-            .is_some_and(|file| !file.trim().is_empty())
-}
-
-pub(crate) fn has_search_token(value: &str) -> bool {
-    value.split_whitespace().any(|term| {
-        term.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-')
-            .chars()
-            .any(char::is_alphanumeric)
-    })
 }
 
 pub(crate) fn normalize_source_identity_filters(

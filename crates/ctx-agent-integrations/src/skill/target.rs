@@ -9,21 +9,21 @@ use super::{
 };
 
 #[derive(Debug, Clone)]
-pub(super) struct SkillTarget {
-    pub(super) agent: SkillAgentArg,
-    pub(super) scope: SkillScope,
-    pub(super) base_dir: PathBuf,
-    pub(super) skill_dir: PathBuf,
+pub struct SkillTarget {
+    pub agent: SkillAgentArg,
+    pub scope: SkillScope,
+    pub base_dir: PathBuf,
+    pub skill_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum SkillScope {
+pub enum SkillScope {
     Global,
     Project,
 }
 
 impl SkillScope {
-    pub(super) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Global => "global",
             Self::Project => "project",
@@ -31,7 +31,7 @@ impl SkillScope {
     }
 }
 
-pub(super) fn single_target(
+pub fn single_target(
     agent: SkillAgentArg,
     project: bool,
     context: &PathContext,
@@ -56,19 +56,7 @@ pub(super) fn single_target(
     })
 }
 
-#[cfg(test)]
-pub(super) fn resolve_targets(
-    agents: &[SkillAgentArg],
-    all_agents: bool,
-    project: bool,
-    context: &PathContext,
-) -> Result<Vec<SkillTarget>> {
-    let selected = super::selection::explicit_selected_agents(agents, all_agents)
-        .unwrap_or_else(|| vec![SkillAgentArg::Universal]);
-    resolve_targets_for_agents(&selected, project, context)
-}
-
-pub(super) fn resolve_targets_for_agents(
+pub fn resolve_targets_for_agents(
     agents: &[SkillAgentArg],
     project: bool,
     context: &PathContext,

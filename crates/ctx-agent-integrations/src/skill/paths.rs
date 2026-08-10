@@ -10,15 +10,15 @@ use sha2::{Digest, Sha256};
 use super::{agents::SkillAgentArg, BUNDLED_SKILL_BODY};
 
 #[derive(Debug, Clone)]
-pub(super) struct PathContext {
-    pub(super) home: PathBuf,
-    pub(super) xdg_config_home: PathBuf,
-    pub(super) cwd: PathBuf,
-    pub(super) env_overrides: BTreeMap<String, PathBuf>,
+pub struct PathContext {
+    pub home: PathBuf,
+    pub xdg_config_home: PathBuf,
+    pub cwd: PathBuf,
+    pub env_overrides: BTreeMap<String, PathBuf>,
 }
 
 impl PathContext {
-    pub(super) fn from_env() -> Result<Self> {
+    pub fn from_env() -> Result<Self> {
         let home = home_dir().context("resolve home directory")?;
         let xdg_config_home =
             non_empty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
@@ -42,8 +42,7 @@ impl PathContext {
         })
     }
 
-    #[cfg(test)]
-    pub(super) fn for_tests(home: PathBuf, cwd: PathBuf) -> Self {
+    pub fn for_tests(home: PathBuf, cwd: PathBuf) -> Self {
         Self {
             xdg_config_home: home.join(".config"),
             home,
@@ -52,26 +51,24 @@ impl PathContext {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn with_env_override(mut self, key: &str, value: PathBuf) -> Self {
+    pub fn with_env_override(mut self, key: &str, value: PathBuf) -> Self {
         self.env_overrides.insert(key.to_owned(), value);
         self
     }
 
-    #[cfg(test)]
-    pub(super) fn with_xdg_config_home(mut self, value: PathBuf) -> Self {
+    pub fn with_xdg_config_home(mut self, value: PathBuf) -> Self {
         self.xdg_config_home = value;
         self
     }
 
-    pub(super) fn env_or_home_child(&self, key: &str, fallback_child: &str) -> PathBuf {
+    pub fn env_or_home_child(&self, key: &str, fallback_child: &str) -> PathBuf {
         self.env_overrides
             .get(key)
             .cloned()
             .unwrap_or_else(|| self.home.join(fallback_child))
     }
 
-    pub(super) fn mimocode_config_dir(&self) -> PathBuf {
+    pub fn mimocode_config_dir(&self) -> PathBuf {
         if let Some(path) = self.env_overrides.get("MIMOCODE_CONFIG_DIR") {
             return path.clone();
         }
@@ -81,7 +78,7 @@ impl PathContext {
             .unwrap_or_else(|| self.xdg_config_home.join("mimocode"))
     }
 
-    pub(super) fn agent_detected(&self, agent: SkillAgentArg) -> bool {
+    pub fn agent_detected(&self, agent: SkillAgentArg) -> bool {
         if agent == SkillAgentArg::Codex
             && !self.env_overrides.contains_key("CODEX_HOME")
             && Path::new("/etc/codex").exists()
@@ -121,7 +118,7 @@ fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-pub(super) fn sanitize_skill_name(name: &str) -> Result<String> {
+pub fn sanitize_skill_name(name: &str) -> Result<String> {
     let mut sanitized = String::with_capacity(name.len());
     let mut previous_dash = false;
     for ch in name.trim().chars().flat_map(char::to_lowercase) {
@@ -145,7 +142,7 @@ pub(super) fn sanitize_skill_name(name: &str) -> Result<String> {
     Ok(sanitized)
 }
 
-pub(super) fn ensure_path_inside(base: &Path, target: &Path) -> Result<()> {
+pub fn ensure_path_inside(base: &Path, target: &Path) -> Result<()> {
     if has_parent_component(base) || has_parent_component(target) {
         return Err(anyhow!("skill path contains parent traversal"));
     }
@@ -160,11 +157,11 @@ fn has_parent_component(path: &Path) -> bool {
         .any(|component| matches!(component, Component::ParentDir))
 }
 
-pub(super) fn bundled_hash() -> String {
+pub fn bundled_hash() -> String {
     sha256_hex(BUNDLED_SKILL_BODY.as_bytes())
 }
 
-pub(super) fn sha256_hex(body: &[u8]) -> String {
+pub fn sha256_hex(body: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(body);
     format!("sha256:{:x}", hasher.finalize())
