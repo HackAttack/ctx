@@ -6,17 +6,17 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use ctx_daemon_service::DaemonObservationPort;
 use ctx_upgrade_engine::{
-    AutomaticUpgradeObservation, AutomaticUpgradePolicyProvider, AutomaticUpgradePolicySnapshot,
-    DaemonRestart, DaemonUpgradeLease, DaemonUpgradePort, ProductBuildIdentity, ReleaseProcessPort,
-    ReleaseTransport, SemanticAccelerator, SemanticLayoutPort, SemanticModelContract,
-    SemanticModelVariant, UpgradeEngine, UpgradeFailureKind as EngineFailureKind, UpgradeObserver,
-    UpgradeTerminalStatus,
+    AutomaticUpgradeObservation, AutomaticUpgradePolicyProvider, DaemonRestart, DaemonUpgradeLease,
+    DaemonUpgradePort, ProductBuildIdentity, ReleaseProcessPort, ReleaseTransport,
+    SemanticAccelerator, SemanticLayoutPort, SemanticModelContract, SemanticModelVariant,
+    UpgradeEngine, UpgradeFailureKind as EngineFailureKind, UpgradeObserver, UpgradeTerminalStatus,
 };
 
 use crate::{
     analytics::{
-        self, count_bucket, OperationCompletedV1, Outcome, PublicEventV1, UpgradeChannel,
+        count_bucket, OperationCompletedV1, Outcome, PublicEventV1, UpgradeChannel,
         UpgradeFailureKind, UpgradeMode, UpgradeOperation, UpgradeStatus, UpgradeTelemetry,
     },
     config::AppConfig,
@@ -280,43 +280,22 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
 
 pub(crate) struct CliAutomaticUpgradePolicy;
 
-impl AutomaticUpgradePolicySnapshot for AppConfig {
-    fn daemon_enabled(&self) -> bool {
-        self.daemon.enabled
-    }
-
-    fn automatic_upgrade_enabled(&self) -> bool {
-        self.auto_upgrade_enabled()
-    }
-
-    fn interval(&self) -> Duration {
-        self.upgrade.interval
-    }
-
-    fn channel(&self) -> &str {
-        &self.upgrade.channel
-    }
-
-    fn semantic_enabled(&self) -> bool {
-        self.semantic_search_enabled()
-    }
-}
-
 impl AutomaticUpgradePolicyProvider for CliAutomaticUpgradePolicy {
-    type Snapshot = AppConfig;
+    type Snapshot = ctx_daemon_service::DaemonConfigSnapshot;
 
     fn reload(&self, data_root: &Path) -> Result<Self::Snapshot> {
         AppConfig::load(data_root)
+            .map(|config| crate::semantic::daemon_service_ports::config_snapshot(&config))
     }
 }
 
 pub(crate) struct CliUpgradeObserver;
 
-impl UpgradeObserver<AppConfig> for CliUpgradeObserver {
+impl UpgradeObserver<ctx_daemon_service::DaemonConfigSnapshot> for CliUpgradeObserver {
     fn observe_automatic_terminal(
         &self,
         data_root: &Path,
-        config: &AppConfig,
+        _config: &ctx_daemon_service::DaemonConfigSnapshot,
         observation: AutomaticUpgradeObservation<'_>,
     ) {
         let plan = observation.plan;
@@ -354,7 +333,7 @@ impl UpgradeObserver<AppConfig> for CliUpgradeObserver {
             },
             observation.duration,
         ));
-        analytics::send_batch(data_root, config, &[event]);
+        crate::semantic::daemon_service_ports::OBSERVATION.deliver(data_root, &[event]);
     }
 }
 

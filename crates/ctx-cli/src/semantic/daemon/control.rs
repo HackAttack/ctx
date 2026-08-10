@@ -39,26 +39,6 @@ fn daemon_operation_for_command(command: &DaemonCommand) -> Option<DaemonOperati
     }
 }
 
-pub(super) fn daemon_run_facts(args: &DaemonRunArgs) -> DaemonRunFactsV1 {
-    let start_mode = match daemon_run_start_mode(args) {
-        DaemonStartModeArg::Auto => DaemonStartModeV1::Auto,
-        DaemonStartModeArg::Manual => DaemonStartModeV1::Manual,
-    };
-    let supervisor = if start_mode == DaemonStartModeV1::Auto
-        && semantic_env_flag(DAEMON_BACKGROUND_CHILD_ENV)
-    {
-        DaemonSupervisorV1::CliAutostart
-    } else {
-        DaemonSupervisorV1::User
-    };
-    let trigger = args.trigger_command.map(|trigger| match trigger {
-        DaemonTriggerCommandArg::Setup => DaemonTriggerV1::Setup,
-        DaemonTriggerCommandArg::Import => DaemonTriggerV1::Import,
-        DaemonTriggerCommandArg::Search => DaemonTriggerV1::Search,
-    });
-    DaemonRunFactsV1::new(start_mode, supervisor, trigger)
-}
-
 pub(super) fn run_daemon_status(args: FormatArgs, data_root: PathBuf, ui: &mut Ui) -> Result<()> {
     let daemon = daemon_report(&data_root);
     let pro = crate::pro::lifecycle_status_json(&data_root);

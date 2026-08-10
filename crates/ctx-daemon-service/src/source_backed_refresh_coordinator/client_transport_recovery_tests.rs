@@ -1,0 +1,331 @@
+use super::*;
+
+use std::{
+    io::{Read as _, Write as _},
+    os::unix::net::UnixListener,
+};
+
+use crate::query_service::{
+    ctx_authenticated_request_handler, start_daemon_source_refresh_service_with_request_timeout,
+    write_daemon_service_endpoint, DaemonIpcService, DaemonQueryEndpoint,
+};
+use crate::SharedSemanticRuntime;
+
+const TEST_ENDPOINT_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+fn short_data_root() -> Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("ctx-refresh-")
+        .tempdir_in("/tmp")
+        .map_err(Into::into)
+}
+
+fn source_refresh_endpoint(socket_path: &Path) -> DaemonQueryEndpoint {
+    DaemonQueryEndpoint::Unix {
+        path: socket_path.to_owned(),
+        token: TEST_ENDPOINT_TOKEN.to_owned(),
+    }
+}
+
+#[test]
+fn background_maintenance_wake_is_accepted_through_client_and_coordinator() -> Result<()> {
+    let data_root = short_data_root()?;
+    ctx_history_core::platform_security::establish_private_data_root(data_root.path())?;
+    let generation = super::publish_authoritative_empty_generation_for_test(
+        &source_backed_index_root(data_root.path()),
+        "background-maintenance-wake-fixture",
+        ctx_history_refresh::RefreshOperation::Refresh,
+        ctx_history_capture::SourceBackedRefreshScope::All,
+        None,
+    )?
+    .generation_id;
+    let coordinator = Arc::new(CoreRefreshEngine::new());
+    let handler = ctx_authenticated_request_handler(
+        data_root.path(),
+        SharedSemanticRuntime::default(),
+        Arc::clone(&coordinator),
+        Arc::new(crate::daemon_wakeup::DaemonWakeup::default()),
+        &crate::test_support::CONFIG,
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        data_root.path(),
+        handler,
+        StdDuration::from_secs(1),
+    )?;
+
+    let observation = coordinate_source_backed_refresh_with_catalog(
+        &crate::test_support::AVAILABILITY,
+        data_root.path(),
+        SourceBackedRefreshMode::Background,
+        SourceBackedRefreshOperation::Refresh,
+        None,
+        false,
+        false,
+        None,
+    )?;
+
+    assert_eq!(observation.mode, SourceBackedRefreshMode::Background);
+    assert_eq!(observation.status, "queued");
+    assert!(observation.daemon_available);
+    assert!(observation.request_id.is_some());
+    assert_eq!(observation.pin.generation_id(), generation);
+    assert!(!coordinator.has_pending_request());
+    drop(service);
+    Ok(())
+}
+
+#[test]
+fn pre_submission_connection_refusal_remains_typed_unavailable() -> Result<()> {
+    let data_root = short_data_root()?;
+    let socket_path = data_root.path().join("refused.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    drop(listener);
+    write_daemon_service_endpoint(
+        data_root.path(),
+        DaemonIpcService::SourceRefresh,
+        &source_refresh_endpoint(&socket_path),
+    )?;
+
+    let error = daemon_source_refresh_request(
+        data_root.path(),
+        compact_json(json!({
+            "schema_version": 1,
+            "op": SOURCE_REFRESH_REQUEST_OP,
+            "request_id": "019fcaaa-0000-7000-8000-000000000299",
+        })),
+        StdDuration::from_millis(100),
+        SOURCE_REFRESH_RESPONSE_MAX_BYTES,
+    )
+    .expect_err("a closed pre-submission endpoint must be unavailable");
+
+    assert!(error
+        .downcast_ref::<DaemonSourceRefreshServiceUnavailable>()
+        .is_some());
+    Ok(())
+}
+
+#[test]
+fn same_id_reenqueue_replays_the_exact_payload_after_a_lost_ack() -> Result<()> {
+    let data_root = short_data_root()?;
+    let socket_path = data_root.path().join("lost-ack.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    write_daemon_service_endpoint(
+        data_root.path(),
+        DaemonIpcService::SourceRefresh,
+        &source_refresh_endpoint(&socket_path),
+    )?;
+    let request_id = "019fcaaa-0000-7000-8000-000000000300";
+    let server = std::thread::spawn(move || -> Result<[Vec<u8>; 2]> {
+        let mut requests = Vec::with_capacity(2);
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept()?;
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received)?;
+            requests.push(received);
+            if attempt == 0 {
+                continue;
+            }
+            stream.write_all(
+                format!(
+                    "{{\"ok\":true,\"owner\":\"daemon\",\"request_id\":\"{request_id}\",\"request_state\":\"admission_pending\",\"schema_version\":1}}\n"
+                )
+                .as_bytes(),
+            )?;
+        }
+        requests
+            .try_into()
+            .map_err(|_| anyhow!("test server did not observe exactly two requests"))
+    });
+
+    let recovered = enqueue_equivalent_wait_refresh_request(
+        data_root.path(),
+        request_id,
+        SourceBackedRefreshOperation::Refresh,
+        None,
+        false,
+    )?;
+    let requests = server.join().expect("lost-ack test server panicked")?;
+
+    assert_eq!(recovered, request_id);
+    assert_eq!(requests[0], requests[1]);
+    for request in requests {
+        let request: Value = serde_json::from_slice(&request)?;
+        assert_eq!(request["request_id"], request_id);
+    }
+    Ok(())
+}
+
+#[test]
+fn background_lost_ack_terminal_replay_is_not_reported_as_pending() -> Result<()> {
+    let data_root = short_data_root()?;
+    ctx_history_core::platform_security::establish_private_data_root(data_root.path())?;
+    let socket_path = data_root.path().join("lost-ack-terminal.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    write_daemon_service_endpoint(
+        data_root.path(),
+        DaemonIpcService::SourceRefresh,
+        &source_refresh_endpoint(&socket_path),
+    )?;
+    let server = std::thread::spawn(move || -> Result<[Vec<u8>; 2]> {
+        let mut requests = Vec::with_capacity(2);
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept()?;
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received)?;
+            let request: Value = serde_json::from_slice(&received)?;
+            requests.push(received);
+            if attempt == 0 {
+                continue;
+            }
+            let request_id = request["request_id"]
+                .as_str()
+                .ok_or_else(|| anyhow!("lost-ack request had no request ID"))?;
+            stream.write_all(
+                format!(
+                    "{{\"ok\":true,\"owner\":\"daemon\",\"request_id\":\"{request_id}\",\"request_state\":\"failed\",\"schema_version\":1,\"last_error\":\"replayed terminal failure\"}}\n"
+                )
+                .as_bytes(),
+            )?;
+        }
+        requests
+            .try_into()
+            .map_err(|_| anyhow!("test server did not observe exactly two requests"))
+    });
+
+    let error = match coordinate_source_backed_refresh_with_catalog(
+        &crate::test_support::AVAILABILITY,
+        data_root.path(),
+        SourceBackedRefreshMode::Background,
+        SourceBackedRefreshOperation::Refresh,
+        None,
+        false,
+        false,
+        None,
+    ) {
+        Ok(_) => panic!("terminal failed replay must remain a failure"),
+        Err(error) => error,
+    };
+    let requests = server.join().expect("lost-ack test server panicked")?;
+
+    assert_eq!(requests[0], requests[1]);
+    assert!(error
+        .downcast_ref::<SourceBackedRefreshPendingPublication>()
+        .is_none());
+    assert!(format!("{error:#}").contains("replayed terminal failure"));
+    Ok(())
+}
+
+#[test]
+fn exhausted_post_submission_disconnects_return_typed_ambiguous_admission() -> Result<()> {
+    let data_root = short_data_root()?;
+    let socket_path = data_root.path().join("lost-all-acks.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    write_daemon_service_endpoint(
+        data_root.path(),
+        DaemonIpcService::SourceRefresh,
+        &source_refresh_endpoint(&socket_path),
+    )?;
+    let request_id = "019fcaaa-0000-7000-8000-000000000304";
+
+    let server = std::thread::spawn(move || -> Result<Vec<Vec<u8>>> {
+        let mut requests = Vec::new();
+        for _ in 0..=AMBIGUOUS_ADMISSION_RECOVERY_ATTEMPT_LIMIT {
+            let (mut stream, _) = listener.accept()?;
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received)?;
+            requests.push(received);
+        }
+        Ok(requests)
+    });
+
+    let error = enqueue_equivalent_wait_refresh_request(
+        data_root.path(),
+        request_id,
+        SourceBackedRefreshOperation::Refresh,
+        None,
+        false,
+    )
+    .unwrap_err();
+    let requests = server.join().expect("lost-ack test server panicked")?;
+
+    let recovery = error
+        .downcast_ref::<SourceRefreshAdmissionRecoveryFailed>()
+        .expect("post-submission disconnect must use typed admission recovery");
+    assert_eq!(recovery.request_id, request_id);
+    assert_eq!(
+        recovery.recovery_attempts,
+        AMBIGUOUS_ADMISSION_RECOVERY_ATTEMPT_LIMIT
+    );
+    assert_eq!(
+        requests.len(),
+        1 + AMBIGUOUS_ADMISSION_RECOVERY_ATTEMPT_LIMIT
+    );
+    assert!(requests.windows(2).all(|pair| pair[0] == pair[1]));
+    assert!(!error.to_string().contains("timed out"));
+    Ok(())
+}
+
+#[test]
+fn typed_unknown_readmission_preserves_lost_ack_retention_uncertainty() -> Result<()> {
+    let data_root = short_data_root()?;
+    let socket_path = data_root.path().join("typed-unknown-lost-acks.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    write_daemon_service_endpoint(
+        data_root.path(),
+        DaemonIpcService::SourceRefresh,
+        &source_refresh_endpoint(&socket_path),
+    )?;
+    let request_id = "019fcaaa-0000-7000-8000-000000000307";
+    let server = std::thread::spawn(move || -> Result<Vec<Vec<u8>>> {
+        let mut requests = Vec::new();
+        for _ in 0..=AMBIGUOUS_ADMISSION_RECOVERY_ATTEMPT_LIMIT {
+            let (mut stream, _) = listener.accept()?;
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received)?;
+            requests.push(received);
+        }
+        Ok(requests)
+    });
+
+    let mut recovery = TypedUnknownRequestRecovery::new(request_id);
+    let error = recover_typed_unknown_request_with(
+        &mut recovery,
+        request_id,
+        |_| {},
+        || {
+            enqueue_equivalent_wait_refresh_request(
+                data_root.path(),
+                request_id,
+                SourceBackedRefreshOperation::Refresh,
+                None,
+                false,
+            )
+        },
+    )
+    .unwrap_err();
+    let requests = server.join().expect("lost-ack test server panicked")?;
+
+    let typed = error
+        .downcast_ref::<SourceRefreshRequestRecoveryFailed>()
+        .expect("typed unknown re-admission keeps its request-bound failure");
+    assert_eq!(typed.request_id, request_id);
+    assert_eq!(typed.recovery_attempts, 1);
+    assert_eq!(
+        typed.reason,
+        SourceRefreshRequestRecoveryFailureReason::ReenqueueFailed
+    );
+    assert_eq!(
+        typed.retention,
+        SourceRefreshRequestRetention::MayBeRetained
+    );
+    assert_eq!(typed.disconnect_policy, Some(DISCONNECT_POLICY));
+    assert!(error
+        .to_string()
+        .contains("disconnect_policy=retain_after_durable_admission"));
+    assert_eq!(
+        requests.len(),
+        1 + AMBIGUOUS_ADMISSION_RECOVERY_ATTEMPT_LIMIT
+    );
+    assert!(requests.windows(2).all(|pair| pair[0] == pair[1]));
+    Ok(())
+}

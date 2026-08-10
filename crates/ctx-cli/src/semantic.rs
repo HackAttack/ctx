@@ -63,10 +63,7 @@ use ctx_semantic_model::{
     SEMANTIC_DIMENSIONS,
 };
 mod model_config;
-pub(crate) use model_config::{
-    semantic_model_config, semantic_runtime_cache_dir, semantic_worker_cache_dir,
-};
-mod resource_policy;
+pub(crate) use model_config::{semantic_runtime_cache_dir, semantic_worker_cache_dir};
 mod runtime_limits;
 pub(crate) use ctx_semantic_index::SemanticNotReady;
 #[allow(unused_imports)]
@@ -82,25 +79,19 @@ mod paths_status;
 use paths_status::*;
 mod daemon;
 pub(crate) use daemon::run_daemon_command;
-#[cfg(test)]
-use daemon::*;
-mod daemon_retry;
+pub(crate) mod daemon_service_ports;
 mod daemon_status;
 mod daemon_supervisor;
-mod daemon_wakeup;
-#[cfg(test)]
-use daemon_retry::*;
 mod source_status;
 pub(crate) use source_status::source_epoch_status_report;
 mod source_backed_pro_catch_up;
-pub(crate) use source_backed_pro_catch_up::wait_for_completed_generation as wait_for_source_backed_pro_generation;
-pub(crate) use source_backed_pro_catch_up::{
-    cancel_core_finalization_generation_lease,
+pub(crate) use ctx_daemon_service::wait_for_completed_generation as wait_for_source_backed_pro_generation;
+pub(crate) use ctx_daemon_service::{
     helper_recheck_targets as source_backed_pro_recheck_targets,
     publish_helper_recheck_intent as publish_source_backed_pro_recheck,
     wake_helper_recheck as wake_source_backed_pro_recheck,
 };
-mod source_backed_refresh_adapter;
+pub(crate) use source_backed_pro_catch_up::cancel_core_finalization_generation_lease;
 mod source_backed_refresh_coordinator;
 #[cfg(test)]
 pub(crate) use source_backed_refresh_coordinator::SourceBackedRefreshPublication;
@@ -111,12 +102,6 @@ pub(crate) use source_backed_refresh_coordinator::{
     SourceBackedCurrentSourceProgress, SourceBackedRefreshDaemonUnavailable,
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
 };
-mod daemon_scheduler;
-#[cfg(test)]
-use daemon_scheduler::*;
-mod daemon_worker;
-#[cfg(test)]
-use daemon_worker::*;
 mod daemon_autostart;
 #[allow(unused_imports)]
 pub(crate) use daemon_autostart::{
@@ -127,22 +112,3 @@ pub(crate) use daemon_autostart::{
     replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonUpgradeHandoff,
 };
 mod health_search;
-#[cfg(test)]
-mod query_service_transport_tests;
-#[cfg(all(
-    test,
-    any(
-        all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64"),
-            target_env = "gnu"
-        ),
-        all(
-            target_os = "macos",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        ),
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "freebsd", target_arch = "x86_64")
-    )
-))]
-mod tests;

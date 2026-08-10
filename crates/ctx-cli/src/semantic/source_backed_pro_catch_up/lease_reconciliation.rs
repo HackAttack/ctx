@@ -17,9 +17,7 @@ use super::status::{
 
 /// Reconciles the single durable Core-generation lease with the daemon's
 /// durable Pro job before the scheduler attempts to pin that job's target.
-pub(in crate::semantic) fn reconcile_core_finalization_generation_lease(
-    data_root: &Path,
-) -> Result<()> {
+pub(crate) fn reconcile_core_finalization_generation_lease(data_root: &Path) -> Result<()> {
     let lease = core_finalization_generation_lease(data_root)?;
     let Some(status) = require_durable_status(data_root)? else {
         if lease.is_some() {

@@ -1,0 +1,65 @@
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use ctx_history_capture::DiscoveryContext;
+use ctx_history_refresh::{RefreshOperation, RefreshRuntime, RefreshRuntimeMetadata};
+use serde_json::Value;
+
+use crate::{paths_status::read_daemon_status, DaemonConfigPort, DaemonMode};
+
+pub(crate) struct DaemonRefreshRuntime {
+    config: &'static dyn DaemonConfigPort,
+}
+
+impl DaemonRefreshRuntime {
+    pub(crate) const fn new(config: &'static dyn DaemonConfigPort) -> Self {
+        Self { config }
+    }
+}
+
+impl RefreshRuntime for DaemonRefreshRuntime {
+    fn metadata(&self, data_root: &Path, operation: RefreshOperation) -> RefreshRuntimeMetadata {
+        let daemon_status = read_daemon_status(data_root);
+        let daemon_mode = self
+            .config
+            .load(data_root)
+            .map(|config| config.daemon.mode)
+            .ok()
+            .or_else(|| {
+                daemon_status
+                    .as_ref()
+                    .and_then(|status| status.get("config_reload"))
+                    .and_then(|reload| reload.get("applied"))
+                    .and_then(|applied| applied.get("daemon_mode"))
+                    .and_then(Value::as_str)
+                    .and_then(DaemonMode::parse)
+            })
+            .unwrap_or_default();
+        let manual_provenance = if daemon_status
+            .as_ref()
+            .and_then(|status| status.get("start_mode"))
+            .and_then(Value::as_str)
+            == Some("auto")
+        {
+            "autostart"
+        } else {
+            "manual"
+        };
+        let (trigger, trigger_provenance) = match operation {
+            RefreshOperation::Refresh => ("search", manual_provenance),
+            RefreshOperation::Import => ("import", "explicit_source_catalog"),
+        };
+        RefreshRuntimeMetadata {
+            operation,
+            daemon_mode: daemon_mode.as_str().to_owned(),
+            trigger,
+            trigger_provenance,
+        }
+    }
+
+    fn discovery_context(&self, _data_root: &Path) -> Result<DiscoveryContext> {
+        self.config
+            .discovery_context(_data_root)
+            .context("resolve source-backed provider discovery context")
+    }
+}

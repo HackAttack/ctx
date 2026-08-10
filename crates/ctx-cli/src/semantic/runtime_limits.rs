@@ -1,9 +1,5 @@
-pub(crate) const SEMANTIC_WORKER_BATCH_MAX: usize = 1_000_000;
-pub(super) const SEMANTIC_MODEL_INIT_MIN_REMAINING_SECS: u64 = 15;
 pub(super) const DAEMON_QUERY_ENDPOINT_FILE: &str = "query-endpoint.json";
 pub(super) const DAEMON_SEMANTIC_JOB_FILE: &str = "semantic-index.json";
-pub(crate) const DAEMON_IDLE_EXIT_SECONDS_CAP: u64 = 24 * 60 * 60;
+pub(crate) use ctx_daemon_service::{DAEMON_IDLE_EXIT_SECONDS_CAP, SEMANTIC_WORKER_BATCH_MAX};
 pub(super) const DAEMON_BACKGROUND_CHILD_ENV: &str = "CTX_DAEMON_BACKGROUND_CHILD";
 pub(super) const DAEMON_AUTOSTART_OFF_ENV: &str = "CTX_DAEMON_AUTOSTART_OFF";
-pub(super) const DAEMON_SEMANTIC_RESERVE_GRACE_SECS: u64 = 10;
-pub(super) const DAEMON_MIN_REMAINING_FOR_JOB_SECS: u64 = 2;
