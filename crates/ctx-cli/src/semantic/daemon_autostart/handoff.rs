@@ -1,8 +1,7 @@
 use super::*;
 
-mod termination;
-use termination::terminate_identity_verified_legacy_daemon;
-pub(super) use termination::{
+use ctx_daemon_runtime::terminate_identity_verified_legacy_daemon;
+pub(super) use ctx_daemon_runtime::{
     terminate_identity_verified_residual_daemon, terminate_identity_verified_residual_daemon_owner,
 };
 
@@ -37,11 +36,11 @@ pub(in crate::semantic) fn terminate_current_executable_daemon(data_root: &Path)
 }
 
 fn daemon_upgrade_handoff_path(data_root: &Path) -> PathBuf {
-    daemon_root_path(data_root).join(DAEMON_UPGRADE_HANDOFF_FILE)
+    ctx_daemon_runtime::daemon_upgrade_handoff_path(data_root)
 }
 
 fn daemon_upgrade_restart_request_root(data_root: &Path) -> PathBuf {
-    daemon_root_path(data_root).join(DAEMON_UPGRADE_RESTART_REQUEST_DIR)
+    ctx_daemon_runtime::daemon_upgrade_restart_request_root(data_root)
 }
 
 const DAEMON_UNINSTALL_ABORT_AFTER_DISABLE_ENV: &str =
@@ -56,69 +55,13 @@ pub(super) fn read_daemon_upgrade_handoff(data_root: &Path) -> Option<Value> {
 }
 
 fn read_daemon_upgrade_handoff_at(path: &Path) -> Option<Value> {
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    ctx_daemon_runtime::read_handoff_marker_at(path)
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum DaemonUpgradeHandoffState {
-    Absent,
-    Terminal,
-    Active,
-    CorruptOrUnreadable,
-}
+use ctx_daemon_runtime::HandoffMarkerState as DaemonUpgradeHandoffState;
 
 fn daemon_upgrade_handoff_state_at(path: &Path) -> DaemonUpgradeHandoffState {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return DaemonUpgradeHandoffState::Absent
-        }
-        Err(_) => return DaemonUpgradeHandoffState::CorruptOrUnreadable,
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
-    };
-    let Some(handoff_id) = value.get("handoff_id").and_then(Value::as_str) else {
-        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
-    };
-    if handoff_id.is_empty() {
-        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
-    }
-    let Some(phase) = value.get("phase").and_then(Value::as_str) else {
-        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
-    };
-    if matches!(phase, "completed" | "aborted") {
-        return DaemonUpgradeHandoffState::Terminal;
-    }
-    let pid_key = match phase {
-        "scheduled" => "helper_pid",
-        "preparing" | "ready" => "owner_pid",
-        _ => return DaemonUpgradeHandoffState::CorruptOrUnreadable,
-    };
-    let Some(pid) = value
-        .get(pid_key)
-        .and_then(Value::as_u64)
-        .and_then(|pid| u32::try_from(pid).ok())
-        .filter(|pid| *pid != 0)
-    else {
-        return DaemonUpgradeHandoffState::CorruptOrUnreadable;
-    };
-    let marker_is_fresh = fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .is_some_and(|modified| {
-            SystemTime::now()
-                .duration_since(modified)
-                .map_or(true, |age| age <= DAEMON_UPGRADE_HANDOFF_STALE_AFTER)
-        });
-    if !marker_is_fresh {
-        return DaemonUpgradeHandoffState::Terminal;
-    }
-    match process_state(pid) {
-        ProcessState::Running | ProcessState::Unknown => DaemonUpgradeHandoffState::Active,
-        ProcessState::NotRunning => DaemonUpgradeHandoffState::Terminal,
-    }
+    ctx_daemon_runtime::handoff_marker_state_at(path, DAEMON_UPGRADE_HANDOFF_STALE_AFTER)
 }
 
 #[cfg(test)]
@@ -127,6 +70,7 @@ pub(super) fn daemon_upgrade_handoff_is_active(data_root: &Path) -> bool {
     daemon_upgrade_handoff_is_active_at(&path)
 }
 
+#[cfg(test)]
 fn daemon_upgrade_handoff_is_active_at(path: &Path) -> bool {
     daemon_upgrade_handoff_state_at(path) == DaemonUpgradeHandoffState::Active
 }
@@ -167,16 +111,11 @@ fn current_process_owns_daemon_upgrade_handoff_at(
     handoff_path: &Path,
     handoff_token: Option<&str>,
 ) -> bool {
-    if !daemon_upgrade_handoff_is_active_at(handoff_path) {
-        return false;
-    }
-    let expected = read_daemon_upgrade_handoff_at(handoff_path).and_then(|value| {
-        value
-            .get("handoff_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-    });
-    expected.as_deref().is_some() && expected.as_deref() == handoff_token
+    ctx_daemon_runtime::process_owns_handoff_marker_at(
+        handoff_path,
+        handoff_token,
+        DAEMON_UPGRADE_HANDOFF_STALE_AFTER,
+    )
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -247,10 +186,9 @@ fn normalize_daemon_upgrade_handoff_input(
 
 pub(crate) struct DaemonUpgradeHandoff {
     data_root: PathBuf,
-    handoff_id: String,
+    fence: ctx_daemon_runtime::DurableHandoffFence,
     installation_executable: PathBuf,
     persisted_restart_label: Option<String>,
-    release_on_drop: bool,
 }
 
 struct UpgradeHandoffRestartAuthority {
@@ -258,7 +196,7 @@ struct UpgradeHandoffRestartAuthority {
 }
 
 impl UpgradeHandoffRestartAuthority {
-    fn spawn(&self, launch: DetachedDaemonLaunch) -> io::Result<Child> {
+    fn spawn(&self, launch: NormalizedLaunch) -> io::Result<Child> {
         spawn_daemon_child_for_upgrade_handoff(launch, &self.replacement_executable)
     }
 }
@@ -267,7 +205,7 @@ impl DaemonUpgradeHandoff {
     pub(crate) fn wait_for_installation_quiescence(&self) -> Result<()> {
         wait_for_installation_daemon_quiescence_for(
             &self.installation_executable,
-            &self.handoff_id,
+            self.fence.handoff_id(),
         )?;
         pause_after_installation_quiescence_for_test()
     }
@@ -301,12 +239,11 @@ impl DaemonUpgradeHandoff {
                 write_daemon_restart_request_at(
                     &daemon_upgrade_restart_request_root(&self.data_root),
                     label,
-                    &self.handoff_id,
+                    self.fence.handoff_id(),
                 )?;
             }
         }
-        self.release("aborted", None)?;
-        self.release_on_drop = false;
+        self.fence.abort_and_disarm()?;
         Ok(())
     }
 
@@ -338,7 +275,7 @@ impl DaemonUpgradeHandoff {
                             executable,
                             &self.data_root,
                             trigger,
-                            Some(&self.handoff_id),
+                            Some(self.fence.handoff_id()),
                         )?;
                         let mut child = restart_authority
                             .spawn(launch)
@@ -351,11 +288,11 @@ impl DaemonUpgradeHandoff {
         remove_daemon_restart_requests(&self.data_root);
         restart_acknowledged_installation_daemons_with(
             executable,
-            &self.handoff_id,
+            self.fence.handoff_id(),
             Some(&self.data_root),
             |launch| restart_authority.spawn(launch),
         )?;
-        if self.release_on_drop {
+        if self.fence.is_armed() {
             self.complete_release()?;
         }
         Ok(())
@@ -368,7 +305,7 @@ impl DaemonUpgradeHandoff {
         let current = read_daemon_upgrade_handoff(&self.data_root)
             .ok_or_else(|| anyhow!("daemon upgrade handoff disappeared before restart"))?;
         let identity_matches = current.get("handoff_id").and_then(Value::as_str)
-            == Some(self.handoff_id.as_str())
+            == Some(self.fence.handoff_id())
             && current.get("phase").and_then(Value::as_str) == Some("ready")
             && current
                 .get("owner_pid")
@@ -391,7 +328,7 @@ impl DaemonUpgradeHandoff {
     pub(crate) fn transfer_to_replacement_helper(mut self, helper_pid: u32) -> Result<()> {
         let already_transferred =
             read_daemon_upgrade_handoff(&self.data_root).is_some_and(|value| {
-                value.get("handoff_id").and_then(Value::as_str) == Some(self.handoff_id.as_str())
+                value.get("handoff_id").and_then(Value::as_str) == Some(self.fence.handoff_id())
                     && value.get("phase").and_then(Value::as_str) == Some("scheduled")
                     && value
                         .get("helper_pid")
@@ -400,36 +337,15 @@ impl DaemonUpgradeHandoff {
                         == Some(helper_pid)
             });
         if !already_transferred {
-            self.release("scheduled", Some(helper_pid))?;
+            self.fence.transfer(helper_pid)?;
+        } else {
+            self.fence.disarm();
         }
-        self.release_on_drop = false;
         Ok(())
-    }
-
-    fn release(&self, phase: &str, helper_pid: Option<u32>) -> Result<()> {
-        let current = read_daemon_upgrade_handoff(&self.data_root);
-        if current
-            .as_ref()
-            .and_then(|value| value.get("handoff_id").and_then(Value::as_str))
-            != Some(self.handoff_id.as_str())
-        {
-            return Ok(());
-        }
-        write_daemon_upgrade_handoff(&self.data_root, &self.handoff_id, phase, helper_pid)
     }
 
     fn complete_release(&mut self) -> Result<()> {
-        self.release("completed", None)?;
-        self.release_on_drop = false;
-        Ok(())
-    }
-}
-
-impl Drop for DaemonUpgradeHandoff {
-    fn drop(&mut self) {
-        if self.release_on_drop {
-            let _ = self.release("aborted", None);
-        }
+        self.fence.complete()
     }
 }
 
@@ -501,10 +417,9 @@ fn begin_daemon_upgrade_handoff_with(
     )?;
     let handoff = DaemonUpgradeHandoff {
         data_root: data_root.to_path_buf(),
-        handoff_id,
+        fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path.clone(), handoff_id),
         installation_executable: expected_process.executable.clone(),
         persisted_restart_label,
-        release_on_drop: true,
     };
     if !allow_cooperative_grace && daemon_lock_is_active(&data_root) {
         terminate_identity_verified_legacy_daemon(&data_root, &expected_process.executable)
@@ -538,7 +453,7 @@ fn begin_daemon_upgrade_handoff_with(
         std::thread::sleep(DAEMON_UPGRADE_POLL_INTERVAL);
     }
     wait_for_daemon_lifecycle_release(&data_root)?;
-    write_daemon_upgrade_handoff_at(&handoff_path, &handoff.handoff_id, "ready", None)?;
+    write_daemon_upgrade_handoff_at(&handoff_path, handoff.fence.handoff_id(), "ready", None)?;
     handoff.wait_for_installation_quiescence()?;
     Ok(handoff)
 }
@@ -550,14 +465,13 @@ fn persist_handoff_before_cooperative_stop(
     persisted_restart_label: Option<&str>,
     cooperative_stop: &mut dyn CooperativeStopPort,
 ) -> Result<()> {
-    // A process crash after this point must leave restart intent and the
-    // lifecycle fence durable before the stop request can be observed.
-    if let Some(label) = persisted_restart_label {
-        write_daemon_restart_request_at(restart_request_root, label, handoff_id)?;
-    }
-    write_daemon_upgrade_handoff_at(handoff_path, handoff_id, "preparing", None)?;
-    cooperative_stop.request_stop();
-    Ok(())
+    ctx_daemon_runtime::persist_handoff_before_stop(
+        handoff_path,
+        restart_request_root,
+        handoff_id,
+        persisted_restart_label,
+        || cooperative_stop.request_stop(),
+    )
 }
 
 /// Hosted uninstallers call this command before deleting the installed
@@ -811,10 +725,9 @@ fn begin_current_daemon_upgrade_handoff_with(
             }
             return Ok(DaemonUpgradeHandoff {
                 data_root,
-                handoff_id,
+                fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path, handoff_id),
                 installation_executable,
                 persisted_restart_label: Some(persisted_restart_label),
-                release_on_drop: true,
             });
         }
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => {}
@@ -823,10 +736,9 @@ fn begin_current_daemon_upgrade_handoff_with(
     write_daemon_upgrade_handoff_at(&handoff_path, &handoff_id, "ready", None)?;
     Ok(DaemonUpgradeHandoff {
         data_root,
-        handoff_id,
+        fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path, handoff_id),
         installation_executable,
         persisted_restart_label: Some(persisted_restart_label),
-        release_on_drop: true,
     })
 }
 
@@ -1015,17 +927,7 @@ fn write_daemon_upgrade_handoff_at(
     phase: &str,
     helper_pid: Option<u32>,
 ) -> Result<()> {
-    write_private_json_file(
-        handoff_path,
-        &compact_json(json!({
-            "schema_version": 1,
-            "handoff_id": handoff_id,
-            "phase": phase,
-            "owner_pid": process::id(),
-            "helper_pid": helper_pid,
-            "updated_at_ms": utc_now().timestamp_millis(),
-        })),
-    )
+    ctx_daemon_runtime::write_handoff_marker_at(handoff_path, handoff_id, phase, helper_pid)
 }
 
 pub(in crate::semantic) fn write_daemon_restart_request(
@@ -1045,46 +947,19 @@ fn write_daemon_restart_request_at(
     persisted_restart_label: &str,
     request_id: &str,
 ) -> Result<PathBuf> {
-    let path = restart_request_root.join(format!("{request_id}.json"));
-    write_private_json_file(
-        &path,
-        &compact_json(json!({
-            "schema_version": 1,
-            "request_id": request_id,
-            "trigger_command": persisted_restart_label,
-            "requester_pid": process::id(),
-            "requested_at_ms": utc_now().timestamp_millis(),
-        })),
-    )?;
-    Ok(path)
+    ctx_daemon_runtime::write_restart_request_at(
+        restart_request_root,
+        persisted_restart_label,
+        request_id,
+    )
 }
 
 pub(in crate::semantic) fn read_daemon_restart_request(
     data_root: &Path,
 ) -> Option<(PathBuf, DaemonTriggerCommandArg)> {
-    let restart_request_root = daemon_upgrade_restart_request_root(data_root);
-    let Ok(entries) = fs::read_dir(&restart_request_root) else {
-        return None;
-    };
-    let mut paths = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect::<Vec<_>>();
-    paths.sort();
-    for path in paths {
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        let Some(label) = value.get("trigger_command").and_then(Value::as_str) else {
-            continue;
-        };
-        if let Some(trigger) = parse_daemon_trigger(Some(label)) {
-            return Some((path, trigger));
-        }
-    }
-    None
+    ctx_daemon_runtime::read_restart_requests_at(&daemon_upgrade_restart_request_root(data_root))
+        .into_iter()
+        .find_map(|(path, label)| parse_daemon_trigger(Some(&label)).map(|trigger| (path, trigger)))
 }
 
 #[cfg(test)]
@@ -1096,32 +971,11 @@ fn read_daemon_restart_request_at(restart_request_root: &Path) -> Option<(PathBu
 
 #[cfg(test)]
 fn read_daemon_restart_requests_at(restart_request_root: &Path) -> Vec<(PathBuf, String)> {
-    let Ok(entries) = fs::read_dir(restart_request_root) else {
-        return Vec::new();
-    };
-    let mut paths = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
-        .into_iter()
-        .filter_map(|path| {
-            let text = fs::read_to_string(&path).ok()?;
-            let value: Value = serde_json::from_str(&text).ok()?;
-            let label = value.get("trigger_command").and_then(Value::as_str)?;
-            Some((path, label.to_owned()))
-        })
-        .collect()
+    ctx_daemon_runtime::read_restart_requests_at(restart_request_root)
 }
 
 pub(super) fn remove_daemon_restart_requests(data_root: &Path) {
-    let root = daemon_upgrade_restart_request_root(data_root);
-    if let Ok(entries) = fs::read_dir(&root) {
-        for path in entries.filter_map(|entry| entry.ok().map(|entry| entry.path())) {
-            let _ = fs::remove_file(path);
-        }
-    }
-    let _ = fs::remove_dir(root);
+    ctx_daemon_runtime::remove_restart_requests_at(&daemon_upgrade_restart_request_root(data_root));
 }
 
 pub(in crate::semantic) fn acknowledge_daemon_restart_requests(data_root: &Path) {

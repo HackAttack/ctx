@@ -4,16 +4,12 @@ use std::{
     ffi::{OsStr, OsString},
     fs, io,
     path::{Path, PathBuf},
-    process::{self, Child, Command, Stdio},
+    process::{self, Child},
     time::{Duration as StdDuration, Instant, SystemTime},
 };
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt as _;
-
 use anyhow::{anyhow, Context, Result};
+use ctx_daemon_runtime::{spawn_detached, NormalizedLaunch};
 use ctx_history_core::utc_now;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -24,20 +20,13 @@ use crate::{
     DaemonStartModeArg, DaemonTriggerCommandArg,
 };
 
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-#[cfg(windows)]
-const DETACHED_PROCESS: u32 = 0x0000_0008;
-
 use super::{
-    health_search::{create_private_dir_all, secure_private_file_permissions, semantic_env_flag},
+    health_search::{create_private_dir_all, semantic_env_flag},
     paths_status::{
         daemon_core_refresh_job_path, daemon_lock_is_active, daemon_lock_is_owned_by,
         daemon_lock_is_stale, daemon_lock_matches_executable, daemon_lock_path, daemon_root_path,
-        executable_sha256, observe_pid_advisory_lock, open_or_create_pid_lock_file,
-        pid_from_lock_json, pid_lock_guard_path, process_executable_sha256, process_state,
-        read_daemon_job_status, read_daemon_status, read_pid_lock_json, write_daemon_status,
-        write_private_json_file, PidAdvisoryLockObservation, ProcessState,
+        executable_sha256, pid_from_lock_json, pid_lock_guard_path, read_daemon_job_status,
+        read_daemon_status, read_pid_lock_json, write_daemon_status, write_private_json_file,
     },
     query_service::daemon_source_refresh_request,
     runtime_limits::{
@@ -52,9 +41,6 @@ mod installation;
 mod recovery;
 
 pub(super) use autostart::handoff_mismatched_daemon_owner;
-#[cfg(test)]
-use autostart::spawn_detached_daemon_child;
-use autostart::DetachedDaemonLaunch;
 pub(crate) use autostart::{
     autostart_daemon_and_wait, daemon_autostart_suppression_reason, maybe_autostart_daemon,
 };
@@ -69,6 +55,8 @@ use autostart::{
     daemon_restart_trigger, parse_daemon_trigger, request_daemon_autostart, spawn_daemon_child,
     spawn_daemon_child_for_upgrade_handoff,
 };
+#[cfg(test)]
+use autostart::{normalized_daemon_launch_for_test, spawn_detached_daemon_child};
 
 #[cfg(test)]
 use handoff::daemon_upgrade_handoff_is_active;
@@ -167,8 +155,6 @@ const DAEMON_UPGRADE_RESTART_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const DAEMON_UPGRADE_POLL_INTERVAL: StdDuration = StdDuration::from_millis(50);
 const DAEMON_UPGRADE_HANDOFF_STALE_AFTER: StdDuration = StdDuration::from_secs(15 * 60);
 const DAEMON_INSTALLATION_QUIESCE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
-const DAEMON_UPGRADE_HANDOFF_FILE: &str = "upgrade-handoff.json";
-const DAEMON_UPGRADE_RESTART_REQUEST_DIR: &str = "upgrade-restart-requests";
 const DAEMON_UPGRADE_HANDOFF_TOKEN_ENV: &str = "CTX_DAEMON_UPGRADE_HANDOFF_TOKEN";
 // Foreground setup/import/retrieval must never inherit the supervisor's
 // potentially multi-root recovery horizon. It verifies one usable endpoint

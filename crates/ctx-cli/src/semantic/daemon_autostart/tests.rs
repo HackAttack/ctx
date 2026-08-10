@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::CONFIG_FILE;
 use crate::semantic::paths_status::DaemonLock;
+use std::process::Command;
 use std::{
     cell::Cell,
     sync::{Arc, Barrier},
@@ -63,10 +64,11 @@ fn daemon_child_environment_preserves_supported_pro_channel_and_strips_authority
                 OsString::from("attacker"),
             );
             let forbidden_error =
-                DetachedDaemonLaunch::for_test(env::current_exe()?, args.clone(), forbidden)
+                normalized_daemon_launch_for_test(env::current_exe()?, args.clone(), forbidden)
                     .expect_err("release authority must be rejected during normalization");
             assert_eq!(forbidden_error.kind(), io::ErrorKind::InvalidInput);
-            let descendant = DetachedDaemonLaunch::for_test(env::current_exe()?, args, overrides);
+            let descendant =
+                normalized_daemon_launch_for_test(env::current_exe()?, args, overrides);
             if expected_channel == "invalid" {
                 let error =
                     descendant.expect_err("unsupported Pro channel must fail during normalization");
@@ -610,7 +612,7 @@ fn autostart_child_detaches_from_the_invoking_terminal_session() -> Result<()> {
     permissions.set_mode(0o700);
     fs::set_permissions(&executable, permissions)?;
 
-    let launch = DetachedDaemonLaunch::for_test(
+    let launch = normalized_daemon_launch_for_test(
         executable.clone(),
         Vec::new(),
         BTreeMap::from([(

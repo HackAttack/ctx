@@ -1,20 +1,19 @@
 use std::{fs, path::Path};
 
-use anyhow::{Context, Result};
-
-use super::super::{
-    health_search::{create_private_dir_all, secure_private_file_permissions},
-    paths_status::{daemon_root_path, open_or_create_pid_lock_file},
+use crate::{
+    create_private_dir_all, daemon_root_path, open_or_create_pid_lock_file,
+    secure_private_file_permissions,
 };
+use anyhow::{Context, Result};
 
 const SUPERVISOR_INSTALLATION_LOCK_FILE: &str = "supervisor-installation.lock";
 
-pub(super) struct SupervisorInstallationLock {
+pub struct SupervisorInstallationLock {
     file: fs::File,
 }
 
 impl SupervisorInstallationLock {
-    pub(super) fn acquire(data_root: &Path) -> Result<Self> {
+    pub fn acquire(data_root: &Path) -> Result<Self> {
         let root = daemon_root_path(data_root);
         create_private_dir_all(&root)?;
         let path = root.join(SUPERVISOR_INSTALLATION_LOCK_FILE);

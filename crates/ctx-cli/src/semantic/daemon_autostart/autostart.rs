@@ -781,65 +781,6 @@ pub(super) fn wait_for_daemon_handoff_with(
     Err(DaemonHandoffTimeout.into())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DetachedDaemonLaunch {
-    program: PathBuf,
-    args: Vec<OsString>,
-    environment: BTreeMap<OsString, OsString>,
-}
-
-/// Product policy is resolved before the detached-process mechanics receive
-/// their input.  In particular, release authority never crosses this DTO and
-/// the Pro channel is represented only by its validated product value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NormalizedDaemonLaunchEnvironment(BTreeMap<OsString, OsString>);
-
-impl DetachedDaemonLaunch {
-    #[cfg(test)]
-    pub(super) fn for_test(
-        program: PathBuf,
-        args: Vec<OsString>,
-        overrides: BTreeMap<OsString, OsString>,
-    ) -> io::Result<Self> {
-        let mut environment = daemon_child_environment();
-        environment.extend(overrides);
-        Self::normalized(
-            program,
-            args,
-            normalize_daemon_launch_environment(environment)?,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn program(&self) -> &Path {
-        &self.program
-    }
-
-    #[cfg(test)]
-    pub(super) fn get_args(&self) -> impl Iterator<Item = &OsStr> {
-        self.args.iter().map(OsString::as_os_str)
-    }
-
-    #[cfg(test)]
-    pub(super) fn get_envs(&self) -> impl Iterator<Item = (&OsStr, Option<&OsStr>)> {
-        self.environment
-            .iter()
-            .map(|(key, value)| (key.as_os_str(), Some(value.as_os_str())))
-    }
-
-    fn normalized(
-        program: PathBuf,
-        args: Vec<OsString>,
-        environment: NormalizedDaemonLaunchEnvironment,
-    ) -> io::Result<Self> {
-        Ok(Self {
-            program,
-            args,
-            environment: environment.0,
-        })
-    }
-}
-
 pub(super) fn daemon_autostart_command(
     exe: &Path,
     data_root: &Path,
@@ -847,7 +788,7 @@ pub(super) fn daemon_autostart_command(
     idle_exit: Option<u64>,
     loop_interval: Option<u64>,
     handoff_token: Option<&str>,
-) -> io::Result<DetachedDaemonLaunch> {
+) -> io::Result<NormalizedLaunch> {
     daemon_autostart_command_with_environment_overrides(
         exe,
         data_root,
@@ -867,7 +808,7 @@ fn daemon_autostart_command_with_environment_overrides(
     loop_interval: Option<u64>,
     handoff_token: Option<&str>,
     overrides: BTreeMap<OsString, OsString>,
-) -> io::Result<DetachedDaemonLaunch> {
+) -> io::Result<NormalizedLaunch> {
     let mut args = vec![
         OsString::from("--data-root"),
         data_root.as_os_str().to_os_string(),
@@ -901,11 +842,20 @@ fn daemon_autostart_command_with_environment_overrides(
     for (name, value) in overrides {
         environment.insert(name, value);
     }
-    DetachedDaemonLaunch::normalized(
-        exe.to_path_buf(),
-        args,
-        normalize_daemon_launch_environment(environment)?,
-    )
+    validate_daemon_launch_environment(&environment)?;
+    Ok(NormalizedLaunch::new(exe.to_path_buf(), args, environment))
+}
+
+#[cfg(test)]
+pub(super) fn normalized_daemon_launch_for_test(
+    program: PathBuf,
+    args: Vec<OsString>,
+    overrides: BTreeMap<OsString, OsString>,
+) -> io::Result<NormalizedLaunch> {
+    let mut environment = daemon_child_environment();
+    environment.extend(overrides);
+    validate_daemon_launch_environment(&environment)?;
+    Ok(NormalizedLaunch::new(program, args, environment))
 }
 
 const DAEMON_CHILD_ENV_ALLOWLIST: &[&str] = &[
@@ -979,9 +929,9 @@ fn daemon_child_environment() -> BTreeMap<OsString, OsString> {
         .collect()
 }
 
-fn normalize_daemon_launch_environment(
-    environment: BTreeMap<OsString, OsString>,
-) -> io::Result<NormalizedDaemonLaunchEnvironment> {
+fn validate_daemon_launch_environment(
+    environment: &BTreeMap<OsString, OsString>,
+) -> io::Result<()> {
     validate_daemon_pro_channel(
         environment
             .get(OsStr::new(DAEMON_PRO_CHANNEL_ENV))
@@ -999,10 +949,10 @@ fn normalize_daemon_launch_environment(
             ),
         ));
     }
-    Ok(NormalizedDaemonLaunchEnvironment(environment))
+    Ok(())
 }
 
-pub(super) fn spawn_daemon_child(launch: DetachedDaemonLaunch) -> io::Result<Child> {
+pub(super) fn spawn_daemon_child(launch: NormalizedLaunch) -> io::Result<Child> {
     if hosted_uninstall_fences_daemon_autostart() {
         return Err(hosted_uninstall_daemon_fence_error());
     }
@@ -1010,7 +960,7 @@ pub(super) fn spawn_daemon_child(launch: DetachedDaemonLaunch) -> io::Result<Chi
 }
 
 pub(super) fn spawn_daemon_child_for_upgrade_handoff(
-    launch: DetachedDaemonLaunch,
+    launch: NormalizedLaunch,
     replacement_executable: &Path,
 ) -> io::Result<Child> {
     if ctx_upgrade_engine::installation_hosted_uninstall_is_active_for_executable(
@@ -1030,31 +980,8 @@ fn hosted_uninstall_daemon_fence_error() -> io::Error {
     )
 }
 
-pub(super) fn spawn_detached_daemon_child(launch: DetachedDaemonLaunch) -> io::Result<Child> {
-    spawn_detached_daemon_launch(launch)
-}
-
-fn spawn_detached_daemon_launch(launch: DetachedDaemonLaunch) -> io::Result<Child> {
-    let mut command = Command::new(launch.program);
-    command
-        .args(launch.args)
-        .env_clear()
-        .envs(launch.environment)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    #[cfg(windows)]
-    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    command.spawn()
+pub(super) fn spawn_detached_daemon_child(launch: NormalizedLaunch) -> io::Result<Child> {
+    spawn_detached(launch)
 }
 
 fn is_release_authority_environment_name(name: &OsStr) -> bool {
@@ -1079,7 +1006,7 @@ pub(super) fn configured_daemon_autostart_command(
     data_root: &Path,
     trigger: DaemonTriggerCommandArg,
     handoff_token: Option<&str>,
-) -> io::Result<DetachedDaemonLaunch> {
+) -> io::Result<NormalizedLaunch> {
     let mut overrides = BTreeMap::new();
     if let Some(mode) = env::var_os(DAEMON_MODE_ENV) {
         overrides.insert(OsString::from(DAEMON_MODE_ENV), mode);

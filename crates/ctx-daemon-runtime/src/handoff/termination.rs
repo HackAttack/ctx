@@ -1,4 +1,23 @@
-use super::*;
+#[cfg(unix)]
+use super::{DAEMON_UPGRADE_POLL_INTERVAL, DAEMON_UPGRADE_RESTART_TIMEOUT};
+use std::path::Path;
+
+#[cfg(unix)]
+use std::time::Instant;
+#[cfg(any(unix, windows))]
+use std::{fs, process};
+
+#[cfg(all(test, target_os = "linux"))]
+use std::process::Command;
+
+use anyhow::{anyhow, Context, Result};
+use serde_json::Value;
+
+use crate::{
+    daemon_lock_is_active, daemon_lock_path, executable_sha256, observe_pid_advisory_lock,
+    pid_from_lock_json, pid_lock_guard_path, process_executable_sha256, read_pid_lock_json,
+    PidAdvisoryLockObservation,
+};
 
 #[cfg(target_os = "linux")]
 mod legacy;
@@ -13,7 +32,7 @@ enum ResidualDaemonIdentityPolicy {
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn terminate_identity_verified_residual_daemon(
+pub fn terminate_identity_verified_residual_daemon(
     data_root: &Path,
     expected_executable: &Path,
 ) -> Result<()> {
@@ -21,7 +40,7 @@ pub(in crate::semantic) fn terminate_identity_verified_residual_daemon(
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn terminate_identity_verified_residual_daemon_owner(
+pub fn terminate_identity_verified_residual_daemon_owner(
     data_root: &Path,
     expected_executable: &Path,
     expected_owner_id: Option<&str>,
@@ -35,7 +54,7 @@ pub(in crate::semantic) fn terminate_identity_verified_residual_daemon_owner(
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn terminate_identity_verified_legacy_daemon(
+pub fn terminate_identity_verified_legacy_daemon(
     data_root: &Path,
     expected_executable: &Path,
 ) -> Result<()> {
@@ -48,7 +67,7 @@ pub(super) fn terminate_identity_verified_legacy_daemon(
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-pub(super) fn terminate_identity_verified_legacy_daemon(
+pub fn terminate_identity_verified_legacy_daemon(
     _data_root: &Path,
     _expected_executable: &Path,
 ) -> Result<()> {
@@ -366,7 +385,7 @@ fn signal_verified_process(pid: u32, signal: libc::c_int) -> Result<()> {
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn terminate_identity_verified_residual_daemon(
+pub fn terminate_identity_verified_residual_daemon(
     data_root: &Path,
     expected_executable: &Path,
 ) -> Result<()> {
@@ -374,7 +393,7 @@ pub(in crate::semantic) fn terminate_identity_verified_residual_daemon(
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn terminate_identity_verified_residual_daemon_owner(
+pub fn terminate_identity_verified_residual_daemon_owner(
     data_root: &Path,
     expected_executable: &Path,
     expected_owner_id: Option<&str>,
@@ -436,7 +455,7 @@ pub(in crate::semantic) fn terminate_identity_verified_residual_daemon_owner(
 }
 
 #[cfg(windows)]
-pub(super) fn terminate_identity_verified_legacy_daemon(
+pub fn terminate_identity_verified_legacy_daemon(
     _data_root: &Path,
     _expected_executable: &Path,
 ) -> Result<()> {
@@ -513,7 +532,7 @@ fn same_windows_path(left: &Path, right: &Path) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn terminate_identity_verified_residual_daemon(
+pub fn terminate_identity_verified_residual_daemon(
     _data_root: &Path,
     _expected_executable: &Path,
 ) -> Result<()> {
@@ -523,7 +542,7 @@ pub(in crate::semantic) fn terminate_identity_verified_residual_daemon(
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn terminate_identity_verified_residual_daemon_owner(
+pub fn terminate_identity_verified_residual_daemon_owner(
     _data_root: &Path,
     _expected_executable: &Path,
     _expected_owner_id: Option<&str>,
@@ -534,7 +553,7 @@ pub(in crate::semantic) fn terminate_identity_verified_residual_daemon_owner(
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn terminate_identity_verified_legacy_daemon(
+pub fn terminate_identity_verified_legacy_daemon(
     _data_root: &Path,
     _expected_executable: &Path,
 ) -> Result<()> {

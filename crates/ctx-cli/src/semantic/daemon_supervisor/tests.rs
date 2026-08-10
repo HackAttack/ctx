@@ -116,7 +116,7 @@ impl FakeSupervisorBackend {
     }
 }
 
-impl NativeSupervisorBackend for FakeSupervisorBackend {
+impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for FakeSupervisorBackend {
     fn artifact_path(&self, data_root: &Path) -> Result<Option<PathBuf>> {
         Ok(Some(data_root.join("fake-native-registration")))
     }
@@ -184,7 +184,7 @@ impl NativeSupervisorBackend for FakeSupervisorBackend {
 
 #[test]
 fn manager_control_environment_is_exact_and_rejects_release_authority() -> Result<()> {
-    let exact = SupervisorManagerEnvironment::normalized(BTreeMap::from([
+    let exact = normalized_supervisor_manager_environment(BTreeMap::from([
         (OsString::from("PATH"), OsString::from("/manager/bin")),
         (OsString::from("HOME"), OsString::from("/manager/home")),
     ]))?;
@@ -200,9 +200,9 @@ fn manager_control_environment_is_exact_and_rejects_release_authority() -> Resul
             )
         })
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(applied, exact.values);
+    assert_eq!(&applied, exact.values());
 
-    let error = SupervisorManagerEnvironment::normalized(BTreeMap::from([(
+    let error = normalized_supervisor_manager_environment(BTreeMap::from([(
         OsString::from("CTX_RELEASE_BASE_URL"),
         OsString::from("https://attacker.invalid"),
     )]))
@@ -956,14 +956,15 @@ fn native_control_context_accepts_nonunicode_manager_values_without_launch_snaps
 {
     use std::os::unix::ffi::OsStringExt as _;
 
-    let manager_environment = SupervisorManagerEnvironment::normalized(BTreeMap::from([(
+    let manager_environment = normalized_supervisor_manager_environment(BTreeMap::from([(
         OsString::from("HOME"),
         OsString::from_vec(vec![b'/', 0xff]),
     )]))?;
-    let backend = PlatformNativeSupervisor {
-        daemon_environment: None,
-        manager_environment: &manager_environment,
-    };
+    let backend = PlatformNativeSupervisor::new(
+        Path::new("/tmp/ctx-control-test"),
+        None,
+        &manager_environment,
+    )?;
     assert!(backend.launch_environment().is_err());
     // Removal/control mechanics consume only the manager context. This keeps
     // uninstall available when the launch-only environment cannot be Unicode.

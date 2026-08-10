@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use ring::digest::{Context as DigestContext, SHA256};
 use serde_json::{json, Value};
 
-use super::{daemon_lock_path, pid_lock_payload, read_pid_lock_json};
+use crate::{daemon_lock_path, pid_lock_payload, read_pid_lock_json};
 
-pub(in crate::semantic) fn current_daemon_lock_identity(data_root: &Path) -> Result<Value> {
+pub fn current_daemon_lock_identity(data_root: &Path) -> Result<Value> {
     let binary = env::current_exe().context("resolve ctx daemon executable identity")?;
     Ok(pid_lock_payload(json!({
         "binary": binary,
@@ -15,20 +15,14 @@ pub(in crate::semantic) fn current_daemon_lock_identity(data_root: &Path) -> Res
     })))
 }
 
-pub(in crate::semantic) fn daemon_lock_matches_executable(
-    data_root: &Path,
-    executable: &Path,
-) -> Result<bool> {
+pub fn daemon_lock_matches_executable(data_root: &Path, executable: &Path) -> Result<bool> {
     let Some(value) = read_pid_lock_json(&daemon_lock_path(data_root)) else {
         return Ok(false);
     };
     daemon_lock_binary_identity_matches(&value, executable)
 }
 
-pub(in crate::semantic) fn daemon_lock_binary_identity_matches(
-    value: &Value,
-    executable: &Path,
-) -> Result<bool> {
+pub fn daemon_lock_binary_identity_matches(value: &Value, executable: &Path) -> Result<bool> {
     let Some(recorded_binary) = value.get("binary").and_then(Value::as_str).map(Path::new) else {
         return Ok(false);
     };
@@ -41,10 +35,7 @@ pub(in crate::semantic) fn daemon_lock_binary_identity_matches(
     Ok(recorded_sha256 == executable_sha256(executable)?)
 }
 
-pub(in crate::semantic) fn daemon_owner_binary_identity_matches(
-    value: &Value,
-    executable: &Path,
-) -> Result<bool> {
+pub fn daemon_owner_binary_identity_matches(value: &Value, executable: &Path) -> Result<bool> {
     if !daemon_lock_binary_identity_matches(value, executable)? {
         return Ok(false);
     }
@@ -61,21 +52,21 @@ pub(in crate::semantic) fn daemon_owner_binary_identity_matches(
     Ok(process_executable_sha256(pid).as_deref() == Some(recorded_sha256))
 }
 
-pub(in crate::semantic) fn process_executable_sha256(pid: u32) -> Option<String> {
+pub fn process_executable_sha256(pid: u32) -> Option<String> {
     process_executable_path(pid)
         .as_deref()
         .and_then(|path| executable_sha256(path).ok())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::semantic) enum ProcessState {
+pub enum ProcessState {
     Running,
     NotRunning,
     Unknown,
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn process_state(pid: u32) -> ProcessState {
+pub fn process_state(pid: u32) -> ProcessState {
     if pid == 0 {
         return ProcessState::NotRunning;
     }
@@ -94,7 +85,7 @@ pub(in crate::semantic) fn process_state(pid: u32) -> ProcessState {
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn process_state(pid: u32) -> ProcessState {
+pub fn process_state(pid: u32) -> ProcessState {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
@@ -116,17 +107,17 @@ pub(in crate::semantic) fn process_state(pid: u32) -> ProcessState {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn process_state(_pid: u32) -> ProcessState {
+pub fn process_state(_pid: u32) -> ProcessState {
     ProcessState::Unknown
 }
 
 #[cfg(target_os = "linux")]
-pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
+pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(format!("/proc/{pid}/exe")))
 }
 
 #[cfg(target_os = "macos")]
-pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
+pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     use std::ffi::CStr;
 
     const MAX_PATH_BYTES: usize = 4096;
@@ -150,7 +141,7 @@ pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path
 }
 
 #[cfg(target_os = "freebsd")]
-pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
+pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     use std::os::unix::ffi::OsStrExt as _;
 
     let mut mib = [
@@ -187,7 +178,7 @@ pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path
     unix,
     not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))
 ))]
-pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
+pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     [format!("/proc/{pid}/file"), format!("/proc/{pid}/exe")]
         .into_iter()
         .map(std::path::PathBuf::from)
@@ -195,7 +186,7 @@ pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
+pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::{
@@ -222,11 +213,11 @@ pub(in crate::semantic) fn process_executable_path(pid: u32) -> Option<std::path
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn process_executable_path(_pid: u32) -> Option<std::path::PathBuf> {
+pub fn process_executable_path(_pid: u32) -> Option<std::path::PathBuf> {
     None
 }
 
-pub(in crate::semantic) fn executable_sha256(path: &Path) -> Result<String> {
+pub fn executable_sha256(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)
         .with_context(|| format!("open executable identity {}", path.display()))?;
     let mut hasher = DigestContext::new(&SHA256);

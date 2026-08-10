@@ -1,3 +1,17 @@
+use anyhow::{anyhow, Context, Result};
+use ctx_daemon_runtime::{
+    daemon_lock_is_active, ensure_native_supervisor_with as ensure_runtime_supervisor_with,
+    resume_native_supervisor_with as resume_runtime_supervisor_with, NativeSupervisorBackend,
+    SupervisorEnsureOutcome, SupervisorIdentity, SupervisorInstallationLock,
+    SupervisorManagerEnvironment, SupervisorResumeOutcome, SupervisorSpec, SupervisorUpgradeFence,
+};
+#[cfg(test)]
+use ctx_daemon_runtime::{
+    launchctl_print_pid, supervisor_command, systemd_main_pid, verify_daemon_owner_identity,
+    write_atomic_supervisor_file as write_atomic_file,
+};
+use ctx_history_core::managed_data_root;
+use serde_json::{json, Value};
 use std::env;
 use std::{
     collections::BTreeMap,
@@ -5,28 +19,16 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(test)]
 use std::{fs, process::Command};
-
-use anyhow::{anyhow, Context, Result};
-#[cfg(any(test, windows))]
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use ctx_history_core::managed_data_root;
-use serde_json::{json, Value};
 
 use crate::compact_json;
 #[cfg(unix)]
 use crate::identity;
 
-#[cfg(windows)]
-use super::paths_status::daemon_root_path;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-use super::{
-    paths_status::{daemon_lock_is_active, pid_from_lock_json, read_pid_lock_json},
-    query_service::daemon_source_refresh_request,
-};
+use super::query_service::daemon_source_refresh_request;
 
-mod coordination;
 mod environment;
 mod report;
 mod state;
@@ -34,19 +36,14 @@ mod state;
 mod tests;
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod unsupported;
-#[cfg(any(test, windows))]
+#[cfg(test)]
 mod windows;
 
-use coordination::SupervisorInstallationLock;
-#[cfg(target_os = "linux")]
-use environment::linux_systemd_unit_with_environment;
+#[cfg(any(test, windows))]
+use environment::validated_supervisor_artifact_path;
 use environment::{
     supervisor_environment_contract_report, supervisor_environment_snapshot,
     SupervisorEnvironmentSnapshot,
-};
-#[cfg(any(test, windows))]
-use environment::{
-    validated_supervisor_artifact_path, validated_supervisor_artifact_text, xml_escape,
 };
 pub(super) use report::daemon_supervisor_report;
 #[cfg(test)]
@@ -56,16 +53,14 @@ use report::freebsd_supervisor_authority_blocker;
 use report::native_supervisor_product_authority_blocker;
 #[cfg(test)]
 use report::revalidated_supervisor_report_with;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-use state::write_atomic_file;
 use state::{
-    native_supervisor_artifact_path, native_supervisor_kind, native_supervisor_limitation,
-    stored_supervisor_report, write_installed_receipt, write_supervisor_receipt,
+    native_supervisor_kind, native_supervisor_limitation, stored_supervisor_report,
+    write_installed_receipt, write_supervisor_receipt,
     write_supervisor_receipt_with_environment_snapshot, SupervisorReceipt,
 };
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use unsupported::*;
-#[cfg(any(test, windows))]
+#[cfg(test)]
 use windows::*;
 
 const SUPERVISOR_HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
@@ -103,7 +98,22 @@ fn supervisor_manager_environment() -> Result<SupervisorManagerEnvironment> {
         }
         values
     };
-    SupervisorManagerEnvironment::normalized(values)
+    normalized_supervisor_manager_environment(values)
+}
+
+fn normalized_supervisor_manager_environment(
+    values: BTreeMap<OsString, OsString>,
+) -> Result<SupervisorManagerEnvironment> {
+    if let Some(name) = values
+        .keys()
+        .find(|name| release_authority_environment_name(name.as_os_str()))
+    {
+        return Err(anyhow!(
+            "supervisor manager environment may not contain release authority variable {}",
+            name.to_string_lossy()
+        ));
+    }
+    Ok(SupervisorManagerEnvironment::new(values))
 }
 
 fn release_authority_environment_name(name: &OsStr) -> bool {
@@ -126,6 +136,14 @@ pub(in crate::semantic) trait DaemonSupervisorUpgradeFence {
     fn release(&mut self) -> Result<()>;
 }
 
+struct RuntimeSupervisorUpgradeFence<'a>(&'a mut dyn DaemonSupervisorUpgradeFence);
+
+impl SupervisorUpgradeFence for RuntimeSupervisorUpgradeFence<'_> {
+    fn release(&mut self) -> Result<()> {
+        self.0.release()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManagedSupervisorInput {
     data_root: PathBuf,
@@ -146,50 +164,43 @@ impl ManagedSupervisorInput {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct SupervisorManagerEnvironment {
-    values: BTreeMap<OsString, OsString>,
-}
-
-impl SupervisorManagerEnvironment {
-    fn normalized(values: BTreeMap<OsString, OsString>) -> Result<Self> {
-        if let Some(name) = values
-            .keys()
-            .find(|name| release_authority_environment_name(name.as_os_str()))
-        {
-            return Err(anyhow!(
-                "supervisor manager environment may not contain release authority variable {}",
-                name.to_string_lossy()
-            ));
-        }
-        Ok(Self { values })
-    }
-
-    fn get(&self, name: &str) -> Option<&OsStr> {
-        self.values.get(OsStr::new(name)).map(OsString::as_os_str)
-    }
-}
-
-trait NativeSupervisorBackend: Sync {
-    fn artifact_path(&self, data_root: &Path) -> Result<Option<PathBuf>>;
-    fn install(
-        &self,
-        data_root: &Path,
-        executable: &Path,
-        environment: &SupervisorEnvironmentSnapshot,
-    ) -> Result<PathBuf>;
-    fn disable(&self, data_root: &Path) -> Result<Option<PathBuf>>;
-    fn verify_registration(&self, data_root: &Path, executable: &Path) -> Result<()>;
-    fn verify_live_owner(&self, data_root: &Path, executable: &Path) -> Result<u32>;
-    fn start(&self, data_root: &Path) -> Result<()>;
-}
-
 struct PlatformNativeSupervisor<'a> {
+    identity: Option<SupervisorIdentity>,
+    data_root: PathBuf,
     daemon_environment: Option<&'a SupervisorEnvironmentSnapshot>,
     manager_environment: &'a SupervisorManagerEnvironment,
 }
 
-impl PlatformNativeSupervisor<'_> {
+impl<'a> PlatformNativeSupervisor<'a> {
+    fn new(
+        data_root: &Path,
+        daemon_environment: Option<&'a SupervisorEnvironmentSnapshot>,
+        manager_environment: &'a SupervisorManagerEnvironment,
+    ) -> Result<Self> {
+        let identity = native_supervisor_identity(data_root, manager_environment)?;
+        Ok(Self {
+            identity,
+            data_root: data_root.to_path_buf(),
+            daemon_environment,
+            manager_environment,
+        })
+    }
+
+    fn identity(&self) -> Result<&SupervisorIdentity> {
+        self.identity
+            .as_ref()
+            .ok_or_else(|| anyhow!("native supervisor identity is unavailable"))
+    }
+
+    fn spec(&self, executable: &Path) -> Result<SupervisorSpec> {
+        environment::supervisor_artifact_spec(
+            self.identity()?.clone(),
+            executable,
+            &self.data_root,
+            self.launch_environment()?,
+        )
+    }
+
     fn launch_environment(&self) -> Result<&SupervisorEnvironmentSnapshot> {
         self.daemon_environment.ok_or_else(|| {
             anyhow!(
@@ -199,9 +210,16 @@ impl PlatformNativeSupervisor<'_> {
     }
 }
 
-impl NativeSupervisorBackend for PlatformNativeSupervisor<'_> {
+impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for PlatformNativeSupervisor<'_> {
     fn artifact_path(&self, data_root: &Path) -> Result<Option<PathBuf>> {
-        native_supervisor_artifact_path(data_root, self.manager_environment)
+        let _ = data_root;
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        return Ok(None);
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        Ok(self
+            .identity
+            .as_ref()
+            .map(|identity| identity.artifact_path().to_path_buf()))
     }
 
     fn install(
@@ -215,38 +233,44 @@ impl NativeSupervisorBackend for PlatformNativeSupervisor<'_> {
             environment.values, daemon_environment.values,
             "installation must use the normalized daemon environment"
         );
+        let spec = self.spec(executable)?;
         install_native_supervisor(
             data_root,
             executable,
             daemon_environment,
             self.manager_environment,
+            &spec,
         )
     }
 
     fn disable(&self, data_root: &Path) -> Result<Option<PathBuf>> {
-        disable_native_supervisor(data_root, self.manager_environment)
+        disable_native_supervisor(data_root, self.manager_environment, self.identity()?)
     }
 
     fn verify_registration(&self, data_root: &Path, executable: &Path) -> Result<()> {
+        let spec = self.spec(executable)?;
         verify_native_supervisor_registration(
             data_root,
             executable,
             self.launch_environment()?,
             self.manager_environment,
+            &spec,
         )
     }
 
     fn verify_live_owner(&self, data_root: &Path, executable: &Path) -> Result<u32> {
+        let spec = self.spec(executable)?;
         verify_native_supervisor(
             data_root,
             executable,
             self.launch_environment()?,
             self.manager_environment,
+            &spec,
         )
     }
 
     fn start(&self, data_root: &Path) -> Result<()> {
-        start_native_supervisor(data_root, self.manager_environment)
+        start_native_supervisor(data_root, self.manager_environment, self.identity()?)
     }
 }
 
@@ -278,10 +302,11 @@ pub(super) fn ensure_daemon_supervisor(data_root: &Path) -> Result<DaemonSupervi
     };
     super::daemon_autostart::handoff_mismatched_daemon_owner(data_root, &input.executable)
         .context("replace daemon ownership held by a different ctx binary image")?;
-    let backend = PlatformNativeSupervisor {
-        daemon_environment: Some(&input.daemon_environment),
-        manager_environment: &input.manager_environment,
-    };
+    let backend = PlatformNativeSupervisor::new(
+        data_root,
+        Some(&input.daemon_environment),
+        &input.manager_environment,
+    )?;
     ensure_native_supervisor_with(&input, &backend)
 }
 
@@ -293,7 +318,7 @@ fn managed_supervisor_input(data_root: &Path) -> Result<Option<ManagedSupervisor
 
 fn ensure_native_supervisor_with(
     input: &ManagedSupervisorInput,
-    backend: &dyn NativeSupervisorBackend,
+    backend: &dyn NativeSupervisorBackend<SupervisorEnvironmentSnapshot>,
 ) -> Result<DaemonSupervisorStart> {
     let data_root = input.data_root.as_path();
     let executable = input.executable.as_path();
@@ -302,116 +327,73 @@ fn ensure_native_supervisor_with(
     // admitted here, every artifact, manager, start, and receipt mutation below
     // remains serialized ahead of that disable.
     ensure_hosted_uninstall_supervisor_admission()?;
-    let artifact = backend.artifact_path(data_root)?;
-
-    if backend.verify_registration(data_root, executable).is_ok() {
-        match backend.verify_live_owner(data_root, executable) {
-            Ok(owner_pid) => {
-                write_installed_receipt(data_root, executable, artifact, owner_pid, None)?;
-                return Ok(DaemonSupervisorStart::Native);
-            }
-            Err(initial_live_error) => {
-                let recovery = backend
-                    .start(data_root)
-                    .and_then(|()| wait_for_native_live_owner(data_root, executable, backend));
-                match recovery {
-                    Ok(owner_pid) => {
-                        write_installed_receipt(data_root, executable, artifact, owner_pid, None)?;
-                        return Ok(DaemonSupervisorStart::Native);
-                    }
-                    Err(recovery_error) => {
-                        write_supervisor_receipt(
-                            data_root,
-                            &SupervisorReceipt {
-                                kind: native_supervisor_kind().to_owned(),
-                                status: "registered_not_running",
-                                autostart_supported: true,
-                                restart_supported: true,
-                                registration_verified: true,
-                                live_owner_verified: false,
-                                owner_pid: None,
-                                artifact_path: artifact,
-                                executable_path: Some(executable.to_path_buf()),
-                                limitation: Some(
-                                    "native registration is valid but has no identity-verified live daemon owner; retrieval commands retain CLI self-healing"
-                                        .to_owned(),
-                                ),
-                                last_error: Some(format!(
-                                    "initial live check: {initial_live_error:#}; recovery: {recovery_error:#}"
-                                )),
-                            },
-                        )?;
-                        return Ok(DaemonSupervisorStart::Fallback);
-                    }
-                }
-            }
-        }
-    }
-
-    let installation = backend
-        .install(data_root, executable, &input.daemon_environment)
-        .and_then(|installed_artifact| {
-            wait_for_native_live_owner(data_root, executable, backend)
-                .map(|owner_pid| (installed_artifact, owner_pid))
-        });
-    match installation {
-        Ok((installed_artifact, owner_pid)) => {
+    match ensure_runtime_supervisor_with(data_root, executable, &input.daemon_environment, backend)?
+    {
+        SupervisorEnsureOutcome::Native {
+            artifact,
+            owner_pid,
+            environment_installed,
+        } => {
             write_installed_receipt(
                 data_root,
                 executable,
-                Some(installed_artifact),
+                artifact,
                 owner_pid,
-                Some(input.daemon_environment.contract_report()),
+                environment_installed.then(|| input.daemon_environment.contract_report()),
             )?;
             Ok(DaemonSupervisorStart::Native)
         }
-        Err(error) if backend.verify_registration(data_root, executable).is_ok() => {
-            let recovery = backend
-                .verify_live_owner(data_root, executable)
-                .or_else(|_| {
-                    backend.start(data_root)?;
-                    wait_for_native_live_owner(data_root, executable, backend)
-                });
-            match recovery {
-                Ok(owner_pid) => {
-                    write_installed_receipt(
-                        data_root,
-                        executable,
-                        artifact,
-                        owner_pid,
-                        Some(input.daemon_environment.contract_report()),
-                    )?;
-                    Ok(DaemonSupervisorStart::Native)
-                }
-                Err(recovery_error) => {
-                    write_supervisor_receipt_with_environment_snapshot(
-                        data_root,
-                        &SupervisorReceipt {
-                            kind: native_supervisor_kind().to_owned(),
-                            status: "registered_not_running",
-                            autostart_supported: true,
-                            restart_supported: true,
-                            registration_verified: true,
-                            live_owner_verified: false,
-                            owner_pid: None,
-                            artifact_path: artifact,
-                            executable_path: Some(executable.to_path_buf()),
-                            limitation: Some(
-                                "native registration survived installation recovery but has no identity-verified live daemon owner; retrieval commands retain CLI self-healing"
-                                    .to_owned(),
-                            ),
-                            last_error: Some(format!(
-                                "installation: {error:#}; recovery: {recovery_error:#}"
-                            )),
-                        },
-                        Some(input.daemon_environment.contract_report()),
-                    )?;
-                    Ok(DaemonSupervisorStart::Fallback)
-                }
+        SupervisorEnsureOutcome::RegisteredNotRunning {
+            artifact,
+            initial_error,
+            recovery_error,
+            environment_installed,
+        } => {
+            let (limitation, last_error) = if environment_installed {
+                (
+                    "native registration survived installation recovery but has no identity-verified live daemon owner; retrieval commands retain CLI self-healing",
+                    format!(
+                        "installation: {initial_error:#}; recovery: {recovery_error:#}"
+                    ),
+                )
+            } else {
+                (
+                    "native registration is valid but has no identity-verified live daemon owner; retrieval commands retain CLI self-healing",
+                    format!(
+                        "initial live check: {initial_error:#}; recovery: {recovery_error:#}"
+                    ),
+                )
+            };
+            let receipt = SupervisorReceipt {
+                kind: native_supervisor_kind().to_owned(),
+                status: "registered_not_running",
+                autostart_supported: true,
+                restart_supported: true,
+                registration_verified: true,
+                live_owner_verified: false,
+                owner_pid: None,
+                artifact_path: artifact,
+                executable_path: Some(executable.to_path_buf()),
+                limitation: Some(limitation.to_owned()),
+                last_error: Some(last_error),
+            };
+            if environment_installed {
+                write_supervisor_receipt_with_environment_snapshot(
+                    data_root,
+                    &receipt,
+                    Some(input.daemon_environment.contract_report()),
+                )?;
+            } else {
+                write_supervisor_receipt(data_root, &receipt)?;
             }
+            Ok(DaemonSupervisorStart::Fallback)
         }
-        Err(error) => {
-            if let Err(cleanup_error) = backend.disable(data_root) {
+        SupervisorEnsureOutcome::InstallFailed {
+            artifact,
+            error,
+            cleanup_error,
+        } => {
+            if let Some(cleanup_error) = cleanup_error {
                 write_supervisor_receipt(
                     data_root,
                     &SupervisorReceipt {
@@ -422,7 +404,7 @@ fn ensure_native_supervisor_with(
                         registration_verified: false,
                         live_owner_verified: false,
                         owner_pid: None,
-                        artifact_path: backend.artifact_path(data_root)?,
+                        artifact_path: artifact,
                         executable_path: Some(executable.to_path_buf()),
                         limitation: Some(
                             "native registration failed and its partial state could not be removed"
@@ -546,17 +528,14 @@ pub(super) fn disable_daemon_supervisor(data_root: &Path) -> Result<()> {
         );
     }
     let manager_environment = supervisor_manager_environment()?;
-    let backend = PlatformNativeSupervisor {
-        daemon_environment: None,
-        manager_environment: &manager_environment,
-    };
+    let backend = PlatformNativeSupervisor::new(data_root, None, &manager_environment)?;
     disable_native_supervisor_candidate_with(data_root, executable, &backend)
 }
 
 fn disable_native_supervisor_candidate_with(
     data_root: &Path,
     executable: Option<PathBuf>,
-    backend: &dyn NativeSupervisorBackend,
+    backend: &dyn NativeSupervisorBackend<SupervisorEnvironmentSnapshot>,
 ) -> Result<()> {
     // A disable request is idempotent control-plane work. Do not probe through
     // launch verification first: a surviving service-manager registration must
@@ -604,27 +583,6 @@ fn disable_native_supervisor_candidate_with(
     }
 }
 
-fn wait_for_native_live_owner(
-    data_root: &Path,
-    executable: &Path,
-    backend: &dyn NativeSupervisorBackend,
-) -> Result<u32> {
-    let deadline = Instant::now() + SUPERVISOR_HANDOFF_TIMEOUT;
-    loop {
-        match backend.verify_live_owner(data_root, executable) {
-            Ok(owner_pid) => return Ok(owner_pid),
-            Err(error) if Instant::now() >= deadline => return Err(error),
-            Err(_) => {}
-        }
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "native supervisor did not start daemon lifecycle ownership"
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
 pub(super) fn resume_daemon_supervisor_after_upgrade(
     data_root: &Path,
     executable: &Path,
@@ -633,44 +591,30 @@ pub(super) fn resume_daemon_supervisor_after_upgrade(
     let daemon_environment = supervisor_environment_snapshot()
         .context("capture native supervisor daemon environment")?;
     let manager_environment = supervisor_manager_environment()?;
-    let backend = PlatformNativeSupervisor {
-        daemon_environment: Some(&daemon_environment),
-        manager_environment: &manager_environment,
-    };
+    let backend =
+        PlatformNativeSupervisor::new(data_root, Some(&daemon_environment), &manager_environment)?;
     resume_daemon_supervisor_after_upgrade_with(data_root, executable, &backend, upgrade_fence)
 }
 
 fn resume_daemon_supervisor_after_upgrade_with(
     data_root: &Path,
     executable: &Path,
-    backend: &dyn NativeSupervisorBackend,
+    backend: &dyn NativeSupervisorBackend<SupervisorEnvironmentSnapshot>,
     upgrade_fence: &mut dyn DaemonSupervisorUpgradeFence,
 ) -> Result<DaemonSupervisorUpgradeResume> {
     let _installation_lock = SupervisorInstallationLock::acquire(data_root)?;
     ensure_hosted_uninstall_supervisor_admission_for_executable(executable)?;
-    if backend.verify_registration(data_root, executable).is_err() {
-        return Ok(DaemonSupervisorUpgradeResume::Fallback);
-    }
-
-    upgrade_fence.release()?;
-    let owner = backend
-        .verify_live_owner(data_root, executable)
-        .or_else(|_| {
-            backend.start(data_root)?;
-            wait_for_native_live_owner(data_root, executable, backend)
-        });
-    match owner {
-        Ok(owner_pid) => {
-            write_installed_receipt(
-                data_root,
-                executable,
-                backend.artifact_path(data_root)?,
-                owner_pid,
-                None,
-            )?;
+    let mut runtime_fence = RuntimeSupervisorUpgradeFence(upgrade_fence);
+    match resume_runtime_supervisor_with(data_root, executable, backend, &mut runtime_fence)? {
+        SupervisorResumeOutcome::Fallback => Ok(DaemonSupervisorUpgradeResume::Fallback),
+        SupervisorResumeOutcome::Native {
+            artifact,
+            owner_pid,
+        } => {
+            write_installed_receipt(data_root, executable, artifact, owner_pid, None)?;
             Ok(DaemonSupervisorUpgradeResume::Native)
         }
-        Err(error) => {
+        SupervisorResumeOutcome::RegisteredNotRunning { artifact, error } => {
             write_supervisor_receipt(
                 data_root,
                 &SupervisorReceipt {
@@ -681,7 +625,7 @@ fn resume_daemon_supervisor_after_upgrade_with(
                     registration_verified: true,
                     live_owner_verified: false,
                     owner_pid: None,
-                    artifact_path: backend.artifact_path(data_root)?,
+                    artifact_path: artifact,
                     executable_path: Some(executable.to_path_buf()),
                     limitation: Some(
                         "the upgrade fence was released to a valid native registration, but the manager did not establish identity-verified daemon ownership; the durable restart request remains available for CLI self-healing"
@@ -693,114 +637,6 @@ fn resume_daemon_supervisor_after_upgrade_with(
             Err(error).context("return upgraded daemon lifecycle ownership to native supervisor")
         }
     }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn verify_daemon_owner_identity(
-    data_root: &Path,
-    executable: &Path,
-    manager_pid: Option<u32>,
-) -> Result<u32> {
-    if !daemon_lock_is_active(data_root) {
-        return Err(anyhow!("native supervisor has no live daemon owner lock"));
-    }
-    let lock = read_pid_lock_json(&super::paths_status::daemon_lock_path(data_root))
-        .ok_or_else(|| anyhow!("native supervisor daemon lock has no readable identity"))?;
-    let pid = pid_from_lock_json(&lock)
-        .ok_or_else(|| anyhow!("native supervisor daemon lock has no process identity"))?;
-    if manager_pid.is_some_and(|expected| expected != pid) {
-        return Err(anyhow!(
-            "native supervisor process identity does not own the ctx daemon lock"
-        ));
-    }
-    let recorded_executable = lock
-        .get("binary")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .ok_or_else(|| anyhow!("native supervisor daemon lock has no executable identity"))?;
-    if !same_canonical_path(recorded_executable, executable) {
-        return Err(anyhow!(
-            "native supervisor daemon lock does not identify the installed ctx executable"
-        ));
-    }
-    if !super::paths_status::daemon_lock_binary_identity_matches(&lock, executable)? {
-        return Err(anyhow!(
-            "native supervisor daemon lock identifies a different ctx binary image"
-        ));
-    }
-    if let Some(process_executable) = supervisor_process_executable(pid) {
-        if !same_canonical_path(&process_executable, executable) {
-            return Err(anyhow!(
-                "native supervisor live process is not the installed ctx executable"
-            ));
-        }
-    } else {
-        return Err(anyhow!(
-            "native supervisor live process executable identity is unavailable"
-        ));
-    }
-    Ok(pid)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn same_canonical_path(left: &Path, right: &Path) -> bool {
-    fs::canonicalize(left).ok() == fs::canonicalize(right).ok()
-}
-
-#[cfg(target_os = "linux")]
-fn supervisor_process_executable(pid: u32) -> Option<PathBuf> {
-    fs::read_link(format!("/proc/{pid}/exe")).ok()
-}
-
-#[cfg(target_os = "macos")]
-fn supervisor_process_executable(pid: u32) -> Option<PathBuf> {
-    use std::ffi::CStr;
-
-    const MAX_PATH_BYTES: usize = 4096;
-    unsafe extern "C" {
-        fn proc_pidpath(pid: libc::c_int, buffer: *mut libc::c_void, size: u32) -> libc::c_int;
-    }
-    let mut buffer = vec![0_u8; MAX_PATH_BYTES];
-    let length = unsafe {
-        proc_pidpath(
-            libc::pid_t::try_from(pid).ok()?,
-            buffer.as_mut_ptr().cast(),
-            u32::try_from(buffer.len()).ok()?,
-        )
-    };
-    if length <= 0 {
-        return None;
-    }
-    CStr::from_bytes_until_nul(&buffer)
-        .ok()
-        .map(|path| PathBuf::from(path.to_string_lossy().into_owned()))
-}
-
-#[cfg(windows)]
-fn supervisor_process_executable(pid: u32) -> Option<PathBuf> {
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-        },
-    };
-
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return None;
-    }
-    let mut buffer = vec![0_u16; 32_768];
-    let mut length = u32::try_from(buffer.len()).ok()?;
-    let succeeded =
-        unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &raw mut length) };
-    unsafe {
-        CloseHandle(handle);
-    }
-    (succeeded != 0).then(|| {
-        PathBuf::from(String::from_utf16_lossy(
-            &buffer[..usize::try_from(length).unwrap_or(0)],
-        ))
-    })
 }
 
 fn safely_supported_managed_install(data_root: &Path) -> Result<Option<PathBuf>> {
@@ -852,360 +688,208 @@ fn migrate_existing_daemon_to_supervisor(data_root: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+fn native_supervisor_identity(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<SupervisorIdentity>> {
+    let name = environment::SYSTEMD_UNIT_NAME;
+    let artifact_path = ctx_daemon_runtime::linux_systemd_unit_path(manager_environment, name)?;
+    environment::supervisor_identity(name, artifact_path).map(Some)
+}
+
+#[cfg(target_os = "macos")]
+fn native_supervisor_identity(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<SupervisorIdentity>> {
+    let name = environment::LAUNCH_AGENT_LABEL;
+    let artifact_path = ctx_daemon_runtime::launch_agent_path(manager_environment, name)?;
+    environment::supervisor_identity(name, artifact_path).map(Some)
+}
+
+#[cfg(windows)]
+fn native_supervisor_identity(
+    data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<SupervisorIdentity>> {
+    let sid = ctx_daemon_runtime::current_windows_user_sid(manager_environment)?;
+    environment::windows_supervisor_identity(data_root, &sid).map(Some)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn native_supervisor_identity(
+    _data_root: &Path,
+    _manager_environment: &SupervisorManagerEnvironment,
+) -> Result<Option<SupervisorIdentity>> {
+    SupervisorIdentity::new(native_supervisor_kind(), PathBuf::new()).map(Some)
+}
+
+#[cfg(target_os = "linux")]
 fn install_native_supervisor(
     data_root: &Path,
-    executable: &Path,
-    environment: &SupervisorEnvironmentSnapshot,
+    _executable: &Path,
+    _environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
 ) -> Result<PathBuf> {
-    let path = linux_systemd_unit_path(manager_environment)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("systemd user unit has no parent directory"))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create systemd user unit directory {}", parent.display()))?;
-    let definition = linux_systemd_unit_with_environment(executable, data_root, environment)?;
-    write_atomic_file(&path, definition.as_bytes())?;
-    systemctl_user(["daemon-reload"], manager_environment)?;
-    systemctl_user(["enable", "ctx.service"], manager_environment)?;
-    migrate_existing_daemon_to_supervisor(data_root)?;
-    start_native_supervisor(data_root, manager_environment)?;
-    Ok(path)
+    ctx_daemon_runtime::install_systemd_supervisor(
+        data_root,
+        spec,
+        manager_environment,
+        &migrate_existing_daemon_to_supervisor,
+    )
 }
 
 #[cfg(target_os = "linux")]
 fn disable_native_supervisor(
     _data_root: &Path,
     manager_environment: &SupervisorManagerEnvironment,
+    identity: &SupervisorIdentity,
 ) -> Result<Option<PathBuf>> {
-    let path = linux_systemd_unit_path(manager_environment)?;
-    let disabled =
-        systemctl_user_capture(["disable", "--now", "ctx.service"], manager_environment)?;
-    if !disabled.status.success()
-        && systemctl_user_capture(["is-enabled", "ctx.service"], manager_environment)?
-            .status
-            .success()
-    {
-        return Err(anyhow!(
-            "systemd user service remained enabled after disable: {}",
-            String::from_utf8_lossy(&disabled.stderr).trim()
-        ));
-    }
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("remove systemd user unit {}", path.display()));
-        }
-    }
-    systemctl_user(["daemon-reload"], manager_environment)?;
-    if systemctl_user_capture(["is-enabled", "ctx.service"], manager_environment)?
-        .status
-        .success()
-        || systemctl_user_capture(["is-active", "ctx.service"], manager_environment)?
-            .status
-            .success()
-    {
-        return Err(anyhow!(
-            "systemd user service remained registered or active after removal"
-        ));
-    }
-    Ok(Some(path))
-}
-
-#[cfg(target_os = "linux")]
-fn linux_systemd_unit_path(manager_environment: &SupervisorManagerEnvironment) -> Result<PathBuf> {
-    let root = manager_environment
-        .get("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            manager_environment
-                .get("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".config"))
-        })
-        .ok_or_else(|| anyhow!("resolve user configuration directory for systemd"))?;
-    Ok(root.join("systemd").join("user").join("ctx.service"))
-}
-
-#[cfg(target_os = "linux")]
-fn systemctl_user<const N: usize>(
-    args: [&str; N],
-    manager_environment: &SupervisorManagerEnvironment,
-) -> Result<()> {
-    let output = systemctl_user_capture(args, manager_environment)?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(anyhow!(
-        "systemctl --user failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
-}
-
-#[cfg(target_os = "linux")]
-fn systemctl_user_capture<const N: usize>(
-    args: [&str; N],
-    manager_environment: &SupervisorManagerEnvironment,
-) -> Result<std::process::Output> {
-    let mut command = supervisor_command("systemctl", manager_environment);
-    command.arg("--user").args(args);
-    supervisor_output(&mut command).context("run systemctl --user")
+    ctx_daemon_runtime::disable_systemd_supervisor(identity, manager_environment)
 }
 
 #[cfg(target_os = "linux")]
 fn verify_native_supervisor_registration(
-    data_root: &Path,
-    executable: &Path,
-    daemon_environment: &SupervisorEnvironmentSnapshot,
+    _data_root: &Path,
+    _executable: &Path,
+    _daemon_environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
 ) -> Result<()> {
-    let path = linux_systemd_unit_path(manager_environment)?;
-    let registered = fs::read_to_string(&path)
-        .with_context(|| format!("read systemd user unit {}", path.display()))?;
-    if registered != linux_systemd_unit_with_environment(executable, data_root, daemon_environment)?
-    {
-        return Err(anyhow!(
-            "systemd user service registration does not match the maintained definition"
-        ));
-    }
-    let enabled = systemctl_user_capture(["is-enabled", "ctx.service"], manager_environment)?;
-    if !enabled.status.success() || String::from_utf8_lossy(&enabled.stdout).trim() != "enabled" {
-        return Err(anyhow!("systemd user service is not durably enabled"));
-    }
-    Ok(())
+    ctx_daemon_runtime::verify_systemd_registration(spec, manager_environment)
 }
 
 #[cfg(target_os = "linux")]
 fn verify_native_supervisor(
     data_root: &Path,
     executable: &Path,
-    daemon_environment: &SupervisorEnvironmentSnapshot,
+    _daemon_environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
 ) -> Result<u32> {
-    verify_native_supervisor_registration(
-        data_root,
-        executable,
-        daemon_environment,
-        manager_environment,
-    )?;
-    let active = systemctl_user_capture(["is-active", "ctx.service"], manager_environment)?;
-    if !active.status.success() || String::from_utf8_lossy(&active.stdout).trim() != "active" {
-        return Err(anyhow!("systemd user service is not active"));
-    }
-    let pid = systemctl_user_capture(
-        ["show", "ctx.service", "--property=MainPID", "--value"],
-        manager_environment,
-    )?
-    .stdout;
-    let pid = systemd_main_pid(&pid)?;
-    verify_daemon_owner_identity(data_root, executable, Some(pid))
+    let manager_pid = ctx_daemon_runtime::systemd_live_owner_pid(spec, manager_environment)?;
+    ctx_daemon_runtime::verify_daemon_owner_identity(data_root, executable, Some(manager_pid))
 }
 
 #[cfg(target_os = "linux")]
 fn start_native_supervisor(
     _data_root: &Path,
     manager_environment: &SupervisorManagerEnvironment,
+    identity: &SupervisorIdentity,
 ) -> Result<()> {
-    systemctl_user(["start", "ctx.service"], manager_environment)
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn systemd_main_pid(output: &[u8]) -> Result<u32> {
-    String::from_utf8_lossy(output)
-        .trim()
-        .parse::<u32>()
-        .context("parse systemd user service MainPID")
-        .and_then(|pid| {
-            (pid != 0)
-                .then_some(pid)
-                .ok_or_else(|| anyhow!("systemd user service has no live MainPID"))
-        })
+    ctx_daemon_runtime::start_systemd_supervisor(identity, manager_environment)
 }
 
 #[cfg(target_os = "macos")]
 fn install_native_supervisor(
     data_root: &Path,
-    executable: &Path,
-    environment: &SupervisorEnvironmentSnapshot,
+    _executable: &Path,
+    _environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
 ) -> Result<PathBuf> {
-    let home = manager_environment
-        .get("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("resolve user home for LaunchAgent"))?;
-    let path = home
-        .join("Library")
-        .join("LaunchAgents")
-        .join("rs.ctx.daemon.plist");
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("LaunchAgent has no parent directory"))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create LaunchAgent directory {}", parent.display()))?;
-    let definition =
-        environment::launch_agent_plist_with_environment(executable, data_root, environment)?;
-    write_atomic_file(&path, definition.as_bytes())?;
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
-    let mut bootout = supervisor_command("launchctl", manager_environment);
-    bootout.args(["bootout", &domain]).arg(&path);
-    let bootout = supervisor_output(&mut bootout).context("run launchctl bootout")?;
-    let registration = launchctl_print(&domain, manager_environment)?;
-    if registration.status.success() {
-        return Err(anyhow!(
-            "LaunchAgent remained registered after bootout: {}",
-            String::from_utf8_lossy(&bootout.stderr).trim()
-        ));
-    }
-    migrate_existing_daemon_to_supervisor(data_root)?;
-    let mut bootstrap = supervisor_command("launchctl", manager_environment);
-    bootstrap.args(["bootstrap", &domain]).arg(&path);
-    command_success(&mut bootstrap, "launchctl bootstrap")?;
-    start_native_supervisor(data_root, manager_environment)?;
-    Ok(path)
+    ctx_daemon_runtime::install_launch_agent(
+        data_root,
+        spec,
+        manager_environment,
+        &migrate_existing_daemon_to_supervisor,
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn disable_native_supervisor(
     _data_root: &Path,
     manager_environment: &SupervisorManagerEnvironment,
+    identity: &SupervisorIdentity,
 ) -> Result<Option<PathBuf>> {
-    let home = manager_environment
-        .get("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("resolve user home for LaunchAgent"))?;
-    let path = home
-        .join("Library")
-        .join("LaunchAgents")
-        .join("rs.ctx.daemon.plist");
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
-    let mut bootout = supervisor_command("launchctl", manager_environment);
-    bootout.args(["bootout", &domain]).arg(&path);
-    let bootout = supervisor_output(&mut bootout).context("run launchctl bootout")?;
-    let registration = launchctl_print(&domain, manager_environment)?;
-    if registration.status.success() {
-        return Err(anyhow!(
-            "LaunchAgent remained registered after bootout: {}",
-            String::from_utf8_lossy(&bootout.stderr).trim()
-        ));
-    }
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("remove ctx LaunchAgent"),
-    }
-    Ok(Some(path))
-}
-
-#[cfg(target_os = "macos")]
-fn launchctl_print(
-    domain: &str,
-    manager_environment: &SupervisorManagerEnvironment,
-) -> Result<std::process::Output> {
-    let mut print = supervisor_command("launchctl", manager_environment);
-    print.args(["print", &format!("{domain}/rs.ctx.daemon")]);
-    supervisor_output(&mut print).context("run launchctl print in GUI domain")
-}
-
-#[cfg(any(test, target_os = "macos"))]
-fn launchctl_print_pid(output: &str) -> Option<u32> {
-    output.lines().find_map(|line| {
-        let (key, value) = line.trim().split_once('=')?;
-        (key.trim() == "pid")
-            .then(|| value.trim().parse::<u32>().ok())
-            .flatten()
-    })
+    ctx_daemon_runtime::disable_launch_agent(identity, manager_environment)
 }
 
 #[cfg(target_os = "macos")]
 fn verify_native_supervisor_registration(
-    data_root: &Path,
-    executable: &Path,
-    daemon_environment: &SupervisorEnvironmentSnapshot,
+    _data_root: &Path,
+    _executable: &Path,
+    _daemon_environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
 ) -> Result<()> {
-    let path = native_supervisor_artifact_path(data_root, manager_environment)?
-        .ok_or_else(|| anyhow!("LaunchAgent artifact path is unavailable"))?;
-    let registered = fs::read_to_string(&path)
-        .with_context(|| format!("read LaunchAgent {}", path.display()))?;
-    if registered
-        != environment::launch_agent_plist_with_environment(
-            executable,
-            data_root,
-            daemon_environment,
-        )?
-    {
-        return Err(anyhow!(
-            "LaunchAgent registration does not match the maintained definition"
-        ));
-    }
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
-    let output = launchctl_print(&domain, manager_environment)?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "LaunchAgent is not registered in the current GUI login domain: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
+    ctx_daemon_runtime::verify_launch_agent_registration(spec, manager_environment)
 }
 
 #[cfg(target_os = "macos")]
 fn verify_native_supervisor(
     data_root: &Path,
     executable: &Path,
-    daemon_environment: &SupervisorEnvironmentSnapshot,
+    _daemon_environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
 ) -> Result<u32> {
-    verify_native_supervisor_registration(
-        data_root,
-        executable,
-        daemon_environment,
-        manager_environment,
-    )?;
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
-    let output = launchctl_print(&domain, manager_environment)?;
-    let pid = launchctl_print_pid(&String::from_utf8_lossy(&output.stdout))
-        .ok_or_else(|| anyhow!("LaunchAgent GUI registration has no live process identity"))?;
-    verify_daemon_owner_identity(data_root, executable, Some(pid))
+    let manager_pid = ctx_daemon_runtime::launch_agent_live_owner_pid(spec, manager_environment)?;
+    ctx_daemon_runtime::verify_daemon_owner_identity(data_root, executable, Some(manager_pid))
 }
 
 #[cfg(target_os = "macos")]
 fn start_native_supervisor(
     _data_root: &Path,
     manager_environment: &SupervisorManagerEnvironment,
+    identity: &SupervisorIdentity,
 ) -> Result<()> {
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
-    let mut kickstart = supervisor_command("launchctl", manager_environment);
-    kickstart.args(["kickstart", "-k", &format!("{domain}/rs.ctx.daemon")]);
-    command_success(&mut kickstart, "launchctl kickstart")
+    ctx_daemon_runtime::start_launch_agent(identity, manager_environment)
 }
 
-#[cfg(any(target_os = "macos", windows))]
-fn command_success(command: &mut Command, label: &str) -> Result<()> {
-    let output = supervisor_output(command).with_context(|| format!("run {label}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(anyhow!(
-        "{label} failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn supervisor_command(
-    program: &str,
+#[cfg(windows)]
+fn install_native_supervisor(
+    data_root: &Path,
+    _executable: &Path,
+    _environment: &SupervisorEnvironmentSnapshot,
     manager_environment: &SupervisorManagerEnvironment,
-) -> Command {
-    let mut command = Command::new(program);
-    command.env_clear().envs(&manager_environment.values);
-    command
+    spec: &SupervisorSpec,
+) -> Result<PathBuf> {
+    ctx_daemon_runtime::install_windows_supervisor(
+        data_root,
+        spec,
+        manager_environment,
+        &migrate_existing_daemon_to_supervisor,
+    )
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn supervisor_output(command: &mut Command) -> std::io::Result<std::process::Output> {
-    command.output()
+#[cfg(windows)]
+fn disable_native_supervisor(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+    identity: &SupervisorIdentity,
+) -> Result<Option<PathBuf>> {
+    ctx_daemon_runtime::disable_windows_supervisor(identity, manager_environment)
+}
+
+#[cfg(windows)]
+fn verify_native_supervisor_registration(
+    _data_root: &Path,
+    _executable: &Path,
+    _daemon_environment: &SupervisorEnvironmentSnapshot,
+    manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
+) -> Result<()> {
+    ctx_daemon_runtime::verify_windows_supervisor_registration(spec, manager_environment)
+}
+
+#[cfg(windows)]
+fn verify_native_supervisor(
+    data_root: &Path,
+    executable: &Path,
+    _daemon_environment: &SupervisorEnvironmentSnapshot,
+    manager_environment: &SupervisorManagerEnvironment,
+    spec: &SupervisorSpec,
+) -> Result<u32> {
+    ctx_daemon_runtime::verify_windows_supervisor(data_root, executable, spec, manager_environment)
+}
+
+#[cfg(windows)]
+fn start_native_supervisor(
+    _data_root: &Path,
+    manager_environment: &SupervisorManagerEnvironment,
+    identity: &SupervisorIdentity,
+) -> Result<()> {
+    ctx_daemon_runtime::start_windows_supervisor(identity, manager_environment)
 }

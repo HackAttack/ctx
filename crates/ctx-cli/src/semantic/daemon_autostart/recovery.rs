@@ -17,7 +17,7 @@ pub(super) fn restart_acknowledged_installation_daemons_with(
     executable: &Path,
     attempt_id: &str,
     skip_root: Option<&Path>,
-    mut spawn: impl FnMut(DetachedDaemonLaunch) -> io::Result<Child>,
+    mut spawn: impl FnMut(NormalizedLaunch) -> io::Result<Child>,
 ) -> Result<()> {
     for restart in read_installation_daemon_restarts(executable, attempt_id)? {
         if skip_root.is_some_and(|root| root == restart.data_root) {
@@ -69,45 +69,51 @@ pub(in crate::semantic) fn resume_completed_installation_daemons(data_root: &Pat
 }
 
 pub(super) fn wait_for_replacement_daemon(data_root: &Path, child: &mut Child) -> Result<()> {
-    let deadline = Instant::now() + DAEMON_UPGRADE_RESTART_TIMEOUT;
-    loop {
-        if daemon_lock_is_owned_by(data_root, child.id())
-            && read_daemon_restart_request(data_root).is_none()
-        {
-            return Ok(());
+    ctx_daemon_runtime::wait_for_replacement_child(
+        child,
+        DAEMON_UPGRADE_RESTART_TIMEOUT,
+        DAEMON_UPGRADE_POLL_INTERVAL,
+        |pid| {
+            daemon_lock_is_owned_by(data_root, pid)
+                && read_daemon_restart_request(data_root).is_none()
+        },
+    )
+    .map_err(replacement_child_wait_error)
+}
+
+fn replacement_child_wait_error(
+    error: ctx_daemon_runtime::ReplacementChildWaitError,
+) -> anyhow::Error {
+    match error {
+        ctx_daemon_runtime::ReplacementChildWaitError::ChildStatus(error) => error.into(),
+        ctx_daemon_runtime::ReplacementChildWaitError::ExitedBeforeOwnership => {
+            anyhow!("replacement ctx daemon exited before acquiring lifecycle ownership")
         }
-        if child.try_wait()?.is_some() {
-            return Err(anyhow!(
-                "replacement ctx daemon exited before acquiring lifecycle ownership"
-            ));
+        ctx_daemon_runtime::ReplacementChildWaitError::TimedOut => {
+            anyhow!("timed out waiting for the replacement ctx daemon to start")
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(anyhow!(
-                "timed out waiting for the replacement ctx daemon to start"
-            ));
-        }
-        std::thread::sleep(DAEMON_UPGRADE_POLL_INTERVAL);
     }
 }
 
 pub(super) fn wait_for_daemon_ready_ack(data_root: &Path) -> Result<()> {
-    let deadline = Instant::now() + DAEMON_UPGRADE_RESTART_TIMEOUT;
-    loop {
-        if daemon_lock_is_active(data_root) && read_daemon_restart_request(data_root).is_none() {
-            return Ok(());
+    ctx_daemon_runtime::wait_for_daemon_ready(
+        DAEMON_UPGRADE_RESTART_TIMEOUT,
+        DAEMON_UPGRADE_POLL_INTERVAL,
+        || daemon_lock_is_active(data_root),
+        || read_daemon_restart_request(data_root).is_some(),
+    )
+    .map_err(daemon_readiness_wait_error)
+}
+
+fn daemon_readiness_wait_error(
+    error: ctx_daemon_runtime::DaemonReadinessWaitError,
+) -> anyhow::Error {
+    match error {
+        ctx_daemon_runtime::DaemonReadinessWaitError::ExitedBeforeReadiness => {
+            anyhow!("replacement ctx daemon exited before lifecycle readiness")
         }
-        if !daemon_lock_is_active(data_root) {
-            return Err(anyhow!(
-                "replacement ctx daemon exited before lifecycle readiness"
-            ));
+        ctx_daemon_runtime::DaemonReadinessWaitError::TimedOut => {
+            anyhow!("timed out waiting for replacement ctx daemon readiness")
         }
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "timed out waiting for replacement ctx daemon readiness"
-            ));
-        }
-        std::thread::sleep(DAEMON_UPGRADE_POLL_INTERVAL);
     }
 }

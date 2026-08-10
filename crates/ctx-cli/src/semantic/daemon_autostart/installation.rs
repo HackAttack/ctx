@@ -20,9 +20,7 @@ pub(super) struct InstallationDaemonRestart {
     pub(super) loop_interval_seconds: Option<u64>,
 }
 
-pub(super) struct InstallationDaemonQuiescence {
-    lock: fs::File,
-}
+pub(super) type InstallationDaemonQuiescence = ctx_daemon_runtime::InstallationQuiescence;
 
 impl InstallationDaemonLease {
     pub(in crate::semantic) fn acquire(
@@ -127,25 +125,12 @@ fn open_installation_daemon_quiescence_lock() -> Result<fs::File> {
 
 pub(super) fn try_acquire_installation_daemon_quiescence(
 ) -> Result<Option<InstallationDaemonQuiescence>> {
-    let lock = open_installation_daemon_quiescence_lock()?;
-    match fs2::FileExt::try_lock_exclusive(&lock) {
-        Ok(()) => Ok(Some(InstallationDaemonQuiescence { lock })),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-        Err(error) => Err(error).context("acquire ctx installation daemon quiescence"),
-    }
-}
-
-impl Drop for InstallationDaemonQuiescence {
-    fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.lock);
-    }
+    let (path, _) = ctx_upgrade_engine::installation_daemon_coordination_paths()?;
+    ctx_daemon_runtime::try_acquire_installation_quiescence(&path)
 }
 
 pub(super) fn open_installation_daemon_quiescence_lock_at(path: &Path) -> Result<fs::File> {
-    let (file, _) = open_or_create_pid_lock_file(path)
-        .with_context(|| format!("open ctx installation daemon lock {}", path.display()))?;
-    secure_private_file_permissions(path)?;
-    Ok(file)
+    ctx_daemon_runtime::open_installation_quiescence_lock(path)
 }
 
 pub(super) fn wait_for_installation_daemon_quiescence_for(
@@ -168,28 +153,15 @@ pub(super) fn wait_for_installation_daemon_quiescence_at(
     attempt_id: &str,
     timeout: StdDuration,
 ) -> Result<()> {
-    let lock = open_installation_daemon_quiescence_lock_at(lock_path)?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match fs2::FileExt::try_lock_exclusive(&lock) {
-            Ok(()) => break,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err(anyhow!(
-                        "timed out waiting for all ctx daemons to acknowledge installation quiescence"
-                    ));
-                }
-                std::thread::sleep(DAEMON_UPGRADE_POLL_INTERVAL);
-            }
-            Err(error) => {
-                return Err(error).context("acquire ctx installation daemon quiescence");
-            }
-        }
-    }
-    let result =
-        read_installation_daemon_restarts_from(registration_root, attempt_id, true).map(|_| ());
-    let _ = fs2::FileExt::unlock(&lock);
-    result
+    ctx_daemon_runtime::wait_for_installation_quiescence(
+        lock_path,
+        registration_root,
+        attempt_id,
+        timeout,
+        DAEMON_UPGRADE_POLL_INTERVAL,
+        DAEMON_IDLE_EXIT_SECONDS_CAP,
+        3_600,
+    )
 }
 
 pub(super) fn read_installation_daemon_restarts(
@@ -205,142 +177,29 @@ pub(super) fn read_installation_daemon_restarts_from(
     attempt_id: &str,
     fail_on_live: bool,
 ) -> Result<Vec<InstallationDaemonRestart>> {
-    let registrations = read_installation_daemon_registrations_from(root)?;
-    let mut restarts = Vec::new();
-    for (path, value) in registrations {
-        let status = value["status"].as_str().unwrap_or_default();
-        let registration_attempt = value.get("attempt_id").and_then(Value::as_str);
-        if status == "quiescing" && registration_attempt == Some(attempt_id) {
-            return Err(anyhow!(
-                "ctx daemon exited without completing its quiescence acknowledgement"
-            ));
-        }
-        if status == "live" {
-            let pid = value["pid"]
-                .as_u64()
-                .and_then(|pid| u32::try_from(pid).ok())
-                .unwrap_or_default();
-            if fail_on_live {
-                match process_state(pid) {
-                    ProcessState::NotRunning => continue,
-                    ProcessState::Running | ProcessState::Unknown => {
-                        return Err(anyhow!(
-                            "ctx daemon registration remains live after installation quiescence"
-                        ));
-                    }
-                }
-            }
-            continue;
-        }
-        if status != "acknowledged" || registration_attempt != Some(attempt_id) {
-            continue;
-        }
-        let data_root = PathBuf::from(value["data_root"].as_str().unwrap_or_default());
-        let trigger = parse_daemon_trigger(value["trigger_command"].as_str())
-            .ok_or_else(|| anyhow!("ctx daemon acknowledgement has an invalid trigger"))?;
-        let persistent = value
-            .get("persistent")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let idle_exit_seconds = if persistent {
-            None
-        } else {
-            Some(
-                value["idle_exit_seconds"]
-                    .as_u64()
-                    .filter(|value| *value > 0 && *value <= DAEMON_IDLE_EXIT_SECONDS_CAP)
-                    .ok_or_else(|| {
-                        anyhow!("ctx daemon acknowledgement has an invalid idle timeout")
-                    })?,
-            )
-        };
-        let loop_interval_explicit = value
-            .get("loop_interval_explicit")
-            .and_then(Value::as_bool)
-            .unwrap_or(!persistent);
-        let loop_interval_seconds = match value["loop_interval_seconds"].as_u64() {
-            Some(value) if value > 0 && value <= 3_600 && loop_interval_explicit => Some(value),
-            Some(value) if value > 0 && value <= 3_600 && persistent => None,
-            _ => {
-                return Err(anyhow!(
-                    "ctx daemon acknowledgement has an invalid loop interval"
-                ))
-            }
-        };
-        restarts.push(InstallationDaemonRestart {
-            registration_path: path,
-            data_root,
-            trigger,
-            idle_exit_seconds,
-            loop_interval_seconds,
-        });
-    }
-    restarts.sort_by(|left, right| left.data_root.cmp(&right.data_root));
-    restarts.dedup_by(|left, right| left.data_root == right.data_root);
-    Ok(restarts)
+    ctx_daemon_runtime::read_installation_restart_records(
+        root,
+        attempt_id,
+        fail_on_live,
+        DAEMON_IDLE_EXIT_SECONDS_CAP,
+        3_600,
+    )?
+    .into_iter()
+    .map(|record| {
+        Ok(InstallationDaemonRestart {
+            registration_path: record.registration_path,
+            data_root: record.data_root,
+            trigger: parse_daemon_trigger(Some(&record.opaque_trigger))
+                .ok_or_else(|| anyhow!("ctx daemon acknowledgement has an invalid trigger"))?,
+            idle_exit_seconds: record.idle_exit_seconds,
+            loop_interval_seconds: record.loop_interval_seconds,
+        })
+    })
+    .collect()
 }
 
 fn read_installation_daemon_registrations_from(root: &Path) -> Result<Vec<(PathBuf, Value)>> {
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("read ctx daemon acknowledgements {}", root.display()));
-        }
-    };
-    let mut registrations = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(&path)
-            .with_context(|| format!("inspect ctx daemon acknowledgement {}", path.display()))?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(anyhow!(
-                "ctx daemon acknowledgement is not a regular file: {}",
-                path.display()
-            ));
-        }
-        let value = fs::read(&path)
-            .with_context(|| format!("read ctx daemon acknowledgement {}", path.display()))
-            .and_then(|bytes| {
-                serde_json::from_slice::<Value>(&bytes)
-                    .with_context(|| format!("parse ctx daemon acknowledgement {}", path.display()))
-            })?;
-        validate_installation_daemon_registration(&value, &path)?;
-        registrations.push((path, value));
-    }
-    registrations.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(registrations)
-}
-
-fn validate_installation_daemon_registration(value: &Value, path: &Path) -> Result<()> {
-    let valid_status = matches!(
-        value.get("status").and_then(Value::as_str),
-        Some("live" | "released" | "quiescing" | "acknowledged")
-    );
-    let valid_root = value
-        .get("data_root")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .is_some_and(Path::is_absolute);
-    if value.get("schema_version").and_then(Value::as_u64) != Some(1)
-        || !value
-            .get("registration_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty())
-        || !valid_status
-        || !valid_root
-    {
-        return Err(anyhow!(
-            "invalid ctx daemon acknowledgement at {}",
-            path.display()
-        ));
-    }
-    Ok(())
+    ctx_daemon_runtime::read_installation_registrations(root)
 }
 
 pub(super) fn remove_installation_daemon_coordination() -> Result<()> {
@@ -365,11 +224,5 @@ pub(super) fn registered_installation_daemon_roots() -> Result<Vec<PathBuf>> {
 }
 
 pub(super) fn registered_installation_daemon_roots_from(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut roots = read_installation_daemon_registrations_from(root)?
-        .into_iter()
-        .map(|(_, value)| PathBuf::from(value["data_root"].as_str().unwrap_or_default()))
-        .collect::<Vec<_>>();
-    roots.sort();
-    roots.dedup();
-    Ok(roots)
+    ctx_daemon_runtime::registered_installation_roots(root)
 }

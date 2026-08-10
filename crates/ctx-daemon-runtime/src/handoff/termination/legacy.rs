@@ -1,6 +1,8 @@
 use super::*;
 
-use crate::semantic::paths_status::{pid_lock_uses_advisory_protocol, process_executable_path};
+use std::path::PathBuf;
+
+use crate::{pid_lock_uses_advisory_protocol, process_executable_path};
 
 pub(super) fn verify_legacy_v025_identity(
     data_root: &Path,

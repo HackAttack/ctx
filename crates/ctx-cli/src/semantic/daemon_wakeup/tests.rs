@@ -1,11 +1,18 @@
 use super::*;
+use ctx_daemon_runtime::{NativeWatchError, NativeWatchEvent, NativeWatchIgnore};
 use ctx_history_capture::{
     ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
     ProviderSourceStatus, SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedRouteDriver,
     SourceBackedSelectorAuthority,
 };
 use ctx_history_core::CaptureProvider;
-use std::sync::Barrier;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Barrier,
+    },
+    thread,
+};
 
 fn catalog_route(
     provider: CaptureProvider,
@@ -153,28 +160,27 @@ fn source_watch_batches_coalesce_to_catalog_cardinality() {
         wakeup.signal_source_watch(batch);
     }
 
-    let pending = wakeup.lock_state();
-    assert_eq!(pending.source_watch.routes.len(), 1);
+    let pending = wakeup.pending_source_watch();
+    assert_eq!(pending.routes.len(), 1);
     assert_eq!(
-        pending.source_watch.routes.get(&route),
+        pending.routes.get(&route),
         Some(&EventWatermark::new(
             7,
             WATCH_EVENT_QUEUE_CAPACITY as u64 * 4
         ))
     );
     assert_eq!(
-        pending.source_watch.reconcile,
+        pending.reconcile,
         Some(EventWatermark::new(
             7,
             WATCH_EVENT_QUEUE_CAPACITY as u64 * 4
         ))
     );
-    assert!(pending.source_watch.rearm);
-    drop(pending);
+    assert!(pending.rearm);
 
     let wake = wakeup.wait(Duration::ZERO);
     assert_eq!(wake.source_watch.routes.len(), 1);
-    assert!(wakeup.lock_state().source_watch.is_empty());
+    assert!(wakeup.pending_source_watch().is_empty());
 }
 
 #[test]
@@ -292,8 +298,6 @@ fn source_watch_install_cannot_miss_signal_paused_after_pending_merge() {
 
 #[test]
 fn in_capture_route_reaches_handoff_fence_before_debounced_wake() {
-    use notify::event::DataChange;
-
     let data_root = Path::new("/tmp/ctx-data");
     let daemon_root = data_root.join("daemon");
     let provider_file = PathBuf::from("/tmp/provider/in-capture.jsonl");
@@ -328,10 +332,7 @@ fn in_capture_route_reaches_handoff_fence_before_debounced_wake() {
         &wakeup,
         data_root,
         &daemon_root,
-        Ok(
-            Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-                .add_path(provider_file),
-        ),
+        Ok(NativeWatchEvent::ordinary(vec![provider_file])),
         EventWatermark::new(13, 1),
     );
 
@@ -356,58 +357,6 @@ fn in_capture_route_reaches_handoff_fence_before_debounced_wake() {
         Some(&EventWatermark::new(13, 1))
     );
 }
-
-#[test]
-fn full_watcher_ingress_fails_closed_into_catalog_reconciliation() {
-    use notify::event::DataChange;
-
-    let data_root = Path::new("/tmp/ctx-data");
-    let counters = Mutex::new(WatchCounters::default());
-    let wakeup = DaemonWakeup::default();
-    let accepting_events = AtomicBool::new(true);
-    let sequence = AtomicU64::new(0);
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let event = || {
-        Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-            .add_path(data_root.join("config.toml"))
-    };
-
-    forward_watch_event(
-        data_root,
-        &counters,
-        &sender,
-        &wakeup,
-        &accepting_events,
-        9,
-        &sequence,
-        Ok(event()),
-    );
-    forward_watch_event(
-        data_root,
-        &counters,
-        &sender,
-        &wakeup,
-        &accepting_events,
-        9,
-        &sequence,
-        Ok(event()),
-    );
-
-    let wake = wakeup.wait(Duration::ZERO);
-    assert!(wake.filesystem);
-    assert_eq!(wake.source_watch.reconcile, Some(EventWatermark::new(9, 2)));
-    assert!(wake.source_watch.rearm);
-    assert!(wake.source_watch.routes.is_empty());
-    assert_eq!(counters.lock().unwrap().ingress_overflows, 1);
-    match receiver.try_recv().expect("one event remains bounded") {
-        WatchMessage::Event { watermark, .. } => {
-            assert_eq!(watermark, EventWatermark::new(9, 1));
-        }
-        WatchMessage::Stop => panic!("unexpected stop message"),
-    }
-    assert!(receiver.try_recv().is_err());
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn forced_rearm_observes_a_recreated_recursive_root() {
@@ -435,7 +384,7 @@ fn forced_rearm_observes_a_recreated_recursive_root() {
     assert!(removed.source_watch.rearm);
 
     fs::create_dir_all(&provider_root).expect("recreate watched root");
-    let attempts_before = watcher.lock_counters().registration_attempts;
+    let attempts_before = watcher.runtime.snapshot().registration_attempts;
     let (_, registration) = watcher.reconcile_roots(true);
     registration.expect("force native watcher re-registration");
     fs::write(provider_root.join("recreated.jsonl"), b"{\"event\":2}\n")
@@ -447,7 +396,7 @@ fn forced_rearm_observes_a_recreated_recursive_root() {
         "recreated root write did not wake the watcher"
     );
     assert!(recreated.source_watch.routes.contains_key(&route));
-    let counters = watcher.lock_counters();
+    let counters = watcher.runtime.snapshot();
     assert_eq!(counters.forced_rearms, 1);
     assert!(counters.registration_attempts > attempts_before);
 }
@@ -546,15 +495,13 @@ fn forced_rearm_emits_only_the_route_mutated_during_registration_overlap() {
 
 #[test]
 fn rescan_and_backend_errors_require_catalog_reconciliation_and_rearm() {
-    use notify::event::Flag;
-
     let data_root = Path::new("/tmp/ctx-data");
     let daemon_root = data_root.join("daemon");
     let authority = RwLock::new(watch_authority(data_root, watch_catalog([])));
     let counters = Mutex::new(WatchCounters::default());
-    let rescan = Event::new(EventKind::Access(AccessKind::Read))
-        .add_path(data_root.join("catalogs/explicit-sources/catalog.lock"))
-        .set_flag(Flag::Rescan);
+    let rescan = NativeWatchEvent::rescan(vec![
+        data_root.join("catalogs/explicit-sources/catalog.lock")
+    ]);
 
     let rescan_batch = record_watch_event(
         &authority,
@@ -572,7 +519,7 @@ fn rescan_and_backend_errors_require_catalog_reconciliation_and_rearm() {
         &counters,
         data_root,
         &daemon_root,
-        Err(notify::Error::generic("backend watch loss")),
+        Err(NativeWatchError),
         EventWatermark::new(3, 2),
     );
     assert_eq!(error_batch.reconcile, Some(EventWatermark::new(3, 2)));
@@ -619,7 +566,7 @@ fn missing_target_uses_exact_nearest_ancestor_without_sibling_matching() {
         missing.clone(),
         "codex_history_jsonl",
     )]);
-    let roots = watch_roots(catalog.target_paths());
+    let roots = ctx_daemon_runtime::watch_roots(catalog.target_paths());
     assert_eq!(roots, BTreeMap::from([(temp.path().to_path_buf(), false)]));
     assert_eq!(
         catalog
@@ -651,11 +598,7 @@ fn core_owned_writes_do_not_retrigger_provider_refresh_or_increment_work_counter
         )]),
     ));
     let counters = Mutex::new(WatchCounters::default());
-    let event = |path: &Path| {
-        let mut event = Event::new(notify::EventKind::Any);
-        event.paths.push(path.to_path_buf());
-        event
-    };
+    let event = |path: &Path| NativeWatchEvent::requiring_rearm(vec![path.to_path_buf()]);
 
     assert!(record_watch_event(
         &targets,
@@ -675,8 +618,10 @@ fn core_owned_writes_do_not_retrigger_provider_refresh_or_increment_work_counter
         EventWatermark::new(1, 2),
     )
     .is_empty());
-    let mut access = event(&data_root.join("config.toml"));
-    access.kind = EventKind::Access(AccessKind::Read);
+    let access = NativeWatchEvent::ignored(
+        vec![data_root.join("config.toml")],
+        NativeWatchIgnore::Access,
+    );
     assert!(record_watch_event(
         &targets,
         &counters,
@@ -687,8 +632,10 @@ fn core_owned_writes_do_not_retrigger_provider_refresh_or_increment_work_counter
     )
     .is_empty());
     assert_eq!(counters.lock().unwrap().raw_events, 0);
-    let mut access_time = event(&data_root.join("config.toml"));
-    access_time.kind = EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime));
+    let access_time = NativeWatchEvent::ignored(
+        vec![data_root.join("config.toml")],
+        NativeWatchIgnore::AccessTime,
+    );
     assert!(record_watch_event(
         &targets,
         &counters,
@@ -713,8 +660,7 @@ fn core_owned_writes_do_not_retrigger_provider_refresh_or_increment_work_counter
         EventWatermark::new(1, 5),
     )
     .is_empty());
-    let mut close_write = event(&data_root.join("config.toml"));
-    close_write.kind = EventKind::Access(AccessKind::Close(AccessMode::Write));
+    let close_write = NativeWatchEvent::ordinary(vec![data_root.join("config.toml")]);
     assert!(!record_watch_event(
         &targets,
         &counters,
@@ -738,8 +684,6 @@ fn core_owned_writes_do_not_retrigger_provider_refresh_or_increment_work_counter
 
 #[test]
 fn authoritative_changes_and_dynamic_discovery_remain_relevant() {
-    use notify::event::{CreateKind, DataChange, RenameMode};
-
     let data_root = Path::new("/tmp/ctx-data");
     let daemon_root = data_root.join("daemon");
     let provider_file = PathBuf::from("/tmp/provider/session.jsonl");
@@ -764,11 +708,7 @@ fn authoritative_changes_and_dynamic_discovery_remain_relevant() {
     ));
     let counters = Mutex::new(WatchCounters::default());
     let sequence = std::cell::Cell::new(0_u64);
-    let relevant = |kind, paths: &[&Path]| {
-        let mut event = Event::new(kind);
-        event
-            .paths
-            .extend(paths.iter().map(|path| path.to_path_buf()));
+    let relevant = |event: NativeWatchEvent| {
         sequence.set(sequence.get().saturating_add(1));
         !record_watch_event(
             &targets,
@@ -781,36 +721,31 @@ fn authoritative_changes_and_dynamic_discovery_remain_relevant() {
         .is_empty()
     };
 
-    assert!(relevant(
-        EventKind::Access(AccessKind::Close(AccessMode::Write)),
-        &[&data_root.join("config.toml")],
-    ));
-    assert!(!relevant(
-        EventKind::Create(CreateKind::File),
-        &[&catalog_root.join("catalog-00000000000000000002.json")],
-    ));
-    assert!(relevant(
-        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
-        &[&provider_file],
-    ));
-    assert!(relevant(
-        EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
-        &[Path::new("/tmp/provider/session.tmp"), &provider_file],
-    ));
-    assert!(relevant(
-        EventKind::Create(CreateKind::Folder),
-        &[Path::new("/tmp/home/.codex")],
-    ));
-    assert!(relevant(
-        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
-        &[Path::new("/tmp/provider/history.sqlite-wal")],
-    ));
+    assert!(relevant(NativeWatchEvent::ordinary(vec![
+        data_root.join("config.toml")
+    ]),));
+    assert!(!relevant(NativeWatchEvent::ordinary(vec![
+        catalog_root.join("catalog-00000000000000000002.json"),
+    ]),));
+    assert!(relevant(NativeWatchEvent::ordinary(vec![
+        provider_file.clone()
+    ]),));
+    assert!(relevant(NativeWatchEvent::requiring_rearm(vec![
+        PathBuf::from("/tmp/provider/session.tmp"),
+        provider_file.clone(),
+    ]),));
+    assert!(relevant(NativeWatchEvent::requiring_rearm(vec![
+        PathBuf::from("/tmp/home/.codex")
+    ]),));
+    assert!(relevant(NativeWatchEvent::ordinary(vec![PathBuf::from(
+        "/tmp/provider/history.sqlite-wal",
+    )]),));
     assert!(!record_watch_event(
         &targets,
         &counters,
         data_root,
         &daemon_root,
-        Err(notify::Error::generic("overflow")),
+        Err(NativeWatchError),
         EventWatermark::new(1, 99),
     )
     .is_empty());

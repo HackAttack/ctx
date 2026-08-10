@@ -6,6 +6,7 @@ pub(super) fn install_native_supervisor(
     _executable: &Path,
     _environment: &SupervisorEnvironmentSnapshot,
     _manager_environment: &SupervisorManagerEnvironment,
+    _spec: &SupervisorSpec,
 ) -> Result<PathBuf> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -14,6 +15,7 @@ pub(super) fn install_native_supervisor(
 pub(super) fn disable_native_supervisor(
     _data_root: &Path,
     _manager_environment: &SupervisorManagerEnvironment,
+    _identity: &SupervisorIdentity,
 ) -> Result<Option<PathBuf>> {
     Ok(None)
 }
@@ -24,6 +26,7 @@ pub(super) fn verify_native_supervisor_registration(
     _executable: &Path,
     _daemon_environment: &SupervisorEnvironmentSnapshot,
     _manager_environment: &SupervisorManagerEnvironment,
+    _spec: &SupervisorSpec,
 ) -> Result<()> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -34,6 +37,7 @@ pub(super) fn verify_native_supervisor(
     _executable: &Path,
     _daemon_environment: &SupervisorEnvironmentSnapshot,
     _manager_environment: &SupervisorManagerEnvironment,
+    _spec: &SupervisorSpec,
 ) -> Result<u32> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -42,6 +46,7 @@ pub(super) fn verify_native_supervisor(
 pub(super) fn start_native_supervisor(
     _data_root: &Path,
     _manager_environment: &SupervisorManagerEnvironment,
+    _identity: &SupervisorIdentity,
 ) -> Result<()> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -57,6 +62,7 @@ pub(super) fn install_native_supervisor(
     _executable: &Path,
     _environment: &SupervisorEnvironmentSnapshot,
     _manager_environment: &SupervisorManagerEnvironment,
+    _spec: &SupervisorSpec,
 ) -> Result<PathBuf> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -70,6 +76,7 @@ pub(super) fn install_native_supervisor(
 pub(super) fn disable_native_supervisor(
     _data_root: &Path,
     _manager_environment: &SupervisorManagerEnvironment,
+    _identity: &SupervisorIdentity,
 ) -> Result<Option<PathBuf>> {
     Ok(None)
 }
@@ -85,6 +92,7 @@ pub(super) fn verify_native_supervisor_registration(
     _executable: &Path,
     _daemon_environment: &SupervisorEnvironmentSnapshot,
     _manager_environment: &SupervisorManagerEnvironment,
+    _spec: &SupervisorSpec,
 ) -> Result<()> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -100,6 +108,7 @@ pub(super) fn verify_native_supervisor(
     _executable: &Path,
     _daemon_environment: &SupervisorEnvironmentSnapshot,
     _manager_environment: &SupervisorManagerEnvironment,
+    _spec: &SupervisorSpec,
 ) -> Result<u32> {
     Err(anyhow!(native_supervisor_limitation()))
 }
@@ -113,6 +122,7 @@ pub(super) fn verify_native_supervisor(
 pub(super) fn start_native_supervisor(
     _data_root: &Path,
     _manager_environment: &SupervisorManagerEnvironment,
+    _identity: &SupervisorIdentity,
 ) -> Result<()> {
     Err(anyhow!(native_supervisor_limitation()))
 }

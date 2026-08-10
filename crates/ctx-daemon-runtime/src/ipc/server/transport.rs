@@ -29,14 +29,14 @@ use super::{
 /// the parsed request move-only makes the single parse an explicit boundary
 /// invariant. Its private field and constructor prevent product dispatch from
 /// forging an authenticated request.
-pub(in crate::semantic) struct AuthenticatedRequest(Value);
+pub struct AuthenticatedRequest(Value);
 
 impl AuthenticatedRequest {
     fn from_authenticated_value(value: Value) -> Self {
         Self(value)
     }
 
-    pub(in crate::semantic) fn into_value(self) -> Value {
+    pub fn into_value(self) -> Value {
         self.0
     }
 }
@@ -87,7 +87,7 @@ impl WindowsServerIoDeadline {
     }
 }
 
-pub(in crate::semantic) fn handle_authenticated_daemon_stream<
+pub fn handle_authenticated_daemon_stream<
     H: AuthenticatedRequestHandler + ?Sized,
     S: std::io::Write,
 >(
@@ -131,7 +131,7 @@ fn serialize_handler_response(response: Result<Value>) -> Result<String> {
     }
 }
 
-pub(in crate::semantic) fn read_bounded_daemon_request<S: std::io::Read>(
+pub fn read_bounded_daemon_request<S: std::io::Read>(
     stream: &mut S,
     max_bytes: usize,
 ) -> Result<String> {
@@ -222,10 +222,10 @@ impl Drop for DaemonServiceThreadExit {
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) const DAEMON_QUERY_SOCKET_PATH_SAFE_BYTES: usize = 90;
+pub const DAEMON_QUERY_SOCKET_PATH_SAFE_BYTES: usize = 90;
 
 #[cfg(unix)]
-pub(in crate::semantic) fn bind_daemon_service_listener(
+pub fn bind_daemon_service_listener(
     preferred: &Path,
 ) -> Result<(UnixListener, PathBuf, Option<PathBuf>)> {
     if preferred.as_os_str().as_bytes().len() <= DAEMON_QUERY_SOCKET_PATH_SAFE_BYTES {
@@ -287,9 +287,7 @@ pub(in crate::semantic) fn bind_daemon_service_listener(
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
-    H: AuthenticatedRequestHandler,
->(
+pub fn start_ipc_service_with_request_timeout<H: AuthenticatedRequestHandler>(
     spec: IpcServiceSpec,
     endpoint_store: Arc<dyn IpcEndpointStore>,
     handler: Arc<H>,
@@ -434,7 +432,7 @@ fn wait_for_unix_listener_or_shutdown(
 }
 
 #[cfg(unix)]
-pub(in crate::semantic) fn configure_daemon_query_stream_unix(
+pub fn configure_daemon_query_stream_unix(
     stream: &UnixStream,
     write_timeout: StdDuration,
 ) -> std::io::Result<()> {
@@ -443,9 +441,7 @@ pub(in crate::semantic) fn configure_daemon_query_stream_unix(
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
-    H: AuthenticatedRequestHandler,
->(
+pub fn start_ipc_service_with_request_timeout<H: AuthenticatedRequestHandler>(
     spec: IpcServiceSpec,
     endpoint_store: Arc<dyn IpcEndpointStore>,
     handler: Arc<H>,
@@ -533,8 +529,8 @@ pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) struct WindowsDaemonQueryPipe {
-    pub(in crate::semantic) handle: windows_sys::Win32::Foundation::HANDLE,
+pub struct WindowsDaemonQueryPipe {
+    pub handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
 #[cfg(windows)]
@@ -554,14 +550,14 @@ impl Drop for WindowsDaemonQueryPipe {
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) struct WindowsDaemonQueryRequestReader<'a> {
+pub struct WindowsDaemonQueryRequestReader<'a> {
     pipe: &'a WindowsDaemonQueryPipe,
     deadline: WindowsServerIoDeadline,
 }
 
 #[cfg(windows)]
 impl WindowsDaemonQueryRequestReader<'_> {
-    pub(in crate::semantic) fn new(
+    pub fn new(
         pipe: &WindowsDaemonQueryPipe,
         timeout: StdDuration,
     ) -> WindowsDaemonQueryRequestReader<'_> {
@@ -640,7 +636,7 @@ impl std::io::Read for WindowsDaemonQueryRequestReader<'_> {
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn read_daemon_query_request_windows(
+pub fn read_daemon_query_request_windows(
     pipe: &WindowsDaemonQueryPipe,
     max_bytes: usize,
     timeout: StdDuration,
@@ -685,7 +681,7 @@ impl std::io::Write for WindowsDaemonQueryPipe {
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn create_windows_daemon_query_pipe(
+pub fn create_windows_daemon_query_pipe(
     pipe_name: &str,
     first_instance: bool,
 ) -> Result<WindowsDaemonQueryPipe> {
@@ -736,9 +732,7 @@ pub(in crate::semantic) fn create_windows_daemon_query_pipe(
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn connect_windows_daemon_query_pipe(
-    stream: &WindowsDaemonQueryPipe,
-) -> Result<()> {
+pub fn connect_windows_daemon_query_pipe(stream: &WindowsDaemonQueryPipe) -> Result<()> {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_PIPE_CONNECTED};
     use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
 
@@ -754,7 +748,7 @@ pub(in crate::semantic) fn connect_windows_daemon_query_pipe(
 }
 
 #[cfg(windows)]
-pub(in crate::semantic) fn wake_windows_daemon_query_pipe(pipe_name: &str) {
+pub fn wake_windows_daemon_query_pipe(pipe_name: &str) {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, OPEN_EXISTING,
@@ -780,9 +774,7 @@ pub(in crate::semantic) fn wake_windows_daemon_query_pipe(pipe_name: &str) {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(in crate::semantic) fn start_ipc_service_with_request_timeout<
-    H: AuthenticatedRequestHandler,
->(
+pub fn start_ipc_service_with_request_timeout<H: AuthenticatedRequestHandler>(
     _spec: IpcServiceSpec,
     _endpoint_store: Arc<dyn IpcEndpointStore>,
     _handler: Arc<H>,
