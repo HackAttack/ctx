@@ -13,6 +13,7 @@ use super::super::{
 };
 
 #[cfg(windows)]
+#[allow(unused_imports)]
 pub use ctx_daemon_runtime::{
     daemon_query_pipe_name, open_windows_daemon_query_pipe, read_windows_daemon_query_pipe,
     windows_named_pipe_name_is_local, windows_wide_null, write_all_windows_daemon_query_pipe,

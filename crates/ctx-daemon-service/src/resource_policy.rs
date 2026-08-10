@@ -18,6 +18,10 @@ pub(super) enum SemanticBackgroundOperation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", test)),
+    allow(dead_code)
+)]
 pub(super) enum SemanticResourceDeferralReason {
     MemoryPressure,
     DiskPressure,
@@ -131,6 +135,7 @@ fn semantic_available_space(path: &Path) -> Option<u64> {
     fs2::available_space(candidate).ok()
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn semantic_energy_deferral_reason_for(
     external_power: Option<bool>,
     energy_saver: Option<bool>,

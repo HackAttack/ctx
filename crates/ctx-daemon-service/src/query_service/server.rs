@@ -7,6 +7,7 @@ pub(crate) use ctx_daemon_runtime::{
     bind_daemon_service_listener, configure_daemon_query_stream_unix,
 };
 #[cfg(windows)]
+#[allow(unused_imports)]
 pub(crate) use ctx_daemon_runtime::{
     connect_windows_daemon_query_pipe, create_windows_daemon_query_pipe,
     read_daemon_query_request_windows, wake_windows_daemon_query_pipe, WindowsDaemonQueryPipe,

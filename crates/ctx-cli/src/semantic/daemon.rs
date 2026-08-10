@@ -33,11 +33,14 @@ use super::{
     paths_status::{daemon_lock_is_active, daemon_report, daemon_report_with_disabled_status},
     query_service::{
         daemon_service_endpoint_path, daemon_source_refresh_request,
-        read_daemon_service_endpoint_identity, DaemonIpcService, DaemonQueryEndpoint,
+        read_daemon_service_endpoint_identity, DaemonIpcService,
     },
     runtime_limits::DAEMON_BACKGROUND_CHILD_ENV,
 };
 use crate::ui::Ui;
+
+#[cfg(unix)]
+use super::query_service::DaemonQueryEndpoint;
 
 mod control;
 #[cfg(test)]
