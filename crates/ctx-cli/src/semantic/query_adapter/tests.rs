@@ -134,6 +134,14 @@ fn embedding() -> Vec<f32> {
     embedding
 }
 
+#[test]
+fn request_adapter_borrows_the_exact_data_root() {
+    let data_root = std::path::PathBuf::from("borrowed-query-root");
+    let adapter = SemanticQueryAdapter::new(&data_root);
+
+    assert!(std::ptr::eq(adapter.data_root, data_root.as_path()));
+}
+
 fn ready_adapter<'a>(
     index: &'a VerifiedIndex,
     data_root: &'a Path,

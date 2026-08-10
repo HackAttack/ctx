@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration as StdDuration,
-};
+use std::{path::Path, time::Duration as StdDuration};
 
 use anyhow::{anyhow, Result};
 use ctx_history_index::{EventSearchCandidate, EventSearchFilters, VerifiedIndex};
@@ -19,19 +16,22 @@ use crate::{
 
 use super::{query_service::daemon_query_request, semantic_query_service_supported};
 
-#[derive(Debug, Clone)]
-pub(crate) struct SemanticQueryAdapter {
-    data_root: PathBuf,
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SemanticQueryAdapter<'data_root> {
+    data_root: &'data_root Path,
 }
 
-impl SemanticQueryAdapter {
-    pub(crate) fn new(data_root: PathBuf) -> Self {
+impl<'data_root> SemanticQueryAdapter<'data_root> {
+    pub(crate) fn new(data_root: &'data_root Path) -> Self {
         Self { data_root }
     }
 }
 
-impl HistorySemanticPort for SemanticQueryAdapter {
-    type Query<'a> = SemanticQuerySession<'a>;
+impl HistorySemanticPort for SemanticQueryAdapter<'_> {
+    type Query<'a>
+        = SemanticQuerySession<'a>
+    where
+        Self: 'a;
 
     fn capability(&self) -> SemanticCapability {
         if semantic_query_service_supported() {
@@ -45,7 +45,7 @@ impl HistorySemanticPort for SemanticQueryAdapter {
         &'a self,
         index: &'a VerifiedIndex,
     ) -> std::result::Result<Self::Query<'a>, HistorySemanticError> {
-        SemanticQuerySession::begin(index, &self.data_root).map_err(HistorySemanticError::from)
+        SemanticQuerySession::begin(index, self.data_root).map_err(HistorySemanticError::from)
     }
 }
 

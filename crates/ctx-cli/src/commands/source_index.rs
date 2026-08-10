@@ -11,8 +11,8 @@ pub(crate) use locate::run_locate;
 #[cfg(test)]
 use search::mcp_search;
 pub(crate) use search::{
-    mcp_search_with_compact, run_search, validate_explicit_semantic_scope, McpSearchError,
-    SourceSearchRequest,
+    mcp_search_with_compact, normalize_mcp_search_request, run_search,
+    validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
 };
 pub(crate) use search::{
     HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,

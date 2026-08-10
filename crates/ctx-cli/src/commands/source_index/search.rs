@@ -78,8 +78,6 @@ pub(super) const MISSING_INDEX_ERROR: &str =
     "the Core index does not exist; retry with daemon refresh enabled";
 const QUEUED_WITHOUT_GENERATION_ERROR: &str =
     "daemon source refresh was queued but no published generation exists; retry with --refresh wait";
-const SOURCE_UNAVAILABLE_ERROR: &str =
-    "source_unavailable: active verified Core generation is missing";
 
 #[derive(Debug)]
 pub(super) enum SourceSearchFailure {
@@ -116,7 +114,9 @@ impl SourceSearchFailure {
     pub(super) fn into_anyhow(self) -> anyhow::Error {
         match self {
             Self::Semantic(error) => semantic_error_into_anyhow(error),
-            Self::SourceUnavailable => anyhow::anyhow!(SOURCE_UNAVAILABLE_ERROR),
+            Self::SourceUnavailable => {
+                anyhow::Error::new(ctx_history_refresh::MissingActiveGeneration)
+            }
             Self::GenerationChanged => {
                 anyhow::Error::new(ctx_history_index::IndexError::ConcurrentGenerationChange)
             }
@@ -162,7 +162,10 @@ impl std::fmt::Display for SourceSearchFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Semantic(error) => std::fmt::Display::fmt(error, formatter),
-            Self::SourceUnavailable => formatter.write_str(SOURCE_UNAVAILABLE_ERROR),
+            Self::SourceUnavailable => std::fmt::Display::fmt(
+                &ctx_history_refresh::MissingActiveGeneration,
+                formatter,
+            ),
             Self::GenerationChanged => formatter.write_str(
                 "History changed while ctx was opening the searchable generation. Retry the same request.",
             ),
@@ -182,6 +185,10 @@ impl From<HistorySemanticError> for SourceSearchFailure {
 
 impl From<anyhow::Error> for SourceSearchFailure {
     fn from(error: anyhow::Error) -> Self {
+        let error = match error.downcast::<ctx_history_refresh::MissingActiveGeneration>() {
+            Ok(_) => return Self::SourceUnavailable,
+            Err(error) => error,
+        };
         let error = match error.downcast::<ctx_history_index::IndexError>() {
             Ok(error) => return Self::from(error),
             Err(error) => error,
@@ -307,7 +314,7 @@ pub(crate) fn run_search(
     ui: &mut Ui,
 ) -> Result<()> {
     let human_output = args.format != JsonOutputFormat::Json;
-    let semantic_port = crate::semantic::SemanticQueryAdapter::new(data_root.clone());
+    let semantic_port = crate::semantic::SemanticQueryAdapter::new(&data_root);
     let result = run_search_inner(
         args,
         data_root.clone(),
@@ -504,27 +511,38 @@ pub(crate) fn mcp_search(
     request: SourceSearchRequest,
     data_root: &Path,
 ) -> std::result::Result<(Value, SearchContextObservation), McpSearchError> {
-    mcp_search_with_compact(request, data_root).map(|(value, observation, _)| (value, observation))
+    let config = config::AppConfig::load(data_root)
+        .map_err(|error| SourceSearchFailure::from(error).into_mcp())?;
+    mcp_search_with_compact(request, data_root, &config)
+        .map(|(value, observation, _)| (value, observation))
 }
 
 pub(crate) fn mcp_search_with_compact(
-    request: SourceSearchRequest,
+    mut request: SourceSearchRequest,
     data_root: &Path,
+    config: &config::AppConfig,
 ) -> std::result::Result<(Value, SearchContextObservation, Value), McpSearchError> {
-    let semantic_port = crate::semantic::SemanticQueryAdapter::new(data_root.to_path_buf());
-    mcp_search_inner(request, data_root, &semantic_port).map_err(SourceSearchFailure::into_mcp)
+    normalize_mcp_search_request(&mut request)?;
+    let semantic_port = crate::semantic::SemanticQueryAdapter::new(data_root);
+    mcp_search_inner(request, data_root, config, &semantic_port)
+        .map_err(SourceSearchFailure::into_mcp)
+}
+
+pub(crate) fn normalize_mcp_search_request(
+    request: &mut SourceSearchRequest,
+) -> std::result::Result<(), McpSearchError> {
+    normalize_search_request(request).map_err(|error| SourceSearchFailure::from(error).into_mcp())
 }
 
 fn mcp_search_inner<P: HistorySemanticPort>(
     mut request: SourceSearchRequest,
     data_root: &Path,
+    config: &config::AppConfig,
     semantic_port: &P,
 ) -> SourceSearchResult<(Value, SearchContextObservation, Value)> {
-    normalize_search_request(&mut request)?;
-    let config = config::AppConfig::load(data_root)?;
     request.backend = Some(resolve_source_search_backend_with_port(
         &request,
-        &config,
+        config,
         semantic_port,
     )?);
     request.semantic_enabled = config.semantic_search_enabled();
@@ -630,17 +648,7 @@ where
             }
             return Err(SourceSearchFailure::from(error));
         }
-        Err(error) => {
-            let failure = SourceSearchFailure::from(error);
-            if mode == SourceBackedRefreshMode::Off
-                && matches!(&failure, SourceSearchFailure::Other(_))
-                && VerifiedIndex::active_generation_id(&index_root(data_root))
-                    .is_ok_and(|generation| generation.is_none())
-            {
-                return Err(SourceSearchFailure::SourceUnavailable);
-            }
-            return Err(failure);
-        }
+        Err(error) => return Err(SourceSearchFailure::from(error)),
     };
     if observation.mode != mode {
         return Err(anyhow!(
@@ -711,7 +719,7 @@ pub(super) fn search_existing_generation(
         semantic_weight,
         refresh_status,
         refresh_source_count,
-        &crate::semantic::SemanticQueryAdapter::new(data_root.to_path_buf()),
+        &crate::semantic::SemanticQueryAdapter::new(data_root),
     )
     .map_err(SourceSearchFailure::into_anyhow)
 }
@@ -796,7 +804,7 @@ pub(super) fn collect_search_hits_with_backend(
         data_root,
         semantic_weight,
         filters,
-        &crate::semantic::SemanticQueryAdapter::new(data_root.to_path_buf()),
+        &crate::semantic::SemanticQueryAdapter::new(data_root),
     )
     .map_err(SourceSearchFailure::into_anyhow)
 }

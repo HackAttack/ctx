@@ -903,6 +903,9 @@ fn active_generation_pin_fails_closed_when_core_state_is_missing() {
         Ok(_) => panic!("missing Core state must not fall back to a helper receipt"),
         Err(error) => error,
     };
+    assert!(error
+        .downcast_ref::<crate::MissingActiveGeneration>()
+        .is_some());
     assert!(format!("{error:#}").starts_with("source_unavailable:"));
 }
 

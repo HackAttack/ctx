@@ -282,7 +282,7 @@ pub(in crate::commands::source_index) fn resolve_source_search_backend(
     resolve_source_search_backend_with_port(
         request,
         config,
-        &crate::semantic::SemanticQueryAdapter::new(PathBuf::new()),
+        &crate::semantic::SemanticQueryAdapter::new(std::path::Path::new("")),
     )
     .map_err(super::semantic_error_into_anyhow)
 }
