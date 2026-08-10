@@ -383,12 +383,12 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.GateError, "offender entry is malformed"):
             gate.parse_policy(malformed, "candidate")
 
-    def test_checked_policy_is_minimal_and_has_four_honest_offenders(self) -> None:
+    def test_checked_policy_is_minimal_and_has_three_honest_offenders(self) -> None:
         value = json.loads((SCRIPT.parent / "check-rust-crate-size-policy-v1.json").read_text())
         entries = gate.parse_policy(value, "checked")
         self.assertEqual(
             list(entries),
-            ["ctx", "ctx-history-capture", "ctx-history-index", "ctx-history-refresh"],
+            ["ctx", "ctx-history-capture", "ctx-history-refresh"],
         )
         self.assertEqual(value["hard_limit"], 20_000)
         self.assertEqual(value["metric"], gate.METRIC)

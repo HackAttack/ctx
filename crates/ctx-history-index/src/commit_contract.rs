@@ -1,8 +1,7 @@
 use ctx_history_core::{CertifiedSource, CertifiedSourceDeletion};
 use std::sync::Arc;
 
-use crate::contracts::{GenerationManifest, IndexError, Result};
-use crate::VerifiedIndex;
+use crate::{GenerationManifest, IndexError, Result, VerifiedIndex};
 
 #[derive(Debug, Clone)]
 pub struct CommitReceipt {
@@ -15,22 +14,6 @@ pub struct CommitReceipt {
 }
 
 impl CommitReceipt {
-    pub(crate) fn from_manifest(opstamp: u64, manifest: GenerationManifest) -> Result<Self> {
-        Self::from_shared_manifest(opstamp, Arc::new(manifest))
-    }
-
-    pub(crate) fn from_shared_manifest(
-        opstamp: u64,
-        manifest: Arc<GenerationManifest>,
-    ) -> Result<Self> {
-        let generation_id = manifest.generation_id()?;
-        Ok(Self::from_verified_manifest(
-            opstamp,
-            generation_id,
-            manifest,
-        ))
-    }
-
     pub(crate) fn from_verified_manifest(
         opstamp: u64,
         generation_id: String,
@@ -51,6 +34,7 @@ impl CommitReceipt {
         &self.manifest
     }
 
+    #[cfg(test)]
     pub(crate) fn shared_manifest(&self) -> Arc<GenerationManifest> {
         Arc::clone(&self.manifest)
     }

@@ -94,8 +94,8 @@ fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
     let metadata = b"{not-domain-json:\xff\x00wrong-generation}".to_vec();
 
     crate::publication::reset_verification_activity();
-    crate::reader::reset_verified_index_reopen_count();
-    crate::reader::reset_verified_index_publication_construction_count();
+    ctx_history_index_query::reset_verified_index_reopen_count();
+    ctx_history_index_query::reset_verified_index_publication_construction_count();
     let published = writer
         .commit_with_complete_inventory_revalidation_and_publication_metadata(
             |target| {
@@ -135,14 +135,14 @@ fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
         Some(metadata.as_slice())
     );
     assert_eq!(crate::publication::verification_activity(), (1, 1));
-    assert_eq!(crate::reader::verified_index_reopen_count(), 0);
+    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
     assert_eq!(
-        crate::reader::verified_index_publication_construction_count(),
+        ctx_history_index_query::verified_index_publication_construction_count(),
         1
     );
     assert!(Arc::ptr_eq(
         &published.receipt().shared_manifest(),
-        &published.verified_index().manifest
+        published.verified_index().test_shared_manifest()
     ));
 
     let expected_payload = format!(
@@ -172,17 +172,17 @@ fn receipt_only_commit_does_not_construct_a_return_pin() {
     let source = source("publication-metadata-receipt-only.jsonl");
 
     crate::publication::reset_verification_activity();
-    crate::reader::reset_verified_index_reopen_count();
-    crate::reader::reset_verified_index_publication_construction_count();
+    ctx_history_index_query::reset_verified_index_reopen_count();
+    ctx_history_index_query::reset_verified_index_publication_construction_count();
     let receipt = staged_replacement(temp.path(), &source, 1, "receipt only")
         .commit(|_| true)
         .unwrap();
 
     assert!(!receipt.generation_id.is_empty());
     assert_eq!(crate::publication::verification_activity(), (1, 1));
-    assert_eq!(crate::reader::verified_index_reopen_count(), 0);
+    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
     assert_eq!(
-        crate::reader::verified_index_publication_construction_count(),
+        ctx_history_index_query::verified_index_publication_construction_count(),
         0
     );
 }
@@ -209,7 +209,7 @@ fn publication_metadata_accepts_exact_bound_and_rejects_one_over_before_commit()
     );
     let mut oversized_metas = published
         .verified_index()
-        .searcher
+        .test_searcher()
         .index()
         .load_metas()
         .unwrap();
@@ -269,8 +269,8 @@ fn exact_reuse_skips_factory_and_returns_old_metadata_as_reused() {
     let factory_called = Cell::new(false);
 
     crate::publication::reset_verification_activity();
-    crate::reader::reset_verified_index_reopen_count();
-    crate::reader::reset_verified_index_publication_construction_count();
+    ctx_history_index_query::reset_verified_index_reopen_count();
+    ctx_history_index_query::reset_verified_index_publication_construction_count();
     let reused = replay
         .commit_with_complete_inventory_revalidation_and_publication_metadata(
             |_| true,
@@ -300,9 +300,9 @@ fn exact_reuse_skips_factory_and_returns_old_metadata_as_reused() {
     assert_eq!(constructions.load(Ordering::SeqCst), 0);
     assert_eq!(crate::publication::verification_activity(), (0, 0));
     assert_eq!(crate::publication::hashed_artifact_bytes(), 0);
-    assert_eq!(crate::reader::verified_index_reopen_count(), 0);
+    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
     assert_eq!(
-        crate::reader::verified_index_publication_construction_count(),
+        ctx_history_index_query::verified_index_publication_construction_count(),
         1
     );
 }
@@ -704,7 +704,7 @@ fn noncanonical_payload_is_rejected_but_raw_metadata_is_not_interpreted() {
 
     let mut malformed_metas = published
         .verified_index()
-        .searcher
+        .test_searcher()
         .index()
         .load_metas()
         .unwrap();

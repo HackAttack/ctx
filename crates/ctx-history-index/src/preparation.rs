@@ -15,9 +15,9 @@ use ctx_history_core::{
 use tantivy::Searcher;
 
 use crate::{
-    index_document::IndexSourceFields, load_active_generation_pointer, prior_core_record, staging,
-    verify_physical_integrity, Fields, GenerationSlot, IndexDocument, IndexError, Result,
-    INDEX_GENERATIONS_DIRECTORY,
+    core_record_accumulator_leaf, core_record_leaf, load_active_generation_pointer,
+    prior_core_record, verify_physical_integrity, Fields, GenerationSlot, IndexDocument,
+    IndexError, IndexSourceFields, Result, INDEX_GENERATIONS_DIRECTORY,
 };
 
 #[cfg(test)]
@@ -174,9 +174,8 @@ impl PreparedCoreRecordDraft {
         #[cfg(test)]
         FINAL_ENCODINGS.with(|count| count.set(count.get() + 1));
         let event_id = self.record.event_id;
-        let record_leaf = staging::core_record_leaf(event_id, &encoded_core_record)?;
-        let record_accumulator_leaf =
-            staging::core_record_accumulator_leaf(event_id, &record_leaf)?;
+        let record_leaf = core_record_leaf(event_id, &encoded_core_record)?;
+        let record_accumulator_leaf = core_record_accumulator_leaf(event_id, &record_leaf)?;
         let document = IndexDocument::from_core(
             self.fields,
             self.record,

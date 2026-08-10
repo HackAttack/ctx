@@ -9,10 +9,19 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+test-support = [
+    "ctx-history-index-format/test-support",
+    "ctx-history-index-generation/test-support",
+    "ctx-history-index-query/test-support",
+]
+
 [dependencies]
 base64.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index-format = { path = "../ctx-history-index-format" }
 ctx-history-index-generation = { path = "../ctx-history-index-generation" }
+ctx-history-index-query = { path = "../ctx-history-index-query" }
 ctx-semantic-model = { path = "../ctx-semantic-model" }
 memmap2.workspace = true
 serde.workspace = true
@@ -24,5 +33,8 @@ tempfile.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+crc32fast = "1.5"
+ctx-history-index-format = { path = "../ctx-history-index-format", features = ["test-support"] }
 ctx-history-index-generation = { path = "../ctx-history-index-generation", features = ["test-support"] }
+ctx-history-index-query = { path = "../ctx-history-index-query", features = ["test-support"] }
 libc.workspace = true

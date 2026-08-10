@@ -665,6 +665,8 @@ fi
     "${repo_root}/contracts/release-candidate-manifest-v1.schema.json" \
   --workspace-manifest "${repo_root}/Cargo.toml" \
   --index-manifest "${repo_root}/crates/ctx-history-index/Cargo.toml" \
+  --index-format-manifest "${repo_root}/crates/ctx-history-index-format/Cargo.toml" \
+  --index-query-manifest "${repo_root}/crates/ctx-history-index-query/Cargo.toml" \
   --output "${staged_sbom}" \
   --notices-output "${staged_notices}" \
   --size-report-output "${staged_size_report}" \
@@ -707,6 +709,8 @@ fi
     "${repo_root}/contracts/release-candidate-manifest-v1.schema.json" \
   --workspace-manifest "${repo_root}/Cargo.toml" \
   --index-manifest "${repo_root}/crates/ctx-history-index/Cargo.toml" \
+  --index-format-manifest "${repo_root}/crates/ctx-history-index-format/Cargo.toml" \
+  --index-query-manifest "${repo_root}/crates/ctx-history-index-query/Cargo.toml" \
   --sbom "${staged_sbom}" \
   --notices "${staged_notices}" \
   --size-report "${staged_size_report}" \

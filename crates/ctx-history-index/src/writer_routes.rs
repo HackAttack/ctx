@@ -20,7 +20,11 @@ impl GenerationWriter {
                     route.route_identity().as_str()
                 )));
             }
-            if let Some(base) = &self.base_manifest {
+            if let Some(base) = self
+                .base_publication
+                .as_ref()
+                .map(PinnedPublication::manifest)
+            {
                 canonical.extend(
                     base.source_routes()
                         .iter()
@@ -96,8 +100,9 @@ impl GenerationWriter {
             )));
         }
         let base_routes = self
-            .base_manifest
+            .base_publication
             .as_ref()
+            .map(PinnedPublication::manifest)
             .map(|manifest| {
                 manifest
                     .source_routes()
@@ -349,11 +354,15 @@ impl GenerationWriter {
                 retired_route.as_str()
             )));
         }
-        let base = self.base_manifest.as_ref().ok_or_else(|| {
-            IndexError::InvalidSourceRoutePlan(
-                "route retirement requires a locked base generation".to_owned(),
-            )
-        })?;
+        let base = self
+            .base_publication
+            .as_ref()
+            .map(PinnedPublication::manifest)
+            .ok_or_else(|| {
+                IndexError::InvalidSourceRoutePlan(
+                    "route retirement requires a locked base generation".to_owned(),
+                )
+            })?;
         let retired = base.source_route(retired_route).ok_or_else(|| {
             IndexError::InvalidSourceRoutePlan(format!(
                 "retired route {} is absent from the locked base",
@@ -391,8 +400,9 @@ impl GenerationWriter {
             ));
         }
         let retained = self
-            .base_manifest
+            .base_publication
             .as_ref()
+            .map(PinnedPublication::manifest)
             .is_some_and(|manifest| manifest.source_route(route_identity).is_some());
         let plan = self.source_route_plan.as_mut().ok_or_else(|| {
             IndexError::InvalidSourceRoutePlan(
@@ -449,14 +459,18 @@ impl GenerationWriter {
         let Some(plan) = &self.source_route_plan else {
             return Ok(());
         };
-        let base_owner = self.base_manifest.as_ref().and_then(|base| {
-            base.source_routes().iter().find(|route| {
-                route.sources().iter().any(|candidate| {
-                    candidate.exact_descriptor_eq(source)
-                        || candidate.is_same_lineage_descriptor_replacement(source)
+        let base_owner = self
+            .base_publication
+            .as_ref()
+            .map(PinnedPublication::manifest)
+            .and_then(|base| {
+                base.source_routes().iter().find(|route| {
+                    route.sources().iter().any(|candidate| {
+                        candidate.exact_descriptor_eq(source)
+                            || candidate.is_same_lineage_descriptor_replacement(source)
+                    })
                 })
-            })
-        });
+            });
         let owner_authorized_for_active = base_owner.is_some_and(|route| {
             self.active_source_route_stage
                 .as_ref()
@@ -505,15 +519,18 @@ impl GenerationWriter {
         let Some(plan) = &self.source_route_plan else {
             return false;
         };
-        self.base_manifest.as_ref().is_some_and(|base| {
-            base.source_routes().iter().any(|route| {
-                plan.carried_from_base.contains(route.route_identity())
-                    && route
-                        .sources()
-                        .iter()
-                        .any(|candidate| candidate.exact_descriptor_eq(source))
+        self.base_publication
+            .as_ref()
+            .map(PinnedPublication::manifest)
+            .is_some_and(|base| {
+                base.source_routes().iter().any(|route| {
+                    plan.carried_from_base.contains(route.route_identity())
+                        && route
+                            .sources()
+                            .iter()
+                            .any(|candidate| candidate.exact_descriptor_eq(source))
+                })
             })
-        })
     }
 }
 

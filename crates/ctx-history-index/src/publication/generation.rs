@@ -2,7 +2,8 @@ use std::path::Path;
 
 use tantivy::Index;
 
-use crate::{analyzer::register_body_analyzer, lexical_schema, Result};
+use crate::{lexical_schema, Result};
+use ctx_history_index_format::register_body_analyzer;
 
 pub(crate) use ctx_history_index_generation::{
     lexical_index_settings, slot_path, ActiveGenerationPointer, GenerationSlot,

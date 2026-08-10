@@ -10,6 +10,7 @@ exports_files([
     "check-client-observability-boundary.sh",
     "check-cli-build-cfg.sh",
     "check-daemon-runtime-dependency-boundary.sh",
+    "check-history-capture-build-cfg.sh",
     "check-pro-access-build-cfg.sh",
     "check-pro-access-dependency-boundary.sh",
     "check-semantic-index-dependency-boundary.sh",

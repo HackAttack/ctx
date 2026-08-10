@@ -44,7 +44,9 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-client-observability",
     "ctx-daemon-runtime",
     "ctx-history-core",
+    "ctx-history-index-format",
     "ctx-history-index",
+    "ctx-history-index-query",
     "ctx-semantic-index",
 }
 NOTICE_BASENAMES = (
@@ -493,14 +495,17 @@ def package_metadata(
 
 def assert_tantivy_contract(
     workspace_manifest_bytes: bytes,
-    index_manifest_bytes: bytes,
+    index_manifest_bytes: dict[str, bytes],
     packages: list[dict[str, Any]],
     selected: set[Identity],
     configured_features: dict[str, set[str]],
 ) -> Identity:
     try:
         workspace_manifest = tomllib.loads(workspace_manifest_bytes.decode())
-        index_manifest = tomllib.loads(index_manifest_bytes.decode())
+        index_manifests = {
+            name: tomllib.loads(payload.decode())
+            for name, payload in index_manifest_bytes.items()
+        }
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError("Tantivy release package manifests are malformed") from error
     declaration = workspace_manifest.get("workspace", {}).get(
@@ -518,11 +523,12 @@ def assert_tantivy_contract(
             "workspace Tantivy must be exactly 0.26.1 with defaults off and "
             "mmap/lz4/columnar-zstd features"
         )
-    index_tantivy = index_manifest.get("dependencies", {}).get("tantivy")
-    if index_tantivy != {"workspace": True}:
-        raise ValueError(
-            "ctx-history-index must consume the exact workspace Tantivy declaration"
-        )
+    for name, manifest in index_manifests.items():
+        index_tantivy = manifest.get("dependencies", {}).get("tantivy")
+        if index_tantivy != {"workspace": True}:
+            raise ValueError(
+                f"{name} must consume the exact workspace Tantivy declaration"
+            )
     candidates = [
         identity
         for identity in selected

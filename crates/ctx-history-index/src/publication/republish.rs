@@ -3,10 +3,10 @@ use std::{path::Path, sync::Arc};
 use tantivy::{indexer::NoMergePolicy, Index, ReloadPolicy};
 
 use crate::{
-    analyzer::register_body_analyzer, fields_from_schema, validate_schema,
-    writer_support::construct_index_writer_with_retry, GenerationManifest, IndexError, Result,
-    WriterOptions,
+    fields_from_schema, validate_schema, writer_support::construct_index_writer_with_retry,
+    GenerationManifest, IndexError, Result, WriterOptions,
 };
+use ctx_history_index_format::register_body_analyzer;
 use ctx_history_index_generation::DurableMmapDirectory;
 
 use super::{
@@ -111,7 +111,7 @@ fn republish_current(
     fields_from_schema(&current_index.schema())?;
     let current_metas = current_index.load_metas()?;
     let current_publication = load_publication_for_metas(root, &current_metas)?;
-    if current_publication.generation_id != pointer.active().generation_id() {
+    if current_publication.generation_id() != pointer.active().generation_id() {
         return Err(IndexError::WriterInvariant(
             "qualification republish requires a current Core generation",
         ));
@@ -123,11 +123,13 @@ fn republish_current(
     let current_searcher = current_reader.searcher();
     verify_complete_searcher(
         &current_searcher,
-        &current_publication.manifest,
+        current_publication.manifest(),
         &slot_path(root, pointer.active()),
         Some(pointer),
         pointer.active().physical_integrity_digest(),
     )?;
+    let (current_generation_id, current_manifest, current_publication_metadata) =
+        current_publication.into_parts();
 
     republish_checkpoint(RepublishStage::BeforeCandidateCreation, None)?;
     let candidate = create_authenticated_republish_candidate(root, pointer, &current_index)?;
@@ -144,9 +146,9 @@ fn republish_current(
         &candidate_path,
         &candidate_directory_name,
         &current_metas,
-        replacement_publication_metadata.or(current_publication.metadata),
-        current_publication.manifest,
-        current_publication.generation_id,
+        replacement_publication_metadata.or(current_publication_metadata),
+        current_manifest,
+        current_generation_id,
     );
     if republish.is_err()
         && load_active_generation_pointer(root).ok().flatten().as_ref() == Some(pointer)
@@ -318,9 +320,9 @@ fn verify_candidate(
         return Err(IndexError::ConcurrentGenerationChange);
     }
     let publication = load_publication_for_metas(root, &metas)?;
-    if publication.generation_id != expected_generation_id
-        || publication.metadata.as_deref() != expected_publication_metadata
-        || serde_json::to_vec(&publication.manifest)? != serde_json::to_vec(expected_manifest)?
+    if publication.generation_id() != expected_generation_id
+        || publication.metadata().map(AsRef::as_ref) != expected_publication_metadata
+        || serde_json::to_vec(publication.manifest())? != serde_json::to_vec(expected_manifest)?
     {
         return Err(IndexError::ConcurrentGenerationChange);
     }

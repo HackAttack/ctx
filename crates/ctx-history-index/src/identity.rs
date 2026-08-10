@@ -5,6 +5,7 @@ use tantivy::{schema::IndexRecordOption, Searcher, Term};
 use uuid::Uuid;
 
 use crate::{hex, Fields, IndexError, Result};
+use ctx_history_index_format::stored_verification_record;
 
 pub(crate) fn prior_core_record(
     searcher: &Searcher,
@@ -28,7 +29,7 @@ pub(crate) fn prior_core_record(
     let Some((_, address)) = hits.into_iter().next() else {
         return Ok(None);
     };
-    let record = crate::query::stored_verification_record(searcher, address, fields)?;
+    let record = stored_verification_record(searcher, address, fields)?;
     if record.core_record.event_id != identity {
         return Err(IndexError::InvalidStoredDocumentField("core_record"));
     }
@@ -40,14 +41,6 @@ pub(crate) fn prior_core_record(
         return Ok(None);
     }
     Ok(Some(record.core_record))
-}
-
-pub(crate) fn source_token(source: &SourceKey) -> String {
-    hex(&source.identity().digest())
-}
-
-pub(crate) fn source_sort_key(source: &SourceKey) -> [u8; 32] {
-    source.identity().digest()
 }
 
 pub(crate) fn register_compact_identity(

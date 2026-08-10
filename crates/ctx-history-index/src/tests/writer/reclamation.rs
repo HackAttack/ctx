@@ -235,14 +235,15 @@ fn post_publication_mutation_fails_exact_noop_then_forces_fresh_rebuild() {
     let initial_receipt = initial.commit(|_| true).unwrap();
     let original_generation_path = active_generation_path(temp.path());
 
-    // An omissive managed-file receipt must not hide corruption in an active
-    // segment component referenced by meta.json.
-    omit_managed_and_corrupt_body_projection(&original_generation_path);
     let mut noop = GenerationWriter::open(temp.path(), WriterOptions::default())
         .unwrap()
         .into_writer()
         .unwrap();
     assert!(noop.base_manifest().is_some());
+
+    // An omissive managed-file receipt must not hide corruption in an active
+    // segment component referenced by meta.json.
+    omit_managed_and_corrupt_body_projection(&original_generation_path);
     noop.certify_complete_inventory(inventory.clone()).unwrap();
     stage_exact_replay(&mut noop, &source);
     assert!(matches!(

@@ -34,7 +34,9 @@ WORKSPACE_PACKAGES = (
     ("ctx-client-observability", "crates/ctx-client-observability"),
     ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
     ("ctx-history-core", "crates/ctx-history-core"),
+    ("ctx-history-index-format", "crates/ctx-history-index-format"),
     ("ctx-history-index", "crates/ctx-history-index"),
+    ("ctx-history-index-query", "crates/ctx-history-index-query"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
     ("ctx-upgrade-engine", "crates/ctx-upgrade-engine"),
@@ -146,7 +148,9 @@ members = [
   "crates/ctx-client-observability",
   "crates/ctx-daemon-runtime",
   "crates/ctx-history-core",
+  "crates/ctx-history-index-format",
   "crates/ctx-history-index",
+  "crates/ctx-history-index-query",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
   "crates/ctx-upgrade-engine",
@@ -186,7 +190,14 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
                 "ctx-history-index": (
+                    "ctx-history-index-format = { path = \"../ctx-history-index-format\" }\n"
+                    "ctx-history-index-query = { path = \"../ctx-history-index-query\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
+                    "tantivy.workspace = true"
+                ),
+                "ctx-history-index-format": "tantivy.workspace = true",
+                "ctx-history-index-query": (
+                    "ctx-history-index-format = { path = \"../ctx-history-index-format\" }\n"
                     "tantivy.workspace = true"
                 ),
                 "ctx-semantic-model": (
@@ -217,6 +228,12 @@ repository.workspace = true
         self.index_manifest = (
             self.main_runfiles / "crates/ctx-history-index/Cargo.toml"
         )
+        self.index_format_manifest = (
+            self.main_runfiles / "crates/ctx-history-index-format/Cargo.toml"
+        )
+        self.index_query_manifest = (
+            self.main_runfiles / "crates/ctx-history-index-query/Cargo.toml"
+        )
 
         for name, version in EXTERNAL_PACKAGES:
             repository = f"{CRATE_REPOSITORY_PREFIX}crates__{name}-{version}"
@@ -242,7 +259,9 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-client-observability:ctx_client_observability",
             "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
             "@@//crates/ctx-history-core:ctx_history_core",
+            "@@//crates/ctx-history-index-format:ctx_history_index_format",
             "@@//crates/ctx-history-index:ctx_history_index",
+            "@@//crates/ctx-history-index-query:ctx_history_index_query",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
             "@@//crates/ctx-upgrade-engine:ctx_upgrade_engine",
@@ -355,7 +374,26 @@ repository = "https://example.invalid/{name}"
             self.package(
                 "ctx-history-index",
                 "0.26.0",
-                ("ctx-semantic-model", "tantivy 0.26.1"),
+                (
+                    "ctx-history-index-format",
+                    "ctx-history-index-query",
+                    "ctx-semantic-model",
+                    "tantivy 0.26.1",
+                ),
+            ),
+            self.package(
+                "ctx-history-index-format",
+                "0.26.0",
+                ("ctx-history-core", "tantivy 0.26.1"),
+            ),
+            self.package(
+                "ctx-history-index-query",
+                "0.26.0",
+                (
+                    "ctx-history-core",
+                    "ctx-history-index-format",
+                    "tantivy 0.26.1",
+                ),
             ),
             self.package(
                 "ctx-semantic-index",
@@ -624,6 +662,10 @@ repository = "https://example.invalid/{name}"
                 str(self.workspace_manifest),
                 "--index-manifest",
                 str(self.index_manifest),
+                "--index-format-manifest",
+                str(self.index_format_manifest),
+                "--index-query-manifest",
+                str(self.index_query_manifest),
                 "--runfiles-root",
                 str(self.runfiles),
                 "--candidate-manifest",
@@ -698,7 +740,7 @@ repository = "https://example.invalid/{name}"
                 for item in component.get("properties", [])
             )
         ]
-        self.assertEqual(len(cargo_components), 15)
+        self.assertEqual(len(cargo_components), 17)
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
         )

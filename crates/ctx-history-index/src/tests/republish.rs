@@ -7,17 +7,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::publication::{
+    republish_current_for_qualification, CurrentRepublishOutcome,
+    PointerReconciliationTestHookGuard, PortableCloneMetrics, PortableCloneStage,
+    PortableCloneTestGuard, PortableCloneTestOptions, RepublishRecovery, RepublishStage,
+    RepublishTestHookGuard,
+};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::publication::{CloneMetrics, CloneStage, CloneTestHookGuard, CloneTestOptions};
-use crate::{
-    durable_directory::{AtomicWriteStage, AtomicWriteTestHookGuard},
-    publication::{
-        republish_current_for_qualification, CurrentRepublishOutcome,
-        PointerReconciliationTestHookGuard, PortableCloneMetrics, PortableCloneStage,
-        PortableCloneTestGuard, PortableCloneTestOptions, RepublishRecovery, RepublishStage,
-        RepublishTestHookGuard,
-    },
-};
+use ctx_history_index_generation::{AtomicWriteStage, AtomicWriteTestHookGuard};
 
 const PUBLICATION_METADATA: &[u8] = b"source-catalog-frontier-receipt-v1";
 const GOLDEN_GENERATION_ID: &str =
@@ -417,7 +415,8 @@ fn unknown_core_fingerprint_fails_all_reads_and_never_starts_source_rebuild() {
     let metas = index.load_metas().unwrap();
     let mut manifest = load_publication_for_metas(predecessor.root(), &metas)
         .unwrap()
-        .manifest;
+        .into_parts()
+        .1;
     let unknown = "f".repeat(64);
     assert_ne!(unknown, current_core_record_contract_fingerprint());
     manifest.core_record_contract_fingerprint = unknown.clone();
@@ -478,7 +477,8 @@ fn schema_18_rejects_the_retired_predecessor_fingerprint_policy_pair() {
     let metas = index.load_metas().unwrap();
     let mut manifest = load_publication_for_metas(generation.root(), &metas)
         .unwrap()
-        .manifest;
+        .into_parts()
+        .1;
     manifest.core_record_contract_fingerprint = RETIRED_CORE_FINGERPRINT.to_owned();
     manifest.policy_schema_hash = RETIRED_SOURCE_GENERATION_POLICY_HASH.to_owned();
     publish_unchecked_generation(generation.root(), &index, manifest, &[], Vec::new());
