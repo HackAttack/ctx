@@ -32,6 +32,7 @@ source_paths=(
   skills
   scripts
   crates/ctx-cli/src
+  crates/ctx-client-observability/src
   crates/ctx-daemon-runtime/src
   crates/ctx-upgrade-engine/src
   crates/ctx-history-capture/src

@@ -6,6 +6,7 @@ load(":mold_toolchain.bzl", "mold_toolchain_files")
 load(":release_routes_test.bzl", "release_route_analysis_test_suite")
 
 exports_files([
+    "check-client-observability-boundary.sh",
     "check-cli-build-cfg.sh",
     "check-daemon-runtime-dependency-boundary.sh",
     "check-semantic-index-dependency-boundary.sh",

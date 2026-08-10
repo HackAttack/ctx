@@ -10,9 +10,9 @@ fixture="${tmp}/fixture"
 mkdir -p \
   "${fixture}/contracts" \
   "${fixture}/contracts/stable-defaults" \
-  "${fixture}/crates/ctx-cli/src/analytics" \
   "${fixture}/crates/ctx-cli/src" \
   "${fixture}/crates/ctx-cli/tests" \
+  "${fixture}/crates/ctx-client-observability/src/analytics" \
   "${fixture}/crates/ctx-upgrade-engine/src/upgrade" \
   "${fixture}/scripts" \
   "${fixture}/docs"
@@ -21,8 +21,8 @@ cp "${repo_root}/contracts/stable-defaults/v0.25.0.json" \
   "${fixture}/contracts/stable-defaults/"
 cp "${repo_root}/crates/ctx-cli/src/config.rs" "${fixture}/crates/ctx-cli/src/"
 cp "${repo_root}/crates/ctx-cli/src/deprecated_controls.rs" "${fixture}/crates/ctx-cli/src/"
-cp "${repo_root}/crates/ctx-cli/src/analytics/operation.rs" \
-  "${fixture}/crates/ctx-cli/src/analytics/"
+cp "${repo_root}/crates/ctx-client-observability/src/analytics/operation.rs" \
+  "${fixture}/crates/ctx-client-observability/src/analytics/"
 cp "${repo_root}/crates/ctx-cli/src/config_tests.rs" "${fixture}/crates/ctx-cli/src/"
 cp "${repo_root}/crates/ctx-cli/src/process_environment.rs" "${fixture}/crates/ctx-cli/src/"
 cp "${repo_root}/crates/ctx-upgrade-engine/src/upgrade/metadata.rs" \

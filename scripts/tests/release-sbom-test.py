@@ -30,6 +30,7 @@ TANTIVY_FEATURES = (
 )
 WORKSPACE_PACKAGES = (
     ("ctx", "crates/ctx-cli"),
+    ("ctx-client-observability", "crates/ctx-client-observability"),
     ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
     ("ctx-history-core", "crates/ctx-history-core"),
     ("ctx-history-index", "crates/ctx-history-index"),
@@ -140,6 +141,7 @@ class ReleaseSbomTest(unittest.TestCase):
 [workspace]
 members = [
   "crates/ctx-cli",
+  "crates/ctx-client-observability",
   "crates/ctx-daemon-runtime",
   "crates/ctx-history-core",
   "crates/ctx-history-index",
@@ -166,9 +168,13 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             manifest.parent.mkdir(parents=True)
             dependencies = {
                 "ctx": (
+                    "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
                     "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
+                ),
+                "ctx-client-observability": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
                 "ctx-history-index": (
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
@@ -226,6 +232,7 @@ repository = "https://example.invalid/{name}"
 
         inventory_labels = [
             "@@//crates/ctx-cli:ctx",
+            "@@//crates/ctx-client-observability:ctx_client_observability",
             "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
             "@@//crates/ctx-history-core:ctx_history_core",
             "@@//crates/ctx-history-index:ctx_history_index",
@@ -312,6 +319,7 @@ repository = "https://example.invalid/{name}"
                 "ctx",
                 "0.26.0",
                 (
+                    "ctx-client-observability",
                     "ctx-history-core",
                     "ctx-daemon-runtime 1.0.0",
                     "ctx-history-index",
@@ -319,6 +327,11 @@ repository = "https://example.invalid/{name}"
                     "ctx-semantic-model",
                     "ctx-upgrade-engine",
                 ),
+            ),
+            self.package(
+                "ctx-client-observability",
+                "0.26.0",
+                ("ctx-history-core",),
             ),
             self.package("ctx-history-core", "0.26.0"),
             self.package(

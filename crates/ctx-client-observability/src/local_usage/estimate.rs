@@ -2,54 +2,52 @@ use serde::Serialize;
 
 use super::store::UsageStoreError;
 
-pub(crate) const ESTIMATE_MODEL_VERSION: &str = "matched_normalized_sessions_v1";
-pub(crate) const COEFFICIENT_VERSION: &str = "utf8_token_equivalent_range_v1";
+pub const ESTIMATE_MODEL_VERSION: &str = "matched_normalized_sessions_v1";
+pub const COEFFICIENT_VERSION: &str = "utf8_token_equivalent_range_v1";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct EstimateFacts {
-    pub(crate) complete_calls: u64,
-    pub(crate) unavailable_calls: u64,
-    pub(crate) delivered_context_bytes: u64,
-    pub(crate) matched_normalized_session_bytes: u64,
+pub struct EstimateFacts {
+    pub complete_calls: u64,
+    pub unavailable_calls: u64,
+    pub delivered_context_bytes: u64,
+    pub matched_normalized_session_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub(crate) struct TokenEquivalentRange {
-    pub(crate) low: u64,
-    pub(crate) central: u64,
-    pub(crate) high: u64,
+pub struct TokenEquivalentRange {
+    pub low: u64,
+    pub central: u64,
+    pub high: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct ApproximateContextTokens {
-    pub(crate) coefficient_version: &'static str,
-    pub(crate) delivered_context_bytes: u64,
+pub struct ApproximateContextTokens {
+    pub coefficient_version: &'static str,
+    pub delivered_context_bytes: u64,
     #[serde(flatten)]
-    pub(crate) token_equivalents: TokenEquivalentRange,
+    pub token_equivalents: TokenEquivalentRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct EstimatedContextReduction {
-    pub(crate) estimate_model_version: &'static str,
-    pub(crate) coefficient_version: &'static str,
-    pub(crate) covered_calls: u64,
-    pub(crate) unavailable_calls: u64,
-    pub(crate) comparison_baseline_bytes: u64,
-    pub(crate) observed_delivered_context_bytes: u64,
-    pub(crate) estimated_avoided_context_bytes: u64,
+pub struct EstimatedContextReduction {
+    pub estimate_model_version: &'static str,
+    pub coefficient_version: &'static str,
+    pub covered_calls: u64,
+    pub unavailable_calls: u64,
+    pub comparison_baseline_bytes: u64,
+    pub observed_delivered_context_bytes: u64,
+    pub estimated_avoided_context_bytes: u64,
     #[serde(flatten)]
-    pub(crate) approximate_token_equivalents: TokenEquivalentRange,
+    pub approximate_token_equivalents: TokenEquivalentRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct UsageEstimates {
-    pub(crate) approximate_context_tokens: ApproximateContextTokens,
-    pub(crate) estimated_context_reduction: EstimatedContextReduction,
+pub struct UsageEstimates {
+    pub approximate_context_tokens: ApproximateContextTokens,
+    pub estimated_context_reduction: EstimatedContextReduction,
 }
 
-pub(crate) fn estimate_usage(
-    facts: EstimateFacts,
-) -> Result<Option<UsageEstimates>, UsageStoreError> {
+pub fn estimate_usage(facts: EstimateFacts) -> Result<Option<UsageEstimates>, UsageStoreError> {
     if facts.complete_calls == 0 {
         return Ok(None);
     }

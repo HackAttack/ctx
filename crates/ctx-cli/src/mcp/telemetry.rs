@@ -1,29 +1,18 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
-        Arc,
-    },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, time::Duration};
 
 use serde_json::Value;
 
 use crate::{
     analytics::{
-        self, McpErrorClassV1, McpErrorLayerV1, McpLifecycleCountsV1, McpResponseBoundV1,
-        McpResultMetadataV1, McpRuntimeObservationV1, McpStopReasonV1, OperationCompletedV1,
-        Outcome, PublicEventV1, RuntimeObservationV1,
+        McpErrorClassV1, McpResponseBoundV1, McpResultMetadataV1, McpStopReasonV1, Outcome,
+        PublicEventV1,
     },
     config::AppConfig,
-    operation_descriptor::{McpOperation, McpOperationKind},
+    operation_descriptor::McpOperationKind,
 };
-
-const MCP_TELEMETRY_QUEUE_CAPACITY: usize = 64;
-const MCP_TELEMETRY_BATCH_LIMIT: usize = 25;
-const MCP_TELEMETRY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+use ctx_client_observability::mcp_observation::{
+    McpDeliveredResponse, McpObservation, McpObservedTool, McpRequestObservation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RequestDescriptor {
@@ -46,8 +35,7 @@ impl RequestDescriptor {
             return Self::MissingRequest;
         };
         let method = object.get("method").and_then(Value::as_str);
-        let has_id = object.contains_key("id");
-        if !has_id {
+        if !object.contains_key("id") {
             return if method == Some("notifications/initialized") {
                 Self::InitializedNotification
             } else {
@@ -68,19 +56,25 @@ impl RequestDescriptor {
         }
     }
 
-    fn operation(self) -> McpOperation {
+    fn observation(self) -> McpRequestObservation {
         match self {
-            Self::ToolCall { operation } => McpOperation::tool_call(operation),
-            Self::UnknownRequest => McpOperation::unknown_request(),
-            Self::Initialize
-            | Self::Ping
-            | Self::ToolsList
-            | Self::MissingRequest
-            | Self::InvalidJson
-            | Self::InvalidUtf8
-            | Self::LineTooLarge
-            | Self::InitializedNotification
-            | Self::UnknownNotification => McpOperation::missing_request(),
+            Self::Initialize => McpRequestObservation::Initialize,
+            Self::Ping => McpRequestObservation::Ping,
+            Self::ToolsList => McpRequestObservation::ToolsList,
+            Self::ToolCall { operation } => {
+                McpRequestObservation::ToolCall(match operation.observed() {
+                    Some(operation) => McpObservedTool::Product(operation),
+                    None if operation == McpOperationKind::Unknown => McpObservedTool::Unknown,
+                    None => McpObservedTool::Missing,
+                })
+            }
+            Self::UnknownRequest => McpRequestObservation::UnknownRequest,
+            Self::MissingRequest => McpRequestObservation::MissingRequest,
+            Self::InitializedNotification => McpRequestObservation::InitializedNotification,
+            Self::UnknownNotification => McpRequestObservation::UnknownNotification,
+            Self::InvalidJson => McpRequestObservation::InvalidJson,
+            Self::InvalidUtf8 => McpRequestObservation::InvalidUtf8,
+            Self::LineTooLarge => McpRequestObservation::LineTooLarge,
         }
     }
 }
@@ -100,34 +94,36 @@ impl<T> McpHandled<T> {
 }
 
 pub(super) struct McpTelemetry {
-    state: McpTelemetryState,
-}
-
-enum McpTelemetryState {
-    Disabled,
-    Enabled {
-        sender: AsyncMcpSender,
-        lifecycle: McpLifecycle,
-    },
+    observation: Option<McpObservation>,
 }
 
 impl McpTelemetry {
     pub(super) fn start(data_root: PathBuf) -> Self {
-        let Ok(config) = AppConfig::load(&data_root) else {
-            return Self {
-                state: McpTelemetryState::Disabled,
-            };
-        };
-        if !config.analytics.enabled {
-            return Self {
-                state: McpTelemetryState::Disabled,
-            };
+        let enabled = AppConfig::load(&data_root).is_ok_and(|config| config.analytics.enabled);
+        if !enabled {
+            return Self { observation: None };
         }
+        let delivery_root = data_root.clone();
         Self {
-            state: McpTelemetryState::Enabled {
-                sender: AsyncMcpSender::start(data_root),
-                lifecycle: McpLifecycle::new(),
-            },
+            observation: Some(McpObservation::start(move |events| {
+                let Ok(config) = AppConfig::load(&delivery_root) else {
+                    return Ok(());
+                };
+                if !config.analytics.enabled {
+                    return Ok(());
+                }
+                crate::analytics::send_batch(&delivery_root, &config, events);
+                Ok(())
+            })),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_for_test(
+        dispatch: impl Fn(&[PublicEventV1]) -> Result<(), ()> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            observation: Some(McpObservation::start(dispatch)),
         }
     }
 
@@ -137,12 +133,11 @@ impl McpTelemetry {
         response: Option<&Value>,
         duration: Duration,
     ) {
-        let McpTelemetryState::Enabled { sender, lifecycle } = &mut self.state else {
+        let Some(observation) = &mut self.observation else {
             return;
         };
-        if let Some(event) = lifecycle.record_delivered(descriptor, response, duration) {
-            sender.try_submit(event);
-        }
+        let delivered = response.map(|response| delivered_response(descriptor, response));
+        observation.record_delivered(descriptor.observation(), delivered, duration);
     }
 
     pub(super) fn record_response_failure(
@@ -151,208 +146,54 @@ impl McpTelemetry {
         duration: Duration,
         class: McpErrorClassV1,
     ) {
-        let McpTelemetryState::Enabled { sender, lifecycle } = &mut self.state else {
-            return;
-        };
-        lifecycle.count_descriptor(descriptor);
-        if matches!(descriptor, RequestDescriptor::ToolCall { .. }) {
-            let operation = descriptor
-                .operation()
-                .with_error(McpErrorLayerV1::Response, class);
-            sender.try_submit(operation_event(operation, Outcome::Failure, duration));
+        if let Some(observation) = &mut self.observation {
+            observation.record_response_failure(descriptor.observation(), duration, class);
         }
     }
 
     pub(super) fn submit_pro_event(&self, event: PublicEventV1) {
-        let McpTelemetryState::Enabled { sender, .. } = &self.state else {
-            return;
-        };
-        sender.try_submit(event);
+        if let Some(observation) = &self.observation {
+            observation.submit_post_flush_event(event);
+        }
     }
 
     pub(super) fn stop(mut self, reason: McpStopReasonV1, outcome: Outcome, duration: Duration) {
-        let McpTelemetryState::Enabled { sender, lifecycle } = &mut self.state else {
-            return;
-        };
-        lifecycle.counts.telemetry_dropped = sender.dropped_count();
-        sender.try_submit(PublicEventV1::RuntimeObservation(
-            RuntimeObservationV1::mcp(
-                McpRuntimeObservationV1::stopped(lifecycle.initialized, reason, lifecycle.counts),
-                outcome,
-                duration,
-            ),
-        ));
-        sender.shutdown(MCP_TELEMETRY_SHUTDOWN_TIMEOUT);
-    }
-}
-
-struct McpLifecycle {
-    started: Instant,
-    initialized: bool,
-    counts: McpLifecycleCountsV1,
-}
-
-impl McpLifecycle {
-    fn new() -> Self {
-        Self {
-            started: Instant::now(),
-            initialized: false,
-            counts: McpLifecycleCountsV1::default(),
-        }
-    }
-
-    fn count_descriptor(&mut self, descriptor: RequestDescriptor) {
-        match descriptor {
-            RequestDescriptor::InitializedNotification => {
-                self.counts.initialized_notifications =
-                    self.counts.initialized_notifications.saturating_add(1);
-            }
-            RequestDescriptor::UnknownNotification => {
-                self.counts.unknown_notifications =
-                    self.counts.unknown_notifications.saturating_add(1);
-            }
-            RequestDescriptor::ToolCall { .. } => {
-                self.counts.requests = self.counts.requests.saturating_add(1);
-                self.counts.tool_requests = self.counts.tool_requests.saturating_add(1);
-            }
-            RequestDescriptor::Ping => {
-                self.counts.requests = self.counts.requests.saturating_add(1);
-                self.counts.pings = self.counts.pings.saturating_add(1);
-            }
-            RequestDescriptor::ToolsList => {
-                self.counts.requests = self.counts.requests.saturating_add(1);
-                self.counts.tools_lists = self.counts.tools_lists.saturating_add(1);
-            }
-            RequestDescriptor::Initialize
-            | RequestDescriptor::UnknownRequest
-            | RequestDescriptor::MissingRequest
-            | RequestDescriptor::InvalidJson
-            | RequestDescriptor::InvalidUtf8
-            | RequestDescriptor::LineTooLarge => {
-                self.counts.requests = self.counts.requests.saturating_add(1);
-            }
-        }
-    }
-
-    fn record_delivered(
-        &mut self,
-        descriptor: RequestDescriptor,
-        response: Option<&Value>,
-        duration: Duration,
-    ) -> Option<PublicEventV1> {
-        self.count_descriptor(descriptor);
-        if let Some(error) = response.and_then(|response| response.get("error")) {
-            if matches!(
-                descriptor,
-                RequestDescriptor::InitializedNotification | RequestDescriptor::UnknownNotification
-            ) {
-                self.counts.requests = self.counts.requests.saturating_add(1);
-            }
-            self.counts.malformed_requests = self.counts.malformed_requests.saturating_add(1);
-            let layer = if matches!(
-                descriptor,
-                RequestDescriptor::InvalidJson
-                    | RequestDescriptor::InvalidUtf8
-                    | RequestDescriptor::LineTooLarge
-            ) {
-                McpErrorLayerV1::Input
-            } else {
-                McpErrorLayerV1::JsonRpc
-            };
-            let operation = descriptor
-                .operation()
-                .with_error(layer, json_rpc_error_class(descriptor, error));
-            return Some(operation_event(operation, Outcome::Failure, duration));
-        }
-        if matches!(
-            descriptor,
-            RequestDescriptor::InitializedNotification | RequestDescriptor::UnknownNotification
-        ) {
-            return None;
-        }
-
-        match descriptor {
-            RequestDescriptor::Initialize if !self.initialized => {
-                self.initialized = true;
-                Some(PublicEventV1::RuntimeObservation(
-                    RuntimeObservationV1::mcp(
-                        McpRuntimeObservationV1::initialized(self.counts),
-                        Outcome::Success,
-                        self.started.elapsed(),
-                    ),
-                ))
-            }
-            RequestDescriptor::Ping
-            | RequestDescriptor::ToolsList
-            | RequestDescriptor::Initialize => None,
-            RequestDescriptor::ToolCall { operation } => {
-                let response = response?;
-                let tool_error =
-                    response.pointer("/result/isError").and_then(Value::as_bool) == Some(true);
-                if tool_error {
-                    self.counts.tool_failures = self.counts.tool_failures.saturating_add(1);
-                }
-                let mut result = result_metadata(operation, response);
-                if matches!(
-                    operation,
-                    McpOperationKind::ShowSession
-                        | McpOperationKind::ShowEvent
-                        | McpOperationKind::QueryEvents
-                ) && response.get("result").is_some()
-                {
-                    result.response_bound = Some(
-                        if response
-                            .pointer("/result/structuredContent/error_code")
-                            .and_then(Value::as_str)
-                            == Some("output_limit_exceeded")
-                        {
-                            McpResponseBoundV1::Replaced
-                        } else {
-                            McpResponseBoundV1::WithinLimit
-                        },
-                    );
-                }
-                let mut operation = McpOperation::tool_call(operation).with_result(result);
-                let outcome = if tool_error {
-                    operation =
-                        operation.with_error(McpErrorLayerV1::Tool, McpErrorClassV1::ToolFailure);
-                    Outcome::Failure
-                } else {
-                    Outcome::Success
-                };
-                Some(operation_event(operation, outcome, duration))
-            }
-            RequestDescriptor::UnknownRequest
-            | RequestDescriptor::MissingRequest
-            | RequestDescriptor::InvalidJson
-            | RequestDescriptor::InvalidUtf8
-            | RequestDescriptor::LineTooLarge => None,
-            RequestDescriptor::InitializedNotification | RequestDescriptor::UnknownNotification => {
-                None
-            }
+        if let Some(observation) = self.observation.take() {
+            observation.stop(reason, outcome, duration);
         }
     }
 }
 
-fn operation_event(operation: McpOperation, outcome: Outcome, duration: Duration) -> PublicEventV1 {
-    PublicEventV1::OperationCompleted(OperationCompletedV1::for_mcp(operation, outcome, duration))
+fn delivered_response(descriptor: RequestDescriptor, response: &Value) -> McpDeliveredResponse {
+    let error_class = response
+        .get("error")
+        .map(|error| json_rpc_error_class(descriptor, error));
+    let tool_error = response.pointer("/result/isError").and_then(Value::as_bool) == Some(true);
+    let result = match descriptor {
+        RequestDescriptor::ToolCall { operation } => result_metadata(operation, response),
+        _ => McpResultMetadataV1::default(),
+    };
+    McpDeliveredResponse {
+        error_class,
+        tool_error,
+        result,
+    }
 }
 
 fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErrorClassV1 {
-    if matches!(descriptor, RequestDescriptor::InvalidUtf8) {
+    if descriptor == RequestDescriptor::InvalidUtf8 {
         return McpErrorClassV1::InvalidUtf8;
     }
-    if matches!(descriptor, RequestDescriptor::LineTooLarge) {
+    if descriptor == RequestDescriptor::LineTooLarge {
         return McpErrorClassV1::LineTooLarge;
     }
-    if matches!(descriptor, RequestDescriptor::InvalidJson) {
+    if descriptor == RequestDescriptor::InvalidJson {
         return McpErrorClassV1::InvalidJson;
     }
     if matches!(
         descriptor,
         RequestDescriptor::ToolCall {
-            operation: McpOperationKind::Missing,
-            ..
+            operation: McpOperationKind::Missing
         }
     ) {
         return McpErrorClassV1::MissingTool;
@@ -360,8 +201,7 @@ fn json_rpc_error_class(descriptor: RequestDescriptor, error: &Value) -> McpErro
     if matches!(
         descriptor,
         RequestDescriptor::ToolCall {
-            operation: McpOperationKind::Unknown,
-            ..
+            operation: McpOperationKind::Unknown
         }
     ) {
         return McpErrorClassV1::UnknownTool;
@@ -406,7 +246,7 @@ fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMe
                 .pointer("/pagination/has_more")
                 .and_then(Value::as_bool);
             metadata.result_truncated = match (truncated, has_more) {
-                (Some(truncated), Some(has_more)) => Some(truncated || has_more),
+                (Some(a), Some(b)) => Some(a || b),
                 (value @ Some(_), None) | (None, value @ Some(_)) => value,
                 (None, None) => None,
             };
@@ -417,126 +257,42 @@ fn result_metadata(operation: McpOperationKind, response: &Value) -> McpResultMe
             }
             metadata.events_truncated =
                 result.pointer("/truncated/events").and_then(Value::as_bool);
+            if response.get("result").is_some() {
+                metadata.response_bound = Some(
+                    if result.get("error_code").and_then(Value::as_str)
+                        == Some("output_limit_exceeded")
+                    {
+                        McpResponseBoundV1::Replaced
+                    } else {
+                        McpResponseBoundV1::WithinLimit
+                    },
+                );
+            }
         }
         McpOperationKind::QueryEvents => {
             if let Some(count) = result.get("events").and_then(Value::as_array).map(Vec::len) {
                 metadata = metadata.with_result_count(count);
             }
             metadata.result_truncated = result.get("truncated").and_then(Value::as_bool);
+            if response.get("result").is_some() {
+                metadata.response_bound = Some(
+                    if result.get("error_code").and_then(Value::as_str)
+                        == Some("output_limit_exceeded")
+                    {
+                        McpResponseBoundV1::Replaced
+                    } else {
+                        McpResponseBoundV1::WithinLimit
+                    },
+                );
+            }
         }
-        McpOperationKind::Blame | McpOperationKind::ProStatus => {
-            // MCP owns protocol and delivery telemetry. Pro-host telemetry owns
-            // Pro product outcomes, result counts, and materialization facts.
-        }
-        McpOperationKind::Status | McpOperationKind::Unknown | McpOperationKind::Missing => {}
+        McpOperationKind::Blame
+        | McpOperationKind::ProStatus
+        | McpOperationKind::Status
+        | McpOperationKind::Unknown
+        | McpOperationKind::Missing => {}
     }
     metadata
-}
-
-type Dispatch = dyn Fn(&Path, &AppConfig, &[PublicEventV1]) -> Result<(), ()> + Send + Sync;
-#[cfg(test)]
-type SubmitObserver = dyn Fn(&PublicEventV1) + Send + Sync;
-
-enum SenderMessage {
-    Event(PublicEventV1),
-}
-
-struct AsyncMcpSender {
-    tx: Option<SyncSender<SenderMessage>>,
-    dropped: Arc<AtomicU64>,
-    worker: Option<JoinHandle<()>>,
-    #[cfg(test)]
-    submit_observer: Option<Arc<SubmitObserver>>,
-}
-
-impl AsyncMcpSender {
-    fn start(data_root: PathBuf) -> Self {
-        Self::start_with(
-            data_root,
-            MCP_TELEMETRY_QUEUE_CAPACITY,
-            Arc::new(|data_root, config, events| {
-                analytics::send_batch(data_root, config, events);
-                Ok(())
-            }),
-        )
-    }
-
-    fn start_with(data_root: PathBuf, capacity: usize, dispatch: Arc<Dispatch>) -> Self {
-        let (tx, rx) = mpsc::sync_channel(capacity);
-        let dropped = Arc::new(AtomicU64::new(0));
-        let worker = thread::Builder::new()
-            .name("ctx-mcp-telemetry".to_owned())
-            .spawn(move || sender_loop(&data_root, &rx, &dispatch))
-            .ok();
-        Self {
-            tx: worker.as_ref().map(|_| tx),
-            dropped,
-            worker,
-            #[cfg(test)]
-            submit_observer: None,
-        }
-    }
-
-    fn try_submit(&self, event: PublicEventV1) {
-        #[cfg(test)]
-        if let Some(observer) = &self.submit_observer {
-            observer(&event);
-        }
-        let Some(tx) = &self.tx else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            return;
-        };
-        match tx.try_send(SenderMessage::Event(event)) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    fn dropped_count(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
-    }
-
-    fn shutdown(&mut self, timeout: Duration) {
-        self.tx.take();
-        let Some(worker) = self.worker.take() else {
-            return;
-        };
-        let deadline = Instant::now() + timeout;
-        while !worker.is_finished() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(5));
-        }
-        if worker.is_finished() {
-            let _ = worker.join();
-        }
-    }
-}
-
-fn sender_loop(data_root: &Path, rx: &Receiver<SenderMessage>, dispatch: &Arc<Dispatch>) {
-    loop {
-        let first = match rx.recv() {
-            Ok(message) => message,
-            Err(_) => return,
-        };
-        let mut events = Vec::with_capacity(MCP_TELEMETRY_BATCH_LIMIT);
-        let SenderMessage::Event(first) = first;
-        events.push(first);
-        while events.len() < MCP_TELEMETRY_BATCH_LIMIT {
-            match rx.try_recv() {
-                Ok(SenderMessage::Event(event)) => events.push(event),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        let Ok(config) = AppConfig::load(data_root) else {
-            continue;
-        };
-        if !config.analytics.enabled {
-            continue;
-        }
-        let _ = dispatch(data_root, &config, &events);
-    }
 }
 
 #[cfg(test)]

@@ -94,7 +94,11 @@ fn foreground_analytics_eligibility_is_closed_and_remote_safe() {
     ] {
         let cli = Cli::try_parse_from(args).unwrap();
         assert!(
-            crate::analytics::ClientOperationDraft::from_command(&cli.command, false).is_some(),
+            crate::analytics::ClientOperationDraft::from_descriptor(
+                crate::dispatch::command_operation_descriptor(&cli.command),
+                false
+            )
+            .is_some(),
             "expected typed foreground telemetry for {cli:?}"
         );
     }
@@ -108,7 +112,11 @@ fn foreground_analytics_eligibility_is_closed_and_remote_safe() {
     ] {
         let cli = Cli::try_parse_from(args).unwrap();
         assert!(
-            crate::analytics::ClientOperationDraft::from_command(&cli.command, false).is_none(),
+            crate::analytics::ClientOperationDraft::from_descriptor(
+                crate::dispatch::command_operation_descriptor(&cli.command),
+                false
+            )
+            .is_none(),
             "follow-on surface must not use the foreground CLI producer: {cli:?}"
         );
     }

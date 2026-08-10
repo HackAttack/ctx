@@ -5,22 +5,22 @@ use crate::operation_descriptor::{CliOperation, McpOperation, OperationDescripto
 use super::*;
 
 #[derive(Debug)]
-pub(crate) struct OperationCompletedV1 {
-    pub(crate) descriptor: OperationDescriptor,
-    pub(crate) output: Option<OutputKind>,
-    pub(crate) outcome: Outcome,
-    pub(crate) duration: DurationBucket,
-    pub(crate) deprecated_daemon_control: bool,
-    pub(crate) deprecated_upgrade_control: bool,
+pub struct OperationCompletedV1 {
+    pub descriptor: OperationDescriptor,
+    pub output: Option<OutputKind>,
+    pub outcome: Outcome,
+    pub duration: DurationBucket,
+    pub deprecated_daemon_control: bool,
+    pub deprecated_upgrade_control: bool,
 }
 
 #[allow(dead_code)]
 impl OperationCompletedV1 {
-    pub(crate) fn for_mcp(operation: McpOperation, outcome: Outcome, duration: Duration) -> Self {
+    pub fn for_mcp(operation: McpOperation, outcome: Outcome, duration: Duration) -> Self {
         Self::for_non_cli(OperationDescriptor::Mcp(operation), outcome, duration)
     }
 
-    pub(crate) fn for_pro_host(
+    pub fn for_pro_host(
         operation: ProHostOperationV1,
         outcome: Outcome,
         duration: Duration,
@@ -28,15 +28,11 @@ impl OperationCompletedV1 {
         Self::for_non_cli(OperationDescriptor::ProHost(operation), outcome, duration)
     }
 
-    pub(crate) fn for_daemon(
-        operation: DaemonOperationV1,
-        outcome: Outcome,
-        duration: Duration,
-    ) -> Self {
+    pub fn for_daemon(operation: DaemonOperationV1, outcome: Outcome, duration: Duration) -> Self {
         Self::for_non_cli(OperationDescriptor::Daemon(operation), outcome, duration)
     }
 
-    pub(crate) fn for_non_cli(
+    pub fn for_non_cli(
         descriptor: OperationDescriptor,
         outcome: Outcome,
         duration: Duration,
@@ -51,7 +47,7 @@ impl OperationCompletedV1 {
         }
     }
 
-    pub(crate) fn for_automatic_upgrade(
+    pub fn for_automatic_upgrade(
         upgrade: UpgradeTelemetry,
         outcome: Outcome,
         duration: Duration,
@@ -67,7 +63,7 @@ impl OperationCompletedV1 {
     }
 }
 
-pub(crate) struct ClientOperationDraft {
+pub struct ClientOperationDraft {
     output: OutputKind,
     operation: CliOperation,
     deprecated_daemon_control: bool,
@@ -75,21 +71,7 @@ pub(crate) struct ClientOperationDraft {
 }
 
 impl ClientOperationDraft {
-    #[cfg(test)]
-    pub(crate) fn from_command(
-        command: &crate::cli::CommandRoot,
-        json_output: bool,
-    ) -> Option<Self> {
-        Self::from_descriptor(
-            crate::dispatch::command_operation_descriptor(command),
-            json_output,
-        )
-    }
-
-    pub(crate) fn from_descriptor(
-        descriptor: OperationDescriptor,
-        json_output: bool,
-    ) -> Option<Self> {
+    pub fn from_descriptor(descriptor: OperationDescriptor, json_output: bool) -> Option<Self> {
         let OperationDescriptor::Cli(operation) = descriptor else {
             return None;
         };
@@ -104,7 +86,7 @@ impl ClientOperationDraft {
         })
     }
 
-    pub(crate) fn set_deprecated_controls(&mut self, ids: Option<&str>) {
+    pub fn set_deprecated_controls(&mut self, ids: Option<&str>) {
         let ids = ids.unwrap_or_default();
         self.deprecated_daemon_control =
             ids.contains("CTX_DAEMON_OFF") || ids.contains("CTX_DISABLE_DAEMON");
@@ -112,91 +94,91 @@ impl ClientOperationDraft {
             ids.contains("CTX_UPGRADE_OFF") || ids.contains("CTX_DISABLE_AUTO_UPGRADE");
     }
 
-    pub(crate) fn setup_mut(&mut self) -> &mut SetupTelemetry {
+    pub fn setup_mut(&mut self) -> &mut SetupTelemetry {
         match &mut self.operation {
             CliOperation::Setup(value) => value,
             _ => unreachable!("setup telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn status_mut(&mut self) -> &mut StatusTelemetry {
+    pub fn status_mut(&mut self) -> &mut StatusTelemetry {
         match &mut self.operation {
             CliOperation::Status(value) => value,
             _ => unreachable!("status telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn index_mut(&mut self) -> &mut IndexTelemetry {
+    pub fn index_mut(&mut self) -> &mut IndexTelemetry {
         match &mut self.operation {
             CliOperation::Index(value) => value,
             _ => unreachable!("index telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn sources_mut(&mut self) -> &mut SourcesTelemetry {
+    pub fn sources_mut(&mut self) -> &mut SourcesTelemetry {
         match &mut self.operation {
             CliOperation::Sources(value) => value,
             _ => unreachable!("sources telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn import_mut(&mut self) -> &mut ImportTelemetry {
+    pub fn import_mut(&mut self) -> &mut ImportTelemetry {
         match &mut self.operation {
             CliOperation::Import(value) => value,
             _ => unreachable!("import telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn show_mut(&mut self) -> &mut ShowTelemetry {
+    pub fn show_mut(&mut self) -> &mut ShowTelemetry {
         match &mut self.operation {
             CliOperation::ShowSession(value) | CliOperation::ShowEvent(value) => value,
             _ => unreachable!("show telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn locate_mut(&mut self) -> &mut LocateTelemetry {
+    pub fn locate_mut(&mut self) -> &mut LocateTelemetry {
         match &mut self.operation {
             CliOperation::Locate(value) => value,
             _ => unreachable!("locate telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn search_mut(&mut self) -> &mut SearchTelemetry {
+    pub fn search_mut(&mut self) -> &mut SearchTelemetry {
         match &mut self.operation {
             CliOperation::Search(value) => value,
             _ => unreachable!("search telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn docs_mut(&mut self) -> &mut DocsTelemetry {
+    pub fn docs_mut(&mut self) -> &mut DocsTelemetry {
         match &mut self.operation {
             CliOperation::Docs(value) => value,
             _ => unreachable!("docs telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn integration_mut(&mut self) -> &mut IntegrationTelemetry {
+    pub fn integration_mut(&mut self) -> &mut IntegrationTelemetry {
         match &mut self.operation {
             CliOperation::Integrations(value) => value,
             _ => unreachable!("integration telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn upgrade_mut(&mut self) -> &mut UpgradeTelemetry {
+    pub fn upgrade_mut(&mut self) -> &mut UpgradeTelemetry {
         match &mut self.operation {
             CliOperation::Upgrade { telemetry, .. } => telemetry,
             _ => unreachable!("upgrade telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn doctor_mut(&mut self) -> &mut DoctorTelemetry {
+    pub fn doctor_mut(&mut self) -> &mut DoctorTelemetry {
         match &mut self.operation {
             CliOperation::Doctor(value) => value,
             _ => unreachable!("doctor telemetry requested for a different operation"),
         }
     }
 
-    pub(crate) fn finish(self, success: bool, duration: Duration) -> PublicEventV1 {
+    pub fn finish(self, success: bool, duration: Duration) -> PublicEventV1 {
         PublicEventV1::OperationCompleted(OperationCompletedV1 {
             descriptor: OperationDescriptor::Cli(self.operation),
             output: Some(self.output),
@@ -211,7 +193,7 @@ impl ClientOperationDraft {
         })
     }
 
-    pub(crate) fn should_emit(&self) -> bool {
+    pub fn should_emit(&self) -> bool {
         !matches!(
             &self.operation,
             CliOperation::Upgrade { telemetry, .. } if telemetry.suppress_event

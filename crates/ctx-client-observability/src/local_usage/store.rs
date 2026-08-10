@@ -15,7 +15,10 @@ use ctx_history_core::platform_security::{
 use rusqlite::params;
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
-use super::{CompletedOperation, LocalUsageStorageAuthority, CTX_VERSION, RETENTION_DAYS};
+use super::{CompletedOperation, LocalUsageStorageAuthority, RETENTION_DAYS};
+
+#[cfg(test)]
+const TEST_PRODUCT_VERSION: &str = "1.0.0";
 
 mod file_family;
 mod migration;
@@ -29,7 +32,7 @@ use file_family::{
     verify_metadata_owner, verify_private_directory_and_owner, verify_same_file,
     verify_single_link, FamilyGuard,
 };
-pub(crate) use migration::verify_report_dates;
+pub use migration::verify_report_dates;
 use migration::{initialize_schema, migrate_to_current, reject_future_daily_dates, verify_schema};
 #[cfg(test)]
 use migration::{
@@ -40,7 +43,7 @@ pub(super) use migration::{v1_uses_legacy_blame_schema, verify_supported_schema}
 use write::record_at as write_record_at;
 
 #[cfg(test)]
-pub(crate) const USAGE_FILE: &str = "usage.sqlite";
+pub const USAGE_FILE: &str = "usage.sqlite";
 const APPLICATION_ID: i64 = 0x4354_5855;
 pub(super) const LEGACY_SCHEMA_VERSION: i64 = 1;
 pub(super) const PREVIOUS_SCHEMA_VERSION: i64 = 2;
@@ -55,7 +58,7 @@ const STALE_INIT_AGE: Duration = Duration::from_secs(60 * 60);
 const INIT_SLOT_COUNT: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum UsageStoreError {
+pub enum UsageStoreError {
     #[error("usage store I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("usage store SQLite error: {0}")]
@@ -77,7 +80,7 @@ pub(crate) enum UsageStoreError {
 }
 
 impl UsageStoreError {
-    pub(crate) const fn public_message(&self) -> &'static str {
+    pub const fn public_message(&self) -> &'static str {
         match self {
             Self::ApplicationId
             | Self::SchemaVersion(_)
@@ -93,13 +96,11 @@ impl UsageStoreError {
 }
 
 #[cfg(test)]
-pub(crate) fn usage_path(data_root: &Path) -> PathBuf {
+pub fn usage_path(data_root: &Path) -> PathBuf {
     data_root.join(USAGE_FILE)
 }
 
-pub(crate) fn usage_store_exists(
-    authority: &LocalUsageStorageAuthority,
-) -> Result<bool, UsageStoreError> {
+pub fn usage_store_exists(authority: &LocalUsageStorageAuthority) -> Result<bool, UsageStoreError> {
     let path = authority.database_path();
     let Some(parent) = path.parent() else {
         return Err(UsageStoreError::SchemaIdentity);
@@ -122,7 +123,7 @@ pub(crate) fn usage_store_exists(
     }
 }
 
-pub(crate) fn record_authorized(
+pub fn record_authorized(
     authority: &LocalUsageStorageAuthority,
     operation: CompletedOperation,
 ) -> Result<(), UsageStoreError> {
@@ -131,6 +132,7 @@ pub(crate) fn record_authorized(
         operation,
         SystemTime::now(),
         BUSY_TIMEOUT,
+        authority.product_version(),
     )
 }
 
@@ -139,8 +141,9 @@ fn record_at_path(
     operation: CompletedOperation,
     now: SystemTime,
     busy_timeout: Duration,
+    product_version: &str,
 ) -> Result<(), UsageStoreError> {
-    record_at_with_ctx_version(database_path, operation, now, busy_timeout, CTX_VERSION)
+    record_at_with_ctx_version(database_path, operation, now, busy_timeout, product_version)
 }
 
 fn record_at_with_ctx_version(
@@ -154,11 +157,8 @@ fn record_at_with_ctx_version(
 }
 
 #[cfg(test)]
-pub(crate) fn record(
-    data_root: &Path,
-    operation: CompletedOperation,
-) -> Result<(), UsageStoreError> {
-    let authority = crate::observability_composition::local_usage_storage_authority(data_root);
+pub fn record(data_root: &Path, operation: CompletedOperation) -> Result<(), UsageStoreError> {
+    let authority = LocalUsageStorageAuthority::new(usage_path(data_root), TEST_PRODUCT_VERSION);
     record_authorized(&authority, operation)
 }
 
@@ -169,7 +169,13 @@ pub(super) fn record_at_for_test(
     now: SystemTime,
     busy_timeout: Duration,
 ) -> Result<(), UsageStoreError> {
-    record_at_path(&usage_path(data_root), operation, now, busy_timeout)
+    record_at_path(
+        &usage_path(data_root),
+        operation,
+        now,
+        busy_timeout,
+        TEST_PRODUCT_VERSION,
+    )
 }
 
 #[cfg(test)]
@@ -396,23 +402,23 @@ pub(super) fn fail_v1_migration_before_commit_for_test(
     .map(|_| ())
 }
 
-pub(crate) struct ReadOnlyStore {
+pub struct ReadOnlyStore {
     conn: Connection,
     family_guard: FamilyGuard,
     path: PathBuf,
 }
 
 impl ReadOnlyStore {
-    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+    pub fn connection_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }
 
-    pub(crate) fn verify_unchanged(&self) -> Result<(), UsageStoreError> {
+    pub fn verify_unchanged(&self) -> Result<(), UsageStoreError> {
         self.family_guard.recheck_unchanged(&self.path)
     }
 }
 
-pub(crate) fn open_read_only(path: &Path) -> Result<ReadOnlyStore, UsageStoreError> {
+pub fn open_read_only(path: &Path) -> Result<ReadOnlyStore, UsageStoreError> {
     let guard = preflight_existing_family(path, true)?;
     if guard.has_nonempty_auxiliary()? {
         return Err(UsageStoreError::UnsafeReadState);
@@ -429,9 +435,7 @@ pub(crate) fn open_read_only(path: &Path) -> Result<ReadOnlyStore, UsageStoreErr
     })
 }
 
-pub(crate) fn reset_authorized(
-    authority: &LocalUsageStorageAuthority,
-) -> Result<bool, UsageStoreError> {
+pub fn reset_authorized(authority: &LocalUsageStorageAuthority) -> Result<bool, UsageStoreError> {
     reset_with_post_commit(authority.database_path(), |_| ())
 }
 
@@ -474,8 +478,8 @@ fn reset_with_post_commit<T>(
 }
 
 #[cfg(test)]
-pub(crate) fn reset(data_root: &Path) -> Result<bool, UsageStoreError> {
-    let authority = crate::observability_composition::local_usage_storage_authority(data_root);
+pub fn reset(data_root: &Path) -> Result<bool, UsageStoreError> {
+    let authority = LocalUsageStorageAuthority::new(usage_path(data_root), TEST_PRODUCT_VERSION);
     reset_authorized(&authority)
 }
 

@@ -1,13 +1,13 @@
 use super::CountBucket;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntegrationAction {
+pub enum IntegrationAction {
     Install,
     Status,
 }
 
 impl IntegrationAction {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Install => "install",
             Self::Status => "status",
@@ -16,14 +16,14 @@ impl IntegrationAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntegrationTarget {
+pub enum IntegrationTarget {
     Mcp,
     Skills,
     SlashCommands,
 }
 
 impl IntegrationTarget {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Mcp => "mcp",
             Self::Skills => "skills",
@@ -33,13 +33,13 @@ impl IntegrationTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntegrationScope {
+pub enum IntegrationScope {
     Global,
     Project,
 }
 
 impl IntegrationScope {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Global => "global",
             Self::Project => "project",
@@ -48,7 +48,7 @@ impl IntegrationScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TargetSelection {
+pub enum TargetSelection {
     All,
     Detected,
     Explicit,
@@ -57,7 +57,7 @@ pub(crate) enum TargetSelection {
 }
 
 impl TargetSelection {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::All => "all",
             Self::Detected => "detected",
@@ -69,7 +69,7 @@ impl TargetSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntegrationResult {
+pub enum IntegrationResult {
     Ok,
     PartialError,
     AllCurrent,
@@ -78,7 +78,7 @@ pub(crate) enum IntegrationResult {
 }
 
 impl IntegrationResult {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
             Self::PartialError => "partial_error",
@@ -90,33 +90,33 @@ impl IntegrationResult {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct IntegrationTelemetry {
-    pub(crate) action: Option<IntegrationAction>,
-    pub(crate) target: Option<IntegrationTarget>,
-    pub(crate) scope: Option<IntegrationScope>,
-    pub(crate) selection: Option<TargetSelection>,
-    pub(crate) force: Option<bool>,
-    pub(crate) target_agents: Option<CountBucket>,
-    pub(crate) resolved_agents: Option<CountBucket>,
-    pub(crate) result: Option<IntegrationResult>,
-    pub(crate) modified_targets: Option<CountBucket>,
-    pub(crate) already_installed: Option<bool>,
-    pub(crate) updated: Option<bool>,
-    pub(crate) current_targets: Option<CountBucket>,
-    pub(crate) missing_targets: Option<CountBucket>,
-    pub(crate) conflicting_targets: Option<CountBucket>,
-    pub(crate) invalid_targets: Option<CountBucket>,
-    pub(crate) unsupported_targets: Option<CountBucket>,
+pub struct IntegrationTelemetry {
+    pub action: Option<IntegrationAction>,
+    pub target: Option<IntegrationTarget>,
+    pub scope: Option<IntegrationScope>,
+    pub selection: Option<TargetSelection>,
+    pub force: Option<bool>,
+    pub target_agents: Option<CountBucket>,
+    pub resolved_agents: Option<CountBucket>,
+    pub result: Option<IntegrationResult>,
+    pub modified_targets: Option<CountBucket>,
+    pub already_installed: Option<bool>,
+    pub updated: Option<bool>,
+    pub current_targets: Option<CountBucket>,
+    pub missing_targets: Option<CountBucket>,
+    pub conflicting_targets: Option<CountBucket>,
+    pub invalid_targets: Option<CountBucket>,
+    pub unsupported_targets: Option<CountBucket>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpgradeMode {
+pub enum UpgradeMode {
     Manual,
     Auto,
 }
 
 impl UpgradeMode {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
             Self::Auto => "auto",
@@ -125,7 +125,7 @@ impl UpgradeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpgradeOperation {
+pub enum UpgradeOperation {
     Apply,
     Check,
     Status,
@@ -134,7 +134,7 @@ pub(crate) enum UpgradeOperation {
 }
 
 impl UpgradeOperation {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Apply => "apply",
             Self::Check => "check",
@@ -146,7 +146,7 @@ impl UpgradeOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpgradeStatus {
+pub enum UpgradeStatus {
     Available,
     UpToDate,
     Applied,
@@ -162,7 +162,7 @@ pub(crate) enum UpgradeStatus {
 }
 
 impl UpgradeStatus {
-    pub(crate) fn from_safe_summary(value: &str) -> Self {
+    pub fn from_safe_summary(value: &str) -> Self {
         match value {
             "available" => Self::Available,
             "up_to_date" => Self::UpToDate,
@@ -179,7 +179,7 @@ impl UpgradeStatus {
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Available => "available",
             Self::UpToDate => "up_to_date",
@@ -198,7 +198,7 @@ impl UpgradeStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpgradeChannel {
+pub enum UpgradeChannel {
     Stable,
     Beta,
     Canary,
@@ -207,7 +207,7 @@ pub(crate) enum UpgradeChannel {
 }
 
 impl UpgradeChannel {
-    pub(crate) fn from_config(value: &str) -> Self {
+    pub fn from_config(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "stable" => Self::Stable,
             "beta" => Self::Beta,
@@ -217,7 +217,7 @@ impl UpgradeChannel {
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Stable => "stable",
             Self::Beta => "beta",
@@ -229,7 +229,7 @@ impl UpgradeChannel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpgradeFailureKind {
+pub enum UpgradeFailureKind {
     LockFailed,
     UnmanagedInstall,
     MetadataFetch,
@@ -242,7 +242,7 @@ pub(crate) enum UpgradeFailureKind {
 }
 
 impl UpgradeFailureKind {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::LockFailed => "lock_failed",
             Self::UnmanagedInstall => "unmanaged_install",
@@ -258,27 +258,27 @@ impl UpgradeFailureKind {
 }
 
 #[derive(Debug)]
-pub(crate) struct UpgradeTelemetry {
-    pub(crate) mode: UpgradeMode,
-    pub(crate) operation: UpgradeOperation,
-    pub(crate) dry_run: bool,
-    pub(crate) suppress_event: bool,
-    pub(crate) status: Option<UpgradeStatus>,
-    pub(crate) applied: Option<bool>,
-    pub(crate) scheduled: Option<bool>,
-    pub(crate) update_available: Option<bool>,
-    pub(crate) update_was_available: Option<bool>,
-    pub(crate) upgrade_attempt_id: Option<String>,
-    pub(crate) managed_install: Option<bool>,
-    pub(crate) self_upgrade_allowed: Option<bool>,
-    pub(crate) auto_upgrade_allowed: Option<bool>,
-    pub(crate) warning_count: Option<CountBucket>,
-    pub(crate) channel: Option<UpgradeChannel>,
-    pub(crate) failure_kind: Option<UpgradeFailureKind>,
+pub struct UpgradeTelemetry {
+    pub mode: UpgradeMode,
+    pub operation: UpgradeOperation,
+    pub dry_run: bool,
+    pub suppress_event: bool,
+    pub status: Option<UpgradeStatus>,
+    pub applied: Option<bool>,
+    pub scheduled: Option<bool>,
+    pub update_available: Option<bool>,
+    pub update_was_available: Option<bool>,
+    pub upgrade_attempt_id: Option<String>,
+    pub managed_install: Option<bool>,
+    pub self_upgrade_allowed: Option<bool>,
+    pub auto_upgrade_allowed: Option<bool>,
+    pub warning_count: Option<CountBucket>,
+    pub channel: Option<UpgradeChannel>,
+    pub failure_kind: Option<UpgradeFailureKind>,
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct DoctorTelemetry {
-    pub(crate) finding_count: Option<CountBucket>,
-    pub(crate) healthy: Option<bool>,
+pub struct DoctorTelemetry {
+    pub finding_count: Option<CountBucket>,
+    pub healthy: Option<bool>,
 }

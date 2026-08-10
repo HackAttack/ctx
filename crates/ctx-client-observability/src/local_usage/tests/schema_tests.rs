@@ -1,10 +1,11 @@
 use std::time::Duration;
 
-use rusqlite::Connection;
-use serde_json::json;
-
 use super::{operation, private_tempdir};
-use crate::local_usage::{store, CompletedOperation, McpInvocation, UsageStoreError};
+use crate::{
+    local_usage::{store, CompletedOperation, McpCompletionFacts, McpInvocation, UsageStoreError},
+    operation_descriptor::ObservedMcpProductOperation,
+};
+use rusqlite::Connection;
 
 #[test]
 fn schema_has_only_spec_26_aggregate_fields_and_content_free_maintenance() {
@@ -90,10 +91,13 @@ fn schema_requires_positive_definition_two_success_and_mcp_output() {
         ),
     )
     .unwrap();
-    let mcp_failure = McpInvocation::recognized("status").unwrap().completed(
-        &json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602}}),
+    let mcp_failure = McpInvocation::from_operation(ObservedMcpProductOperation::Status).completed(
+        &McpCompletionFacts {
+            failed: true,
+            delivered_output_bytes: 17,
+            ..McpCompletionFacts::default()
+        },
         Duration::ZERO,
-        17,
     );
     store::record(root.path(), mcp_failure).unwrap();
 
@@ -132,11 +136,15 @@ fn report_validation_rejects_constraint_bypassed_zero_output_rows() {
         if surface == "cli" {
             store::record(root.path(), operation("doctor")).unwrap();
         } else {
-            let failed = McpInvocation::recognized("status").unwrap().completed(
-                &json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602}}),
-                Duration::ZERO,
-                19,
-            );
+            let failed = McpInvocation::from_operation(ObservedMcpProductOperation::Status)
+                .completed(
+                    &McpCompletionFacts {
+                        failed: true,
+                        delivered_output_bytes: 19,
+                        ..McpCompletionFacts::default()
+                    },
+                    Duration::ZERO,
+                );
             store::record(root.path(), failed).unwrap();
         }
         let conn = Connection::open(store::usage_path(root.path())).unwrap();

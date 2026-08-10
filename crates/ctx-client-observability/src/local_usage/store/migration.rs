@@ -722,9 +722,6 @@ pub(super) fn reject_future_daily_dates(
     Ok(())
 }
 
-pub(crate) fn verify_report_dates(
-    conn: &Connection,
-    now: SystemTime,
-) -> Result<(), UsageStoreError> {
+pub fn verify_report_dates(conn: &Connection, now: SystemTime) -> Result<(), UsageStoreError> {
     reject_future_dates(conn, &utc_day(now))
 }

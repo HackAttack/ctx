@@ -10,119 +10,117 @@ use super::{
 };
 
 mod query;
-mod render;
 mod validation;
 
 use query::query_report;
-pub(crate) use render::pro_conversion_action;
 pub(super) use validation::{validate_rows, validate_rows_for_schema};
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct UsageReport {
-    pub(crate) schema_version: i64,
-    pub(crate) local_only: bool,
-    pub(crate) read_only: bool,
-    pub(crate) enabled: bool,
-    pub(crate) state: &'static str,
-    pub(crate) retention_days: i64,
+pub struct UsageReport {
+    pub schema_version: i64,
+    pub local_only: bool,
+    pub read_only: bool,
+    pub enabled: bool,
+    pub state: &'static str,
+    pub retention_days: i64,
     #[serde(skip)]
-    pub(crate) definition_version: i64,
+    pub definition_version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) definitions: Option<Vec<UsageDefinition>>,
+    pub definitions: Option<Vec<UsageDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) estimates: Option<UsageEstimates>,
+    pub estimates: Option<UsageEstimates>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) error: Option<UsageReportError>,
+    pub error: Option<UsageReportError>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct UsageDefinition {
-    pub(crate) definition_version: i64,
-    pub(crate) ctx_versions: Vec<String>,
-    pub(crate) first_day_utc: String,
-    pub(crate) last_day_utc: String,
-    pub(crate) active_days: u64,
-    pub(crate) summary: UsageSummary,
+pub struct UsageDefinition {
+    pub definition_version: i64,
+    pub ctx_versions: Vec<String>,
+    pub first_day_utc: String,
+    pub last_day_utc: String,
+    pub active_days: u64,
+    pub summary: UsageSummary,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) by_operation: Vec<OperationSummary>,
+    pub by_operation: Vec<OperationSummary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) duration_buckets: Vec<DurationSummary>,
+    pub duration_buckets: Vec<DurationSummary>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct UsageSummary {
-    pub(crate) calls: u64,
-    pub(crate) successful_calls: u64,
-    pub(crate) failed_calls: u64,
-    pub(crate) result_bearing_calls: u64,
-    pub(crate) empty_calls: u64,
-    pub(crate) not_applicable_calls: u64,
-    pub(crate) result_count: u64,
-    pub(crate) citation_count: u64,
-    pub(crate) delivered_output_bytes: u64,
-    pub(crate) delivered_context_bytes: u64,
-    pub(crate) matched_normalized_session_bytes: u64,
-    pub(crate) complete_context_eligible_calls: u64,
-    pub(crate) unavailable_context_eligible_calls: u64,
-    pub(crate) pro_blame: ProBlameSummary,
+pub struct UsageSummary {
+    pub calls: u64,
+    pub successful_calls: u64,
+    pub failed_calls: u64,
+    pub result_bearing_calls: u64,
+    pub empty_calls: u64,
+    pub not_applicable_calls: u64,
+    pub result_count: u64,
+    pub citation_count: u64,
+    pub delivered_output_bytes: u64,
+    pub delivered_context_bytes: u64,
+    pub matched_normalized_session_bytes: u64,
+    pub complete_context_eligible_calls: u64,
+    pub unavailable_context_eligible_calls: u64,
+    pub pro_blame: ProBlameSummary,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct ProBlameSummary {
-    pub(crate) requests: u64,
-    pub(crate) produced_attribution_requests: u64,
-    pub(crate) possible_only_requests: u64,
-    pub(crate) none_requests: u64,
-    pub(crate) error_requests: u64,
-    pub(crate) by_target: Vec<ProBlameTargetSummary>,
+pub struct ProBlameSummary {
+    pub requests: u64,
+    pub produced_attribution_requests: u64,
+    pub possible_only_requests: u64,
+    pub none_requests: u64,
+    pub error_requests: u64,
+    pub by_target: Vec<ProBlameTargetSummary>,
     #[serde(skip)]
     pub(super) not_applicable_target_errors: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ProBlameTargetSummary {
-    pub(crate) target_type: String,
-    pub(crate) requests: u64,
-    pub(crate) produced: u64,
-    pub(crate) possible: u64,
-    pub(crate) none: u64,
-    pub(crate) error: u64,
+pub struct ProBlameTargetSummary {
+    pub target_type: String,
+    pub requests: u64,
+    pub produced: u64,
+    pub possible: u64,
+    pub none: u64,
+    pub error: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct OperationSummary {
-    pub(crate) ctx_version: String,
-    pub(crate) surface: String,
-    pub(crate) operation: String,
-    pub(crate) calls: u64,
-    pub(crate) successful_calls: u64,
-    pub(crate) failed_calls: u64,
-    pub(crate) result_bearing_calls: u64,
-    pub(crate) empty_calls: u64,
-    pub(crate) not_applicable_calls: u64,
-    pub(crate) result_count: u64,
-    pub(crate) citation_count: u64,
-    pub(crate) delivered_output_bytes: u64,
-    pub(crate) delivered_context_bytes: u64,
-    pub(crate) matched_normalized_session_bytes: u64,
-    pub(crate) complete_context_eligible_calls: u64,
-    pub(crate) unavailable_context_eligible_calls: u64,
+pub struct OperationSummary {
+    pub ctx_version: String,
+    pub surface: String,
+    pub operation: String,
+    pub calls: u64,
+    pub successful_calls: u64,
+    pub failed_calls: u64,
+    pub result_bearing_calls: u64,
+    pub empty_calls: u64,
+    pub not_applicable_calls: u64,
+    pub result_count: u64,
+    pub citation_count: u64,
+    pub delivered_output_bytes: u64,
+    pub delivered_context_bytes: u64,
+    pub matched_normalized_session_bytes: u64,
+    pub complete_context_eligible_calls: u64,
+    pub unavailable_context_eligible_calls: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct DurationSummary {
-    pub(crate) duration_bucket: String,
-    pub(crate) calls: u64,
+pub struct DurationSummary {
+    pub duration_bucket: String,
+    pub calls: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct UsageReportError {
-    pub(crate) code: &'static str,
-    pub(crate) message: &'static str,
+pub struct UsageReportError {
+    pub code: &'static str,
+    pub message: &'static str,
 }
 
 impl UsageReport {
-    pub(crate) fn config_error() -> Self {
+    pub fn config_error() -> Self {
         error_report(
             false,
             "local_usage_config_unavailable",
@@ -130,8 +128,8 @@ impl UsageReport {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn ui_test_ready() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ui_test_ready() -> Self {
         let pro_blame = ProBlameSummary {
             requests: 2,
             produced_attribution_requests: 1,
@@ -168,7 +166,7 @@ impl UsageReport {
     }
 }
 
-pub(crate) fn read_report_authorized(
+pub fn read_report_authorized(
     authority: &LocalUsageStorageAuthority,
     control: &UsageControlSnapshot,
     detailed: bool,
@@ -207,8 +205,9 @@ pub(crate) fn read_report_authorized(
 }
 
 #[cfg(test)]
-pub(crate) fn read_report(data_root: &Path, enabled: bool, detailed: bool) -> UsageReport {
-    let authority = crate::observability_composition::local_usage_storage_authority(data_root);
+pub fn read_report(data_root: &Path, enabled: bool, detailed: bool) -> UsageReport {
+    let authority =
+        LocalUsageStorageAuthority::new(data_root.join(super::store::USAGE_FILE), "1.0.0");
     read_report_authorized(
         &authority,
         &UsageControlSnapshot::unversioned(enabled),

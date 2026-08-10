@@ -1,0 +1,31 @@
+[package]
+name = "ctx-client-observability"
+version = "0.26.0"
+description = "Content-free client observability primitives for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+ctx-history-core = { path = "../ctx-history-core" }
+libc.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+same-file = "1.0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile.workspace = true
