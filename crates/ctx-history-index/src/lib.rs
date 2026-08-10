@@ -3,23 +3,14 @@
 //! A Tantivy commit names a durable immutable source-revision manifest, so
 //! readers observe either the previous complete generation or the next one.
 
-mod analyzer;
 mod commit_contract;
-mod contracts;
-mod core_contract;
-mod durable_directory;
 mod identity;
-mod index_document;
 mod merge_policy;
-pub mod policy;
 mod preparation;
 mod publication;
-mod query;
-mod reader;
-mod schema;
-mod search_projection;
 mod staging;
 mod writer_deletion;
+mod writer_options;
 mod writer_publication;
 mod writer_routes;
 mod writer_support;
@@ -36,28 +27,21 @@ pub use commit_contract::{
     RevalidationTarget,
 };
 
-pub(crate) use contracts::{
-    CommitPayload, COMMIT_PAYLOAD_VERSION, INDEX_MEMORY_MIN_PER_THREAD, MAX_DOCUMENT_METADATA_BYTES,
-};
-pub use contracts::{
-    CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount, GenerationManifest,
-    IndexError, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
-    SourceRouteIdentity, SourceRouteMissingState, SourceRouteSnapshot, WriterOptions,
-    GENERATION_MANIFEST_VERSION, LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION,
-    LEXICAL_SEGMENT_MERGE_FAN_IN, MAX_PUBLICATION_METADATA_BYTES,
-};
-pub(crate) use core_contract::{
-    current_core_record_contract_fingerprint, expected_source_generation_policy_hash,
-    validate_core_contract_fingerprint,
-};
 pub use ctx_history_core::CoreRecord;
-pub(crate) use ctx_history_index_generation::{
-    hex, is_generation_id, sha256_hex, MANIFEST_DIRECTORY,
+pub use ctx_history_index_format::policy;
+pub use ctx_history_index_format::project_body_search;
+#[cfg(test)]
+pub(crate) use ctx_history_index_format::required_field;
+pub(crate) use ctx_history_index_format::source_token;
+pub(crate) use ctx_history_index_format::{
+    accumulate_core_record, core_record_accumulator_leaf, core_record_leaf, implicit_source_routes,
+    INDEX_MEMORY_MIN_PER_THREAD,
 };
-pub(crate) use identity::{
-    prior_core_record, register_compact_identity, source_sort_key, source_token,
+#[cfg(test)]
+pub(crate) use ctx_history_index_format::{
+    current_core_record_contract_fingerprint, CommitPayload, COMMIT_PAYLOAD_VERSION,
 };
-pub use policy::{
+pub use ctx_history_index_format::{
     current_semantic_generation_policy, current_semantic_generation_policy_hash,
     current_source_generation_policy, current_source_generation_policy_hash,
     EmbeddingGenerationPolicy, LexicalBodySelection, LexicalGenerationPolicy,
@@ -66,28 +50,21 @@ pub use policy::{
     LEXICAL_SCHEMA_REVISION, LEXICAL_TOKENIZER_REVISION, SEMANTIC_CHUNK_OVERLAP_CHARS,
     SEMANTIC_CHUNK_TARGET_CHARS, SEMANTIC_SOURCE_MAX_CHARS,
 };
-pub use preparation::{
-    CoreRecordPreparer, PreparedCoreRecord, PreparedCoreRecordDraft,
-    PreparedCoreRecordMaterialization,
+pub(crate) use ctx_history_index_format::{
+    fields_from_schema, lexical_schema, validate_schema, Fields, IndexSourceFields,
+};
+pub use ctx_history_index_format::{
+    CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount, GenerationManifest,
+    IndexError, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
+    SourceRouteIdentity, SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
+    LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
+    MAX_PUBLICATION_METADATA_BYTES,
 };
 #[cfg(test)]
-pub(crate) use publication::republish_current_for_qualification;
-pub(crate) use publication::{
-    best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
-    load_active_generation_pointer, load_publication_for_metas, meta_generation, open_slot_index,
-    payload_generation_id, physical_integrity_audit, publish_active_generation_pointer,
-    reclaim_inactive_generation_directories, reclaim_unreferenced_certifications,
-    reclaim_unreferenced_manifests, reconcile_commit_error,
-    republish_current_with_publication_metadata, scrub_and_certify_physical_integrity,
-    searcher_generation, sync_directory, sync_generation, verify_or_certify_physical_integrity,
-    verify_physical_integrity, verify_publication_candidate, verify_searcher,
-    verify_searcher_structure, write_manifest, ActiveGenerationPointer, CurrentRepublishOutcome,
-    GenerationSlot, PhysicalIntegrityAudit, PointerPublicationOutcome, GENERATION_WRITER_LOCK_FILE,
-    INDEX_GENERATIONS_DIRECTORY,
-};
-#[cfg(test)]
-pub(crate) use publication::{manifest_path, physical_integrity_digest};
-pub use query::{
+pub(crate) use ctx_history_index_generation::sha256_hex;
+pub(crate) use ctx_history_index_generation::{hex, is_generation_id, MANIFEST_DIRECTORY};
+pub use ctx_history_index_query::VerifiedIndex;
+pub use ctx_history_index_query::{
     AgentScope, CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
     CopiedEventLineageRelationshipCount, CopiedEventLineageResolution, CoreEventBatch,
     CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeDirection, CoreEventRangeDomain,
@@ -106,11 +83,30 @@ pub use query::{
     MAX_SESSION_EVENT_PAGE_ITEMS, MAX_SOURCE_EVENT_PAGE_ITEMS, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
     SHOW_COPIED_EVENT_LINEAGE_POLICY,
 };
-pub use reader::VerifiedIndex;
+pub(crate) use identity::{prior_core_record, register_compact_identity};
+pub use preparation::{
+    CoreRecordPreparer, PreparedCoreRecord, PreparedCoreRecordDraft,
+    PreparedCoreRecordMaterialization,
+};
 #[cfg(test)]
-pub(crate) use schema::required_field;
-pub(crate) use schema::{fields_from_schema, lexical_schema, validate_schema, Fields};
-pub use search_projection::project_body_search;
+pub(crate) use publication::republish_current_for_qualification;
+#[cfg(test)]
+pub(crate) use publication::verify_searcher;
+pub(crate) use publication::{
+    best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
+    load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
+    publish_active_generation_pointer, reclaim_inactive_generation_directories,
+    reclaim_unreferenced_certifications, reclaim_unreferenced_manifests, reconcile_commit_error,
+    republish_current_with_publication_metadata, searcher_generation, sync_directory,
+    sync_generation, verify_physical_integrity, write_manifest, ActiveGenerationPointer,
+    CurrentRepublishOutcome, GenerationSlot, PointerPublicationOutcome,
+    GENERATION_WRITER_LOCK_FILE, INDEX_GENERATIONS_DIRECTORY,
+};
+#[cfg(test)]
+pub(crate) use publication::{
+    load_publication_for_metas, manifest_path, physical_integrity_digest,
+};
+pub use writer_options::WriterOptions;
 pub use writer_support::{
     BaseEventIdentityLookup, CandidateEventOriginResolution, CandidateEventOriginResolver,
 };
@@ -131,20 +127,25 @@ use ctx_history_core::{
 #[cfg(test)]
 use tantivy::directory::INDEX_WRITER_LOCK;
 #[cfg(test)]
+use tantivy::ReloadPolicy;
+#[cfg(test)]
 use tantivy::TantivyDocument;
 use tantivy::{
     collector::Count,
     directory::{error::LockError, Directory, DirectoryLock, Lock},
     query::TermQuery,
     schema::{Field, IndexRecordOption},
-    Index, IndexWriter, ReloadPolicy, Searcher, Term,
+    Index, IndexWriter, Searcher, Term,
 };
 use uuid::Uuid;
 
-use ctx_history_index_generation::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
-use index_document::IndexDocument;
 #[cfg(test)]
-use index_document::{core_content_bytes, IndexSourceFields};
+use ctx_history_index_format::core_content_bytes;
+use ctx_history_index_format::{
+    load_active_publication_authority, open_pinned_publication, ActivePublicationAuthority,
+    IndexDocument, OpenedPinnedPublication, PinnedPublication,
+};
+use ctx_history_index_generation::{reclaim_abandoned_atomic_writes, DurableMmapDirectory};
 use merge_policy::LexicalMergePolicy;
 use staging::{finish_identical_staging, PendingSource as StagedPendingSource, PendingSourceMode};
 use writer_support::{
@@ -235,6 +236,23 @@ pub fn generation_incompatibility_requires_rebuild(error: &IndexError) -> bool {
     )
 }
 
+fn classify_active_integrity_failure(
+    root: &Path,
+    active: &GenerationSlot,
+    error: IndexError,
+) -> IndexError {
+    let detail = match writer_support::mark_active_generation_for_rebuild(root, active) {
+        Ok(()) => error.to_string(),
+        Err(marker_error) => {
+            format!("{error}; persisting the rebuild decision also failed: {marker_error}")
+        }
+    };
+    IndexError::ActiveGenerationNeedsRebuild {
+        generation_id: active.generation_id().to_owned(),
+        detail,
+    }
+}
+
 #[cfg(test)]
 type GenerationPathHook = Box<dyn FnOnce(&Path) + Send>;
 
@@ -247,10 +265,8 @@ pub struct GenerationWriter {
     writer: Option<IndexWriter<IndexDocument>>,
     writer_options: WriterOptions,
     fields: Fields,
-    base_manifest: Option<GenerationManifest>,
+    base_publication: Option<PinnedPublication>,
     base_opstamp: u64,
-    base_searcher: Option<Searcher>,
-    base_publication_metadata: Option<std::sync::Arc<[u8]>>,
     core_record_preparer: CoreRecordPreparer,
     complete_inventories: Vec<CertifiedSourceInventory>,
     pending: HashMap<String, PendingSource>,
@@ -320,7 +336,11 @@ impl GenerationWriter {
     /// Captures an exact event-identity lookup pinned to this writer's base generation.
     pub fn base_event_identity_lookup(&self) -> BaseEventIdentityLookup {
         BaseEventIdentityLookup {
-            searcher: self.base_searcher.clone(),
+            searcher: self
+                .base_publication
+                .as_ref()
+                .map(PinnedPublication::searcher)
+                .cloned(),
             event_id_field: self.fields.event_id,
         }
     }
@@ -356,15 +376,15 @@ impl GenerationWriter {
         reclaim_abandoned_atomic_writes(&root)?;
         reclaim_abandoned_atomic_writes(&root.join(MANIFEST_DIRECTORY))?;
 
-        let (active_pointer, mut pointer_requires_rebuild) =
-            match load_active_generation_pointer(&root) {
+        let (active_authority, mut pointer_requires_rebuild) =
+            match load_active_publication_authority(&root) {
                 Ok(pointer) => (pointer, false),
                 Err(error) if generation_incompatibility_requires_rebuild(&error) => (None, true),
                 Err(error) => return Err(error),
             };
         if !pointer_requires_rebuild {
-            if let Some(pointer) = active_pointer.as_ref() {
-                let schema_check = open_slot_index(&root, pointer.active())
+            if let Some(authority) = active_authority.as_ref() {
+                let schema_check = open_slot_index(&root, authority.pointer().active())
                     .and_then(|index| validate_schema(&index.schema()));
                 if let Err(error) = schema_check {
                     if generation_incompatibility_requires_rebuild(&error) {
@@ -379,14 +399,17 @@ impl GenerationWriter {
             }
         }
         if !pointer_requires_rebuild {
+            let active_pointer_ref = active_authority
+                .as_ref()
+                .map(ActivePublicationAuthority::pointer);
             let retention_lease = load_generation_retention_lease(&root)?;
             reclaim_inactive_generation_directories(
                 &root,
-                active_pointer.as_ref(),
+                active_pointer_ref,
                 retention_lease.as_ref(),
             )?;
-            let mut retained_generation_ids = active_pointer
-                .iter()
+            let mut retained_generation_ids = active_pointer_ref
+                .into_iter()
                 .flat_map(|pointer| std::iter::once(pointer.active()).chain(pointer.previous()))
                 .map(|slot| slot.generation_id().to_owned())
                 .collect::<Vec<_>>();
@@ -398,7 +421,7 @@ impl GenerationWriter {
             reclaim_unreferenced_manifests(&root, &retained_generation_ids)?;
             reclaim_unreferenced_certifications(
                 &root,
-                active_pointer.as_ref(),
+                active_pointer_ref,
                 retention_lease.as_ref(),
             )?;
         }
@@ -411,9 +434,9 @@ impl GenerationWriter {
                 // reclaimed during staging.
                 true
             } else if let Some(marker) = load_active_generation_rebuild_marker(&root)? {
-                if active_pointer.as_ref().is_some_and(|pointer| {
-                    pointer.active().generation_id() == marker.generation_id
-                        && pointer.active().directory() == marker.directory
+                if active_authority.as_ref().is_some_and(|authority| {
+                    authority.pointer().active().generation_id() == marker.generation_id
+                        && authority.pointer().active().directory() == marker.directory
                 }) {
                     // The prior physical integrity check failed. Keep serving the
                     // old pointer until a fresh source-authoritative candidate is
@@ -431,47 +454,14 @@ impl GenerationWriter {
             };
 
             let reusable_generation = if !rebuild_marked {
-                active_pointer
+                active_authority
                     .as_ref()
-                    .map(|pointer| {
-                        let index = open_slot_index(&root, pointer.active())?;
-                        validate_schema(&index.schema())?;
-                        let fields = fields_from_schema(&index.schema())?;
-                        let metas = index.load_metas()?;
-                        let (manifest, publication_metadata, searcher) = if metas.payload.is_some()
-                        {
-                            let publication = load_publication_for_metas(&root, &metas)?;
-                            let manifest = publication.manifest;
-                            if pointer.active().generation_id() != manifest.generation_id()? {
-                                return Err(IndexError::InvalidActiveGenerationPointer);
-                            }
-                            let reader = index
-                                .reader_builder()
-                                .reload_policy(ReloadPolicy::Manual)
-                                .try_into()?;
-                            let searcher = reader.searcher();
-                            if searcher_generation(&searcher) != meta_generation(&metas) {
-                                return Err(IndexError::ConcurrentGenerationChange);
-                            }
-                            verify_searcher_structure(&searcher, &manifest)?;
-                            (Some(manifest), publication.metadata, Some(searcher))
-                        } else if metas.segments.is_empty() {
-                            (None, None, None)
-                        } else {
-                            return Err(IndexError::UnboundIndexState);
-                        };
-                        Ok((
-                            index,
-                            fields,
-                            manifest,
-                            metas.opstamp,
-                            searcher,
-                            publication_metadata,
-                        ))
-                    })
+                    .map(|authority| open_pinned_publication(&root, authority))
                     .transpose()
                     .or_else(|error| {
-                        if generation_incompatibility_requires_rebuild(&error) {
+                        if matches!(error, IndexError::ChecksumMismatch) {
+                            Err(error)
+                        } else if generation_incompatibility_requires_rebuild(&error) {
                             Ok(None)
                         } else {
                             Err(error)
@@ -480,50 +470,44 @@ impl GenerationWriter {
             } else {
                 None
             };
+            let active_pointer = active_authority.map(ActivePublicationAuthority::into_pointer);
 
-            let (
-                index,
-                candidate_directory_name,
-                fields,
-                base_manifest,
-                base_opstamp,
-                base_searcher,
-                base_publication_metadata,
-            ) = if let Some((index, fields, manifest, opstamp, searcher, publication_metadata)) =
-                reusable_generation
-            {
-                (
-                    index,
-                    None,
-                    fields,
-                    manifest,
-                    opstamp,
-                    searcher,
-                    publication_metadata,
-                )
-            } else {
-                // The active slot is absent, physically rejected, or belongs to
-                // an incompatible disposable generation. Build an empty current
-                // candidate and retain only the pointer as publication authority.
-                let candidate = create_candidate_generation(&root, None)?;
-                validate_schema(&candidate.index.schema())?;
-                let fields = fields_from_schema(&candidate.index.schema())?;
-                let metas = candidate.index.load_metas()?;
-                (
-                    candidate.index,
-                    Some(candidate.directory_name),
-                    fields,
-                    None,
-                    metas.opstamp,
-                    None,
-                    None,
-                )
-            };
+            let (index, candidate_directory_name, fields, base_publication, base_opstamp) =
+                match reusable_generation {
+                    Some(OpenedPinnedPublication::Published(publication)) => {
+                        let (index, fields, opstamp, publication) =
+                            publication.into_writer_parts()?;
+                        (index, None, fields, Some(publication), opstamp)
+                    }
+                    Some(OpenedPinnedPublication::Empty(empty)) => {
+                        let (index, fields, opstamp) = empty.into_parts();
+                        (index, None, fields, None, opstamp)
+                    }
+                    None => {
+                        // The active slot is absent, physically rejected, or belongs to
+                        // an incompatible disposable generation. Build an empty current
+                        // candidate and retain only the pointer as publication authority.
+                        let candidate = create_candidate_generation(&root, None)?;
+                        validate_schema(&candidate.index.schema())?;
+                        let fields = fields_from_schema(&candidate.index.schema())?;
+                        let metas = candidate.index.load_metas()?;
+                        (
+                            candidate.index,
+                            Some(candidate.directory_name),
+                            fields,
+                            None,
+                            metas.opstamp,
+                        )
+                    }
+                };
             let preparation_base = active_pointer.as_ref().and_then(|pointer| {
-                base_searcher
-                    .as_ref()
-                    .filter(|_| base_manifest.is_some())
-                    .map(|searcher| (root.clone(), pointer.active().clone(), searcher.clone()))
+                base_publication.as_ref().map(|publication| {
+                    (
+                        root.clone(),
+                        pointer.active().clone(),
+                        publication.searcher().clone(),
+                    )
+                })
             });
             let core_record_preparer = CoreRecordPreparer::new(
                 fields,
@@ -533,7 +517,7 @@ impl GenerationWriter {
                 preparation_base,
             );
             let mut source_identities = HashMap::new();
-            if let Some(manifest) = &base_manifest {
+            if let Some(manifest) = base_publication.as_ref().map(PinnedPublication::manifest) {
                 for source in &manifest.sources {
                     register_compact_identity(
                         &mut source_identities,
@@ -552,10 +536,8 @@ impl GenerationWriter {
                 writer: None,
                 writer_options: options,
                 fields,
-                base_manifest,
+                base_publication,
                 base_opstamp,
-                base_searcher,
-                base_publication_metadata,
                 core_record_preparer,
                 complete_inventories: Vec::new(),
                 pending: HashMap::new(),
@@ -593,7 +575,9 @@ impl GenerationWriter {
     /// Returns the base generation captured after this writer acquired
     /// Tantivy's exclusive writer lock.
     pub fn base_manifest(&self) -> Option<&GenerationManifest> {
-        self.base_manifest.as_ref()
+        self.base_publication
+            .as_ref()
+            .map(PinnedPublication::manifest)
     }
 
     /// Registers one complete provider inventory captured by the current
@@ -630,7 +614,7 @@ impl GenerationWriter {
         if self.writer.is_some() || !self.deletions.is_empty() {
             return Ok(None);
         }
-        let Some(base) = self.base_manifest.as_ref() else {
+        let Some(base) = self.base_manifest() else {
             return Ok(None);
         };
         if !self.observed_missing_routes.is_empty() || !self.route_deletions.is_empty() {
@@ -779,8 +763,7 @@ impl GenerationWriter {
             return Err(IndexError::DuplicateSource(source.identity().to_string()));
         }
         let base = self
-            .base_manifest
-            .as_ref()
+            .base_manifest()
             .and_then(|manifest| {
                 manifest
                     .sources
@@ -854,7 +837,7 @@ impl GenerationWriter {
         if matches!(&pending_source.mode, PendingSourceMode::Retain { .. }) {
             return Err(IndexError::DocumentSourceNotActive);
         }
-        if is_append && self.base_searcher.is_none() {
+        if is_append && self.base_publication.is_none() {
             return Err(IndexError::AppendBaseMismatch);
         }
         let preparation::PreparedCoreRecordParts {
@@ -866,7 +849,7 @@ impl GenerationWriter {
             .pending
             .get_mut(&token)
             .ok_or(IndexError::DocumentSourceNotActive)?;
-        staging::accumulate_core_record(
+        accumulate_core_record(
             &mut pending.core_record_accumulator,
             &record_accumulator_leaf,
         );

@@ -57,7 +57,11 @@ impl GenerationWriter {
         }
         self.route_publication_revalidations
             .push((route_identity.clone(), Box::new(revalidate_missing)));
-        let Some(base) = self.base_manifest.as_ref() else {
+        let Some(base) = self
+            .base_publication
+            .as_ref()
+            .map(PinnedPublication::manifest)
+        else {
             return Ok(CertifiedMissingRouteOutcome {
                 retained_sources: Vec::new(),
                 deleted: false,

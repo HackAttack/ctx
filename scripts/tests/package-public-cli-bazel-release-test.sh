@@ -60,7 +60,9 @@ mkdir -p \
   "${repo}/security" \
   "${repo}/contracts" \
   "${repo}/crates/ctx-cli" \
+  "${repo}/crates/ctx-history-index-format" \
   "${repo}/crates/ctx-history-index" \
+  "${repo}/crates/ctx-history-index-query" \
   "${repo}/tests/fixtures/custom-history-jsonl" \
   "${repo}/bazel-out/k8-opt/bin/crates/ctx-cli" \
   "${repo}/inputs" \
@@ -100,6 +102,10 @@ cp "${source_root}/MODULE.bazel.lock" "${repo}/MODULE.bazel.lock"
 cp "${source_root}/crates/ctx-cli/Cargo.toml" "${repo}/crates/ctx-cli/Cargo.toml"
 cp "${source_root}/crates/ctx-history-index/Cargo.toml" \
   "${repo}/crates/ctx-history-index/Cargo.toml"
+cp "${source_root}/crates/ctx-history-index-format/Cargo.toml" \
+  "${repo}/crates/ctx-history-index-format/Cargo.toml"
+cp "${source_root}/crates/ctx-history-index-query/Cargo.toml" \
+  "${repo}/crates/ctx-history-index-query/Cargo.toml"
 cp "${source_root}/tests/fixtures/custom-history-jsonl/basic.jsonl" \
   "${repo}/tests/fixtures/custom-history-jsonl/basic.jsonl"
 
@@ -452,7 +458,9 @@ EOF
 cat >"${repo}/inputs/license-materials.txt" <<'EOF'
 main	_main/Cargo.toml
 main	_main/crates/ctx-cli/Cargo.toml
+main	_main/crates/ctx-history-index-format/Cargo.toml
 main	_main/crates/ctx-history-index/Cargo.toml
+main	_main/crates/ctx-history-index-query/Cargo.toml
 EOF
 ln -s "${repo}/inputs/sbom-inventory.txt" \
   "${route_runfiles}/sbom-inventory.txt"

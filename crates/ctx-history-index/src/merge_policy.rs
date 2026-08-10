@@ -5,10 +5,10 @@ use tantivy::{
     indexer::{LogMergePolicy, MergeCandidate, MergePolicy},
 };
 
-use crate::contracts::{
+use crate::LEXICAL_SEGMENT_MERGE_FAN_IN;
+use ctx_history_index_format::{
     LEXICAL_DELETED_DOCUMENT_RECLAIM_DENOMINATOR, LEXICAL_DELETED_DOCUMENT_RECLAIM_NUMERATOR,
 };
-use crate::LEXICAL_SEGMENT_MERGE_FAN_IN;
 
 #[derive(Debug)]
 pub(crate) struct LexicalMergePolicy {

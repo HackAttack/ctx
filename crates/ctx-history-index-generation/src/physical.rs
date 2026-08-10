@@ -31,9 +31,9 @@ const PHYSICAL_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const TANTIVY_META_FILE: &str = "meta.json";
 
 #[derive(Debug)]
-struct PhysicalFileDigest {
-    artifact: ArtifactIdentity,
-    sha256: [u8; 32],
+pub(super) struct PhysicalFileDigest {
+    pub(super) artifact: ArtifactIdentity,
+    pub(super) sha256: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -46,7 +46,7 @@ struct PhysicalDigestPart {
 #[derive(Debug)]
 pub struct PhysicalIntegrityAudit {
     digest: String,
-    artifacts: Vec<ArtifactIdentity>,
+    files: Vec<PhysicalFileDigest>,
 }
 
 impl PhysicalIntegrityAudit {
@@ -54,14 +54,14 @@ impl PhysicalIntegrityAudit {
         &self.digest
     }
 
-    pub(super) fn artifacts(&self) -> &[ArtifactIdentity] {
-        &self.artifacts
+    pub(super) fn files(&self) -> &[PhysicalFileDigest] {
+        &self.files
     }
 
     pub(super) fn artifact_paths(&self) -> Vec<String> {
-        self.artifacts
+        self.files
             .iter()
-            .map(|artifact| artifact.path.clone())
+            .map(|file| file.artifact.path.clone())
             .collect()
     }
 }
@@ -129,8 +129,10 @@ pub fn physical_integrity_audit(
         })
         .collect::<Vec<_>>();
     let digest = canonical_physical_integrity_digest(&parts)?;
-    let artifacts = entries.into_iter().map(|entry| entry.artifact).collect();
-    Ok(PhysicalIntegrityAudit { digest, artifacts })
+    Ok(PhysicalIntegrityAudit {
+        digest,
+        files: entries,
+    })
 }
 
 /// Verifies a generation against the physical authority in its pointer slot.

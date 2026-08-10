@@ -7,7 +7,7 @@ use std::{
 
 #[cfg(unix)]
 use std::{
-    fs::{FileTimes, OpenOptions},
+    fs::{File, FileTimes, OpenOptions},
     io::{Read, Seek, Write},
 };
 
@@ -313,6 +313,95 @@ fn same_size_restored_mtime_mutation_and_symlink_fail_closed() {
         Err(IndexError::ChecksumMismatch) | Err(IndexError::Tantivy(_))
     ));
     assert_eq!(crate::publication::hashed_artifact_bytes(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn crc_valid_active_segment_mutation_is_rejected_before_pinning() {
+    let (temp, _, _) = published_fixture("crc-valid-before-pinning.jsonl");
+    rewrite_active_store_with_valid_crc(temp.path());
+
+    let error = match GenerationWriter::open(temp.path(), WriterOptions::default()) {
+        Ok(_) => panic!("mutated active segment unexpectedly became a writer base"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, IndexError::ChecksumMismatch));
+    assert!(!temp
+        .path()
+        .join("active-generation-rebuild-required.json")
+        .exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn crc_valid_retained_segment_mutation_cannot_be_rebound_by_mutating_publication() {
+    let (temp, source, baseline) = published_fixture("crc-valid-retained-base.jsonl");
+    let pointer_before = fs::read(temp.path().join("active-generation.json")).unwrap();
+    let mut append = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let base = append.begin_source_append(source.clone()).unwrap().clone();
+
+    rewrite_active_store_with_valid_crc(temp.path());
+    append
+        .add_core_record(document(
+            &source,
+            2,
+            "candidate must not rebind altered base bytes",
+        ))
+        .unwrap();
+    append
+        .certify_source_append(
+            CertifiedSourceAppend::certify(
+                &base,
+                appendable_certificate(&source, 2, 2, 20),
+                10,
+                [1; 32],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let error = append.commit(|_| true).unwrap_err();
+    assert!(matches!(
+        error,
+        IndexError::ActiveGenerationNeedsRebuild { generation_id, .. }
+            if generation_id == baseline.generation_id
+    ));
+    assert_eq!(
+        fs::read(temp.path().join("active-generation.json")).unwrap(),
+        pointer_before
+    );
+}
+
+#[cfg(unix)]
+fn rewrite_active_store_with_valid_crc(root: &Path) -> PathBuf {
+    const FOOTER_MAGIC: u32 = 1337;
+
+    let path = active_store_path(root);
+    let mut bytes = fs::read(&path).unwrap();
+    assert!(bytes.len() > 8);
+    let trailer = bytes.len() - 8;
+    let footer_len = u32::from_le_bytes(bytes[trailer..trailer + 4].try_into().unwrap()) as usize;
+    assert_eq!(
+        u32::from_le_bytes(bytes[trailer + 4..].try_into().unwrap()),
+        FOOTER_MAGIC
+    );
+    let footer_start = trailer.checked_sub(footer_len).unwrap();
+    assert!(footer_start > 0);
+    let mut footer: serde_json::Value =
+        serde_json::from_slice(&bytes[footer_start..trailer]).unwrap();
+    bytes[footer_start / 2] ^= 0x5a;
+    footer["crc"] = serde_json::Value::from(crc32fast::hash(&bytes[..footer_start]));
+    let footer = serde_json::to_vec(&footer).unwrap();
+    bytes.truncate(footer_start);
+    bytes.extend_from_slice(&footer);
+    bytes.extend_from_slice(&u32::try_from(footer.len()).unwrap().to_le_bytes());
+    bytes.extend_from_slice(&FOOTER_MAGIC.to_le_bytes());
+    fs::write(&path, bytes).unwrap();
+    File::open(&path).unwrap().sync_all().unwrap();
+    path
 }
 
 fn active_store_path(root: &Path) -> PathBuf {

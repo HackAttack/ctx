@@ -23,10 +23,10 @@ use std::{
     time::Instant,
 };
 
-use crate::{
-    durable_directory::{AtomicWriteStage, AtomicWriteTestHookGuard},
-    publication::{CloneTestHookGuard, CloneTestOptions, RepublishStage, RepublishTestHookGuard},
+use crate::publication::{
+    CloneTestHookGuard, CloneTestOptions, RepublishStage, RepublishTestHookGuard,
 };
+use ctx_history_index_generation::{AtomicWriteStage, AtomicWriteTestHookGuard};
 
 mod process;
 mod topology;
@@ -558,14 +558,14 @@ fn build_generated_predecessor(root: &Path, corpus: CorpusSpec) {
 }
 
 fn stored_payload(index: &VerifiedIndex) -> Vec<u8> {
-    let fields = fields_from_schema(index.searcher.schema()).unwrap();
+    let fields = fields_from_schema(index.test_searcher().schema()).unwrap();
     let mut records = index
-        .searcher
+        .test_searcher()
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .map(|address| {
-            let document: TantivyDocument = index.searcher.doc(address).unwrap();
+            let document: TantivyDocument = index.test_searcher().doc(address).unwrap();
             let encoded = document
                 .get_first(fields.core_record)
                 .and_then(|value| value.as_bytes())

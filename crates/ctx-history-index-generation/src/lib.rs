@@ -21,7 +21,8 @@ pub use certification::{
 };
 pub use certification::{
     certify_activated_generation, reclaim_unreferenced_certifications,
-    scrub_and_certify_physical_integrity, verify_or_certify_physical_integrity,
+    scrub_and_certify_physical_integrity, verify_certified_physical_integrity,
+    verify_or_certify_physical_integrity, CertifiedPhysicalIntegrity,
 };
 pub use clone::{create_authenticated_republish_candidate, RepublishCandidate};
 #[cfg(all(

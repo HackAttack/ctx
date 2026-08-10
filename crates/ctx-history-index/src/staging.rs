@@ -41,8 +41,9 @@ impl GenerationWriter {
             return Err(IndexError::DuplicateSource(source.identity().to_string()));
         }
         let base =
-            self.base_manifest
+            self.base_publication
                 .as_ref()
+                .map(PinnedPublication::manifest)
                 .and_then(|manifest| {
                     manifest.sources.iter().find(|candidate| {
                         candidate.observation().source().exact_descriptor_eq(source)
@@ -77,42 +78,6 @@ fn retained_core_records_match(base: &CertifiedSource, current: &CertifiedSource
         && base.counts() == current.counts()
 }
 
-pub(super) fn core_record_leaf(
-    event_id: ctx_history_core::StableEntityId,
-    encoded_core_record: &[u8],
-) -> Result<[u8; 32]> {
-    Ok(ctx_history_core::core_record_leaf_digest(
-        event_id,
-        encoded_core_record,
-    )?)
-}
-
-pub(super) fn core_record_accumulator_leaf(
-    event_id: ctx_history_core::StableEntityId,
-    record_leaf: &[u8; 32],
-) -> Result<[u8; 32]> {
-    Ok(ctx_history_core::core_record_accumulator_leaf_digest(
-        event_id,
-        record_leaf,
-    )?)
-}
-
-/// Adds a domain-separated record leaf to the source's commutative 256-bit
-/// accumulator modulo 2^256. This lets append publication combine the prior
-/// commitment with its staged delta without reading the retained prefix.
-pub(super) fn accumulate_core_record(accumulator: &mut [u8; 32], record_leaf_or_delta: &[u8; 32]) {
-    let mut carry = 0_u16;
-    for (current, addend) in accumulator
-        .iter_mut()
-        .rev()
-        .zip(record_leaf_or_delta.iter().rev())
-    {
-        let sum = u16::from(*current) + u16::from(*addend) + carry;
-        *current = sum as u8;
-        carry = sum >> 8;
-    }
-}
-
 fn source_record_aggregate(
     source: &SourceKey,
     indexed_documents: u64,
@@ -130,8 +95,9 @@ pub(super) fn manifest_record_aggregates(
     sources: &[CertifiedSource],
 ) -> Result<Vec<SourceCoreRecordAggregate>> {
     let mut base_aggregates = generation
-        .base_manifest
+        .base_publication
         .as_ref()
+        .map(PinnedPublication::manifest)
         .map(|manifest| {
             manifest
                 .core_record_aggregates
@@ -229,13 +195,13 @@ pub(super) fn finish_identical_staging<F, I>(
     manifest: &GenerationManifest,
     revalidate: &mut F,
     revalidate_inventory: &mut I,
-) -> Result<Option<CommitReceipt>>
+) -> Result<bool>
 where
     F: FnMut(RevalidationTarget<'_>) -> bool,
     I: FnMut(&CertifiedSourceInventory) -> bool,
 {
     if !staged_manifest_matches_base(generation, manifest)? {
-        return Ok(None);
+        return Ok(false);
     }
 
     for pending in generation.pending.values() {
@@ -270,9 +236,8 @@ where
         }
     }
 
-    let base = generation
-        .base_manifest
-        .clone()
+    generation
+        .base_manifest()
         .ok_or(IndexError::WriterInvariant(
             "staged no-op is missing its verified base manifest",
         ))?;
@@ -281,7 +246,7 @@ where
     ))?;
     writer.rollback()?;
     writer.wait_merging_threads()?;
-    CommitReceipt::from_manifest(generation.base_opstamp, base).map(Some)
+    Ok(true)
 }
 
 fn staged_manifest_matches_base(
@@ -291,7 +256,11 @@ fn staged_manifest_matches_base(
     if generation.writer.is_none() {
         return Ok(false);
     }
-    let Some(base) = generation.base_manifest.as_ref() else {
+    let Some(base) = generation
+        .base_publication
+        .as_ref()
+        .map(PinnedPublication::manifest)
+    else {
         return Ok(false);
     };
     if base.sources.iter().any(|source| {

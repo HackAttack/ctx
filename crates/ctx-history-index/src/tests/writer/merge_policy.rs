@@ -19,7 +19,7 @@ fn production_merge_policy_bounds_repeated_tiny_appends_amortized() {
 
     let initial_segments = VerifiedIndex::open(temp.path())
         .unwrap()
-        .searcher
+        .test_searcher()
         .segment_readers()
         .len();
     let append_count = LEXICAL_SEGMENT_MERGE_FAN_IN * 2 + 1;
@@ -58,7 +58,7 @@ fn production_merge_policy_bounds_repeated_tiny_appends_amortized() {
 
         let current_segments = VerifiedIndex::open(temp.path())
             .unwrap()
-            .searcher
+            .test_searcher()
             .segment_readers()
             .len();
         assert!(
@@ -246,7 +246,7 @@ fn production_merge_policy_bounds_repeated_substantial_replacements() {
 
     let segment_stats = || {
         let index = VerifiedIndex::open_pinned(temp.path()).unwrap();
-        let segments = index.searcher.segment_readers();
+        let segments = index.test_searcher().segment_readers();
         for segment in segments {
             assert!(
                 u64::from(segment.num_deleted_docs()) * 4 <= u64::from(segment.max_doc()),

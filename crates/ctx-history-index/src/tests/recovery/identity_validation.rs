@@ -307,10 +307,13 @@ fn verified_generation_rejects_a_forged_duplicate_event_identity() {
     writer.commit(|_| true).unwrap();
 
     let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let addresses = pinned.searcher.search(&AllQuery, &DocSetCollector).unwrap();
+    let addresses = pinned
+        .test_searcher()
+        .search(&AllQuery, &DocSetCollector)
+        .unwrap();
     let address = addresses.into_iter().next().unwrap();
-    let duplicate = indexed_document(decoded_stored_core(&pinned.searcher, address));
-    let index = pinned.searcher.index().clone();
+    let duplicate = indexed_document(decoded_stored_core(pinned.test_searcher(), address));
+    let index = pinned.test_searcher().index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -346,15 +349,15 @@ fn verified_generation_rejects_forged_source_ownership() {
     writer.commit(|_| true).unwrap();
 
     let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.searcher.schema()).unwrap();
+    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
     let address = pinned
-        .searcher
+        .test_searcher()
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
-    let document = indexed_document(decoded_stored_core(&pinned.searcher, address));
+    let document = indexed_document(decoded_stored_core(pinned.test_searcher(), address));
     let mut forged = TantivyDocument::default();
     for (field, value) in document.field_values() {
         if field != fields.source_key {
@@ -362,7 +365,7 @@ fn verified_generation_rejects_forged_source_ownership() {
         }
     }
     forged.add_text(fields.source_key, source_token(&second));
-    let index = pinned.searcher.index().clone();
+    let index = pinned.test_searcher().index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,
@@ -401,15 +404,18 @@ fn verified_generation_rejects_malformed_stored_core_during_exhaustive_audit() {
     writer.commit(|_| true).unwrap();
 
     let pinned = VerifiedIndex::open(temp.path()).unwrap();
-    let fields = fields_from_schema(pinned.searcher.schema()).unwrap();
+    let fields = fields_from_schema(pinned.test_searcher().schema()).unwrap();
     let address = pinned
-        .searcher
+        .test_searcher()
         .search(&AllQuery, &DocSetCollector)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
-    let document = pinned.searcher.doc::<TantivyDocument>(address).unwrap();
+    let document = pinned
+        .test_searcher()
+        .doc::<TantivyDocument>(address)
+        .unwrap();
     let mut forged = TantivyDocument::default();
     for (field, value) in document.field_values() {
         if field != fields.core_record && field != fields.core_record_encoded_bytes {
@@ -418,7 +424,7 @@ fn verified_generation_rejects_malformed_stored_core_during_exhaustive_audit() {
     }
     forged.add_u64(fields.core_record_encoded_bytes, 1);
     forged.add_bytes(fields.core_record, b"{");
-    let index = pinned.searcher.index().clone();
+    let index = pinned.test_searcher().index().clone();
     publish_unchecked_generation(
         temp.path(),
         &index,

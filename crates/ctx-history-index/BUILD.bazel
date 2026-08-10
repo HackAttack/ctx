@@ -23,6 +23,7 @@ COMMON_RUSTC_ENV = {
 }
 
 RUST_SRCS = glob(["src/**/*.rs"])
+RUST_TEST_SRCS = RUST_SRCS
 
 PROD_SRCS = glob(
     ["src/**/*.rs"],
@@ -31,13 +32,17 @@ PROD_SRCS = glob(
 
 CTX_HISTORY_INDEX_DEPS = [
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-index-format:lib",
     "//crates/ctx-history-index-generation:lib",
+    "//crates/ctx-history-index-query:lib",
     "//crates/ctx-semantic-model:lib",
 ]
 
 CTX_HISTORY_INDEX_TEST_DEPS = [
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-index-format:test_support_lib",
     "//crates/ctx-history-index-generation:test_support_lib",
+    "//crates/ctx-history-index-query:test_support_lib",
     "//crates/ctx-semantic-model:lib",
 ]
 
@@ -53,9 +58,30 @@ rust_library(
     rustc_env = COMMON_RUSTC_ENV,
 )
 
+rust_library(
+    name = "test_support_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_history_index",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_HISTORY_INDEX_TEST_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    rustc_env = COMMON_RUSTC_ENV,
+    rustc_flags = ['--cfg=feature="test-support"'],
+)
+
+# Compatibility label for the capture conformance macro. The executable and
+# inventory authority live in the query package.
+alias(
+    name = "mcp_attribution_search_tests",
+    actual = "//crates/ctx-history-index-query:mcp_attribution_search_tests",
+)
+
 ctx_rust_test(
     name = "unit_tests",
-    srcs = RUST_SRCS,
+    srcs = RUST_TEST_SRCS,
     crate_name = "ctx_history_index",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
@@ -77,7 +103,7 @@ ctx_rust_test(
 
 ctx_rust_test(
     name = "republish_fault_tests",
-    srcs = RUST_SRCS,
+    srcs = RUST_TEST_SRCS,
     crate_name = "ctx_history_index_republish_faults",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
@@ -107,7 +133,7 @@ ctx_rust_test(
 # uses the same harness but keeps noisy wall/CPU/RSS thresholds off ordinary CI.
 ctx_rust_test(
     name = "republish_disk_qualification_tests",
-    srcs = RUST_SRCS,
+    srcs = RUST_TEST_SRCS,
     crate_name = "ctx_history_index_republish_disk_qualification",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
@@ -146,7 +172,7 @@ ctx_rust_test(
 # blocking release run.
 ctx_rust_test(
     name = "republish_release_benchmark",
-    srcs = RUST_SRCS,
+    srcs = RUST_TEST_SRCS,
     crate_name = "ctx_history_index_republish_release_benchmark",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
@@ -180,34 +206,6 @@ ctx_rust_test(
     ],
     target_compatible_with = ["@platforms//os:linux"],
     timeout = "long",
-)
-
-ctx_rust_test(
-    name = "mcp_attribution_search_tests",
-    srcs = ["tests/mcp_attribution_search.rs"],
-    crate_name = "mcp_attribution_search",
-    crate_root = "tests/mcp_attribution_search.rs",
-    edition = crate_edition(),
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ) + [
-        ":lib",
-        "//crates/ctx-history-core:lib",
-    ],
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    rustc_env = COMMON_RUSTC_ENV,
-    tags = [
-        "privacy",
-        "provider-conformance",
-    ],
 )
 
 ctx_rust_test(

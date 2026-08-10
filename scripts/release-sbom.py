@@ -479,6 +479,16 @@ def build_bundle(args: argparse.Namespace) -> dict[str, bytes]:
     index_manifest_bytes = regular_bytes(
         args.index_manifest, "ctx-history-index Cargo.toml", 256 * 1024
     )
+    index_format_manifest_bytes = regular_bytes(
+        args.index_format_manifest,
+        "ctx-history-index-format Cargo.toml",
+        256 * 1024,
+    )
+    index_query_manifest_bytes = regular_bytes(
+        args.index_query_manifest,
+        "ctx-history-index-query Cargo.toml",
+        256 * 1024,
+    )
 
     cargo_lock_sha256 = sha256_bytes(cargo_lock_bytes)
     build_info, build_properties = load_core_build_info(
@@ -502,7 +512,11 @@ def build_bundle(args: argparse.Namespace) -> dict[str, bytes]:
     )
     tantivy = assert_tantivy_contract(
         workspace_manifest_bytes,
-        index_manifest_bytes,
+        {
+            "ctx-history-index": index_manifest_bytes,
+            "ctx-history-index-format": index_format_manifest_bytes,
+            "ctx-history-index-query": index_query_manifest_bytes,
+        },
         packages,
         selected,
         configured_features,
@@ -530,7 +544,9 @@ def build_bundle(args: argparse.Namespace) -> dict[str, bytes]:
         ("target-dependency-inventory.txt", inventory_bytes),
         ("license-materials-inventory.txt", material_inventory_bytes),
         ("workspace-Cargo.toml", workspace_manifest_bytes),
+        ("ctx-history-index-format-Cargo.toml", index_format_manifest_bytes),
         ("ctx-history-index-Cargo.toml", index_manifest_bytes),
+        ("ctx-history-index-query-Cargo.toml", index_query_manifest_bytes),
     ]
     file_components = []
     direct_dependencies = [cargo_root]
@@ -640,6 +656,12 @@ def build_bundle(args: argparse.Namespace) -> dict[str, bytes]:
         "cargo_lock": evidence_record(args.cargo_lock, cargo_lock_bytes),
         "ctx_history_index_manifest": evidence_record(
             args.index_manifest, index_manifest_bytes
+        ),
+        "ctx_history_index_format_manifest": evidence_record(
+            args.index_format_manifest, index_format_manifest_bytes
+        ),
+        "ctx_history_index_query_manifest": evidence_record(
+            args.index_query_manifest, index_query_manifest_bytes
         ),
         "cyclonedx_sbom": evidence_record(args.output, sbom_bytes),
         "license_materials_inventory": evidence_record(
@@ -877,6 +899,8 @@ def verify_bundle_only(
         "candidate_schema",
         "cargo_lock",
         "ctx_history_index_manifest",
+        "ctx_history_index_format_manifest",
+        "ctx_history_index_query_manifest",
         "cyclonedx_sbom",
         "license_materials_inventory",
         "module_file",
@@ -1051,6 +1075,8 @@ def require_full_arguments(parser: argparse.ArgumentParser, args: argparse.Names
         "candidate_schema",
         "cargo_lock",
         "index_manifest",
+        "index_format_manifest",
+        "index_query_manifest",
         "license_materials",
         "module_file",
         "module_lock",
@@ -1109,6 +1135,8 @@ def main() -> int:
     parser.add_argument("--candidate-schema", type=Path)
     parser.add_argument("--workspace-manifest", type=Path)
     parser.add_argument("--index-manifest", type=Path)
+    parser.add_argument("--index-format-manifest", type=Path)
+    parser.add_argument("--index-query-manifest", type=Path)
     parser.add_argument("--runfiles-root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--notices-output", type=Path)

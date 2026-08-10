@@ -1,0 +1,39 @@
+[package]
+name = "ctx-history-index-query"
+version = "0.26.0"
+description = "Pinned immutable lexical query contracts and execution for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+base64.workspace = true
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index-format = { path = "../ctx-history-index-format" }
+ctx-history-index-generation = { path = "../ctx-history-index-generation" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+ctx-history-index = { path = "../ctx-history-index", features = ["test-support"] }
+ctx-history-index-format = { path = "../ctx-history-index-format", features = ["test-support"] }
+ctx-history-index-generation = { path = "../ctx-history-index-generation", features = ["test-support"] }
+tempfile.workspace = true
+
+[[test]]
+name = "writer_integration"
+path = "tests/writer_integration.rs"
+
+[[test]]
+name = "mcp_attribution_search"
+path = "tests/writer_integration/mcp_attribution_search.rs"

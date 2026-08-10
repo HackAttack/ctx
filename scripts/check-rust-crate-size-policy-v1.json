@@ -15,11 +15,6 @@
       "ratchet": 204681
     },
     {
-      "package": "ctx-history-index",
-      "manifest": "crates/ctx-history-index/Cargo.toml",
-      "ratchet": 36356
-    },
-    {
       "package": "ctx-history-refresh",
       "manifest": "crates/ctx-history-refresh/Cargo.toml",
       "ratchet": 22103

@@ -1,5 +1,10 @@
 use super::*;
 use crate::merge_policy::deletion_density_exceeds_limit;
+use ctx_history_index_format::{
+    open_publication_candidate, verify_and_bind_publication_candidate,
+    verify_and_bind_reusable_publication, CandidatePublicationVerificationError,
+    ReusablePublicationError, VerifiedCandidatePublication,
+};
 use std::collections::BTreeMap;
 
 struct CommitGenerationOutcome {
@@ -23,10 +28,7 @@ impl CommitGenerationOutcome {
 
 struct VerifiedCandidate {
     slot: GenerationSlot,
-    searcher: Searcher,
-    manifest: std::sync::Arc<GenerationManifest>,
-    publication_metadata: Option<std::sync::Arc<[u8]>>,
-    physical_integrity_audit: PhysicalIntegrityAudit,
+    publication: VerifiedCandidatePublication,
 }
 
 impl GenerationWriter {
@@ -49,8 +51,7 @@ impl GenerationWriter {
                 "publication metadata republish requires an active generation",
             ))?;
         let generation_id = self
-            .base_manifest
-            .as_ref()
+            .base_manifest()
             .ok_or(IndexError::WriterInvariant(
                 "publication metadata republish requires a base manifest",
             ))?
@@ -117,14 +118,14 @@ impl GenerationWriter {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let current_metas = self.index.load_metas()?;
             let expected_generation = self
-                .base_manifest
-                .as_ref()
+                .base_manifest()
                 .map(GenerationManifest::generation_id)
                 .transpose()?;
             let current_generation = payload_generation_id(&current_metas)?;
             let expected_segments = self
-                .base_searcher
+                .base_publication
                 .as_ref()
+                .map(PinnedPublication::searcher)
                 .map(searcher_generation)
                 .unwrap_or_default();
             if current_metas.opstamp != self.base_opstamp
@@ -141,6 +142,12 @@ impl GenerationWriter {
         self.writer.as_mut().ok_or(IndexError::WriterInvariant(
             "lazy writer construction completed without a writer",
         ))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn test_writer_mut(&mut self) -> Result<&mut IndexWriter<IndexDocument>> {
+        self.writer_mut()
     }
 
     /// Publishes one atomic lexical generation.
@@ -262,9 +269,8 @@ impl GenerationWriter {
                     return Err(IndexError::SourceInvalidated(route.as_str().to_owned()));
                 }
             }
-            self.validate_base_integrity_for_reuse()?;
-            let receipt = CommitReceipt::from_manifest(self.base_opstamp, witness.base.clone())?;
-            return self.reused_generation(receipt, return_verified_index);
+            let opstamp = self.base_opstamp;
+            return self.reused_generation(opstamp, return_verified_index);
         }
 
         for pending in self.pending.values() {
@@ -276,15 +282,15 @@ impl GenerationWriter {
         }
 
         let manifest = self.next_manifest()?;
-        if let Some(receipt) = finish_identical_staging(
+        if finish_identical_staging(
             &mut self,
             &manifest,
             &mut revalidate,
             &mut revalidate_inventory,
         )? {
             self.discard_candidate()?;
-            self.validate_base_integrity_for_reuse()?;
-            return self.reused_generation(receipt, return_verified_index);
+            let opstamp = self.base_opstamp;
+            return self.reused_generation(opstamp, return_verified_index);
         }
 
         // Build opaque owner metadata from the complete staged manifest before
@@ -299,8 +305,7 @@ impl GenerationWriter {
         self.writer_mut()?;
         let candidate_path = self.candidate_path()?;
         let previous_generation_id = self
-            .base_manifest
-            .as_ref()
+            .base_manifest()
             .map(GenerationManifest::generation_id)
             .transpose()?;
         let root = self.root.clone();
@@ -417,7 +422,6 @@ impl GenerationWriter {
         let verified = self
             .verify_candidate(
                 &candidate_path,
-                &manifest,
                 &generation_id,
                 &directory_name,
                 &committed_candidate_generation,
@@ -438,7 +442,7 @@ impl GenerationWriter {
         drop(manifest);
         let next_pointer = ActiveGenerationPointer::new(
             verified.slot.clone(),
-            self.base_manifest.as_ref().and_then(|_| {
+            self.base_publication.as_ref().and_then(|_| {
                 self.active_pointer
                     .as_ref()
                     .map(|pointer| pointer.active().clone())
@@ -498,22 +502,17 @@ impl GenerationWriter {
             &root,
             &next_pointer,
             next_pointer.active(),
-            verified.searcher.index(),
-            &verified.physical_integrity_audit,
+            verified.publication.publication().searcher().index(),
+            verified.publication.physical_integrity_audit(),
         );
 
         let receipt = CommitReceipt::from_verified_manifest(
             opstamp,
             generation_id.clone(),
-            std::sync::Arc::clone(&verified.manifest),
+            std::sync::Arc::clone(verified.publication.publication().shared_manifest()),
         );
         let verified_index = return_verified_index.then(|| {
-            VerifiedIndex::from_verified_publication(
-                verified.searcher,
-                verified.manifest,
-                generation_id,
-                verified.publication_metadata,
-            )
+            VerifiedIndex::from_verified_publication(verified.publication.into_publication())
         });
         Ok(CommitGenerationOutcome {
             receipt,
@@ -525,27 +524,18 @@ impl GenerationWriter {
     fn verify_candidate(
         &self,
         candidate_path: &Path,
-        manifest: &GenerationManifest,
         generation_id: &str,
         directory_name: &str,
         committed_candidate_generation: &BTreeMap<String, Option<u64>>,
     ) -> Result<VerifiedCandidate> {
-        let directory =
-            DurableMmapDirectory::open(candidate_path).map_err(tantivy::TantivyError::from)?;
-        let index = Index::open(directory)?;
-        validate_schema(&index.schema())?;
-        if index.settings() != &publication::lexical_index_settings() {
-            return Err(IndexError::IndexSettingsMismatch(LEXICAL_SCHEMA_VERSION));
-        }
-        let metas = index.load_metas()?;
-        let loaded_publication = load_publication_for_metas(&self.root, &metas)?;
-        if loaded_publication.generation_id != generation_id {
+        let candidate = open_publication_candidate(&self.root, candidate_path)?;
+        if candidate.generation_id() != generation_id {
             return Err(IndexError::ConcurrentGenerationChange);
         }
-        if &meta_generation(&metas) != committed_candidate_generation {
+        if &meta_generation(candidate.metas()) != committed_candidate_generation {
             return Err(IndexError::ConcurrentGenerationChange);
         }
-        for segment in &metas.segments {
+        for segment in &candidate.metas().segments {
             if deletion_density_exceeds_limit(segment) {
                 return Err(IndexError::CandidateDeletionDensityExceeded {
                     deleted_documents: u64::from(segment.num_deleted_docs()),
@@ -553,52 +543,73 @@ impl GenerationWriter {
                 });
             }
         }
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()?;
-        let searcher = reader.searcher();
-        if searcher_generation(&searcher) != meta_generation(&metas) {
-            return Err(IndexError::ConcurrentGenerationChange);
-        }
-        let physical_integrity_audit =
-            physical_integrity_audit(&index, candidate_path, self.active_pointer.as_ref())?;
-        verify_publication_candidate(&searcher, manifest, self.base_searcher.as_ref())?;
+        let publication = verify_and_bind_publication_candidate(
+            candidate,
+            self.active_pointer.as_ref(),
+            self.base_publication.as_ref(),
+            self.active_pointer
+                .as_ref()
+                .map(|pointer| (&*self.root, pointer, pointer.active())),
+        )
+        .map_err(|error| match error {
+            CandidatePublicationVerificationError::Candidate(error) => error,
+            CandidatePublicationVerificationError::Reusable(ReusablePublicationError::Binding(
+                error,
+            )) => error,
+            CandidatePublicationVerificationError::Reusable(
+                ReusablePublicationError::Integrity(error),
+            ) => {
+                let active = self
+                    .active_pointer
+                    .as_ref()
+                    .expect("reusable publication verification has active authority")
+                    .active();
+                classify_active_integrity_failure(&self.root, active, error)
+            }
+        })?;
         let slot = GenerationSlot::new(
             generation_id.to_owned(),
             directory_name.to_owned(),
-            physical_integrity_audit.digest().to_owned(),
+            publication.physical_integrity_audit().digest().to_owned(),
         )?;
-        Ok(VerifiedCandidate {
-            slot,
-            searcher,
-            manifest: std::sync::Arc::new(loaded_publication.manifest),
-            publication_metadata: loaded_publication.metadata,
-            physical_integrity_audit,
-        })
+        Ok(VerifiedCandidate { slot, publication })
     }
 
     fn reused_generation(
-        &self,
-        receipt: CommitReceipt,
+        mut self,
+        opstamp: u64,
         return_verified_index: bool,
     ) -> Result<CommitGenerationOutcome> {
-        let verified_index = if return_verified_index {
-            let searcher = self
-                .base_searcher
-                .clone()
-                .ok_or(IndexError::WriterInvariant(
-                    "reused generation is missing its pinned base searcher",
-                ))?;
-            Some(VerifiedIndex::from_verified_publication(
-                searcher,
-                receipt.shared_manifest(),
-                receipt.generation_id.clone(),
-                self.base_publication_metadata.clone(),
-            ))
-        } else {
-            None
-        };
+        let base = self
+            .base_publication
+            .take()
+            .ok_or(IndexError::WriterInvariant(
+                "no-op integrity validation is missing its base publication",
+            ))?;
+        let pointer = self
+            .active_pointer
+            .as_ref()
+            .ok_or(IndexError::WriterInvariant(
+                "no-op integrity validation is missing its active pointer",
+            ))?;
+        let active = pointer.active();
+        if active.generation_id() != base.generation_id() {
+            return Err(IndexError::ConcurrentGenerationChange);
+        }
+        let publication = verify_and_bind_reusable_publication(&self.root, pointer, active, base)
+            .map_err(|error| match error {
+            ReusablePublicationError::Binding(error) => error,
+            ReusablePublicationError::Integrity(error) => {
+                self.classify_reusable_integrity_failure(active, error)
+            }
+        })?;
+        let receipt = CommitReceipt::from_verified_manifest(
+            opstamp,
+            publication.generation_id().to_owned(),
+            std::sync::Arc::clone(publication.shared_manifest()),
+        );
+        let verified_index =
+            return_verified_index.then(|| VerifiedIndex::from_verified_publication(publication));
         Ok(CommitGenerationOutcome {
             receipt,
             disposition: PublicationDisposition::Reused,
@@ -606,47 +617,12 @@ impl GenerationWriter {
         })
     }
 
-    fn validate_base_integrity_for_reuse(&self) -> Result<()> {
-        let base = self
-            .base_manifest
-            .as_ref()
-            .ok_or(IndexError::WriterInvariant(
-                "no-op integrity validation is missing its base manifest",
-            ))?;
-        let generation_id = base.generation_id()?;
-        let active = self
-            .active_pointer
-            .as_ref()
-            .map(ActiveGenerationPointer::active)
-            .ok_or(IndexError::WriterInvariant(
-                "no-op integrity validation is missing its active generation",
-            ))?;
-        if active.generation_id() != generation_id {
-            return Err(IndexError::ConcurrentGenerationChange);
-        }
-        let active_index = open_slot_index(&self.root, active)?;
-        let pointer = self
-            .active_pointer
-            .as_ref()
-            .ok_or(IndexError::WriterInvariant(
-                "no-op integrity validation is missing its active pointer",
-            ))?;
-        if let Err(error) =
-            verify_or_certify_physical_integrity(&self.root, pointer, active, &active_index)
-        {
-            let detail =
-                match writer_support::mark_active_generation_for_rebuild(&self.root, active) {
-                    Ok(()) => error.to_string(),
-                    Err(marker_error) => format!(
-                        "{error}; persisting the rebuild decision also failed: {marker_error}"
-                    ),
-                };
-            return Err(IndexError::ActiveGenerationNeedsRebuild {
-                generation_id,
-                detail,
-            });
-        }
-        Ok(())
+    fn classify_reusable_integrity_failure(
+        &self,
+        active: &GenerationSlot,
+        error: IndexError,
+    ) -> IndexError {
+        classify_active_integrity_failure(&self.root, active, error)
     }
 
     fn classify_pointer_failure(
@@ -699,7 +675,7 @@ impl GenerationWriter {
     fn next_manifest(&self) -> Result<GenerationManifest> {
         self.validate_source_route_plan_complete()?;
         let mut sources = HashMap::<SourceKey, CertifiedSource>::new();
-        if let Some(base) = &self.base_manifest {
+        if let Some(base) = self.base_manifest() {
             for source in &base.sources {
                 sources.insert(source.observation().source().clone(), source.clone());
             }
@@ -718,7 +694,7 @@ impl GenerationWriter {
         let mut source_routes = if let Some(routes) = &self.present_source_routes {
             routes.clone()
         } else {
-            contracts::implicit_source_routes(&sources)?
+            implicit_source_routes(&sources)?
         };
         source_routes.extend(self.observed_missing_routes.values().cloned());
         GenerationManifest::from_parts_with_record_aggregates(
