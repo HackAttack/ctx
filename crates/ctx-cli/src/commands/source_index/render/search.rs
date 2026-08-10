@@ -268,15 +268,11 @@ fn render_result(
 }
 
 fn render_copied_lineage(document: &mut Document, context: &RenderContext, result: &Value) {
-    let Some(lineage) = result
-        .get("copied_lineage")
-        .filter(|value| value.is_object())
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::super::copied_lineage::copied_lineage_summary(result)
     else {
         return;
     };
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
-    let resolution = lineage["resolution"]["state"].as_str();
-    let selected_depth = lineage["selected_depth"].as_u64().unwrap_or(0);
     if let Some(resolution) = resolution.filter(|state| *state != "resolved" || selected_depth != 0)
     {
         push_field(
@@ -297,21 +293,8 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, resul
         return;
     }
     let truncated = lineage["truncated"].as_bool().unwrap_or(true);
-    let relationship_summary = lineage["relationship_counts"]
-        .as_object()
-        .map(|counts| {
-            counts
-                .iter()
-                .filter_map(|(relationship, count)| {
-                    count
-                        .as_u64()
-                        .filter(|count| *count != 0)
-                        .map(|count| format!("{relationship} {count}"))
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .filter(|summary| !summary.is_empty());
+    let relationship_summary =
+        super::super::copied_lineage::copied_lineage_relationship_summary(lineage);
     let noun = if observed == 1 { "session" } else { "sessions" };
     let mut summary = if truncated {
         format!("at least {observed} {noun}")

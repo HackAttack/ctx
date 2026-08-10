@@ -813,15 +813,11 @@ fn render_show_markdown(value: &Value) -> String {
 }
 
 fn append_copied_lineage_text(output: &mut String, value: &Value) {
-    let Some(lineage) = value
-        .get("copied_lineage")
-        .filter(|value| value.is_object())
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::copied_lineage::copied_lineage_summary(value)
     else {
         return;
     };
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
-    let resolution = lineage["resolution"]["state"].as_str();
-    let selected_depth = lineage["selected_depth"].as_u64().unwrap_or(0);
     if observed == 0 && resolution.is_none_or(|state| state == "resolved") && selected_depth == 0 {
         return;
     }
@@ -860,15 +856,11 @@ fn append_copied_lineage_text(output: &mut String, value: &Value) {
 }
 
 fn append_copied_lineage_markdown(output: &mut String, value: &Value) {
-    let Some(lineage) = value
-        .get("copied_lineage")
-        .filter(|value| value.is_object())
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::copied_lineage::copied_lineage_summary(value)
     else {
         return;
     };
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
-    let resolution = lineage["resolution"]["state"].as_str();
-    let selected_depth = lineage["selected_depth"].as_u64().unwrap_or(0);
     if observed == 0 && resolution.is_none_or(|state| state == "resolved") && selected_depth == 0 {
         return;
     }

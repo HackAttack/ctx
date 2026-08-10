@@ -240,15 +240,7 @@ fn status_missing_source_epoch_is_read_only_and_does_not_initialize_files() {
     assert!(status.get("relational").is_none(), "{status:#}");
     assert!(status.get("prior_epoch").is_none());
 
-    let output = ctx(&temp)
-        .arg("status")
-        .env("CTX_DATA_ROOT", &data_root)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let output = String::from_utf8(output).unwrap();
+    let output = success_stdout(ctx(&temp).arg("status").env("CTX_DATA_ROOT", &data_root));
     assert!(output.contains("History status: failed"), "{output}");
     assert!(
         output.contains("history has not been indexed yet"),
@@ -482,14 +474,8 @@ fn setup_background_refresh_and_wait_publish_the_same_codex_source() {
 
     let human_temp = tempdir();
     write_codex_setup_session(&human_temp);
-    let human_setup = ctx(&human_temp)
-        .args(["setup", "--wait", "--progress", "none"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let human_setup = String::from_utf8(human_setup).unwrap();
+    let human_setup =
+        success_stdout(ctx(&human_temp).args(["setup", "--wait", "--progress", "none"]));
     assert!(human_setup.contains("History is ready to search"));
     assert!(human_setup.contains("  ctx search \"test failure\""));
 }
@@ -566,14 +552,8 @@ fn setup_no_daemon_is_one_run_opt_out_and_keeps_semantic_disabled() {
     assert_eq!(status["semantic"]["reason"], "semantic_disabled");
     assert!(!data_root(&temp).join("config.toml").exists());
 
-    let human_setup = ctx(&temp)
-        .args(["setup", "--no-daemon", "--progress", "none"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let human_setup = String::from_utf8(human_setup).unwrap();
+    let human_setup =
+        success_stdout(ctx(&temp).args(["setup", "--no-daemon", "--progress", "none"]));
     assert!(
         human_setup.contains("Background  skipped because --no-daemon was used"),
         "{human_setup}"

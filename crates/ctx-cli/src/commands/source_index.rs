@@ -7,6 +7,7 @@ mod search;
 mod shared;
 mod show;
 
+pub(crate) use copied_lineage::copied_lineage_summary;
 pub(crate) use locate::run_locate;
 #[cfg(test)]
 use search::mcp_search;

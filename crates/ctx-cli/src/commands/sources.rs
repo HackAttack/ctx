@@ -657,26 +657,6 @@ mod ui_tests {
     }
 
     #[test]
-    fn hermes_unsupported_schema_has_stable_reason_and_no_import_override() {
-        let mut hermes = source(ProviderSourceStatus::Unsupported, "/tmp/hermes/state.db");
-        hermes.provider = CaptureProvider::Hermes;
-        hermes.source_format = "hermes_state_sqlite";
-        hermes.source_kind = ProviderSourceKind::DetectionOnly;
-        hermes.import_support = ProviderImportSupport::Unsupported;
-        hermes.unsupported_reason = Some(ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON);
-
-        let context = context(100, ColorMode::Never);
-        let rendered =
-            render_sources_human(&context, &[hermes], &[], &[], &[], 0, None).render_plain();
-        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
-
-        assert!(rendered.contains("hermes history cannot be imported automatically"));
-        assert!(rendered.contains("no safe import path in this ctx release"));
-        assert!(normalized.contains(ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON));
-        assert!(!rendered.contains("ctx import --provider hermes"));
-    }
-
-    #[test]
     fn sources_plain_output_matches_ansi_stripped_output() {
         let sources = vec![source(ProviderSourceStatus::Available, "/tmp/codex")];
         let context = context(80, ColorMode::Always);

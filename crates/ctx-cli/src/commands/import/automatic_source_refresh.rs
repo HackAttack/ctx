@@ -383,29 +383,6 @@ mod tests {
     }
 
     #[test]
-    fn source_failure_rows_follow_schema_v2_and_are_bounded() {
-        let source_identity = "22".repeat(32);
-        let row = source_failure_report_row(
-            &source_identity,
-            "codex",
-            "source_changed",
-            true,
-            "/tmp/codex-history",
-            "source changed during refresh",
-        );
-        assert_eq!(row["status"], "failure");
-        assert_eq!(row["failure_scope"], "source");
-        assert_eq!(row["failure_type"], "other");
-        assert_eq!(row["source_failure_class"], "source_changed");
-        assert_eq!(row["source_selector"], "/tmp/codex-history");
-        assert_eq!(row["detail"], row["error"]);
-        for unsupported in ["imported_sessions", "imported_events"] {
-            assert!(row.get(unsupported).is_none(), "{row:#}");
-        }
-        assert_eq!(MAX_REPORTED_SOURCE_FAILURES, 3);
-    }
-
-    #[test]
     fn logical_publication_reports_zero_scans_without_receipt_count_fallback() {
         assert_eq!(published_request_scanned_routes(Some(0)).unwrap(), 0);
         assert!(published_request_scanned_routes(None).is_err());

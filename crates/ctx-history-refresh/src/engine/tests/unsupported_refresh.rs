@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn discovery_fixture(root: &Path) -> (PathBuf, PathBuf, DiscoveryContext) {
+pub(super) fn discovery_fixture(root: &Path) -> (PathBuf, PathBuf, DiscoveryContext) {
     let home = root.join("home");
     let cwd = root.join("cwd");
     fs::create_dir_all(&home).unwrap();
@@ -32,7 +32,7 @@ fn unsupported_warp(root: &Path) -> ProviderSource {
     }
 }
 
-fn run_report(
+pub(super) fn run_report(
     discovery: &DiscoveryContext,
     report: DiscoveryReport,
     data_root: &Path,

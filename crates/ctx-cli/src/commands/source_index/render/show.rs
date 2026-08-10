@@ -60,15 +60,11 @@ pub(in crate::commands::source_index) fn render_show_document(
 }
 
 fn render_copied_lineage(document: &mut Document, context: &RenderContext, value: &Value) {
-    let Some(lineage) = value
-        .get("copied_lineage")
-        .filter(|value| value.is_object())
+    let Some((lineage, observed, resolution, selected_depth)) =
+        super::super::copied_lineage::copied_lineage_summary(value)
     else {
         return;
     };
-    let observed = lineage["observed_count"].as_u64().unwrap_or(0);
-    let resolution = lineage["resolution"]["state"].as_str();
-    let selected_depth = lineage["selected_depth"].as_u64().unwrap_or(0);
     if observed == 0 && resolution.is_none_or(|state| state == "resolved") && selected_depth == 0 {
         return;
     }
@@ -107,20 +103,10 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, value
         );
     }
 
-    if let Some(counts) = lineage["relationship_counts"].as_object() {
-        let summary = counts
-            .iter()
-            .filter_map(|(relationship, count)| {
-                count
-                    .as_u64()
-                    .filter(|count| *count != 0)
-                    .map(|count| format!("{relationship} {count}"))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !summary.is_empty() {
-            push_wrapped(document, context, 2, &summary, Token::Label);
-        }
+    if let Some(summary) =
+        super::super::copied_lineage::copied_lineage_relationship_summary(lineage)
+    {
+        push_wrapped(document, context, 2, &summary, Token::Label);
     }
 
     let command_prefix = value["_command_prefix"].as_str().unwrap_or("ctx");
