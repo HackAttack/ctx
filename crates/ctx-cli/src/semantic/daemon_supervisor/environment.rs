@@ -145,7 +145,7 @@ pub(super) fn supervisor_environment_contract_report() -> Value {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(test)]
 pub(super) fn linux_systemd_unit_with_environment(
     executable: &Path,
     data_root: &Path,
@@ -247,6 +247,7 @@ fn validated_supervisor_fallback_home(home: PathBuf) -> Result<String> {
     validated_supervisor_environment_value("HOME", home.into_os_string())
 }
 
+#[cfg(all(test, windows))]
 pub(super) fn validated_supervisor_artifact_path<'a>(
     label: &str,
     path: &'a Path,

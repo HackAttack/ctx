@@ -30,6 +30,7 @@ TANTIVY_FEATURES = (
 )
 WORKSPACE_PACKAGES = (
     ("ctx", "crates/ctx-cli"),
+    ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
     ("ctx-history-core", "crates/ctx-history-core"),
     ("ctx-history-index", "crates/ctx-history-index"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
@@ -139,6 +140,7 @@ class ReleaseSbomTest(unittest.TestCase):
 [workspace]
 members = [
   "crates/ctx-cli",
+  "crates/ctx-daemon-runtime",
   "crates/ctx-history-core",
   "crates/ctx-history-index",
   "crates/ctx-semantic-index",
@@ -164,12 +166,16 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             manifest.parent.mkdir(parents=True)
             dependencies = {
                 "ctx": (
+                    "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
                 "ctx-history-index": (
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "tantivy.workspace = true"
+                ),
+                "ctx-daemon-runtime": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
                 "ctx-semantic-model": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
@@ -181,11 +187,16 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             dependencies = (
                 f"\n[dependencies]\n{dependencies}\n" if dependencies else ""
             )
+            version = (
+                'version = "1.0.0"'
+                if name == "ctx-daemon-runtime"
+                else "version.workspace = true"
+            )
             manifest.write_text(
                 f"""\
 [package]
 name = "{name}"
-version.workspace = true
+{version}
 license.workspace = true
 repository.workspace = true
 {dependencies}""",
@@ -215,6 +226,7 @@ repository = "https://example.invalid/{name}"
 
         inventory_labels = [
             "@@//crates/ctx-cli:ctx",
+            "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
             "@@//crates/ctx-history-core:ctx_history_core",
             "@@//crates/ctx-history-index:ctx_history_index",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
@@ -301,6 +313,7 @@ repository = "https://example.invalid/{name}"
                 "0.26.0",
                 (
                     "ctx-history-core",
+                    "ctx-daemon-runtime 1.0.0",
                     "ctx-history-index",
                     "ctx-semantic-index",
                     "ctx-semantic-model",
@@ -308,6 +321,11 @@ repository = "https://example.invalid/{name}"
                 ),
             ),
             self.package("ctx-history-core", "0.26.0"),
+            self.package(
+                "ctx-daemon-runtime",
+                "1.0.0",
+                ("ctx-history-core",),
+            ),
             self.package(
                 "ctx-history-index",
                 "0.26.0",
@@ -654,7 +672,7 @@ repository = "https://example.invalid/{name}"
                 for item in component.get("properties", [])
             )
         ]
-        self.assertEqual(len(cargo_components), 12)
+        self.assertEqual(len(cargo_components), 13)
         self.assertTrue(
             all(component.get("licenses") for component in cargo_components)
         )

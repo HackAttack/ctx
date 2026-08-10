@@ -12,8 +12,6 @@ use super::super::{
     runtime_limits::DAEMON_QUERY_ENDPOINT_FILE,
 };
 
-#[cfg(all(test, unix))]
-pub(in crate::semantic) use ctx_daemon_runtime::daemon_query_roundtrip_unix;
 #[cfg(test)]
 pub(in crate::semantic) use ctx_daemon_runtime::read_bounded_daemon_request as read_daemon_query_request;
 #[cfg(all(test, unix))]
@@ -26,10 +24,8 @@ pub(in crate::semantic) use ctx_daemon_runtime::{
 };
 #[cfg(test)]
 pub(in crate::semantic) use ctx_daemon_runtime::{
-    daemon_query_roundtrip, daemon_query_roundtrip_error_is_unavailable,
-    daemon_query_unix_io_error_is_pre_submission_unavailable,
-    daemon_query_windows_io_error_is_pre_submission_unavailable,
-    read_daemon_query_endpoint_identity_value, DaemonQueryResponseTooLarge,
+    daemon_query_roundtrip, daemon_query_unix_io_error_is_pre_submission_unavailable,
+    daemon_query_windows_io_error_is_pre_submission_unavailable, DaemonQueryResponseTooLarge,
 };
 pub(in crate::semantic) use ctx_daemon_runtime::{
     remove_daemon_service_endpoint_at, write_daemon_service_endpoint_at, DaemonQueryEndpoint,

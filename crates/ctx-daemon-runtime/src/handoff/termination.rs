@@ -13,10 +13,11 @@ use std::process::Command;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 
+#[cfg(unix)]
+use crate::daemon_lock_is_active;
 use crate::{
-    daemon_lock_is_active, daemon_lock_path, executable_sha256, observe_pid_advisory_lock,
-    pid_from_lock_json, pid_lock_guard_path, process_executable_sha256, read_pid_lock_json,
-    PidAdvisoryLockObservation,
+    daemon_lock_path, observe_pid_advisory_lock, pid_from_lock_json, process_executable_sha256,
+    read_pid_lock_json, PidAdvisoryLockObservation,
 };
 
 #[cfg(target_os = "linux")]
@@ -28,6 +29,7 @@ use legacy::verify_legacy_v025_identity;
 #[derive(Clone, Copy)]
 enum ResidualDaemonIdentityPolicy {
     CurrentDigest,
+    #[cfg(target_os = "linux")]
     LegacyV025,
 }
 
@@ -159,6 +161,7 @@ impl UnixSignalTarget {
     fn without_pidfd(pid: u32, identity_policy: ResidualDaemonIdentityPolicy) -> Result<Self> {
         match identity_policy {
             ResidualDaemonIdentityPolicy::CurrentDigest => Ok(Self::ReverifiedPid(pid)),
+            #[cfg(target_os = "linux")]
             ResidualDaemonIdentityPolicy::LegacyV025 => Err(anyhow!(
                 "legacy automatic daemon replacement requires a stable Linux pidfd; fix forward with a manual 1.0 install"
             )),
@@ -332,24 +335,9 @@ fn verify_residual_daemon_identity(
     }
     match identity_policy {
         ResidualDaemonIdentityPolicy::CurrentDigest => verify_recorded_digest_identity(pid, value),
+        #[cfg(target_os = "linux")]
         ResidualDaemonIdentityPolicy::LegacyV025 => {
-            #[cfg(target_os = "linux")]
-            {
-                verify_legacy_v025_identity(
-                    data_root,
-                    expected_executable,
-                    recorded_binary,
-                    pid,
-                    value,
-                )
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = (data_root, expected_executable, recorded_binary, pid, value);
-                Err(anyhow!(
-                    "legacy automatic daemon replacement requires Linux pidfd identity"
-                ))
-            }
+            verify_legacy_v025_identity(data_root, expected_executable, recorded_binary, pid, value)
         }
     }
 }

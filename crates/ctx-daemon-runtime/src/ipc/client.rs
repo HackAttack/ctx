@@ -720,18 +720,14 @@ pub fn windows_wide_null(value: &str) -> Vec<u16> {
         .collect()
 }
 
-use std::{
-    fmt, fs,
-    io::Read,
-    path::{Path, PathBuf},
-    process,
-    time::Duration as StdDuration,
-};
+use std::{fmt, fs, io::Read, path::Path, process, time::Duration as StdDuration};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 #[cfg(test)]
 pub fn read_daemon_query_request<S: std::io::Read>(

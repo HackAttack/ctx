@@ -40,6 +40,7 @@ TANTIVY_RESOLVED_FEATURES = [
     "zstd-compression",
 ]
 WORKSPACE_RELEASE_PACKAGES = {
+    "ctx-daemon-runtime",
     "ctx-history-core",
     "ctx-history-index",
     "ctx-semantic-index",

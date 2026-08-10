@@ -549,3 +549,127 @@ pub fn watch_roots<'a>(targets: impl IntoIterator<Item = &'a Path>) -> BTreeMap<
     }
     roots
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use notify::event::{DataChange, Flag};
+
+    use super::*;
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct TestPayload {
+        reconciliation: Option<WatchWatermark>,
+    }
+
+    impl CoalescingWakePayload for TestPayload {
+        fn is_empty(&self) -> bool {
+            self.reconciliation.is_none()
+        }
+
+        fn merge(&mut self, other: Self) {
+            if let Some(watermark) = other.reconciliation {
+                self.reconciliation = Some(
+                    self.reconciliation
+                        .map_or(watermark, |current| current.max(watermark)),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn notify_events_are_normalized_without_product_policy() {
+        let path = PathBuf::from("/tmp/history.jsonl");
+        let access = normalize_native_watch_event(Ok(Event::new(EventKind::Access(
+            AccessKind::Read,
+        ))
+        .add_path(path.clone())))
+        .unwrap();
+        assert_eq!(access.paths, vec![path.clone()]);
+        assert_eq!(access.ignored_kind(), Some(NativeWatchIgnore::Access));
+        assert!(!access.needs_rescan());
+        assert!(!access.requires_rearm());
+
+        let access_time = normalize_native_watch_event(Ok(Event::new(EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::AccessTime),
+        ))
+        .add_path(path.clone())))
+        .unwrap();
+        assert_eq!(
+            access_time.ignored_kind(),
+            Some(NativeWatchIgnore::AccessTime)
+        );
+
+        let write_close = normalize_native_watch_event(Ok(Event::new(EventKind::Access(
+            AccessKind::Close(AccessMode::Write),
+        ))
+        .add_path(path.clone())))
+        .unwrap();
+        assert_eq!(write_close.ignored_kind(), None);
+
+        let rename = normalize_native_watch_event(Ok(Event::new(EventKind::Modify(
+            ModifyKind::Name(notify::event::RenameMode::Both),
+        ))
+        .add_path(path.clone())))
+        .unwrap();
+        assert!(rename.requires_rearm());
+
+        let rescan = normalize_native_watch_event(Ok(Event::new(EventKind::Modify(
+            ModifyKind::Data(DataChange::Content),
+        ))
+        .add_path(path)
+        .set_flag(Flag::Rescan)))
+        .unwrap();
+        assert!(rescan.needs_rescan());
+    }
+
+    #[test]
+    fn full_ingress_fails_closed_into_bounded_reconciliation() {
+        let counters = Mutex::new(NativeWatcherCounters::default());
+        let accepting_events = AtomicBool::new(true);
+        let sequence = AtomicU64::new(0);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let ignore_event: IgnoreEvent = Arc::new(|_| false);
+        let reconciliation: ReconciliationFactory<TestPayload> =
+            Arc::new(|watermark| TestPayload {
+                reconciliation: Some(watermark),
+            });
+        let signaled = Arc::new(Mutex::new(Vec::new()));
+        let signal_payload: SignalPayload<TestPayload> = {
+            let signaled = Arc::clone(&signaled);
+            Arc::new(move |payload| signaled.lock().unwrap().push(payload))
+        };
+
+        for _ in 0..2 {
+            forward_native_watch_event(
+                &sender,
+                &counters,
+                &accepting_events,
+                9,
+                &sequence,
+                &ignore_event,
+                &reconciliation,
+                &signal_payload,
+                Ok(NativeWatchEvent::ordinary(vec![PathBuf::from(
+                    "/tmp/config.toml",
+                )])),
+            );
+        }
+
+        assert_eq!(counters.lock().unwrap().ingress_overflows, 1);
+        assert_eq!(
+            signaled.lock().unwrap().as_slice(),
+            &[TestPayload {
+                reconciliation: Some(WatchWatermark::new(9, 2)),
+            }]
+        );
+        match receiver.try_recv().expect("one event remains bounded") {
+            WatchMessage::Event { watermark, .. } => {
+                assert_eq!(watermark, WatchWatermark::new(9, 1));
+            }
+            WatchMessage::Stop => panic!("unexpected stop message"),
+        }
+        assert!(receiver.try_recv().is_err());
+    }
+}

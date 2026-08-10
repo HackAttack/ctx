@@ -7,6 +7,7 @@ load(":release_routes_test.bzl", "release_route_analysis_test_suite")
 
 exports_files([
     "check-cli-build-cfg.sh",
+    "check-daemon-runtime-dependency-boundary.sh",
     "check-semantic-index-dependency-boundary.sh",
     "check_semantic_index_boundary.py",
     "check_semantic_index_boundary_test.py",

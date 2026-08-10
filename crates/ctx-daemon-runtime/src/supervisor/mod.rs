@@ -199,3 +199,163 @@ pub fn resume_native_supervisor_with<E>(
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    struct StubBackend {
+        registered: bool,
+        owner_pid: Option<u32>,
+        install_error: bool,
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl StubBackend {
+        fn new(registered: bool, owner_pid: Option<u32>, install_error: bool) -> Self {
+            Self {
+                registered,
+                owner_pid,
+                install_error,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn record(&self, call: &'static str) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    impl NativeSupervisorBackend<()> for StubBackend {
+        fn artifact_path(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
+            self.record("artifact_path");
+            Ok(Some(PathBuf::from("/tmp/ctx.service")))
+        }
+
+        fn install(
+            &self,
+            _data_root: &Path,
+            _executable: &Path,
+            _environment: &(),
+        ) -> Result<PathBuf> {
+            self.record("install");
+            if self.install_error {
+                Err(anyhow!("install failed"))
+            } else {
+                Ok(PathBuf::from("/tmp/installed.service"))
+            }
+        }
+
+        fn disable(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
+            self.record("disable");
+            Ok(Some(PathBuf::from("/tmp/ctx.service")))
+        }
+
+        fn verify_registration(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
+            self.record("verify_registration");
+            if self.registered {
+                Ok(())
+            } else {
+                Err(anyhow!("not registered"))
+            }
+        }
+
+        fn verify_live_owner(&self, _data_root: &Path, _executable: &Path) -> Result<u32> {
+            self.record("verify_live_owner");
+            self.owner_pid.ok_or_else(|| anyhow!("not running"))
+        }
+
+        fn start(&self, _data_root: &Path) -> Result<()> {
+            self.record("start");
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubFence {
+        released: bool,
+    }
+
+    impl SupervisorUpgradeFence for StubFence {
+        fn release(&mut self) -> Result<()> {
+            self.released = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ensure_reuses_registered_live_owner_without_installing() {
+        let backend = StubBackend::new(true, Some(41), false);
+        let outcome = ensure_native_supervisor_with(
+            Path::new("/tmp/data"),
+            Path::new("/tmp/ctx"),
+            &(),
+            &backend,
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            SupervisorEnsureOutcome::Native {
+                owner_pid: 41,
+                environment_installed: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            backend.calls(),
+            ["artifact_path", "verify_registration", "verify_live_owner"]
+        );
+    }
+
+    #[test]
+    fn ensure_cleans_up_when_installation_does_not_register() {
+        let backend = StubBackend::new(false, None, true);
+        let outcome = ensure_native_supervisor_with(
+            Path::new("/tmp/data"),
+            Path::new("/tmp/ctx"),
+            &(),
+            &backend,
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            SupervisorEnsureOutcome::InstallFailed {
+                artifact: None,
+                cleanup_error: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            backend.calls(),
+            [
+                "artifact_path",
+                "verify_registration",
+                "install",
+                "verify_registration",
+                "disable"
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_preserves_upgrade_fence_when_registration_is_absent() {
+        let backend = StubBackend::new(false, None, false);
+        let mut fence = StubFence::default();
+        let outcome = resume_native_supervisor_with(
+            Path::new("/tmp/data"),
+            Path::new("/tmp/ctx"),
+            &backend,
+            &mut fence,
+        )
+        .unwrap();
+        assert!(matches!(outcome, SupervisorResumeOutcome::Fallback));
+        assert!(!fence.released);
+        assert_eq!(backend.calls(), ["verify_registration"]);
+    }
+}

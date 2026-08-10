@@ -1,19 +1,27 @@
-use std::{collections::BTreeMap, ffi::OsString, path::Path};
+use std::path::Path;
+
+#[cfg(windows)]
+use std::{collections::BTreeMap, ffi::OsString};
 
 use anyhow::Result;
-use ctx_daemon_runtime::{NormalizedLaunch, SupervisorManagerEnvironment};
+#[cfg(windows)]
+use ctx_daemon_runtime::NormalizedLaunch;
+use ctx_daemon_runtime::SupervisorManagerEnvironment;
 
+#[cfg(windows)]
+use super::environment::SUPERVISOR_DESCRIPTION;
 use super::environment::{
     supervisor_artifact_spec, windows_supervisor_identity, SupervisorEnvironmentSnapshot,
-    SUPERVISOR_DESCRIPTION,
 };
 
 #[cfg(windows)]
 pub(super) use ctx_daemon_runtime::current_windows_user_sid;
+#[cfg(windows)]
+pub(super) use ctx_daemon_runtime::powershell_single_quote;
 pub(super) use ctx_daemon_runtime::{
-    decode_supervisor_text, parse_windows_task_state, powershell_single_quote,
-    windows_command_line_quote, windows_task_state_script, windows_task_user_identity_matches,
-    windows_task_xml_bytes, WINDOWS_TASK_XML_NAMESPACE,
+    decode_supervisor_text, parse_windows_task_state, windows_command_line_quote,
+    windows_task_state_script, windows_task_user_identity_matches, windows_task_xml_bytes,
+    WINDOWS_TASK_XML_NAMESPACE,
 };
 
 pub(super) fn windows_task_name(user_sid: &str) -> String {
@@ -30,6 +38,7 @@ pub(super) fn windows_sanitized_daemon_script_with_environment(
     ctx_daemon_runtime::windows_sanitized_process_supervisor_script(spec.launch())
 }
 
+#[cfg(windows)]
 pub(super) fn windows_sanitized_process_supervisor_script(
     executable: &Path,
     arguments: &[String],
@@ -64,6 +73,7 @@ pub(super) fn windows_task_xml_with_environment(
     ctx_daemon_runtime::windows_task_xml(&spec, system_root, user_sid)
 }
 
+#[cfg(windows)]
 pub(super) fn windows_task_xml_with_script(
     system_root: &Path,
     user_sid: &str,

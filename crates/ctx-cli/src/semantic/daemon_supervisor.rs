@@ -39,7 +39,7 @@ mod unsupported;
 #[cfg(test)]
 mod windows;
 
-#[cfg(any(test, windows))]
+#[cfg(all(test, windows))]
 use environment::validated_supervisor_artifact_path;
 use environment::{
     supervisor_environment_contract_report, supervisor_environment_snapshot,
