@@ -70,6 +70,7 @@ rust_library(
 
 rust_library(
     name = "qualification_lib",
+    testonly = True,
     srcs = PROD_SRCS,
     crate_name = "ctx_history_capture",
     crate_root = "src/lib.rs",
