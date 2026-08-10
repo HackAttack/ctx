@@ -4,7 +4,7 @@ use std::{
     io::Write,
     path::Path,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{Arc, Barrier, Mutex},
 };
 
 use ctx_history_core::{CertifiedSource, EventOrigin, SessionRelationshipKind};
@@ -14,6 +14,10 @@ use super::*;
 use crate::provider::codex::nativepath::{
     install_after_codex_causal_stage_hook_v1, install_after_codex_metadata_inventory_hook,
     CodexCausalSourceObservationV1,
+};
+use crate::provider::source_backed::family::jsonl::{
+    set_after_jsonl_append_observation_route_binding_hook,
+    set_before_jsonl_terminal_physical_revalidation_hook,
 };
 
 const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-record-v27-bounded-exact-origin";
@@ -245,6 +249,31 @@ fn append_event(path: &Path, event: serde_json::Value) {
     let mut file = OpenOptions::new().append(true).open(path).unwrap();
     file.write_all(&jsonl_bytes([event])).unwrap();
     file.sync_all().unwrap();
+}
+
+fn destructively_mutate_session(path: &Path, replacement: &Path, mutation: &str) {
+    match mutation {
+        "rewrite" => {
+            let mut contents = fs::read(path).unwrap();
+            let marker = b"lastgooduniquetoken";
+            let start = contents
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .expect("rewrite marker is present");
+            contents[start] = b'L';
+            fs::write(path, contents).unwrap();
+        }
+        "truncate" => {
+            let file = OpenOptions::new().write(true).open(path).unwrap();
+            file.set_len(fs::metadata(path).unwrap().len() / 2).unwrap();
+            file.sync_all().unwrap();
+        }
+        "replacement" => {
+            fs::remove_file(path).unwrap();
+            fs::rename(replacement, path).unwrap();
+        }
+        _ => unreachable!(),
+    }
 }
 
 fn register_tree(roots: &[&Path]) -> SourceBackedProviderRegistry {
@@ -1501,57 +1530,280 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
 }
 
 #[test]
-fn genuine_mid_capture_change_preserves_last_good_generation_atomically() {
+fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
+    const GENERATION_APPEND_MARKER: &str = "coldgenerationappendtoken306a";
+    const TERMINAL_APPEND_MARKER: &str = "coldterminalappendtoken306b";
+    const PRECOMMIT_APPEND_MARKER: &str = "coldprecommitappendtoken306c";
+
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index_root = temp.path().join("index");
     fs::create_dir_all(&sessions).unwrap();
-    let native_session_id = "019fb000-0000-7000-8000-000000000041";
-    let path = session_path(&sessions, native_session_id);
+    let parent = "019fb000-0000-7000-8000-000000000041";
+    let child = "019fb000-0000-7000-8000-000000000042";
+    let parent_path = session_path(&sessions, parent);
     write_session(
         &sessions,
-        native_session_id,
+        parent,
         SessionRelationshipKind::Root,
         None,
-        [message("lastgooduniquetoken")],
+        [message("coldprefixuniquetoken")],
+    );
+    write_session(
+        &sessions,
+        child,
+        SessionRelationshipKind::Delegated,
+        Some(parent),
+        [message("coldchildstableuniquetoken")],
     );
     let registry = register_tree(&[&sessions]);
-    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    let before = VerifiedIndex::open(&index_root).unwrap();
-    let generation = before.generation_id().to_owned();
-    let snapshot = source_snapshot(&before, native_session_id, "lastgooduniquetoken");
-    drop(before);
 
-    let mutate = path.clone();
-    install_after_codex_metadata_inventory_hook(move || {
-        append_event(&mutate, message("deferredafterfailureuniquetoken"));
+    let generation_observation = Arc::new(Barrier::new(2));
+    let terminal_observation = Arc::new(Barrier::new(2));
+    let precommit_physical_revalidation = Arc::new(Barrier::new(2));
+    let writer_path = parent_path.clone();
+    let writer_generation_observation = Arc::clone(&generation_observation);
+    let writer_terminal_observation = Arc::clone(&terminal_observation);
+    let writer_precommit_physical_revalidation = Arc::clone(&precommit_physical_revalidation);
+    let writer = std::thread::spawn(move || {
+        writer_generation_observation.wait();
+        append_event(&writer_path, message(GENERATION_APPEND_MARKER));
+        writer_generation_observation.wait();
+
+        writer_terminal_observation.wait();
+        append_event(&writer_path, message(TERMINAL_APPEND_MARKER));
+        writer_terminal_observation.wait();
+
+        writer_precommit_physical_revalidation.wait();
+        append_event(&writer_path, message(PRECOMMIT_APPEND_MARKER));
+        writer_precommit_physical_revalidation.wait();
     });
-    let failed =
-        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    assert_eq!(failed.failed_routes.len(), 1);
-    assert!(failed.failed_routes[0].carried_forward);
-    let retained = VerifiedIndex::open(&index_root).unwrap();
-    assert_eq!(retained.generation_id(), generation);
-    assert_eq!(
-        source_snapshot(&retained, native_session_id, "lastgooduniquetoken"),
-        snapshot
-    );
-    assert!(retained
-        .search_event_candidates("deferredafterfailureuniquetoken", 8)
-        .unwrap()
-        .is_empty());
-    drop(retained);
 
+    let generation_hook = Arc::clone(&generation_observation);
+    let terminal_hook_path = parent_path.clone();
+    let terminal_hook = Arc::clone(&terminal_observation);
+    set_after_jsonl_append_observation_route_binding_hook(parent_path.clone(), move || {
+        generation_hook.wait();
+        generation_hook.wait();
+        set_after_jsonl_append_observation_route_binding_hook(terminal_hook_path, move || {
+            terminal_hook.wait();
+            terminal_hook.wait();
+        });
+    });
+    let precommit_hook = Arc::clone(&precommit_physical_revalidation);
+    set_before_jsonl_terminal_physical_revalidation_hook(sessions.clone(), move || {
+        precommit_hook.wait();
+        precommit_hook.wait();
+    });
+
+    let cold_causal = capture_causal_stage();
+    let cold = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    writer.join().expect("bounded Codex appender completed");
+    assert!(cold.failed_routes.is_empty());
+    assert!(cold.logical_source_failures.is_empty());
+    let cold_sources = causal_by_id(&cold_causal);
+    assert_eq!(cold_sources.get(parent).unwrap().counters.cold_sources, 1);
+    assert_eq!(cold_sources.get(child).unwrap().counters.cold_sources, 1);
+
+    let initial = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(initial.manifest().sources.len(), 2);
+    let cold_generation = initial.generation_id().to_owned();
+    let cold_parent = source_snapshot(&initial, parent, "coldprefixuniquetoken");
+    let cold_child = source_snapshot(&initial, child, "coldchildstableuniquetoken");
+    assert_eq!(cold_parent.search_event_ids.len(), 1);
+    assert_eq!(records_for(&initial, parent).len(), 1);
+    for marker in [
+        GENERATION_APPEND_MARKER,
+        TERMINAL_APPEND_MARKER,
+        PRECOMMIT_APPEND_MARKER,
+    ] {
+        assert!(
+            initial
+                .search_event_candidates(marker, 8)
+                .unwrap()
+                .is_empty(),
+            "cold publication included deferred suffix {marker}"
+        );
+    }
+    drop(initial);
+
+    let catch_up_causal = capture_causal_stage();
     let caught_up =
         refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     assert!(caught_up.failed_routes.is_empty());
+    assert!(caught_up.logical_source_failures.is_empty());
+    let catch_up_sources = causal_by_id(&catch_up_causal);
+    let parent_counters = catch_up_sources.get(parent).unwrap().counters;
+    assert_eq!(parent_counters.appended_sources, 1);
+    assert_eq!(parent_counters.replaced_sources, 0);
+    assert_eq!(parent_counters.scanner_sources_started, 1);
+    assert_eq!(parent_counters.scanner_sources_completed, 1);
+    assert_eq!(parent_counters.complete_records_scanned, 3);
+    assert_eq!(parent_counters.retained_records_scanned, 3);
+    assert_eq!(parent_counters.staged_documents, 3);
+    assert_exact_zero_work(&catch_up_sources, child, Some(parent));
+
     let current = VerifiedIndex::open(&index_root).unwrap();
-    assert_ne!(current.generation_id(), generation);
+    assert_ne!(current.generation_id(), cold_generation);
+    let caught_up_generation = current.generation_id().to_owned();
+    let caught_up_parent = source_snapshot(&current, parent, "coldprefixuniquetoken");
+    assert_eq!(records_for(&current, parent).len(), 4);
+    for marker in [
+        GENERATION_APPEND_MARKER,
+        TERMINAL_APPEND_MARKER,
+        PRECOMMIT_APPEND_MARKER,
+    ] {
+        assert_eq!(
+            source_snapshot(&current, parent, marker)
+                .search_event_ids
+                .len(),
+            1,
+            "catch-up did not index suffix {marker} exactly once"
+        );
+    }
     assert_eq!(
-        current
-            .search_event_candidates("deferredafterfailureuniquetoken", 8)
-            .unwrap()
-            .len(),
-        1
+        source_snapshot(&current, child, "coldchildstableuniquetoken"),
+        cold_child
     );
+    drop(current);
+
+    let no_op_causal = capture_causal_stage();
+    let no_op = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(no_op.failed_routes.is_empty());
+    assert!(no_op.logical_source_failures.is_empty());
+    let no_op_sources = causal_by_id(&no_op_causal);
+    assert_exact_zero_work(&no_op_sources, parent, None);
+    assert_exact_zero_work(&no_op_sources, child, Some(parent));
+
+    let terminal = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(terminal.generation_id(), caught_up_generation);
+    assert_eq!(
+        source_snapshot(&terminal, parent, "coldprefixuniquetoken"),
+        caught_up_parent
+    );
+    for marker in [
+        GENERATION_APPEND_MARKER,
+        TERMINAL_APPEND_MARKER,
+        PRECOMMIT_APPEND_MARKER,
+    ] {
+        assert_eq!(
+            source_snapshot(&terminal, parent, marker)
+                .search_event_ids
+                .len(),
+            1,
+            "terminal no-op changed suffix {marker}"
+        );
+    }
+    assert_eq!(
+        source_snapshot(&terminal, child, "coldchildstableuniquetoken"),
+        cold_child
+    );
+}
+
+#[test]
+fn destructive_mid_capture_changes_preserve_last_good_generation_atomically() {
+    for seam in [
+        "metadata_inventory",
+        "generation_observation",
+        "terminal_observation",
+        "precommit_physical_revalidation",
+    ] {
+        for mutation in ["rewrite", "truncate", "replacement"] {
+            let temp = tempdir().unwrap();
+            let sessions = temp.path().join("sessions");
+            let index_root = temp.path().join("index");
+            fs::create_dir_all(&sessions).unwrap();
+            let native_session_id = "019fb000-0000-7000-8000-000000000041";
+            let path = session_path(&sessions, native_session_id);
+            write_session(
+                &sessions,
+                native_session_id,
+                SessionRelationshipKind::Root,
+                None,
+                [message("lastgooduniquetoken")],
+            );
+            let registry = register_tree(&[&sessions]);
+            refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+            let before = VerifiedIndex::open(&index_root).unwrap();
+            let generation = before.generation_id().to_owned();
+            let snapshot = source_snapshot(&before, native_session_id, "lastgooduniquetoken");
+            drop(before);
+
+            let mutate = path.clone();
+            let replacement = path.with_extension("replacement");
+            if mutation == "replacement" {
+                fs::write(
+                    &replacement,
+                    jsonl_bytes([
+                        session_meta(native_session_id, SessionRelationshipKind::Root, None),
+                        message("replacementuniquetoken"),
+                    ]),
+                )
+                .unwrap();
+            }
+            match seam {
+                "metadata_inventory" => {
+                    install_after_codex_metadata_inventory_hook(move || {
+                        destructively_mutate_session(&mutate, &replacement, mutation);
+                    });
+                }
+                "generation_observation" => {
+                    set_after_jsonl_append_observation_route_binding_hook(
+                        path.clone(),
+                        move || {
+                            destructively_mutate_session(&mutate, &replacement, mutation);
+                        },
+                    );
+                }
+                "terminal_observation" => {
+                    let terminal_hook_path = path.clone();
+                    set_after_jsonl_append_observation_route_binding_hook(
+                        path.clone(),
+                        move || {
+                            set_after_jsonl_append_observation_route_binding_hook(
+                                terminal_hook_path,
+                                move || {
+                                    destructively_mutate_session(&mutate, &replacement, mutation);
+                                },
+                            );
+                        },
+                    );
+                }
+                "precommit_physical_revalidation" => {
+                    set_before_jsonl_terminal_physical_revalidation_hook(
+                        sessions.clone(),
+                        move || {
+                            destructively_mutate_session(&mutate, &replacement, mutation);
+                        },
+                    );
+                }
+                _ => unreachable!(),
+            }
+            match refresh_source_backed_generation(&index_root, &registry, writer_options()) {
+                Ok(failed) => {
+                    assert_eq!(failed.failed_routes.len(), 1, "{seam}/{mutation}");
+                    assert!(failed.failed_routes[0].carried_forward, "{seam}/{mutation}");
+                }
+                Err(SourceBackedCoordinatorError::RouteScan { source, .. }) => {
+                    assert_eq!(
+                        source.kind,
+                        SourceBackedRouteErrorKind::InvalidSource,
+                        "{seam}/{mutation}"
+                    );
+                }
+                Err(error) => panic!("unexpected {seam}/{mutation} failure: {error:?}"),
+            }
+            let retained = VerifiedIndex::open(&index_root).unwrap();
+            assert_eq!(retained.generation_id(), generation, "{seam}/{mutation}");
+            assert_eq!(
+                source_snapshot(&retained, native_session_id, "lastgooduniquetoken"),
+                snapshot,
+                "{seam}/{mutation}"
+            );
+            assert!(retained
+                .search_event_candidates("replacementuniquetoken", 8)
+                .unwrap()
+                .is_empty());
+        }
+    }
 }

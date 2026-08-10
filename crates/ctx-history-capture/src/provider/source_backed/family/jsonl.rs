@@ -35,11 +35,15 @@ use revalidation::hash_prefix;
 #[cfg(test)]
 pub(crate) use revalidation::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_final_jsonl_prefix_hash_hook,
-    set_after_jsonl_prefix_hash_hook, set_after_second_jsonl_prefix_hash_hook,
+    set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_prefix_hash_hook,
+    set_after_second_jsonl_prefix_hash_hook,
 };
 pub(crate) use revalidation::{
-    observe_opened_file, revalidate_frozen_prefix, revalidate_frozen_prefix_sha256,
+    observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
+    revalidate_frozen_prefix_sha256,
 };
+#[cfg(test)]
+pub(crate) use route::set_before_jsonl_terminal_physical_revalidation_hook;
 pub(crate) use route::{
     jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
     JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
@@ -126,10 +130,6 @@ pub(crate) struct JsonlFileObservation {
 }
 
 impl JsonlFileObservation {
-    pub(crate) fn length(&self) -> u64 {
-        self.length
-    }
-
     fn same_stable_file(&self, current: &Self) -> bool {
         match (self.stable_identity, current.stable_identity) {
             (Some(previous), Some(current)) => previous == current,

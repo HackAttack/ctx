@@ -10,11 +10,12 @@ use crate::{
     common::io::OpenedProviderSourceFile,
     provider::source_backed::{
         family::jsonl::{
-            observe_opened_file, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
-            JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-            JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome,
-            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRootMissingMode,
-            JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlFileObservation,
+            observe_opened_file, observe_opened_file_allow_append, JsonlFamilyAdapter,
+            JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
+            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
+            JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector, JsonlFamilyPublication,
+            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+            JsonlFileObservation,
         },
         SourceBackedRouteErrorKind,
     },
@@ -27,11 +28,11 @@ fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
 ) -> Result<JsonlFileObservation> {
     let opened = reopen_codex_source_capability(source)?;
+    let observation = observe_opened_file_allow_append(&source.source_path, &opened)?;
+    // The shared observation deliberately owns only current same-object route
+    // binding. Run the Codex catalog proof afterward so a mutation during that
+    // observation cannot land beyond the exact frozen-prefix digest check.
     revalidate_codex_catalog_source_capability(source, &opened)?;
-    let observation = observe_opened_file(&source.source_path, &opened)?;
-    if observation.length() != source.catalog_observation.len {
-        return Err(CaptureError::SourceChangedDuringCapture);
-    }
     Ok(observation)
 }
 
