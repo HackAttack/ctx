@@ -40,6 +40,8 @@ use super::{
 use crate::ui::Ui;
 
 mod control;
+#[cfg(test)]
+mod seam_tests;
 pub(crate) use control::run_daemon_command;
 
 fn run_daemon(

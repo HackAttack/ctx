@@ -25,6 +25,26 @@ mod client;
 mod refresh_mode;
 mod request;
 
+#[cfg(feature = "test-support")]
+pub use client::SourceRefreshObservationRecoveryFailed;
+
+#[cfg(feature = "test-support")]
+pub fn recover_wait_refresh_request_for_test(
+    availability: &dyn crate::DaemonAvailabilityPort,
+    data_root: &Path,
+    request_id: &str,
+) -> Result<String> {
+    client::recover_wait_refresh_request(
+        availability,
+        data_root,
+        request_id,
+        SourceBackedRefreshOperation::Refresh,
+        None,
+        false,
+        true,
+    )
+}
+
 #[cfg(not(test))]
 pub(crate) use ctx_history_refresh::RefreshEngine as CoreRefreshEngine;
 pub use ctx_history_refresh::{

@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "client_observation_recovery.rs"]
 mod observation_recovery;
+#[cfg(feature = "test-support")]
+pub use observation_recovery::SourceRefreshObservationRecoveryFailed;
 use observation_recovery::{
     request_bound_status_with_recovery, retained_request_unobservable, DISCONNECT_POLICY,
 };
@@ -933,7 +935,7 @@ fn legacy_failed_refresh_response(response: &Value) -> Result<SourceBackedRefres
     }
 }
 
-fn recover_wait_refresh_request(
+pub(super) fn recover_wait_refresh_request(
     availability: &dyn crate::DaemonAvailabilityPort,
     data_root: &Path,
     request_id: &str,

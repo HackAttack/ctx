@@ -7,7 +7,7 @@ pub(super) fn daemon_should_schedule_auto_upgrade(
     daemon_enabled && daemon_mode == DaemonMode::Full
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn fail_daemon_before_ready_for_test(data_root: &Path) -> Result<()> {
     if data_root
         .join(".fail-daemon-before-ready-for-test")

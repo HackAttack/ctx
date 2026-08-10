@@ -4,10 +4,10 @@ const REQUEST_BOUND_STATUS_RECOVERY_ATTEMPT_LIMIT: usize = 3;
 pub(super) const DISCONNECT_POLICY: &str = "retain_after_durable_admission";
 
 #[derive(Debug)]
-pub(super) struct SourceRefreshObservationRecoveryFailed {
-    pub(super) request_id: String,
-    pub(super) recovery_attempts: usize,
-    pub(super) disconnect_policy: &'static str,
+pub struct SourceRefreshObservationRecoveryFailed {
+    pub request_id: String,
+    pub recovery_attempts: usize,
+    pub disconnect_policy: &'static str,
 }
 
 impl fmt::Display for SourceRefreshObservationRecoveryFailed {

@@ -95,6 +95,37 @@ pub use source_backed_refresh_coordinator::{
 #[cfg(feature = "test-support")]
 pub mod testing {
     pub use crate::source_backed_pro_catch_up::testing::*;
+    pub use crate::source_backed_refresh_coordinator::{
+        recover_wait_refresh_request_for_test, SourceRefreshObservationRecoveryFailed,
+    };
+
+    pub fn pro_catch_up_production_source() -> String {
+        [
+            include_str!("source_backed_pro_catch_up.rs"),
+            include_str!("source_backed_pro_catch_up/finalization.rs"),
+            include_str!("source_backed_pro_catch_up/lease_reconciliation.rs"),
+            include_str!("source_backed_pro_catch_up/recheck.rs"),
+            include_str!("source_backed_pro_catch_up/status.rs"),
+        ]
+        .join("\n")
+    }
+
+    pub fn write_daemon_lifecycle_status(
+        data_root: &std::path::Path,
+        status: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        super::paths_status::write_daemon_status(data_root, status)
+    }
+
+    pub fn write_core_refresh_status(
+        data_root: &std::path::Path,
+        status: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        super::paths_status::write_daemon_job_status(
+            &super::paths_status::daemon_core_refresh_job_path(data_root),
+            status,
+        )
+    }
 
     pub fn write_daemon_service_endpoint(
         data_root: &std::path::Path,

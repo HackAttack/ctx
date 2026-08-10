@@ -391,7 +391,7 @@ where
             ));
         }
         ensure_daemon_ipc_services_healthy(query_service.as_ref(), refresh_service.as_ref())?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fail_daemon_before_ready_for_test(data_root)?;
         if !runtime.config.daemon.mode.runs_only_source_refresh() {
             ports.installation.resume_completed(data_root)?;

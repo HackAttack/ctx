@@ -1659,3 +1659,57 @@ mod tests {
             .is_some_and(|error| error.contains("provider-neutral executor failed")));
     }
 }
+
+#[cfg(test)]
+mod client_admission_recovery_tests {
+    use ctx_daemon_service::testing::{
+        recover_wait_refresh_request_for_test, SourceRefreshObservationRecoveryFailed,
+    };
+
+    use super::*;
+
+    #[test]
+    fn disabled_daemon_post_ack_recovery_preserves_stable_request_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        std::fs::write(
+            data_root.join(crate::config::CONFIG_FILE),
+            "[daemon]\nenabled = false\n",
+        )
+        .unwrap();
+        let request_id = "019fcaaa-0000-7000-8000-0000000002b1";
+
+        let error = recover_wait_refresh_request_for_test(&AVAILABILITY, &data_root, request_id)
+            .unwrap_err();
+
+        let retained = error
+            .downcast_ref::<SourceRefreshObservationRecoveryFailed>()
+            .expect("disabled post-ack recovery remains request-bound");
+        assert_eq!(retained.request_id, request_id);
+        assert_eq!(retained.disconnect_policy, "retain_after_durable_admission");
+        assert!(format!("{error:#}").contains("daemon was disabled"));
+        assert!(error
+            .downcast_ref::<SourceBackedRefreshDaemonUnavailable>()
+            .is_none());
+    }
+
+    #[test]
+    fn malformed_config_post_ack_recovery_preserves_stable_request_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+        std::fs::write(data_root.join(crate::config::CONFIG_FILE), "[daemon\n").unwrap();
+        let request_id = "019fcaaa-0000-7000-8000-0000000002b2";
+
+        let error = recover_wait_refresh_request_for_test(&AVAILABILITY, &data_root, request_id)
+            .unwrap_err();
+
+        let retained = error
+            .downcast_ref::<SourceRefreshObservationRecoveryFailed>()
+            .expect("configuration failure remains request-bound after acknowledgement");
+        assert_eq!(retained.request_id, request_id);
+        assert_eq!(retained.disconnect_policy, "retain_after_durable_admission");
+        assert!(format!("{error:#}").contains("load daemon configuration"));
+    }
+}
