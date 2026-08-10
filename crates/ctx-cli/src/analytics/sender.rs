@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     config::AppConfig,
     execution_capabilities::{self, CapabilitySnapshotV1},
-    install_marker, net,
+    net,
     operation_descriptor::{CliOperation, OperationDescriptor},
 };
 
@@ -60,7 +60,7 @@ pub(crate) fn send_batch(data_root: &Path, config: &AppConfig, events: &[PublicE
 fn send_batch_inner(data_root: &Path, config: &AppConfig, events: &[PublicEventV1]) -> Result<()> {
     let client_profile_id = crate::identity::device_id(data_root)?;
     let data_root_id = crate::identity::installation_id(data_root)?;
-    let install_marker = install_marker::current_exe_install_marker();
+    let install_marker = ctx_upgrade_engine::current_exe_install_marker();
     let mut capability_snapshot = execution_capabilities::pending(data_root).ok().flatten();
     let occurred_at = minute_rounded_now();
     let serialized = events

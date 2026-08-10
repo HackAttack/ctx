@@ -160,7 +160,7 @@ fn assert_mode(path: &Path, expected: u32) {
 
 #[test]
 fn windows_runtime_extractor_keeps_external_source_contract() {
-    let installer_source = include_str!("../src/upgrade/install.rs");
+    let installer_source = include_str!("../../ctx-upgrade-engine/src/upgrade/install.rs");
     let declaration = "const EXTRACT_SCRIPT: &str = r#\"\n";
     assert_eq!(
         installer_source.matches(declaration).count(),

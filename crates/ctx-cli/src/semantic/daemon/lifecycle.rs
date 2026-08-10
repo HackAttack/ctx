@@ -65,7 +65,7 @@ pub(super) fn daemon_should_attempt_finite_idle_shutdown(
 }
 
 pub(super) fn installation_lifecycle_blocks_current_process(data_root: &Path) -> bool {
-    crate::upgrade::installation_hosted_uninstall_is_active().unwrap_or(true)
+    ctx_upgrade_engine::installation_hosted_uninstall_is_active().unwrap_or(true)
         || (!super::current_process_owns_daemon_upgrade_handoff(data_root)
-            && crate::upgrade::installation_upgrade_is_active().unwrap_or(false))
+            && ctx_upgrade_engine::installation_upgrade_is_active().unwrap_or(false))
 }

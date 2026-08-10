@@ -44,7 +44,7 @@ impl InstallationDaemonLease {
             let _ = fs2::FileExt::unlock(&lock);
             return Ok(None);
         }
-        let (_, registration_root) = crate::upgrade::installation_daemon_coordination_paths()?;
+        let (_, registration_root) = ctx_upgrade_engine::installation_daemon_coordination_paths()?;
         create_private_dir_all(&registration_root)?;
         let registration_id = Uuid::now_v7().to_string();
         let registration_path = registration_root.join(format!("{registration_id}.json"));
@@ -105,8 +105,10 @@ impl InstallationDaemonLease {
 }
 
 fn installation_daemon_admission_is_fenced(allow_active_upgrade: bool) -> Result<bool> {
-    Ok(crate::upgrade::installation_hosted_uninstall_is_active()?
-        || (!allow_active_upgrade && crate::upgrade::installation_upgrade_is_active()?))
+    Ok(
+        ctx_upgrade_engine::installation_hosted_uninstall_is_active()?
+            || (!allow_active_upgrade && ctx_upgrade_engine::installation_upgrade_is_active()?),
+    )
 }
 
 impl Drop for InstallationDaemonLease {
@@ -119,7 +121,7 @@ impl Drop for InstallationDaemonLease {
 }
 
 fn open_installation_daemon_quiescence_lock() -> Result<fs::File> {
-    let (path, _) = crate::upgrade::installation_daemon_coordination_paths()?;
+    let (path, _) = ctx_upgrade_engine::installation_daemon_coordination_paths()?;
     open_installation_daemon_quiescence_lock_at(&path)
 }
 
@@ -151,7 +153,7 @@ pub(super) fn wait_for_installation_daemon_quiescence_for(
     attempt_id: &str,
 ) -> Result<()> {
     let (lock_path, registration_root) =
-        crate::upgrade::installation_daemon_coordination_paths_for(executable);
+        ctx_upgrade_engine::installation_daemon_coordination_paths_for(executable);
     wait_for_installation_daemon_quiescence_at(
         &lock_path,
         &registration_root,
@@ -194,7 +196,7 @@ pub(super) fn read_installation_daemon_restarts(
     executable: &Path,
     attempt_id: &str,
 ) -> Result<Vec<InstallationDaemonRestart>> {
-    let (_, root) = crate::upgrade::installation_daemon_coordination_paths_for(executable);
+    let (_, root) = ctx_upgrade_engine::installation_daemon_coordination_paths_for(executable);
     read_installation_daemon_restarts_from(&root, attempt_id, false)
 }
 
@@ -342,7 +344,7 @@ fn validate_installation_daemon_registration(value: &Value, path: &Path) -> Resu
 }
 
 pub(super) fn remove_installation_daemon_coordination() -> Result<()> {
-    let (_, root) = crate::upgrade::installation_daemon_coordination_paths()?;
+    let (_, root) = ctx_upgrade_engine::installation_daemon_coordination_paths()?;
     for (path, _) in read_installation_daemon_registrations_from(&root)? {
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -358,7 +360,7 @@ pub(super) fn remove_installation_daemon_coordination() -> Result<()> {
 }
 
 pub(super) fn registered_installation_daemon_roots() -> Result<Vec<PathBuf>> {
-    let (_, root) = crate::upgrade::installation_daemon_coordination_paths()?;
+    let (_, root) = ctx_upgrade_engine::installation_daemon_coordination_paths()?;
     registered_installation_daemon_roots_from(&root)
 }
 

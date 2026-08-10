@@ -471,7 +471,7 @@ fn ensure_native_supervisor_with(
 }
 
 fn ensure_hosted_uninstall_supervisor_admission() -> Result<()> {
-    if crate::upgrade::installation_hosted_uninstall_is_active().unwrap_or(true) {
+    if ctx_upgrade_engine::installation_hosted_uninstall_is_active().unwrap_or(true) {
         return Err(anyhow!(
             "ctx daemon supervisor mutation is fenced by hosted uninstall"
         ));
@@ -480,7 +480,7 @@ fn ensure_hosted_uninstall_supervisor_admission() -> Result<()> {
 }
 
 fn ensure_hosted_uninstall_supervisor_admission_for_executable(executable: &Path) -> Result<()> {
-    if crate::upgrade::installation_hosted_uninstall_is_active_for_executable(executable)
+    if ctx_upgrade_engine::installation_hosted_uninstall_is_active_for_executable(executable)
         .unwrap_or(true)
     {
         return Err(anyhow!(
@@ -807,7 +807,7 @@ fn safely_supported_managed_install(data_root: &Path) -> Result<Option<PathBuf>>
     if !is_canonical_managed_data_root(data_root)? {
         return Ok(None);
     }
-    crate::upgrade::managed_install_executable()
+    ctx_upgrade_engine::managed_install_executable()
 }
 
 fn is_canonical_managed_data_root(data_root: &Path) -> Result<bool> {
