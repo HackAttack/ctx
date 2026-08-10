@@ -2,6 +2,26 @@ mod support;
 
 use support::*;
 
+const BUILD_SURFACE_MANIFESTS: [&str; 3] = [
+    "Cargo.toml",
+    "crates/ctx-cli/Cargo.toml",
+    "crates/ctx-daemon-runtime/Cargo.toml",
+];
+const REMOVED_BUILD_SURFACES: [&str; 3] = ["ctx-cloud-client", "ctx-captured-batch", "cloud-v2"];
+
+fn removed_build_surface<'a>(
+    manifests: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<(&'a str, &'static str)> {
+    for (path, manifest) in manifests {
+        for removed in REMOVED_BUILD_SURFACES {
+            if manifest.contains(removed) {
+                return Some((path, removed));
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn cloud_subcommand_is_not_reachable() {
     let temp = tempdir();
@@ -47,12 +67,42 @@ fn workspace_has_no_cloud_history_targets_or_features() {
         );
     }
 
-    let workspace_manifest = fs::read_to_string(repo_root.join("Cargo.toml")).unwrap();
-    let cli_manifest = fs::read_to_string(repo_root.join("crates/ctx-cli/Cargo.toml")).unwrap();
-    for removed in ["ctx-cloud-client", "ctx-captured-batch", "cloud-v2"] {
-        assert!(
-            !workspace_manifest.contains(removed) && !cli_manifest.contains(removed),
-            "removed build surface is still reachable: {removed}"
-        );
+    let manifests = BUILD_SURFACE_MANIFESTS.map(|path| {
+        (
+            path,
+            fs::read_to_string(repo_root.join(path))
+                .unwrap_or_else(|error| panic!("read {path}: {error}")),
+        )
+    });
+    if let Some((path, removed)) = removed_build_surface(
+        manifests
+            .iter()
+            .map(|(path, manifest)| (*path, manifest.as_str())),
+    ) {
+        panic!("removed build surface is still reachable from {path}: {removed}");
     }
+}
+
+#[test]
+fn daemon_runtime_manifest_is_a_fail_closed_cloud_removal_input() {
+    assert_eq!(
+        BUILD_SURFACE_MANIFESTS,
+        [
+            "Cargo.toml",
+            "crates/ctx-cli/Cargo.toml",
+            "crates/ctx-daemon-runtime/Cargo.toml",
+        ],
+        "cloud-removal policy must retain its exact manifest inventory"
+    );
+    assert_eq!(
+        removed_build_surface([
+            ("Cargo.toml", "[workspace]"),
+            ("crates/ctx-cli/Cargo.toml", "[package]"),
+            (
+                "crates/ctx-daemon-runtime/Cargo.toml",
+                "[dependencies]\nctx-cloud-client = \"1\"",
+            ),
+        ]),
+        Some(("crates/ctx-daemon-runtime/Cargo.toml", "ctx-cloud-client"))
+    );
 }

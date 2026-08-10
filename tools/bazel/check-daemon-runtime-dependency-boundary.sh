@@ -37,6 +37,22 @@ if [[ -z "$(query 'somepath(//crates/ctx-cli:ctx, //crates/ctx-daemon-runtime:li
   exit 1
 fi
 
+expected_reverse_bazel="${tmp}/expected-reverse-bazel.txt"
+# The fixture binaries compile the CLI production source under controlled cfg
+# variants, so the complete binary/library reverse set is intentionally exact.
+printf '%s\n' \
+  '//crates/ctx-cli:ctx' \
+  '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
+  '//crates/ctx-cli:ctx_pro_test_host' \
+  '//crates/ctx-cli:ctx_upgrade_test_harness' \
+  '//crates/ctx-daemon-runtime:lib' >"${expected_reverse_bazel}"
+query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:lib))' \
+  | LC_ALL=C sort -u >"${tmp}/actual-reverse-bazel.txt"
+if ! diff -u "${expected_reverse_bazel}" "${tmp}/actual-reverse-bazel.txt"; then
+  echo 'unexpected reverse production consumer of ctx-daemon-runtime' >&2
+  exit 1
+fi
+
 runtime_root="${repo_root}/crates/ctx-daemon-runtime"
 actual_internal_cargo="${tmp}/actual-internal-cargo.txt"
 grep -E '^[[:space:]]*ctx-[[:alnum:]-]+[[:space:]]*=' "${runtime_root}/Cargo.toml" \
@@ -45,6 +61,19 @@ grep -E '^[[:space:]]*ctx-[[:alnum:]-]+[[:space:]]*=' "${runtime_root}/Cargo.tom
 printf '%s\n' 'ctx-history-core' >"${tmp}/expected-internal-cargo.txt"
 if ! diff -u "${tmp}/expected-internal-cargo.txt" "${actual_internal_cargo}"; then
   echo 'unexpected internal Cargo dependency for ctx-daemon-runtime' >&2
+  exit 1
+fi
+
+actual_reverse_cargo="${tmp}/actual-reverse-cargo.txt"
+while IFS= read -r manifest; do
+  if [[ "${manifest}" != "${runtime_root}/Cargo.toml" ]] && grep -q 'ctx-daemon-runtime' "${manifest}"; then
+    printf '%s\n' "${manifest#${repo_root}/}"
+  fi
+done < <(find "${repo_root}/crates" -mindepth 2 -maxdepth 2 -name Cargo.toml -type f | LC_ALL=C sort) \
+  >"${actual_reverse_cargo}"
+printf '%s\n' 'crates/ctx-cli/Cargo.toml' >"${tmp}/expected-reverse-cargo.txt"
+if ! diff -u "${tmp}/expected-reverse-cargo.txt" "${actual_reverse_cargo}"; then
+  echo 'unexpected reverse Cargo consumer of ctx-daemon-runtime' >&2
   exit 1
 fi
 
