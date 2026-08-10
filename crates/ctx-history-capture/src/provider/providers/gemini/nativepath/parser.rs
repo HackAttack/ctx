@@ -1,7 +1,9 @@
+#[cfg(test)]
+use std::io::BufRead;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    io::{BufRead, BufReader, Seek, SeekFrom},
+    io::{BufReader, Seek, SeekFrom},
 };
 #[cfg(test)]
 use std::{fs::File, io::Read};
@@ -18,9 +20,12 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::Cell;
 
+#[cfg(test)]
+use crate::Result;
 use crate::{
     provider::ctx_retrieval::{ContributionClass, ResultAtom, ResultTerminalStatus},
-    CaptureError, OutputOutcome, OutputOutcomeMetadata, Result, MAX_PROVIDER_JSONL_LINE_BYTES,
+    provider::source_backed::family::jsonl::{read_bounded_record_unhashed, JsonlRecordFraming},
+    CaptureError, OutputOutcome, OutputOutcomeMetadata, MAX_PROVIDER_JSONL_LINE_BYTES,
     PROVIDER_MAX_PREVIEW_CHARS,
 };
 
@@ -45,10 +50,12 @@ mod reader;
 #[cfg(test)]
 mod resume;
 mod selective;
+#[cfg(test)]
 mod source;
 
 use paging::*;
 use selective::*;
+#[cfg(test)]
 use source::*;
 
 pub(super) use identity::GeminiNativeEventIds;
@@ -63,6 +70,7 @@ const BODY_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-retained-body-v1\0";
 const RESULT_STRING_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-result-string-v1\0";
 const RESULT_STRUCTURED_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-result-structured-v1\0";
 const RESULT_FALLBACK_ID_DOMAIN: &[u8] = b"ctx-gemini-nativepath-result-fallback-id-v1\0";
+#[cfg(test)]
 const PREFIX_HASH_DOMAIN: &[u8] = b"ctx-gemini-nativepath-complete-prefix-v1\0";
 #[cfg(test)]
 const CORE_PAGE_IDENTITY_DOMAIN: &[u8] = b"ctx-gemini-nativepath-core-page-v2\0";
@@ -333,30 +341,27 @@ pub(crate) fn read_gemini_session_header(
     let mut file = source_file.file().try_clone()?;
     file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::new(file);
-    let mut prefix_hasher = new_prefix_hasher();
-    let mut source_hasher = prefix_hasher.clone();
     let mut line = Vec::new();
     let mut raw_ordinal = 0_u64;
     let mut offset = 0_u64;
 
-    loop {
-        let Some(record) = read_record(
+    while offset < opening.length {
+        let record = read_bounded_record_unhashed(
             &mut reader,
             &mut line,
-            &mut prefix_hasher,
-            &mut source_hasher,
+            opening.length.saturating_sub(offset),
+            JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES.saturating_add(1), false),
+            || CaptureError::SourceChangedDuringCapture,
         )?
-        else {
-            return Err(GeminiScanError::UncommittedRecord {
-                raw_ordinal,
-                byte_start: offset,
-                byte_end_exclusive: offset,
-                reason: "Gemini source has no importable native session header".to_owned(),
-            });
-        };
+        .ok_or_else(|| GeminiScanError::UncommittedRecord {
+            raw_ordinal,
+            byte_start: offset,
+            byte_end_exclusive: offset,
+            reason: "Gemini source has no importable native session header".to_owned(),
+        })?;
         let byte_start = offset;
-        offset = offset.saturating_add(record.bytes_observed);
-        if !record.terminated {
+        offset = offset.saturating_add(record.byte_len);
+        if !record.complete {
             return Err(GeminiScanError::UncommittedRecord {
                 raw_ordinal,
                 byte_start,
@@ -365,7 +370,7 @@ pub(crate) fn read_gemini_session_header(
             });
         }
         if !record.oversized {
-            let payload = trim_jsonl_ending(&line);
+            let payload = line.strip_suffix(b"\r").unwrap_or(&line);
             if !payload.iter().all(u8::is_ascii_whitespace) {
                 if let Ok(probe) = serde_json::from_slice::<GeminiRecordProbe>(payload) {
                     if probe.classify() == GeminiRecordClass::Header {
@@ -391,4 +396,10 @@ pub(crate) fn read_gemini_session_header(
         }
         raw_ordinal = raw_ordinal.saturating_add(1);
     }
+    Err(GeminiScanError::UncommittedRecord {
+        raw_ordinal,
+        byte_start: offset,
+        byte_end_exclusive: offset,
+        reason: "Gemini source has no importable native session header".to_owned(),
+    })
 }

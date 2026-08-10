@@ -6,7 +6,7 @@
 //! capability rather than reopening a canonicalized pathname.
 
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::BufReader,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -30,10 +30,11 @@ use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::source_backed::{
         family::jsonl::{
-            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
-            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome,
-            JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRootMissingMode,
-            JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+            read_bounded_record, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
+            JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+            JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector, JsonlFamilyPublication,
+            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+            JsonlRecordFraming,
         },
         SourceBackedRouteErrorKind,
     },
@@ -845,7 +846,7 @@ fn walk_complete_records(
     prefix_boundary: Option<u64>,
     mut retained: impl FnMut(&RetainedPromptRecord) -> CodexPromptHistorySourceBackedResultV0<()>,
 ) -> CodexPromptHistorySourceBackedResultV0<ScanAnalysis> {
-    let mut reader = BufReader::new(opened_file_from_start(source)?.take(frozen_len));
+    let mut reader = BufReader::new(opened_file_from_start(source)?);
     let mut whole = Sha256::new();
     let mut complete = Sha256::new();
     let mut offset = 0_u64;
@@ -860,72 +861,46 @@ fn walk_complete_records(
     });
     let mut terminal = true;
 
-    loop {
+    while offset < frozen_len {
         let record_offset = offset;
-        let complete_before = complete.clone();
         let mut bytes = Vec::new();
-        let mut observed = 0_usize;
-        let mut saw_any = false;
-        let mut terminated = false;
-        while !terminated {
-            let available = reader.fill_buf()?;
-            if available.is_empty() {
-                break;
-            }
-            saw_any = true;
-            let take = available
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(available.len(), |index| index.saturating_add(1));
-            let chunk = &available[..take];
-            whole.update(chunk);
-            complete.update(chunk);
-            observed = observed
-                .checked_add(chunk.len())
-                .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
-            if bytes.len() <= MAX_PROVIDER_JSONL_LINE_BYTES {
-                let remaining = MAX_PROVIDER_JSONL_LINE_BYTES
-                    .saturating_add(1)
-                    .saturating_sub(bytes.len());
-                bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-            }
-            offset = offset
-                .checked_add(
-                    u64::try_from(chunk.len())
-                        .map_err(|_| CodexPromptHistorySourceBackedErrorV0::CountMismatch)?,
-                )
-                .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
-            terminated = chunk.last() == Some(&b'\n');
-            reader.consume(take);
-        }
-        if !saw_any {
-            break;
-        }
-        if !terminated {
-            complete = complete_before;
+        let record = read_bounded_record(
+            &mut reader,
+            &mut bytes,
+            &mut whole,
+            &mut complete,
+            frozen_len.saturating_sub(offset),
+            JsonlRecordFraming::new(MAX_PROVIDER_JSONL_LINE_BYTES, false),
+            || CaptureError::SourceChangedDuringCapture,
+        )?
+        .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
+        offset = offset
+            .checked_add(record.byte_len)
+            .ok_or(CodexPromptHistorySourceBackedErrorV0::CountMismatch)?;
+        if !record.complete {
             terminal = false;
             break;
         }
 
-        let classification = if observed > MAX_PROVIDER_JSONL_LINE_BYTES {
-            RecordClassification::Rejected
-        } else {
-            let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
-            let body = body.strip_suffix(b"\r").unwrap_or(body);
-            if body.iter().all(u8::is_ascii_whitespace) {
-                RecordClassification::Ignored
+        let classification =
+            if record.byte_len > u64::try_from(MAX_PROVIDER_JSONL_LINE_BYTES).unwrap_or(u64::MAX) {
+                RecordClassification::Rejected
             } else {
-                match serde_json::from_slice::<PromptLine>(body) {
-                    Ok(line)
-                        if !line.session_id.trim().is_empty()
-                            && chrono::DateTime::from_timestamp(line.ts, 0).is_some() =>
-                    {
-                        RecordClassification::Retained(line)
+                let body = bytes.strip_suffix(b"\r").unwrap_or(&bytes);
+                if body.iter().all(u8::is_ascii_whitespace) {
+                    RecordClassification::Ignored
+                } else {
+                    match serde_json::from_slice::<PromptLine>(body) {
+                        Ok(line)
+                            if !line.session_id.trim().is_empty()
+                                && chrono::DateTime::from_timestamp(line.ts, 0).is_some() =>
+                        {
+                            RecordClassification::Retained(line)
+                        }
+                        _ => RecordClassification::Rejected,
                     }
-                    _ => RecordClassification::Rejected,
                 }
-            }
-        };
+            };
         match classification {
             RecordClassification::Retained(line) => {
                 retained(&RetainedPromptRecord {
