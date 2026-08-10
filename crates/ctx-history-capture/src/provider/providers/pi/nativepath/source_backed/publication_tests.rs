@@ -67,6 +67,7 @@ fn published_session(index: &Path, provider_session_id: &str) -> Vec<CoreRecord>
 #[test]
 fn parent_session_path_resolves_header_identity_and_publishes_forked_unknown_copy() {
     let temp = crate::test_support_paths::tempdir().unwrap();
+    let index_temp = crate::test_support_paths::tempdir().unwrap();
     let parent_path = temp.path().join("parent.jsonl");
     let child_path = temp.path().join("child.jsonl");
     write_session(&parent_path, "pi-parent", None, "parent retained message");
@@ -78,7 +79,7 @@ fn parent_session_path_resolves_header_identity_and_publishes_forked_unknown_cop
         "child retained message",
     );
 
-    let index = temp.path().join("index");
+    let index = index_temp.path().join("index");
     refresh_source_backed_generation(
         &index,
         &registry(temp.path()),
@@ -113,6 +114,7 @@ fn parent_session_path_resolves_header_identity_and_publishes_forked_unknown_cop
 #[test]
 fn provider_p1_lineage_declared_missing_parent_fails_closed() {
     let temp = crate::test_support_paths::tempdir().unwrap();
+    let index_temp = crate::test_support_paths::tempdir().unwrap();
     let child_path = temp.path().join("child.jsonl");
     let missing_parent = temp.path().join("missing-parent.jsonl");
     write_session(
@@ -123,7 +125,7 @@ fn provider_p1_lineage_declared_missing_parent_fails_closed() {
     );
 
     let error = refresh_source_backed_generation(
-        temp.path().join("index"),
+        index_temp.path().join("index"),
         &registry(temp.path()),
         WriterOptions {
             indexer_threads: 1,

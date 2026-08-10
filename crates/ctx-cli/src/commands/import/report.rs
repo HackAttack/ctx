@@ -237,9 +237,13 @@ fn source_failure_fields(report: &ImportReport) -> Vec<(String, String)> {
                 .and_then(Value::as_str)
                 .or_else(|| source.get("error").and_then(Value::as_str))
                 .unwrap_or("no detail reported");
+            let disposition = (source.get("failure_type").and_then(Value::as_str)
+                == Some("unsupported_schema"))
+            .then_some(" is not importable")
+            .unwrap_or_default();
             (
                 format!("Source {}", index.saturating_add(1)),
-                format!("{selector} ({provider}, {class}{retained}): {detail}"),
+                format!("{selector}{disposition} ({provider}, {class}{retained}): {detail}"),
             )
         })
         .collect::<Vec<_>>();

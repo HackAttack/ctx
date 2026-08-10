@@ -31,6 +31,18 @@ pub(in crate::provider::source_backed) fn validate_executable_route(
     selection: SourceBackedRouteSelection,
     selector_authority: SourceBackedSelectorAuthority,
 ) -> SourceBackedCoordinatorResult<&'static SourceBackedProviderRouteMetadata> {
+    if !source.import_support.is_importable()
+        || source.source_kind == ProviderSourceKind::DetectionOnly
+        || source.status == ProviderSourceStatus::Unsupported
+        || source.unsupported_reason.is_some()
+    {
+        return Err(invalid_route(
+            source.provider,
+            source
+                .unsupported_reason
+                .unwrap_or("the selected provider source is unsupported"),
+        ));
+    }
     let known = landed_format_route(source.provider, source.source_format);
     let Some(known) = known else {
         return Err(invalid_route(
@@ -45,13 +57,7 @@ pub(in crate::provider::source_backed) fn validate_executable_route(
         SourceBackedRouteSelection::Automatic => known.automatic,
         SourceBackedRouteSelection::ExplicitManual => known.explicit_manual,
     };
-    if !selected_mode_supported
-        || known.unsupported_reason.is_some()
-        || !source.import_support.is_importable()
-        || source.source_kind == ProviderSourceKind::DetectionOnly
-        || source.status == ProviderSourceStatus::Unsupported
-        || source.unsupported_reason.is_some()
-    {
+    if !selected_mode_supported || known.unsupported_reason.is_some() {
         return Err(invalid_route(
             source.provider,
             source

@@ -126,6 +126,10 @@ pub(crate) struct JsonlFileObservation {
 }
 
 impl JsonlFileObservation {
+    pub(crate) fn length(&self) -> u64 {
+        self.length
+    }
+
     fn same_stable_file(&self, current: &Self) -> bool {
         match (self.stable_identity, current.stable_identity) {
             (Some(previous), Some(current)) => previous == current,

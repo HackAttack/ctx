@@ -33,6 +33,10 @@ CTX_DAEMON_RUNTIME_DEPS = [
     "//crates/ctx-history-core:lib",
 ]
 
+CTX_DAEMON_RUNTIME_RUSTC_FLAGS = [
+    "--check-cfg=cfg(ctx_release_qualification)",
+]
+
 rust_library(
     name = "lib",
     srcs = PROD_SRCS,
@@ -43,6 +47,21 @@ rust_library(
     deps = all_crate_deps(normal = True) + CTX_DAEMON_RUNTIME_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
+    rustc_flags = CTX_DAEMON_RUNTIME_RUSTC_FLAGS,
+)
+
+rust_library(
+    name = "qualification_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_daemon_runtime",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + CTX_DAEMON_RUNTIME_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+    rustc_flags = CTX_DAEMON_RUNTIME_RUSTC_FLAGS + ["--cfg=ctx_release_qualification"],
 )
 
 ctx_rust_test(
@@ -55,4 +74,5 @@ ctx_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + CTX_DAEMON_RUNTIME_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
+    rustc_flags = CTX_DAEMON_RUNTIME_RUSTC_FLAGS,
 )

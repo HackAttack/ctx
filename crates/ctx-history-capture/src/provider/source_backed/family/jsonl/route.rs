@@ -830,6 +830,28 @@ impl JsonlFamilyRejectedLeaf {
             logical_source_failure_detail: None,
         }
     }
+
+    pub(crate) fn bind_observed_with_terminal(
+        source_path: PathBuf,
+        authority_path: PathBuf,
+        proof: TypedKey,
+        rejected_records: u64,
+        source: SourceKey,
+        revalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+        logical_source_failure_detail: String,
+    ) -> Self {
+        Self {
+            source_path,
+            authority_path,
+            proof,
+            rejected_records,
+            terminal: Some(JsonlFamilyRejectedTerminal {
+                source,
+                revalidate: Arc::new(revalidate),
+            }),
+            logical_source_failure_detail: Some(logical_source_failure_detail),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -860,15 +882,6 @@ impl JsonlFamilyInventory {
         rejected_leaves: Vec<JsonlFamilyRejectedLeaf>,
     ) -> Result<Self> {
         Self::present_multi_with_rejected(provider, root, vec![authority], leaves, rejected_leaves)
-    }
-
-    pub(crate) fn present_multi(
-        provider: CaptureProvider,
-        root: &Path,
-        authorities: Vec<Arc<ProviderSourceRoot>>,
-        leaves: Vec<JsonlFamilyLeaf>,
-    ) -> Result<Self> {
-        Self::present_multi_with_rejected(provider, root, authorities, leaves, Vec::new())
     }
 
     pub(crate) fn present_multi_with_rejected(

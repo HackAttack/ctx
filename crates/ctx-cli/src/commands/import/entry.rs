@@ -74,7 +74,19 @@ pub(crate) fn run_import(
         let detail = report
             .sources
             .iter()
-            .find_map(|source| source.get("error").and_then(Value::as_str))
+            .find_map(|source| {
+                let error = source.get("error").and_then(Value::as_str)?;
+                if source.get("failure_type").and_then(Value::as_str) == Some("unsupported_schema")
+                {
+                    let selector = source
+                        .get("source_selector")
+                        .and_then(Value::as_str)
+                        .unwrap_or("selected source");
+                    Some(format!("{selector} is not importable: {error}"))
+                } else {
+                    Some(error.to_owned())
+                }
+            })
             .map(|error| format!("; first failure: {error}"))
             .unwrap_or_default();
         return Err(anyhow!("all import sources failed{detail}"));

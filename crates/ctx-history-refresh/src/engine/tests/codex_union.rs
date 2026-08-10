@@ -113,7 +113,7 @@ fn successful_codex_route_derives_rejected_records_from_committed_core_sources()
 }
 
 #[test]
-fn codex_advisory_root_conflict_preserves_child_owned_lineage_and_all_sources() {
+fn codex_irreconcilable_root_conflict_fails_closed_and_publishes_peer() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
@@ -164,35 +164,15 @@ fn codex_advisory_root_conflict_preserves_child_owned_lineage_and_all_sources() 
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, 0);
-    assert!(result.source_failures.is_empty());
+    assert_eq!(result.source_failure_total, 2);
+    assert_eq!(result.source_failures.len(), 2);
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, 3);
+    assert_eq!(publication.current.source_count, 1);
     assert_eq!(publication.current.rejected_records, 0);
     let verified = VerifiedIndex::open(&index_root).unwrap();
     let records = codex_core_records(&verified);
-    assert_eq!(records.len(), 3);
-    let parent = records
-        .iter()
-        .find(|record| record.content.normalized_body.as_deref() == Some(private_root_marker))
-        .unwrap();
-    let child = records
-        .iter()
-        .find(|record| record.content.normalized_body.as_deref() == Some(private_child_marker))
-        .unwrap();
-    assert_eq!(parent.session_relationship.as_str(), "root");
-    assert_eq!(child.session_relationship.as_str(), "forked");
-    assert_eq!(child.parent_session_id, Some(parent.session_id));
-    assert_eq!(child.root_session_id, parent.session_id);
-    assert_ne!(
-        child.root_session_id,
-        records
-            .iter()
-            .find(|record| record.content.normalized_body.as_deref() == Some(valid_marker))
-            .unwrap()
-            .session_id
-    );
+    assert_eq!(records.len(), 1);
     assert_eq!(
         verified
             .search_event_candidates(valid_marker, 10)
@@ -205,21 +185,21 @@ fn codex_advisory_root_conflict_preserves_child_owned_lineage_and_all_sources() 
             .search_event_candidates(private_root_marker, 10)
             .unwrap()
             .len(),
-        1
+        0
     );
     assert_eq!(
         verified
             .search_event_candidates(private_child_marker, 10)
             .unwrap()
             .len(),
-        1
+        0
     );
 }
 
 #[test]
-fn codex_advisory_root_conflicts_publish_without_failure_receipt_inflation() {
+fn codex_root_conflicts_fail_closed_with_bounded_failure_receipts() {
     const CONFLICTING_CHILDREN: usize = 65;
-    const PUBLISHED_SOURCES: usize = CONFLICTING_CHILDREN + 2;
+    const REJECTED_SOURCES: usize = CONFLICTING_CHILDREN + 1;
 
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -276,15 +256,15 @@ fn codex_advisory_root_conflicts_publish_without_failure_receipt_inflation() {
         panic!("one selected Codex route expected");
     };
     assert!(result.outcome.is_success());
-    assert_eq!(result.source_failure_total, 0);
-    assert!(result.source_failures.is_empty());
+    assert_eq!(result.source_failure_total, REJECTED_SOURCES);
+    assert!(!result.source_failures.is_empty());
     assert_eq!(result.rejected_record_total, 0);
     assert!(result.rejection_diagnostics.is_empty());
-    assert_eq!(publication.current.source_count, PUBLISHED_SOURCES);
+    assert_eq!(publication.current.source_count, 1);
     assert_eq!(publication.current.rejected_records, 0);
     assert_eq!(
         codex_core_records(&VerifiedIndex::open(&index_root).unwrap()).len(),
-        PUBLISHED_SOURCES
+        1
     );
 
     let receipt = SourceBackedRefreshReceipt::from_verified_publication(
@@ -293,22 +273,28 @@ fn codex_advisory_root_conflicts_publish_without_failure_receipt_inflation() {
         &publication,
     )
     .unwrap();
-    assert_eq!(receipt.terminal_outcome(), "completed");
-    assert_eq!(receipt.source_failure_total(), 0);
-    assert_eq!(receipt.source_failure_diagnostic_count(), 0);
-    assert_eq!(receipt.source_failures_omitted(), 0);
+    assert_eq!(receipt.terminal_outcome(), "completed_with_source_failures");
+    assert_eq!(receipt.source_failure_total(), REJECTED_SOURCES);
+    assert!(receipt.source_failure_diagnostic_count() > 0);
+    assert_eq!(
+        receipt.source_failures_omitted(),
+        REJECTED_SOURCES - receipt.source_failure_diagnostic_count()
+    );
     assert_eq!(receipt.rejected_record_total(), 0);
 
     let envelope = receipt.to_json();
-    assert_eq!(envelope["source_failure_total"], 0);
+    assert_eq!(envelope["source_failure_total"], REJECTED_SOURCES);
     assert_eq!(envelope["rejected_record_total"], 0);
     let route = envelope["route_results"]
         .as_object()
         .and_then(|routes| routes.values().next())
         .and_then(Value::as_array)
         .expect("one compact route receipt");
-    assert_eq!(route.len(), 2);
-    assert_eq!(envelope["source_failures_omitted"], 0);
+    assert_eq!(route.len(), 6);
+    assert_eq!(
+        envelope["source_failures_omitted"],
+        REJECTED_SOURCES - receipt.source_failure_diagnostic_count()
+    );
     assert!(
         serde_json::to_vec(&envelope).unwrap().len() <= SOURCE_REFRESH_RECEIPT_JSON_BUDGET_BYTES
     );

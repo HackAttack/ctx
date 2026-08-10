@@ -142,6 +142,7 @@ fn exact_parent_metadata_publishes_forked_relationship_with_unknown_copy_origin(
     .to_string()
         + "\n";
     let temp = crate::test_support_paths::tempdir().unwrap();
+    let index_temp = crate::test_support_paths::tempdir().unwrap();
     write_named_session(
         temp.path(),
         "parent",
@@ -156,7 +157,7 @@ fn exact_parent_metadata_publishes_forked_relationship_with_unknown_copy_origin(
         Some("mistral-parent"),
         &child_messages,
     );
-    let index = temp.path().join("index");
+    let index = index_temp.path().join("index");
     refresh_source_backed_generation(
         &index,
         &registry(temp.path()),

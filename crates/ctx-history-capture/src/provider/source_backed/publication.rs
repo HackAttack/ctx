@@ -484,7 +484,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         ) else {
                             continue;
                         };
-                        if !carried_unselected_route_ids.contains(route_identity) {
+                        if !selected_route_ids.contains(route_identity)
+                            && !carried_unselected_route_ids.contains(route_identity)
+                        {
                             continue;
                         }
                         let sources = base
