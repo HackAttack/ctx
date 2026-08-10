@@ -9,7 +9,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use ctx_history_core::utc_now;
 use ctx_semantic_model::SharedSemanticRuntime;
-use ctx_upgrade_engine::{DaemonRestart, DaemonUpgradePort, PreparedDaemonUpgrade};
+use ctx_upgrade_engine::{DaemonUpgradeLease, DaemonUpgradePort, PreparedDaemonUpgrade};
 use serde_json::{json, Value};
 
 use crate::{
@@ -740,19 +740,11 @@ pub(super) fn run_daemon_inner(
             .as_ref()
             .and_then(PreparedDaemonUpgrade::attempt_id)
         {
-            auto_upgrade_handoff = Some(
-                crate::upgrade::ports::DAEMON_UPGRADE.begin_current(
-                    data_root,
-                    attempt_id,
-                    DaemonRestart {
-                        trigger: upgrade_restart_trigger.as_str(),
-                        idle_exit_seconds: idle_exit
-                            .map(|duration| duration.as_secs())
-                            .unwrap_or(super::runtime_limits::DAEMON_IDLE_EXIT_SECONDS_CAP),
-                        loop_interval_seconds: safety_interval.as_secs(),
-                    },
-                )?,
-            );
+            auto_upgrade_handoff = Some(crate::upgrade::ports::DAEMON_UPGRADE.begin_current(
+                data_root,
+                attempt_id,
+                upgrade_restart_trigger.as_str(),
+            )?);
         }
         let failure_message = failed.then(|| {
             let core_refresh = read_daemon_job_status(&daemon_core_refresh_job_path(data_root));

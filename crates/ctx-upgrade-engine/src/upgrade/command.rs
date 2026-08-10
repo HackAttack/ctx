@@ -33,8 +33,8 @@ use super::state::{
 use super::{
     env_flag, platform_key, version_gt, AutomaticUpgradeObservation,
     AutomaticUpgradePolicyProvider, AutomaticUpgradePolicySnapshot, DaemonUpgradeLease,
-    SemanticAccelerator, SemanticLayoutPort, UpgradeEngine, UpgradeFailureKind, UpgradeObserver,
-    UpgradePlan, UpgradePolicy, UpgradeTerminalStatus,
+    DaemonUpgradePort, SemanticAccelerator, SemanticLayoutPort, UpgradeEngine, UpgradeFailureKind,
+    UpgradeObserver, UpgradePlan, UpgradePolicy, UpgradeTerminalStatus,
 };
 #[cfg(unix)]
 use super::{is_valid_upgrade_attempt_id, ReleaseProcessPort};
@@ -55,9 +55,9 @@ const CURRENT_FORMAT_ROLLBACK_DETAIL: &str =
     "schema-2 interrupted ctx installation was rolled back to its identity-validated current-format executable; recovery must fix forward";
 
 #[cfg(unix)]
-fn continue_current_format_recovery_reexec(
+fn continue_current_format_recovery_reexec<L: DaemonUpgradeLease>(
     process: &dyn ReleaseProcessPort,
-    handoff: Box<dyn DaemonUpgradeLease>,
+    handoff: L,
     recovery: CurrentFormatRecoveryReexec,
 ) -> Result<()> {
     handoff
@@ -131,7 +131,7 @@ impl UpgradeOutcome {
     }
 }
 
-impl UpgradeEngine<'_> {
+impl<D: DaemonUpgradePort + ?Sized> UpgradeEngine<'_, D> {
     pub fn prepare_data_root(&self, data_root: &Path) -> Result<()> {
         prepare_upgrade_data_root(data_root)
     }
@@ -194,7 +194,7 @@ impl UpgradeEngine<'_> {
         observer: &O,
         prepared: PreparedDaemonUpgrade,
         restart: (&str, u64, u64),
-        handoff: Option<Box<dyn DaemonUpgradeLease>>,
+        handoff: Option<D::Lease>,
     ) -> Result<()>
     where
         P: AutomaticUpgradePolicyProvider,
@@ -271,8 +271,8 @@ fn semantic_archive_download_limit(asset: &super::metadata::SemanticAssetMetadat
     }
 }
 
-fn check_upgrade(
-    engine: &UpgradeEngine<'_>,
+fn check_upgrade<D: DaemonUpgradePort + ?Sized>(
+    engine: &UpgradeEngine<'_, D>,
     data_root: &Path,
     policy: UpgradePolicy<'_>,
     channel_override: Option<&str>,
@@ -391,8 +391,8 @@ fn check_upgrade(
     })
 }
 
-fn apply_upgrade(
-    engine: &UpgradeEngine<'_>,
+fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
+    engine: &UpgradeEngine<'_, D>,
     data_root: &Path,
     policy: UpgradePolicy<'_>,
     channel_override: Option<&str>,
@@ -790,8 +790,8 @@ fn record_post_apply_state(
     }
 }
 
-fn build_upgrade_plan(
-    engine: &UpgradeEngine<'_>,
+fn build_upgrade_plan<D: DaemonUpgradePort + ?Sized>(
+    engine: &UpgradeEngine<'_, D>,
     lock: &UpgradeLock,
     policy: UpgradePolicy<'_>,
     channel_override: Option<&str>,

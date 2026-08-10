@@ -121,9 +121,9 @@ pub(super) fn publish_install(
 
 /// Called by the hidden command in the copied executable.
 #[cfg(windows)]
-pub(in crate::upgrade) fn run_replacement_helper(
+pub(in crate::upgrade) fn run_replacement_helper<D: DaemonUpgradePort + ?Sized>(
     semantic_layout: &dyn SemanticLayoutPort,
-    daemon: &dyn DaemonUpgradePort,
+    daemon: &D,
     install_path: &Path,
     attempt_id: &str,
     parent_pid: u32,
@@ -203,8 +203,8 @@ pub(super) fn recover_transaction(
     })
 }
 
-fn execute_transaction(
-    daemon: &dyn DaemonUpgradePort,
+fn execute_transaction<D: DaemonUpgradePort + ?Sized>(
+    daemon: &D,
     transaction: &mut InstallTransactionJournal,
 ) -> Result<HelperOutcome> {
     match transaction.phase {
@@ -244,8 +244,8 @@ fn execute_transaction(
     }
 }
 
-fn rollback_after_failure(
-    daemon: &dyn DaemonUpgradePort,
+fn rollback_after_failure<D: DaemonUpgradePort + ?Sized>(
+    daemon: &D,
     transaction: &mut InstallTransactionJournal,
     failure: String,
 ) -> Result<HelperOutcome> {
@@ -275,8 +275,8 @@ fn rollback_after_failure(
     finalize_rollback(daemon, transaction)
 }
 
-fn finalize_rollback(
-    daemon: &dyn DaemonUpgradePort,
+fn finalize_rollback<D: DaemonUpgradePort + ?Sized>(
+    daemon: &D,
     transaction: &mut InstallTransactionJournal,
 ) -> Result<HelperOutcome> {
     let mut failure = transaction
@@ -290,8 +290,8 @@ fn finalize_rollback(
     finish_failed(transaction, failure)
 }
 
-fn finalize_committed(
-    daemon: &dyn DaemonUpgradePort,
+fn finalize_committed<D: DaemonUpgradePort + ?Sized>(
+    daemon: &D,
     transaction: &mut InstallTransactionJournal,
 ) -> Result<HelperOutcome> {
     let cleanup_warning = layout::finish_committed(transaction)?;
@@ -352,8 +352,8 @@ fn merge_warnings(first: Option<String>, second: Option<String>) -> Option<Strin
 }
 
 #[cfg(windows)]
-fn restart_daemon(
-    daemon: &dyn DaemonUpgradePort,
+fn restart_daemon<D: DaemonUpgradePort + ?Sized>(
+    daemon: &D,
     transaction: &InstallTransactionJournal,
 ) -> Result<()> {
     let helper = transaction
@@ -374,8 +374,8 @@ fn restart_daemon(
 }
 
 #[cfg(all(test, not(windows)))]
-fn restart_daemon(
-    _daemon: &dyn crate::upgrade::DaemonUpgradePort,
+fn restart_daemon<D: crate::upgrade::DaemonUpgradePort + ?Sized>(
+    _daemon: &D,
     _transaction: &InstallTransactionJournal,
 ) -> Result<()> {
     Ok(())

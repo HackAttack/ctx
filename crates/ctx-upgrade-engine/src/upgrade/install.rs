@@ -301,9 +301,9 @@ pub(in crate::upgrade) fn reexec_current_format_recovery(
 }
 
 #[cfg(windows)]
-pub(in crate::upgrade) fn run_replacement_helper(
+pub(in crate::upgrade) fn run_replacement_helper<D: super::DaemonUpgradePort + ?Sized>(
     semantic_layout: &dyn SemanticLayoutPort,
-    daemon: &dyn super::DaemonUpgradePort,
+    daemon: &D,
     install_path: &Path,
     attempt_id: &str,
     parent_pid: u32,

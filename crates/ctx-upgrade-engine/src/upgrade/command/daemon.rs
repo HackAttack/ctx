@@ -44,14 +44,15 @@ enum PreparedDaemonUpgradeKind {
 
 /// Called only by the ready enabled long-lived daemon. Foreground commands do
 /// not have access to this automatic scheduling entry point.
-pub(crate) fn prepare_daemon_auto_upgrade<P, O>(
-    engine: &UpgradeEngine<'_>,
+pub(crate) fn prepare_daemon_auto_upgrade<D, P, O>(
+    engine: &UpgradeEngine<'_, D>,
     policy_provider: &P,
     observer: &O,
     data_root: &Path,
     startup_policy: &P::Snapshot,
 ) -> Result<Option<PreparedDaemonUpgrade>>
 where
+    D: DaemonUpgradePort + ?Sized,
     P: AutomaticUpgradePolicyProvider,
     O: UpgradeObserver<P::Snapshot>,
 {
@@ -296,15 +297,16 @@ where
 
 /// Completes a staged daemon-owned attempt after the daemon has stopped
 /// accepting work and released its per-root lifecycle lock.
-pub(crate) fn finish_daemon_auto_upgrade<P, O>(
-    engine: &UpgradeEngine<'_>,
+pub(crate) fn finish_daemon_auto_upgrade<D, P, O>(
+    engine: &UpgradeEngine<'_, D>,
     policy_provider: &P,
     observer: &O,
     prepared: PreparedDaemonUpgrade,
     restart: (&str, u64, u64),
-    handoff: Option<Box<dyn DaemonUpgradeLease>>,
+    handoff: Option<D::Lease>,
 ) -> Result<()>
 where
+    D: DaemonUpgradePort + ?Sized,
     P: AutomaticUpgradePolicyProvider,
     O: UpgradeObserver<P::Snapshot>,
 {

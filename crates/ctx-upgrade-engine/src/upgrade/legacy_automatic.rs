@@ -2,9 +2,11 @@
 
 #[cfg(unix)]
 mod unix {
+    #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStringExt as _;
     use std::{
         env, fs, io,
-        os::unix::{ffi::OsStringExt as _, process::CommandExt as _},
+        os::unix::process::CommandExt as _,
         path::{Path, PathBuf},
         process::{self, Command, Stdio},
         time::{Duration, Instant},
@@ -19,7 +21,7 @@ mod unix {
         install::{
             classify_install_marker_at, discard_legacy_previous_binary, ManagedInstallMarker,
         },
-        platform_key, sha256_hex, DaemonUpgradePort,
+        platform_key, sha256_hex, DaemonUpgradeLease, DaemonUpgradePort,
     };
 
     const LEGACY_BACKGROUND_ENV: &str = "CTX_UPGRADE_BACKGROUND_CHILD";
@@ -33,7 +35,7 @@ mod unix {
     const LEGACY_STAGE_DIRECTORY_SCAN_LIMIT: usize = 4_096;
     const LEGACY_STAGE_REMOVAL_LIMIT: usize = 32;
 
-    pub(super) fn run(daemon: &dyn DaemonUpgradePort) -> Result<bool> {
+    pub(super) fn run<D: DaemonUpgradePort + ?Sized>(daemon: &D) -> Result<bool> {
         if env::var_os(HELPER_ENV).is_some() {
             run_replacement_helper(daemon)?;
             return Ok(true);
@@ -172,7 +174,7 @@ mod unix {
         None
     }
 
-    fn run_replacement_helper(daemon: &dyn DaemonUpgradePort) -> Result<()> {
+    fn run_replacement_helper<D: DaemonUpgradePort + ?Sized>(daemon: &D) -> Result<()> {
         let data_root = required_absolute_path(HELPER_DATA_ROOT_ENV)?;
         let target = required_absolute_path(HELPER_TARGET_ENV)?;
         let handoff_id = required_text(HELPER_HANDOFF_ID_ENV)?;
@@ -336,8 +338,8 @@ mod unix {
     }
 }
 
-pub(crate) fn run_legacy_automatic_upgrade_bridge(
-    daemon: &dyn super::DaemonUpgradePort,
+pub(crate) fn run_legacy_automatic_upgrade_bridge<D: super::DaemonUpgradePort + ?Sized>(
+    daemon: &D,
 ) -> anyhow::Result<bool> {
     #[cfg(unix)]
     {

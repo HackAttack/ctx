@@ -109,14 +109,41 @@ fn write_private_config(path: &Path, body: &[u8]) -> Result<()> {
     result
 }
 
+#[cfg(not(windows))]
 fn replace_config_file(temporary: &Path, target: &Path) -> Result<()> {
-    #[cfg(windows)]
-    if target.exists() {
-        fs::remove_file(target)
-            .with_context(|| format!("replace upgrade config {}", target.display()))?;
-    }
     fs::rename(temporary, target)
-        .with_context(|| format!("replace upgrade config {}", target.display()))
+        .with_context(|| format!("rename {} to {}", temporary.display(), target.display()))
+}
+
+#[cfg(windows)]
+fn replace_config_file(temporary: &Path, target: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let temporary_wide = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target_wide = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            temporary_wide.as_ptr(),
+            target_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("replace {}", target.display()));
+    }
+    Ok(())
 }
 
 fn set_toml_section_value(input: &str, section: &str, key: &str, value: &str) -> String {

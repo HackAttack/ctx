@@ -33,7 +33,7 @@ pub(crate) const fn product_identity() -> ProductBuildIdentity {
     ProductBuildIdentity::new(env!("CARGO_PKG_VERSION"))
 }
 
-pub(crate) fn engine() -> UpgradeEngine<'static> {
+pub(crate) fn engine() -> UpgradeEngine<'static, CliDaemonUpgrade> {
     UpgradeEngine::new(
         product_identity(),
         &RELEASE_TRANSPORT,
@@ -165,7 +165,7 @@ fn semantic_variant(variant: SemanticModelVariant) -> crate::semantic::SemanticO
 
 pub(crate) struct CliDaemonUpgrade;
 
-struct CliDaemonUpgradeLease(crate::semantic::DaemonUpgradeHandoff);
+pub(crate) struct CliDaemonUpgradeLease(crate::semantic::DaemonUpgradeHandoff);
 
 impl DaemonUpgradeLease for CliDaemonUpgradeLease {
     fn wait_for_installation_quiescence(&self) -> Result<()> {
@@ -184,24 +184,26 @@ impl DaemonUpgradeLease for CliDaemonUpgradeLease {
             )
     }
 
-    fn resume_with(self: Box<Self>, executable: &Path) -> Result<()> {
+    fn resume_with(self, executable: &Path) -> Result<()> {
         self.0.resume_with(executable)
     }
 
-    fn transfer_to_replacement_helper(self: Box<Self>, helper_pid: u32) -> Result<()> {
+    fn transfer_to_replacement_helper(self, helper_pid: u32) -> Result<()> {
         self.0.transfer_to_replacement_helper(helper_pid)
     }
 
-    fn release_for_current_format_reexec(self: Box<Self>) -> Result<()> {
+    fn release_for_current_format_reexec(self) -> Result<()> {
         self.0.release_for_current_format_reexec()
     }
 }
 
 impl DaemonUpgradePort for CliDaemonUpgrade {
-    fn begin(&self, data_root: &Path, attempt_id: &str) -> Result<Box<dyn DaemonUpgradeLease>> {
-        Ok(Box::new(CliDaemonUpgradeLease(
+    type Lease = CliDaemonUpgradeLease;
+
+    fn begin(&self, data_root: &Path, attempt_id: &str) -> Result<Self::Lease> {
+        Ok(CliDaemonUpgradeLease(
             crate::semantic::begin_daemon_upgrade_handoff(data_root, attempt_id)?,
-        )))
+        ))
     }
 
     fn begin_legacy(
@@ -209,27 +211,27 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
         data_root: &Path,
         attempt_id: &str,
         target: &Path,
-    ) -> Result<Box<dyn DaemonUpgradeLease>> {
-        Ok(Box::new(CliDaemonUpgradeLease(
+    ) -> Result<Self::Lease> {
+        Ok(CliDaemonUpgradeLease(
             crate::semantic::begin_legacy_daemon_upgrade_handoff(data_root, attempt_id, target)?,
-        )))
+        ))
     }
 
     fn begin_current(
         &self,
         data_root: &Path,
         attempt_id: &str,
-        restart: DaemonRestart<'_>,
-    ) -> Result<Box<dyn DaemonUpgradeLease>> {
-        let trigger = match restart.trigger {
+        restart_trigger: &str,
+    ) -> Result<Self::Lease> {
+        let trigger = match restart_trigger {
             "setup" => crate::DaemonTriggerCommandArg::Setup,
             "import" => crate::DaemonTriggerCommandArg::Import,
             "search" => crate::DaemonTriggerCommandArg::Search,
             other => return Err(anyhow!("invalid daemon upgrade restart trigger {other}")),
         };
-        Ok(Box::new(CliDaemonUpgradeLease(
+        Ok(CliDaemonUpgradeLease(
             crate::semantic::begin_current_daemon_upgrade_handoff(data_root, attempt_id, trigger)?,
-        )))
+        ))
     }
 
     fn mark_replacement_helper_handoff(

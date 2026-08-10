@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "ctxrs/ctx",
-  "base_commit": "8815447c320c6dc257ebc217113f51a0b0d0e27e",
+  "base_commit": "ad39d1b762aca14303680caea49cc67bfa9ec3f2",
   "provenance_kind": "content_addressed_candidate",
   "scope": "selected_typed_telemetry_contract_inventory",
   "files": {
@@ -15,8 +15,8 @@
     "crates/ctx-cli/src/analytics/product.rs": "90c84843faf1550d417da4e7e77134c6a2fc9d6425018b6b0c458be74e358387",
     "crates/ctx-cli/src/analytics/sender.rs": "e788ba1c97c9a6b22007162fe316c7faa1d240e14e58b4492dee03203578b488",
     "crates/ctx-cli/src/upgrade/command.rs": "19e814cc71d2d3d3fce0921455d1b0c8df19f80fe49e519f198e955dd13de49e",
-    "crates/ctx-cli/src/upgrade/ports.rs": "fd23555c47753d0b2f1816a61cef44d6d673ce0281ede1aa20f48d0cba2cc801",
-    "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs": "b25604a7dd7fde9ea77eddb52513c4a915449d1fe77f445a5e4d28b14ca07c8c",
+    "crates/ctx-cli/src/upgrade/ports.rs": "34ec7cc23bfdafef9002e120d7c7cde2c0521e48be8b38137ae5ae5193775ffa",
+    "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs": "cd34cb61a599e347c2b6485aac803921edf7a26aaac0c14e23faaca61028ff36",
     "crates/ctx-upgrade-engine/src/upgrade/state.rs": "c1d3569ab954d05a46618a0f1671627dcd5b204cf6683e2936a17134b16f9fb2"
   }
 }

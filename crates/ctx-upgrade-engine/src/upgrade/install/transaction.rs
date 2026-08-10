@@ -34,9 +34,9 @@ pub(super) fn durable_replace_file(source: &Path, target: &Path) -> Result<()> {
 pub(in crate::upgrade) use windows::HelperOutcome;
 
 #[cfg(windows)]
-pub(in crate::upgrade) fn run_windows_replacement_helper(
+pub(in crate::upgrade) fn run_windows_replacement_helper<D: DaemonUpgradePort + ?Sized>(
     semantic_layout: &dyn SemanticLayoutPort,
-    daemon: &dyn DaemonUpgradePort,
+    daemon: &D,
     install_path: &Path,
     attempt_id: &str,
     parent_pid: u32,

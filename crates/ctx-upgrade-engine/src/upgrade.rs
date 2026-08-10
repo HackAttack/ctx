@@ -131,30 +131,32 @@ pub struct DaemonRestart<'a> {
     pub loop_interval_seconds: u64,
 }
 
-pub trait DaemonUpgradeLease: Send {
+pub trait DaemonUpgradeLease: Send + Sized {
     fn wait_for_installation_quiescence(&self) -> Result<()>;
     fn replacement_restart(&self) -> Option<DaemonRestart<'_>>;
-    fn resume_with(self: Box<Self>, executable: &Path) -> Result<()>;
-    fn transfer_to_replacement_helper(self: Box<Self>, helper_pid: u32) -> Result<()>;
-    fn release_for_current_format_reexec(self: Box<Self>) -> Result<()>;
+    fn resume_with(self, executable: &Path) -> Result<()>;
+    fn transfer_to_replacement_helper(self, helper_pid: u32) -> Result<()>;
+    fn release_for_current_format_reexec(self) -> Result<()>;
 }
 
 pub trait DaemonUpgradePort: Send + Sync {
-    fn begin(&self, data_root: &Path, attempt_id: &str) -> Result<Box<dyn DaemonUpgradeLease>>;
+    type Lease: DaemonUpgradeLease;
+
+    fn begin(&self, data_root: &Path, attempt_id: &str) -> Result<Self::Lease>;
 
     fn begin_legacy(
         &self,
         data_root: &Path,
         attempt_id: &str,
         target: &Path,
-    ) -> Result<Box<dyn DaemonUpgradeLease>>;
+    ) -> Result<Self::Lease>;
 
     fn begin_current(
         &self,
         data_root: &Path,
         attempt_id: &str,
-        restart: DaemonRestart<'_>,
-    ) -> Result<Box<dyn DaemonUpgradeLease>>;
+        restart_trigger: &str,
+    ) -> Result<Self::Lease>;
 
     fn mark_replacement_helper_handoff(
         &self,
@@ -241,21 +243,21 @@ pub struct UpgradePolicy<'a> {
     pub semantic_enabled: bool,
 }
 
-pub struct UpgradeEngine<'a> {
+pub struct UpgradeEngine<'a, D: DaemonUpgradePort + ?Sized> {
     identity: ProductBuildIdentity,
     transport: &'a dyn ReleaseTransport,
     process: &'a dyn ReleaseProcessPort,
     semantic_layout: &'a dyn SemanticLayoutPort,
-    daemon: &'a dyn DaemonUpgradePort,
+    daemon: &'a D,
 }
 
-impl<'a> UpgradeEngine<'a> {
+impl<'a, D: DaemonUpgradePort + ?Sized> UpgradeEngine<'a, D> {
     pub const fn new(
         identity: ProductBuildIdentity,
         transport: &'a dyn ReleaseTransport,
         process: &'a dyn ReleaseProcessPort,
         semantic_layout: &'a dyn SemanticLayoutPort,
-        daemon: &'a dyn DaemonUpgradePort,
+        daemon: &'a D,
     ) -> Self {
         Self {
             identity,
