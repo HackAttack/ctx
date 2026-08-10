@@ -97,11 +97,17 @@ fn running_cold_periodic_all_and_manual_all_share_one_physical_executor() -> Res
     });
     execution_entered.wait();
 
-    let service = start_daemon_source_refresh_service_with_coordinator_for_test(
+    let wakeup = Arc::new(DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
         &data_root,
         SharedSemanticRuntime::default(),
-        TEST_QUERY_REQUEST_READ_TIMEOUT,
         Arc::clone(&coordinator),
+        wakeup,
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        &data_root,
+        handler,
+        TEST_QUERY_REQUEST_READ_TIMEOUT,
     )?;
     let planner_coordinator = Arc::clone(&coordinator);
     let planner_data_root = data_root.clone();
@@ -216,27 +222,143 @@ impl std::io::Write for BrokenResponseWriter {
     }
 }
 
+struct BarrierOrderingWriter<'a> {
+    data_root: &'a Path,
+    coordinator: &'a CoreRefreshEngine,
+    wakeup: &'a DaemonWakeup,
+    writes: usize,
+}
+
+impl std::io::Write for BarrierOrderingWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        assert!(
+            !self
+                .coordinator
+                .prepare_next_pending_admission(self.data_root)
+                .expect("check admission barrier during response write"),
+            "admission barrier released before the response write attempt"
+        );
+        assert!(
+            self.wakeup.wait(StdDuration::ZERO).timed_out,
+            "scheduler woke before the response write attempt completed"
+        );
+        self.writes += 1;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
-fn disconnected_client_does_not_cancel_a_durably_admitted_request() -> Result<()> {
+fn admission_barrier_releases_before_post_write_scheduler_wakeup() -> Result<()> {
+    let (_temp, data_root) = private_data_root()?;
+    let coordinator = Arc::new(CoreRefreshEngine::with_admission_fence_for_test(Arc::new(
+        |_data_root, _catalog| Ok(BTreeMap::new()),
+    )));
+    let wakeup = Arc::new(DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
+        &data_root,
+        SharedSemanticRuntime::default(),
+        Arc::clone(&coordinator),
+        Arc::clone(&wakeup),
+    );
+    let token = "0123456789abcdef0123456789abcdef";
+    let request_id = "019fcaaa-0000-7000-8000-000000000296";
+    let mut request = refresh_request(request_id);
+    request["token"] = Value::String(token.to_owned());
+    let mut writer = BarrierOrderingWriter {
+        data_root: &data_root,
+        coordinator: &coordinator,
+        wakeup: &wakeup,
+        writes: 0,
+    };
+
+    handle_authenticated_daemon_stream(
+        handler.as_ref(),
+        &ServiceId::new("source-refresh")?,
+        token,
+        &mut writer,
+        Ok(serde_json::to_string(&request)?),
+    )?;
+
+    assert!(writer.writes > 0);
+    assert!(!wakeup.wait(StdDuration::ZERO).timed_out);
+    assert!(coordinator.prepare_next_pending_admission(&data_root)?);
+    assert_eq!(
+        coordinator.status_for_test(request_id).unwrap()["request_state"],
+        "queued"
+    );
+    Ok(())
+}
+
+#[test]
+fn source_refresh_finisher_releases_barrier_before_signaling_scheduler() -> Result<()> {
     let (_temp, data_root) = private_data_root()?;
     let coordinator =
         CoreRefreshEngine::with_admission_fence_for_test(Arc::new(|_data_root, _catalog| {
             Ok(BTreeMap::new())
         }));
+    let request_id = "019fcaaa-0000-7000-8000-000000000297";
+    let response = crate::semantic::source_backed_refresh_adapter::wire::handle_ipc_request(
+        &coordinator,
+        &data_root,
+        &refresh_request(request_id),
+    )?
+    .expect("source refresh wire response");
+    assert_eq!(
+        coordinator.status_for_test(request_id).unwrap()["request_state"],
+        "admission_pending"
+    );
+
+    let mut signaled = false;
+    crate::semantic::source_backed_refresh_adapter::wire::finish_wire_response_for_test(
+        response,
+        &coordinator,
+        || {
+            signaled = true;
+            assert!(
+                coordinator
+                    .prepare_next_pending_admission(&data_root)
+                    .expect("admission barrier must be released before scheduler signal"),
+                "scheduler signal observed before admission barrier release"
+            );
+        },
+    );
+
+    assert!(signaled);
+    assert_eq!(
+        coordinator.status_for_test(request_id).unwrap()["request_state"],
+        "queued"
+    );
+    Ok(())
+}
+
+#[test]
+fn disconnected_client_does_not_cancel_a_durably_admitted_request() -> Result<()> {
+    let (_temp, data_root) = private_data_root()?;
+    let coordinator = Arc::new(CoreRefreshEngine::with_admission_fence_for_test(Arc::new(
+        |_data_root, _catalog| Ok(BTreeMap::new()),
+    )));
     let request_id = "019fcaaa-0000-7000-8000-000000000295";
     let token = "0123456789abcdef0123456789abcdef";
     let mut request = refresh_request(request_id);
     request["token"] = Value::String(token.to_owned());
 
-    handle_daemon_query_stream(
+    let wakeup = Arc::new(DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
         &data_root,
-        &SharedSemanticRuntime::default(),
-        &coordinator,
-        DaemonIpcService::SourceRefresh,
+        SharedSemanticRuntime::default(),
+        Arc::clone(&coordinator),
+        wakeup,
+    );
+    let _ = handle_authenticated_daemon_stream(
+        handler.as_ref(),
+        &ServiceId::new("source-refresh")?,
         token,
         BrokenResponseWriter,
         Ok(serde_json::to_string(&request)?),
-        Some(&DaemonWakeup::default()),
     );
 
     let admitted = coordinator

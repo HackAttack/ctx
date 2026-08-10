@@ -55,7 +55,7 @@ const SUPERVISOR_DAEMON_FIXED_PATH: &str = if cfg!(windows) {
     "/usr/local/bin:/usr/bin:/bin"
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct SupervisorEnvironmentSnapshot {
     pub(super) values: Vec<(String, String)>,
     captured_at_ms: i64,
@@ -140,12 +140,6 @@ pub(super) fn supervisor_environment_contract_report() -> Value {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-pub(super) fn linux_systemd_unit(executable: &Path, data_root: &Path) -> Result<String> {
-    let snapshot = supervisor_environment_snapshot()?;
-    linux_systemd_unit_with_environment(executable, data_root, &snapshot)
-}
-
-#[cfg(any(test, target_os = "linux"))]
 pub(super) fn linux_systemd_unit_with_environment(
     executable: &Path,
     data_root: &Path,
@@ -171,12 +165,6 @@ pub(super) fn linux_systemd_unit_with_environment(
 fn systemd_quote_text(value: &str) -> String {
     let value = value.replace('%', "%%");
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-#[cfg(any(test, target_os = "macos"))]
-pub(super) fn launch_agent_plist(executable: &Path, data_root: &Path) -> Result<String> {
-    let snapshot = supervisor_environment_snapshot()?;
-    launch_agent_plist_with_environment(executable, data_root, &snapshot)
 }
 
 #[cfg(any(test, target_os = "macos"))]

@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::semantic::query_service::{
-    start_daemon_source_refresh_service_with_coordinator_for_test, write_daemon_service_endpoint,
-    DaemonIpcService, DaemonQueryEndpoint,
+    ctx_authenticated_request_handler, start_daemon_source_refresh_service_with_request_timeout,
+    write_daemon_service_endpoint, DaemonIpcService, DaemonQueryEndpoint,
 };
 use crate::semantic::SharedSemanticRuntime;
 
@@ -40,11 +40,16 @@ fn background_maintenance_wake_is_accepted_through_client_and_coordinator() -> R
     )?
     .generation_id;
     let coordinator = Arc::new(CoreRefreshEngine::new());
-    let service = start_daemon_source_refresh_service_with_coordinator_for_test(
+    let handler = ctx_authenticated_request_handler(
         data_root.path(),
         SharedSemanticRuntime::default(),
-        StdDuration::from_secs(1),
         Arc::clone(&coordinator),
+        Arc::new(crate::semantic::daemon_wakeup::DaemonWakeup::default()),
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        data_root.path(),
+        handler,
+        StdDuration::from_secs(1),
     )?;
 
     let observation = coordinate_source_backed_refresh_with_catalog(

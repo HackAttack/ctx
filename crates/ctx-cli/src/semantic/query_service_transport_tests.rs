@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 #[path = "query_service_transport_tests/admission_lifecycle.rs"]
 mod admission_lifecycle;
@@ -23,20 +25,42 @@ fn short_test_query_socket_path() -> Result<(tempfile::TempDir, PathBuf)> {
 
 #[cfg(any(unix, windows))]
 fn start_test_query_service(data_root: &Path) -> Result<DaemonQueryService> {
-    start_daemon_query_service_with_request_timeout(
+    let wakeup = Arc::new(super::daemon_wakeup::DaemonWakeup::default());
+    let source_refresh = Arc::new(super::source_backed_refresh_adapter::refresh_engine());
+    let handler = ctx_authenticated_request_handler(
         data_root,
         SharedSemanticRuntime::default(),
+        source_refresh,
+        wakeup,
+    );
+    start_daemon_query_service_with_request_timeout(
+        data_root,
+        handler,
         TEST_QUERY_REQUEST_READ_TIMEOUT,
     )
 }
 
 #[cfg(any(unix, windows))]
-fn start_test_source_refresh_service(data_root: &Path) -> Result<DaemonQueryService> {
-    start_daemon_source_refresh_service_with_request_timeout(
+fn start_test_source_refresh_service(
+    data_root: &Path,
+) -> Result<(
+    DaemonQueryService,
+    Arc<super::source_backed_refresh_coordinator::CoreRefreshEngine>,
+)> {
+    let wakeup = Arc::new(super::daemon_wakeup::DaemonWakeup::default());
+    let source_refresh = Arc::new(super::source_backed_refresh_adapter::refresh_engine());
+    let handler = ctx_authenticated_request_handler(
         data_root,
         SharedSemanticRuntime::default(),
+        Arc::clone(&source_refresh),
+        wakeup,
+    );
+    let service = start_daemon_source_refresh_service_with_request_timeout(
+        data_root,
+        handler,
         TEST_QUERY_REQUEST_READ_TIMEOUT,
-    )
+    )?;
+    Ok((service, source_refresh))
 }
 
 #[cfg(any(unix, windows))]
@@ -51,6 +75,293 @@ fn wait_for_active_query(service: &DaemonQueryService) -> Result<()> {
     Err(anyhow!(
         "daemon query service did not accept the test client"
     ))
+}
+
+struct CountingAfterWrite(Arc<std::sync::atomic::AtomicUsize>);
+
+impl CountingAfterWrite {
+    fn run(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+enum CountingPostWriteAction<'a> {
+    None,
+    Completion(&'a CountingAfterWrite),
+}
+
+impl Default for CountingPostWriteAction<'_> {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl PostWriteAction for CountingPostWriteAction<'_> {
+    fn run(self) {
+        if let Self::Completion(completion) = self {
+            completion.run();
+        }
+    }
+}
+
+struct CountingAuthenticatedHandler {
+    handled: Arc<std::sync::atomic::AtomicUsize>,
+    after_write: CountingAfterWrite,
+    fail: bool,
+}
+
+impl AuthenticatedRequestHandler for CountingAuthenticatedHandler {
+    type PostWriteAction<'a> = CountingPostWriteAction<'a>;
+
+    fn handle<'a>(
+        &'a self,
+        _service: &ServiceId,
+        _request: AuthenticatedRequest,
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
+        self.handled
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let response = if self.fail {
+            Err(anyhow!("authenticated handler failed"))
+        } else {
+            Ok(json!({"ok": true, "schema_version": 1}))
+        };
+        HandlerOutcome::with_post_write_action(
+            response,
+            CountingPostWriteAction::Completion(&self.after_write),
+        )
+    }
+}
+
+struct DisconnectedResponseWriter;
+
+impl std::io::Write for DisconnectedResponseWriter {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "test client disconnected",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn authenticated_transport_finalizes_once_after_success_error_and_disconnect() -> Result<()> {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    let request = || Ok(format!("{{\"token\":\"{TOKEN}\",\"op\":\"ping\"}}"));
+
+    for (fail, disconnected) in [(false, false), (true, false), (false, true)] {
+        let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handler = CountingAuthenticatedHandler {
+            handled: Arc::clone(&handled),
+            after_write: CountingAfterWrite(Arc::clone(&finalized)),
+            fail,
+        };
+        if disconnected {
+            assert!(
+                handle_authenticated_daemon_stream(
+                    &handler,
+                    &ServiceId::new("test-service")?,
+                    TOKEN,
+                    DisconnectedResponseWriter,
+                    request(),
+                )
+                .is_err()
+            );
+        } else {
+            let mut response = Vec::new();
+            handle_authenticated_daemon_stream(
+                &handler,
+                &ServiceId::new("test-service")?,
+                TOKEN,
+                &mut response,
+                request(),
+            )?;
+            let expected = if fail {
+                b"{\"error\":\"authenticated handler failed\",\"ok\":false}\n".as_slice()
+            } else {
+                b"{\"ok\":true,\"schema_version\":1}\n".as_slice()
+            };
+            assert_eq!(response, expected);
+        }
+        assert_eq!(handled.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(finalized.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_and_bad_token_requests_never_reach_handler_or_post_write_action() -> Result<()> {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let finalized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler = CountingAuthenticatedHandler {
+        handled: Arc::clone(&handled),
+        after_write: CountingAfterWrite(Arc::clone(&finalized)),
+        fail: false,
+    };
+
+    for (request, expected) in [
+        ("{not-json", None),
+        (
+            "{\"token\":\"wrong\",\"op\":\"ping\"}",
+            Some(b"{\"error\":\"daemon query authentication failed\",\"ok\":false}\n".as_slice()),
+        ),
+    ] {
+        let mut response = Vec::new();
+        handle_authenticated_daemon_stream(
+            &handler,
+            &ServiceId::new("test-service")?,
+            TOKEN,
+            &mut response,
+            Ok(request.to_owned()),
+        )?;
+        if let Some(expected) = expected {
+            assert_eq!(response, expected);
+        } else {
+            assert_eq!(response.last(), Some(&b'\n'));
+            let response: Value = serde_json::from_slice(&response)?;
+            assert_eq!(response["ok"], false);
+        }
+    }
+    assert_eq!(handled.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(finalized.load(std::sync::atomic::Ordering::SeqCst), 0);
+    Ok(())
+}
+
+struct RecordingServiceHandler(std::sync::Mutex<Vec<String>>);
+
+impl AuthenticatedRequestHandler for RecordingServiceHandler {
+    type PostWriteAction<'a> = NoPostWriteAction;
+
+    fn handle<'a>(
+        &'a self,
+        service: &ServiceId,
+        _request: AuthenticatedRequest,
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(service.as_str().to_owned());
+        HandlerOutcome::response(Ok(json!({"ok": true})))
+    }
+}
+
+struct ParsedRequestHandler(std::sync::Mutex<Vec<Value>>);
+
+impl AuthenticatedRequestHandler for ParsedRequestHandler {
+    type PostWriteAction<'a> = NoPostWriteAction;
+
+    fn handle<'a>(
+        &'a self,
+        _service: &ServiceId,
+        request: AuthenticatedRequest,
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(request.into_value());
+        HandlerOutcome::response(Ok(json!({"ok": true})))
+    }
+}
+
+#[test]
+fn no_op_post_write_action_is_zero_sized_and_inline() {
+    assert_eq!(std::mem::size_of::<NoPostWriteAction>(), 0);
+    let outcome = HandlerOutcome::<NoPostWriteAction>::response(Ok(json!({"ok": true})));
+    assert_eq!(std::mem::size_of_val(&outcome.after_write_action), 0);
+}
+
+#[test]
+fn bounded_authenticated_request_is_parsed_once_before_dispatch() -> Result<()> {
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+    let payload = "x".repeat(DAEMON_QUERY_REQUEST_MAX_BYTES / 2);
+    let request = json!({
+        "token": TOKEN,
+        "op": "ping",
+        "payload": payload,
+    })
+    .to_string();
+    assert!(request.len() < DAEMON_QUERY_REQUEST_MAX_BYTES);
+
+    let handler = ParsedRequestHandler(std::sync::Mutex::new(Vec::new()));
+    let mut response = Vec::new();
+    handle_authenticated_daemon_stream(
+        &handler,
+        &ServiceId::new("test-service")?,
+        TOKEN,
+        &mut response,
+        Ok(request),
+    )?;
+
+    assert_eq!(response, b"{\"ok\":true}\n");
+    let requests = handler.0.lock().unwrap_or_else(|error| error.into_inner());
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["op"], "ping");
+    assert_eq!(
+        requests[0]["payload"].as_str().map(str::len),
+        Some(DAEMON_QUERY_REQUEST_MAX_BYTES / 2)
+    );
+    Ok(())
+}
+
+#[test]
+fn runtime_service_identity_is_validated_and_forwarded_without_product_mapping() -> Result<()> {
+    for invalid in [
+        "",
+        "UPPER",
+        "leading/slash",
+        "-leading",
+        "trailing-",
+        "service_name",
+    ] {
+        assert!(ServiceId::new(invalid).is_err(), "accepted `{invalid}`");
+    }
+    assert!(ServiceId::new("a".repeat(65)).is_err());
+
+    let service_id = ServiceId::new("opaque-service-7")?;
+    #[cfg(unix)]
+    {
+        let constructor: fn(ServiceId, PathBuf, bool) -> Result<IpcServiceSpec> = IpcServiceSpec::new;
+        assert!(
+            constructor(
+                service_id.clone(),
+                PathBuf::from("/"),
+                false,
+            )
+            .is_err()
+        );
+        let spec = constructor(
+            service_id.clone(),
+            PathBuf::from("/tmp/opaque.sock"),
+            false,
+        )?;
+        assert_eq!(spec.unix_socket_path(), Path::new("/tmp/opaque.sock"));
+    }
+    #[cfg(not(unix))]
+    {
+        let spec = IpcServiceSpec::new(service_id.clone(), false)?;
+        assert_eq!(spec.service_id(), &service_id);
+    }
+
+    let handler = RecordingServiceHandler(std::sync::Mutex::new(Vec::new()));
+    let mut response = Vec::new();
+    handle_authenticated_daemon_stream(
+        &handler,
+        &service_id,
+        "token",
+        &mut response,
+        Ok("{\"token\":\"token\",\"op\":\"opaque\"}".to_owned()),
+    )?;
+    assert_eq!(
+        *handler.0.lock().unwrap_or_else(|error| error.into_inner()),
+        ["opaque-service-7"]
+    );
+    assert_eq!(response, b"{\"ok\":true}\n");
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -338,9 +649,11 @@ fn partial_unix_response_preserves_one_aggregate_byte_limit() -> Result<()> {
     let error = read_daemon_query_response_unix(&mut client, 8, StdDuration::from_secs(1))
         .expect_err("split response above the aggregate limit must fail");
 
-    assert!(error
-        .downcast_ref::<DaemonQueryResponseTooLarge>()
-        .is_some());
+    assert!(
+        error
+            .downcast_ref::<DaemonQueryResponseTooLarge>()
+            .is_some()
+    );
     writer.join().expect("query response writer panicked")?;
     Ok(())
 }
@@ -448,9 +761,16 @@ fn stalled_query_client_is_discarded_and_next_query_is_served() -> Result<()> {
 fn query_service_ping_stays_healthy_while_embedder_is_busy() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let runtime = SharedSemanticRuntime::default();
-    let service = start_daemon_query_service_with_request_timeout(
+    let wakeup = Arc::new(super::daemon_wakeup::DaemonWakeup::default());
+    let handler = ctx_authenticated_request_handler(
         temp.path(),
         runtime.clone(),
+        Arc::new(super::source_backed_refresh_adapter::refresh_engine()),
+        wakeup,
+    );
+    let service = start_daemon_query_service_with_request_timeout(
+        temp.path(),
+        handler,
         TEST_QUERY_REQUEST_READ_TIMEOUT,
     )?;
     let _runtime_guard = runtime.lock_for_test()?;
@@ -479,7 +799,7 @@ fn query_service_ping_stays_healthy_while_embedder_is_busy() -> Result<()> {
 #[test]
 fn query_service_coalesces_source_refresh_requests_on_one_daemon_ticket() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let service = start_test_source_refresh_service(temp.path())?;
+    let (service, source_refresh) = start_test_source_refresh_service(temp.path())?;
     let request = || {
         daemon_source_refresh_request(
             temp.path(),
@@ -502,7 +822,7 @@ fn query_service_coalesces_source_refresh_requests_on_one_daemon_ticket() -> Res
     assert_eq!(first["request_id"], second["request_id"]);
     assert_eq!(first["coalesced_requests"], 0);
     assert_eq!(second["coalesced_requests"], 1);
-    assert!(service.source_refresh.has_pending_request());
+    assert!(source_refresh.has_pending_request());
     let job = read_daemon_job_status(&daemon_source_backed_refresh_job_path(temp.path()))
         .expect("queued source refresh job status");
     assert_eq!(job["owner"], "daemon");
@@ -662,9 +982,11 @@ fn stale_unix_endpoint_is_sanitized_and_removed() -> Result<()> {
     .expect_err("missing socket should be unavailable");
     let message = format!("{error:#}");
 
-    assert!(error
-        .downcast_ref::<DaemonQueryServiceUnavailable>()
-        .is_some());
+    assert!(
+        error
+            .downcast_ref::<DaemonQueryServiceUnavailable>()
+            .is_some()
+    );
     assert!(message.len() < 256, "{message}");
     assert!(!message.contains(&socket_path.display().to_string()));
     assert!(!message.contains("Connection refused"));
@@ -696,9 +1018,11 @@ fn closed_unix_listener_is_sanitized_and_removed() -> Result<()> {
     )
     .expect_err("closed listener should be unavailable");
     let message = format!("{error:#}");
-    assert!(error
-        .downcast_ref::<DaemonQueryServiceUnavailable>()
-        .is_some());
+    assert!(
+        error
+            .downcast_ref::<DaemonQueryServiceUnavailable>()
+            .is_some()
+    );
     assert!(!message.contains(&socket_path.display().to_string()));
     assert!(!message.contains("Connection refused"));
     assert!(!message.contains("os error"));

@@ -1,7 +1,49 @@
 use super::*;
 
 pub(in crate::semantic) fn daemon_supervisor_report(data_root: &Path) -> Value {
-    revalidated_supervisor_report_with(data_root, &PlatformNativeSupervisor)
+    let normalized = supervisor_environment_snapshot().and_then(|daemon_environment| {
+        supervisor_manager_environment()
+            .map(|manager_environment| (daemon_environment, manager_environment))
+    });
+    daemon_supervisor_report_with_normalized_environment(data_root, normalized)
+}
+
+pub(super) fn daemon_supervisor_report_with_normalized_environment(
+    data_root: &Path,
+    normalized: Result<(SupervisorEnvironmentSnapshot, SupervisorManagerEnvironment)>,
+) -> Value {
+    let Ok((daemon_environment, manager_environment)) = normalized else {
+        let mut report = stored_supervisor_report(data_root);
+        invalidate_supervisor_claims_for_environment_failure(&mut report);
+        append_forced_termination_identity_report(&mut report);
+        append_supervisor_environment_report(&mut report);
+        return report;
+    };
+    let backend = PlatformNativeSupervisor {
+        daemon_environment: Some(&daemon_environment),
+        manager_environment: &manager_environment,
+    };
+    revalidated_supervisor_report_with(data_root, &backend)
+}
+
+fn invalidate_supervisor_claims_for_environment_failure(report: &mut Value) {
+    if let Some(object) = report.as_object_mut() {
+        object.insert("revalidated".to_owned(), Value::Bool(true));
+        object.insert("registration_verified".to_owned(), Value::Bool(false));
+        object.insert("live_owner_verified".to_owned(), Value::Bool(false));
+        object.insert("owner_pid".to_owned(), Value::Null);
+        object.insert(
+            "status".to_owned(),
+            Value::String("environment_invalid".to_owned()),
+        );
+        object.insert(
+            "revalidation_error".to_owned(),
+            Value::String(
+                "current supervisor environment cannot be normalized; native registration and live-owner claims are not trusted"
+                    .to_owned(),
+            ),
+        );
+    }
 }
 
 pub(super) fn revalidated_supervisor_report_with(

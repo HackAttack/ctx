@@ -1,36 +1,180 @@
 use std::{
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant},
 };
 
 #[cfg(unix)]
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use serde_json::Value;
+
+#[cfg(unix)]
 use std::{fs, net::Shutdown, os::unix::net::UnixStream};
-
-use crate::semantic::{
-    daemon_wakeup::DaemonWakeup, source_backed_refresh_coordinator::CoreRefreshEngine,
-};
-
-use super::transport::{remove_daemon_service_endpoint, DaemonIpcService};
 
 mod dispatch;
 mod transport;
+pub(in crate::semantic) use transport::AuthenticatedRequest;
 #[cfg(windows)]
 #[path = "windows_security.rs"]
 mod windows_security;
 
 // Preserve the former parent-module paths for semantic-internal callers.
+#[cfg(all(test, unix))]
+pub(in crate::semantic) use dispatch::bind_daemon_query_listener;
 #[allow(unused_imports)]
 pub(in crate::semantic) use dispatch::{
-    handle_daemon_query_stream, handle_daemon_query_stream_inner,
+    CtxAuthenticatedRequestHandler, ctx_authenticated_request_handler, start_daemon_query_service,
+    start_daemon_source_refresh_service,
+};
+#[cfg(test)]
+pub(in crate::semantic) use dispatch::{
+    start_daemon_query_service_with_request_timeout,
+    start_daemon_source_refresh_service_with_request_timeout,
 };
 pub(in crate::semantic) use transport::*;
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(in crate::semantic) struct ServiceId(String);
+
+impl ServiceId {
+    pub(in crate::semantic) fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= 64
+            && !value.starts_with('-')
+            && !value.ends_with('-')
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if !valid {
+            anyhow::bail!(
+                "IPC service id must be 1-64 lowercase ASCII letters, digits, or interior hyphens"
+            );
+        }
+        Ok(Self(value))
+    }
+
+    pub(in crate::semantic) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::semantic) struct IpcServiceSpec {
+    service_id: ServiceId,
+    wake_when_idle: bool,
+    #[cfg(unix)]
+    unix_socket_path: PathBuf,
+}
+
+impl IpcServiceSpec {
+    #[cfg(unix)]
+    pub(in crate::semantic) fn new(
+        service_id: ServiceId,
+        unix_socket_path: PathBuf,
+        wake_when_idle: bool,
+    ) -> Result<Self> {
+        if unix_socket_path.file_name().is_none() {
+            anyhow::bail!("IPC service Unix socket path must name a socket");
+        }
+        Ok(Self {
+            service_id,
+            wake_when_idle,
+            unix_socket_path,
+        })
+    }
+
+    #[cfg(not(unix))]
+    pub(in crate::semantic) fn new(
+        service_id: ServiceId,
+        wake_when_idle: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            service_id,
+            wake_when_idle,
+        })
+    }
+
+    pub(in crate::semantic) fn service_id(&self) -> &ServiceId {
+        &self.service_id
+    }
+
+    pub(in crate::semantic) fn wake_when_idle(&self) -> bool {
+        self.wake_when_idle
+    }
+
+    #[cfg(unix)]
+    pub(in crate::semantic) fn unix_socket_path(&self) -> &Path {
+        &self.unix_socket_path
+    }
+}
+
+pub(in crate::semantic) trait AuthenticatedRequestHandler:
+    Send + Sync + 'static
+{
+    type PostWriteAction<'a>: PostWriteAction + Default
+    where
+        Self: 'a;
+
+    fn handle<'a>(
+        &'a self,
+        service: &ServiceId,
+        request: AuthenticatedRequest,
+    ) -> HandlerOutcome<Self::PostWriteAction<'a>>;
+}
+
+pub(in crate::semantic) trait DaemonWakePort: Send + Sync + 'static {
+    fn signal_ipc(&self);
+}
+
+/// A bounded, move-only product action that runs after the response-write
+/// attempt. The transport knows only this neutral contract; composition owns
+/// concrete release and wake-up mechanics.
+pub(in crate::semantic) trait PostWriteAction {
+    fn run(self);
+}
+
+/// The zero-sized default action keeps ordinary daemon requests allocation-
+/// and refcount-free after their response-write attempt.
+#[cfg(test)]
+#[derive(Default)]
+pub(in crate::semantic) struct NoPostWriteAction;
+
+#[cfg(test)]
+impl PostWriteAction for NoPostWriteAction {
+    fn run(self) {}
+}
+
+pub(in crate::semantic) struct HandlerOutcome<A> {
+    pub(in crate::semantic) response: Result<Value>,
+    pub(in crate::semantic) after_write_action: A,
+}
+
+impl<A: Default> HandlerOutcome<A> {
+    pub(in crate::semantic) fn response(response: Result<Value>) -> Self {
+        Self {
+            response,
+            after_write_action: A::default(),
+        }
+    }
+}
+
+impl<A> HandlerOutcome<A> {
+    pub(in crate::semantic) fn with_post_write_action(
+        response: Result<Value>,
+        after_write_action: A,
+    ) -> Self {
+        Self {
+            response,
+            after_write_action,
+        }
+    }
+}
+
 pub(in crate::semantic) struct DaemonQueryService {
-    pub(in crate::semantic) data_root: PathBuf,
-    pub(in crate::semantic) service: DaemonIpcService,
+    pub(in crate::semantic) spec: IpcServiceSpec,
     pub(in crate::semantic) activity: Arc<DaemonQueryActivity>,
-    pub(in crate::semantic) source_refresh: Arc<CoreRefreshEngine>,
     pub(in crate::semantic) thread: Option<std::thread::JoinHandle<()>>,
     #[cfg(unix)]
     pub(in crate::semantic) socket_path: PathBuf,
@@ -40,6 +184,7 @@ pub(in crate::semantic) struct DaemonQueryService {
     pub(in crate::semantic) shutdown_stream: UnixStream,
     #[cfg(windows)]
     pub(in crate::semantic) pipe_name: String,
+    pub(in crate::semantic) endpoint_store: Arc<dyn IpcEndpointStore>,
 }
 
 pub(in crate::semantic) const DAEMON_QUERY_REQUEST_MAX_BYTES: usize = 256 * 1024;
@@ -47,6 +192,10 @@ pub(in crate::semantic) const DAEMON_QUERY_REQUEST_READ_TIMEOUT: StdDuration =
     StdDuration::from_secs(2);
 
 impl DaemonQueryService {
+    pub(in crate::semantic) fn service_id(&self) -> &ServiceId {
+        self.spec.service_id()
+    }
+
     pub(in crate::semantic) fn listener_finished(&self) -> bool {
         self.thread
             .as_ref()
@@ -68,7 +217,7 @@ impl Drop for DaemonQueryService {
         }
         #[cfg(windows)]
         transport::wake_windows_daemon_query_pipe(&self.pipe_name);
-        remove_daemon_service_endpoint(&self.data_root, self.service);
+        self.endpoint_store.remove();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -85,7 +234,7 @@ impl Drop for DaemonQueryService {
 #[derive(Default)]
 pub(in crate::semantic) struct DaemonQueryActivity {
     pub(in crate::semantic) state: Mutex<DaemonQueryActivityState>,
-    idle_wakeup: Option<Arc<DaemonWakeup>>,
+    idle_wakeup: Option<Arc<dyn DaemonWakePort>>,
 }
 
 #[derive(Default)]
@@ -112,7 +261,14 @@ impl DaemonQueryActivity {
         }
     }
 
-    pub(in crate::semantic) fn with_idle_wakeup(idle_wakeup: Arc<DaemonWakeup>) -> Self {
+    #[cfg(test)]
+    pub(in crate::semantic) fn with_idle_wakeup<W: DaemonWakePort>(idle_wakeup: Arc<W>) -> Self {
+        let mut activity = Self::new();
+        activity.idle_wakeup = Some(idle_wakeup);
+        activity
+    }
+
+    pub(in crate::semantic) fn with_idle_wakeup_port(idle_wakeup: Arc<dyn DaemonWakePort>) -> Self {
         let mut activity = Self::new();
         activity.idle_wakeup = Some(idle_wakeup);
         activity
@@ -186,6 +342,21 @@ impl DaemonQueryActivity {
     pub(in crate::semantic) fn stopping(&self) -> bool {
         self.state().stopping
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::semantic) struct IpcEndpointPublication {
+    pub(in crate::semantic) token: String,
+    #[cfg(unix)]
+    pub(in crate::semantic) unix_socket_path: PathBuf,
+    #[cfg(windows)]
+    pub(in crate::semantic) windows_pipe_name: String,
+}
+
+pub(in crate::semantic) trait IpcEndpointStore: Send + Sync + 'static {
+    fn prepare(&self) -> Result<()>;
+    fn publish(&self, endpoint: &IpcEndpointPublication) -> Result<()>;
+    fn remove(&self);
 }
 
 impl Drop for DaemonQueryRequestGuard {

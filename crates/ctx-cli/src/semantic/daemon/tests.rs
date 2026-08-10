@@ -33,14 +33,34 @@ use ctx_history_index::{GenerationWriter, SourceRouteSnapshot, WriterOptions};
 use ctx_history_refresh::EventWatermark;
 use sha2::{Digest, Sha256};
 
+#[test]
+fn scheduler_source_refresh_selection_borrows_without_refcount_churn() {
+    let source_refresh = Arc::new(crate::semantic::source_backed_refresh_adapter::refresh_engine());
+    let stable_coordinator = Some(Arc::clone(&source_refresh));
+    let strong_count = Arc::strong_count(&source_refresh);
+
+    let selected = daemon_scheduler_source_refresh(&stable_coordinator)
+        .expect("stable coordinator must be selectable");
+
+    assert!(std::ptr::eq(selected, source_refresh.as_ref()));
+    assert_eq!(Arc::strong_count(&source_refresh), strong_count);
+}
+
 #[cfg(unix)]
 #[test]
 fn completed_ipc_listener_is_a_fatal_daemon_health_failure() -> Result<()> {
     let root = tempfile::tempdir()?;
+    let wakeup = Arc::new(crate::semantic::daemon_wakeup::DaemonWakeup::default());
+    let handler = crate::semantic::query_service::ctx_authenticated_request_handler(
+        root.path(),
+        SharedSemanticRuntime::default(),
+        Arc::new(crate::semantic::source_backed_refresh_adapter::refresh_engine()),
+        wakeup,
+    );
     let service =
         crate::semantic::query_service::start_daemon_source_refresh_service_with_request_timeout(
             root.path(),
-            SharedSemanticRuntime::default(),
+            handler,
             StdDuration::from_millis(100),
         )?;
     assert!(daemon_service_endpoint_path(root.path(), DaemonIpcService::SourceRefresh).exists());

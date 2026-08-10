@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, io::Write, path::Path};
+use std::{collections::BTreeSet, path::Path};
 
 use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_index::SourceRouteIdentity;
@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::output::compact_json;
+use crate::semantic::{
+    source_backed_refresh_coordinator::CoreRefreshEngine,
+};
 
 const SOURCE_REFRESH_REQUEST_OP: &str = "source_refresh_request";
 const SOURCE_REFRESH_STATUS_OP: &str = "source_refresh_status";
@@ -56,19 +59,37 @@ pub(in crate::semantic) fn handle_ipc_request(
     }
 }
 
-pub(in crate::semantic) fn write_response<S: Write>(
-    stream: &mut S,
-    engine: &RefreshEngine,
-    mut response: WireResponse,
-) -> Result<()> {
-    let response_write = (|| -> Result<()> {
-        writeln!(stream, "{}", serde_json::to_string(&response.value)?)?;
-        Ok(())
-    })();
-    if let Some(barrier) = response.response_barrier.take() {
+impl WireResponse {
+    pub(in crate::semantic) fn into_parts(self) -> (Value, Option<AdmissionResponseBarrier>) {
+        (self.value, self.response_barrier)
+    }
+}
+
+pub(in crate::semantic) fn finish_source_refresh_response(
+    barrier: Option<AdmissionResponseBarrier>,
+    engine: &CoreRefreshEngine,
+    signal_scheduler: impl FnOnce(),
+) {
+    if let Some(barrier) = barrier {
         barrier.release(engine);
     }
-    response_write
+    if engine.has_pending_request() {
+        signal_scheduler();
+    }
+}
+
+#[cfg(test)]
+pub(in crate::semantic) fn finish_wire_response_for_test(
+    response: WireResponse,
+    engine: &CoreRefreshEngine,
+    signal_scheduler: impl FnOnce(),
+) -> Value {
+    let WireResponse {
+        value,
+        response_barrier,
+    } = response;
+    finish_source_refresh_response(response_barrier, engine, signal_scheduler);
+    value
 }
 
 #[cfg(test)]

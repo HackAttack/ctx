@@ -15,16 +15,17 @@ pub(in crate::semantic) use transport::*;
 #[cfg(not(test))]
 pub(in crate::semantic) use transport::{
     daemon_query_request, daemon_service_endpoint_path, daemon_source_refresh_request,
-    read_daemon_service_endpoint_identity, DaemonIpcService, DaemonQueryEndpoint,
-    DaemonSourceRefreshServiceUnavailable,
+    read_daemon_service_endpoint_identity, DaemonIpcService, DaemonSourceRefreshServiceUnavailable,
 };
+#[cfg(all(not(test), unix))]
+pub(in crate::semantic) use transport::DaemonQueryEndpoint;
 mod server;
 #[cfg(test)]
 pub(in crate::semantic) use server::*;
 #[cfg(not(test))]
 pub(in crate::semantic) use server::{
-    daemon_can_begin_idle_shutdown, observe_daemon_query_activity, start_daemon_query_service,
-    start_daemon_source_refresh_service, start_daemon_source_refresh_service_with_coordinator,
+    ctx_authenticated_request_handler, daemon_can_begin_idle_shutdown,
+    observe_daemon_query_activity, start_daemon_query_service, start_daemon_source_refresh_service,
     DaemonQueryActivity, DaemonQueryService,
 };
 

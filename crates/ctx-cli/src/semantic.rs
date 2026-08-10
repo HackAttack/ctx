@@ -7,7 +7,7 @@ use std::{
 };
 
 #[cfg(all(unix, test))]
-use std::{io::Write, path::PathBuf};
+use std::io::Write;
 
 #[cfg(test)]
 use std::sync::Arc;

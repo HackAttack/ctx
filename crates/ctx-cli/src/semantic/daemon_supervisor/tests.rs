@@ -1,19 +1,90 @@
 use super::*;
+
+struct TestSupervisorUpgradeFence<F: FnOnce() -> Result<()>>(Option<F>);
+
+impl<F: FnOnce() -> Result<()>> DaemonSupervisorUpgradeFence for TestSupervisorUpgradeFence<F> {
+    fn release(&mut self) -> Result<()> {
+        self.0
+            .take()
+            .ok_or_else(|| anyhow!("test supervisor upgrade fence released twice"))?()
+    }
+}
 use std::{
     env,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Barrier, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 const SUPERVISOR_ENV_ARTIFACT_PROBE_STAGE: &str = "CTX_SUPERVISOR_ENV_ARTIFACT_PROBE_STAGE";
-const SUPERVISOR_ENV_ARTIFACT_PROBE_TEST: &str =
-    "semantic::daemon_supervisor::tests::native_supervisor_artifacts_exclude_authority_and_fail_closed_on_controls";
+const SUPERVISOR_ENV_ARTIFACT_PROBE_TEST: &str = "semantic::daemon_supervisor::tests::native_supervisor_artifacts_exclude_authority_and_fail_closed_on_controls";
+
+fn linux_systemd_unit(executable: &Path, data_root: &Path) -> Result<String> {
+    environment::linux_systemd_unit_with_environment(
+        executable,
+        data_root,
+        &supervisor_environment_snapshot()?,
+    )
+}
+
+fn launch_agent_plist(executable: &Path, data_root: &Path) -> Result<String> {
+    environment::launch_agent_plist_with_environment(
+        executable,
+        data_root,
+        &supervisor_environment_snapshot()?,
+    )
+}
+
+fn windows_sanitized_daemon_script(executable: &Path, data_root: &Path) -> Result<String> {
+    windows_sanitized_daemon_script_with_environment(
+        executable,
+        data_root,
+        &supervisor_environment_snapshot()?,
+    )
+}
+
+fn windows_task_xml(
+    executable: &Path,
+    data_root: &Path,
+    system_root: &Path,
+    user_sid: &str,
+    task_name: &str,
+) -> Result<String> {
+    windows_task_xml_with_environment(
+        executable,
+        data_root,
+        system_root,
+        user_sid,
+        task_name,
+        &supervisor_environment_snapshot()?,
+    )
+}
+
+fn windows_task_registration_matches(
+    xml: &str,
+    executable: &Path,
+    data_root: &Path,
+    system_root: &Path,
+    user_sid: &str,
+    task_name: &str,
+) -> Result<bool> {
+    windows_task_registration_matches_with_environment(
+        xml,
+        executable,
+        data_root,
+        system_root,
+        user_sid,
+        task_name,
+        &supervisor_environment_snapshot()?,
+        &supervisor_manager_environment()?,
+    )
+}
 
 #[derive(Default)]
 struct FakeSupervisorState {
     registered: bool,
+    registration_probes: usize,
     live_owner: Option<u32>,
     installs: usize,
     disables: usize,
@@ -27,6 +98,7 @@ struct FakeSupervisorBackend {
     state: Mutex<FakeSupervisorState>,
     delay_install: bool,
     fail_install_after_registration: bool,
+    fail_disable: bool,
 }
 
 impl FakeSupervisorBackend {
@@ -39,6 +111,7 @@ impl FakeSupervisorBackend {
             }),
             delay_install: false,
             fail_install_after_registration: false,
+            fail_disable: false,
         }
     }
 }
@@ -75,15 +148,18 @@ impl NativeSupervisorBackend for FakeSupervisorBackend {
     fn disable(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
         let mut state = self.state.lock().unwrap();
         state.disables += 1;
+        if self.fail_disable {
+            return Err(anyhow!("fake native disable failed"));
+        }
         state.registered = false;
         state.live_owner = None;
         Ok(None)
     }
 
     fn verify_registration(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
-        self.state
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        state.registration_probes += 1;
+        state
             .registered
             .then_some(())
             .ok_or_else(|| anyhow!("fake native registration is absent"))
@@ -104,6 +180,86 @@ impl NativeSupervisorBackend for FakeSupervisorBackend {
         state.live_owner = Some(4_242);
         Ok(())
     }
+}
+
+#[test]
+fn manager_control_environment_is_exact_and_rejects_release_authority() -> Result<()> {
+    let exact = SupervisorManagerEnvironment::normalized(BTreeMap::from([
+        (OsString::from("PATH"), OsString::from("/manager/bin")),
+        (OsString::from("HOME"), OsString::from("/manager/home")),
+    ]))?;
+    let command = supervisor_command("manager", &exact);
+    let applied = command
+        .get_envs()
+        .map(|(name, value)| {
+            (
+                name.to_os_string(),
+                value
+                    .expect("manager environment values are explicit")
+                    .to_os_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(applied, exact.values);
+
+    let error = SupervisorManagerEnvironment::normalized(BTreeMap::from([(
+        OsString::from("CTX_RELEASE_BASE_URL"),
+        OsString::from("https://attacker.invalid"),
+    )]))
+    .expect_err("release authority must be rejected before mechanics");
+    assert!(error.to_string().contains("release authority variable"));
+    Ok(())
+}
+
+#[test]
+fn managed_supervisor_input_freezes_daemon_and_manager_environments() -> Result<()> {
+    struct RestoreEnvironment {
+        pro_channel: Option<OsString>,
+        home: Option<OsString>,
+    }
+    impl Drop for RestoreEnvironment {
+        fn drop(&mut self) {
+            match self.pro_channel.take() {
+                Some(value) => env::set_var("CTX_PRO_CHANNEL", value),
+                None => env::remove_var("CTX_PRO_CHANNEL"),
+            }
+            match self.home.take() {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+        }
+    }
+
+    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let _restore = RestoreEnvironment {
+        pro_channel: env::var_os("CTX_PRO_CHANNEL"),
+        home: env::var_os("HOME"),
+    };
+    env::set_var("CTX_PRO_CHANNEL", "stable");
+    env::set_var("HOME", "/manager-before-normalization");
+    let input = ManagedSupervisorInput::new(Path::new("/data"), Path::new("/bin/ctx"))?;
+    env::set_var("CTX_PRO_CHANNEL", "staging");
+    env::set_var("HOME", "/manager-after-normalization");
+
+    assert!(
+        input
+            .daemon_environment
+            .values
+            .contains(&("CTX_PRO_CHANNEL".to_owned(), "stable".to_owned()))
+    );
+    assert!(
+        !input
+            .daemon_environment
+            .values
+            .contains(&("CTX_PRO_CHANNEL".to_owned(), "staging".to_owned()))
+    );
+    assert_eq!(
+        input.manager_environment.get("HOME"),
+        Some(OsStr::new("/manager-before-normalization"))
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -325,7 +481,8 @@ fn windows_task_xml_registers_with_task_scheduler() -> Result<()> {
         }
     }
 
-    let sid = current_windows_user_sid()?;
+    let manager_environment = supervisor_manager_environment()?;
+    let sid = current_windows_user_sid(&manager_environment)?;
     let task_name = format!(r"\ctx-test-daemon-xml-{}", std::process::id());
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("windows-task.xml");
@@ -575,25 +732,29 @@ fn native_supervisor_artifacts_exclude_authority_and_fail_closed_on_controls() -
     assert!(linux_systemd_unit(executable, data_root).is_err());
     assert!(launch_agent_plist(executable, data_root).is_err());
     assert!(windows_sanitized_daemon_script(executable, data_root).is_err());
-    assert!(windows_task_xml(
-        executable,
-        data_root,
-        Path::new(r"C:\Windows"),
-        "S-1-5-21-1000",
-        r"\ctx-daemon-S-1-5-21-1000",
-    )
-    .is_err());
+    assert!(
+        windows_task_xml(
+            executable,
+            data_root,
+            Path::new(r"C:\Windows"),
+            "S-1-5-21-1000",
+            r"\ctx-daemon-S-1-5-21-1000",
+        )
+        .is_err()
+    );
     let hostile_root = Path::new("/tmp/ctx\ninjected-directive");
     assert!(linux_systemd_unit(executable, hostile_root).is_err());
     assert!(launch_agent_plist(executable, hostile_root).is_err());
-    assert!(windows_task_xml(
-        executable,
-        hostile_root,
-        Path::new(r"C:\Windows"),
-        "S-1-5-21-1000",
-        r"\ctx-daemon-S-1-5-21-1000",
-    )
-    .is_err());
+    assert!(
+        windows_task_xml(
+            executable,
+            hostile_root,
+            Path::new(r"C:\Windows"),
+            "S-1-5-21-1000",
+            r"\ctx-daemon-S-1-5-21-1000",
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -639,7 +800,10 @@ fn concurrent_recovery_revalidates_registration_under_the_installation_lock() ->
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                ensure_native_supervisor_with(&data_root, &executable, backend.as_ref())
+                ensure_native_supervisor_with(
+                    &ManagedSupervisorInput::new(&data_root, &executable)?,
+                    backend.as_ref(),
+                )
             })
         })
         .collect::<Vec<_>>();
@@ -665,12 +829,16 @@ fn concurrent_recovery_revalidates_registration_under_the_installation_lock() ->
     assert_eq!(receipt["live_owner_verified"], true);
     assert_eq!(receipt["owner_pid"], 4_242);
     assert_eq!(receipt["environment_snapshot"]["schema_version"], 1);
-    assert!(receipt["environment_snapshot"]["captured_at_ms"]
-        .as_i64()
-        .is_some());
-    assert!(receipt["environment_snapshot"]["sha256"]
-        .as_str()
-        .is_some_and(|value| value.len() == 64));
+    assert!(
+        receipt["environment_snapshot"]["captured_at_ms"]
+            .as_i64()
+            .is_some()
+    );
+    assert!(
+        receipt["environment_snapshot"]["sha256"]
+            .as_str()
+            .is_some_and(|value| value.len() == 64)
+    );
     assert_eq!(receipt["environment_snapshot"]["values_exposed"], false);
     assert!(receipt["environment_snapshot"].get("values").is_none());
     Ok(())
@@ -681,11 +849,16 @@ fn upgrade_handoff_releases_fence_before_native_manager_start() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let executable = temp.path().join("ctx");
     let backend = FakeSupervisorBackend::with_registration(None);
-    let result =
-        resume_daemon_supervisor_after_upgrade_with(temp.path(), &executable, &backend, || {
-            backend.state.lock().unwrap().upgrade_fence_released = true;
-            Ok(())
-        })?;
+    let mut fence = TestSupervisorUpgradeFence(Some(|| {
+        backend.state.lock().unwrap().upgrade_fence_released = true;
+        Ok(())
+    }));
+    let result = resume_daemon_supervisor_after_upgrade_with(
+        temp.path(),
+        &executable,
+        &backend,
+        &mut fence,
+    )?;
     assert_eq!(result, DaemonSupervisorUpgradeResume::Native);
     let state = backend.state.lock().unwrap();
     assert_eq!(state.starts, 1);
@@ -704,11 +877,16 @@ fn upgrade_handoff_keeps_fence_for_detached_fallback_without_native_registration
     let executable = temp.path().join("ctx");
     let backend = FakeSupervisorBackend::default();
     let fence_released = AtomicBool::new(false);
-    let result =
-        resume_daemon_supervisor_after_upgrade_with(temp.path(), &executable, &backend, || {
-            fence_released.store(true, Ordering::SeqCst);
-            Ok(())
-        })?;
+    let mut fence = TestSupervisorUpgradeFence(Some(|| {
+        fence_released.store(true, Ordering::SeqCst);
+        Ok(())
+    }));
+    let result = resume_daemon_supervisor_after_upgrade_with(
+        temp.path(),
+        &executable,
+        &backend,
+        &mut fence,
+    )?;
     assert_eq!(result, DaemonSupervisorUpgradeResume::Fallback);
     assert!(!fence_released.load(Ordering::SeqCst));
     assert_eq!(backend.state.lock().unwrap().starts, 0);
@@ -747,6 +925,67 @@ fn status_revalidates_registration_and_live_owner_instead_of_replaying_receipt()
     assert_eq!(stale["status"], "stale_registration");
     assert_eq!(stale["registration_verified"], false);
     assert_eq!(stale["live_owner_verified"], false);
+    Ok(())
+}
+
+#[test]
+fn status_invalidates_healthy_receipt_when_current_launch_environment_is_unreadable() -> Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    write_supervisor_receipt(
+        temp.path(),
+        &SupervisorReceipt {
+            kind: native_supervisor_kind().to_owned(),
+            status: "installed",
+            autostart_supported: true,
+            restart_supported: true,
+            registration_verified: true,
+            live_owner_verified: true,
+            owner_pid: Some(4_242),
+            artifact_path: Some(temp.path().join("native")),
+            executable_path: Some(temp.path().join("ctx")),
+            limitation: None,
+            last_error: None,
+        },
+    )?;
+    let report = daemon_supervisor_report_with_normalized_environment(
+        temp.path(),
+        Err(anyhow!("CTX_PRO_CHANNEL is not Unicode")),
+    );
+    assert_eq!(report["status"], "environment_invalid");
+    assert_eq!(report["registration_verified"], false);
+    assert_eq!(report["live_owner_verified"], false);
+    assert_eq!(report["owner_pid"], Value::Null);
+    assert!(
+        report["revalidation_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not trusted"))
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn native_control_context_accepts_nonunicode_manager_values_without_launch_snapshot() -> Result<()>
+{
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let manager_environment = SupervisorManagerEnvironment::normalized(BTreeMap::from([(
+        OsString::from("HOME"),
+        OsString::from_vec(vec![b'/', 0xff]),
+    )]))?;
+    let backend = PlatformNativeSupervisor {
+        daemon_environment: None,
+        manager_environment: &manager_environment,
+    };
+    assert!(backend.launch_environment().is_err());
+    // Removal/control mechanics consume only the manager context. This keeps
+    // uninstall available when the launch-only environment cannot be Unicode.
+    assert!(
+        backend
+            .artifact_path(Path::new("/tmp/ctx-control-test"))?
+            .is_some()
+    );
     Ok(())
 }
 
@@ -794,17 +1033,21 @@ fn supervisor_report_states_forced_termination_identity_limitations() {
             report["forced_termination_identity"]["strategy"],
             "pidfd_when_available"
         );
-        assert!(report["forced_termination_identity"]["limitation"]
-            .as_str()
-            .is_some_and(|value| value.contains("PID reuse")));
+        assert!(
+            report["forced_termination_identity"]["limitation"]
+                .as_str()
+                .is_some_and(|value| value.contains("PID reuse"))
+        );
     } else if cfg!(unix) {
         assert_eq!(
             report["forced_termination_identity"]["strategy"],
             "reverified_pid"
         );
-        assert!(report["forced_termination_identity"]["limitation"]
-            .as_str()
-            .is_some_and(|value| value.contains("cannot eliminate")));
+        assert!(
+            report["forced_termination_identity"]["limitation"]
+                .as_str()
+                .is_some_and(|value| value.contains("cannot eliminate"))
+        );
     }
 }
 
@@ -820,18 +1063,22 @@ fn supervisor_live_ownership_requires_exact_manager_pid_and_executable() {
         verify_daemon_owner_identity(temp.path(), &executable, Some(std::process::id())).unwrap(),
         std::process::id()
     );
-    assert!(verify_daemon_owner_identity(
-        temp.path(),
-        &executable,
-        Some(std::process::id().saturating_add(1)),
-    )
-    .is_err());
-    assert!(verify_daemon_owner_identity(
-        temp.path(),
-        &temp.path().join("not-the-owner"),
-        Some(std::process::id()),
-    )
-    .is_err());
+    assert!(
+        verify_daemon_owner_identity(
+            temp.path(),
+            &executable,
+            Some(std::process::id().saturating_add(1)),
+        )
+        .is_err()
+    );
+    assert!(
+        verify_daemon_owner_identity(
+            temp.path(),
+            &temp.path().join("not-the-owner"),
+            Some(std::process::id()),
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -862,6 +1109,53 @@ fn fallback_disable_status_is_retry_safe_without_claiming_registration() {
     assert_eq!(status["live_owner_verified"], false);
     assert_eq!(status["autostart_supported"], false);
     assert_eq!(status["restart_supported"], false);
+}
+
+#[test]
+fn native_disable_attempts_surviving_registration_without_artifact_or_launch_probe() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let backend = FakeSupervisorBackend::with_registration(Some(4_242));
+
+    disable_native_supervisor_candidate_with(
+        temp.path(),
+        Some(temp.path().join("ctx")),
+        &backend,
+    )?;
+
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.disables, 1);
+    assert_eq!(state.registration_probes, 0);
+    assert!(!state.registered);
+    drop(state);
+    let receipt = stored_supervisor_report(temp.path());
+    assert_eq!(receipt["status"], "disabled");
+    assert_eq!(receipt["registration_verified"], false);
+    Ok(())
+}
+
+#[test]
+fn native_disable_failure_does_not_claim_an_unavailable_launch_probe_is_healthy() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut backend = FakeSupervisorBackend::with_registration(Some(4_242));
+    backend.fail_disable = true;
+
+    assert!(disable_native_supervisor_candidate_with(
+        temp.path(),
+        Some(temp.path().join("ctx")),
+        &backend,
+    )
+    .is_err());
+
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.disables, 1);
+    assert_eq!(state.registration_probes, 0);
+    assert!(state.registered);
+    drop(state);
+    let receipt = stored_supervisor_report(temp.path());
+    assert_eq!(receipt["status"], "disable_failed");
+    assert_eq!(receipt["registration_verified"], false);
+    assert!(receipt["last_error"].as_str().is_some_and(|error| error.contains("failed")));
+    Ok(())
 }
 
 #[test]
