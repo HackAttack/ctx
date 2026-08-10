@@ -41,10 +41,3 @@ pub(crate) fn load_explicit_source_catalog_authority(
 ) -> Result<ExplicitSourceCatalogAuthority> {
     Ok(ctx_history_refresh::explicit_source_catalog_authority_for_test(0))
 }
-
-#[cfg(test)]
-pub(crate) fn explicit_source_catalog_authority_for_test(
-    revision: u64,
-) -> ExplicitSourceCatalogAuthority {
-    ctx_history_refresh::explicit_source_catalog_authority_for_test(revision)
-}

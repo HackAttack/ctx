@@ -172,6 +172,131 @@ impl DaemonRetryBackoff {
         self.retry_not_before_at_ms = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        daemon_scheduler::daemon_job_should_backoff, daemon_worker::daemon_semantic_job_json,
+    };
+    use ctx_semantic_index::test_support::{
+        newer_schema_error, reset_required_error, semantic_vector_schema_version,
+        storage_conflict_error, unavailable_error,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn restored_daemon_retry_deadline_is_clamped_to_runtime_maximum() {
+        let now_ms = utc_now().timestamp_millis();
+        let persisted = json!({
+            "consecutive_failures": 99,
+            "retry_not_before_at_ms": now_ms + 24 * 60 * 60 * 1_000,
+        });
+        let mut backoff = DaemonRetryBackoff::default();
+        backoff.restore(Some(&persisted));
+
+        let maximum_ms = DaemonRetryBackoff::MAX_DELAY.as_millis() as u64;
+        assert!(
+            backoff
+                .retry_after_ms()
+                .is_some_and(|remaining| remaining <= maximum_ms),
+            "{backoff:#?}"
+        );
+        assert!(
+            backoff.retry_not_before_at_ms.is_some_and(|deadline| {
+                deadline > now_ms && deadline <= now_ms + maximum_ms as i64
+            }),
+            "{backoff:#?}"
+        );
+        assert_eq!(backoff.consecutive_failures, 99);
+    }
+
+    #[test]
+    fn semantic_failure_classes_control_retry_backoff() {
+        let retryable = anyhow::anyhow!("transient flat segment publication failure");
+        assert_eq!(
+            classify_semantic_failure(&retryable),
+            SemanticFailureClass::Retryable
+        );
+        let permanent = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into();
+        assert_eq!(
+            classify_semantic_failure(&permanent),
+            SemanticFailureClass::Permanent
+        );
+        let corrupt: anyhow::Error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        )
+        .into();
+        assert_eq!(
+            classify_semantic_failure(&corrupt),
+            SemanticFailureClass::CorruptSidecar
+        );
+        for typed in [
+            storage_conflict_error("sidecar identity changed"),
+            newer_schema_error(semantic_vector_schema_version() + 1),
+        ] {
+            assert_eq!(
+                classify_semantic_failure(&anyhow::Error::new(typed)),
+                SemanticFailureClass::Permanent
+            );
+        }
+        assert_eq!(
+            classify_semantic_failure(&anyhow::Error::new(reset_required_error(
+                "sidecar reset required"
+            ))),
+            SemanticFailureClass::CorruptSidecar
+        );
+        assert_eq!(
+            classify_semantic_failure(&anyhow::Error::new(unavailable_error(
+                "flat segment store temporarily unavailable"
+            ))),
+            SemanticFailureClass::Retryable
+        );
+        let pressure = SemanticModelLoadDeferred::for_test(1, 2);
+        assert_eq!(
+            classify_semantic_failure(&anyhow::Error::new(pressure)),
+            SemanticFailureClass::ResourcePressure
+        );
+
+        for (class, should_backoff) in [
+            (SemanticFailureClass::Retryable, true),
+            (SemanticFailureClass::Permanent, false),
+            (SemanticFailureClass::CorruptSidecar, false),
+            (SemanticFailureClass::ResourcePressure, false),
+        ] {
+            let job = annotate_semantic_failure(
+                daemon_semantic_job_json("failed", None, 1234, None, Some("failure".to_owned())),
+                class,
+            );
+            assert_eq!(daemon_job_should_backoff(&job), should_backoff);
+        }
+    }
+
+    #[test]
+    fn daemon_retry_backoff_is_capped() {
+        let mut backoff = DaemonRetryBackoff::default();
+        let mut last = StdDuration::ZERO;
+        for _ in 0..40 {
+            let delay = backoff.record_failure();
+            assert!(delay >= last);
+            assert!(delay <= DaemonRetryBackoff::MAX_DELAY);
+            last = delay;
+        }
+        assert_eq!(last, DaemonRetryBackoff::MAX_DELAY);
+        assert!(!backoff.ready());
+        assert!(backoff.retry_after_ms().is_some_and(|delay| delay > 0));
+        let persisted = json!({
+            "consecutive_failures": backoff.consecutive_failures,
+            "retry_not_before_at_ms": backoff.retry_not_before_at_ms,
+        });
+        let mut restarted = DaemonRetryBackoff::default();
+        restarted.restore(Some(&persisted));
+        assert!(!restarted.ready(), "restart must preserve watcher backoff");
+        backoff.reset();
+        assert!(backoff.ready());
+    }
+}
 use std::time::{Duration as StdDuration, Instant};
 
 use ctx_history_core::utc_now;

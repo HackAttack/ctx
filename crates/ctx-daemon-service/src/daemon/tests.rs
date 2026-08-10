@@ -1164,6 +1164,40 @@ fn source_refresh_only_scheduler_runs_no_unrelated_job() -> Result<()> {
 }
 
 #[test]
+fn foreground_query_preempts_daemon_background_jobs() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let _hooks = install_daemon_test_job_hooks(DaemonTestJobHooks {
+        calls: calls.clone(),
+        semantic_index: Some(json!({
+            "status": "budget_exhausted",
+            "indexed_chunks": 1,
+        })),
+    });
+    let activity = Arc::new(crate::query_service::DaemonQueryActivity::new());
+    let _request = activity
+        .begin_request()
+        .expect("test foreground query should be accepted");
+    let mut runtime = DaemonRuntime::default();
+
+    let iteration = run_daemon_scheduler_cycle_with_activity(
+        &test_daemon_run_args(),
+        temp.path(),
+        &mut runtime,
+        None,
+        true,
+        Some(activity.as_ref()),
+        None,
+    )?;
+
+    assert!(!iteration.did_work);
+    assert!(!iteration.failed);
+    assert!(calls.borrow().is_empty());
+    assert!(!super::super::paths_status::daemon_core_refresh_job_path(temp.path()).exists());
+    Ok(())
+}
+
+#[test]
 fn source_refresh_only_and_full_modes_share_the_same_refresh_path() -> Result<()> {
     use super::super::source_backed_refresh_coordinator::{
         SourceBackedRefreshCurrent, SourceBackedRefreshExecution, SourceBackedRefreshPublication,

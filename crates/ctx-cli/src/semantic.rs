@@ -1,34 +1,4 @@
 #[cfg(test)]
-use std::{
-    fs,
-    path::Path,
-    process,
-    time::{Duration as StdDuration, Instant},
-};
-
-#[cfg(all(unix, test))]
-use std::io::Write;
-
-#[cfg(test)]
-use std::sync::Arc;
-
-#[cfg(all(unix, test))]
-use std::net::Shutdown;
-#[cfg(all(unix, test))]
-use std::os::unix::ffi::OsStrExt;
-#[cfg(all(unix, test))]
-use std::os::unix::net::UnixStream;
-
-#[cfg(all(unix, test))]
-use anyhow::Context;
-#[cfg(test)]
-use anyhow::{anyhow, Result};
-#[cfg(test)]
-use ctx_history_core::utc_now;
-#[cfg(test)]
-use serde_json::{json, Value};
-
-#[cfg(test)]
 fn committed_generation_recovery_error(
     recovery: ctx_history_index::CommittedPredecessorMigrationRecovery,
 ) -> ctx_history_index::IndexError {
@@ -38,13 +8,6 @@ fn committed_generation_recovery_error(
         detail: recovery.detail().to_owned(),
     }
 }
-
-#[cfg(test)]
-use crate::config::CONFIG_FILE;
-#[cfg(test)]
-use crate::output::compact_json;
-#[cfg(test)]
-use crate::{DaemonRunArgs, DaemonStartModeArg, DaemonTriggerCommandArg};
 
 #[allow(unused_imports)]
 pub(crate) use ctx_semantic_model::{
@@ -72,12 +35,8 @@ mod query_adapter;
 pub(crate) use query_adapter::SemanticQueryAdapter;
 mod query_service;
 pub(crate) use query_service::wait_for_daemon_query_service;
-#[cfg(test)]
-use query_service::*;
-mod paths_status;
-#[cfg(test)]
-use paths_status::*;
 mod daemon;
+mod paths_status;
 pub(crate) use daemon::run_daemon_command;
 pub(crate) mod daemon_service_ports;
 mod daemon_status;
@@ -93,8 +52,6 @@ pub(crate) use ctx_daemon_service::{
 };
 pub(crate) use source_backed_pro_catch_up::cancel_core_finalization_generation_lease;
 mod source_backed_refresh_coordinator;
-#[cfg(test)]
-pub(crate) use source_backed_refresh_coordinator::SourceBackedRefreshPublication;
 pub(crate) use source_backed_refresh_coordinator::{
     coordinate_import_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
     coordinate_source_backed_refresh_with_progress, pin_active_verified_generation,
@@ -112,3 +69,5 @@ pub(crate) use daemon_autostart::{
     replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonUpgradeHandoff,
 };
 mod health_search;
+#[cfg(test)]
+mod tests;

@@ -7,20 +7,17 @@ use serde_json::{json, Value};
 
 use crate::{compact_json, config::AppConfig};
 
-use super::{
-    health_search::{json_i64, json_string, json_u32},
-    runtime_limits::DAEMON_SEMANTIC_JOB_FILE,
-};
+use super::health_search::{json_i64, json_string, json_u32};
 
 #[allow(unused_imports)]
 pub(super) use ctx_daemon_runtime::*;
 
 pub(super) fn daemon_core_refresh_job_path(data_root: &Path) -> PathBuf {
-    daemon_jobs_path(data_root).join("core-refresh.json")
+    ctx_daemon_service::daemon_core_refresh_job_path(data_root)
 }
 
 pub(super) fn daemon_semantic_job_path(data_root: &Path) -> PathBuf {
-    daemon_jobs_path(data_root).join(DAEMON_SEMANTIC_JOB_FILE)
+    ctx_daemon_service::daemon_semantic_job_path(data_root)
 }
 
 pub(super) fn daemon_report(data_root: &Path) -> Value {

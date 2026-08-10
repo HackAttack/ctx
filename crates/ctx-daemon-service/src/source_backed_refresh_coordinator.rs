@@ -430,6 +430,11 @@ const SOURCE_REFRESH_RESPONSE_MAX_BYTES: u64 = 64 * 1024;
 pub struct PinnedSourceBackedGeneration(ctx_history_refresh::PinnedSourceBackedGeneration);
 
 impl PinnedSourceBackedGeneration {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_index(index: ctx_history_index::VerifiedIndex) -> Self {
+        Self(ctx_history_refresh::PinnedSourceBackedGeneration::from_index(index))
+    }
+
     pub fn generation_id(&self) -> &str {
         self.0.generation_id()
     }

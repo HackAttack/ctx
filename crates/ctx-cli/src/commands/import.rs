@@ -25,9 +25,7 @@ use automatic_source_refresh::{
 pub(crate) use entry::{import_report_analytics_outcome, import_report_failure_type, run_import};
 use explicit::{run_explicit_source_catalog_import, ExplicitSourceCatalogImportContext};
 #[cfg(test)]
-pub(crate) use explicit_source_catalog::{
-    explicit_source_catalog_authority_for_test, load_explicit_source_catalog_authority,
-};
+pub(crate) use explicit_source_catalog::load_explicit_source_catalog_authority;
 pub(crate) use explicit_source_catalog::{
     explicit_source_for_import, relocate_explicit_source, relocation_authority_for_import,
     upsert_explicit_source, ExplicitSourceCatalogAuthority,

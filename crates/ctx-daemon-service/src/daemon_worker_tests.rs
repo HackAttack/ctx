@@ -4,8 +4,193 @@ use ctx_history_core::{
     SourceKey, SourceObservation, TypedKey,
 };
 use ctx_history_index::{GenerationWriter, WriterOptions};
+use ctx_semantic_index::source_backed_semantic_vector_path;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_env = "gnu"
+    ),
+    all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "freebsd", target_arch = "x86_64")
+))]
+use ctx_semantic_model::{
+    semantic_model_cache_available,
+    test_support::{
+        load_missing_semantic_onnxruntime as load_missing_semantic_onnxruntime_for_test,
+        map_daemon_coreml_load_error, write_test_semantic_cache,
+    },
+};
 
 use super::*;
+use crate::{
+    daemon_retry::DaemonRetryBackoff, daemon_scheduler::record_daemon_job_retry, CONFIG_FILE,
+};
+
+#[test]
+fn daemon_job_json_keeps_outcomes_without_live_worker_snapshots() {
+    let job = daemon_semantic_job_json("budget_exhausted", None, 1234, Some(7), None);
+
+    assert_eq!(job["status"], "budget_exhausted");
+    assert_eq!(job["indexed_chunks"], 7);
+    for field in [
+        "enabled",
+        "model_cache_available",
+        "model_acquisition",
+        "embed_policy",
+        "embedding_runtime",
+        "worker_status",
+        "coverage",
+    ] {
+        assert!(
+            job.get(field).is_none(),
+            "unexpected live snapshot: {field}"
+        );
+    }
+}
+
+#[test]
+fn daemon_acquisition_failure_is_explicit_retryable_and_fail_closed() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+
+    let startup = run_daemon_semantic_model_startup_with(
+        1234,
+        || Err(anyhow!("signed model input unavailable")),
+        |_| -> Result<SemanticDaemonModelAcquisition> {
+            unreachable!("failed initial acquisition must not request CPU fallback")
+        },
+        |_| -> Result<()> { unreachable!("failed acquisition must never initialize the runtime") },
+    )?;
+    let DaemonSemanticModelStartup::Finished(job) = startup else {
+        panic!("failed acquisition must stop daemon model startup");
+    };
+    assert_eq!(job["status"], "skipped");
+    assert_eq!(job["reason"], "model_acquisition_failed");
+
+    let mut backoff = DaemonRetryBackoff::default();
+    let job = record_daemon_job_retry(&mut backoff, job);
+    assert_eq!(job["failure_class"], "retryable");
+    assert_eq!(job["retryable"], true);
+    assert!(job["retry_after_ms"]
+        .as_u64()
+        .is_some_and(|delay| delay > 0));
+    assert!(
+        !source_backed_semantic_vector_path(temp.path()).exists(),
+        "failed model acquisition must not claim a semantic projection"
+    );
+    Ok(())
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_env = "gnu"
+    ),
+    all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "freebsd", target_arch = "x86_64")
+))]
+#[test]
+fn verified_cache_missing_runtime_reports_model_load_failed() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let cache_dir = temp.path().join("semantic-model-cache");
+    write_test_semantic_cache(&cache_dir)?;
+    let missing_runtime = temp.path().join("missing-libonnxruntime.so");
+
+    let startup = run_daemon_semantic_model_startup_with(
+        1234,
+        || Ok(SemanticDaemonModelAcquisition::verified_cpu_cache_for_test()),
+        |_| -> Result<SemanticDaemonModelAcquisition> {
+            unreachable!("CPU runtime load failure must not request Core ML fallback")
+        },
+        |_| -> Result<()> {
+            load_missing_semantic_onnxruntime_for_test(&cache_dir, &missing_runtime)?;
+            unreachable!("missing explicit runtime must fail deterministically")
+        },
+    )?;
+    let DaemonSemanticModelStartup::Finished(job) = startup else {
+        panic!("missing ONNX Runtime must stop daemon model startup");
+    };
+    assert_eq!(job["status"], "skipped");
+    assert_eq!(job["reason"], "model_load_failed");
+    assert_eq!(job["failure_class"], "retryable");
+    assert!(job["last_error"]
+        .as_str()
+        .is_some_and(|message| message.contains("failed to load ONNX Runtime")));
+    assert!(semantic_model_cache_available(&cache_dir));
+    Ok(())
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_env = "gnu"
+    ),
+    all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "freebsd", target_arch = "x86_64")
+))]
+#[test]
+fn auto_coreml_load_failure_acquires_cpu_and_preserves_fallback_metadata() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    std::fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[daemon]\nenabled = true\n\n[search]\nsemantic = true\n",
+    )?;
+    let cpu_cache = temp.path().join("semantic-model-cache");
+    assert!(!cpu_cache.exists(), "CPU fallback cache must start empty");
+    let cpu_acquired = std::cell::Cell::new(false);
+    let load_attempts = std::cell::Cell::new(0_u8);
+
+    let startup = run_daemon_semantic_model_startup_with(
+        1234,
+        || Ok(SemanticDaemonModelAcquisition::verified_coreml_cache_for_test()),
+        |fallback| {
+            assert_eq!(fallback, "coreml_load_error");
+            assert!(
+                !cpu_cache.exists(),
+                "forced Core ML load failure must precede CPU acquisition"
+            );
+            std::fs::create_dir_all(cpu_cache.join("daemon-authorized-cpu-acquisition"))?;
+            cpu_acquired.set(true);
+            Ok(SemanticDaemonModelAcquisition::downloaded_cpu_fallback_for_test(fallback))
+        },
+        |acquisition| {
+            load_attempts.set(load_attempts.get() + 1);
+            if acquisition.fallback().is_none() {
+                return Err(map_daemon_coreml_load_error(
+                    acquisition,
+                    anyhow!("forced Core ML runtime load failure"),
+                ));
+            }
+            assert!(
+                cpu_acquired.get(),
+                "cache-only CPU load must follow daemon-authorized acquisition"
+            );
+            assert_eq!(acquisition.source(), "download");
+            assert_eq!(acquisition.fallback(), Some("coreml_load_error"));
+            Ok(())
+        },
+    )?;
+
+    assert!(matches!(startup, DaemonSemanticModelStartup::Loaded));
+    assert!(cpu_acquired.get());
+    assert_eq!(load_attempts.get(), 2);
+    Ok(())
+}
 
 struct CoreFixture {
     temp: tempfile::TempDir,
