@@ -216,3 +216,39 @@ fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
         Err(error) => Err(error),
     }
 }
+
+#[cfg(all(test, unix))]
+#[test]
+fn released_daemon_service_artifacts_are_removed_after_forced_shutdown() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = tempfile::tempdir()?;
+    let daemon_root = super::super::paths_status::daemon_root_path(root.path());
+    fs::create_dir_all(&daemon_root)?;
+    fs::set_permissions(&daemon_root, fs::Permissions::from_mode(0o700))?;
+    for (service, name) in [
+        (DaemonIpcService::SemanticQuery, "query.sock"),
+        (DaemonIpcService::SourceRefresh, "source-refresh.sock"),
+    ] {
+        let socket_path = daemon_root.join(name);
+        fs::write(&socket_path, b"stale")?;
+        ctx_daemon_service::testing::write_daemon_service_endpoint(
+            root.path(),
+            service,
+            &DaemonQueryEndpoint::Unix {
+                path: socket_path.clone(),
+                token: format!("{name}-token-00000000000000000000000000000000"),
+            },
+        )?;
+        assert!(socket_path.exists());
+        assert!(daemon_service_endpoint_path(root.path(), service).exists());
+    }
+
+    remove_released_daemon_service_artifacts(root.path())?;
+
+    assert!(!daemon_root.join("query.sock").exists());
+    assert!(!daemon_root.join("source-refresh.sock").exists());
+    assert!(!daemon_service_endpoint_path(root.path(), DaemonIpcService::SemanticQuery).exists());
+    assert!(!daemon_service_endpoint_path(root.path(), DaemonIpcService::SourceRefresh).exists());
+    Ok(())
+}

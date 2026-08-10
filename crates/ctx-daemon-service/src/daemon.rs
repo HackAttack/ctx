@@ -196,7 +196,7 @@ fn daemon_run_facts(args: &DaemonRunArgs) -> DaemonRunFactsV1 {
     DaemonRunFactsV1::new(start_mode, supervisor, trigger)
 }
 
-pub fn run_daemon<I, D, AP, UO>(
+pub fn run_daemon<I, P, D, AP, UO>(
     args: DaemonRunArgs,
     data_root: &Path,
     config: AppConfig,
@@ -205,13 +205,14 @@ pub fn run_daemon<I, D, AP, UO>(
         dyn DaemonConfigPort,
         dyn DaemonAvailabilityPort,
         I,
-        dyn ProCatchUpPort,
+        P,
         dyn DaemonObservationPort,
     >,
     upgrade: &DaemonUpgradePorts<'_, D, AP, UO>,
 ) -> Result<()>
 where
     I: DaemonInstallationPort,
+    P: ProCatchUpPort + ?Sized,
     D: DaemonUpgradePort + ?Sized,
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,
@@ -245,7 +246,7 @@ where
     }
 }
 
-fn run_daemon_inner<I, D, AP, UO>(
+fn run_daemon_inner<I, P, D, AP, UO>(
     args: DaemonRunArgs,
     data_root: &Path,
     config: AppConfig,
@@ -254,13 +255,14 @@ fn run_daemon_inner<I, D, AP, UO>(
         dyn DaemonConfigPort,
         dyn DaemonAvailabilityPort,
         I,
-        dyn ProCatchUpPort,
+        P,
         dyn DaemonObservationPort,
     >,
     upgrade: &DaemonUpgradePorts<'_, D, AP, UO>,
 ) -> Result<()>
 where
     I: DaemonInstallationPort,
+    P: ProCatchUpPort + ?Sized,
     D: DaemonUpgradePort + ?Sized,
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,

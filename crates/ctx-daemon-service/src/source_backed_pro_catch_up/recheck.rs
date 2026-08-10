@@ -88,9 +88,9 @@ pub fn wake(data_root: &Path) {
     );
 }
 
-pub fn schedule(
+pub fn schedule<P: ProCatchUpPort + ?Sized>(
     data_root: &Path,
-    pro: &dyn ProCatchUpPort,
+    pro: &P,
 ) -> Result<Option<HelperRecheckSchedule>> {
     let Some(intent) = read(data_root)? else {
         return Ok(None);

@@ -13,6 +13,8 @@ pub(crate) use server::{
     start_daemon_query_service_with_request_timeout,
     start_daemon_source_refresh_service_with_request_timeout,
 };
+#[cfg(all(feature = "test-support", not(test)))]
+pub(crate) use transport::write_daemon_service_endpoint;
 #[cfg(test)]
 pub(crate) use transport::{
     daemon_query_endpoint_path, read_daemon_query_endpoint, read_daemon_query_endpoint_identity,

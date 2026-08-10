@@ -82,7 +82,7 @@ pub fn write_daemon_query_endpoint(data_root: &Path, endpoint: &DaemonQueryEndpo
     write_daemon_service_endpoint(data_root, DaemonIpcService::SemanticQuery, endpoint)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn write_daemon_service_endpoint(
     data_root: &Path,
     service: DaemonIpcService,

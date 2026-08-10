@@ -92,6 +92,19 @@ pub use source_backed_refresh_coordinator::{
     SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
 };
 
+#[cfg(feature = "test-support")]
+pub mod testing {
+    pub use crate::source_backed_pro_catch_up::testing::*;
+
+    pub fn write_daemon_service_endpoint(
+        data_root: &std::path::Path,
+        service: crate::DaemonIpcService,
+        endpoint: &crate::DaemonQueryEndpoint,
+    ) -> anyhow::Result<()> {
+        super::query_service::write_daemon_service_endpoint(data_root, service, endpoint)
+    }
+}
+
 fn compact_json(mut value: serde_json::Value) -> serde_json::Value {
     prune_null_json(&mut value);
     value

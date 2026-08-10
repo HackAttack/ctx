@@ -91,13 +91,13 @@ if grep -REn --include='*.rs' \
 fi
 
 fetch_impls="$(grep -REl --include='*.rs' 'impl[[:space:]]+ArtifactFetcher[[:space:]]+for' "${repo_root}/crates/ctx-cli/src" | LC_ALL=C sort -u)"
-if [[ "${fetch_impls}" != "${repo_root}/crates/ctx-cli/src/semantic/daemon_worker.rs" ]]; then
-  echo 'the CLI daemon worker must be the sole ArtifactFetcher implementation' >&2
+if [[ "${fetch_impls}" != "${repo_root}/crates/ctx-cli/src/semantic/daemon_service_ports.rs" ]]; then
+  echo 'the CLI daemon service adapter must be the sole production ArtifactFetcher implementation' >&2
   printf '%s\n' "${fetch_impls}" >&2
   exit 1
 fi
-if [[ "$(grep -RE --include='*.rs' -c '\.acquire_for_daemon\(' "${repo_root}/crates/ctx-cli/src" | awk -F: '{ total += $2 } END { print total + 0 }')" -ne 1 ]]; then
-  echo 'ctx-cli must have exactly one production daemon acquisition call' >&2
+if [[ "$(grep -RE --include='*.rs' -c '\.acquire_for_daemon\(' "${repo_root}/crates/ctx-daemon-service/src" | awk -F: '{ total += $2 } END { print total + 0 }')" -ne 1 ]]; then
+  echo 'ctx-daemon-service must have exactly one production daemon acquisition call' >&2
   exit 1
 fi
 
