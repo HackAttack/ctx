@@ -13,11 +13,6 @@
       "package": "ctx-history-capture",
       "manifest": "crates/ctx-history-capture/Cargo.toml",
       "ratchet": 204681
-    },
-    {
-      "package": "ctx-history-refresh",
-      "manifest": "crates/ctx-history-refresh/Cargo.toml",
-      "ratchet": 22103
     }
   ]
 }

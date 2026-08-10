@@ -102,6 +102,15 @@ fn present_unsupported_only_refresh_fails_cold_and_reports_against_a_warm_genera
     ));
 
     let retained_generation = publish_pin_source(&index_root, publication_pin_source());
+    let legacy_nonempty = VerifiedIndex::open(&index_root).unwrap();
+    assert!(legacy_nonempty.publication_metadata().is_none());
+    assert_eq!(
+        verify_generation_query_readiness(&legacy_nonempty).unwrap(),
+        GenerationQueryReadiness::Ready
+    );
+    verify_generation_query_authority(&legacy_nonempty).unwrap();
+    assert!(verified_generation_is_query_ready(&legacy_nonempty).unwrap());
+    drop(legacy_nonempty);
     let warm = run_report(&discovery, report, &data_root, &index_root).unwrap();
     assert_eq!(warm.generation_id, retained_generation);
     let [failed_route] = warm.route_results.as_slice() else {
@@ -143,7 +152,12 @@ fn executable_empty_inventory_publishes_v2_authority_and_survives_restart() {
     assert_eq!(authority.generation_id, publication.generation_id);
 
     let restarted = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        verify_generation_query_readiness(&restarted).unwrap(),
+        GenerationQueryReadiness::Ready
+    );
     assert!(verified_generation_is_query_ready(&restarted).unwrap());
+    verify_generation_query_authority(&restarted).unwrap();
     let metadata = SourceBackedPublicationMetadata::decode(&restarted).unwrap();
     assert_eq!(
         metadata.version,
@@ -153,6 +167,10 @@ fn executable_empty_inventory_publishes_v2_authority_and_survives_restart() {
     drop(restarted);
 
     let legacy = replace_metadata_version(&index_root, 1);
+    assert_eq!(
+        verify_generation_query_readiness(&legacy).unwrap(),
+        GenerationQueryReadiness::Uncertified
+    );
     assert!(!verified_generation_is_query_ready(&legacy).unwrap());
     assert_eq!(
         SourceBackedPublicationMetadata::decode(&legacy)
@@ -177,6 +195,23 @@ fn executable_empty_inventory_publishes_v2_authority_and_survives_restart() {
 
     let unknown = replace_metadata_version(&index_root, 99);
     assert!(SourceBackedPublicationMetadata::decode(&unknown).is_err());
+    let neutral_detail = format!(
+        "{:#}",
+        verify_generation_query_readiness(&unknown).unwrap_err()
+    );
+    let authority_error = verify_generation_query_authority(&unknown).unwrap_err();
+    assert_eq!(
+        authority_error.error_code(),
+        "publication_authority_invalid"
+    );
+    assert!(!authority_error.retryable());
+    assert!(matches!(
+        &authority_error,
+        GenerationQueryAuthorityError::Invalid {
+            generation_id,
+            detail,
+        } if generation_id == unknown.generation_id() && detail == &neutral_detail
+    ));
     assert!(verified_generation_is_query_ready(&unknown).is_err());
 }
 

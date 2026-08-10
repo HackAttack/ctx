@@ -1,23 +1,48 @@
 use super::*;
 use ctx_history_index::MAX_PUBLICATION_METADATA_BYTES;
 
-pub(crate) const SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 2;
+pub const SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 2;
 const LEGACY_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 1;
+
+/// Provider-neutral query-readiness verdict for one physically verified Core
+/// generation.
+///
+/// Public API boundaries can map an uncertified generation or a metadata
+/// decoding failure into their own typed errors without reimplementing the
+/// publication predicate.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum GenerationQueryReadiness {
+    Ready,
+    Uncertified,
+}
+
+impl GenerationQueryReadiness {
+    pub const fn is_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
 
 /// Refresh-owned authority carried by Core's opaque CommitPayload metadata.
 /// Core deliberately knows nothing about this encoding.
 #[derive(Debug, Clone)]
 pub struct SourceBackedPublicationMetadata {
-    pub(crate) version: u64,
-    pub(crate) request_id: String,
-    pub(crate) operation: SourceBackedRefreshOperation,
-    pub(crate) refresh_scope: SourceBackedRefreshScope,
-    pub(crate) receipt: Value,
-    pub(crate) route_observations: BTreeMap<SourceRouteIdentity, String>,
+    #[doc(hidden)]
+    pub version: u64,
+    #[doc(hidden)]
+    pub request_id: String,
+    #[doc(hidden)]
+    pub operation: SourceBackedRefreshOperation,
+    #[doc(hidden)]
+    pub refresh_scope: SourceBackedRefreshScope,
+    #[doc(hidden)]
+    pub receipt: Value,
+    #[doc(hidden)]
+    pub route_observations: BTreeMap<SourceRouteIdentity, String>,
 }
 
 impl SourceBackedPublicationMetadata {
-    pub(crate) fn encode(&self) -> ctx_history_index::Result<Vec<u8>> {
+    #[doc(hidden)]
+    pub fn encode(&self) -> ctx_history_index::Result<Vec<u8>> {
         if self.version != SOURCE_REFRESH_PUBLICATION_METADATA_VERSION {
             return Err(IndexError::PublicationMetadata(
                 "new Core source-refresh publications must use metadata v2".to_owned(),
@@ -70,7 +95,7 @@ impl SourceBackedPublicationMetadata {
             "version": self.version,
             "request_id": self.request_id,
             "operation": self.operation.as_str(),
-            "refresh_scope": engine::refresh_scope_json(&self.refresh_scope),
+            "refresh_scope": refresh_scope_json(&self.refresh_scope),
             "receipt": self.receipt,
             "route_observations": route_observations,
         }));
@@ -121,7 +146,7 @@ impl SourceBackedPublicationMetadata {
         let operation = SourceBackedRefreshOperation::from_request_json(&json!({
             "operation": fields.get("operation").cloned().unwrap_or(Value::Null),
         }))?;
-        let refresh_scope = engine::refresh_scope_from_json(fields.get("refresh_scope"))?;
+        let refresh_scope = refresh_scope_from_json(fields.get("refresh_scope"))?;
         let receipt = fields
             .get("receipt")
             .filter(|receipt| receipt.is_object())
@@ -204,7 +229,7 @@ impl SourceBackedPublicationMetadata {
                 self.version == SOURCE_REFRESH_PUBLICATION_METADATA_VERSION
                     && required_route_results(self.receipt.get("route_results"))
                         .and_then(|route_results| {
-                            parse_zero_source_authority(
+                            crate::receipt_parse::parse_zero_source_authority(
                                 self.receipt.get("zero_source_authority"),
                                 &route_results,
                             )
@@ -219,6 +244,27 @@ impl SourceBackedPublicationMetadata {
             None => false,
         }
     }
+}
+
+/// Applies the single publication-authority predicate to a verified Core
+/// generation. A legacy nonempty generation is query-ready without metadata;
+/// metadata-bearing generations must decode and certify their exact pin.
+pub fn verify_generation_query_readiness(
+    index: &VerifiedIndex,
+) -> Result<GenerationQueryReadiness> {
+    let Some(_) = index.publication_metadata() else {
+        return Ok(if index.manifest().sources.is_empty() {
+            GenerationQueryReadiness::Uncertified
+        } else {
+            GenerationQueryReadiness::Ready
+        });
+    };
+    let metadata = SourceBackedPublicationMetadata::decode(index)?;
+    Ok(if metadata.certifies_generation(index) {
+        GenerationQueryReadiness::Ready
+    } else {
+        GenerationQueryReadiness::Uncertified
+    })
 }
 
 fn validate_receipt_generation(receipt: &Value, index: &VerifiedIndex) -> Result<()> {
@@ -255,8 +301,10 @@ fn validate_v2_receipt(receipt: &Value, index: Option<&VerifiedIndex>) -> Result
         validate_receipt_generation(receipt, index)?;
     }
     let route_results = required_route_results(receipt.get("route_results"))?;
-    let authority =
-        parse_zero_source_authority(receipt.get("zero_source_authority"), &route_results)?;
+    let authority = crate::receipt_parse::parse_zero_source_authority(
+        receipt.get("zero_source_authority"),
+        &route_results,
+    )?;
     validate_zero_source_authority(
         generation_id,
         source_count,

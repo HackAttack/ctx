@@ -210,10 +210,6 @@ pub(super) fn pin_test_published_generation(
     crate::pin_published_generation(data_root, &TestFileRefreshJournal)
 }
 
-pub(super) fn open_test_published_generation(data_root: &Path) -> Result<Option<VerifiedIndex>> {
-    crate::publication::open_published_generation(data_root, &TestFileRefreshJournal)
-}
-
 pub(super) fn pin_test_active_verified_generation(
     data_root: &Path,
 ) -> Result<PinnedSourceBackedGeneration> {

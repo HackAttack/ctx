@@ -38,6 +38,7 @@ WORKSPACE_PACKAGES = (
     ("ctx-history-index-format", "crates/ctx-history-index-format"),
     ("ctx-history-index", "crates/ctx-history-index"),
     ("ctx-history-index-query", "crates/ctx-history-index-query"),
+    ("ctx-history-refresh-execution", "crates/ctx-history-refresh-execution"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
     ("ctx-upgrade-engine", "crates/ctx-upgrade-engine"),
@@ -153,6 +154,7 @@ members = [
   "crates/ctx-history-index-format",
   "crates/ctx-history-index",
   "crates/ctx-history-index-query",
+  "crates/ctx-history-refresh-execution",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
   "crates/ctx-upgrade-engine",
@@ -180,6 +182,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
                     "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
                     "ctx-daemon-service = { path = \"../ctx-daemon-service\" }\n"
+                    "ctx-history-refresh-execution = { path = \"../ctx-history-refresh-execution\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
@@ -275,6 +278,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-index-format:ctx_history_index_format",
             "@@//crates/ctx-history-index:ctx_history_index",
             "@@//crates/ctx-history-index-query:ctx_history_index_query",
+            "@@//crates/ctx-history-refresh-execution:ctx_history_refresh_execution",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
             "@@//crates/ctx-upgrade-engine:ctx_upgrade_engine",
@@ -364,6 +368,7 @@ repository = "https://example.invalid/{name}"
                     "ctx-daemon-runtime 1.0.0",
                     "ctx-daemon-service 1.0.0",
                     "ctx-history-index",
+                    "ctx-history-refresh-execution",
                     "ctx-semantic-index",
                     "ctx-semantic-model",
                     "ctx-upgrade-engine",
@@ -422,6 +427,7 @@ repository = "https://example.invalid/{name}"
                     "tantivy 0.26.1",
                 ),
             ),
+            self.package("ctx-history-refresh-execution", "0.26.0"),
             self.package(
                 "ctx-semantic-index",
                 "0.26.0",

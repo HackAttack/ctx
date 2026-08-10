@@ -1,4 +1,4 @@
-mod codex_union;
+mod catalog_merge;
 mod generation_witness;
 mod source_helpers;
 mod storage;

@@ -43,7 +43,7 @@ fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
             let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| {
                 Ok::<(), SourceBackedRouteError>(())
             };
-            refresh_all_provider_sources_route_local(
+            ctx_history_refresh_execution::refresh_all_provider_sources_route_local(
                 &executor_discovery,
                 executor_report.clone(),
                 StdDuration::ZERO,
@@ -55,7 +55,7 @@ fn post_scan_jsonl_append_is_not_certified_clean_across_restart() {
                 execution.scope,
                 &execution.covered_route_ids,
                 &execution.covered_publication,
-                execution.journal,
+                execution.published_state,
                 &mut progress,
             )
         }) as Arc<dyn SourceBackedRefreshExecutor>

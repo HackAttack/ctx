@@ -1,22 +1,5 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
-pub struct SourceBackedRefreshTimings {
-    pub discovery_us: u64,
-    pub scan_stage_us: u64,
-    pub commit_us: u64,
-}
-
-impl SourceBackedRefreshTimings {
-    pub(crate) fn to_json(self) -> Value {
-        json!({
-            "discovery": self.discovery_us,
-            "scan_stage": self.scan_stage_us,
-            "commit": self.commit_us,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum SourceBackedRefreshState {
     AdmissionPending,
@@ -41,83 +24,6 @@ impl SourceBackedRefreshState {
         matches!(self, Self::AdmissionPending | Self::Queued | Self::Running)
     }
 }
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum SourceBackedCurrentSourceProgressStage {
-    SourceFamilyCopy,
-    OnlineBackup,
-    LogicalFingerprint,
-    LogicalScan,
-}
-
-impl SourceBackedCurrentSourceProgressStage {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SourceFamilyCopy => "source_family_copy",
-            Self::OnlineBackup => "online_backup",
-            Self::LogicalFingerprint => "logical_fingerprint",
-            Self::LogicalScan => "logical_scan",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "source_family_copy" => Some(Self::SourceFamilyCopy),
-            "online_backup" => Some(Self::OnlineBackup),
-            "logical_fingerprint" => Some(Self::LogicalFingerprint),
-            "logical_scan" => Some(Self::LogicalScan),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct SourceBackedCurrentSourceProgress {
-    pub stage: SourceBackedCurrentSourceProgressStage,
-    pub snapshot_pages_completed: Option<u64>,
-    pub snapshot_pages_total: Option<u64>,
-    pub snapshot_bytes_completed: Option<u64>,
-    pub snapshot_bytes_total: Option<u64>,
-    pub logical_rows_scanned: Option<u64>,
-    pub logical_certified_bytes: Option<u64>,
-}
-
-impl SourceBackedCurrentSourceProgress {
-    pub fn to_json(self) -> Value {
-        compact_json(json!({
-            "stage": self.stage.as_str(),
-            "snapshot_pages_completed": self.snapshot_pages_completed,
-            "snapshot_pages_total": self.snapshot_pages_total,
-            "snapshot_bytes_completed": self.snapshot_bytes_completed,
-            "snapshot_bytes_total": self.snapshot_bytes_total,
-            "logical_rows_scanned": self.logical_rows_scanned,
-            "logical_certified_bytes": self.logical_certified_bytes,
-        }))
-    }
-
-    fn from_json(value: &Value) -> Result<Self> {
-        let fields = value.as_object().ok_or_else(|| {
-            anyhow!("daemon source refresh current-source progress is not an object")
-        })?;
-        let stage = fields
-            .get("stage")
-            .and_then(Value::as_str)
-            .and_then(SourceBackedCurrentSourceProgressStage::parse)
-            .ok_or_else(|| {
-                anyhow!("daemon source refresh current-source progress has an invalid stage")
-            })?;
-        Ok(Self {
-            stage,
-            snapshot_pages_completed: optional_progress_u64(fields, "snapshot_pages_completed")?,
-            snapshot_pages_total: optional_progress_u64(fields, "snapshot_pages_total")?,
-            snapshot_bytes_completed: optional_progress_u64(fields, "snapshot_bytes_completed")?,
-            snapshot_bytes_total: optional_progress_u64(fields, "snapshot_bytes_total")?,
-            logical_rows_scanned: optional_progress_u64(fields, "logical_rows_scanned")?,
-            logical_certified_bytes: optional_progress_u64(fields, "logical_certified_bytes")?,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SourceBackedRefreshProgress {
     pub phase: String,

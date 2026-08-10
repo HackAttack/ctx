@@ -48,6 +48,7 @@ WORKSPACE_RELEASE_PACKAGES = {
     "ctx-history-index-format",
     "ctx-history-index",
     "ctx-history-index-query",
+    "ctx-history-refresh-execution",
     "ctx-semantic-index",
 }
 NOTICE_BASENAMES = (

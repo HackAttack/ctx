@@ -1,7 +1,7 @@
-//! Registry-policy coverage owned by the refresh engine.
+//! Registry-policy coverage owned by the refresh execution crate.
 
-use super::unsupported_refresh::{discovery_fixture, run_report};
 use super::*;
+use super::{discovery_fixture, run_report};
 use sha2::{Digest, Sha256};
 
 fn registry_policy_source(

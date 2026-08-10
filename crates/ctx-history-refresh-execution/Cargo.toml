@@ -1,7 +1,7 @@
 [package]
-name = "ctx-history-refresh"
+name = "ctx-history-refresh-execution"
 version = "0.26.0"
-description = "Process-neutral Core refresh engine for ctx"
+description = "Physical source-refresh execution and publication for ctx"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,19 +11,17 @@ publish = false
 
 [features]
 default = []
-test-support = ["ctx-history-refresh-execution/test-support"]
+test-support = []
 
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-uuid.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-index = { path = "../ctx-history-index" }
-ctx-history-refresh-execution = { path = "../ctx-history-refresh-execution" }
 
 [dev-dependencies]
-ctx-history-refresh-execution = { path = "../ctx-history-refresh-execution", features = ["test-support"] }
+rusqlite.workspace = true
 tempfile.workspace = true
