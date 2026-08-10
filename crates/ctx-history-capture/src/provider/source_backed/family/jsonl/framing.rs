@@ -31,8 +31,8 @@ impl JsonlRecordFraming {
         )
     }
 
-    pub(crate) const fn codex() -> Self {
-        Self::new(MAX_PROVIDER_JSONL_LINE_BYTES, true)
+    pub(crate) const fn terminal_nul_padded(maximum_stored_bytes: usize) -> Self {
+        Self::new(maximum_stored_bytes, true)
     }
 }
 

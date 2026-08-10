@@ -19,7 +19,7 @@ pub(super) fn read_bounded_record(
         full_hasher,
         complete_hasher,
         maximum_bytes,
-        JsonlRecordFraming::codex(),
+        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
         source_changed_during_scan,
     )
 }
@@ -33,7 +33,7 @@ pub(super) fn read_bounded_record_unhashed(
         reader,
         storage,
         maximum_bytes,
-        JsonlRecordFraming::codex(),
+        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
         source_changed_during_scan,
     )
 }
