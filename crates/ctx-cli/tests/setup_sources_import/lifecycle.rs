@@ -1038,9 +1038,9 @@ fn machine_readable_setup_uses_v2_top_level_persistent_daemon_contract() {
         setup["daemon_autostart"]["reason"], "native_supervisor_unavailable",
         "{setup:#}"
     );
-    assert_eq!(setup["daemon_autostart"]["persistent"], false, "{setup:#}");
-    assert_eq!(
-        setup["daemon_autostart"]["limitation"]["code"], "continuous_refresh_unavailable",
+    assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
+    assert!(
+        setup["daemon_autostart"]["limitation"].is_null(),
         "{setup:#}"
     );
     assert_eq!(

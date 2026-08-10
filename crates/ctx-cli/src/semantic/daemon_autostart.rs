@@ -146,11 +146,7 @@ pub(super) fn maybe_autostart_daemon_inner(
     }
     let bounded_unsupervised = if daemon_autostart_suppression_reason().is_none() {
         match super::daemon_supervisor::ensure_daemon_supervisor(data_root) {
-            Ok(super::daemon_supervisor::DaemonSupervisorStart::Native) => false,
-            Ok(
-                super::daemon_supervisor::DaemonSupervisorStart::Fallback
-                | super::daemon_supervisor::DaemonSupervisorStart::ManagerUnavailable,
-            ) => true,
+            Ok(start) => autostart::daemon_supervisor_launch_policy(start).0,
             Err(_) => return,
         }
     } else {
@@ -184,6 +180,7 @@ pub(crate) struct DaemonHandoff {
 
 pub(crate) struct DaemonSetupHandoff {
     pub(crate) handoff: DaemonHandoff,
+    pub(crate) bounded_unsupervised: bool,
     pub(crate) requires_initial_refresh_wait: bool,
 }
 

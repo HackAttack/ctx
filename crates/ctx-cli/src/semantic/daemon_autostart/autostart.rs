@@ -132,6 +132,7 @@ pub(crate) fn autostart_daemon_for_setup_and_wait(
             Ok(handoff) => {
                 return Ok(DaemonSetupHandoff {
                     handoff,
+                    bounded_unsupervised,
                     requires_initial_refresh_wait,
                 })
             }

@@ -107,7 +107,7 @@ pub(crate) fn run_setup(
         daemon_autostart_json(
             daemon_autostart_requested,
             daemon_autostart_reason,
-            daemon_handoff.as_ref().map(|startup| &startup.handoff),
+            daemon_handoff.as_ref(),
             &supervisor,
         ),
     );
@@ -131,6 +131,9 @@ pub(crate) fn run_setup(
                 requested: daemon_autostart_requested,
                 reason: daemon_autostart_reason,
                 handoff: daemon_handoff.as_ref().map(|startup| &startup.handoff),
+                bounded_unsupervised: daemon_handoff
+                    .as_ref()
+                    .is_some_and(|startup| startup.bounded_unsupervised),
                 supervisor: &supervisor,
             },
         );
@@ -265,29 +268,32 @@ fn refresh_request_failure(
 fn daemon_autostart_json(
     requested: bool,
     reason: Option<&str>,
-    handoff: Option<&DaemonHandoff>,
+    startup: Option<&DaemonSetupHandoff>,
     supervisor: &Value,
 ) -> Value {
     let persistently_supervised = supervisor_persistently_verified(supervisor);
-    match handoff {
-        Some(handoff) => json!({
-            "status": if persistently_supervised { "verified" } else { "degraded" },
-            "reason": if persistently_supervised {
-                Value::Null
-            } else {
-                Value::String("native_supervisor_unavailable".to_owned())
-            },
-            "requested": requested,
-            "pid": handoff.pid,
-            "persistent": persistently_supervised,
-            "limitation": if persistently_supervised {
-                Value::Null
-            } else {
-                continuous_refresh_limitation(supervisor)
-            },
-            "supervisor": supervisor,
-            "status_command": "ctx daemon status",
-        }),
+    match startup {
+        Some(startup) => {
+            let persistent = !startup.bounded_unsupervised;
+            json!({
+                "status": if persistently_supervised { "verified" } else { "degraded" },
+                "reason": if persistently_supervised {
+                    Value::Null
+                } else {
+                    Value::String("native_supervisor_unavailable".to_owned())
+                },
+                "requested": requested,
+                "pid": startup.handoff.pid,
+                "persistent": persistent,
+                "limitation": if persistent {
+                    Value::Null
+                } else {
+                    continuous_refresh_limitation(supervisor)
+                },
+                "supervisor": supervisor,
+                "status_command": "ctx daemon status",
+            })
+        }
         None => json!({
             "status": if requested { "unavailable" } else { "not_requested" },
             "reason": reason.unwrap_or("not_requested"),
@@ -324,6 +330,7 @@ struct DaemonAutostartHuman<'a> {
     requested: bool,
     reason: Option<&'a str>,
     handoff: Option<&'a DaemonHandoff>,
+    bounded_unsupervised: bool,
     supervisor: &'a Value,
 }
 
@@ -401,7 +408,7 @@ fn render_setup_human(
     document.push_blank();
     document.append(section("History", fields(context, &history_fields)));
 
-    if daemon.handoff.is_some() && !supervisor_persistently_verified(daemon.supervisor) {
+    if daemon.handoff.is_some() && daemon.bounded_unsupervised {
         document.push_blank();
         document.append(outcome(
             context,
@@ -457,7 +464,10 @@ fn component_status(component: &Value) -> &str {
 fn daemon_human_status(daemon: &DaemonAutostartHuman<'_>) -> Option<String> {
     match daemon.handoff {
         Some(_) if supervisor_persistently_verified(daemon.supervisor) => None,
-        Some(_) => Some("temporary daemon (initial maintenance only)".to_owned()),
+        Some(_) if daemon.bounded_unsupervised => {
+            Some("temporary daemon (initial maintenance only)".to_owned())
+        }
+        Some(_) => Some("persistent daemon (automatic restart unavailable)".to_owned()),
         None if daemon.requested => {
             Some("startup was not verified; run ctx daemon status".to_owned())
         }
@@ -537,6 +547,7 @@ mod tests {
                 pid: 42,
                 heartbeat_at_ms: 1,
             },
+            bounded_unsupervised: true,
             requires_initial_refresh_wait: true,
         };
         assert!(setup_refresh_wait(false, Some(&startup)));
@@ -605,6 +616,7 @@ mod tests {
                 requested: false,
                 reason: None,
                 handoff: None,
+                bounded_unsupervised: false,
                 supervisor: &supervisor,
             },
         )
@@ -654,6 +666,7 @@ mod tests {
                 requested: false,
                 reason: None,
                 handoff: None,
+                bounded_unsupervised: false,
                 supervisor: &supervisor,
             },
         );
@@ -688,6 +701,7 @@ mod tests {
                     requested: true,
                     reason: None,
                     handoff: Some(&handoff),
+                    bounded_unsupervised: false,
                     supervisor: &supervisor,
                 },
             );
@@ -729,6 +743,7 @@ mod tests {
                     requested: false,
                     reason: Some("daemon_disabled"),
                     handoff: None,
+                    bounded_unsupervised: false,
                     supervisor: &supervisor,
                 },
             );
@@ -751,11 +766,15 @@ mod tests {
             "live_owner_verified": false,
             "limitation": "continuous refresh is unavailable because the systemd user manager is not operational",
         });
-        let handoff = DaemonHandoff {
-            pid: 42,
-            heartbeat_at_ms: 1,
+        let startup = DaemonSetupHandoff {
+            handoff: DaemonHandoff {
+                pid: 42,
+                heartbeat_at_ms: 1,
+            },
+            bounded_unsupervised: true,
+            requires_initial_refresh_wait: true,
         };
-        let autostart = daemon_autostart_json(true, None, Some(&handoff), &supervisor);
+        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
         assert_eq!(autostart["status"], "degraded");
         assert_eq!(autostart["persistent"], false);
         assert_eq!(
@@ -777,7 +796,8 @@ mod tests {
                 DaemonAutostartHuman {
                     requested: true,
                     reason: None,
-                    handoff: Some(&handoff),
+                    handoff: Some(&startup.handoff),
+                    bounded_unsupervised: true,
                     supervisor: &supervisor,
                 },
             );
@@ -787,6 +807,57 @@ mod tests {
             assert!(normalized.contains("Background temporary daemon (initial maintenance only)"));
             assert!(normalized.contains("! Continuous refresh is unavailable"));
             assert!(normalized.contains("run ctx setup --wait again to refresh later"));
+            assert_fits(&document, &context);
+        }
+    }
+
+    #[test]
+    fn setup_fallback_reports_a_persistent_daemon_without_a_bounded_limitation() {
+        let supervisor = json!({
+            "kind": "cli_self_heal",
+            "status": "fallback",
+            "registration_verified": false,
+            "live_owner_verified": false,
+            "limitation": "native per-user restart registration requires the hosted installer and the default data root",
+        });
+        let startup = DaemonSetupHandoff {
+            handoff: DaemonHandoff {
+                pid: 42,
+                heartbeat_at_ms: 1,
+            },
+            bounded_unsupervised: false,
+            requires_initial_refresh_wait: false,
+        };
+        let autostart = daemon_autostart_json(true, None, Some(&startup), &supervisor);
+        assert_eq!(autostart["status"], "degraded");
+        assert_eq!(autostart["persistent"], true);
+        assert!(autostart["limitation"].is_null());
+
+        for width in [32, 48, 80, 120] {
+            let context = context(width, ColorMode::Never);
+            let document = render_setup_human(
+                &context,
+                std::path::Path::new("/tmp/ctx"),
+                "ready",
+                &ready_source(),
+                &json!({"status": "published"}),
+                DaemonAutostartHuman {
+                    requested: true,
+                    reason: None,
+                    handoff: Some(&startup.handoff),
+                    bounded_unsupervised: false,
+                    supervisor: &supervisor,
+                },
+            );
+            let normalized = document
+                .render_plain()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                normalized.contains("Background persistent daemon (automatic restart unavailable)")
+            );
+            assert!(!normalized.contains("Continuous refresh is unavailable"));
             assert_fits(&document, &context);
         }
     }

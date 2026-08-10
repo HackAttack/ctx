@@ -58,6 +58,12 @@ artifacts are preserved when the unavailable manager cannot verify or remove
 them. Ownership, identity, integrity, fencing, and security failures remain
 errors rather than degraded limitations.
 
+An unmanaged install or custom data root instead uses the persistent
+CLI-self-healing fallback process. Its autostart status is `"degraded"` because
+automatic restart registration is unavailable, but `persistent` is `true` and
+it does not report the bounded `continuous_refresh_unavailable` limitation.
+The nested supervisor report uses status `"fallback"`.
+
 Setup does not perform a foreground provider import. `--wait` waits for the
 daemon-owned Core refresh; without it, setup requests a background Core
 refresh. When that first request finds zero sources and no prior publication,

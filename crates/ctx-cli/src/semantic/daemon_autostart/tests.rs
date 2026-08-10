@@ -500,6 +500,41 @@ fn unsupervised_autostart_child_has_a_finite_default_lifetime() {
 }
 
 #[test]
+fn persistent_fallback_autostart_child_has_no_idle_exit() {
+    struct RestoreIdleEnv(Option<std::ffi::OsString>);
+    impl Drop for RestoreIdleEnv {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => env::set_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", value),
+                None => env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"),
+            }
+        }
+    }
+
+    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _restore = RestoreIdleEnv(env::var_os("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"));
+    env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+    let temp = tempfile::tempdir().unwrap();
+    let launch = configured_daemon_autostart_command(
+        Path::new("ctx"),
+        temp.path(),
+        DaemonTriggerCommandArg::Import,
+        None,
+    )
+    .expect("normalized persistent fallback daemon launch");
+    let args = launch
+        .get_args()
+        .filter_map(std::ffi::OsStr::to_str)
+        .collect::<Vec<_>>();
+    assert!(
+        !args.contains(&"--idle-exit-seconds"),
+        "persistent fallback launch must not acquire the bounded manager-unavailable lifetime: {args:?}"
+    );
+}
+
+#[test]
 fn only_manager_unavailability_requires_the_initial_refresh_wait() {
     use super::super::daemon_supervisor::DaemonSupervisorStart;
 
