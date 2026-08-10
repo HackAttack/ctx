@@ -99,8 +99,11 @@ pub(crate) struct JsonlPhysicalStreamPosition {
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
     digest: JsonlPhysicalDigest,
+    incomplete_tail: bool,
+    exhausted: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct JsonlPhysicalStream {
     reader: BufReader<File>,
     frozen_length: u64,
@@ -225,12 +228,32 @@ impl JsonlPhysicalStream {
         &self.record_buffer[..record.stored_len]
     }
 
+    /// Transfers the bounded record scratch to a projector that needs mutable
+    /// access to its enclosing scanner while inspecting the current record.
+    /// The caller must return the allocation before reading another record.
+    pub(crate) fn take_record_buffer(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.record_buffer)
+    }
+
+    pub(crate) fn restore_record_buffer(&mut self, record_buffer: Vec<u8>) {
+        debug_assert!(self.record_buffer.is_empty());
+        self.record_buffer = record_buffer;
+    }
+
+    /// Drops retained record capacity before a prepared page crosses a worker
+    /// boundary. Providers that do not transfer pages keep the allocation.
+    pub(crate) fn release_record_buffer(&mut self) {
+        self.record_buffer = Vec::new();
+    }
+
     pub(crate) fn position(&self) -> JsonlPhysicalStreamPosition {
         JsonlPhysicalStreamPosition {
             offset: self.offset,
             next_physical_ordinal: self.next_physical_ordinal,
             complete_prefix_end: self.complete_prefix_end,
             digest: self.digest.clone(),
+            incomplete_tail: self.incomplete_tail,
+            exhausted: self.exhausted,
         }
     }
 
@@ -240,8 +263,8 @@ impl JsonlPhysicalStream {
         self.next_physical_ordinal = position.next_physical_ordinal;
         self.complete_prefix_end = position.complete_prefix_end;
         self.digest = position.digest;
-        self.incomplete_tail = false;
-        self.exhausted = false;
+        self.incomplete_tail = position.incomplete_tail;
+        self.exhausted = position.exhausted;
         Ok(())
     }
 

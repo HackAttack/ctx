@@ -1,11 +1,13 @@
 use super::super::rows::{build_event_row, tool_context_from_row};
 use super::*;
+#[cfg(test)]
+use crate::provider::source_backed::family::jsonl::read_bounded_record as read_shared_bounded_record;
 use crate::provider::source_backed::family::jsonl::{
-    read_bounded_record as read_shared_bounded_record,
     read_bounded_record_unhashed as read_shared_bounded_record_unhashed, retained_file_identity,
     JsonlBoundedRecordRead as BoundedRecordRead, JsonlFileIdentityPolicy, JsonlRecordFraming,
 };
 
+#[cfg(test)]
 pub(super) fn read_bounded_record(
     reader: &mut BufReader<File>,
     storage: &mut Vec<u8>,

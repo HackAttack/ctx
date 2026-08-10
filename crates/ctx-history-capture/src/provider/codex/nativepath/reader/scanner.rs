@@ -195,12 +195,9 @@ impl CodexNativeScanner {
             return Ok(Self {
                 source,
                 opened,
-                frozen_len: before.len,
                 before,
-                reader,
+                physical: None,
                 disposition: CodexParseDisposition::ObservationReplay,
-                offset: replay.complete_prefix_end,
-                raw_ordinal: replay.next_raw_ordinal,
                 owner: replay.owner.clone(),
                 tool_contexts: BTreeMap::new(),
                 tool_authorities: BTreeMap::new(),
@@ -208,9 +205,6 @@ impl CodexNativeScanner {
                 mcp_terminal_authority: CodexMcpTerminalAuthority::from_checkpoint(
                     proof.checkpoint.terminal_authority(),
                 ),
-                complete_hasher: Sha256::new(),
-                full_hasher: Sha256::new(),
-                record_buffer: Vec::new(),
                 incomplete_tail: None,
                 counters: replay.counters,
                 local_turn_started: proof.checkpoint.local_turn_started(),
@@ -276,7 +270,6 @@ impl CodexNativeScanner {
                         "terminal NUL padding is not an append boundary",
                     ));
                 }
-                reader.seek(SeekFrom::Start(proof.checkpoint.complete_prefix_end()))?;
                 (
                     CodexParseDisposition::AppendDelta,
                     Some(proof.checkpoint.owner.clone()),
@@ -295,21 +288,18 @@ impl CodexNativeScanner {
                     "checkpoint generation is neither an exact replay nor an append prefix",
                 ));
             }
-            (None, None) => {
-                reader.seek(SeekFrom::Start(0))?;
-                (
-                    CodexParseDisposition::FullGeneration,
-                    None,
-                    BTreeMap::new(),
-                    BTreeMap::new(),
-                    BTreeMap::new(),
-                    0,
-                    0,
-                    Sha256::new(),
-                    0,
-                    false,
-                )
-            }
+            (None, None) => (
+                CodexParseDisposition::FullGeneration,
+                None,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                0,
+                0,
+                Sha256::new(),
+                0,
+                false,
+            ),
             _ => {
                 return Err(CaptureError::SystemInvariant(
                     "Codex checkpoint validation state is incomplete",
@@ -317,23 +307,27 @@ impl CodexNativeScanner {
             }
         };
 
+        let physical = JsonlPhysicalStream::open(
+            opened.file().try_clone()?,
+            before.len,
+            offset,
+            raw_ordinal,
+            JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
+            JsonlPhysicalDigest::full_and_complete(complete_hasher.clone(), complete_hasher),
+            source_changed_during_scan,
+        )?;
+
         Ok(Self {
             source,
             opened,
-            frozen_len: before.len,
             before,
-            reader,
+            physical: Some(physical),
             disposition,
-            offset,
-            raw_ordinal,
             owner,
             tool_contexts,
             tool_authorities,
             continuations,
             mcp_terminal_authority: authority_preflight.authority,
-            complete_hasher: complete_hasher.clone(),
-            full_hasher: complete_hasher,
-            record_buffer: Vec::new(),
             incomplete_tail: None,
             counters: CodexScanCounters {
                 bytes_read: validation_bytes,
@@ -370,7 +364,10 @@ impl CodexNativeScanner {
                     || page.serialized_bytes > MAX_CODEX_PAGE_BYTES
                     || page.physical_records >= MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS
                     || self
-                        .offset
+                        .physical
+                        .as_ref()
+                        .map(JsonlPhysicalStream::offset)
+                        .unwrap_or(page.expected_frontier.complete_prefix_end)
                         .saturating_sub(page.expected_frontier.complete_prefix_end)
                         >= MAX_CODEX_SOURCE_BACKED_PAGE_PROGRESS_BYTES
             });
@@ -378,49 +375,34 @@ impl CodexNativeScanner {
                 return self.emit_active_core_page().map(Some);
             }
 
-            let position = self.position();
-            let record_start = self.offset;
-            let record_read = {
-                let reader = &mut self.reader;
-                let record_buffer = &mut self.record_buffer;
-                let full_hasher = &mut self.full_hasher;
-                let complete_hasher = &mut self.complete_hasher;
-                read_bounded_record(
-                    reader,
-                    record_buffer,
-                    full_hasher,
-                    complete_hasher,
-                    self.frozen_len.saturating_sub(self.offset),
-                )?
-            };
-            let Some(record_read) = record_read else {
+            let position = self.position()?;
+            let record = self
+                .physical
+                .as_mut()
+                .ok_or(CaptureError::SystemInvariant(
+                    "Codex NativePath lost its physical JSONL stream",
+                ))?
+                .next_record()?;
+            let Some(record) = record else {
                 self.exhausted = true;
                 self.queue_end_pages(true)?;
                 return Ok(self.take_ready_page());
             };
 
-            self.offset = self.offset.checked_add(record_read.byte_len).ok_or(
-                CaptureError::SystemInvariant("Codex source offset exceeds u64"),
-            )?;
-            self.counters.bytes_read = self
-                .counters
-                .bytes_read
-                .saturating_add(record_read.byte_len);
-            self.counters.peak_line_buffer_bytes = self
-                .counters
-                .peak_line_buffer_bytes
-                .max(record_read.stored_len);
+            self.counters.bytes_read = self.counters.bytes_read.saturating_add(record.byte_len());
+            self.counters.peak_line_buffer_bytes =
+                self.counters.peak_line_buffer_bytes.max(record.stored_len);
 
-            if !record_read.complete {
+            if !record.complete {
                 self.incomplete_tail = Some(CodexIncompleteTail {
-                    raw_ordinal: self.raw_ordinal,
-                    start_byte: record_start,
-                    byte_len: record_read.byte_len,
-                    sha256: record_read.sha256,
+                    raw_ordinal: record.physical_ordinal,
+                    start_byte: record.byte_start,
+                    byte_len: record.byte_len(),
+                    sha256: record.sha256,
                 });
                 self.counters.incomplete_records =
                     self.counters.incomplete_records.saturating_add(1);
-                if record_read.oversized {
+                if record.oversized {
                     self.counters.oversized_records =
                         self.counters.oversized_records.saturating_add(1);
                 }
@@ -430,22 +412,33 @@ impl CodexNativeScanner {
             }
 
             self.counters.complete_records = self.counters.complete_records.saturating_add(1);
-            let record_end = self.offset;
-            let mut projection = if record_read.terminal_nul_padding {
+            let mut projection = if record.terminal_nul_padding {
                 self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
                 CodexRecordProjection::default()
-            } else if record_read.oversized {
+            } else if record.oversized {
                 self.reject(true);
                 CodexRecordProjection::default()
             } else {
-                let record_buffer = std::mem::take(&mut self.record_buffer);
+                let record_buffer = self
+                    .physical
+                    .as_mut()
+                    .ok_or(CaptureError::SystemInvariant(
+                        "Codex NativePath lost its physical JSONL stream",
+                    ))?
+                    .take_record_buffer();
                 let result = self.process_record(
-                    &record_buffer[..record_read.stored_len],
-                    record_start,
-                    record_end,
-                    record_read.sha256,
+                    &record_buffer[..record.stored_len],
+                    record.physical_ordinal,
+                    record.byte_start,
+                    record.byte_end_exclusive,
+                    record.sha256,
                 );
-                self.record_buffer = record_buffer;
+                self.physical
+                    .as_mut()
+                    .ok_or(CaptureError::SystemInvariant(
+                        "Codex NativePath lost its physical JSONL stream",
+                    ))?
+                    .restore_record_buffer(record_buffer);
                 result?
             };
 
@@ -483,7 +476,6 @@ impl CodexNativeScanner {
             if let Some(mutation) = projection.context_mutation.take() {
                 self.apply_context_mutation(mutation);
             }
-            self.raw_ordinal = self.raw_ordinal.saturating_add(1);
             let page = self
                 .active_core_page
                 .as_mut()

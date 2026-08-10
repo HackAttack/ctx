@@ -139,27 +139,6 @@ impl JsonlRecordDigest for CompleteSha256<'_> {
     }
 }
 
-struct FullSha256<'a> {
-    full_hasher: &'a mut Sha256,
-}
-
-impl JsonlRecordDigest for FullSha256<'_> {
-    #[inline(always)]
-    fn update(&mut self, chunk: &[u8]) {
-        self.full_hasher.update(chunk);
-    }
-
-    #[inline(always)]
-    fn finish(self) -> [u8; 32] {
-        [0; 32]
-    }
-
-    #[inline(always)]
-    fn finish_incomplete(self) -> [u8; 32] {
-        [0; 32]
-    }
-}
-
 struct Unhashed;
 
 impl JsonlRecordDigest for Unhashed {
@@ -258,27 +237,6 @@ pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
         framing,
         source_changed,
         digest,
-    )
-}
-
-pub(crate) fn read_bounded_record_full_sha256(
-    reader: &mut BufReader<File>,
-    storage: &mut Vec<u8>,
-    full_hasher: &mut Sha256,
-    maximum_bytes: u64,
-    framing: JsonlRecordFraming,
-    source_changed: fn() -> CaptureError,
-) -> Result<Option<JsonlBoundedRecordRead>> {
-    if maximum_bytes == 0 {
-        return Ok(None);
-    }
-    read_bounded_record_with_digest(
-        reader,
-        storage,
-        maximum_bytes,
-        framing,
-        source_changed,
-        FullSha256 { full_hasher },
     )
 }
 

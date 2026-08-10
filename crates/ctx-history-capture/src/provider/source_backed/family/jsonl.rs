@@ -26,12 +26,11 @@ pub(crate) use checkpoint::{
 use framing::read_bounded_record_complete_sha256;
 pub(crate) use framing::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
-    read_bounded_record_full_sha256, read_bounded_record_unhashed, JsonlBoundedRecordRead,
-    JsonlRecordFraming,
+    read_bounded_record_unhashed, JsonlBoundedRecordRead, JsonlRecordFraming,
 };
 use identity::observe_metadata;
 pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
-pub(crate) use physical::{JsonlPhysicalDigest, JsonlPhysicalStream};
+pub(crate) use physical::{JsonlPhysicalDigest, JsonlPhysicalStream, JsonlPhysicalStreamPosition};
 use revalidation::hash_prefix;
 #[cfg(test)]
 pub(crate) use revalidation::{
