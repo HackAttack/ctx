@@ -1,0 +1,340 @@
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+};
+
+use sha2::{Digest, Sha256};
+
+use crate::{CaptureError, Result, MAX_PROVIDER_JSONL_LINE_BYTES};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JsonlRecordFraming {
+    maximum_stored_bytes: usize,
+    terminal_nul_padding: bool,
+}
+
+impl JsonlRecordFraming {
+    pub(crate) const fn ordinary() -> Self {
+        Self {
+            // Preserve the ordinary-family contract: a maximum-sized JSON
+            // value may be followed by CRLF. The common framer omits LF from
+            // storage, and the ordinary caller removes the optional CR.
+            maximum_stored_bytes: MAX_PROVIDER_JSONL_LINE_BYTES + 1,
+            terminal_nul_padding: false,
+        }
+    }
+
+    pub(crate) const fn codex() -> Self {
+        Self {
+            maximum_stored_bytes: MAX_PROVIDER_JSONL_LINE_BYTES,
+            terminal_nul_padding: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JsonlBoundedRecordRead {
+    pub(crate) complete: bool,
+    pub(crate) terminal_nul_padding: bool,
+    pub(crate) oversized: bool,
+    pub(crate) stored_len: usize,
+    pub(crate) byte_len: u64,
+    pub(crate) sha256: [u8; 32],
+}
+
+// Static dispatch gives each caller its exact digest policy without adding a
+// per-chunk branch to the scanner hot path.
+trait JsonlRecordDigest {
+    fn update(&mut self, chunk: &[u8]);
+    fn finish(self) -> [u8; 32];
+    fn finish_incomplete(self) -> [u8; 32];
+}
+
+struct FullAndCompleteSha256<'a> {
+    full_hasher: &'a mut Sha256,
+    complete_hasher: &'a mut Sha256,
+    complete_before_record: Sha256,
+    record_hasher: Sha256,
+}
+
+impl JsonlRecordDigest for FullAndCompleteSha256<'_> {
+    #[inline(always)]
+    fn update(&mut self, chunk: &[u8]) {
+        self.full_hasher.update(chunk);
+        self.complete_hasher.update(chunk);
+        self.record_hasher.update(chunk);
+    }
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        self.record_hasher.finalize().into()
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        *self.complete_hasher = self.complete_before_record;
+        self.record_hasher.finalize().into()
+    }
+}
+
+struct CompleteSha256<'a> {
+    complete_hasher: &'a mut Sha256,
+    complete_before_record: Sha256,
+    record_hasher: Sha256,
+}
+
+impl JsonlRecordDigest for CompleteSha256<'_> {
+    #[inline(always)]
+    fn update(&mut self, chunk: &[u8]) {
+        self.complete_hasher.update(chunk);
+        self.record_hasher.update(chunk);
+    }
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        self.record_hasher.finalize().into()
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        *self.complete_hasher = self.complete_before_record;
+        self.record_hasher.finalize().into()
+    }
+}
+
+struct FullSha256<'a> {
+    full_hasher: &'a mut Sha256,
+}
+
+impl JsonlRecordDigest for FullSha256<'_> {
+    #[inline(always)]
+    fn update(&mut self, chunk: &[u8]) {
+        self.full_hasher.update(chunk);
+    }
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        [0; 32]
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
+struct Unhashed;
+
+impl JsonlRecordDigest for Unhashed {
+    #[inline(always)]
+    fn update(&mut self, _chunk: &[u8]) {}
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        [0; 32]
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
+pub(crate) fn read_bounded_record(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    full_hasher: &mut Sha256,
+    complete_hasher: &mut Sha256,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    let digest = FullAndCompleteSha256 {
+        full_hasher,
+        complete_before_record: complete_hasher.clone(),
+        complete_hasher,
+        record_hasher: Sha256::new(),
+    };
+    read_bounded_record_with_digest(
+        reader,
+        storage,
+        maximum_bytes,
+        framing,
+        source_changed,
+        digest,
+    )
+}
+
+pub(crate) fn read_bounded_record_complete_sha256(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    complete_hasher: &mut Sha256,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    let digest = CompleteSha256 {
+        complete_before_record: complete_hasher.clone(),
+        complete_hasher,
+        record_hasher: Sha256::new(),
+    };
+    read_bounded_record_with_digest(
+        reader,
+        storage,
+        maximum_bytes,
+        framing,
+        source_changed,
+        digest,
+    )
+}
+
+pub(crate) fn read_bounded_record_full_sha256(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    full_hasher: &mut Sha256,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    read_bounded_record_with_digest(
+        reader,
+        storage,
+        maximum_bytes,
+        framing,
+        source_changed,
+        FullSha256 { full_hasher },
+    )
+}
+
+pub(crate) fn read_bounded_record_unhashed(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    read_bounded_record_with_digest(
+        reader,
+        storage,
+        maximum_bytes,
+        framing,
+        source_changed,
+        Unhashed,
+    )
+}
+
+fn read_bounded_record_with_digest<D: JsonlRecordDigest>(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+    mut digest: D,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    storage.clear();
+    let mut byte_len = 0_u64;
+    let mut oversized = false;
+    let mut all_nul = true;
+
+    loop {
+        let (consumed, complete) = {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                if byte_len == 0 {
+                    return Err(source_changed());
+                }
+                if framing.terminal_nul_padding && all_nul {
+                    return Ok(Some(JsonlBoundedRecordRead {
+                        complete: true,
+                        terminal_nul_padding: true,
+                        oversized,
+                        stored_len: storage.len(),
+                        byte_len,
+                        sha256: [0; 32],
+                    }));
+                }
+                return Ok(Some(JsonlBoundedRecordRead {
+                    complete: false,
+                    terminal_nul_padding: false,
+                    oversized,
+                    stored_len: storage.len(),
+                    byte_len,
+                    sha256: digest.finish_incomplete(),
+                }));
+            }
+
+            let remaining = maximum_bytes.saturating_sub(byte_len);
+            let bounded = usize::try_from(remaining.min(available.len() as u64))
+                .map_err(|_| CaptureError::SystemInvariant("JSONL record bound exceeds usize"))?;
+            let newline = available[..bounded].iter().position(|byte| *byte == b'\n');
+            let consumed = newline.map_or(bounded, |index| index + 1);
+            let chunk = &available[..consumed];
+            digest.update(chunk);
+            all_nul &= chunk.iter().all(|byte| *byte == 0);
+            byte_len =
+                byte_len
+                    .checked_add(u64::try_from(consumed).map_err(|_| {
+                        CaptureError::SystemInvariant("JSONL record chunk exceeds u64")
+                    })?)
+                    .ok_or(CaptureError::SystemInvariant(
+                        "JSONL record length exceeds u64",
+                    ))?;
+
+            let content_len = if newline.is_some() {
+                consumed.saturating_sub(1)
+            } else {
+                consumed
+            };
+            let remaining = framing.maximum_stored_bytes.saturating_sub(storage.len());
+            let copied = content_len.min(remaining);
+            storage.extend_from_slice(&chunk[..copied]);
+            if copied != content_len {
+                oversized = true;
+            }
+            if newline.is_none() && byte_len == maximum_bytes {
+                if framing.terminal_nul_padding && all_nul {
+                    return Ok(Some(JsonlBoundedRecordRead {
+                        complete: true,
+                        terminal_nul_padding: true,
+                        oversized,
+                        stored_len: storage.len(),
+                        byte_len,
+                        sha256: [0; 32],
+                    }));
+                }
+                return Ok(Some(JsonlBoundedRecordRead {
+                    complete: false,
+                    terminal_nul_padding: false,
+                    oversized,
+                    stored_len: storage.len(),
+                    byte_len,
+                    sha256: digest.finish_incomplete(),
+                }));
+            }
+            (consumed, newline.is_some())
+        };
+        reader.consume(consumed);
+        if complete {
+            return Ok(Some(JsonlBoundedRecordRead {
+                complete: true,
+                terminal_nul_padding: false,
+                oversized,
+                stored_len: storage.len(),
+                byte_len,
+                sha256: digest.finish(),
+            }));
+        }
+    }
+}

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -14,12 +14,18 @@ use crate::{
 };
 
 mod checkpoint;
+mod framing;
 mod identity;
 mod revalidation;
 mod route;
 
 pub(crate) use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+};
+use framing::read_bounded_record_complete_sha256;
+pub(crate) use framing::{
+    read_bounded_record, read_bounded_record_full_sha256, read_bounded_record_unhashed,
+    JsonlBoundedRecordRead, JsonlRecordFraming,
 };
 use identity::observe_metadata;
 use revalidation::hash_prefix;
@@ -824,77 +830,42 @@ fn read_bounded_line(
     if start >= frozen_length {
         return Ok(RawLine::EndOfFile);
     }
-    let mut total = 0_u64;
-    let mut oversized = false;
-    let mut record_hasher = Sha256::new();
-    loop {
-        let remaining = frozen_length.saturating_sub(start.saturating_add(total));
-        if remaining == 0 {
-            return Ok(RawLine::IncompleteTail);
-        }
-        let available = reader.fill_buf()?;
-        if available.is_empty() {
-            return Err(CaptureError::SourceChangedDuringCapture);
-        }
-        let available_len = usize::try_from(remaining.min(available.len() as u64))
-            .map_err(|_| CaptureError::SystemInvariant("JSONL read bound exceeds usize"))?;
-        let available = &available[..available_len];
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |index| index.saturating_add(1));
-        let chunk = &available[..take];
-        hasher.update(chunk);
-        record_hasher.update(chunk);
-        total = total.saturating_add(chunk.len() as u64);
-        if !oversized {
-            if bytes.len().saturating_add(chunk.len())
-                > MAX_PROVIDER_JSONL_LINE_BYTES.saturating_add(2)
-            {
-                oversized = true;
-                bytes.clear();
-            } else {
-                bytes.extend_from_slice(chunk);
-            }
-        }
-        let complete = chunk.last() == Some(&b'\n');
-        reader.consume(take);
-        if complete {
-            let end = start
-                .checked_add(total)
-                .ok_or(CaptureError::SystemInvariant(
-                    "JSONL byte offset overflowed",
-                ))?;
-            if oversized {
-                return Ok(RawLine::Oversized {
-                    end,
-                    record_digest: record_hasher.finalize().into(),
-                    wire_bytes: usize::try_from(total).unwrap_or(usize::MAX),
-                });
-            }
-            let record_digest = record_hasher.finalize().into();
-            let wire_bytes = bytes.len();
-            if bytes.last() == Some(&b'\n') {
-                bytes.pop();
-                if bytes.last() == Some(&b'\r') {
-                    bytes.pop();
-                }
-            }
-            if bytes.len() > MAX_PROVIDER_JSONL_LINE_BYTES {
-                bytes.clear();
-                return Ok(RawLine::Oversized {
-                    end,
-                    record_digest,
-                    wire_bytes,
-                });
-            }
-            return Ok(RawLine::Complete {
-                end,
-                record_digest,
-                wire_bytes,
-            });
-        }
+    let Some(record) = read_bounded_record_complete_sha256(
+        reader,
+        bytes,
+        hasher,
+        frozen_length.saturating_sub(start),
+        JsonlRecordFraming::ordinary(),
+        || CaptureError::SourceChangedDuringCapture,
+    )?
+    else {
+        return Ok(RawLine::EndOfFile);
+    };
+    if !record.complete {
+        return Ok(RawLine::IncompleteTail);
     }
+    let end = start
+        .checked_add(record.byte_len)
+        .ok_or(CaptureError::SystemInvariant(
+            "JSONL byte offset overflowed",
+        ))?;
+    let wire_bytes = usize::try_from(record.byte_len).unwrap_or(usize::MAX);
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    if record.oversized || bytes.len() > MAX_PROVIDER_JSONL_LINE_BYTES {
+        bytes.clear();
+        return Ok(RawLine::Oversized {
+            end,
+            record_digest: record.sha256,
+            wire_bytes,
+        });
+    }
+    Ok(RawLine::Complete {
+        end,
+        record_digest: record.sha256,
+        wire_bytes,
+    })
 }
 
 fn new_prefix_hasher() -> Sha256 {

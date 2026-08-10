@@ -1,66 +1,10 @@
 use super::super::rows::{build_event_row, tool_context_from_row};
 use super::*;
-
-pub(super) struct BoundedRecordRead {
-    pub(super) complete: bool,
-    pub(super) terminal_nul_padding: bool,
-    pub(super) oversized: bool,
-    pub(super) stored_len: usize,
-    pub(super) byte_len: u64,
-    pub(super) sha256: [u8; 32],
-}
-
-// Static dispatch gives scanning and authority preflight their exact digest
-// policies without adding a per-chunk branch to either path.
-trait BoundedRecordDigest {
-    fn update(&mut self, chunk: &[u8]);
-    fn finish(self) -> [u8; 32];
-    fn finish_incomplete(self) -> [u8; 32];
-}
-
-struct Sha256BoundedRecordDigest<'a> {
-    full_hasher: &'a mut Sha256,
-    complete_hasher: &'a mut Sha256,
-    complete_before_record: Sha256,
-    record_hasher: Sha256,
-}
-
-impl BoundedRecordDigest for Sha256BoundedRecordDigest<'_> {
-    #[inline(always)]
-    fn update(&mut self, chunk: &[u8]) {
-        self.full_hasher.update(chunk);
-        self.complete_hasher.update(chunk);
-        self.record_hasher.update(chunk);
-    }
-
-    #[inline(always)]
-    fn finish(self) -> [u8; 32] {
-        self.record_hasher.finalize().into()
-    }
-
-    #[inline(always)]
-    fn finish_incomplete(self) -> [u8; 32] {
-        *self.complete_hasher = self.complete_before_record;
-        self.record_hasher.finalize().into()
-    }
-}
-
-struct UnhashedBoundedRecordDigest;
-
-impl BoundedRecordDigest for UnhashedBoundedRecordDigest {
-    #[inline(always)]
-    fn update(&mut self, _chunk: &[u8]) {}
-
-    #[inline(always)]
-    fn finish(self) -> [u8; 32] {
-        [0; 32]
-    }
-
-    #[inline(always)]
-    fn finish_incomplete(self) -> [u8; 32] {
-        [0; 32]
-    }
-}
+use crate::provider::source_backed::family::jsonl::{
+    read_bounded_record as read_shared_bounded_record,
+    read_bounded_record_unhashed as read_shared_bounded_record_unhashed,
+    JsonlBoundedRecordRead as BoundedRecordRead, JsonlRecordFraming,
+};
 
 pub(super) fn read_bounded_record(
     reader: &mut BufReader<File>,
@@ -69,16 +13,15 @@ pub(super) fn read_bounded_record(
     complete_hasher: &mut Sha256,
     maximum_bytes: u64,
 ) -> Result<Option<BoundedRecordRead>> {
-    if maximum_bytes == 0 {
-        return Ok(None);
-    }
-    let digest = Sha256BoundedRecordDigest {
+    read_shared_bounded_record(
+        reader,
+        storage,
         full_hasher,
-        complete_before_record: complete_hasher.clone(),
         complete_hasher,
-        record_hasher: Sha256::new(),
-    };
-    read_bounded_record_with_digest(reader, storage, maximum_bytes, digest)
+        maximum_bytes,
+        JsonlRecordFraming::codex(),
+        source_changed_during_scan,
+    )
 }
 
 pub(super) fn read_bounded_record_unhashed(
@@ -86,112 +29,13 @@ pub(super) fn read_bounded_record_unhashed(
     storage: &mut Vec<u8>,
     maximum_bytes: u64,
 ) -> Result<Option<BoundedRecordRead>> {
-    if maximum_bytes == 0 {
-        return Ok(None);
-    }
-    read_bounded_record_with_digest(reader, storage, maximum_bytes, UnhashedBoundedRecordDigest)
-}
-
-fn read_bounded_record_with_digest<D: BoundedRecordDigest>(
-    reader: &mut BufReader<File>,
-    storage: &mut Vec<u8>,
-    maximum_bytes: u64,
-    mut digest: D,
-) -> Result<Option<BoundedRecordRead>> {
-    storage.clear();
-    let mut byte_len = 0_u64;
-    let mut oversized = false;
-    let mut all_nul = true;
-
-    loop {
-        let (consumed, complete) = {
-            let available = reader.fill_buf()?;
-            if available.is_empty() {
-                if byte_len == 0 {
-                    return Err(source_changed_during_scan());
-                }
-                if all_nul {
-                    return Ok(Some(BoundedRecordRead {
-                        complete: true,
-                        terminal_nul_padding: true,
-                        oversized,
-                        stored_len: storage.len(),
-                        byte_len,
-                        sha256: [0; 32],
-                    }));
-                }
-                return Ok(Some(BoundedRecordRead {
-                    complete: false,
-                    terminal_nul_padding: false,
-                    oversized,
-                    stored_len: storage.len(),
-                    byte_len,
-                    sha256: digest.finish_incomplete(),
-                }));
-            }
-
-            let remaining = maximum_bytes.saturating_sub(byte_len);
-            let bounded = usize::try_from(remaining.min(available.len() as u64))
-                .map_err(|_| CaptureError::SystemInvariant("Codex record bound exceeds usize"))?;
-            let newline = available[..bounded].iter().position(|byte| *byte == b'\n');
-            let consumed = newline.map_or(bounded, |index| index + 1);
-            let chunk = &available[..consumed];
-            digest.update(chunk);
-            all_nul &= chunk.iter().all(|byte| *byte == 0);
-            byte_len =
-                byte_len
-                    .checked_add(u64::try_from(consumed).map_err(|_| {
-                        CaptureError::SystemInvariant("Codex record chunk exceeds u64")
-                    })?)
-                    .ok_or(CaptureError::SystemInvariant(
-                        "Codex JSONL record length exceeds u64",
-                    ))?;
-
-            let content_len = if newline.is_some() {
-                consumed.saturating_sub(1)
-            } else {
-                consumed
-            };
-            let remaining = MAX_CODEX_RECORD_BYTES.saturating_sub(storage.len());
-            let copied = content_len.min(remaining);
-            storage.extend_from_slice(&chunk[..copied]);
-            if copied != content_len {
-                oversized = true;
-            }
-            if newline.is_none() && byte_len == maximum_bytes {
-                if all_nul {
-                    return Ok(Some(BoundedRecordRead {
-                        complete: true,
-                        terminal_nul_padding: true,
-                        oversized,
-                        stored_len: storage.len(),
-                        byte_len,
-                        sha256: [0; 32],
-                    }));
-                }
-                return Ok(Some(BoundedRecordRead {
-                    complete: false,
-                    terminal_nul_padding: false,
-                    oversized,
-                    stored_len: storage.len(),
-                    byte_len,
-                    sha256: digest.finish_incomplete(),
-                }));
-            }
-            (consumed, newline.is_some())
-        };
-        reader.consume(consumed);
-        if complete {
-            return Ok(Some(BoundedRecordRead {
-                complete: true,
-                terminal_nul_padding: false,
-                oversized,
-                stored_len: storage.len(),
-                byte_len,
-                sha256: digest.finish(),
-            }));
-        }
-    }
+    read_shared_bounded_record_unhashed(
+        reader,
+        storage,
+        maximum_bytes,
+        JsonlRecordFraming::codex(),
+        source_changed_during_scan,
+    )
 }
 
 #[cfg(test)]
