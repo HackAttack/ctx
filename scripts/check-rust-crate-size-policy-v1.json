@@ -2,7 +2,7 @@
   "schema_version": 1,
   "metric": "physical-rust-cloc-v1",
   "hard_limit": 20000,
-  "admission_sha": "446b39057b1c6a78a8cb329385b32cd40a38378a",
+  "admission_sha": "da4861f79faa8c1193f8bd6a11a9e958c946582f",
   "offenders": [
     {
       "package": "ctx",
