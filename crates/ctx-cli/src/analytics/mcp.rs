@@ -1,5 +1,9 @@
 use serde_json::{json, Map, Value};
 
+use crate::operation_descriptor::McpOperation;
+#[cfg(test)]
+use crate::operation_descriptor::McpOperationKind;
+
 use super::{count_bucket, CountBucket};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,55 +14,9 @@ pub(crate) enum McpMethodV1 {
 }
 
 impl McpMethodV1 {
-    fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::ToolsCall => "tools_call",
-            Self::Unknown => "unknown",
-            Self::Missing => "missing",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpToolV1 {
-    Status,
-    Sources,
-    Search,
-    ShowSession,
-    ShowEvent,
-    QueryEvents,
-    Blame,
-    ProStatus,
-    Unknown,
-    Missing,
-}
-
-impl McpToolV1 {
-    pub(crate) fn from_name(name: Option<&str>) -> Self {
-        match name {
-            Some("status") => Self::Status,
-            Some("sources") => Self::Sources,
-            Some("search") => Self::Search,
-            Some("show_session") => Self::ShowSession,
-            Some("show_event") => Self::ShowEvent,
-            Some("query_events") => Self::QueryEvents,
-            Some("blame") => Self::Blame,
-            Some("pro_status") => Self::ProStatus,
-            Some(_) => Self::Unknown,
-            None => Self::Missing,
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Status => "status",
-            Self::Sources => "sources",
-            Self::Search => "search",
-            Self::ShowSession => "show_session",
-            Self::ShowEvent => "show_event",
-            Self::QueryEvents => "query_events",
-            Self::Blame => "blame",
-            Self::ProStatus => "pro_status",
             Self::Unknown => "unknown",
             Self::Missing => "missing",
         }
@@ -153,98 +111,33 @@ impl McpResultMetadataV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct McpOperationV1 {
-    method: McpMethodV1,
-    tool: McpToolV1,
-    error_layer: Option<McpErrorLayerV1>,
-    error_class: Option<McpErrorClassV1>,
-    result: McpResultMetadataV1,
-}
-
-#[allow(dead_code, non_upper_case_globals)]
-impl McpOperationV1 {
-    // Compatibility constants keep shared serializer tests independent of MCP wiring details.
-    pub(crate) const Initialize: Self = Self::missing();
-    pub(crate) const ToolCall: Self = Self::tool_call(McpToolV1::Missing);
-    pub(crate) const Shutdown: Self = Self::missing();
-
-    pub(crate) const fn tool_call(tool: McpToolV1) -> Self {
-        Self {
-            method: McpMethodV1::ToolsCall,
-            tool,
-            error_layer: None,
-            error_class: None,
-            result: McpResultMetadataV1 {
-                result_count: None,
-                zero_result: None,
-                result_truncated: None,
-                events_truncated: None,
-                response_bound: None,
-            },
-        }
-    }
-
-    pub(crate) const fn missing() -> Self {
-        Self {
-            method: McpMethodV1::Missing,
-            tool: McpToolV1::Missing,
-            error_layer: None,
-            error_class: None,
-            result: McpResultMetadataV1 {
-                result_count: None,
-                zero_result: None,
-                result_truncated: None,
-                events_truncated: None,
-                response_bound: None,
-            },
-        }
-    }
-
-    pub(crate) fn unknown_method() -> Self {
-        Self {
-            method: McpMethodV1::Unknown,
-            tool: McpToolV1::Unknown,
-            ..Self::missing()
-        }
-    }
-
-    pub(crate) fn with_error(mut self, layer: McpErrorLayerV1, class: McpErrorClassV1) -> Self {
-        self.error_layer = Some(layer);
-        self.error_class = Some(class);
-        self
-    }
-
-    pub(crate) fn with_result(mut self, result: McpResultMetadataV1) -> Self {
-        self.result = result;
-        self
-    }
-
+impl McpOperation {
     pub(crate) fn name(&self) -> &'static str {
-        self.tool.as_str()
+        self.kind().tool_name()
     }
 
     pub(crate) fn insert_properties(&self, properties: &mut Map<String, Value>) {
-        properties.insert("method".to_owned(), json!(self.method.as_str()));
-        properties.insert("tool".to_owned(), json!(self.tool.as_str()));
+        properties.insert("method".to_owned(), json!(self.method().as_str()));
+        properties.insert("tool".to_owned(), json!(self.kind().tool_name()));
         insert_optional_enum(
             properties,
             "error_layer",
-            self.error_layer.map(McpErrorLayerV1::as_str),
+            self.error_layer().map(McpErrorLayerV1::as_str),
         );
         insert_optional_enum(
             properties,
             "error_class",
-            self.error_class.map(McpErrorClassV1::as_str),
+            self.error_class().map(McpErrorClassV1::as_str),
         );
-        insert_optional_bucket(properties, "result_count_bucket", self.result.result_count);
-        insert_optional_bool(properties, "zero_result", self.result.zero_result);
-        insert_optional_bool(properties, "result_truncated", self.result.result_truncated);
-        insert_optional_bool(properties, "events_truncated", self.result.events_truncated);
+        let result = self.result();
+        insert_optional_bucket(properties, "result_count_bucket", result.result_count);
+        insert_optional_bool(properties, "zero_result", result.zero_result);
+        insert_optional_bool(properties, "result_truncated", result.result_truncated);
+        insert_optional_bool(properties, "events_truncated", result.events_truncated);
         insert_optional_enum(
             properties,
             "response_bound",
-            self.result.response_bound.map(McpResponseBoundV1::as_str),
+            result.response_bound.map(McpResponseBoundV1::as_str),
         );
     }
 }
@@ -442,7 +335,7 @@ mod tests {
 
     #[test]
     fn tool_names_and_properties_are_closed_and_content_free() {
-        let operation = McpOperationV1::tool_call(McpToolV1::Search)
+        let operation = McpOperation::tool_call(McpOperationKind::Search)
             .with_result(McpResultMetadataV1::default().with_result_count(0))
             .with_error(McpErrorLayerV1::Tool, McpErrorClassV1::ToolFailure);
         let mut properties = Map::new();
@@ -471,8 +364,11 @@ mod tests {
     #[test]
     fn unknown_tool_names_collapse_without_preserving_input() {
         let sensitive = "SELECT secret FROM private_table WHERE token = 'raw'";
-        assert_eq!(McpToolV1::from_name(Some(sensitive)), McpToolV1::Unknown);
-        assert_eq!(McpToolV1::Unknown.as_str(), "unknown");
+        assert_eq!(
+            McpOperationKind::from_tool_name(Some(sensitive)),
+            McpOperationKind::Unknown
+        );
+        assert_eq!(McpOperationKind::Unknown.tool_name(), "unknown");
     }
 
     #[test]

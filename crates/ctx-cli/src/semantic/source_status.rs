@@ -14,7 +14,7 @@ use crate::commands::import::load_explicit_source_catalog_authority;
 use crate::{compact_json, config::AppConfig};
 
 use super::paths_status::{
-    daemon_core_refresh_job_path, daemon_jobs_path, daemon_report_with_disabled_status,
+    daemon_core_refresh_job_path, daemon_jobs_path, daemon_report_with_config,
     daemon_semantic_job_path, read_daemon_job_status,
 };
 use super::source_backed_refresh_coordinator::verified_generation_is_query_ready;
@@ -92,7 +92,7 @@ fn source_epoch_status_report_with_pro_query(
     let initialized = admitted_index.is_some();
     let generation_id = index.as_ref().map(|index| index.generation_id().to_owned());
     let admitted_generation_id = admitted_index.map(|index| index.generation_id().to_owned());
-    let daemon = source_daemon_report(data_root);
+    let daemon = source_daemon_report(data_root, config);
     let catalog = catalog_report(admitted_generation_id.as_deref(), admitted_index);
     let mut semantic = semantic_report(data_root, config, admitted_index);
     attach_catch_up_status(
@@ -145,8 +145,8 @@ fn attach_catch_up_status(report: &mut Value, status: Option<Value>) {
     }
 }
 
-fn source_daemon_report(data_root: &Path) -> Value {
-    let mut daemon = daemon_report_with_disabled_status(data_root, true);
+fn source_daemon_report(data_root: &Path, config: &AppConfig) -> Value {
+    let mut daemon = daemon_report_with_config(data_root, true, config);
     if let Some(jobs) = daemon.get_mut("jobs").and_then(Value::as_object_mut) {
         jobs.retain(|name, _| matches!(name.as_str(), "core_refresh" | "semantic_index"));
     }

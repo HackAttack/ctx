@@ -1,5 +1,6 @@
 mod hydration;
 mod query;
+mod semantic_port;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,10 +25,9 @@ use crate::{
     local_usage::{CliUsage, ResultObservationAction, SearchContextObservation},
     output::{print_json, JsonOutputFormat},
     semantic::{
-        coordinate_source_backed_refresh, semantic_query_service_supported,
-        PinnedSourceBackedGeneration, SemanticNotReady, SemanticQueryAdapter,
-        SourceBackedRefreshDaemonUnavailable, SourceBackedRefreshMode,
-        SourceBackedRefreshObservation,
+        coordinate_source_backed_refresh, wait_for_daemon_query_service,
+        PinnedSourceBackedGeneration, SourceBackedRefreshDaemonUnavailable,
+        SourceBackedRefreshMode, SourceBackedRefreshObservation,
     },
     ui::{
         canonical_human_output_bytes, diagnostic, Action, Diagnostic, DiagnosticLevel, Document,
@@ -55,12 +55,19 @@ pub(super) use hydration::{
     SearchPresentationRetentionBudgetExceeded, SEARCH_PRESENTATION_HYDRATION_BUDGET,
     SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES,
 };
-#[cfg(test)]
-pub(super) use query::index_search_filters;
 use query::index_search_filters_with_refs;
+pub(super) use query::NormalizedSearchQuery;
 pub(crate) use query::SourceSearchRequest;
-use query::{normalize_search_request, unsupported_semantic_scope, validate_search_request};
-pub(super) use query::{resolve_source_search_backend, NormalizedSearchQuery};
+#[cfg(test)]
+pub(super) use query::{index_search_filters, resolve_source_search_backend};
+use query::{
+    normalize_search_request, resolve_source_search_backend_with_port, unsupported_semantic_scope,
+    validate_search_request,
+};
+pub(crate) use semantic_port::{
+    HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
+    SemanticCapability,
+};
 
 const MAX_SESSION_DIVERSITY_CANDIDATES: usize = 64 * 1024;
 const MIN_CANDIDATE_BATCH: usize = 256;
@@ -71,6 +78,144 @@ pub(super) const MISSING_INDEX_ERROR: &str =
     "the Core index does not exist; retry with daemon refresh enabled";
 const QUEUED_WITHOUT_GENERATION_ERROR: &str =
     "daemon source refresh was queued but no published generation exists; retry with --refresh wait";
+
+#[derive(Debug)]
+pub(super) enum SourceSearchFailure {
+    Semantic(HistorySemanticError),
+    SourceUnavailable,
+    GenerationChanged,
+    GenerationAuthority(ctx_history_refresh::GenerationQueryAuthorityError),
+    Other(anyhow::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum McpSearchError {
+    #[error("source-backed semantic search is not ready ({code}): {detail}")]
+    SemanticNotReady {
+        code: &'static str,
+        detail: String,
+        retryable: bool,
+    },
+    #[error("{detail}")]
+    SemanticFailed { detail: String },
+    #[error("source_unavailable")]
+    SourceUnavailable,
+    #[error(
+        "History changed while ctx was opening the searchable generation. Retry the same request."
+    )]
+    GenerationChanged,
+    #[error(transparent)]
+    GenerationAuthority(ctx_history_refresh::GenerationQueryAuthorityError),
+    #[error("{detail}")]
+    Application { detail: String },
+}
+
+impl SourceSearchFailure {
+    pub(super) fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            Self::Semantic(error) => semantic_error_into_anyhow(error),
+            Self::SourceUnavailable => {
+                anyhow::Error::new(ctx_history_refresh::MissingActiveGeneration)
+            }
+            Self::GenerationChanged => {
+                anyhow::Error::new(ctx_history_index::IndexError::ConcurrentGenerationChange)
+            }
+            Self::GenerationAuthority(error) => anyhow::Error::new(error),
+            Self::Other(error) => error,
+        }
+    }
+
+    fn into_mcp(self) -> McpSearchError {
+        match self {
+            Self::Semantic(HistorySemanticError::NotReady {
+                code,
+                detail,
+                retryable,
+            }) => McpSearchError::SemanticNotReady {
+                code,
+                detail,
+                retryable,
+            },
+            Self::Semantic(HistorySemanticError::Failed { detail }) => {
+                McpSearchError::SemanticFailed { detail }
+            }
+            Self::SourceUnavailable => McpSearchError::SourceUnavailable,
+            Self::GenerationChanged => McpSearchError::GenerationChanged,
+            Self::GenerationAuthority(error) => McpSearchError::GenerationAuthority(error),
+            Self::Other(error) => McpSearchError::Application {
+                detail: error.to_string(),
+            },
+        }
+    }
+}
+
+fn semantic_error_into_anyhow(error: HistorySemanticError) -> anyhow::Error {
+    match error {
+        HistorySemanticError::NotReady { code, detail, .. } => {
+            anyhow::Error::new(crate::semantic::SemanticNotReady::new(code, detail))
+        }
+        HistorySemanticError::Failed { detail } => anyhow::anyhow!(detail),
+    }
+}
+
+impl std::fmt::Display for SourceSearchFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Semantic(error) => std::fmt::Display::fmt(error, formatter),
+            Self::SourceUnavailable => std::fmt::Display::fmt(
+                &ctx_history_refresh::MissingActiveGeneration,
+                formatter,
+            ),
+            Self::GenerationChanged => formatter.write_str(
+                "History changed while ctx was opening the searchable generation. Retry the same request.",
+            ),
+            Self::GenerationAuthority(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Other(error) => std::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for SourceSearchFailure {}
+
+impl From<HistorySemanticError> for SourceSearchFailure {
+    fn from(error: HistorySemanticError) -> Self {
+        Self::Semantic(error)
+    }
+}
+
+impl From<anyhow::Error> for SourceSearchFailure {
+    fn from(error: anyhow::Error) -> Self {
+        let error = match error.downcast::<ctx_history_refresh::MissingActiveGeneration>() {
+            Ok(_) => return Self::SourceUnavailable,
+            Err(error) => error,
+        };
+        let error = match error.downcast::<ctx_history_index::IndexError>() {
+            Ok(error) => return Self::from(error),
+            Err(error) => error,
+        };
+        match error.downcast::<ctx_history_refresh::GenerationQueryAuthorityError>() {
+            Ok(error) => Self::GenerationAuthority(error),
+            Err(error) => Self::Other(error),
+        }
+    }
+}
+
+impl From<std::io::Error> for SourceSearchFailure {
+    fn from(error: std::io::Error) -> Self {
+        Self::Other(anyhow::Error::new(error))
+    }
+}
+
+impl From<ctx_history_index::IndexError> for SourceSearchFailure {
+    fn from(error: ctx_history_index::IndexError) -> Self {
+        match error {
+            ctx_history_index::IndexError::ConcurrentGenerationChange => Self::GenerationChanged,
+            other => Self::Other(anyhow::Error::new(other)),
+        }
+    }
+}
+
+type SourceSearchResult<T> = std::result::Result<T, SourceSearchFailure>;
 
 #[derive(Debug)]
 pub(super) struct SearchCollection {
@@ -169,21 +314,32 @@ pub(crate) fn run_search(
     ui: &mut Ui,
 ) -> Result<()> {
     let human_output = args.format != JsonOutputFormat::Json;
-    let result = run_search_inner(args, data_root.clone(), telemetry, local_usage, ui);
+    let semantic_port = crate::semantic::SemanticQueryAdapter::new(&data_root);
+    let result = run_search_inner(
+        args,
+        data_root.clone(),
+        telemetry,
+        local_usage,
+        ui,
+        &semantic_port,
+    )
+    .map_err(SourceSearchFailure::into_anyhow);
     render_search_error(result, human_output, &data_root, ui)
 }
 
-fn run_search_inner(
+fn run_search_inner<P: HistorySemanticPort>(
     args: SearchArgs,
     data_root: PathBuf,
     telemetry: &mut SearchTelemetry,
     local_usage: &mut CliUsage,
     ui: &mut Ui,
-) -> Result<()> {
+    semantic_port: &P,
+) -> SourceSearchResult<()> {
     let config = config::AppConfig::load(&data_root)?;
     let mut request = SourceSearchRequest::from(&args);
     normalize_search_request(&mut request)?;
-    let requested_backend = resolve_source_search_backend(&request, &config)?;
+    let requested_backend =
+        resolve_source_search_backend_with_port(&request, &config, semantic_port)?;
     request.backend = Some(requested_backend);
     request.semantic_enabled = config.semantic_search_enabled();
     request.semantic_daemon_enabled = config.daemon.enabled;
@@ -191,7 +347,7 @@ fn run_search_inner(
     let json_output = args.format == JsonOutputFormat::Json;
     if request.refresh == RefreshArg::Background
         && request.semantic_enabled
-        && semantic_query_service_supported()
+        && semantic_port.capability() == SemanticCapability::Available
         && matches!(
             requested_backend,
             SearchBackendArg::Semantic | SearchBackendArg::Hybrid
@@ -199,7 +355,7 @@ fn run_search_inner(
         && unsupported_semantic_scope(&request).is_none()
         && !(requested_backend == SearchBackendArg::Hybrid && semantic_weight == 0.0)
     {
-        crate::semantic::wait_for_daemon_query_service(&data_root, Duration::from_secs(3));
+        wait_for_daemon_query_service(&data_root, Duration::from_secs(3));
     }
     let refresh_started = Instant::now();
     let refresh = refresh_for_search(&request, &data_root)?;
@@ -208,7 +364,13 @@ fn run_search_inner(
 
     let query_started = Instant::now();
     let (value, collection, index, refresh_status, refresh_source_count) =
-        search_pinned_generation(&request, &data_root, semantic_weight, refresh)?;
+        search_pinned_generation(
+            &request,
+            &data_root,
+            semantic_weight,
+            refresh,
+            semantic_port,
+        )?;
     if !json_output {
         if let Some(fallback) = collection.semantic_fallback.as_ref() {
             let warning = render_semantic_fallback_warning(ui.stderr_context(), fallback);
@@ -348,23 +510,47 @@ pub(super) fn render_semantic_fallback_warning(
 pub(crate) fn mcp_search(
     request: SourceSearchRequest,
     data_root: &Path,
-) -> Result<(Value, SearchContextObservation)> {
-    mcp_search_with_compact(request, data_root).map(|(value, observation, _)| (value, observation))
+) -> std::result::Result<(Value, SearchContextObservation), McpSearchError> {
+    let config = config::AppConfig::load(data_root)
+        .map_err(|error| SourceSearchFailure::from(error).into_mcp())?;
+    mcp_search_with_compact(request, data_root, &config)
+        .map(|(value, observation, _)| (value, observation))
 }
 
 pub(crate) fn mcp_search_with_compact(
     mut request: SourceSearchRequest,
     data_root: &Path,
-) -> Result<(Value, SearchContextObservation, Value)> {
-    normalize_search_request(&mut request)?;
-    let config = config::AppConfig::load(data_root)?;
-    request.backend = Some(resolve_source_search_backend(&request, &config)?);
+    config: &config::AppConfig,
+) -> std::result::Result<(Value, SearchContextObservation, Value), McpSearchError> {
+    normalize_mcp_search_request(&mut request)?;
+    let semantic_port = crate::semantic::SemanticQueryAdapter::new(data_root);
+    mcp_search_inner(request, data_root, config, &semantic_port)
+        .map_err(SourceSearchFailure::into_mcp)
+}
+
+pub(crate) fn normalize_mcp_search_request(
+    request: &mut SourceSearchRequest,
+) -> std::result::Result<(), McpSearchError> {
+    normalize_search_request(request).map_err(|error| SourceSearchFailure::from(error).into_mcp())
+}
+
+fn mcp_search_inner<P: HistorySemanticPort>(
+    mut request: SourceSearchRequest,
+    data_root: &Path,
+    config: &config::AppConfig,
+    semantic_port: &P,
+) -> SourceSearchResult<(Value, SearchContextObservation, Value)> {
+    request.backend = Some(resolve_source_search_backend_with_port(
+        &request,
+        config,
+        semantic_port,
+    )?);
     request.semantic_enabled = config.semantic_search_enabled();
     request.semantic_daemon_enabled = config.daemon.enabled;
     let semantic_weight = request.semantic_weight;
     let refresh = refresh_for_search(&request, data_root)?;
     let (value, collection, index, _, _) =
-        search_pinned_generation(&request, data_root, semantic_weight, refresh)?;
+        search_pinned_generation(&request, data_root, semantic_weight, refresh, semantic_port)?;
     let observation = if config.local_usage.enabled {
         search_context_observation(&value, &collection, &index)
     } else {
@@ -375,10 +561,12 @@ pub(crate) fn mcp_search_with_compact(
     Ok((value, observation, compact_value))
 }
 
-pub(crate) fn validate_explicit_semantic_scope(request: &SourceSearchRequest) -> Result<()> {
+pub(crate) fn validate_explicit_semantic_scope(
+    request: &SourceSearchRequest,
+) -> std::result::Result<(), McpSearchError> {
     if request.backend == Some(SearchBackendArg::Semantic) {
         if let Some(not_ready) = unsupported_semantic_scope(request) {
-            return Err(anyhow::Error::new(not_ready));
+            return Err(SourceSearchFailure::Semantic(not_ready).into_mcp());
         }
     }
     Ok(())
@@ -430,7 +618,7 @@ pub(super) fn search_context_observation(
 pub(super) fn refresh_for_search(
     request: &SourceSearchRequest,
     data_root: &Path,
-) -> Result<RefreshOutcome> {
+) -> SourceSearchResult<RefreshOutcome> {
     refresh_for_search_with(request, data_root, coordinate_source_backed_refresh)
 }
 
@@ -438,7 +626,7 @@ pub(super) fn refresh_for_search_with<Coordinate>(
     request: &SourceSearchRequest,
     data_root: &Path,
     coordinate: Coordinate,
-) -> Result<RefreshOutcome>
+) -> SourceSearchResult<RefreshOutcome>
 where
     Coordinate: FnOnce(&Path, SourceBackedRefreshMode) -> Result<SourceBackedRefreshObservation>,
 {
@@ -452,23 +640,23 @@ where
             // R1 authority error instead of replacing it with refresh state.
             if let Err(authority_error) = crate::semantic::pin_active_verified_generation(data_root)
             {
-                if authority_error
-                    .downcast_ref::<ctx_history_refresh::GenerationQueryAuthorityError>()
-                    .is_some()
+                if let Ok(authority_error) =
+                    authority_error.downcast::<ctx_history_refresh::GenerationQueryAuthorityError>()
                 {
-                    return Err(authority_error);
+                    return Err(SourceSearchFailure::GenerationAuthority(authority_error));
                 }
             }
-            return Err(error);
+            return Err(SourceSearchFailure::from(error));
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(SourceSearchFailure::from(error)),
     };
     if observation.mode != mode {
         return Err(anyhow!(
             "source-backed refresh coordinator returned mode {:?} for requested mode {:?}",
             observation.mode,
             mode
-        ));
+        )
+        .into());
     }
     let status = match mode {
         SourceBackedRefreshMode::Off => "existing_generation",
@@ -491,28 +679,31 @@ pub(super) fn source_backed_refresh_mode(refresh: RefreshArg) -> SourceBackedRef
     }
 }
 
-fn search_pinned_generation(
+fn search_pinned_generation<P: HistorySemanticPort>(
     request: &SourceSearchRequest,
     data_root: &Path,
     semantic_weight: f32,
     refresh: RefreshOutcome,
-) -> Result<(Value, SearchCollection, VerifiedIndex, &'static str, usize)> {
+    semantic_port: &P,
+) -> SourceSearchResult<(Value, SearchCollection, VerifiedIndex, &'static str, usize)> {
     let RefreshOutcome {
         pin,
         status,
         source_count,
     } = refresh;
-    let (value, collection, index) = search_existing_generation(
+    let (value, collection, index) = search_existing_generation_with_port(
         request,
         pin.into_index(),
         data_root,
         semantic_weight,
         status,
         source_count,
+        semantic_port,
     )?;
     Ok((value, collection, index, status, source_count))
 }
 
+#[cfg(test)]
 pub(super) fn search_existing_generation(
     request: &SourceSearchRequest,
     index: VerifiedIndex,
@@ -521,6 +712,27 @@ pub(super) fn search_existing_generation(
     refresh_status: &str,
     refresh_source_count: usize,
 ) -> Result<(Value, SearchCollection, VerifiedIndex)> {
+    search_existing_generation_with_port(
+        request,
+        index,
+        data_root,
+        semantic_weight,
+        refresh_status,
+        refresh_source_count,
+        &crate::semantic::SemanticQueryAdapter::new(data_root),
+    )
+    .map_err(SourceSearchFailure::into_anyhow)
+}
+
+fn search_existing_generation_with_port<P: HistorySemanticPort>(
+    request: &SourceSearchRequest,
+    index: VerifiedIndex,
+    data_root: &Path,
+    semantic_weight: f32,
+    refresh_status: &str,
+    refresh_source_count: usize,
+    semantic_port: &P,
+) -> SourceSearchResult<(Value, SearchCollection, VerifiedIndex)> {
     validate_search_request(request)?;
     let input_references = CompactPresentation::open_if_needed(
         &index,
@@ -537,8 +749,14 @@ pub(super) fn search_existing_generation(
         .unwrap_or(pinned_references);
     let filters = index_search_filters_with_refs(request, &index, &input_resolver)?;
     let query_started = Instant::now();
-    let collection =
-        collect_search_hits_with_backend(request, &index, data_root, semantic_weight, &filters)?;
+    let collection = collect_search_hits_with_port(
+        request,
+        &index,
+        data_root,
+        semantic_weight,
+        &filters,
+        semantic_port,
+    )?;
     let query_duration = query_started.elapsed();
     let presentations = presentations_for_search_hits(
         &index,
@@ -572,6 +790,7 @@ pub(super) fn search_existing_generation(
     Ok((value, collection, index))
 }
 
+#[cfg(test)]
 pub(super) fn collect_search_hits_with_backend(
     request: &SourceSearchRequest,
     index: &VerifiedIndex,
@@ -579,19 +798,59 @@ pub(super) fn collect_search_hits_with_backend(
     semantic_weight: f32,
     filters: &EventSearchFilters,
 ) -> Result<SearchCollection> {
-    let mut semantic_query = SemanticQueryAdapter::default();
-    collect_search_hits_with_backend_using(
+    collect_search_hits_with_port(
         request,
         index,
         data_root,
         semantic_weight,
         filters,
-        |index, data_root, query, filters, candidate_limit| {
-            semantic_query.search(index, data_root, query, filters, candidate_limit)
-        },
+        &crate::semantic::SemanticQueryAdapter::new(data_root),
     )
+    .map_err(SourceSearchFailure::into_anyhow)
 }
 
+fn collect_search_hits_with_port<P: HistorySemanticPort>(
+    request: &SourceSearchRequest,
+    index: &VerifiedIndex,
+    _data_root: &Path,
+    semantic_weight: f32,
+    filters: &EventSearchFilters,
+    semantic_port: &P,
+) -> SourceSearchResult<SearchCollection> {
+    let prepared = prepare_semantic_search(request, index, semantic_weight, filters)?;
+    let (requested_backend, normalized_query) = match prepared {
+        PreparedSemanticSearch::Complete(collection) => return Ok(collection),
+        PreparedSemanticSearch::Query {
+            requested_backend,
+            normalized_query,
+        } => (requested_backend, normalized_query),
+    };
+
+    match semantic_port.begin_query(index) {
+        Ok(mut semantic_query) => collect_prepared_semantic_search(
+            request,
+            index,
+            semantic_weight,
+            filters,
+            requested_backend,
+            normalized_query,
+            |query, filters, candidate_limit| {
+                semantic_query.candidates(query, filters, candidate_limit)
+            },
+        ),
+        Err(error) => collect_prepared_semantic_search(
+            request,
+            index,
+            semantic_weight,
+            filters,
+            requested_backend,
+            normalized_query,
+            |_, _, _| Err(error.clone()),
+        ),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn collect_search_hits_with_backend_using<SemanticSearch>(
     request: &SourceSearchRequest,
     index: &VerifiedIndex,
@@ -609,11 +868,51 @@ where
         usize,
     ) -> Result<(Vec<EventSearchCandidate>, Value)>,
 {
+    let prepared = prepare_semantic_search(request, index, semantic_weight, filters)?;
+    let (requested_backend, normalized_query) = match prepared {
+        PreparedSemanticSearch::Complete(collection) => return Ok(collection),
+        PreparedSemanticSearch::Query {
+            requested_backend,
+            normalized_query,
+        } => (requested_backend, normalized_query),
+    };
+    let mut semantic_search = semantic_search;
+    collect_prepared_semantic_search(
+        request,
+        index,
+        semantic_weight,
+        filters,
+        requested_backend,
+        normalized_query,
+        |query, filters, candidate_limit| {
+            semantic_search(index, data_root, query, filters, candidate_limit)
+                .map(|(candidates, diagnostics)| HistorySemanticBatch {
+                    candidates,
+                    diagnostics,
+                })
+                .map_err(|error| HistorySemanticError::failed(format!("{error:#}")))
+        },
+    )
+    .map_err(SourceSearchFailure::into_anyhow)
+}
+
+enum PreparedSemanticSearch {
+    Complete(SearchCollection),
+    Query {
+        requested_backend: SearchBackendArg,
+        normalized_query: NormalizedSearchQuery,
+    },
+}
+
+fn prepare_semantic_search(
+    request: &SourceSearchRequest,
+    index: &VerifiedIndex,
+    semantic_weight: f32,
+    filters: &EventSearchFilters,
+) -> SourceSearchResult<PreparedSemanticSearch> {
     let requested_backend = request.backend.unwrap_or(SearchBackendArg::Lexical);
     if !semantic_weight.is_finite() || !(0.0..=1.0).contains(&semantic_weight) {
-        return Err(anyhow!(
-            "semantic weight must be finite and between 0.0 and 1.0"
-        ));
+        return Err(anyhow!("semantic weight must be finite and between 0.0 and 1.0").into());
     }
     if requested_backend == SearchBackendArg::Lexical
         || (requested_backend == SearchBackendArg::Hybrid && semantic_weight == 0.0)
@@ -624,12 +923,12 @@ where
             collect_search_hits(index, &queries, request.limit, request.events, filters)?;
         collection.requested_backend = requested_backend;
         collection.semantic_weight = 0.0;
-        return Ok(collection);
+        return Ok(PreparedSemanticSearch::Complete(collection));
     }
     if requested_backend != SearchBackendArg::Lexical {
         if let Some(not_ready) = unsupported_semantic_scope(request) {
             if requested_backend == SearchBackendArg::Semantic {
-                return Err(anyhow::Error::new(not_ready));
+                return Err(not_ready.into());
             }
             let normalized_query = NormalizedSearchQuery::from_request(request);
             let queries = normalized_query.texts();
@@ -652,20 +951,25 @@ where
                     "detail": fallback.detail,
                 },
             }));
-            return Ok(collection);
+            return Ok(PreparedSemanticSearch::Complete(collection));
         }
     }
     if !request.semantic_enabled || !request.semantic_daemon_enabled {
         let not_ready = if request.semantic_enabled {
-            SemanticNotReady::new(
+            HistorySemanticError::not_ready(
                 "semantic_daemon_disabled",
                 "local semantic retrieval is unavailable because the ctx daemon is disabled",
+                false,
             )
         } else {
-            SemanticNotReady::new("semantic_disabled", "local semantic retrieval is disabled")
+            HistorySemanticError::not_ready(
+                "semantic_disabled",
+                "local semantic retrieval is disabled",
+                false,
+            )
         };
         if requested_backend == SearchBackendArg::Semantic {
-            return Err(anyhow::Error::new(not_ready));
+            return Err(not_ready.into());
         }
         let normalized_query = NormalizedSearchQuery::from_request(request);
         let queries = normalized_query.texts();
@@ -692,18 +996,42 @@ where
                 "detail": fallback.detail,
             },
         }));
-        return Ok(collection);
+        return Ok(PreparedSemanticSearch::Complete(collection));
     }
 
     let normalized_query = NormalizedSearchQuery::from_request(request);
+    Ok(PreparedSemanticSearch::Query {
+        requested_backend,
+        normalized_query,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_prepared_semantic_search<SemanticSearch>(
+    request: &SourceSearchRequest,
+    index: &VerifiedIndex,
+    semantic_weight: f32,
+    filters: &EventSearchFilters,
+    requested_backend: SearchBackendArg,
+    normalized_query: NormalizedSearchQuery,
+    mut semantic_search: SemanticSearch,
+) -> SourceSearchResult<SearchCollection>
+where
+    SemanticSearch: FnMut(
+        &str,
+        &EventSearchFilters,
+        usize,
+    ) -> std::result::Result<HistorySemanticBatch, HistorySemanticError>,
+{
     let queries = normalized_query.texts();
     let mut semantic_by_event = BTreeMap::<Uuid, EventSearchCandidate>::new();
     let mut semantic_query_diagnostics = Vec::with_capacity(queries.len());
-    let mut semantic_search = semantic_search;
     for query in &queries {
-        let semantic_result =
-            semantic_search(index, data_root, query, filters, SOURCE_FUSION_CANDIDATES);
-        let (candidates, diagnostics) = match semantic_result {
+        let semantic_result = semantic_search(query, filters, SOURCE_FUSION_CANDIDATES);
+        let HistorySemanticBatch {
+            candidates,
+            diagnostics,
+        } = match semantic_result {
             Ok(value) => value,
             Err(error) if requested_backend == SearchBackendArg::Hybrid => {
                 let fallback = semantic_fallback_diagnostics(&error);
@@ -724,7 +1052,7 @@ where
                 }));
                 return Ok(collection);
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         semantic_query_diagnostics.push(json!({
             "query": query,
@@ -786,16 +1114,10 @@ where
     })
 }
 
-fn semantic_fallback_diagnostics(error: &anyhow::Error) -> SemanticFallbackDiagnostics {
-    if let Some(not_ready) = error.downcast_ref::<SemanticNotReady>() {
-        return SemanticFallbackDiagnostics {
-            code: not_ready.code(),
-            detail: not_ready.detail().to_owned(),
-        };
-    }
+fn semantic_fallback_diagnostics(error: &HistorySemanticError) -> SemanticFallbackDiagnostics {
     SemanticFallbackDiagnostics {
-        code: "semantic_query_failed",
-        detail: format!("{error:#}"),
+        code: error.code(),
+        detail: error.detail().to_owned(),
     }
 }
 

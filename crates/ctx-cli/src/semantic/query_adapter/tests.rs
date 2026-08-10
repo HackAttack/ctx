@@ -134,11 +134,20 @@ fn embedding() -> Vec<f32> {
     embedding
 }
 
-fn ready_adapter(
-    index: &VerifiedIndex,
+#[test]
+fn request_adapter_borrows_the_exact_data_root() {
+    let data_root = std::path::PathBuf::from("borrowed-query-root");
+    let adapter = SemanticQueryAdapter::new(&data_root);
+
+    assert!(std::ptr::eq(adapter.data_root, data_root.as_path()));
+}
+
+fn ready_adapter<'a>(
+    index: &'a VerifiedIndex,
+    data_root: &'a Path,
     event_id: Uuid,
     vector_root: &Path,
-) -> Result<SemanticQueryAdapter> {
+) -> Result<SemanticQuerySession<'a>> {
     let mut store = SemanticVectorStore::open(vector_root)?;
     publish_chunk_replacements(
         &mut store,
@@ -149,7 +158,9 @@ fn ready_adapter(
         &[],
     )?;
     let pinned = pinned_flat_generation(&store)?;
-    Ok(SemanticQueryAdapter::from_pin(
+    Ok(SemanticQuerySession::from_pin(
+        index,
+        data_root,
         SemanticQueryPin::from_readiness_for_test(
             index.generation_id(),
             SourceBackedGenerationPin::Ready(pinned),
@@ -165,35 +176,21 @@ fn adapter_never_embeds_before_missing_or_unacknowledged_store_preflight() -> Re
         if unacknowledged_store {
             SemanticVectorStore::open(&source_backed_semantic_vector_path(temp.path()))?;
         }
-        let calls = Cell::new(0_u8);
-        let mut adapter = SemanticQueryAdapter::default();
-
-        let error = adapter
-            .search_with(
-                &index,
-                temp.path(),
-                "query",
-                &EventSearchFilters::default(),
-                1,
-                |_, _| {
-                    calls.set(calls.get() + 1);
-                    Ok(Some((embedding(), 1)))
-                },
-            )
-            .expect_err("unready semantic state must fail closed");
-
-        let not_ready = error
-            .downcast_ref::<SemanticNotReady>()
-            .expect("preflight must retain the typed not-ready contract");
-        assert_eq!(
-            not_ready.code(),
-            if unacknowledged_store {
+        let error = SemanticQuerySession::begin(&index, temp.path())
+            .err()
+            .expect("unready semantic state must fail closed");
+        assert!(matches!(
+            error,
+            SemanticQueryError::NotReady {
+                code,
+                retryable: true,
+                ..
+            } if code == if unacknowledged_store {
                 "semantic_generation_not_acknowledged"
             } else {
                 "semantic_store_missing"
             }
-        );
-        assert_eq!(calls.get(), 0);
+        ));
     }
     Ok(())
 }
@@ -212,28 +209,17 @@ fn adapter_never_embeds_before_acknowledged_stale_generation_preflight() -> Resu
     drop(store);
 
     let (index, _) = semantic_index_revision(temp.path(), 2, true)?;
-    let calls = Cell::new(0_u8);
-    let error = SemanticQueryAdapter::default()
-        .search_with(
-            &index,
-            temp.path(),
-            "query",
-            &EventSearchFilters::default(),
-            1,
-            |_, _| {
-                calls.set(calls.get() + 1);
-                Ok(Some((embedding(), 1)))
-            },
-        )
-        .expect_err("an acknowledged stale generation must fail closed");
-
-    assert_eq!(
-        error
-            .downcast_ref::<SemanticNotReady>()
-            .map(SemanticNotReady::code),
-        Some("semantic_generation_not_acknowledged")
-    );
-    assert_eq!(calls.get(), 0);
+    let error = SemanticQuerySession::begin(&index, temp.path())
+        .err()
+        .expect("an acknowledged stale generation must fail closed");
+    assert!(matches!(
+        error,
+        SemanticQueryError::NotReady {
+            code: "semantic_generation_not_acknowledged",
+            retryable: true,
+            ..
+        }
+    ));
     Ok(())
 }
 
@@ -246,19 +232,12 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
             generation,
             SourceBackedGenerationPin::ReadyEmpty,
         )?;
-        let mut adapter = SemanticQueryAdapter::from_pin(pin);
+        let mut adapter = SemanticQuerySession::from_pin(&index, temp.path(), pin);
         let calls = Cell::new(0_u8);
-        let result = adapter.search_with(
-            &index,
-            temp.path(),
-            "query",
-            &EventSearchFilters::default(),
-            1,
-            |_, _| {
-                calls.set(calls.get() + 1);
-                Ok(Some((embedding(), 1)))
-            },
-        );
+        let result = adapter.search_with("query", &EventSearchFilters::default(), 1, |_, _| {
+            calls.set(calls.get() + 1);
+            Ok(Some((embedding(), 1)))
+        });
 
         if generation == index.generation_id() {
             let (candidates, diagnostics) = result?;
@@ -288,12 +267,14 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
             );
         } else {
             let error = result.expect_err("a mismatched pin must fail closed");
-            assert_eq!(
-                error
-                    .downcast_ref::<SemanticNotReady>()
-                    .map(SemanticNotReady::code),
-                Some("semantic_generation_receipt_mismatch")
-            );
+            assert!(matches!(
+                error,
+                SemanticQueryError::NotReady {
+                    code: "semantic_generation_receipt_mismatch",
+                    retryable: true,
+                    ..
+                }
+            ));
         }
         assert_eq!(calls.get(), 0);
     }
@@ -304,46 +285,29 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
 fn adapter_embeds_ready_queries_once_and_reuses_one_pin_filter_cache() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (index, event_id) = semantic_index(temp.path())?;
-    let mut adapter = ready_adapter(&index, event_id, &temp.path().join("vectors"))?;
+    let mut adapter = ready_adapter(&index, temp.path(), event_id, &temp.path().join("vectors"))?;
     let calls = Cell::new(0_u8);
     let filters = EventSearchFilters::default();
 
-    let (first, first_diagnostics) = adapter.search_with(
-        &index,
-        temp.path(),
-        "first normalized query",
-        &filters,
-        1,
-        |_, _| {
+    let (first, first_diagnostics) =
+        adapter.search_with("first normalized query", &filters, 1, |_, _| {
             calls.set(calls.get() + 1);
             Ok(Some((embedding(), 17)))
-        },
-    )?;
+        })?;
     assert_eq!(first.len(), 1);
     assert_eq!(first_diagnostics["query_embed_ms"], 17);
     let first_projection = adapter
         .pin
-        .as_ref()
-        .and_then(SemanticQueryPin::filter_projection_identity_for_test)
+        .filter_projection_identity_for_test()
         .expect("first query must cache its filter projection");
-    let (second, _) = adapter.search_with(
-        &index,
-        temp.path(),
-        "second normalized query",
-        &filters,
-        1,
-        |_, _| {
-            calls.set(calls.get() + 1);
-            Ok(Some((embedding(), 17)))
-        },
-    )?;
+    let (second, _) = adapter.search_with("second normalized query", &filters, 1, |_, _| {
+        calls.set(calls.get() + 1);
+        Ok(Some((embedding(), 17)))
+    })?;
     assert_eq!(second.len(), 1);
     assert_eq!(calls.get(), 2, "each ready query must embed exactly once");
     assert_eq!(
-        adapter
-            .pin
-            .as_ref()
-            .and_then(SemanticQueryPin::filter_projection_identity_for_test),
+        adapter.pin.filter_projection_identity_for_test(),
         Some(first_projection),
         "normalized queries must reuse one pin and filter cache"
     );
@@ -354,32 +318,78 @@ fn adapter_embeds_ready_queries_once_and_reuses_one_pin_filter_cache() -> Result
 fn adapter_preserves_daemon_query_service_unavailable_contract() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (index, event_id) = semantic_index(temp.path())?;
-    let mut adapter = ready_adapter(&index, event_id, &temp.path().join("vectors"))?;
+    let mut adapter = ready_adapter(&index, temp.path(), event_id, &temp.path().join("vectors"))?;
     let calls = Cell::new(0_u8);
 
     let error = adapter
-        .search_with(
-            &index,
-            temp.path(),
-            "query",
-            &EventSearchFilters::default(),
-            1,
-            |_, _| {
-                calls.set(calls.get() + 1);
-                Ok(None)
-            },
-        )
+        .search_with("query", &EventSearchFilters::default(), 1, |_, _| {
+            calls.set(calls.get() + 1);
+            Ok(None)
+        })
         .expect_err("a ready pin still requires the daemon embedding service");
-    let not_ready = error
-        .downcast_ref::<SemanticNotReady>()
-        .expect("daemon unavailability must retain the typed contract");
-
     assert_eq!(calls.get(), 1);
-    assert_eq!(not_ready.code(), "semantic_query_service_unavailable");
-    assert_eq!(
-        not_ready.detail(),
-        "the daemon query embedding service is unavailable"
-    );
-    assert!(not_ready.retryable());
+    assert!(matches!(
+        error,
+        SemanticQueryError::NotReady {
+            code: "semantic_query_service_unavailable",
+            detail,
+            retryable: true,
+        } if detail == "the daemon query embedding service is unavailable"
+    ));
     Ok(())
+}
+
+#[test]
+fn adapter_preserves_typed_not_ready_from_engine_search() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (index, _) = semantic_index(temp.path())?;
+    let mut adapter = ready_adapter(
+        &index,
+        temp.path(),
+        Uuid::new_v4(),
+        &temp.path().join("vectors"),
+    )?;
+
+    let error = adapter
+        .search_with("query", &EventSearchFilters::default(), 1, |_, _| {
+            Ok(Some((embedding(), 1)))
+        })
+        .expect_err("a vector generation that does not map to Core must fail closed");
+
+    assert!(matches!(
+        error,
+        SemanticQueryError::NotReady {
+            code: "semantic_projection_event_mismatch",
+            detail,
+            retryable: true,
+        } if detail.contains("metadata-eligible events")
+    ));
+    Ok(())
+}
+
+#[test]
+fn adapter_downcasts_engine_not_ready_without_parsing_display_text() {
+    let error = anyhow::Error::new(SemanticNotReady::new(
+        "semantic_projection_event_mismatch",
+        "typed engine detail",
+    ));
+    let classified = SemanticQueryError::from(error);
+
+    assert!(matches!(
+        classified,
+        SemanticQueryError::NotReady {
+            code: "semantic_projection_event_mismatch",
+            detail,
+            retryable: true,
+        } if detail == "typed engine detail"
+    ));
+}
+
+#[test]
+fn adapter_maps_non_engine_failures_to_failed() {
+    let classified = SemanticQueryError::from(anyhow!("transport failed"));
+    assert!(matches!(
+        classified,
+        SemanticQueryError::Failed { detail } if detail == "transport failed"
+    ));
 }

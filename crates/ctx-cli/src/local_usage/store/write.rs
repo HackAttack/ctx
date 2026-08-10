@@ -8,17 +8,17 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use super::super::{CompletedOperation, DEFINITION_VERSION};
 use super::{
     open_writable, preflight_existing_family, protect_sqlite_files, reject_future_daily_dates,
-    retention_cutoff, usage_path, utc_day, verify_schema, UsageStoreError, WritableStore,
+    retention_cutoff, utc_day, verify_schema, UsageStoreError, WritableStore,
 };
 
 pub(super) fn record_at(
-    data_root: &Path,
+    database_path: &Path,
     operation: CompletedOperation,
     now: SystemTime,
     busy_timeout: Duration,
     ctx_version: &str,
 ) -> Result<(), UsageStoreError> {
-    let path = usage_path(data_root);
+    let path = database_path.to_path_buf();
     let WritableStore {
         mut conn,
         family_guard,
@@ -79,7 +79,7 @@ pub(super) fn record_at(
             DEFINITION_VERSION,
             ctx_version,
             operation.surface.as_str(),
-            operation.operation,
+            operation.operation.as_str(),
             operation.outcome.as_str(),
             operation.value_class.as_str(),
             operation.duration.as_str(),

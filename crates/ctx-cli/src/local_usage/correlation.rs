@@ -1,18 +1,14 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
     hash::Hash,
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
-
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt as _;
 
 use serde_json::Value;
 
 use super::{
-    mcp_search_context_targets, resolved_mcp_context_target, store, McpContextTarget,
-    McpInvocation, Outcome,
+    mcp_search_context_targets, resolved_mcp_context_target, store, LocalUsageStorageAuthority,
+    McpContextTarget, McpInvocation, Outcome, UsageControlRevision,
 };
 
 pub(super) const CONTEXT_CORRELATION_MAX_RECORDS: usize = 1_024;
@@ -68,30 +64,38 @@ impl<K: Eq + Hash> EphemeralContextCorrelation<K> {
 }
 
 pub(crate) struct McpUsageRecorder {
-    data_root: PathBuf,
+    storage: LocalUsageStorageAuthority,
+    control: crate::observability_composition::LocalUsageControlAuthority,
     enabled: bool,
-    control_resolver: crate::config::LocalUsageConfigResolver,
-    control_revision: Option<ControlFileRevision>,
+    control_revision: Option<UsageControlRevision>,
     context: EphemeralContextCorrelation<McpContextTarget>,
     #[cfg(test)]
     trace: Option<std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>>,
 }
 
 impl McpUsageRecorder {
-    pub(crate) fn start(data_root: PathBuf) -> Self {
-        let mut control_resolver = crate::config::LocalUsageConfigResolver::default();
-        let revision_before = ControlFileRevision::capture(&data_root);
-        let enabled = control_resolver.resolve(&data_root).effective_on_startup();
-        let revision_after = ControlFileRevision::capture(&data_root);
+    pub(crate) fn start_authorized(
+        storage: LocalUsageStorageAuthority,
+        mut control: crate::observability_composition::LocalUsageControlAuthority,
+    ) -> Self {
+        let snapshot = control.snapshot();
         Self {
-            data_root,
-            enabled,
-            control_resolver,
-            control_revision: stable_control_revision(revision_before, revision_after),
+            storage,
+            control,
+            enabled: snapshot.enabled(),
+            control_revision: snapshot.revision().cloned(),
             context: EphemeralContextCorrelation::default(),
             #[cfg(test)]
             trace: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start(data_root: std::path::PathBuf) -> Self {
+        Self::start_authorized(
+            crate::observability_composition::local_usage_storage_authority(&data_root),
+            crate::observability_composition::LocalUsageControlAuthority::new(data_root),
+        )
     }
 
     pub(crate) fn record_delivered(
@@ -110,7 +114,7 @@ impl McpUsageRecorder {
         if operation.outcome == Outcome::Success {
             Self::apply_delivered_correlation(&mut next_context, &invocation, response);
         }
-        if store::record(&self.data_root, operation).is_ok() {
+        if store::record_authorized(&self.storage, operation).is_ok() {
             self.context = next_context;
             #[cfg(test)]
             if let Some(trace) = &self.trace {
@@ -128,21 +132,16 @@ impl McpUsageRecorder {
     }
 
     fn refresh_control(&mut self) {
-        let revision_before = ControlFileRevision::capture(&self.data_root);
-        let enabled = self
-            .control_resolver
-            .resolve(&self.data_root)
-            .effective_after(Some(self.enabled));
-        let revision_after = ControlFileRevision::capture(&self.data_root);
-        let control_revision = stable_control_revision(revision_before, revision_after);
-        if control_revision.is_none()
-            || self.control_revision.as_ref() != control_revision.as_ref()
-            || self.enabled && !enabled
+        let snapshot = self.control.snapshot();
+        if !snapshot.available()
+            || snapshot.revision().is_none()
+            || self.control_revision.as_ref() != snapshot.revision()
+            || self.enabled && !snapshot.enabled()
         {
             self.context = EphemeralContextCorrelation::default();
         }
-        self.control_revision = control_revision;
-        self.enabled = enabled;
+        self.control_revision = snapshot.revision().cloned();
+        self.enabled = snapshot.enabled();
     }
 
     fn apply_delivered_correlation(
@@ -150,7 +149,7 @@ impl McpUsageRecorder {
         invocation: &McpInvocation,
         response: &Value,
     ) -> bool {
-        if invocation.operation == "search" {
+        if invocation.operation == crate::operation_descriptor::LocalUsageOperation::Search {
             for target in mcp_search_context_targets(response) {
                 context.record_found(target);
             }
@@ -171,57 +170,5 @@ impl McpUsageRecorder {
         response: &Value,
     ) -> bool {
         Self::apply_delivered_correlation(&mut self.context, invocation, response)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ControlFileRevision {
-    Missing,
-    File {
-        len: u64,
-        modified: SystemTime,
-        created: Option<SystemTime>,
-        #[cfg(unix)]
-        device: u64,
-        #[cfg(unix)]
-        inode: u64,
-        #[cfg(unix)]
-        changed_seconds: i64,
-        #[cfg(unix)]
-        changed_nanoseconds: i64,
-    },
-}
-
-impl ControlFileRevision {
-    fn capture(data_root: &Path) -> Option<Self> {
-        let path = crate::config::AppConfig::config_path(data_root);
-        match path.metadata() {
-            Ok(metadata) if metadata.is_file() => Some(Self::File {
-                len: metadata.len(),
-                modified: metadata.modified().ok()?,
-                created: metadata.created().ok(),
-                #[cfg(unix)]
-                device: metadata.dev(),
-                #[cfg(unix)]
-                inode: metadata.ino(),
-                #[cfg(unix)]
-                changed_seconds: metadata.ctime(),
-                #[cfg(unix)]
-                changed_nanoseconds: metadata.ctime_nsec(),
-            }),
-            Ok(_) => None,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Self::Missing),
-            Err(_) => None,
-        }
-    }
-}
-
-fn stable_control_revision(
-    before: Option<ControlFileRevision>,
-    after: Option<ControlFileRevision>,
-) -> Option<ControlFileRevision> {
-    match (before, after) {
-        (Some(before), Some(after)) if before == after => Some(after),
-        _ => None,
     }
 }

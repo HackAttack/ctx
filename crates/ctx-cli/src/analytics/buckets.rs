@@ -185,7 +185,7 @@ pub(crate) enum ProgressMode {
 }
 
 impl ProgressMode {
-    pub(super) fn from_arg(value: ProgressArg) -> Self {
+    pub(crate) fn from_arg(value: ProgressArg) -> Self {
         match value {
             ProgressArg::Auto => Self::Auto,
             ProgressArg::Plain => Self::Plain,

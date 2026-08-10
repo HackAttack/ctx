@@ -15,7 +15,7 @@ use ctx_history_core::platform_security::{
 use rusqlite::params;
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
-use super::{CompletedOperation, CTX_VERSION, RETENTION_DAYS};
+use super::{CompletedOperation, LocalUsageStorageAuthority, CTX_VERSION, RETENTION_DAYS};
 
 mod file_family;
 mod migration;
@@ -39,6 +39,7 @@ use migration::{
 pub(super) use migration::{v1_uses_legacy_blame_schema, verify_supported_schema};
 use write::record_at as write_record_at;
 
+#[cfg(test)]
 pub(crate) const USAGE_FILE: &str = "usage.sqlite";
 const APPLICATION_ID: i64 = 0x4354_5855;
 pub(super) const LEGACY_SCHEMA_VERSION: i64 = 1;
@@ -91,12 +92,15 @@ impl UsageStoreError {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn usage_path(data_root: &Path) -> PathBuf {
     data_root.join(USAGE_FILE)
 }
 
-pub(crate) fn usage_store_exists(data_root: &Path) -> Result<bool, UsageStoreError> {
-    let path = usage_path(data_root);
+pub(crate) fn usage_store_exists(
+    authority: &LocalUsageStorageAuthority,
+) -> Result<bool, UsageStoreError> {
+    let path = authority.database_path();
     let Some(parent) = path.parent() else {
         return Err(UsageStoreError::SchemaIdentity);
     };
@@ -107,41 +111,55 @@ pub(crate) fn usage_store_exists(data_root: &Path) -> Result<bool, UsageStoreErr
     }
     match path.symlink_metadata() {
         Ok(_) => {
-            let _guard = preflight_existing_family(&path, true)?;
+            let _guard = preflight_existing_family(path, true)?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            preflight_auxiliaries(&path, false)?;
+            preflight_auxiliaries(path, false)?;
             Ok(false)
         }
         Err(error) => Err(error.into()),
     }
 }
 
-pub(crate) fn record(
-    data_root: &Path,
+pub(crate) fn record_authorized(
+    authority: &LocalUsageStorageAuthority,
     operation: CompletedOperation,
 ) -> Result<(), UsageStoreError> {
-    record_at(data_root, operation, SystemTime::now(), BUSY_TIMEOUT)
+    record_at_path(
+        authority.database_path(),
+        operation,
+        SystemTime::now(),
+        BUSY_TIMEOUT,
+    )
 }
 
-fn record_at(
-    data_root: &Path,
+fn record_at_path(
+    database_path: &Path,
     operation: CompletedOperation,
     now: SystemTime,
     busy_timeout: Duration,
 ) -> Result<(), UsageStoreError> {
-    record_at_with_ctx_version(data_root, operation, now, busy_timeout, CTX_VERSION)
+    record_at_with_ctx_version(database_path, operation, now, busy_timeout, CTX_VERSION)
 }
 
 fn record_at_with_ctx_version(
-    data_root: &Path,
+    database_path: &Path,
     operation: CompletedOperation,
     now: SystemTime,
     busy_timeout: Duration,
     ctx_version: &str,
 ) -> Result<(), UsageStoreError> {
-    write_record_at(data_root, operation, now, busy_timeout, ctx_version)
+    write_record_at(database_path, operation, now, busy_timeout, ctx_version)
+}
+
+#[cfg(test)]
+pub(crate) fn record(
+    data_root: &Path,
+    operation: CompletedOperation,
+) -> Result<(), UsageStoreError> {
+    let authority = crate::observability_composition::local_usage_storage_authority(data_root);
+    record_authorized(&authority, operation)
 }
 
 #[cfg(test)]
@@ -151,7 +169,7 @@ pub(super) fn record_at_for_test(
     now: SystemTime,
     busy_timeout: Duration,
 ) -> Result<(), UsageStoreError> {
-    record_at(data_root, operation, now, busy_timeout)
+    record_at_path(&usage_path(data_root), operation, now, busy_timeout)
 }
 
 #[cfg(test)]
@@ -411,15 +429,17 @@ pub(crate) fn open_read_only(path: &Path) -> Result<ReadOnlyStore, UsageStoreErr
     })
 }
 
-pub(crate) fn reset(data_root: &Path) -> Result<bool, UsageStoreError> {
-    reset_with_post_commit(data_root, |_| ())
+pub(crate) fn reset_authorized(
+    authority: &LocalUsageStorageAuthority,
+) -> Result<bool, UsageStoreError> {
+    reset_with_post_commit(authority.database_path(), |_| ())
 }
 
 fn reset_with_post_commit<T>(
-    data_root: &Path,
+    database_path: &Path,
     after_commit: impl FnOnce(&Path) -> T,
 ) -> Result<bool, UsageStoreError> {
-    let path = usage_path(data_root);
+    let path = database_path.to_path_buf();
     let Some(WritableStore {
         mut conn,
         family_guard,
@@ -451,6 +471,12 @@ fn reset_with_post_commit<T>(
     });
     let _ = protect_sqlite_files(&path);
     Ok(true)
+}
+
+#[cfg(test)]
+pub(crate) fn reset(data_root: &Path) -> Result<bool, UsageStoreError> {
+    let authority = crate::observability_composition::local_usage_storage_authority(data_root);
+    reset_authorized(&authority)
 }
 
 enum PreparedFile {

@@ -1,20 +1,28 @@
-use std::path::Path;
-
-use anyhow::Result;
 use serde_json::Value;
 
 use super::{
     invalid_tool_request, optional_string, optional_transcript_mode, optional_usize,
-    TranscriptMode, MAX_EVENT_WINDOW, MCP_DEFAULT_SESSION_PAGE_LIMIT, MCP_MAX_SESSION_CURSOR_BYTES,
+    MAX_EVENT_WINDOW, MCP_DEFAULT_SESSION_PAGE_LIMIT, MCP_MAX_SESSION_CURSOR_BYTES,
     MCP_MAX_SESSION_PAGE_LIMIT,
 };
-use crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES;
+use crate::{
+    presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    tool_backend::{
+        ShowEventRequest, ShowSessionRequest, ToolBackendError, ToolOperation, ToolTranscriptMode,
+    },
+    TranscriptMode,
+};
 
-pub(super) fn tool_show_session(arguments: &Value, data_root: &Path) -> Result<(Value, Value)> {
+pub(super) fn show_session_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
     let session_id = optional_string(arguments, "ctx_session_id")?
         .ok_or_else(|| invalid_tool_request("ctx_session_id is required"))?;
     validate_ctx_id(&session_id, "ctx_session_id", "session")?;
     let mode = optional_transcript_mode(arguments, "mode")?.unwrap_or(TranscriptMode::Lite);
+    let mode = match mode {
+        TranscriptMode::Full => ToolTranscriptMode::Full,
+        TranscriptMode::Lite => ToolTranscriptMode::Lite,
+        TranscriptMode::Log => ToolTranscriptMode::Log,
+    };
     let limit = optional_usize(arguments, "limit")?.unwrap_or(MCP_DEFAULT_SESSION_PAGE_LIMIT);
     if !(1..=MCP_MAX_SESSION_PAGE_LIMIT).contains(&limit) {
         return Err(invalid_tool_request(format!(
@@ -22,17 +30,16 @@ pub(super) fn tool_show_session(arguments: &Value, data_root: &Path) -> Result<(
         )));
     }
     let cursor = optional_session_cursor(arguments)?;
-    crate::commands::source_index::mcp_show_session_with_compact(
-        data_root,
-        &session_id,
+    Ok(ToolOperation::ShowSession(ShowSessionRequest {
+        selector: session_id,
         mode,
         limit,
-        cursor.as_deref(),
-        MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    )
+        cursor,
+        output_limit_bytes: MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    }))
 }
 
-fn optional_session_cursor(arguments: &Value) -> Result<Option<String>> {
+fn optional_session_cursor(arguments: &Value) -> Result<Option<String>, ToolBackendError> {
     let cursor = optional_string(arguments, "cursor")?;
     match cursor {
         Some(value)
@@ -48,7 +55,7 @@ fn optional_session_cursor(arguments: &Value) -> Result<Option<String>> {
     }
 }
 
-pub(super) fn tool_show_event(arguments: &Value, data_root: &Path) -> Result<(Value, Value)> {
+pub(super) fn show_event_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
     let event_id = optional_string(arguments, "ctx_event_id")?
         .ok_or_else(|| invalid_tool_request("ctx_event_id is required"))?;
     validate_ctx_id(&event_id, "ctx_event_id", "event")?;
@@ -63,17 +70,16 @@ pub(super) fn tool_show_event(arguments: &Value, data_root: &Path) -> Result<(Va
             "show_event before/after/window must be {MAX_EVENT_WINDOW} or less"
         )));
     }
-    crate::commands::source_index::mcp_show_event_with_compact(
-        data_root,
-        &event_id,
+    Ok(ToolOperation::ShowEvent(ShowEventRequest {
+        selector: event_id,
         before,
         after,
         window,
-        MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    )
+        output_limit_bytes: MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    }))
 }
 
-fn validate_ctx_id(id: &str, argument: &str, kind: &str) -> Result<()> {
+fn validate_ctx_id(id: &str, argument: &str, kind: &str) -> Result<(), ToolBackendError> {
     if uuid::Uuid::parse_str(id.trim()).is_ok() {
         return Ok(());
     }

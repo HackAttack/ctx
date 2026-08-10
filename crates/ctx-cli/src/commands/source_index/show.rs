@@ -8,8 +8,8 @@ use ctx_history_core::{
     CaptureProvider, EventType, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 use ctx_history_index::{
-    CoreEventPageBudget, CoreEventRecord, SessionEventCursor, SessionRecord, VerifiedIndex,
-    MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS, SHOW_COPIED_EVENT_LINEAGE_POLICY,
+    CoreEventPageBudget, CoreEventRecord, IndexError, SessionEventCursor, SessionRecord,
+    VerifiedIndex, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS, SHOW_COPIED_EVENT_LINEAGE_POLICY,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -21,7 +21,10 @@ use crate::{
     },
     local_usage::{CliUsage, ResultObservationAction},
     output::{compact_json, OutputFormat},
-    presentation_limit::{enforce_presentation_output_limit, CLI_PRESENTATION_MAX_OUTPUT_BYTES},
+    presentation_limit::{
+        enforce_presentation_output_limit, PresentationOutputLimitError,
+        CLI_PRESENTATION_MAX_OUTPUT_BYTES,
+    },
     provider_args::ProviderArg,
     transcript::{TranscriptMode, TranscriptOutput},
     ui::{canonical_human_output_bytes, RenderContext, Ui},
@@ -42,7 +45,7 @@ use super::{
 
 #[cfg(test)]
 pub(crate) use mcp::{mcp_show_event, mcp_show_session};
-pub(crate) use mcp::{mcp_show_event_with_compact, mcp_show_session_with_compact};
+pub(crate) use mcp::{mcp_show_event_application, mcp_show_session_application};
 use render::event_window_json;
 #[cfg(test)]
 pub(super) use render::{event_window_value, render_event_values};
@@ -51,6 +54,120 @@ pub(super) use render::{render_event_value, session_transcript_value};
 const CORE_PRESENTATION_FETCH_MAX_EVENTS: usize = 200;
 const CLI_SESSION_EVENT_PAGE_ITEMS: usize = CORE_PRESENTATION_FETCH_MAX_EVENTS;
 const PRESENTATION_MAX_EVENT_WINDOW_EVENTS: usize = MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS;
+
+/// Typed failures exposed by the transport-neutral show application boundary.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ShowApplicationError {
+    #[error(
+        "History changed while ctx was opening the searchable generation. Retry the same request."
+    )]
+    GenerationChanged,
+    #[error(transparent)]
+    GenerationAuthority(ctx_history_refresh::GenerationQueryAuthorityError),
+    #[error("{detail}")]
+    CursorStale { detail: String },
+    #[error("{detail}")]
+    CursorMismatch { detail: String },
+    #[error("{detail}")]
+    InvalidCursor { detail: String },
+    #[error(
+        "Core content output for ctx event {event_id} requires {actual_bytes} bytes; the presentation limit is {maximum_bytes} bytes"
+    )]
+    OutputLimit {
+        event_id: Uuid,
+        actual_bytes: usize,
+        maximum_bytes: usize,
+    },
+    #[error("{detail}")]
+    Application { detail: String },
+}
+
+impl ShowApplicationError {
+    pub(super) fn from_index(error: IndexError) -> Self {
+        Self::from_index_ref(&error)
+    }
+
+    fn from_index_ref(error: &IndexError) -> Self {
+        let detail = error.to_string();
+        match error {
+            IndexError::ConcurrentGenerationChange => Self::GenerationChanged,
+            IndexError::SessionEventCursorGenerationMismatch { .. } => Self::CursorStale { detail },
+            IndexError::SessionEventCursorSessionMismatch => Self::CursorMismatch { detail },
+            IndexError::InvalidSessionEventCursorSessionIdentity
+            | IndexError::InvalidSessionEventCursorCoordinate => Self::InvalidCursor { detail },
+            _ => Self::Application { detail },
+        }
+    }
+
+    pub(super) fn application(error: impl fmt::Display) -> Self {
+        Self::Application {
+            detail: error.to_string(),
+        }
+    }
+
+    pub(super) fn from_application_error(error: anyhow::Error) -> Self {
+        let error = match error.downcast::<IndexError>() {
+            Ok(error) => return Self::from_index(error),
+            Err(error) => error,
+        };
+        let error = match error.downcast::<ctx_history_refresh::GenerationQueryAuthorityError>() {
+            Ok(error) => return Self::GenerationAuthority(error),
+            Err(error) => error,
+        };
+        match error.downcast::<PresentationOutputLimitError>() {
+            Ok(error) => Self::from(error),
+            Err(error) => Self::application(error),
+        }
+    }
+
+    #[cfg(test)]
+    fn into_cli_error(self) -> anyhow::Error {
+        match self {
+            Self::GenerationChanged => anyhow::Error::new(IndexError::ConcurrentGenerationChange),
+            Self::GenerationAuthority(error) => anyhow::Error::new(error),
+            Self::CursorStale { .. } => {
+                anyhow::Error::new(IndexError::SessionEventCursorGenerationMismatch {
+                    cursor_generation: "stale".to_owned(),
+                    pinned_generation: "current".to_owned(),
+                })
+            }
+            Self::CursorMismatch { .. } => {
+                anyhow::Error::new(IndexError::SessionEventCursorSessionMismatch)
+            }
+            Self::InvalidCursor { .. } => {
+                anyhow::Error::new(IndexError::InvalidSessionEventCursorCoordinate)
+            }
+            Self::OutputLimit {
+                event_id,
+                actual_bytes,
+                maximum_bytes,
+            } => anyhow::Error::new(PresentationOutputLimitError {
+                event_id,
+                actual_bytes,
+                maximum_bytes,
+            }),
+            Self::Application { detail } => anyhow!(detail),
+        }
+    }
+}
+
+impl From<IndexError> for ShowApplicationError {
+    fn from(error: IndexError) -> Self {
+        Self::from_index(error)
+    }
+}
+
+impl From<PresentationOutputLimitError> for ShowApplicationError {
+    fn from(error: PresentationOutputLimitError) -> Self {
+        Self::OutputLimit {
+            event_id: error.event_id,
+            actual_bytes: error.actual_bytes,
+            maximum_bytes: error.maximum_bytes,
+        }
+    }
+}
+
+pub(super) type ShowApplicationResult<T> = std::result::Result<T, ShowApplicationError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PresentationEventLimitError {

@@ -260,8 +260,9 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
     canonical_search.query = "ancestor body".to_owned();
     canonical_search.events = true;
     canonical_search.limit = 10;
+    let config = config::AppConfig::load(temp.path()).unwrap();
     let (canonical_results, _, compact_results) =
-        mcp_search_with_compact(canonical_search, temp.path()).unwrap();
+        mcp_search_with_compact(canonical_search, temp.path(), &config).unwrap();
     let lineage = &canonical_results["results"][0]["copied_lineage"];
     let lineage = lineage.as_object().unwrap();
     for required in [

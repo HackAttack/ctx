@@ -314,6 +314,7 @@ impl AppConfig {
         data_root: &Path,
         deprecated_controls: &DeprecatedControls,
     ) -> Result<Self> {
+        observe_app_config_load();
         let mut config = Self::default();
         let path = data_root.join(CONFIG_FILE);
         match fs::read_to_string(&path) {
@@ -445,6 +446,36 @@ impl AppConfig {
     pub fn config_path(data_root: &Path) -> PathBuf {
         data_root.join(CONFIG_FILE)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static APP_CONFIG_LOAD_COUNT: std::cell::Cell<Option<usize>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+fn observe_app_config_load() {
+    #[cfg(test)]
+    APP_CONFIG_LOAD_COUNT.with(|count| {
+        if let Some(current) = count.get() {
+            count.set(Some(current.saturating_add(1)));
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn count_app_config_loads<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    APP_CONFIG_LOAD_COUNT.with(|count| {
+        let previous = count.replace(Some(0));
+        assert!(
+            previous.is_none(),
+            "AppConfig load counters must not be nested"
+        );
+        let result = operation();
+        let observed = count.replace(previous).unwrap_or(0);
+        (result, observed)
+    })
 }
 
 pub fn write_default_config(data_root: &Path) -> Result<()> {

@@ -83,7 +83,11 @@ fn schema_requires_positive_definition_two_success_and_mcp_output() {
     store::record(root.path(), operation("doctor")).unwrap();
     store::record(
         root.path(),
-        CompletedOperation::cli("doctor", false, Duration::ZERO),
+        CompletedOperation::cli(
+            crate::operation_descriptor::LocalUsageOperation::Doctor,
+            false,
+            Duration::ZERO,
+        ),
     )
     .unwrap();
     let mcp_failure = McpInvocation::recognized("status").unwrap().completed(

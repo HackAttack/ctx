@@ -1,9 +1,13 @@
+#[cfg(test)]
 use std::path::Path;
 
 use serde::Serialize;
 
-use super::store::{open_read_only, usage_path, usage_store_exists};
-use super::{estimate_usage, UsageEstimates, DEFINITION_VERSION, RETENTION_DAYS};
+use super::store::{open_read_only, usage_store_exists};
+use super::{
+    estimate_usage, LocalUsageStorageAuthority, UsageControlSnapshot, UsageEstimates,
+    DEFINITION_VERSION, RETENTION_DAYS,
+};
 
 mod query;
 mod render;
@@ -164,11 +168,18 @@ impl UsageReport {
     }
 }
 
-pub(crate) fn read_report(data_root: &Path, enabled: bool, detailed: bool) -> UsageReport {
-    if !enabled {
+pub(crate) fn read_report_authorized(
+    authority: &LocalUsageStorageAuthority,
+    control: &UsageControlSnapshot,
+    detailed: bool,
+) -> UsageReport {
+    if !control.available() {
+        return UsageReport::config_error();
+    }
+    if !control.enabled() {
         return base_report(false, "disabled", None, None, None);
     }
-    let exists = match usage_store_exists(data_root) {
+    let exists = match usage_store_exists(authority) {
         Ok(exists) => exists,
         Err(error) => {
             return error_report(true, "usage_store_unavailable", error.public_message());
@@ -177,8 +188,7 @@ pub(crate) fn read_report(data_root: &Path, enabled: bool, detailed: bool) -> Us
     if !exists {
         return base_report(true, "empty", Some(Vec::new()), None, None);
     }
-    let path = usage_path(data_root);
-    match open_read_only(&path).and_then(|mut store| {
+    match open_read_only(authority.database_path()).and_then(|mut store| {
         let (definitions, estimate_facts) = query_report(store.connection_mut(), detailed)?;
         let estimates = estimate_usage(estimate_facts)?;
         store.verify_unchanged()?;
@@ -194,6 +204,16 @@ pub(crate) fn read_report(data_root: &Path, enabled: bool, detailed: bool) -> Us
         }
         Err(error) => error_report(true, "usage_store_unavailable", error.public_message()),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn read_report(data_root: &Path, enabled: bool, detailed: bool) -> UsageReport {
+    let authority = crate::observability_composition::local_usage_storage_authority(data_root);
+    read_report_authorized(
+        &authority,
+        &UsageControlSnapshot::unversioned(enabled),
+        detailed,
+    )
 }
 
 fn base_report(

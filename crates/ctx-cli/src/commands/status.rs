@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -36,9 +36,11 @@ pub(crate) struct StatusReadModel {
     indexed_sources: Option<u64>,
 }
 
-pub(crate) fn status_read_model(
+pub(crate) fn status_read_model_authorized(
     data_root: &Path,
     config: &config::AppConfig,
+    storage: &local_usage::LocalUsageStorageAuthority,
+    control: &local_usage::UsageControlSnapshot,
 ) -> Result<StatusReadModel> {
     let source = source_epoch_status_report(data_root, config)?;
     let mut pro = source.pro;
@@ -50,7 +52,7 @@ pub(crate) fn status_read_model(
         );
     }
     let upgrade = upgrade_report(config);
-    let local_usage = local_usage::read_report(data_root, config.local_usage.enabled, false);
+    let local_usage = local_usage::read_report_authorized(storage, control, false);
     let mut report = source.report;
     if let Some(object) = report.as_object_mut() {
         object.remove("catalog");
@@ -73,21 +75,21 @@ pub(crate) fn status_read_model(
     })
 }
 
-pub(crate) fn run_status(
+pub(crate) fn run_status_authorized(
     args: StatusArgs,
-    data_root: PathBuf,
+    data_root: &Path,
+    config: &config::AppConfig,
     quiet: bool,
     telemetry: &mut StatusTelemetry,
+    storage: &local_usage::LocalUsageStorageAuthority,
+    control: &local_usage::UsageControlSnapshot,
     ui: &mut Ui,
 ) -> Result<()> {
     if let Some(mode) = args.usage {
-        return run_usage_action(mode, &data_root, args.format.is_json(), quiet, ui);
+        return run_usage_action(mode, data_root, storage, args.format.is_json(), quiet, ui);
     }
     let config_path = data_root.join(CONFIG_FILE);
-    let Some(config) = load_status_config(&data_root) else {
-        return malformed_config_failure(args.format.is_json(), ui);
-    };
-    let status = status_read_model(&data_root, &config)?;
+    let status = status_read_model_authorized(data_root, config, storage, control)?;
     telemetry.initialized = Some(status.initialized);
     telemetry.indexed_items = status.indexed_items.map(count_bucket);
     telemetry.indexed_sessions = status.indexed_sessions.map(count_bucket);
@@ -99,7 +101,7 @@ pub(crate) fn run_status(
         let document = render_status_human(
             ui.stdout_context(),
             &status.report,
-            &data_root,
+            data_root,
             &config_path,
             &status.report["upgrade"],
             &status.report["pro"],
@@ -108,6 +110,34 @@ pub(crate) fn run_status(
         ui.write_stdout(&document)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn status_read_model(
+    data_root: &Path,
+    config: &config::AppConfig,
+) -> Result<StatusReadModel> {
+    let storage = crate::observability_composition::local_usage_storage_authority(data_root);
+    let control =
+        crate::observability_composition::usage_control_snapshot(config.local_usage.enabled);
+    status_read_model_authorized(data_root, config, &storage, &control)
+}
+
+#[cfg(test)]
+pub(crate) fn run_status(
+    args: StatusArgs,
+    data_root: std::path::PathBuf,
+    quiet: bool,
+    telemetry: &mut StatusTelemetry,
+    ui: &mut Ui,
+) -> Result<()> {
+    let config = load_status_config(&data_root).unwrap_or_default();
+    let storage = crate::observability_composition::local_usage_storage_authority(&data_root);
+    let control =
+        crate::observability_composition::usage_control_snapshot(config.local_usage.enabled);
+    run_status_authorized(
+        args, &data_root, &config, quiet, telemetry, &storage, &control, ui,
+    )
 }
 
 fn render_status_human(
@@ -364,6 +394,7 @@ fn grouped_count(count: u64) -> String {
     reversed.chars().rev().collect()
 }
 
+#[cfg(test)]
 fn load_status_config(data_root: &Path) -> Option<config::AppConfig> {
     // Dispatch already loaded this file, but a concurrent replacement can make
     // the status-specific reread fail. Discard that raw cause here so neither

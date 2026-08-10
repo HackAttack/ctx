@@ -6,74 +6,197 @@ use ctx_semantic_index::{SemanticNotReady, SemanticQueryPin};
 use ctx_semantic_model::{semantic_model_key, SEMANTIC_DIMENSIONS};
 use serde_json::{json, Value};
 
-use crate::compact_json;
+use crate::{
+    commands::source_index::{
+        HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
+        SemanticCapability,
+    },
+    compact_json,
+};
 
-use super::query_service::daemon_query_request;
+use super::{query_service::daemon_query_request, semantic_query_service_supported};
 
-#[derive(Default)]
-pub(crate) struct SemanticQueryAdapter {
-    pin: Option<SemanticQueryPin>,
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SemanticQueryAdapter<'data_root> {
+    data_root: &'data_root Path,
 }
 
-impl SemanticQueryAdapter {
-    pub(crate) fn search(
+impl<'data_root> SemanticQueryAdapter<'data_root> {
+    pub(crate) fn new(data_root: &'data_root Path) -> Self {
+        Self { data_root }
+    }
+}
+
+impl HistorySemanticPort for SemanticQueryAdapter<'_> {
+    type Query<'a>
+        = SemanticQuerySession<'a>
+    where
+        Self: 'a;
+
+    fn capability(&self) -> SemanticCapability {
+        if semantic_query_service_supported() {
+            SemanticCapability::Available
+        } else {
+            SemanticCapability::Unavailable
+        }
+    }
+
+    fn begin_query<'a>(
+        &'a self,
+        index: &'a VerifiedIndex,
+    ) -> std::result::Result<Self::Query<'a>, HistorySemanticError> {
+        SemanticQuerySession::begin(index, self.data_root).map_err(HistorySemanticError::from)
+    }
+}
+
+pub(crate) struct SemanticQuerySession<'a> {
+    pin: SemanticQueryPin,
+    index: &'a VerifiedIndex,
+    data_root: &'a Path,
+}
+
+impl SemanticQuerySession<'_> {
+    fn begin<'a>(
+        index: &'a VerifiedIndex,
+        data_root: &'a Path,
+    ) -> std::result::Result<SemanticQuerySession<'a>, SemanticQueryError> {
+        let pin =
+            SemanticQueryPin::preflight(index, data_root).map_err(SemanticQueryError::from)?;
+        Ok(SemanticQuerySession {
+            pin,
+            index,
+            data_root,
+        })
+    }
+
+    fn search(
         &mut self,
-        index: &VerifiedIndex,
-        data_root: &Path,
         query: &str,
         filters: &EventSearchFilters,
         candidate_limit: usize,
-    ) -> Result<(Vec<EventSearchCandidate>, Value)> {
-        self.search_with(
-            index,
-            data_root,
-            query,
-            filters,
-            candidate_limit,
-            daemon_query_embedding,
-        )
+    ) -> std::result::Result<(Vec<EventSearchCandidate>, Value), SemanticQueryError> {
+        self.search_with(query, filters, candidate_limit, daemon_query_embedding)
     }
 
     fn search_with<EmbedQuery>(
         &mut self,
-        index: &VerifiedIndex,
-        data_root: &Path,
         query: &str,
         filters: &EventSearchFilters,
         candidate_limit: usize,
         mut embed_query: EmbedQuery,
-    ) -> Result<(Vec<EventSearchCandidate>, Value)>
+    ) -> std::result::Result<(Vec<EventSearchCandidate>, Value), SemanticQueryError>
     where
         EmbedQuery: FnMut(&Path, &str) -> Result<Option<(Vec<f32>, u64)>>,
     {
-        if self.pin.is_none() {
-            self.pin = Some(SemanticQueryPin::preflight(index, data_root)?);
-        }
-        let pin = self
+        if !self
             .pin
-            .as_mut()
-            .ok_or_else(|| anyhow!("source-backed semantic query pin is unavailable"))?;
-        if !pin.requires_embedding(index)? {
-            return pin.search(index, filters, &[], candidate_limit, None);
+            .requires_embedding(self.index)
+            .map_err(SemanticQueryError::from)?
+        {
+            return self
+                .pin
+                .search(self.index, filters, &[], candidate_limit, None)
+                .map_err(SemanticQueryError::from);
         }
-        let (embedding, query_embed_ms) = embed_query(data_root, query)?.ok_or_else(|| {
-            anyhow::Error::new(SemanticNotReady::new(
-                "semantic_query_service_unavailable",
-                "the daemon query embedding service is unavailable",
-            ))
-        })?;
-        pin.search(
-            index,
-            filters,
-            &embedding,
-            candidate_limit,
-            Some(query_embed_ms),
-        )
+        let (embedding, query_embed_ms) = embed_query(self.data_root, query)
+            .map_err(SemanticQueryError::from)?
+            .ok_or_else(|| {
+                SemanticQueryError::not_ready(
+                    "semantic_query_service_unavailable",
+                    "the daemon query embedding service is unavailable",
+                    true,
+                )
+            })?;
+        self.pin
+            .search(
+                self.index,
+                filters,
+                &embedding,
+                candidate_limit,
+                Some(query_embed_ms),
+            )
+            .map_err(SemanticQueryError::from)
     }
 
     #[cfg(test)]
-    fn from_pin(pin: SemanticQueryPin) -> Self {
-        Self { pin: Some(pin) }
+    fn from_pin<'a>(
+        index: &'a VerifiedIndex,
+        data_root: &'a Path,
+        pin: SemanticQueryPin,
+    ) -> SemanticQuerySession<'a> {
+        SemanticQuerySession {
+            pin,
+            index,
+            data_root,
+        }
+    }
+}
+
+impl HistorySemanticQuery for SemanticQuerySession<'_> {
+    fn candidates(
+        &mut self,
+        query: &str,
+        filters: &EventSearchFilters,
+        candidate_limit: usize,
+    ) -> std::result::Result<HistorySemanticBatch, HistorySemanticError> {
+        self.search(query, filters, candidate_limit)
+            .map(|(candidates, diagnostics)| HistorySemanticBatch {
+                candidates,
+                diagnostics,
+            })
+            .map_err(HistorySemanticError::from)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SemanticQueryError {
+    #[error("source-backed semantic search is not ready ({code}): {detail}")]
+    NotReady {
+        code: &'static str,
+        detail: String,
+        retryable: bool,
+    },
+    #[error("{detail}")]
+    Failed { detail: String },
+}
+
+impl SemanticQueryError {
+    fn not_ready(code: &'static str, detail: impl Into<String>, retryable: bool) -> Self {
+        Self::NotReady {
+            code,
+            detail: detail.into(),
+            retryable,
+        }
+    }
+
+    fn failed(detail: impl Into<String>) -> Self {
+        Self::Failed {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for SemanticQueryError {
+    fn from(error: anyhow::Error) -> Self {
+        match error.downcast::<SemanticNotReady>() {
+            Ok(not_ready) => {
+                Self::not_ready(not_ready.code(), not_ready.detail(), not_ready.retryable())
+            }
+            Err(error) => Self::failed(format!("{error:#}")),
+        }
+    }
+}
+
+impl From<SemanticQueryError> for HistorySemanticError {
+    fn from(error: SemanticQueryError) -> Self {
+        match error {
+            SemanticQueryError::NotReady {
+                code,
+                detail,
+                retryable,
+            } => Self::not_ready(code, detail, retryable),
+            SemanticQueryError::Failed { detail } => Self::failed(detail),
+        }
     }
 }
 

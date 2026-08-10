@@ -1,27 +1,10 @@
-use std::fmt;
-
-use anyhow::Error;
 use serde_json::{json, Value};
 
 use super::{compact_json, render_tool_text};
+use crate::tool_backend::{CursorFailureKind, ToolBackendError};
 
-#[derive(Debug)]
-pub(super) struct InvalidToolRequest {
-    message: String,
-}
-
-impl fmt::Display for InvalidToolRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for InvalidToolRequest {}
-
-pub(super) fn invalid_tool_request(message: impl Into<String>) -> Error {
-    Error::new(InvalidToolRequest {
-        message: message.into(),
-    })
+pub(super) fn invalid_tool_request(message: impl Into<String>) -> ToolBackendError {
+    ToolBackendError::invalid_request(message)
 }
 
 pub(super) fn tool_result(structured: Value) -> Value {
@@ -53,17 +36,6 @@ fn structured_error_result(structured: Value) -> Value {
         ],
         "structuredContent": structured,
     })
-}
-
-/// Reads the exact serializer used by CLI JSON errors. This keeps MCP
-/// `structuredContent` on the canonical diagnostic path without depending on
-/// the diagnostic's concrete Rust representation.
-fn stable_pro_error_value(err: &Error) -> Option<Value> {
-    let mut encoded = Vec::new();
-    if !crate::pro::write_stable_error_json(&mut encoded, err).ok()? {
-        return None;
-    }
-    serde_json::from_slice(&encoded).ok()
 }
 
 fn render_diagnostic_text(structured: &Value) -> String {
@@ -112,130 +84,79 @@ fn display_argument(argument: &str) -> String {
     }
 }
 
-pub(super) fn tool_error_result(err: Error) -> Value {
-    if let Some(error) = err.downcast_ref::<crate::commands::list::events::EventQueryError>() {
-        let structured = crate::commands::list::events::event_query_error_value(error);
-        return json!({
-            "isError": true,
-            "content": [{ "type": "text", "text": error.to_string() }],
-            "structuredContent": structured,
-        });
-    }
-    if crate::commands::source_index::is_active_generation_race(&err) {
-        let structured = crate::commands::source_index::active_generation_race_error_json();
-        return json!({
-            "isError": true,
-            "content": [
-                {
-                    "type": "text",
-                    "text": "History changed while ctx was opening the searchable generation. Retry the same request.",
-                }
-            ],
-            "structuredContent": structured,
-        });
-    }
-    if let Some(error) = err.downcast_ref::<ctx_history_refresh::GenerationQueryAuthorityError>() {
-        let detail = error.to_string();
-        let structured =
-            crate::commands::source_index::generation_query_authority_error_json(error);
-        return json!({
-            "isError": true,
-            "content": [{ "type": "text", "text": detail.clone() }],
-            "structuredContent": structured,
-        });
-    }
-    if let Some(error) = err.downcast_ref::<ctx_history_index::IndexError>() {
-        let error_code = match error {
-            ctx_history_index::IndexError::SessionEventCursorGenerationMismatch { .. } => {
-                Some("cursor_stale")
-            }
-            ctx_history_index::IndexError::SessionEventCursorSessionMismatch => {
-                Some("cursor_mismatch")
-            }
-            ctx_history_index::IndexError::InvalidSessionEventCursorSessionIdentity
-            | ctx_history_index::IndexError::InvalidSessionEventCursorCoordinate => {
-                Some("invalid_cursor")
-            }
-            _ => None,
-        };
-        if let Some(error_code) = error_code {
-            let detail = error.to_string();
-            return json!({
-                "isError": true,
-                "content": [
-                    {
-                        "type": "text",
-                        "text": detail.clone(),
-                    }
-                ],
-                "structuredContent": {
-                    "error": detail.clone(),
-                    "error_code": error_code,
-                    "detail": detail,
-                    "retryable": false,
-                },
-            });
+pub(super) fn tool_error_result(error: ToolBackendError) -> Value {
+    let error = match error {
+        ToolBackendError::Pro { structured, .. } => return structured_error_result(structured),
+        error => error,
+    };
+    let text = error.to_string();
+    let structured = match error {
+        ToolBackendError::InvalidRequest { detail } => json!({
+            "error": detail,
+            "error_code": "invalid_request",
+        }),
+        ToolBackendError::EventQuery(error) => {
+            crate::commands::list::events::event_query_error_value(&error)
         }
-    }
-    if let Some(error) =
-        err.downcast_ref::<crate::presentation_limit::PresentationOutputLimitError>()
-    {
-        let structured = crate::presentation_limit::presentation_output_limit_error_json(error);
-        return json!({
-            "isError": true,
-            "content": [
-                {
-                    "type": "text",
-                    "text": error.to_string(),
-                }
-            ],
-            "structuredContent": structured,
-        });
-    }
-    if let Some(error) = err.downcast_ref::<crate::semantic::SemanticNotReady>() {
-        let structured = error.structured();
-        return json!({
-            "isError": true,
-            "content": [
-                {
-                    "type": "text",
-                    "text": error.to_string(),
-                }
-            ],
-            "structuredContent": structured,
-        });
-    }
-    if let Some(error) = err.downcast_ref::<InvalidToolRequest>() {
-        let message = error.to_string();
-        return json!({
-            "isError": true,
-            "content": [
-                {
-                    "type": "text",
-                    "text": message.clone(),
-                }
-            ],
-            "structuredContent": {
-                "error": message,
-                "error_code": "invalid_request",
-            }
-        });
-    }
-    if let Some(structured) = stable_pro_error_value(&err) {
-        return structured_error_result(structured);
-    }
-    let error = err.to_string();
+        ToolBackendError::SourceUnavailable => json!({
+            "error": "source_unavailable",
+            "error_code": "source_unavailable",
+        }),
+        ToolBackendError::GenerationAuthority(error) => {
+            crate::commands::source_index::generation_query_authority_error_json(&error)
+        }
+        ToolBackendError::GenerationChanged => json!({
+            "error": "generation_changed/active_generation_race",
+            "error_code": "generation_changed",
+            "failure_kind": "active_generation_race",
+            "detail": "the active searchable generation changed while the command was opening it",
+            "retryable": true,
+        }),
+        ToolBackendError::Cursor { kind, detail } => json!({
+            "error": detail.clone(),
+            "error_code": match kind {
+                CursorFailureKind::Stale => "cursor_stale",
+                CursorFailureKind::Mismatch => "cursor_mismatch",
+                CursorFailureKind::Invalid => "invalid_cursor",
+            },
+            "detail": detail,
+            "retryable": false,
+        }),
+        ToolBackendError::OutputLimit {
+            event_id,
+            actual_bytes,
+            maximum_bytes,
+        } => json!({
+            "error": "output_limit_exceeded",
+            "error_code": "output_limit_exceeded",
+            "ctx_event_id": event_id,
+            "actual_bytes": actual_bytes,
+            "maximum_bytes": maximum_bytes,
+            "retryable": false,
+            "remediation": "reduce the event window or choose a narrower transcript mode",
+        }),
+        ToolBackendError::SemanticNotReady {
+            code,
+            detail,
+            retryable,
+        } => json!({
+            "error": text.clone(),
+            "error_code": code,
+            "detail": detail,
+            "retryable": retryable,
+        }),
+        ToolBackendError::Internal { detail } => json!({ "error": detail }),
+        ToolBackendError::Pro { .. } => unreachable!("Pro failures return above"),
+    };
     json!({
         "isError": true,
         "content": [
             {
                 "type": "text",
-                "text": error.clone(),
+                "text": text,
             }
         ],
-        "structuredContent": {
-            "error": error,
-        }
+        "structuredContent": structured,
     })
 }
 
@@ -280,20 +201,18 @@ pub(super) fn json_rpc_error(code: i64, message: &str, data: Option<Value>) -> V
 
 #[cfg(test)]
 mod tests {
-    use ctx_history_index::IndexError;
     use serde_json::{json, Value};
     use uuid::Uuid;
 
     use super::{
-        error_response, invalid_request_response, invalid_tool_request, stable_pro_error_value,
-        structured_error_result, tool_error_result, tool_result,
+        error_response, invalid_request_response, invalid_tool_request, structured_error_result,
+        tool_error_result, tool_result,
     };
+    use crate::tool_backend::{CursorFailureKind, ToolBackendError};
 
     #[test]
     fn generation_change_is_a_retryable_typed_tool_error() {
-        let error = anyhow::Error::new(IndexError::ConcurrentGenerationChange)
-            .context("opening the searchable generation");
-        let result = tool_error_result(error);
+        let result = tool_error_result(ToolBackendError::GenerationChanged);
 
         assert_eq!(result["isError"], true);
         assert_eq!(
@@ -363,8 +282,11 @@ mod tests {
         assert!(crate::pro::write_stable_error_json(&mut cli_json, &error).unwrap());
         let expected: serde_json::Value = serde_json::from_slice(&cli_json).unwrap();
 
-        assert_eq!(stable_pro_error_value(&error), Some(expected.clone()));
-        let result = tool_error_result(error);
+        let result = tool_error_result(ToolBackendError::Pro {
+            code: "resource_not_found",
+            diagnostic: "resource_not_found".to_owned(),
+            structured: expected.clone(),
+        });
         assert_eq!(result["isError"], true);
         assert_eq!(result["structuredContent"], expected);
         let expected_text = result["structuredContent"]
@@ -436,7 +358,11 @@ mod tests {
             actual_bytes: 2048,
             maximum_bytes: 1024,
         };
-        let result = tool_error_result(anyhow::Error::new(error.clone()));
+        let result = tool_error_result(ToolBackendError::OutputLimit {
+            event_id,
+            actual_bytes: 2048,
+            maximum_bytes: 1024,
+        });
 
         assert_eq!(result["isError"], true);
         assert_eq!(
@@ -459,21 +385,27 @@ mod tests {
                     cursor_generation: "old".to_owned(),
                     pinned_generation: "new".to_owned(),
                 },
+                CursorFailureKind::Stale,
                 "cursor_stale",
             ),
             (
                 ctx_history_index::IndexError::SessionEventCursorSessionMismatch,
+                CursorFailureKind::Mismatch,
                 "cursor_mismatch",
             ),
             (
                 ctx_history_index::IndexError::InvalidSessionEventCursorCoordinate,
+                CursorFailureKind::Invalid,
                 "invalid_cursor",
             ),
         ];
 
-        for (error, code) in cases {
+        for (error, kind, code) in cases {
             let message = error.to_string();
-            let result = tool_error_result(anyhow::Error::new(error));
+            let result = tool_error_result(ToolBackendError::Cursor {
+                kind,
+                detail: message.clone(),
+            });
             assert_eq!(result["isError"], true);
             assert_eq!(result["structuredContent"]["error_code"], code);
             assert_eq!(result["structuredContent"]["retryable"], false);

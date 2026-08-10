@@ -1,21 +1,17 @@
-use std::path::Path;
-
-use anyhow::Result;
-use ctx_history_core::MAX_CORE_CONTENT_BYTES;
-use ctx_history_index::{
-    CoreEventPageBudget, CoreEventRangeDirection, CoreEventRangeFilters, CoreEventRangeScope,
-};
+use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{invalid_tool_request, optional_string, optional_usize};
-use crate::commands::list::events::{
-    decode_cursor, event_range_page_value, mcp_event_query_core_record_bytes, selection,
-    validated_limit, EventContentProjection, EventQueryWireRequest, DEFAULT_EVENT_QUERY_LIMIT,
+use crate::{
+    commands::list::events::DEFAULT_EVENT_QUERY_LIMIT,
+    presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    tool_backend::{
+        QueryEventFilters, QueryEventsRequest, ToolBackendError, ToolEventContent, ToolOperation,
+    },
 };
-use crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES;
 
-pub(super) fn tool_query_events(arguments: &Value, data_root: &Path) -> Result<Value> {
+pub(super) fn query_events_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
     let providers = optional_strings(arguments, "providers")?;
     let source = optional_string(arguments, "source")?;
     let history_source = optional_string(arguments, "history_source")?;
@@ -34,7 +30,7 @@ pub(super) fn tool_query_events(arguments: &Value, data_root: &Path) -> Result<V
     let scope = optional_scope(arguments)?;
     let file = optional_string(arguments, "file")?;
     let direction = optional_direction(arguments)?;
-    let filters = CoreEventRangeFilters {
+    let filters = QueryEventFilters {
         providers,
         source_identity: parse_optional_uuid("source", source.as_deref())?,
         history_source,
@@ -56,36 +52,28 @@ pub(super) fn tool_query_events(arguments: &Value, data_root: &Path) -> Result<V
     };
     let since = optional_string(arguments, "since")?;
     let until = optional_string(arguments, "until")?;
-    let selection = selection(since.as_deref(), until.as_deref(), filters)?;
-    let cursor = optional_string(arguments, "cursor")?
-        .as_deref()
-        .map(decode_cursor)
-        .transpose()?;
+    let cursor = optional_string(arguments, "cursor")?;
     let limit = optional_usize(arguments, "limit")?
         .map(usize_to_u64)
         .transpose()?
         .unwrap_or(DEFAULT_EVENT_QUERY_LIMIT);
-    let limit = validated_limit(limit)?;
     let content = optional_content_projection(arguments)?;
-    let request = EventQueryWireRequest::from_selection(&selection, content, limit);
-    let record_bytes = mcp_event_query_core_record_bytes(MCP_PRESENTATION_MAX_OUTPUT_BYTES);
-    let strict_budget =
-        CoreEventPageBudget::new(record_bytes, record_bytes.min(MAX_CORE_CONTENT_BYTES));
-    event_range_page_value(
-        data_root,
-        &selection,
-        cursor.as_ref(),
-        &request,
-        Some(strict_budget),
-    )
-    .map_err(Into::into)
+    Ok(ToolOperation::QueryEvents(QueryEventsRequest {
+        since,
+        until,
+        filters,
+        cursor,
+        content,
+        limit,
+        output_limit_bytes: MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    }))
 }
 
-fn usize_to_u64(value: usize) -> Result<u64> {
+fn usize_to_u64(value: usize) -> Result<u64, ToolBackendError> {
     u64::try_from(value).map_err(|_| invalid_tool_request("numeric argument is too large"))
 }
 
-fn optional_strings(arguments: &Value, key: &str) -> Result<Vec<String>> {
+fn optional_strings(arguments: &Value, key: &str) -> Result<Vec<String>, ToolBackendError> {
     match arguments.get(key) {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::Array(values)) => values
@@ -101,7 +89,10 @@ fn optional_strings(arguments: &Value, key: &str) -> Result<Vec<String>> {
     }
 }
 
-fn parse_optional_uuid(key: &'static str, value: Option<&str>) -> Result<Option<Uuid>> {
+fn parse_optional_uuid(
+    key: &'static str,
+    value: Option<&str>,
+) -> Result<Option<Uuid>, ToolBackendError> {
     value
         .map(|value| {
             Uuid::parse_str(value)
@@ -110,7 +101,7 @@ fn parse_optional_uuid(key: &'static str, value: Option<&str>) -> Result<Option<
         .transpose()
 }
 
-fn optional_scope(arguments: &Value) -> Result<CoreEventRangeScope> {
+fn optional_scope(arguments: &Value) -> Result<CoreEventRangeScope, ToolBackendError> {
     match optional_string(arguments, "scope")?.as_deref() {
         None | Some("all") => Ok(CoreEventRangeScope::All),
         Some("primary") => Ok(CoreEventRangeScope::Primary),
@@ -121,7 +112,7 @@ fn optional_scope(arguments: &Value) -> Result<CoreEventRangeScope> {
     }
 }
 
-fn optional_direction(arguments: &Value) -> Result<CoreEventRangeDirection> {
+fn optional_direction(arguments: &Value) -> Result<CoreEventRangeDirection, ToolBackendError> {
     match optional_string(arguments, "direction")?.as_deref() {
         None | Some("ascending") => Ok(CoreEventRangeDirection::Ascending),
         Some("descending") => Ok(CoreEventRangeDirection::Descending),
@@ -131,11 +122,11 @@ fn optional_direction(arguments: &Value) -> Result<CoreEventRangeDirection> {
     }
 }
 
-fn optional_content_projection(arguments: &Value) -> Result<EventContentProjection> {
+fn optional_content_projection(arguments: &Value) -> Result<ToolEventContent, ToolBackendError> {
     match optional_string(arguments, "content")?.as_deref() {
-        None | Some("full") => Ok(EventContentProjection::Full),
-        Some("text") => Ok(EventContentProjection::Text),
-        Some("none") => Ok(EventContentProjection::None),
+        None | Some("full") => Ok(ToolEventContent::Full),
+        Some("text") => Ok(ToolEventContent::Text),
+        Some("none") => Ok(ToolEventContent::None),
         Some(_) => Err(invalid_tool_request(
             "content must be one of full, text, none",
         )),

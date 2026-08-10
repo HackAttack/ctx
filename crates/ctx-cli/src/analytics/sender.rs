@@ -10,6 +10,7 @@ use crate::{
     config::AppConfig,
     execution_capabilities::{self, CapabilitySnapshotV1},
     install_marker, net,
+    operation_descriptor::{CliOperation, OperationDescriptor},
 };
 
 use super::*;
@@ -157,8 +158,8 @@ pub(super) fn serialize_event(
             }
             (
                 "operation_completed",
-                event.payload.surface(),
-                event.payload.name(),
+                descriptor_surface(&event.descriptor),
+                descriptor_name(&event.descriptor),
                 event.outcome,
                 event.duration,
                 properties,
@@ -221,15 +222,33 @@ fn event_id(event: &PublicEventV1) -> String {
 
 fn operation_properties(event: &OperationCompletedV1) -> Map<String, Value> {
     let mut properties = Map::new();
-    match &event.payload {
-        OperationPayloadV1::Cli(operation) => {
+    match &event.descriptor {
+        OperationDescriptor::Cli(operation) => {
             insert_client_operation_properties(&mut properties, operation)
         }
-        OperationPayloadV1::Mcp(operation) => operation.insert_properties(&mut properties),
-        OperationPayloadV1::ProHost(operation) => operation.insert_properties(&mut properties),
-        OperationPayloadV1::Daemon(operation) => operation.insert_properties(&mut properties),
+        OperationDescriptor::Mcp(operation) => operation.insert_properties(&mut properties),
+        OperationDescriptor::ProHost(operation) => operation.insert_properties(&mut properties),
+        OperationDescriptor::Daemon(operation) => operation.insert_properties(&mut properties),
     }
     properties
+}
+
+fn descriptor_surface(descriptor: &OperationDescriptor) -> Surface {
+    match descriptor {
+        OperationDescriptor::Cli(_) => Surface::Cli,
+        OperationDescriptor::Mcp(_) => Surface::Mcp,
+        OperationDescriptor::ProHost(_) => Surface::ProHost,
+        OperationDescriptor::Daemon(_) => Surface::Daemon,
+    }
+}
+
+fn descriptor_name(descriptor: &OperationDescriptor) -> &'static str {
+    match descriptor {
+        OperationDescriptor::Cli(operation) => operation.analytics_name(),
+        OperationDescriptor::Mcp(operation) => operation.name(),
+        OperationDescriptor::ProHost(operation) => operation.name(),
+        OperationDescriptor::Daemon(operation) => operation.name(),
+    }
 }
 
 fn insert_provider_refresh_properties(
@@ -307,10 +326,10 @@ fn insert_provider_refresh_properties(
 
 fn insert_client_operation_properties(
     properties: &mut Map<String, Value>,
-    operation: &ClientOperationV1,
+    operation: &CliOperation,
 ) {
     match operation {
-        ClientOperationV1::Setup(value) => {
+        CliOperation::Setup(value) => {
             insert_bool(properties, "catalog_only", value.catalog_only);
             insert_bool(properties, "no_daemon", value.no_daemon);
             insert_bool(properties, "wait", value.wait);
@@ -358,7 +377,7 @@ fn insert_client_operation_properties(
             );
             insert_import_result_properties(properties, &value.import);
         }
-        ClientOperationV1::Status(value) => {
+        CliOperation::Status(value) => {
             insert_optional_bool(properties, "initialized", value.initialized);
             insert_optional_count(properties, "indexed_items_bucket", value.indexed_items);
             insert_optional_count(
@@ -369,7 +388,7 @@ fn insert_client_operation_properties(
             insert_optional_count(properties, "indexed_events_bucket", value.indexed_events);
             insert_optional_count(properties, "indexed_sources_bucket", value.indexed_sources);
         }
-        ClientOperationV1::Index(value) => {
+        CliOperation::Index(value) => {
             insert_optional_str(
                 properties,
                 "index_operation",
@@ -395,7 +414,7 @@ fn insert_client_operation_properties(
             );
             insert_optional_count(properties, "indexed_items_bucket", value.indexed_items);
         }
-        ClientOperationV1::Sources(value) => {
+        CliOperation::Sources(value) => {
             insert_bool(properties, "all_sources", value.all);
             insert_bool(properties, "show_missing", value.show_missing);
             insert_optional_provider(properties, "provider_filter", value.provider_filter);
@@ -415,8 +434,8 @@ fn insert_client_operation_properties(
                 value.providers_importable,
             );
         }
-        ClientOperationV1::Import(value) => insert_import_properties(properties, value),
-        ClientOperationV1::Show(value) => {
+        CliOperation::Import(value) => insert_import_properties(properties, value),
+        CliOperation::ShowSession(value) | CliOperation::ShowEvent(value) => {
             insert_str(properties, "target_kind", value.target_kind.as_str());
             insert_optional_str(
                 properties,
@@ -429,13 +448,13 @@ fn insert_client_operation_properties(
             insert_optional_count(properties, "window_bucket", value.window);
             insert_optional_count(properties, "events_returned_bucket", value.events_returned);
         }
-        ClientOperationV1::Locate(value) => {
+        CliOperation::Locate(value) => {
             insert_str(properties, "target_kind", value.target_kind.as_str());
             insert_str(properties, "output_format", value.output_format.as_str());
             insert_bool(properties, "provider_lookup", value.provider_lookup);
         }
-        ClientOperationV1::Search(value) => insert_search_properties(properties, value),
-        ClientOperationV1::Docs(value) => {
+        CliOperation::Search(value) => insert_search_properties(properties, value),
+        CliOperation::Docs(value) => {
             insert_optional_str(
                 properties,
                 "docs_operation",
@@ -453,12 +472,23 @@ fn insert_client_operation_properties(
             insert_optional_str(properties, "topic", value.topic.map(DocTopicId::as_str));
             insert_bool(properties, "writes_output", value.writes_output);
         }
-        ClientOperationV1::Integration(value) => insert_integration_properties(properties, value),
-        ClientOperationV1::Upgrade(value) => insert_upgrade_properties(properties, value),
-        ClientOperationV1::Doctor(value) => {
+        CliOperation::Integrations(value) => insert_integration_properties(properties, value),
+        CliOperation::Upgrade { telemetry, .. } => insert_upgrade_properties(properties, telemetry),
+        CliOperation::Doctor(value) => {
             insert_optional_count(properties, "finding_count_bucket", value.finding_count);
             insert_optional_bool(properties, "healthy", value.healthy);
         }
+        CliOperation::Stats
+        | CliOperation::ProSetup
+        | CliOperation::ProManage
+        | CliOperation::ProUninstall
+        | CliOperation::Referral
+        | CliOperation::Blame
+        | CliOperation::McpServe
+        | CliOperation::DaemonRun
+        | CliOperation::DaemonStatus
+        | CliOperation::DaemonEnable
+        | CliOperation::DaemonDisable => {}
     }
 }
 

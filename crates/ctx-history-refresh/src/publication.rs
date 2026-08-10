@@ -136,6 +136,21 @@ impl fmt::Display for GenerationQueryAuthorityError {
 
 impl std::error::Error for GenerationQueryAuthorityError {}
 
+/// The refresh authority has no active verified Core generation to pin.
+///
+/// This is distinct from failures while reading or validating publication
+/// state so application boundaries can classify only the actual absence case.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct MissingActiveGeneration;
+
+impl fmt::Display for MissingActiveGeneration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("source_unavailable: active verified Core generation is missing")
+    }
+}
+
+impl std::error::Error for MissingActiveGeneration {}
+
 /// Applies the one generation-bound publication-authority check shared by all
 /// public Core query openers. Physical verification alone is insufficient for
 /// an empty generation because absence must be certified by refresh metadata.
@@ -1169,7 +1184,7 @@ pub fn pin_active_verified_generation(
 ) -> Result<PinnedSourceBackedGeneration> {
     let index = open_published_generation(data_root, journal)
         .context("source_unavailable: verify active Core generation")?
-        .ok_or_else(|| anyhow!("source_unavailable: active verified Core generation is missing"))?;
+        .ok_or_else(|| anyhow::Error::new(MissingActiveGeneration))?;
     verify_generation_query_authority(&index).map_err(anyhow::Error::new)?;
     Ok(PinnedSourceBackedGeneration { index })
 }

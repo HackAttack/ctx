@@ -525,14 +525,36 @@ pub(super) fn daemon_report_with_disabled_status(
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
 ) -> Value {
-    let status_value = read_daemon_status(data_root);
     let current_config = AppConfig::load(data_root).ok();
+    daemon_report_with_config_snapshot(
+        data_root,
+        disabled_overrides_lifecycle,
+        current_config.as_ref(),
+    )
+}
+
+pub(super) fn daemon_report_with_config(
+    data_root: &Path,
+    disabled_overrides_lifecycle: bool,
+    current_config: &AppConfig,
+) -> Value {
+    daemon_report_with_config_snapshot(
+        data_root,
+        disabled_overrides_lifecycle,
+        Some(current_config),
+    )
+}
+
+fn daemon_report_with_config_snapshot(
+    data_root: &Path,
+    disabled_overrides_lifecycle: bool,
+    current_config: Option<&AppConfig>,
+) -> Value {
+    let status_value = read_daemon_status(data_root);
     let enabled = current_config
-        .as_ref()
         .map(|config| config.daemon.enabled)
         .unwrap_or_else(|| AppConfig::default().daemon.enabled);
     let daemon_mode = current_config
-        .as_ref()
         .map(|config| config.daemon.mode)
         .or_else(|| {
             status_value
@@ -586,7 +608,7 @@ pub(super) fn daemon_report_with_disabled_status(
             .as_ref()
             .and_then(|value| json_u32(value, "pid"))
     };
-    let config_reload = daemon_config_reload_report(data_root, status_value.as_ref(), running);
+    let config_reload = daemon_config_reload_report(status_value.as_ref(), running, current_config);
     let semantic_runtime_active = running
         && status_value
             .as_ref()
@@ -609,7 +631,10 @@ pub(super) fn daemon_report_with_disabled_status(
     let jobs = json!({
         "core_refresh": daemon_core_refresh_job_report(
             data_root,
-            disabled_overrides_lifecycle
+            disabled_overrides_lifecycle,
+            current_config
+                .map(|config| config.daemon.enabled)
+                .unwrap_or_else(|| AppConfig::default().daemon.enabled),
         ),
         "semantic_index": daemon_semantic_job_report(
             data_root,
@@ -618,6 +643,7 @@ pub(super) fn daemon_report_with_disabled_status(
             running,
             semantic_runtime_active,
             &config_reload,
+            current_config,
         ),
     });
     let lock_identity = compact_json(json!({
@@ -683,6 +709,7 @@ fn daemon_semantic_job_report(
     daemon_running: bool,
     semantic_runtime_active: bool,
     config_reload: &Value,
+    current_config: Option<&AppConfig>,
 ) -> Value {
     let requested_daemon_enabled = config_reload
         .pointer("/requested/daemon_enabled")
@@ -698,14 +725,14 @@ fn daemon_semantic_job_report(
         .and_then(Value::as_bool);
     let daemon_enabled = requested_daemon_enabled
         .or(applied_daemon_enabled)
-        .unwrap_or_else(|| daemon_enabled_for_status(data_root));
+        .unwrap_or_else(|| {
+            current_config
+                .map(|config| config.daemon.enabled)
+                .unwrap_or_else(|| AppConfig::default().daemon.enabled)
+        });
     let semantic_enabled = requested_semantic_enabled
         .or(applied_semantic_enabled)
-        .unwrap_or_else(|| {
-            AppConfig::load(data_root)
-                .map(|config| config.semantic_search_enabled())
-                .unwrap_or(false)
-        });
+        .unwrap_or_else(|| current_config.is_some_and(AppConfig::semantic_search_enabled));
     let semantic_supported = super::semantic_query_service_supported();
     let mode_allows_semantic = !daemon_mode.runs_only_source_refresh();
     let enabled = daemon_enabled && semantic_enabled && semantic_supported && mode_allows_semantic;
@@ -799,8 +826,8 @@ fn daemon_semantic_job_report(
 pub(super) fn daemon_core_refresh_job_report(
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
+    daemon_enabled: bool,
 ) -> Value {
-    let daemon_enabled = daemon_enabled_for_status(data_root);
     let status_value = read_daemon_job_status(&daemon_core_refresh_job_path(data_root));
     let job = status_value.as_ref();
     let disabled = !daemon_enabled && disabled_overrides_lifecycle;
@@ -876,18 +903,11 @@ fn daemon_core_refresh_endpoint_report(data_root: &Path) -> Value {
     }))
 }
 
-pub(super) fn daemon_enabled_for_status(data_root: &Path) -> bool {
-    AppConfig::load(data_root)
-        .map(|config| config.daemon.enabled)
-        .unwrap_or_else(|_| AppConfig::default().daemon.enabled)
-}
-
 fn daemon_config_reload_report(
-    data_root: &Path,
     daemon_status: Option<&Value>,
     running: bool,
+    current_config: Option<&AppConfig>,
 ) -> Value {
-    let current_config = AppConfig::load(data_root).ok();
     let persisted = daemon_status
         .and_then(|value| value.get("config_reload"))
         .cloned()
@@ -904,13 +924,9 @@ fn daemon_config_reload_report(
         .get("applied")
         .and_then(|value| value.get("semantic_enabled"))
         .and_then(Value::as_bool);
-    let requested_daemon_enabled = current_config.as_ref().map(|config| config.daemon.enabled);
-    let requested_daemon_mode = current_config
-        .as_ref()
-        .map(|config| config.daemon.mode.as_str());
-    let requested_semantic_enabled = current_config
-        .as_ref()
-        .map(AppConfig::semantic_search_enabled);
+    let requested_daemon_enabled = current_config.map(|config| config.daemon.enabled);
+    let requested_daemon_mode = current_config.map(|config| config.daemon.mode.as_str());
+    let requested_semantic_enabled = current_config.map(AppConfig::semantic_search_enabled);
     let out_of_sync = running
         && (requested_daemon_enabled != applied_daemon_enabled
             || requested_daemon_mode != applied_daemon_mode
