@@ -3,19 +3,16 @@ mod query;
 mod semantic_port;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Result};
-use ctx_history_core::{EventOrigin, SessionRelationshipKind};
-use ctx_history_index::{
-    EventRecord, EventSearchCandidate, EventSearchFilters, VerifiedIndex,
-    MAX_LEXICAL_QUERY_RESULTS, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
-};
-use serde_json::{json, Value};
-use uuid::Uuid;
+#[cfg(test)]
+use ctx_history_index::EventSearchCandidate;
+use ctx_history_index::{EventSearchFilters, VerifiedIndex, SEARCH_COPIED_EVENT_LINEAGE_POLICY};
+use serde_json::Value;
 
 use crate::{
     analytics::{
@@ -56,6 +53,8 @@ pub(super) use hydration::{
     SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES,
 };
 use query::index_search_filters_with_refs;
+#[cfg(test)]
+pub(super) use query::source_search_request;
 pub(super) use query::NormalizedSearchQuery;
 pub(crate) use query::SourceSearchRequest;
 #[cfg(test)]
@@ -69,10 +68,6 @@ pub(crate) use semantic_port::{
     SemanticCapability,
 };
 
-const MAX_SESSION_DIVERSITY_CANDIDATES: usize = 64 * 1024;
-const MIN_CANDIDATE_BATCH: usize = 256;
-const CANDIDATE_OVERSAMPLE: usize = 8;
-const SOURCE_FUSION_CANDIDATES: usize = 1_600;
 const MAX_USAGE_CONTEXT_EVENTS_PER_SESSION: usize = 256;
 pub(super) const MISSING_INDEX_ERROR: &str =
     "the Core index does not exist; retry with daemon refresh enabled";
@@ -215,90 +210,21 @@ impl From<ctx_history_index::IndexError> for SourceSearchFailure {
     }
 }
 
-type SourceSearchResult<T> = std::result::Result<T, SourceSearchFailure>;
-
-#[derive(Debug)]
-pub(super) struct SearchCollection {
-    pub(super) result_window: SearchResultWindow,
-    pub(super) candidate_pool: usize,
-    pub(super) candidate_pool_truncated: bool,
-    pub(super) requested_backend: SearchBackendArg,
-    pub(super) effective_backend: SearchBackendArg,
-    pub(super) semantic_weight: f32,
-    pub(super) semantic_status: &'static str,
-    pub(super) semantic_fallback: Option<SemanticFallbackDiagnostics>,
-    pub(super) semantic_diagnostics: Option<Value>,
-}
-
-#[derive(Debug)]
-pub(super) struct SearchResultWindow {
-    pub(super) limit: usize,
-    pub(super) hits: Vec<SearchHit>,
-    pub(super) more_available: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct SemanticFallbackDiagnostics {
-    pub(super) code: &'static str,
-    pub(super) detail: String,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct SearchHit {
-    pub(super) event: SearchEventMetadata,
-    pub(super) score: f32,
-    pub(super) more_matches_in_session: usize,
-}
-
-/// The exact immutable event fields retained after candidate shaping and used
-/// by search presentation, rendering, and context accounting. Large source,
-/// native-identity, and touched-file metadata stays outside the result window.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::commands::source_index) struct SearchEventMetadata {
-    pub(in crate::commands::source_index) event_id: Uuid,
-    pub(in crate::commands::source_index) session_id: Uuid,
-    pub(in crate::commands::source_index) parent_session_id: Option<Uuid>,
-    pub(in crate::commands::source_index) root_session_id: Uuid,
-    pub(in crate::commands::source_index) session_relationship: SessionRelationshipKind,
-    pub(in crate::commands::source_index) event_origin: EventOrigin,
-    pub(in crate::commands::source_index) provider: String,
-    pub(in crate::commands::source_index) source_format: String,
-    pub(in crate::commands::source_index) provider_session_id: Option<String>,
-    pub(in crate::commands::source_index) branch: Option<String>,
-    pub(in crate::commands::source_index) agent_type: String,
-    pub(in crate::commands::source_index) is_primary: bool,
-    pub(in crate::commands::source_index) event_sequence: u64,
-    pub(in crate::commands::source_index) occurred_at_unix_ms: Option<i64>,
-    pub(in crate::commands::source_index) event_type: String,
-    pub(in crate::commands::source_index) role: Option<String>,
-    pub(in crate::commands::source_index) workspace: Option<String>,
-    pub(in crate::commands::source_index) cwd: Option<String>,
-}
-
-impl From<&EventRecord> for SearchEventMetadata {
-    fn from(event: &EventRecord) -> Self {
-        Self {
-            event_id: event.event_id.as_uuid(),
-            session_id: event.session_id.as_uuid(),
-            parent_session_id: event.parent_session_id.map(|id| id.as_uuid()),
-            root_session_id: event.root_session_id.as_uuid(),
-            session_relationship: event.session_relationship,
-            event_origin: event.event_origin.clone(),
-            provider: event.provider.clone(),
-            source_format: event.source_format.clone(),
-            provider_session_id: event.provider_session_id.clone(),
-            branch: event.branch.clone(),
-            agent_type: event.agent_type.clone(),
-            is_primary: event.is_primary,
-            event_sequence: event.event_sequence,
-            occurred_at_unix_ms: event.occurred_at_unix_ms,
-            event_type: event.event_type.clone(),
-            role: event.role.clone(),
-            workspace: event.workspace.clone(),
-            cwd: event.cwd.clone(),
+impl From<ctx_history_query::SearchExecutionError> for SourceSearchFailure {
+    fn from(error: ctx_history_query::SearchExecutionError) -> Self {
+        match error {
+            ctx_history_query::SearchExecutionError::Semantic(error) => Self::Semantic(error),
+            ctx_history_query::SearchExecutionError::Index(error) => Self::from(error),
+            ctx_history_query::SearchExecutionError::Application(error) => Self::from(error),
         }
     }
 }
+
+type SourceSearchResult<T> = std::result::Result<T, SourceSearchFailure>;
+
+pub(super) use ctx_history_query::{SearchCollection, SearchHit, SemanticFallbackDiagnostics};
+#[cfg(test)]
+pub(super) use ctx_history_query::{SearchEventMetadata, SearchResultWindow};
 
 pub(super) struct RefreshOutcome {
     pub(super) pin: PinnedSourceBackedGeneration,
@@ -336,7 +262,7 @@ fn run_search_inner<P: HistorySemanticPort>(
     semantic_port: &P,
 ) -> SourceSearchResult<()> {
     let config = config::AppConfig::load(&data_root)?;
-    let mut request = SourceSearchRequest::from(&args);
+    let mut request = query::source_search_request(&args);
     normalize_search_request(&mut request)?;
     let requested_backend =
         resolve_source_search_backend_with_port(&request, &config, semantic_port)?;
@@ -825,37 +751,10 @@ fn collect_search_hits_with_port<P: HistorySemanticPort>(
     filters: &EventSearchFilters,
     semantic_port: &P,
 ) -> SourceSearchResult<SearchCollection> {
-    let prepared = prepare_semantic_search(request, index, semantic_weight, filters)?;
-    let (requested_backend, normalized_query) = match prepared {
-        PreparedSemanticSearch::Complete(collection) => return Ok(collection),
-        PreparedSemanticSearch::Query {
-            requested_backend,
-            normalized_query,
-        } => (requested_backend, normalized_query),
-    };
-
-    match semantic_port.begin_query(index) {
-        Ok(mut semantic_query) => collect_prepared_semantic_search(
-            request,
-            index,
-            semantic_weight,
-            filters,
-            requested_backend,
-            normalized_query,
-            |query, filters, candidate_limit| {
-                semantic_query.candidates(query, filters, candidate_limit)
-            },
-        ),
-        Err(error) => collect_prepared_semantic_search(
-            request,
-            index,
-            semantic_weight,
-            filters,
-            requested_backend,
-            normalized_query,
-            |_, _, _| Err(error.clone()),
-        ),
-    }
+    let mut planned = request.clone();
+    planned.semantic_weight = semantic_weight;
+    ctx_history_query::collect_search_hits(&planned, index, filters, semantic_port)
+        .map_err(SourceSearchFailure::from)
 }
 
 #[cfg(test)]
@@ -865,7 +764,7 @@ pub(super) fn collect_search_hits_with_backend_using<SemanticSearch>(
     data_root: &Path,
     semantic_weight: f32,
     filters: &EventSearchFilters,
-    semantic_search: SemanticSearch,
+    mut semantic_search: SemanticSearch,
 ) -> Result<SearchCollection>
 where
     SemanticSearch: FnMut(
@@ -876,22 +775,12 @@ where
         usize,
     ) -> Result<(Vec<EventSearchCandidate>, Value)>,
 {
-    let prepared = prepare_semantic_search(request, index, semantic_weight, filters)?;
-    let (requested_backend, normalized_query) = match prepared {
-        PreparedSemanticSearch::Complete(collection) => return Ok(collection),
-        PreparedSemanticSearch::Query {
-            requested_backend,
-            normalized_query,
-        } => (requested_backend, normalized_query),
-    };
-    let mut semantic_search = semantic_search;
-    collect_prepared_semantic_search(
-        request,
+    let mut planned = request.clone();
+    planned.semantic_weight = semantic_weight;
+    ctx_history_query::collect_search_hits_using(
+        &planned,
         index,
-        semantic_weight,
         filters,
-        requested_backend,
-        normalized_query,
         |query, filters, candidate_limit| {
             semantic_search(index, data_root, query, filters, candidate_limit)
                 .map(|(candidates, diagnostics)| HistorySemanticBatch {
@@ -901,412 +790,9 @@ where
                 .map_err(|error| HistorySemanticError::failed(format!("{error:#}")))
         },
     )
+    .map_err(SourceSearchFailure::from)
     .map_err(SourceSearchFailure::into_anyhow)
 }
 
-enum PreparedSemanticSearch {
-    Complete(SearchCollection),
-    Query {
-        requested_backend: SearchBackendArg,
-        normalized_query: NormalizedSearchQuery,
-    },
-}
-
-fn prepare_semantic_search(
-    request: &SourceSearchRequest,
-    index: &VerifiedIndex,
-    semantic_weight: f32,
-    filters: &EventSearchFilters,
-) -> SourceSearchResult<PreparedSemanticSearch> {
-    let requested_backend = request.backend.unwrap_or(SearchBackendArg::Lexical);
-    if !semantic_weight.is_finite() || !(0.0..=1.0).contains(&semantic_weight) {
-        return Err(anyhow!("semantic weight must be finite and between 0.0 and 1.0").into());
-    }
-    if requested_backend == SearchBackendArg::Lexical
-        || (requested_backend == SearchBackendArg::Hybrid && semantic_weight == 0.0)
-    {
-        let normalized_query = NormalizedSearchQuery::from_request(request);
-        let queries = normalized_query.texts();
-        let mut collection =
-            collect_search_hits(index, &queries, request.limit, request.events, filters)?;
-        collection.requested_backend = requested_backend;
-        collection.semantic_weight = 0.0;
-        return Ok(PreparedSemanticSearch::Complete(collection));
-    }
-    if requested_backend != SearchBackendArg::Lexical {
-        if let Some(not_ready) = unsupported_semantic_scope(request) {
-            if requested_backend == SearchBackendArg::Semantic {
-                return Err(not_ready.into());
-            }
-            let normalized_query = NormalizedSearchQuery::from_request(request);
-            let queries = normalized_query.texts();
-            let mut collection =
-                collect_search_hits(index, &queries, request.limit, request.events, filters)?;
-            let fallback = SemanticFallbackDiagnostics {
-                code: not_ready.code(),
-                detail: not_ready.detail().to_owned(),
-            };
-            collection.requested_backend = requested_backend;
-            collection.effective_backend = SearchBackendArg::Lexical;
-            collection.semantic_weight = 0.0;
-            collection.semantic_status = "unsupported";
-            collection.semantic_fallback = Some(fallback.clone());
-            collection.semantic_diagnostics = Some(json!({
-                "query_count": queries.len(),
-                "queries": [],
-                "fallback": {
-                    "code": fallback.code,
-                    "detail": fallback.detail,
-                },
-            }));
-            return Ok(PreparedSemanticSearch::Complete(collection));
-        }
-    }
-    if !request.semantic_enabled || !request.semantic_daemon_enabled {
-        let not_ready = if request.semantic_enabled {
-            HistorySemanticError::not_ready(
-                "semantic_daemon_disabled",
-                "local semantic retrieval is unavailable because the ctx daemon is disabled",
-                false,
-            )
-        } else {
-            HistorySemanticError::not_ready(
-                "semantic_disabled",
-                "local semantic retrieval is disabled",
-                false,
-            )
-        };
-        if requested_backend == SearchBackendArg::Semantic {
-            return Err(not_ready.into());
-        }
-        let normalized_query = NormalizedSearchQuery::from_request(request);
-        let queries = normalized_query.texts();
-        let mut collection =
-            collect_search_hits(index, &queries, request.limit, request.events, filters)?;
-        let fallback = SemanticFallbackDiagnostics {
-            code: not_ready.code(),
-            detail: not_ready.detail().to_owned(),
-        };
-        collection.requested_backend = requested_backend;
-        collection.effective_backend = SearchBackendArg::Lexical;
-        collection.semantic_weight = semantic_weight;
-        collection.semantic_status = if request.semantic_enabled {
-            "unavailable"
-        } else {
-            "disabled"
-        };
-        collection.semantic_fallback = Some(fallback.clone());
-        collection.semantic_diagnostics = Some(json!({
-            "query_count": queries.len(),
-            "queries": [],
-            "fallback": {
-                "code": fallback.code,
-                "detail": fallback.detail,
-            },
-        }));
-        return Ok(PreparedSemanticSearch::Complete(collection));
-    }
-
-    let normalized_query = NormalizedSearchQuery::from_request(request);
-    Ok(PreparedSemanticSearch::Query {
-        requested_backend,
-        normalized_query,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_prepared_semantic_search<SemanticSearch>(
-    request: &SourceSearchRequest,
-    index: &VerifiedIndex,
-    semantic_weight: f32,
-    filters: &EventSearchFilters,
-    requested_backend: SearchBackendArg,
-    normalized_query: NormalizedSearchQuery,
-    mut semantic_search: SemanticSearch,
-) -> SourceSearchResult<SearchCollection>
-where
-    SemanticSearch: FnMut(
-        &str,
-        &EventSearchFilters,
-        usize,
-    ) -> std::result::Result<HistorySemanticBatch, HistorySemanticError>,
-{
-    let queries = normalized_query.texts();
-    let mut semantic_by_event = BTreeMap::<Uuid, EventSearchCandidate>::new();
-    let mut semantic_query_diagnostics = Vec::with_capacity(queries.len());
-    for query in &queries {
-        let semantic_result = semantic_search(query, filters, SOURCE_FUSION_CANDIDATES);
-        let HistorySemanticBatch {
-            candidates,
-            diagnostics,
-        } = match semantic_result {
-            Ok(value) => value,
-            Err(error) if requested_backend == SearchBackendArg::Hybrid => {
-                let fallback = semantic_fallback_diagnostics(&error);
-                let mut collection =
-                    collect_search_hits(index, &queries, request.limit, request.events, filters)?;
-                collection.requested_backend = requested_backend;
-                collection.effective_backend = SearchBackendArg::Lexical;
-                collection.semantic_weight = semantic_weight;
-                collection.semantic_status = "unavailable";
-                collection.semantic_fallback = Some(fallback.clone());
-                collection.semantic_diagnostics = Some(json!({
-                    "query_count": queries.len(),
-                    "queries": semantic_query_diagnostics,
-                    "fallback": {
-                        "code": fallback.code,
-                        "detail": fallback.detail,
-                    },
-                }));
-                return Ok(collection);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        semantic_query_diagnostics.push(json!({
-            "query": query,
-            "diagnostics": diagnostics,
-        }));
-        for candidate in candidates {
-            semantic_by_event
-                .entry(candidate.event.event_id.as_uuid())
-                .and_modify(|existing| {
-                    if candidate.score > existing.score {
-                        *existing = candidate.clone();
-                    }
-                })
-                .or_insert(candidate);
-        }
-    }
-    let mut semantic_candidates = semantic_by_event.into_values().collect::<Vec<_>>();
-    semantic_candidates.sort_by(|left, right| {
-        right.score.total_cmp(&left.score).then_with(|| {
-            left.event
-                .event_id
-                .as_uuid()
-                .cmp(&right.event.event_id.as_uuid())
-        })
-    });
-    semantic_candidates.truncate(SOURCE_FUSION_CANDIDATES);
-    let semantic_diagnostics = json!({
-        "query_count": queries.len(),
-        "queries": semantic_query_diagnostics,
-    });
-
-    let candidates = if requested_backend == SearchBackendArg::Semantic {
-        semantic_candidates
-    } else {
-        let lexical_candidates = index.search_event_candidates_any_with_filters(
-            &queries,
-            filters,
-            SOURCE_FUSION_CANDIDATES,
-        )?;
-        fuse_source_candidates(lexical_candidates, semantic_candidates, semantic_weight)
-    };
-    let candidate_pool = candidates.len();
-    let result_window =
-        shape_search_result_window(candidates.iter(), request.limit, request.events);
-    Ok(SearchCollection {
-        result_window,
-        candidate_pool,
-        candidate_pool_truncated: candidate_pool >= SOURCE_FUSION_CANDIDATES,
-        requested_backend,
-        effective_backend: requested_backend,
-        semantic_weight: if requested_backend == SearchBackendArg::Semantic {
-            1.0
-        } else {
-            semantic_weight
-        },
-        semantic_status: "ready",
-        semantic_fallback: None,
-        semantic_diagnostics: Some(semantic_diagnostics),
-    })
-}
-
-fn semantic_fallback_diagnostics(error: &HistorySemanticError) -> SemanticFallbackDiagnostics {
-    SemanticFallbackDiagnostics {
-        code: error.code(),
-        detail: error.detail().to_owned(),
-    }
-}
-
-fn collect_search_hits(
-    index: &VerifiedIndex,
-    queries: &[&str],
-    limit: usize,
-    event_results: bool,
-    filters: &EventSearchFilters,
-) -> Result<SearchCollection> {
-    let document_count = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
-    let maximum = document_count
-        .min(MAX_SESSION_DIVERSITY_CANDIDATES)
-        .min(MAX_LEXICAL_QUERY_RESULTS);
-    let mut candidate_limit = limit
-        .saturating_mul(CANDIDATE_OVERSAMPLE)
-        .max(MIN_CANDIDATE_BATCH)
-        .min(maximum.max(1));
-
-    loop {
-        let candidates = if queries.is_empty() {
-            index.list_event_candidates_with_filters(filters, candidate_limit)?
-        } else {
-            index.search_event_candidates_any_with_filters(queries, filters, candidate_limit)?
-        };
-        let exhausted = candidates.len() < candidate_limit || candidate_limit >= document_count;
-        let result_window = shape_search_result_window(candidates.iter(), limit, event_results);
-        let enough = result_window.more_available;
-        if enough || exhausted {
-            return Ok(SearchCollection {
-                result_window,
-                candidate_pool: candidates.len(),
-                candidate_pool_truncated: false,
-                requested_backend: SearchBackendArg::Lexical,
-                effective_backend: SearchBackendArg::Lexical,
-                semantic_weight: 0.0,
-                semantic_status: "skipped",
-                semantic_fallback: None,
-                semantic_diagnostics: None,
-            });
-        }
-        if candidate_limit >= maximum {
-            return Ok(SearchCollection {
-                result_window,
-                candidate_pool: candidates.len(),
-                candidate_pool_truncated: true,
-                requested_backend: SearchBackendArg::Lexical,
-                effective_backend: SearchBackendArg::Lexical,
-                semantic_weight: 0.0,
-                semantic_status: "skipped",
-                semantic_fallback: None,
-                semantic_diagnostics: None,
-            });
-        }
-        candidate_limit = candidate_limit
-            .saturating_mul(2)
-            .min(maximum)
-            .max(candidate_limit.saturating_add(1));
-    }
-}
-
-struct SourceFusionEvidence {
-    event: EventRecord,
-    lexical_rank: Option<usize>,
-    semantic_rank: Option<usize>,
-}
-
-fn fuse_source_candidates(
-    lexical: Vec<EventSearchCandidate>,
-    semantic: Vec<EventSearchCandidate>,
-    semantic_weight: f32,
-) -> Vec<EventSearchCandidate> {
-    let mut evidence = BTreeMap::<Uuid, SourceFusionEvidence>::new();
-    for (rank, candidate) in lexical.into_iter().enumerate() {
-        evidence.insert(
-            candidate.event.event_id.as_uuid(),
-            SourceFusionEvidence {
-                event: candidate.event,
-                lexical_rank: Some(rank.saturating_add(1)),
-                semantic_rank: None,
-            },
-        );
-    }
-    for (rank, candidate) in semantic.into_iter().enumerate() {
-        let semantic_rank = rank.saturating_add(1);
-        evidence
-            .entry(candidate.event.event_id.as_uuid())
-            .and_modify(|entry| entry.semantic_rank = Some(semantic_rank))
-            .or_insert(SourceFusionEvidence {
-                event: candidate.event,
-                lexical_rank: None,
-                semantic_rank: Some(semantic_rank),
-            });
-    }
-    let mut candidates = evidence
-        .into_values()
-        .map(|evidence| EventSearchCandidate {
-            score: weighted_rrf_score(
-                evidence.lexical_rank,
-                evidence.semantic_rank,
-                semantic_weight,
-            ),
-            event: evidence.event,
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then_with(|| {
-                right
-                    .event
-                    .occurred_at_unix_ms
-                    .cmp(&left.event.occurred_at_unix_ms)
-            })
-            .then_with(|| right.event.event_sequence.cmp(&left.event.event_sequence))
-            .then_with(|| {
-                left.event
-                    .event_id
-                    .as_uuid()
-                    .cmp(&right.event.event_id.as_uuid())
-            })
-    });
-    candidates
-}
-
-fn weighted_rrf_score(
-    lexical_rank: Option<usize>,
-    semantic_rank: Option<usize>,
-    semantic_weight: f32,
-) -> f32 {
-    let reciprocal_rank = |rank: usize| 1.0 / (60.0 + rank.max(1) as f32);
-    let lexical = lexical_rank.map(reciprocal_rank).unwrap_or(0.0);
-    let semantic = semantic_rank.map(reciprocal_rank).unwrap_or(0.0);
-    ((1.0 - semantic_weight) * lexical) + (semantic_weight * semantic)
-}
-
-pub(super) fn shape_search_result_window<'a>(
-    candidates: impl IntoIterator<Item = &'a EventSearchCandidate>,
-    limit: usize,
-    event_results: bool,
-) -> SearchResultWindow {
-    let shape_limit = limit.saturating_add(1);
-    let mut hits = if event_results {
-        candidates
-            .into_iter()
-            .take(shape_limit)
-            .map(|candidate| SearchHit {
-                event: SearchEventMetadata::from(&candidate.event),
-                score: candidate.score,
-                more_matches_in_session: 0,
-            })
-            .collect()
-    } else {
-        let mut positions = BTreeMap::<Uuid, usize>::new();
-        let mut hits = Vec::<SearchHit>::new();
-        for candidate in candidates {
-            let session_id = candidate.event.session_id.as_uuid();
-            if let Some(position) = positions.get(&session_id).copied() {
-                if let Some(hit) = hits.get_mut(position) {
-                    hit.more_matches_in_session = hit.more_matches_in_session.saturating_add(1);
-                }
-                continue;
-            }
-            if hits.len() == shape_limit {
-                continue;
-            }
-            positions.insert(session_id, hits.len());
-            hits.push(SearchHit {
-                event: SearchEventMetadata::from(&candidate.event),
-                score: candidate.score,
-                more_matches_in_session: 0,
-            });
-        }
-        hits
-    };
-    let more_available = hits.len() > limit;
-    hits.truncate(limit);
-    SearchResultWindow {
-        limit,
-        hits,
-        more_available,
-    }
-}
+#[cfg(test)]
+pub(super) use ctx_history_query::shape_search_result_window;

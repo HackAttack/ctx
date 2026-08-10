@@ -4,9 +4,7 @@ mod render;
 use std::{collections::VecDeque, fmt, io::Write, path::PathBuf};
 
 use anyhow::{anyhow, Result};
-use ctx_history_core::{
-    CaptureProvider, EventType, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES,
-};
+use ctx_history_core::{EventType, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES};
 use ctx_history_index::{
     CoreEventPageBudget, CoreEventRecord, IndexError, SessionEventCursor, SessionRecord,
     VerifiedIndex, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS, SHOW_COPIED_EVENT_LINEAGE_POLICY,
@@ -38,8 +36,8 @@ use super::{
     render::{follow_up_command_prefix, render_show_document, write_show_value},
     shared::{
         index_root, open_index, render_active_generation_race, resolve_core_event_with_refs,
-        resolve_lookup_for_output, resolve_session_with_refs, validate_ctx_id,
-        validate_session_selector, ActiveGenerationRaceCommand,
+        resolve_lookup_for_output, validate_ctx_id, validate_session_selector,
+        ActiveGenerationRaceCommand,
     },
 };
 
@@ -894,73 +892,8 @@ pub(super) fn validate_show_target(target: &ShowTarget) -> Result<()> {
 }
 
 #[cfg(test)]
-pub(super) fn resolve_show_session(
-    index: &VerifiedIndex,
-    id: Option<&str>,
-    provider_session_id: Option<&str>,
-    provider: Option<CaptureProvider>,
-) -> Result<SessionRecord> {
-    let references = super::compact_ref::CompactRefResolver::new(index, None);
-    resolve_show_session_with_refs(&references, id, provider_session_id, provider)
-}
-
-pub(super) fn resolve_show_session_with_refs(
-    references: &super::compact_ref::CompactRefResolver<'_>,
-    id: Option<&str>,
-    provider_session_id: Option<&str>,
-    provider: Option<CaptureProvider>,
-) -> Result<SessionRecord> {
-    let index = references.current_index();
-    validate_session_selector(id, provider_session_id)?;
-    let session = match (id, provider_session_id) {
-        (Some(id), None) => resolve_session_with_refs(references, id)?,
-        (None, Some(provider_session_id)) => select_show_provider_session(
-            provider_session_id,
-            index.sessions_by_provider_session_id(
-                provider_session_id,
-                provider.map(CaptureProvider::as_str),
-            )?,
-        )?,
-        (Some(_), Some(_)) => {
-            return Err(anyhow!(
-                "pass either a ctx session ID or --provider-session, not both"
-            ));
-        }
-        (None, None) => {
-            return Err(anyhow!(
-                "Core session lookup requires a ctx session ID or --provider-session"
-            ));
-        }
-    };
-    if let Some(provider) = provider {
-        if session.provider != provider.as_str() {
-            return Err(anyhow!(
-                "Core session {} belongs to provider {}, not {}",
-                session.session_id,
-                session.provider,
-                provider
-            ));
-        }
-    }
-    Ok(session)
-}
-
-fn select_show_provider_session(
-    provider_session_id: &str,
-    matches: Vec<SessionRecord>,
-) -> Result<SessionRecord> {
-    match matches.as_slice() {
-        [] => Err(anyhow!(
-            "provider session {provider_session_id:?} was not found in the Core generation"
-        )),
-        [session] => Ok(session.clone()),
-        matches => Err(anyhow!(
-            "provider session {provider_session_id:?} is ambiguous; first matches are {} and {}; pass --provider or a ctx session ID",
-            matches[0].session_id,
-            matches[1].session_id
-        )),
-    }
-}
+pub(super) use ctx_history_query::resolve_show_session;
+pub(super) use ctx_history_query::resolve_show_session_with_refs;
 
 pub(super) fn event_window(
     index: &VerifiedIndex,

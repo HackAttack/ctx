@@ -1,17 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use ctx_history_index::{CoreEventRecord, IndexError, SessionRecord, VerifiedIndex};
+use ctx_history_index::{IndexError, VerifiedIndex};
 use ctx_history_refresh::{verify_generation_query_authority, GenerationQueryAuthorityError};
 use serde_json::{json, Value};
-use uuid::Uuid;
 
-use crate::{
-    transcript::normalize_uuid_prefix,
-    ui::{diagnostic, Action, Diagnostic, DiagnosticLevel, Field, RenderContext, Ui},
-};
-
-use super::compact_ref::{CompactRefNamespace, CompactRefResolveError, CompactRefResolver};
+use crate::ui::{diagnostic, Action, Diagnostic, DiagnosticLevel, Field, RenderContext, Ui};
 
 const SEARCH_DIRECTORY: &str = "search";
 const LEXICAL_DIRECTORY: &str = "lexical";
@@ -46,132 +40,12 @@ impl ActiveGenerationRaceCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MissingLookupKind {
-    Event,
-    Session,
-}
-
-impl MissingLookupKind {
-    const fn noun(self) -> &'static str {
-        match self {
-            Self::Event => "event",
-            Self::Session => "session",
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub(super) struct MissingLookupError {
-    kind: MissingLookupKind,
-    requested: String,
-    message: String,
-}
-
-impl MissingLookupError {
-    fn exact(kind: MissingLookupKind, requested: impl Into<String>) -> Self {
-        let requested = requested.into();
-        let message = format!(
-            "{} {requested} was not found in the Core generation",
-            kind.noun()
-        );
-        Self {
-            kind,
-            requested,
-            message,
-        }
-    }
-
-    fn prefix(kind: MissingLookupKind, requested: impl Into<String>) -> Self {
-        let requested = requested.into();
-        let message = format!(
-            "{} id prefix {requested:?} was not found in the Core generation",
-            kind.noun()
-        );
-        Self {
-            kind,
-            requested,
-            message,
-        }
-    }
-}
-
 #[cfg(test)]
-pub(super) fn resolve_core_event(index: &VerifiedIndex, id: &str) -> Result<CoreEventRecord> {
-    let references = CompactRefResolver::new(index, None);
-    resolve_core_event_with_refs(&references, id)
-}
-
-pub(super) fn resolve_core_event_with_refs(
-    references: &CompactRefResolver<'_>,
-    id: &str,
-) -> Result<CoreEventRecord> {
-    let event_id = resolve_compact_id_for_lookup(references, CompactRefNamespace::Event, id)?;
-    references
-        .current_index()
-        .core_event_by_id(event_id)?
-        .ok_or_else(|| missing_resolved_lookup(MissingLookupKind::Event, id, event_id).into())
-}
-
-#[cfg(test)]
-pub(super) fn resolve_session(index: &VerifiedIndex, id: &str) -> Result<SessionRecord> {
-    let references = CompactRefResolver::new(index, None);
-    resolve_session_with_refs(&references, id)
-}
-
-pub(super) fn resolve_session_with_refs(
-    references: &CompactRefResolver<'_>,
-    id: &str,
-) -> Result<SessionRecord> {
-    let session_id = resolve_compact_id_for_lookup(references, CompactRefNamespace::Session, id)?;
-    references
-        .current_index()
-        .session_by_id(session_id)?
-        .ok_or_else(|| missing_resolved_lookup(MissingLookupKind::Session, id, session_id).into())
-}
-
-fn resolve_compact_id_for_lookup(
-    references: &CompactRefResolver<'_>,
-    namespace: CompactRefNamespace,
-    id: &str,
-) -> Result<Uuid> {
-    if let Ok(id) = Uuid::parse_str(id.trim()) {
-        return Ok(id);
-    }
-    match references.resolve_id(namespace, id) {
-        Ok(id) => Ok(id),
-        Err(error) => match error.downcast_ref::<CompactRefResolveError>() {
-            Some(CompactRefResolveError::ExactNotFound { id, .. }) => {
-                let kind = match namespace {
-                    CompactRefNamespace::Event => MissingLookupKind::Event,
-                    CompactRefNamespace::Session => MissingLookupKind::Session,
-                };
-                Err(MissingLookupError::exact(kind, id.to_string()).into())
-            }
-            Some(CompactRefResolveError::NotFound { reference, .. }) => {
-                let kind = match namespace {
-                    CompactRefNamespace::Event => MissingLookupKind::Event,
-                    CompactRefNamespace::Session => MissingLookupKind::Session,
-                };
-                Err(MissingLookupError::prefix(kind, reference).into())
-            }
-            _ => Err(error),
-        },
-    }
-}
-
-fn missing_resolved_lookup(
-    kind: MissingLookupKind,
-    requested: &str,
-    resolved: Uuid,
-) -> MissingLookupError {
-    if Uuid::parse_str(requested.trim()).is_ok() {
-        MissingLookupError::exact(kind, resolved.to_string())
-    } else {
-        MissingLookupError::prefix(kind, requested.trim().to_ascii_lowercase())
-    }
-}
+pub(super) use ctx_history_query::{resolve_core_event, resolve_session};
+pub(super) use ctx_history_query::{
+    resolve_core_event_with_refs, resolve_session_with_refs, validate_ctx_id,
+    validate_session_selector, MissingLookupError, MissingLookupKind,
+};
 
 pub(super) fn resolve_lookup_for_output<T>(
     result: Result<T>,
@@ -262,7 +136,7 @@ pub(super) fn render_missing_lookup(
     missing: &MissingLookupError,
     recovery_command: &str,
 ) -> crate::ui::Document {
-    let (summary, detail, label) = match missing.kind {
+    let (summary, detail, label) = match missing.kind() {
         MissingLookupKind::Event => (
             "Event not found",
             "This event is not in the current searchable generation. Search for text from the event, then retry with a returned event ID.",
@@ -280,42 +154,12 @@ pub(super) fn render_missing_lookup(
             level: DiagnosticLevel::Error,
             summary,
             detail: Some(detail),
-            fields: &[Field::new(label, &missing.requested)],
+            fields: &[Field::new(label, missing.requested())],
             action: Some(Action {
                 command: recovery_command,
             }),
         },
     )
-}
-
-pub(super) fn validate_ctx_id(id: &str, kind: &str) -> Result<String> {
-    let trimmed = id.trim();
-    if Uuid::parse_str(trimmed).is_ok() {
-        return Ok(trimmed.to_ascii_lowercase());
-    }
-    normalize_uuid_prefix(trimmed, kind)
-}
-
-pub(super) fn validate_session_selector(
-    id: Option<&str>,
-    provider_session_id: Option<&str>,
-) -> Result<()> {
-    match (id, provider_session_id) {
-        (Some(id), None) => {
-            validate_ctx_id(id, "session")?;
-            Ok(())
-        }
-        (None, Some(provider_session_id)) if provider_session_id.trim().is_empty() => {
-            Err(anyhow!("provider session ID must not be empty"))
-        }
-        (None, Some(_)) => Ok(()),
-        (Some(_), Some(_)) => Err(anyhow!(
-            "pass either a ctx session ID or --provider-session, not both"
-        )),
-        (None, None) => Err(anyhow!(
-            "Core session lookup requires a ctx session ID or --provider-session"
-        )),
-    }
 }
 
 pub(super) fn open_index(data_root: &Path) -> Result<VerifiedIndex> {

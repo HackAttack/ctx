@@ -1,0 +1,25 @@
+[package]
+name = "ctx-history-query"
+version = "0.26.0"
+description = "Transport-neutral history query planning, ranking, and result contracts for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index-format = { path = "../ctx-history-index-format" }
+ctx-history-index-query = { path = "../ctx-history-index-query" }
+serde_json.workspace = true
+thiserror.workspace = true
+unicode-segmentation.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+ctx-history-index = { path = "../ctx-history-index" }
+tempfile.workspace = true

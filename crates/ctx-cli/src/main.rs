@@ -54,6 +54,7 @@ mod progress;
 mod provider_args;
 mod provider_sources;
 mod release_build_identity;
+#[cfg(test)]
 mod search_filters;
 mod semantic;
 mod skill;
@@ -67,14 +68,18 @@ mod value_parsers;
 #[cfg(test)]
 mod parser_prop_tests;
 
+#[cfg(test)]
+pub(crate) use cli::MAX_SEARCH_LIMIT;
 pub(crate) use cli::{
     Cli, DaemonArgs, DaemonCommand, DaemonDisableArgs, DaemonRunArgs, DaemonStartModeArg,
     DaemonTriggerCommandArg, DoctorArgs, FormatArgs, ImportArgs, ListArgs, ListTarget, SearchArgs,
-    SearchBackendArg, SetupArgs, ShowArgs, ShowTarget, SourcesArgs, StatsArgs, StatusArgs,
-    UsageStatusMode, MAX_EVENT_WINDOW, MAX_SEARCH_LIMIT,
+    SetupArgs, ShowArgs, ShowTarget, SourcesArgs, StatsArgs, StatusArgs, UsageStatusMode,
+    MAX_EVENT_WINDOW,
 };
 pub(crate) use commands::locate::LocateTarget;
-pub(crate) use commands::search::RefreshArg;
+pub(crate) use ctx_history_query::{
+    SearchBackend as SearchBackendArg, SearchRefreshMode as RefreshArg,
+};
 pub(crate) use output::compact_json;
 pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};
