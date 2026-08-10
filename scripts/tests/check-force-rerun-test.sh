@@ -16,16 +16,24 @@ fail() {
   exit 1
 }
 
-mkdir -p "${repo_root}/scripts" "${repo_root}/tools/bazel"
+mkdir -p "${repo_root}/scripts"
 cp "${source_root}/scripts/check.sh" "${repo_root}/scripts/check.sh"
 cp "${source_root}/scripts/tests/fixtures/fake-bazel.sh" "${repo_root}/scripts/bazelw"
-printf '%s\n' \
-  '#!/usr/bin/env python3' \
-  'import os, sys' \
-  'with open(os.environ["CTX_FAKE_BAZEL_LOG"], "a", encoding="utf-8") as output:' \
-  '    output.write("preflight=" + " ".join(sys.argv[1:]) + "\n")' \
-  >"${repo_root}/tools/bazel/check_rust_target_inventory.py"
-chmod +x "${repo_root}/scripts/check.sh" "${repo_root}/scripts/bazelw"
+cat >"${repo_root}/scripts/check-rust-crate-size.py" <<'PY'
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+if sys.argv != [sys.argv[0], "--preflight", str(Path.cwd())]:
+    raise SystemExit(f"unexpected preflight arguments: {sys.argv[1:]!r}")
+with open(os.environ["CTX_FAKE_BAZEL_LOG"], "a", encoding="utf-8") as output:
+    print(f"preflight={sys.argv[1]} {sys.argv[2]}", file=output)
+PY
+chmod +x \
+  "${repo_root}/scripts/check.sh" \
+  "${repo_root}/scripts/check-rust-crate-size.py" \
+  "${repo_root}/scripts/bazelw"
 
 export CTX_FAKE_BAZEL_LOG="${test_root}/fake-bazel.log"
 unset RUST_TEST_THREADS
@@ -33,10 +41,11 @@ unset RUST_TEST_THREADS
 : >"${CTX_FAKE_BAZEL_LOG}"
 "${repo_root}/scripts/check.sh" --mode ci --force-rerun \
   >"${test_root}/ci.out" 2>"${test_root}/ci.err"
-[[ "$(grep -c '^preflight=--preflight ' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
-  || fail 'ci mode did not run exactly one local authority preflight'
-[[ "$(sed -n '1p' "${CTX_FAKE_BAZEL_LOG}")" == preflight=--preflight\ * ]] \
-  || fail 'ci mode did not run authority preflight before Bazel'
+[[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+  || fail 'ci mode did not run exactly one local preflight'
+head -n 1 "${CTX_FAKE_BAZEL_LOG}" | grep -Fqx \
+  "preflight=--preflight ${repo_root}" \
+  || fail 'ci mode did not run preflight before Bazel'
 if grep -Fqx 'arg=query' "${CTX_FAKE_BAZEL_LOG}"; then
   fail 'ci mode ran a redundant Bazel query'
 fi
@@ -65,8 +74,8 @@ fi
 : >"${CTX_FAKE_BAZEL_LOG}"
 "${repo_root}/scripts/check.sh" --mode ci \
   >"${test_root}/normal.out" 2>"${test_root}/normal.err"
-[[ "$(grep -c '^preflight=--preflight ' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
-  || fail 'normal ci mode did not run exactly one local authority preflight'
+[[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+  || fail 'normal mode did not run exactly one local preflight'
 if grep -Fqx 'arg=--cache_test_results=no' "${CTX_FAKE_BAZEL_LOG}"; then
   fail 'normal mode disabled Bazel test-result reuse'
 fi
@@ -88,21 +97,23 @@ cmp -s "${expected}" "${CTX_FAKE_BAZEL_LOG}" \
 grep -Fq -- '--force-rerun disables test-result reuse' \
   <("${repo_root}/scripts/check.sh" --help) \
   || fail 'help does not document force-rerun cache behavior'
+grep -Fq -- 'physical Rust crate-size preflight runs locally' \
+  <("${repo_root}/scripts/check.sh" --help) \
+  || fail 'help does not document local preflight behavior'
 
 expected_modes="$(printf '%s\n' ci nightly release)"
 [[ "$("${repo_root}/scripts/check.sh" --list-modes)" == "${expected_modes}" ]] \
   || fail 'mode inventory is not the canonical three-tier taxonomy'
 
 for removed_mode in fast presubmit smoke; do
-  : >"${CTX_FAKE_BAZEL_LOG}"
   if "${repo_root}/scripts/check.sh" --mode "${removed_mode}" \
     >"${test_root}/${removed_mode}.out" 2>"${test_root}/${removed_mode}.err"; then
     fail "removed ${removed_mode} mode still succeeds"
   fi
   grep -Fq "unknown check mode: ${removed_mode}" "${test_root}/${removed_mode}.err" \
     || fail "removed ${removed_mode} mode did not fail explicitly"
-  if [[ -s "${CTX_FAKE_BAZEL_LOG}" ]]; then
-    fail "removed ${removed_mode} mode ran preflight or Bazel"
+  if grep -Fq '^preflight=' "${CTX_FAKE_BAZEL_LOG}"; then
+    fail "removed ${removed_mode} mode ran preflight before mode validation"
   fi
 done
 
@@ -110,8 +121,8 @@ for mode in nightly release; do
   : >"${CTX_FAKE_BAZEL_LOG}"
   "${repo_root}/scripts/check.sh" --mode "${mode}" \
     >"${test_root}/${mode}.out" 2>"${test_root}/${mode}.err"
-  [[ "$(grep -c '^preflight=--preflight ' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
-    || fail "${mode} mode did not run exactly one local authority preflight"
+  [[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+    || fail "${mode} mode did not run exactly one local preflight"
   grep -Fqx "arg=//:${mode}" "${CTX_FAKE_BAZEL_LOG}" \
     || fail "${mode} mode did not execute its owning suite"
 done

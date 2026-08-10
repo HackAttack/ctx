@@ -19,8 +19,8 @@ run_bazel() {
 }
 
 run_rust_crate_size_preflight() {
-  printf '==> local Rust crate-size Cargo/Bazel authority preflight\n'
-  python3 tools/bazel/check_rust_target_inventory.py --preflight "${repo_root}"
+  printf '==> local physical Rust crate-size preflight\n'
+  python3 scripts/check-rust-crate-size.py --preflight "${repo_root}"
 }
 
 usage() {
@@ -34,8 +34,8 @@ Modes:
   nightly    ci plus serialized upgrade, daemon, and fault qualification
   release    nightly qualification for a release candidate
 
-Cargo metadata is invoked only by the local, offline crate-size authority preflight.
-Bazel remains the build and test authority.
+The physical Rust crate-size preflight runs locally before each named mode.
+Cargo is not invoked by these modes; Bazel is the build and test authority.
 --force-rerun disables test-result reuse without deleting compilation caches.
 USAGE
 }

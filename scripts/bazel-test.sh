@@ -139,23 +139,6 @@ case "${mode}" in
       CTX_LOC_SCC="${loc_scc}" \
       bash scripts/check-loc.sh
     ;;
-  rust_crate_size_check)
-    crate_scc="${2:-}"
-    crate_manifest="${3:-}"
-    [[ -n "${crate_scc}" && -x "${crate_scc}" ]] || \
-      fail 'rust_crate_size_check requires the pinned scc runfile'
-    [[ -n "${crate_manifest}" && -f "${crate_manifest}" ]] || \
-      fail 'rust_crate_size_check requires the declared crate source manifest'
-    crate_manifest="$(cd "$(dirname "${crate_manifest}")" && pwd -P)/$(basename "${crate_manifest}")"
-    [[ -n "${TEST_SRCDIR:-}" && -n "${TEST_WORKSPACE:-}" ]] || \
-      fail 'rust_crate_size_check requires the Bazel runfiles repository root'
-    crate_root="${TEST_SRCDIR}/${TEST_WORKSPACE}"
-    run env \
-      CTX_CRATE_LOC_PATHS_MANIFEST="${crate_manifest}" \
-      CTX_CRATE_LOC_ROOT="${crate_root}" \
-      CTX_CRATE_LOC_SCC="${crate_scc}" \
-      python3 scripts/check-rust-crate-size.py
-    ;;
   public_control_surface_check)
     run bash scripts/tests/check-public-control-surface-test.sh
     run python3 scripts/check-public-control-surface.py
