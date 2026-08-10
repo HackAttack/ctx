@@ -518,8 +518,14 @@ fn source_failures_with_rejections_remain_partial_and_name_source_failures() {
     let rendered = render_status(&context(80), &report).render_plain();
 
     assert!(rendered.starts_with("! Daemon is partially healthy\n"));
-    assert!(rendered.contains("ready with source failures"), "{rendered}");
-    assert!(rendered.contains("Rejected  2 provider records"), "{rendered}");
+    assert!(
+        rendered.contains("ready with source failures"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Rejected  2 provider records"),
+        "{rendered}"
+    );
     assert!(
         rendered.contains("Hint: Inspect source-level refresh failures."),
         "{rendered}"

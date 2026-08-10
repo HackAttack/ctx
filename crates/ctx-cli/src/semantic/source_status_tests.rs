@@ -551,7 +551,10 @@ fn published_record_rejections_are_ready_but_remain_diagnostic() {
     assert_eq!(report["status"], "ready", "{report:#}");
     assert_eq!(report["outcome"], "completed_with_rejections");
     assert_eq!(report["current"]["current_rejected_records"], 1);
-    assert_eq!(current_rejected_record_count(&json!({"refresh": report})), 1);
+    assert_eq!(
+        current_rejected_record_count(&json!({"refresh": report})),
+        1
+    );
 }
 
 #[test]

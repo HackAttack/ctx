@@ -295,7 +295,10 @@ mod ui_tests {
         let rendered = render_doctor_human(&context(80), "apply", &[], 2).render_plain();
 
         assert!(rendered.starts_with("✓ No problems found\n"), "{rendered}");
-        assert!(rendered.contains("History\nRejected  2 provider records\n"), "{rendered}");
+        assert!(
+            rendered.contains("History\nRejected  2 provider records\n"),
+            "{rendered}"
+        );
         assert!(!rendered.contains("issue"), "{rendered}");
     }
 
@@ -334,8 +337,7 @@ mod ui_tests {
         let finding = "ctx Pro key store is unavailable; unlock or repair the already selected secure key store, then run `ctx pro`".to_owned();
         for width in [32, 48, 80, 120] {
             let context = context(width);
-            let document =
-                render_doctor_human(&context, "off", std::slice::from_ref(&finding), 0);
+            let document = render_doctor_human(&context, "off", std::slice::from_ref(&finding), 0);
             let rendered = document.render_plain();
             assert!(rendered.starts_with("! ctx found 1 issue\n"));
             assert!(rendered.contains("Issues\n[1]"));

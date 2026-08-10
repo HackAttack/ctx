@@ -180,8 +180,7 @@ fn refresh_report(job: Option<&Value>, generation_id: Option<&str>, daemon: &Val
         || matches!(
             outcome,
             Some(
-                "completed_with_source_failures"
-                    | "completed_with_rejections_and_source_failures"
+                "completed_with_source_failures" | "completed_with_rejections_and_source_failures"
             )
         );
     let retryable = job

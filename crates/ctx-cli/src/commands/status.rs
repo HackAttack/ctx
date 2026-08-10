@@ -554,7 +554,10 @@ mod tests {
 
         assert!(rendered.starts_with("✓ ctx is healthy\n"), "{rendered}");
         assert!(rendered.contains("Refresh   ready"), "{rendered}");
-        assert!(rendered.contains("Rejected  3 provider records"), "{rendered}");
+        assert!(
+            rendered.contains("Rejected  3 provider records"),
+            "{rendered}"
+        );
         assert!(!rendered.contains("partially ready"), "{rendered}");
         assert!(!rendered.contains("\nNext\n"), "{rendered}");
     }
