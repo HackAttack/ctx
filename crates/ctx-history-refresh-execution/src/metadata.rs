@@ -48,7 +48,7 @@ impl SourceBackedPublicationMetadata {
                 "new Core source-refresh publications must use metadata v2".to_owned(),
             ));
         }
-        validate_v2_receipt(&self.receipt, None)
+        validate_v2_receipt(&self.receipt, None, &self.refresh_scope)
             .map_err(|error| IndexError::PublicationMetadata(error.to_string()))?;
         let route_ids = receipt_route_ids(&self.receipt)
             .map_err(|error| IndexError::PublicationMetadata(error.to_string()))?;
@@ -160,7 +160,7 @@ impl SourceBackedPublicationMetadata {
                 validate_receipt_generation(&receipt, index)?;
             }
             SOURCE_REFRESH_PUBLICATION_METADATA_VERSION => {
-                validate_v2_receipt(&receipt, Some(index))?;
+                validate_v2_receipt(&receipt, Some(index), &refresh_scope)?;
             }
             _ => unreachable!("metadata version checked above"),
         }
@@ -233,12 +233,18 @@ impl SourceBackedPublicationMetadata {
                                 self.receipt.get("zero_source_authority"),
                                 &route_results,
                             )
+                            .map(|authority| (route_results, authority))
                         })
-                        .is_ok_and(|authority| {
-                            !authority.is_empty()
-                                && authority
+                        .is_ok_and(|(route_results, authority)| {
+                            if authority.is_empty() {
+                                route_results.is_empty()
+                                    && self.refresh_scope == SourceBackedRefreshScope::All
+                                    && index.manifest().source_routes().is_empty()
+                            } else {
+                                authority
                                     .iter()
                                     .all(|entry| entry.generation_id == index.generation_id())
+                            }
                         })
             }
             None => false,
@@ -285,7 +291,11 @@ fn validate_receipt_generation(receipt: &Value, index: &VerifiedIndex) -> Result
     Ok(())
 }
 
-fn validate_v2_receipt(receipt: &Value, index: Option<&VerifiedIndex>) -> Result<()> {
+fn validate_v2_receipt(
+    receipt: &Value,
+    index: Option<&VerifiedIndex>,
+    refresh_scope: &SourceBackedRefreshScope,
+) -> Result<()> {
     let generation_id = receipt
         .get("published_generation")
         .and_then(Value::as_str)
@@ -305,12 +315,21 @@ fn validate_v2_receipt(receipt: &Value, index: Option<&VerifiedIndex>) -> Result
         receipt.get("zero_source_authority"),
         &route_results,
     )?;
+    let authoritative_empty_catalog = source_count == 0
+        && route_results.is_empty()
+        && authority.is_empty()
+        && refresh_scope == &SourceBackedRefreshScope::All;
+    if authoritative_empty_catalog
+        && index.is_some_and(|index| !index.manifest().source_routes().is_empty())
+    {
+        bail!("empty-catalog Core source-refresh metadata retained source routes");
+    }
     validate_zero_source_authority(
         generation_id,
         source_count,
         &route_results,
         &authority,
-        true,
+        !authoritative_empty_catalog,
     )
 }
 
@@ -419,6 +438,24 @@ mod tests {
         assert!(matches!(
             value.encode(),
             Err(IndexError::PublicationMetadata(_))
+        ));
+    }
+
+    #[test]
+    fn all_scope_accepts_a_truthful_empty_catalog_but_exact_scope_does_not() {
+        let mut all = metadata(json!({
+            "route_results": {},
+        }));
+        all.receipt["current"]["current_source_count"] = json!(0);
+        all.encode()
+            .expect("an all-scope refresh can certify a genuinely empty catalog");
+
+        let mut exact = all;
+        exact.refresh_scope = SourceBackedRefreshScope::exact(Vec::new());
+        assert!(matches!(
+            exact.encode(),
+            Err(IndexError::PublicationMetadata(message))
+                if message.contains("no publication authority")
         ));
     }
 }

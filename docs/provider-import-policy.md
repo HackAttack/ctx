@@ -44,6 +44,12 @@ cannot create a permanent hot retry. Incomplete records and retryable parser,
 source, Store, or system failures do not advance it. Corrected complete records
 remain eligible after source replacement is detected.
 
+A fully published generation with deterministic record rejections and no source
+failures is converged and searchable. Status and doctor report its Core refresh
+as ready while retaining the current rejected-record count as a diagnostic.
+Source failures, retryable failures, an unpublished or retained generation, and
+an unavailable verified search generation remain partial or unhealthy.
+
 Content transactions use the shared 64-unit/8 MiB bounds with required WAL
 checkpoints. Event-search merge suppression may span a whole source, including
 manifested per-file imports, but its final compaction remains bounded.

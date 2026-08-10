@@ -471,10 +471,12 @@ fn source_rejections_are_visible_without_internal_provenance() {
     });
     let rendered = render_status(&context(80), &report).render_plain();
 
-    assert!(rendered.starts_with("! Daemon is partially healthy\n"));
+    assert!(rendered.starts_with("✓ Daemon is healthy\n"));
     assert!(rendered.contains("Status    ready with rejections\n"));
-    assert!(rendered.contains("Rejected  3 records\n"));
+    assert!(rendered.contains("Rejected  3 provider records\n"));
+    assert!(rendered.contains("Hint: Inspect rejected provider records.\n"));
     assert!(rendered.contains("ctx import --all --no-daemon\n"));
+    assert!(!rendered.contains("source-level refresh failures"));
     assert!(!rendered.contains("internal-import-route"));
 }
 
@@ -499,6 +501,36 @@ fn failed_transcript_route_prevents_a_misleading_healthy_daemon_status() {
     );
     assert!(rendered.contains("transcript routes could not be refreshed"));
     assert!(!rendered.contains("Daemon is healthy"));
+}
+
+#[test]
+fn source_failures_with_rejections_remain_partial_and_name_source_failures() {
+    let mut report = running_report();
+    report["jobs"]["core_refresh"] = json!({
+        "status": "completed",
+        "request_state": "published",
+        "receipt": {
+            "outcome": "completed_with_rejections_and_source_failures",
+            "source_failure_total": 1,
+            "current": {"current_rejected_records": 2},
+        },
+    });
+    let rendered = render_status(&context(80), &report).render_plain();
+
+    assert!(rendered.starts_with("! Daemon is partially healthy\n"));
+    assert!(
+        rendered.contains("ready with source failures"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Rejected  2 provider records"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Hint: Inspect source-level refresh failures."),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Hint: Inspect rejected provider records."));
 }
 
 #[test]

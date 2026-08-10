@@ -459,6 +459,100 @@ fn configured_autostart_child_inherits_source_refresh_only_mode() {
 }
 
 #[test]
+fn unsupervised_autostart_child_has_a_finite_default_lifetime() {
+    struct RestoreIdleEnv(Option<std::ffi::OsString>);
+    impl Drop for RestoreIdleEnv {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => env::set_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", value),
+                None => env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"),
+            }
+        }
+    }
+
+    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _restore = RestoreIdleEnv(env::var_os("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"));
+    env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+    let temp = tempfile::tempdir().unwrap();
+
+    let launch = configured_unsupervised_daemon_autostart_command(
+        Path::new("ctx"),
+        temp.path(),
+        DaemonTriggerCommandArg::Setup,
+        None,
+    )
+    .expect("normalized bounded daemon launch");
+    let args = launch
+        .get_args()
+        .filter_map(std::ffi::OsStr::to_str)
+        .collect::<Vec<_>>();
+    let idle_index = args
+        .iter()
+        .position(|arg| *arg == "--idle-exit-seconds")
+        .expect("bounded daemon must declare an idle exit");
+    assert_eq!(
+        args.get(idle_index + 1)
+            .and_then(|value| value.parse::<u64>().ok()),
+        Some(DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS)
+    );
+}
+
+#[test]
+fn persistent_fallback_autostart_child_has_no_idle_exit() {
+    struct RestoreIdleEnv(Option<std::ffi::OsString>);
+    impl Drop for RestoreIdleEnv {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => env::set_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS", value),
+                None => env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"),
+            }
+        }
+    }
+
+    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _restore = RestoreIdleEnv(env::var_os("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS"));
+    env::remove_var("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+    let temp = tempfile::tempdir().unwrap();
+    let launch = configured_daemon_autostart_command(
+        Path::new("ctx"),
+        temp.path(),
+        DaemonTriggerCommandArg::Import,
+        None,
+    )
+    .expect("normalized persistent fallback daemon launch");
+    let args = launch
+        .get_args()
+        .filter_map(std::ffi::OsStr::to_str)
+        .collect::<Vec<_>>();
+    assert!(
+        !args.contains(&"--idle-exit-seconds"),
+        "persistent fallback launch must not acquire the bounded manager-unavailable lifetime: {args:?}"
+    );
+}
+
+#[test]
+fn only_manager_unavailability_requires_the_initial_refresh_wait() {
+    use super::super::daemon_supervisor::DaemonSupervisorStart;
+
+    assert_eq!(
+        daemon_supervisor_launch_policy(DaemonSupervisorStart::Native),
+        (false, false)
+    );
+    assert_eq!(
+        daemon_supervisor_launch_policy(DaemonSupervisorStart::Fallback),
+        (false, false)
+    );
+    assert_eq!(
+        daemon_supervisor_launch_policy(DaemonSupervisorStart::ManagerUnavailable),
+        (true, true)
+    );
+}
+
+#[test]
 fn mismatched_live_binary_never_joins_and_returns_one_actionable_handoff_command() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let _lock = DaemonLock::acquire(temp.path())?
@@ -995,6 +1089,99 @@ fn setup_handoff_accepts_a_slow_healthy_daemon_owned_first_build() {
             heartbeat_at_ms: 1_050,
         })
     );
+}
+
+#[test]
+fn setup_handoff_accepts_fresh_same_owner_job_progress_with_a_stale_lifecycle_heartbeat() {
+    let expected = AppConfig::default();
+    let now_ms = 100_000;
+    let stale_heartbeat_at_ms = now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1;
+    let status = json!({
+        "status": "running",
+        "pid": 41,
+        "started_at_ms": 1_000,
+        "heartbeat_at_ms": stale_heartbeat_at_ms,
+        "config_reload": {
+            "status": "applied",
+            "applied": {
+                "daemon_enabled": expected.daemon.enabled,
+                "daemon_mode": expected.daemon.mode.as_str(),
+                "semantic_enabled": expected.semantic_search_enabled(),
+            },
+        },
+    });
+    let refresh_job = json!({
+        "owner": "daemon",
+        "kind": "core_refresh",
+        "status": "running",
+        "request_id": "cold-build",
+        "request_state": "running",
+        "last_run_at_ms": 2_000,
+        "progress": {
+            "phase": "refreshing",
+            "completed_sources": 3,
+            "total_sources": 4,
+        },
+        "last_error": null,
+    });
+
+    assert_eq!(
+        daemon_handoff_observation_with_refresh_job_from(
+            Some(&status),
+            Some(&refresh_job),
+            Some(41),
+            true,
+            Some(41),
+            Some(&expected),
+            Some(now_ms),
+            now_ms,
+        ),
+        (
+            DaemonHandoffObservation::Running(DaemonHandoff {
+                pid: 41,
+                heartbeat_at_ms: stale_heartbeat_at_ms,
+            }),
+            true,
+        )
+    );
+
+    for invalid_job in [
+        {
+            let mut job = refresh_job.clone();
+            job["owner"] = json!("cli");
+            job
+        },
+        {
+            let mut job = refresh_job.clone();
+            job["request_id"] = json!("");
+            job
+        },
+        {
+            let mut job = refresh_job.clone();
+            job["request_state"] = json!("failed");
+            job
+        },
+        {
+            let mut job = refresh_job.clone();
+            job["last_error"] = json!("refresh failed");
+            job
+        },
+    ] {
+        assert_eq!(
+            daemon_handoff_observation_with_refresh_job_from(
+                Some(&status),
+                Some(&invalid_job),
+                Some(41),
+                true,
+                Some(41),
+                Some(&expected),
+                Some(now_ms),
+                now_ms,
+            ),
+            (DaemonHandoffObservation::Pending, false),
+            "invalid owner/request/error state must not gain handoff authority: {invalid_job}"
+        );
+    }
 }
 
 #[test]

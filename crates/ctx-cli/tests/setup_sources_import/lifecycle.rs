@@ -7,6 +7,179 @@ use super::{
 mod lifecycle_helpers;
 use lifecycle_helpers::*;
 
+#[cfg(target_os = "linux")]
+fn install_managed_test_marker(binary: &std::path::Path) {
+    use sha2::{Digest as _, Sha256};
+
+    const MAX_MANAGED_BINARY_BYTES: u64 = 128 * 1024 * 1024;
+    if fs::metadata(binary).unwrap().len() > MAX_MANAGED_BINARY_BYTES {
+        let stripped = std::process::Command::new("strip")
+            .arg(binary)
+            .status()
+            .expect("strip temporary managed setup binary");
+        assert!(stripped.success(), "strip temporary managed setup binary");
+    }
+    let binary = fs::canonicalize(binary).unwrap();
+    let body = fs::read(&binary).unwrap();
+    assert!(
+        body.len() <= MAX_MANAGED_BINARY_BYTES as usize,
+        "managed setup acceptance binary exceeds the production marker bound"
+    );
+    let sha256 = Sha256::digest(&body)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let platform = match std::env::consts::ARCH {
+        "x86_64" => "linux-x64",
+        "aarch64" => "linux-aarch64",
+        arch => panic!("unsupported Linux setup acceptance architecture {arch}"),
+    };
+    let mut marker = binary.as_os_str().to_os_string();
+    marker.push(".install.json");
+    fs::write(
+        std::path::PathBuf::from(marker),
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "manager": "ctx-hosted-installer",
+            "install_attempt_id": "ia_empty_catalog_native_supervisor",
+            "install_path": binary,
+            "platform": platform,
+            "channel": "stable",
+            "version": env!("CARGO_PKG_VERSION"),
+            "sha256": sha256,
+            "metadata_url": null,
+            "artifact_url": null,
+            "installed_at": "2026-08-10T00:00:00Z",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+struct FakeSystemdDaemon {
+    pid_file: std::path::PathBuf,
+    data_root: std::path::PathBuf,
+    executable: std::path::PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for FakeSystemdDaemon {
+    fn drop(&mut self) {
+        let Some(pid) = fs::read_to_string(&self.pid_file)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+        else {
+            return;
+        };
+        let Some(lock) = fs::read(self.data_root.join("daemon/daemon.lock"))
+            .ok()
+            .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        else {
+            return;
+        };
+        let recorded_binary = lock.get("binary").and_then(Value::as_str).map(Path::new);
+        let process_binary = fs::read_link(format!("/proc/{pid}/exe")).ok();
+        if lock.get("pid").and_then(Value::as_u64) != Some(u64::from(pid))
+            || lock.get("data_root").and_then(Value::as_str) != self.data_root.to_str()
+            || recorded_binary.and_then(|path| fs::canonicalize(path).ok())
+                != fs::canonicalize(&self.executable).ok()
+            || process_binary.and_then(|path| fs::canonicalize(path).ok())
+                != fs::canonicalize(&self.executable).ok()
+        {
+            return;
+        }
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fake_operational_systemd_user_manager(
+    temp: &TempDir,
+    binary: &std::path::Path,
+    managed_root: &std::path::Path,
+) -> (std::path::PathBuf, FakeSystemdDaemon) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let manager_bin = temp.path().join("fake-systemd-bin");
+    fs::create_dir(&manager_bin).unwrap();
+    let systemctl = manager_bin.join("systemctl");
+    let pid_file = temp.path().join("fake-systemd-main.pid");
+    let enabled_file = temp.path().join("fake-systemd-enabled");
+    let stdout_file = temp.path().join("fake-systemd-daemon.stdout");
+    let stderr_file = temp.path().join("fake-systemd-daemon.stderr");
+    fs::write(
+        &systemctl,
+        format!(
+            r#"#!/bin/sh
+pid_file='{pid_file}'
+enabled_file='{enabled_file}'
+case "$*" in
+  "--user show --property=Version --value")
+    printf '255\n'
+    exit 0
+    ;;
+  "--user daemon-reload")
+    exit 0
+    ;;
+  "--user enable ctx.service")
+    : > "$enabled_file"
+    exit 0
+    ;;
+  "--user start ctx.service")
+    if [ -s "$pid_file" ] && kill -0 "$(sed -n '1p' "$pid_file")" 2>/dev/null; then
+      exit 0
+    fi
+    '{binary}' --data-root '{managed_root}' daemon run --format=json >'{stdout_file}' 2>'{stderr_file}' &
+    printf '%s\n' "$!" > "$pid_file"
+    exit 0
+    ;;
+  "--user is-enabled ctx.service")
+    if [ -f "$enabled_file" ]; then printf 'enabled\n'; exit 0; fi
+    exit 1
+    ;;
+  "--user is-active ctx.service")
+    if [ -s "$pid_file" ] && kill -0 "$(sed -n '1p' "$pid_file")" 2>/dev/null; then
+      printf 'active\n'
+      exit 0
+    fi
+    exit 1
+    ;;
+  "--user show ctx.service --property=MainPID --value")
+    sed -n '1p' "$pid_file"
+    exit 0
+    ;;
+  "--user disable --now ctx.service")
+    if [ -s "$pid_file" ]; then kill "$(sed -n '1p' "$pid_file")" 2>/dev/null || true; fi
+    rm -f "$pid_file" "$enabled_file"
+    exit 0
+    ;;
+esac
+printf 'unexpected fake systemctl invocation: %s\n' "$*" >&2
+exit 2
+"#,
+            pid_file = pid_file.display(),
+            enabled_file = enabled_file.display(),
+            binary = binary.display(),
+            managed_root = managed_root.display(),
+            stdout_file = stdout_file.display(),
+            stderr_file = stderr_file.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o700)).unwrap();
+    (
+        manager_bin,
+        FakeSystemdDaemon {
+            pid_file: pid_file.clone(),
+            data_root: managed_root.to_path_buf(),
+            executable: binary.to_path_buf(),
+        },
+    )
+}
+
 #[test]
 fn setup_does_not_migrate_legacy_shim_directory() {
     let temp = tempdir();
@@ -624,6 +797,180 @@ fn setup_all_invalid_source_publishes_a_verified_empty_generation() {
 }
 
 #[test]
+fn installer_style_setup_succeeds_with_a_genuinely_empty_source_catalog() {
+    let temp = tempdir();
+
+    let setup = json_output(ctx(&temp).args(["setup", "--format=json", "--progress", "none"]));
+    assert_eq!(setup["schema_version"], 2, "{setup:#}");
+    assert_eq!(setup["mode"], "ready", "{setup:#}");
+    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
+    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
+    assert_eq!(
+        setup["refresh_request"]["receipt"]["successful_route_total"],
+        setup["refresh_request"]["receipt"]["selected_route_total"],
+        "{setup:#}"
+    );
+    assert_eq!(
+        setup["refresh_request"]["receipt"]["source_failure_total"], 0,
+        "{setup:#}"
+    );
+
+    let status = json_output(ctx(&temp).args(["status", "--format=json"]));
+    assert_eq!(status["lexical"]["status"], "ready", "{status:#}");
+    assert_eq!(status["lexical"]["certified_sources"], 0, "{status:#}");
+    assert_eq!(status["lexical"]["indexed_documents"], 0, "{status:#}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn operational_systemd_installer_style_setup_verifies_an_empty_noop_core() {
+    let temp = tempdir();
+    let binary = copied_ctx_binary(&temp);
+    install_managed_test_marker(&binary);
+    let managed_root = temp.path().join(".ctx");
+    let (manager_bin, _daemon_guard) =
+        fake_operational_systemd_user_manager(&temp, &binary, &managed_root);
+    let path = std::env::var_os("PATH")
+        .map(|path| {
+            let mut paths = vec![manager_bin.clone()];
+            paths.extend(std::env::split_paths(&path));
+            std::env::join_paths(paths).unwrap()
+        })
+        .unwrap_or_else(|| manager_bin.as_os_str().to_os_string());
+
+    let mut setup_command = ctx_from_binary(&temp, &binary);
+    setup_command
+        .env("CTX_DATA_ROOT", &managed_root)
+        .env("CTX_DAEMON_AUTOSTART_EXE", &binary)
+        .env("CTX_HOSTED_INSTALLER_SETUP", "1")
+        .env("CTX_SEARCH_SEMANTIC", "false")
+        .env("CTX_UPGRADE_CHANNEL", "staging")
+        .env("PATH", &path)
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
+        .env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+    let setup = json_output(setup_command.args(["setup", "--format=json", "--progress", "none"]));
+    assert_eq!(setup["mode"], "ready", "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["status"], "verified", "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
+    assert_eq!(
+        setup["daemon"]["supervisor"]["status"], "installed",
+        "{setup:#}"
+    );
+    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
+    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
+    assert_eq!(
+        setup["refresh_request"]["receipt"]["successful_route_total"],
+        setup["refresh_request"]["receipt"]["selected_route_total"],
+        "{setup:#}"
+    );
+    assert_eq!(
+        setup["refresh_request"]["receipt"]["source_failure_total"], 0,
+        "{setup:#}"
+    );
+
+    let mut ordinary_status = ctx_from_binary(&temp, &binary);
+    ordinary_status
+        .env("CTX_DATA_ROOT", &managed_root)
+        .env("PATH", &path)
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
+        .env_remove("CTX_HOSTED_INSTALLER_SETUP")
+        .env_remove("CTX_SEARCH_SEMANTIC")
+        .env_remove("CTX_UPGRADE_CHANNEL");
+    let status = json_output(ordinary_status.args(["status", "--format=json"]));
+    assert_eq!(
+        status["daemon"]["supervisor"]["status"], "installed",
+        "{status:#}"
+    );
+    assert_eq!(
+        status["daemon"]["supervisor"]["registration_verified"], true,
+        "{status:#}"
+    );
+    assert_eq!(
+        status["daemon"]["supervisor"]["environment_snapshot"]["restart_required"], false,
+        "{status:#}"
+    );
+
+    let mut disable = ctx_from_binary(&temp, &binary);
+    disable
+        .env("CTX_DATA_ROOT", &managed_root)
+        .env("PATH", &path)
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF");
+    disable.args(["daemon", "disable"]).assert().success();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unavailable_systemd_installer_style_setup_succeeds_with_a_bounded_warning() {
+    use std::os::unix::fs::symlink;
+
+    let temp = daemon_test_root();
+    let binary = copied_ctx_binary(&temp);
+    install_managed_test_marker(&binary);
+    let managed_root = temp.path().join(".ctx");
+    let manager_bin = temp.path().join("unavailable-systemd-bin");
+    fs::create_dir(&manager_bin).unwrap();
+    symlink("/bin/false", manager_bin.join("systemctl")).unwrap();
+    let path = std::env::var_os("PATH")
+        .map(|path| {
+            let mut paths = vec![manager_bin.clone()];
+            paths.extend(std::env::split_paths(&path));
+            std::env::join_paths(paths).unwrap()
+        })
+        .unwrap_or_else(|| manager_bin.as_os_str().to_os_string());
+    let mut setup_command = ctx_from_binary(&temp, &binary);
+    setup_command
+        .env("CTX_DATA_ROOT", &managed_root)
+        .env("CTX_DAEMON_AUTOSTART_EXE", &binary)
+        .env("CTX_HOSTED_INSTALLER_SETUP", "1")
+        .env("CTX_SEARCH_SEMANTIC", "false")
+        .env("PATH", &path)
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
+        .env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+    let setup = json_output(setup_command.args(["setup", "--format=json", "--progress", "none"]));
+    assert_eq!(setup["mode"], "ready", "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["status"], "degraded", "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["persistent"], false, "{setup:#}");
+    assert_eq!(
+        setup["daemon_autostart"]["limitation"]["code"], "continuous_refresh_unavailable",
+        "{setup:#}"
+    );
+    assert_eq!(
+        setup["daemon"]["supervisor"]["status"], "manager_unavailable",
+        "{setup:#}"
+    );
+    assert_eq!(setup["refresh_request"]["mode"], "wait", "{setup:#}");
+    assert_eq!(setup["lexical"]["certified_sources"], 0, "{setup:#}");
+    assert_eq!(setup["lexical"]["indexed_documents"], 0, "{setup:#}");
+    assert_eq!(
+        setup["refresh_request"]["receipt"]["successful_route_total"],
+        setup["refresh_request"]["receipt"]["selected_route_total"],
+        "{setup:#}"
+    );
+    assert_eq!(
+        setup["refresh_request"]["receipt"]["source_failure_total"], 0,
+        "{setup:#}"
+    );
+
+    let mut human_command = ctx_from_binary(&temp, &binary);
+    human_command
+        .env("CTX_DATA_ROOT", &managed_root)
+        .env("CTX_DAEMON_AUTOSTART_EXE", &binary)
+        .env("CTX_SEARCH_SEMANTIC", "false")
+        .env("PATH", &path)
+        .env_remove("CTX_DAEMON_AUTOSTART_OFF")
+        .env_remove("CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS");
+    let human = success_stdout(human_command.args(["setup", "--progress", "none"]));
+    assert!(
+        human.contains("Continuous refresh is unavailable"),
+        "{human}"
+    );
+    assert!(
+        human.contains("temporary daemon (initial maintenance only)"),
+        "{human}"
+    );
+}
+
+#[test]
 fn setup_autostart_records_spawn_failure_status() {
     let temp = tempdir();
     write_codex_setup_session(&temp);
@@ -691,7 +1038,11 @@ fn machine_readable_setup_uses_v2_top_level_persistent_daemon_contract() {
         setup["daemon_autostart"]["reason"], "native_supervisor_unavailable",
         "{setup:#}"
     );
-    assert_eq!(setup["daemon_autostart"]["persistent"], false, "{setup:#}");
+    assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
+    assert!(
+        setup["daemon_autostart"]["limitation"].is_null(),
+        "{setup:#}"
+    );
     assert_eq!(
         setup["daemon_autostart"]["supervisor"]["status"], "fallback",
         "{setup:#}"
@@ -861,7 +1212,35 @@ fn foreground_import_rejections_complete_and_preserve_diagnostics() {
 
     let status = json_output(ctx_from_binary(&temp, &binary).args(["status", "--format=json"]));
     assert_eq!(status["lexical"]["status"], "ready", "{status:#}");
-    assert_eq!(status["refresh"]["status"], "partial", "{status:#}");
+    assert_eq!(status["refresh"]["status"], "ready", "{status:#}");
+    assert_eq!(
+        status["refresh"]["current"]["current_rejected_records"], 1,
+        "{status:#}"
+    );
+
+    let search = json_output(ctx_from_binary(&temp, &binary).args([
+        "search",
+        "after malformed",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert!(
+        !search["results"].as_array().unwrap().is_empty(),
+        "{search:#}"
+    );
+
+    let doctor = json_output(ctx_from_binary(&temp, &binary).args(["doctor", "--format=json"]));
+    assert_eq!(doctor["ok"], true, "{doctor:#}");
+    assert_eq!(doctor["findings"], json!([]), "{doctor:#}");
+    assert_eq!(
+        doctor["source_epoch"]["refresh"]["status"], "ready",
+        "{doctor:#}"
+    );
+    assert_eq!(
+        doctor["source_epoch"]["refresh"]["current"]["current_rejected_records"], 1,
+        "{doctor:#}"
+    );
     ctx_from_binary(&temp, &binary)
         .args([
             "index",

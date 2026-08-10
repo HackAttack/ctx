@@ -3,7 +3,8 @@ use ctx_daemon_runtime::{
     daemon_lock_is_active, ensure_native_supervisor_with as ensure_runtime_supervisor_with,
     resume_native_supervisor_with as resume_runtime_supervisor_with, NativeSupervisorBackend,
     SupervisorEnsureOutcome, SupervisorIdentity, SupervisorInstallationLock,
-    SupervisorManagerEnvironment, SupervisorResumeOutcome, SupervisorSpec, SupervisorUpgradeFence,
+    SupervisorManagerEnvironment, SupervisorManagerOperability, SupervisorResumeOutcome,
+    SupervisorSpec, SupervisorUpgradeFence,
 };
 #[cfg(test)]
 use ctx_daemon_runtime::{
@@ -124,12 +125,14 @@ fn release_authority_environment_name(name: &OsStr) -> bool {
 pub(super) enum DaemonSupervisorStart {
     Native,
     Fallback,
+    ManagerUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum DaemonSupervisorUpgradeResume {
     Native,
     Fallback,
+    ManagerUnavailable,
 }
 
 pub(in crate::semantic) trait DaemonSupervisorUpgradeFence {
@@ -211,6 +214,24 @@ impl<'a> PlatformNativeSupervisor<'a> {
 }
 
 impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for PlatformNativeSupervisor<'_> {
+    fn probe_manager(&self, _data_root: &Path) -> Result<SupervisorManagerOperability> {
+        #[cfg(target_os = "linux")]
+        return ctx_daemon_runtime::probe_systemd_user_manager(self.manager_environment);
+        #[cfg(target_os = "macos")]
+        return ctx_daemon_runtime::probe_launchd_gui_user_domain(self.manager_environment);
+        #[cfg(windows)]
+        return ctx_daemon_runtime::probe_windows_task_scheduler(self.manager_environment);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        Ok(SupervisorManagerOperability::Unavailable {
+            reason: native_supervisor_limitation().to_owned(),
+        })
+    }
+
+    fn prepare_mutation(&self, data_root: &Path, executable: &Path) -> Result<()> {
+        super::daemon_autostart::handoff_mismatched_daemon_owner(data_root, executable)
+            .context("replace daemon ownership held by a different ctx binary image")
+    }
+
     fn artifact_path(&self, data_root: &Path) -> Result<Option<PathBuf>> {
         let _ = data_root;
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -300,8 +321,6 @@ pub(super) fn ensure_daemon_supervisor(data_root: &Path) -> Result<DaemonSupervi
         )?;
         return Ok(DaemonSupervisorStart::Fallback);
     };
-    super::daemon_autostart::handoff_mismatched_daemon_owner(data_root, &input.executable)
-        .context("replace daemon ownership held by a different ctx binary image")?;
     let backend = PlatformNativeSupervisor::new(
         data_root,
         Some(&input.daemon_environment),
@@ -322,7 +341,11 @@ fn ensure_native_supervisor_with(
 ) -> Result<DaemonSupervisorStart> {
     let data_root = input.data_root.as_path();
     let executable = input.executable.as_path();
-    let _installation_lock = SupervisorInstallationLock::acquire(data_root)?;
+    // This first probe is intentionally outside the lock: even creating the
+    // lock file is a mutation. The runtime probes again while serialized
+    // before owner handoff or any native registration change.
+    let _ = backend.probe_manager(data_root)?;
+    let installation_lock = SupervisorInstallationLock::acquire(data_root)?;
     // The uninstall path disables supervisor state under this same lock. Once
     // admitted here, every artifact, manager, start, and receipt mutation below
     // remains serialized ahead of that disable.
@@ -386,7 +409,9 @@ fn ensure_native_supervisor_with(
             } else {
                 write_supervisor_receipt(data_root, &receipt)?;
             }
-            Ok(DaemonSupervisorStart::Fallback)
+            Err(recovery_error).context(format!(
+                "native supervisor registration did not establish identity-verified daemon ownership; initial verification: {initial_error:#}"
+            ))
         }
         SupervisorEnsureOutcome::InstallFailed {
             artifact,
@@ -449,7 +474,71 @@ fn ensure_native_supervisor_with(
                 Err(error).context("install and verify native per-user ctx daemon supervisor")
             }
         }
+        SupervisorEnsureOutcome::ManagerUnavailable {
+            artifact,
+            reason,
+            native_state_preserved,
+            preceding_error,
+        } => manager_unavailable_fallback_locked(
+            &installation_lock,
+            data_root,
+            executable,
+            artifact,
+            reason,
+            native_state_preserved,
+            preceding_error,
+        ),
     }
+}
+
+fn manager_unavailable_fallback_locked(
+    _installation_lock: &SupervisorInstallationLock,
+    data_root: &Path,
+    executable: &Path,
+    artifact: Option<PathBuf>,
+    reason: String,
+    native_state_preserved: bool,
+    preceding_error: Option<String>,
+) -> Result<DaemonSupervisorStart> {
+    let current = stored_supervisor_report(data_root);
+    let previously_registered = current.get("kind").and_then(Value::as_str)
+        == Some(native_supervisor_kind())
+        && !matches!(
+            current.get("status").and_then(Value::as_str),
+            Some("disabled" | "degraded" | "manager_unavailable")
+        );
+    // Artifact presence has already been inspected by the runtime through a
+    // fallible check. Never collapse permission or integrity errors into
+    // apparent absence here.
+    let native_state_preserved = native_state_preserved || previously_registered;
+    let limitation = if native_state_preserved {
+        format!(
+            "{}; existing native supervisor state was preserved for a later retry",
+            native_supervisor_limitation()
+        )
+    } else {
+        native_supervisor_limitation().to_owned()
+    };
+    write_supervisor_receipt(
+        data_root,
+        &SupervisorReceipt {
+            kind: native_supervisor_kind().to_owned(),
+            status: "manager_unavailable",
+            autostart_supported: false,
+            restart_supported: false,
+            registration_verified: false,
+            live_owner_verified: false,
+            owner_pid: None,
+            artifact_path: artifact,
+            executable_path: Some(executable.to_path_buf()),
+            limitation: Some(limitation),
+            last_error: Some(match preceding_error {
+                Some(preceding_error) => format!("{reason}; {preceding_error}"),
+                None => reason,
+            }),
+        },
+    )?;
+    Ok(DaemonSupervisorStart::ManagerUnavailable)
 }
 
 fn ensure_hosted_uninstall_supervisor_admission() -> Result<()> {
@@ -540,6 +629,13 @@ fn disable_native_supervisor_candidate_with(
     // A disable request is idempotent control-plane work. Do not probe through
     // launch verification first: a surviving service-manager registration must
     // still be removed when its launch artifact or launch environment is gone.
+    if let SupervisorManagerOperability::Unavailable { reason } =
+        backend.probe_manager(data_root)?
+    {
+        return Err(anyhow!(
+            "native supervisor manager is unavailable; no registration state was changed: {reason}"
+        ));
+    }
     let artifact = backend.artifact_path(data_root).ok().flatten();
     let result = backend.disable(data_root);
     match result {
@@ -602,7 +698,10 @@ fn resume_daemon_supervisor_after_upgrade_with(
     backend: &dyn NativeSupervisorBackend<SupervisorEnvironmentSnapshot>,
     upgrade_fence: &mut dyn DaemonSupervisorUpgradeFence,
 ) -> Result<DaemonSupervisorUpgradeResume> {
-    let _installation_lock = SupervisorInstallationLock::acquire(data_root)?;
+    // Probe before creating the lock, then re-probe in the runtime while the
+    // receipt/native-state mutation domain is serialized.
+    let _ = backend.probe_manager(data_root)?;
+    let installation_lock = SupervisorInstallationLock::acquire(data_root)?;
     ensure_hosted_uninstall_supervisor_admission_for_executable(executable)?;
     let mut runtime_fence = RuntimeSupervisorUpgradeFence(upgrade_fence);
     match resume_runtime_supervisor_with(data_root, executable, backend, &mut runtime_fence)? {
@@ -635,6 +734,23 @@ fn resume_daemon_supervisor_after_upgrade_with(
                 },
             )?;
             Err(error).context("return upgraded daemon lifecycle ownership to native supervisor")
+        }
+        SupervisorResumeOutcome::ManagerUnavailable {
+            artifact,
+            reason,
+            native_state_preserved,
+            preceding_error,
+        } => {
+            manager_unavailable_fallback_locked(
+                &installation_lock,
+                data_root,
+                executable,
+                artifact,
+                reason,
+                native_state_preserved,
+                preceding_error,
+            )?;
+            Ok(DaemonSupervisorUpgradeResume::ManagerUnavailable)
         }
     }
 }

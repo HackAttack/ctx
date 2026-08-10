@@ -282,6 +282,18 @@ impl DaemonUpgradeHandoff {
                             .context("restart ctx daemon after upgrade")?;
                         wait_for_replacement_daemon(&self.data_root, &mut child)?;
                     }
+                    super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::ManagerUnavailable => {
+                        let launch = configured_unsupervised_daemon_autostart_command(
+                            executable,
+                            &self.data_root,
+                            trigger,
+                            Some(self.fence.handoff_id()),
+                        )?;
+                        let mut child = restart_authority
+                            .spawn(launch)
+                            .context("restart bounded ctx daemon while native manager is unavailable")?;
+                        wait_for_replacement_daemon(&self.data_root, &mut child)?;
+                    }
                 }
             }
         }
@@ -842,26 +854,47 @@ pub(crate) fn complete_replacement_daemon_handoff(
                     wait_for_daemon_ready_ack(data_root)?;
                 }
                 super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::Fallback => {
-                    let launch =
-                        if let Some((_trigger, idle_exit, loop_interval)) = captured_restart {
-                            daemon_autostart_command(
-                                executable,
-                                data_root,
-                                trigger,
-                                (idle_exit != DAEMON_IDLE_EXIT_SECONDS_CAP).then_some(idle_exit),
-                                Some(loop_interval),
-                                Some(handoff_id),
-                            )
-                        } else {
-                            configured_daemon_autostart_command(
-                                executable,
-                                data_root,
-                                trigger,
-                                Some(handoff_id),
-                            )
-                        }?;
+                    let launch = if let Some((_trigger, idle_exit, loop_interval)) = captured_restart {
+                        daemon_autostart_command(
+                            executable,
+                            data_root,
+                            trigger,
+                            (idle_exit != DAEMON_IDLE_EXIT_SECONDS_CAP).then_some(idle_exit),
+                            Some(loop_interval),
+                            Some(handoff_id),
+                        )
+                    } else {
+                        configured_daemon_autostart_command(
+                            executable,
+                            data_root,
+                            trigger,
+                            Some(handoff_id),
+                        )
+                    }?;
                     let mut child = spawn_daemon_child(launch)
                         .context("restart ctx daemon after replacement")?;
+                    wait_for_replacement_daemon(data_root, &mut child)?;
+                }
+                super::super::daemon_supervisor::DaemonSupervisorUpgradeResume::ManagerUnavailable => {
+                    let launch = if let Some((_trigger, idle_exit, loop_interval)) = captured_restart {
+                        daemon_autostart_command(
+                            executable,
+                            data_root,
+                            trigger,
+                            Some(idle_exit.min(DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS)),
+                            Some(loop_interval),
+                            Some(handoff_id),
+                        )
+                    } else {
+                        configured_unsupervised_daemon_autostart_command(
+                            executable,
+                            data_root,
+                            trigger,
+                            Some(handoff_id),
+                        )
+                    }?;
+                    let mut child = spawn_daemon_child(launch)
+                        .context("restart bounded ctx daemon while native manager is unavailable")?;
                     wait_for_replacement_daemon(data_root, &mut child)?;
                 }
             }

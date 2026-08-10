@@ -528,12 +528,41 @@ fn legacy_zero_source_publication_is_not_projected_as_ready() {
 }
 
 #[test]
-fn refresh_report_is_partial_when_a_transcript_route_failed_or_rejected_records() {
+fn published_record_rejections_are_ready_but_remain_diagnostic() {
     let daemon = json!({"running": true});
-    for outcome in [
-        "completed_with_source_failures",
-        "completed_with_rejections",
-        "completed_with_rejections_and_source_failures",
+    let report = refresh_report(
+        Some(&json!({
+            "request_state": "published",
+            "published_generation": "generation-1",
+            "receipt": {
+                "outcome": "completed_with_rejections",
+                "source_failure_total": 0,
+                "rejected_record_total": 1,
+                "current": {
+                    "current_rejected_records": 1,
+                },
+            },
+            "structured_outcome": {"retryable": false},
+        })),
+        Some("generation-1"),
+        &daemon,
+    );
+
+    assert_eq!(report["status"], "ready", "{report:#}");
+    assert_eq!(report["outcome"], "completed_with_rejections");
+    assert_eq!(report["current"]["current_rejected_records"], 1);
+    assert_eq!(
+        current_rejected_record_count(&json!({"refresh": report})),
+        1
+    );
+}
+
+#[test]
+fn source_failures_and_combined_diagnostics_remain_partial() {
+    let daemon = json!({"running": true});
+    for (outcome, rejected_records) in [
+        ("completed_with_source_failures", 0),
+        ("completed_with_rejections_and_source_failures", 1),
     ] {
         let report = refresh_report(
             Some(&json!({
@@ -541,10 +570,10 @@ fn refresh_report_is_partial_when_a_transcript_route_failed_or_rejected_records(
                 "published_generation": "generation-1",
                 "receipt": {
                     "outcome": outcome,
-                    "source_failure_total": usize::from(outcome.contains("source_failures")),
-                    "rejected_record_total": u64::from(outcome.contains("rejections")),
+                    "source_failure_total": 1,
+                    "rejected_record_total": rejected_records,
                     "current": {
-                        "current_rejected_records": u64::from(outcome.contains("rejections")),
+                        "current_rejected_records": rejected_records,
                     },
                 },
             })),
@@ -554,6 +583,27 @@ fn refresh_report_is_partial_when_a_transcript_route_failed_or_rejected_records(
         assert_eq!(report["status"], "partial", "{outcome}: {report:#}");
         assert_eq!(report["outcome"], outcome);
     }
+}
+
+#[test]
+fn retryable_published_failure_remains_partial() {
+    let daemon = json!({"running": true});
+    let report = refresh_report(
+        Some(&json!({
+            "request_state": "published",
+            "published_generation": "generation-1",
+            "receipt": {
+                "outcome": "completed_with_rejections",
+                "source_failure_total": 0,
+                "current": {"current_rejected_records": 1},
+            },
+            "structured_outcome": {"retryable": true},
+        })),
+        Some("generation-1"),
+        &daemon,
+    );
+
+    assert_eq!(report["status"], "partial", "{report:#}");
 }
 
 #[test]

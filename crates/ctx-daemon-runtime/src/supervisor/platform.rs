@@ -3,7 +3,9 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -11,7 +13,7 @@ use serde_json::Value;
 
 use crate::{
     daemon_lock_binary_identity_matches, daemon_lock_is_active, daemon_lock_path,
-    pid_from_lock_json, read_pid_lock_json,
+    pid_from_lock_json, read_pid_lock_json, SupervisorManagerOperability,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -65,6 +67,84 @@ pub fn command_success(command: &mut Command, label: &str) -> Result<()> {
         "{label} failed: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     ))
+}
+
+pub(crate) fn probe_supervisor_manager_bounded(
+    command: &mut Command,
+    label: &str,
+) -> Result<SupervisorManagerOperability> {
+    probe_supervisor_manager_with_timeout(
+        command,
+        label,
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+    )
+}
+
+fn probe_supervisor_manager_with_timeout(
+    command: &mut Command,
+    label: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<SupervisorManagerOperability> {
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SupervisorManagerOperability::Unavailable {
+                reason: format!("{label} is unavailable: {error}"),
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("start {label} operability probe"));
+        }
+    };
+    let started = Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .with_context(|| format!("observe {label} operability probe"))?
+        {
+            Some(status) if status.success() => {
+                return Ok(SupervisorManagerOperability::Operational);
+            }
+            Some(status) => {
+                return Ok(SupervisorManagerOperability::Unavailable {
+                    reason: format!("{label} is unavailable: process exited with {status}"),
+                });
+            }
+            None => {}
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            child
+                .kill()
+                .with_context(|| format!("terminate timed-out {label} operability probe"))?;
+            child
+                .wait()
+                .with_context(|| format!("reap timed-out {label} operability probe"))?;
+            return Ok(SupervisorManagerOperability::Unavailable {
+                reason: format!(
+                    "{label} is unavailable: operability probe timed out after {} ms",
+                    timeout.as_millis()
+                ),
+            });
+        }
+        thread::sleep(
+            poll_interval
+                .max(Duration::from_millis(1))
+                .min(timeout.saturating_sub(elapsed)),
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn probe_systemd_user_manager(
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<SupervisorManagerOperability> {
+    let mut command = supervisor_command("systemctl", manager_environment);
+    command.args(["--user", "show", "--property=Version", "--value"]);
+    probe_supervisor_manager_bounded(&mut command, "systemd user manager")
 }
 
 #[cfg(target_os = "linux")]
@@ -250,6 +330,25 @@ pub fn launch_agent_path(
 #[cfg(target_os = "macos")]
 fn launchctl_domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
+}
+
+#[cfg(target_os = "macos")]
+pub fn probe_launchd_gui_user_domain(
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<SupervisorManagerOperability> {
+    let domain = launchctl_domain();
+    let mut command = launchd_gui_user_domain_probe_command(manager_environment, &domain);
+    probe_supervisor_manager_bounded(&mut command, "launchd GUI user domain")
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn launchd_gui_user_domain_probe_command(
+    manager_environment: &SupervisorManagerEnvironment,
+    domain: &str,
+) -> Command {
+    let mut command = supervisor_command("launchctl", manager_environment);
+    command.args(["print", domain]);
+    command
 }
 
 #[cfg(target_os = "macos")]
@@ -488,4 +587,122 @@ fn supervisor_process_executable(pid: u32) -> Option<PathBuf> {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn supervisor_process_executable(_pid: u32) -> Option<PathBuf> {
     None
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+    use super::*;
+
+    #[test]
+    fn systemd_probe_distinguishes_an_operational_manager_from_an_unavailable_one() {
+        let temp = tempfile::tempdir().expect("temporary manager probe root");
+        let systemctl = temp.path().join("systemctl");
+        symlink("/bin/true", &systemctl).expect("link operational systemctl");
+        let environment = SupervisorManagerEnvironment::new(BTreeMap::from([(
+            OsString::from("PATH"),
+            temp.path().as_os_str().to_os_string(),
+        )]));
+
+        assert_eq!(
+            probe_systemd_user_manager(&environment).expect("operational manager probe"),
+            SupervisorManagerOperability::Operational
+        );
+
+        let unavailable = tempfile::tempdir().expect("temporary unavailable manager root");
+        symlink("/bin/false", unavailable.path().join("systemctl"))
+            .expect("link unavailable systemctl");
+        let unavailable_environment = SupervisorManagerEnvironment::new(BTreeMap::from([(
+            OsString::from("PATH"),
+            unavailable.path().as_os_str().to_os_string(),
+        )]));
+        let probe = probe_systemd_user_manager(&unavailable_environment)
+            .expect("normal nonzero manager probe");
+        assert!(matches!(
+            probe,
+            SupervisorManagerOperability::Unavailable { reason }
+                if reason.contains("process exited with")
+        ));
+    }
+
+    #[test]
+    fn bounded_probe_discards_manager_output_and_reports_only_status() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'unbounded-task-list-marker'; printf 'diagnostic-marker' >&2; exit 7",
+        ]);
+        let result = probe_supervisor_manager_bounded(&mut command, "test manager")
+            .expect("normal nonzero manager probe");
+        let SupervisorManagerOperability::Unavailable { reason } = result else {
+            panic!("nonzero manager probe unexpectedly succeeded");
+        };
+        assert!(reason.contains("process exited with"));
+        assert!(!reason.contains("task-list-marker"));
+        assert!(!reason.contains("diagnostic-marker"));
+    }
+
+    #[test]
+    fn missing_manager_is_unavailable_but_spawn_permission_failure_is_fatal() {
+        let temp = tempfile::tempdir().expect("temporary manager probe root");
+        let mut missing = Command::new(temp.path().join("missing-manager"));
+        assert!(matches!(
+            probe_supervisor_manager_bounded(&mut missing, "missing manager")
+                .expect("missing executable is an expected unavailable manager"),
+            SupervisorManagerOperability::Unavailable { reason }
+                if reason.contains("missing manager is unavailable")
+        ));
+
+        let denied_path = temp.path().join("manager-without-execute-permission");
+        fs::write(&denied_path, "#!/bin/sh\nexit 0\n").expect("write denied manager");
+        fs::set_permissions(&denied_path, fs::Permissions::from_mode(0o600))
+            .expect("remove manager execute permission");
+        let mut denied = Command::new(&denied_path);
+        let error = probe_supervisor_manager_bounded(&mut denied, "permission-denied manager")
+            .expect_err("spawn permission failure must not degrade setup");
+        assert!(
+            format!("{error:#}").contains("start permission-denied manager operability probe"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn manager_probe_timeout_is_bounded_and_degrades_without_output() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 30"]);
+        let started = Instant::now();
+        let probe = probe_supervisor_manager_with_timeout(
+            &mut command,
+            "blocked manager",
+            Duration::from_millis(25),
+            Duration::from_millis(1),
+        )
+        .expect("manager timeout is an expected unavailable result");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(matches!(
+            probe,
+            SupervisorManagerOperability::Unavailable { reason }
+                if reason.contains("timed out after 25 ms")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod manager_probe_command_tests {
+    use super::*;
+
+    #[test]
+    fn launchd_probe_reads_only_the_gui_user_domain() {
+        let environment = SupervisorManagerEnvironment::new(BTreeMap::new());
+        let command = launchd_gui_user_domain_probe_command(&environment, "gui/501");
+        assert_eq!(command.get_program(), "launchctl");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["print", "gui/501"]
+                .iter()
+                .map(OsStr::new)
+                .collect::<Vec<_>>()
+        );
+    }
 }

@@ -149,15 +149,15 @@ pub(super) fn native_supervisor_kind() -> &'static str {
 pub(super) fn native_supervisor_limitation() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        "systemd user services are unavailable; retrieval commands retain CLI self-healing"
+        "continuous refresh is unavailable because the systemd user manager is not operational; requested maintenance uses a bounded unsupervised ctx daemon"
     }
     #[cfg(target_os = "macos")]
     {
-        "LaunchAgent registration is unavailable; retrieval commands retain CLI self-healing"
+        "continuous refresh is unavailable because the launchd GUI user domain is not operational; requested maintenance uses a bounded unsupervised ctx daemon"
     }
     #[cfg(windows)]
     {
-        "Task Scheduler registration is unavailable; retrieval commands retain CLI self-healing"
+        "continuous refresh is unavailable because current-user Task Scheduler is not operational; requested maintenance uses a bounded unsupervised ctx daemon"
     }
     #[cfg(target_os = "freebsd")]
     {
@@ -170,6 +170,6 @@ pub(super) fn native_supervisor_limitation() -> &'static str {
         windows
     )))]
     {
-        "this platform has no maintained native per-user supervisor integration; retrieval commands retain CLI self-healing"
+        "continuous refresh is unavailable because this platform has no maintained native per-user supervisor integration; requested maintenance uses a bounded unsupervised ctx daemon"
     }
 }

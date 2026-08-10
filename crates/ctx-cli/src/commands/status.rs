@@ -9,7 +9,7 @@ use crate::local_usage;
 use crate::output::print_json;
 use crate::pro::PRO_MONTHLY_PRICE_DISPLAY;
 use crate::progress::format_bytes;
-use crate::semantic::source_epoch_status_report;
+use crate::semantic::{current_rejected_record_count, source_epoch_status_report};
 use crate::ui::{
     fields, outcome, section, Document, Field, Line, Outcome, OutcomeState, RenderContext, Span,
     Token, Ui,
@@ -236,6 +236,13 @@ fn render_status_human(
         if let Some(count) = report[field].as_u64() {
             history_values.push((label, counted(count, singular, plural)));
         }
+    }
+    let rejected_records = current_rejected_record_count(report);
+    if rejected_records > 0 {
+        history_values.push((
+            "Rejected",
+            counted(rejected_records, "provider record", "provider records"),
+        ));
     }
     if history_health == StatusHealth::Healthy {
         history_values.push(("Refresh", component_display(&report["refresh"]).to_owned()));
@@ -534,6 +541,25 @@ mod tests {
             assert!(!rendered.contains("\nNext\n"));
             assert_fits(&document, &context);
         }
+    }
+
+    #[test]
+    fn published_rejections_keep_status_healthy_and_visible() {
+        let mut report = status_report(true, "ready", "ready");
+        report["refresh"]["current"] = json!({
+            "current_rejected_records": 3,
+            "current_sources_with_rejections": 1,
+        });
+        let rendered = render_report(&context(80, ColorMode::Never), &report).render_plain();
+
+        assert!(rendered.starts_with("✓ ctx is healthy\n"), "{rendered}");
+        assert!(rendered.contains("Refresh   ready"), "{rendered}");
+        assert!(
+            rendered.contains("Rejected  3 provider records"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("partially ready"), "{rendered}");
+        assert!(!rendered.contains("\nNext\n"), "{rendered}");
     }
 
     #[test]

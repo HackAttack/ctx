@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::analytics::{count_bucket, DoctorTelemetry};
 use crate::config::AppConfig;
 use crate::output::print_json;
-use crate::semantic::source_epoch_status_report;
+use crate::semantic::{current_rejected_record_count, source_epoch_status_report};
 use crate::ui::{
     evidence_list, fields, hint, outcome, section, Action, Document, Evidence, Field, Hint,
     Outcome, OutcomeState, RenderContext, Ui,
@@ -27,33 +27,12 @@ pub(crate) fn run_doctor(
     let config = AppConfig::load(&data_root)?;
     let source = source_epoch_status_report(&data_root, &config)?;
     let pro = crate::pro::lifecycle_status_json(&data_root);
-    for (name, required) in [
-        ("history_epoch", true),
-        ("lexical", true),
-        ("catalog", true),
-        ("refresh", true),
-        ("semantic", config.semantic_search_enabled()),
-        (
-            "pro_projection",
-            pro.get("installed").and_then(serde_json::Value::as_bool) == Some(true),
-        ),
-    ] {
-        if !required {
-            continue;
-        }
-        let component = &source.report[name];
-        let status = component
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unavailable");
-        if !matches!(status, "ready" | "disabled") {
-            let reason = component
-                .get("reason")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            findings.push(format!("{name} is {status} ({reason})"));
-        }
-    }
+    findings.extend(source_epoch_findings(
+        &source.report,
+        config.semantic_search_enabled(),
+        pro.get("installed").and_then(Value::as_bool) == Some(true),
+    ));
+    let rejected_records = current_rejected_record_count(&source.report);
     let daemon = source.report["daemon"].clone();
     let upgrade_diagnostics = crate::upgrade::upgrade_diagnostics(&config);
     findings.extend(upgrade_diagnostics.findings);
@@ -95,16 +74,51 @@ pub(crate) fn run_doctor(
             ui.stdout_context(),
             config.auto_upgrade_mode().as_str(),
             &findings,
+            rejected_records,
         );
         ui.write_stdout(&document)?;
     }
     Ok(())
 }
 
+fn source_epoch_findings(
+    report: &Value,
+    semantic_required: bool,
+    pro_projection_required: bool,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (name, required) in [
+        ("history_epoch", true),
+        ("lexical", true),
+        ("catalog", true),
+        ("refresh", true),
+        ("semantic", semantic_required),
+        ("pro_projection", pro_projection_required),
+    ] {
+        if !required {
+            continue;
+        }
+        let component = &report[name];
+        let status = component
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unavailable");
+        if !matches!(status, "ready" | "disabled") {
+            let reason = component
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            findings.push(format!("{name} is {status} ({reason})"));
+        }
+    }
+    findings
+}
+
 fn render_doctor_human(
     context: &RenderContext,
     automatic_upgrades: &str,
     findings: &[String],
+    rejected_records: u64,
 ) -> Document {
     let title = match findings.len() {
         0 => "No problems found".to_owned(),
@@ -131,6 +145,23 @@ fn render_doctor_human(
             &[Field::new("Automatic upgrades", automatic_upgrades)],
         ),
     ));
+    if rejected_records > 0 {
+        document.push_blank();
+        document.append(section(
+            "History",
+            fields(
+                context,
+                &[Field::new(
+                    "Rejected",
+                    &format!(
+                        "{} provider record{}",
+                        rejected_records,
+                        if rejected_records == 1 { "" } else { "s" }
+                    ),
+                )],
+            ),
+        ));
+    }
     if findings.is_empty() {
         return document;
     }
@@ -252,7 +283,7 @@ mod ui_tests {
     #[test]
     fn healthy_doctor_is_concise_and_outcome_first() {
         let context = context(80);
-        let rendered = render_doctor_human(&context, "apply", &[]).render_plain();
+        let rendered = render_doctor_human(&context, "apply", &[], 0).render_plain();
         assert_eq!(
             rendered,
             "✓ No problems found\n\nConfiguration\nAutomatic upgrades  apply\n"
@@ -260,11 +291,53 @@ mod ui_tests {
     }
 
     #[test]
+    fn healthy_doctor_discloses_rejected_provider_records() {
+        let rendered = render_doctor_human(&context(80), "apply", &[], 2).render_plain();
+
+        assert!(rendered.starts_with("✓ No problems found\n"), "{rendered}");
+        assert!(
+            rendered.contains("History\nRejected  2 provider records\n"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("issue"), "{rendered}");
+    }
+
+    #[test]
+    fn doctor_ignores_record_diagnostics_but_flags_source_failures() {
+        let base = json!({
+            "history_epoch": {"status": "ready"},
+            "lexical": {"status": "ready"},
+            "catalog": {"status": "ready"},
+            "semantic": {"status": "disabled"},
+            "pro_projection": {"status": "unavailable"},
+        });
+        let mut rejections = base.clone();
+        rejections["refresh"] = json!({
+            "status": "ready",
+            "outcome": "completed_with_rejections",
+            "current": {"current_rejected_records": 1},
+        });
+        assert!(source_epoch_findings(&rejections, false, false).is_empty());
+
+        for outcome in [
+            "completed_with_source_failures",
+            "completed_with_rejections_and_source_failures",
+        ] {
+            let mut failures = base.clone();
+            failures["refresh"] = json!({"status": "partial", "reason": outcome});
+            assert_eq!(
+                source_epoch_findings(&failures, false, false),
+                vec![format!("refresh is partial ({outcome})")],
+            );
+        }
+    }
+
+    #[test]
     fn findings_are_numbered_wrapped_and_actionable() {
         let finding = "ctx Pro key store is unavailable; unlock or repair the already selected secure key store, then run `ctx pro`".to_owned();
         for width in [32, 48, 80, 120] {
             let context = context(width);
-            let document = render_doctor_human(&context, "off", std::slice::from_ref(&finding));
+            let document = render_doctor_human(&context, "off", std::slice::from_ref(&finding), 0);
             let rendered = document.render_plain();
             assert!(rendered.starts_with("! ctx found 1 issue\n"));
             assert!(rendered.contains("Issues\n[1]"));
@@ -285,7 +358,7 @@ mod ui_tests {
 
         for width in [32, 48, 80, 120] {
             let context = context(width);
-            let document = render_doctor_human(&context, "apply", &findings);
+            let document = render_doctor_human(&context, "apply", &findings, 0);
             let rendered = document.render_plain();
             let flattened = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(rendered.starts_with("! ctx found 4 issues\n"));

@@ -449,11 +449,18 @@ explicit selected-plugin import in 1.0.
 
 When `ctx daemon run` or setup/import autostart runs the ctx-owned background
 coordinator, it stores private lock/status files under `daemon/` in the ctx data
-root. Setup/import autostart uses the normal background daemon profile and exits
-after it becomes idle; explicit `ctx daemon run` runs the same coordinator in
-the foreground. The coordinator always bounds native provider-history refresh
+root. Setup/import autostart normally uses the persistent background daemon
+profile; explicit `ctx daemon run` runs the same coordinator in the foreground.
+The coordinator always bounds native provider-history refresh
 and local semantic indexing by its local runtime/model availability. Foreground
 query activity preempts background work.
+A hosted managed install probes systemd-user, the launchd GUI user domain, or
+current-user Task Scheduler before changing native registration state. When
+that manager is unavailable, setup/import runs this same coordinator with an
+explicit finite idle exit, preserves any unverified native artifact for a later
+retry, and reports that continuous refresh is unavailable. It does not create a
+second importer or index writer. Native ownership, identity, integrity,
+fencing, and security failures still fail closed.
 A looping daemon may keep the
 local embedding model resident between passes and uses semantic projection state
 to prioritize recent/stale events. Default background refresh may start the

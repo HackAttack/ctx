@@ -83,6 +83,9 @@ fn windows_task_registration_matches(
 
 #[derive(Default)]
 struct FakeSupervisorState {
+    manager_probes: usize,
+    manager_unavailable: bool,
+    mutation_preparations: usize,
     registered: bool,
     registration_probes: usize,
     live_owner: Option<u32>,
@@ -96,9 +99,16 @@ struct FakeSupervisorState {
 #[derive(Default)]
 struct FakeSupervisorBackend {
     state: Mutex<FakeSupervisorState>,
+    artifact_path_override: Option<PathBuf>,
     delay_install: bool,
     fail_install_after_registration: bool,
+    fail_install_without_registration: bool,
     fail_disable: bool,
+    manager_unavailable_after_install: bool,
+    manager_unavailable_on_disable_failure: bool,
+    manager_probe_error: bool,
+    mutation_preparation_error: bool,
+    fail_start: bool,
 }
 
 impl FakeSupervisorBackend {
@@ -109,16 +119,50 @@ impl FakeSupervisorBackend {
                 live_owner,
                 ..FakeSupervisorState::default()
             }),
+            artifact_path_override: None,
             delay_install: false,
             fail_install_after_registration: false,
+            fail_install_without_registration: false,
             fail_disable: false,
+            manager_unavailable_after_install: false,
+            manager_unavailable_on_disable_failure: false,
+            manager_probe_error: false,
+            mutation_preparation_error: false,
+            fail_start: false,
         }
     }
 }
 
 impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for FakeSupervisorBackend {
+    fn probe_manager(&self, _data_root: &Path) -> Result<SupervisorManagerOperability> {
+        let mut state = self.state.lock().unwrap();
+        state.manager_probes += 1;
+        if self.manager_probe_error {
+            return Err(anyhow!("fake manager identity probe failed"));
+        }
+        if state.manager_unavailable {
+            Ok(SupervisorManagerOperability::Unavailable {
+                reason: "fake native manager unavailable".to_owned(),
+            })
+        } else {
+            Ok(SupervisorManagerOperability::Operational)
+        }
+    }
+
+    fn prepare_mutation(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state.mutation_preparations += 1;
+        if self.mutation_preparation_error {
+            Err(anyhow!("fake daemon ownership preparation failed"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn artifact_path(&self, data_root: &Path) -> Result<Option<PathBuf>> {
-        Ok(Some(data_root.join("fake-native-registration")))
+        Ok(Some(self.artifact_path_override.clone().unwrap_or_else(
+            || data_root.join("fake-native-registration"),
+        )))
     }
 
     fn install(
@@ -135,8 +179,14 @@ impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for FakeSupervisorBa
             std::thread::sleep(Duration::from_millis(100));
         }
         let mut state = self.state.lock().unwrap();
+        if self.fail_install_without_registration {
+            return Err(anyhow!("fake installer failed before registration"));
+        }
         state.registered = true;
         state.live_owner = Some(4_242);
+        if self.manager_unavailable_after_install {
+            state.manager_unavailable = true;
+        }
         if self.fail_install_after_registration {
             return Err(anyhow!(
                 "fake installer failed after publishing valid registration"
@@ -149,6 +199,9 @@ impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for FakeSupervisorBa
         let mut state = self.state.lock().unwrap();
         state.disables += 1;
         if self.fail_disable {
+            if self.manager_unavailable_on_disable_failure {
+                state.manager_unavailable = true;
+            }
             return Err(anyhow!("fake native disable failed"));
         }
         state.registered = false;
@@ -176,6 +229,9 @@ impl NativeSupervisorBackend<SupervisorEnvironmentSnapshot> for FakeSupervisorBa
     fn start(&self, _data_root: &Path) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         state.starts += 1;
+        if self.fail_start {
+            return Err(anyhow!("fake native manager refused to start daemon"));
+        }
         state.start_observed_released_fence = state.upgrade_fence_released;
         state.live_owner = Some(4_242);
         Ok(())
@@ -833,6 +889,328 @@ fn concurrent_recovery_revalidates_registration_under_the_installation_lock() ->
 }
 
 #[test]
+fn unavailable_manager_falls_back_before_native_mutation_under_the_installation_lock() -> Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend::default();
+    backend.state.lock().unwrap().manager_unavailable = true;
+
+    let result = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &backend,
+    )?;
+    assert_eq!(result, DaemonSupervisorStart::ManagerUnavailable);
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.manager_probes, 2);
+    assert_eq!(state.mutation_preparations, 0);
+    assert_eq!(state.registration_probes, 0);
+    assert_eq!(state.installs, 0);
+    assert_eq!(state.disables, 0);
+    assert_eq!(state.starts, 0);
+    drop(state);
+    assert!(ctx_daemon_runtime::daemon_root_path(temp.path())
+        .join("supervisor-installation.lock")
+        .exists());
+
+    let report = stored_supervisor_report(temp.path());
+    assert_eq!(report["status"], "manager_unavailable");
+    assert_eq!(report["autostart_supported"], false);
+    assert_eq!(report["restart_supported"], false);
+    assert_eq!(report["registration_verified"], false);
+    assert_eq!(report["live_owner_verified"], false);
+    assert!(report["limitation"]
+        .as_str()
+        .is_some_and(|value| value.contains("continuous refresh is unavailable")));
+    Ok(())
+}
+
+#[test]
+fn unavailable_manager_receipt_waits_for_the_installation_lock() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_root = temp.path().to_path_buf();
+    let executable = data_root.join("ctx");
+    let held_lock = SupervisorInstallationLock::acquire(&data_root)?;
+    let backend = Arc::new(FakeSupervisorBackend::default());
+    backend.state.lock().unwrap().manager_unavailable = true;
+
+    let worker_backend = Arc::clone(&backend);
+    let worker_root = data_root.clone();
+    let worker_executable = executable.clone();
+    let worker = std::thread::spawn(move || {
+        ensure_native_supervisor_with(
+            &ManagedSupervisorInput::new(&worker_root, &worker_executable)?,
+            worker_backend.as_ref(),
+        )
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while backend.state.lock().unwrap().manager_probes == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "manager preflight did not reach the held installation lock"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        !ctx_daemon_runtime::daemon_root_path(&data_root)
+            .join("supervisor.json")
+            .exists(),
+        "manager-unavailable receipt must not race ahead of the installation lock"
+    );
+
+    drop(held_lock);
+    assert_eq!(
+        worker.join().expect("join manager-unavailable setup")?,
+        DaemonSupervisorStart::ManagerUnavailable
+    );
+    assert_eq!(
+        stored_supervisor_report(&data_root)["status"],
+        "manager_unavailable"
+    );
+    Ok(())
+}
+
+#[test]
+fn unavailable_manager_artifact_inspection_errors_remain_fatal() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let blocked_parent = temp.path().join("artifact-parent-is-a-file");
+    fs::write(&blocked_parent, b"not a directory")?;
+    let backend = FakeSupervisorBackend {
+        artifact_path_override: Some(blocked_parent.join("ctx.service")),
+        ..FakeSupervisorBackend::default()
+    };
+    backend.state.lock().unwrap().manager_unavailable = true;
+
+    let error = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &temp.path().join("ctx"))?,
+        &backend,
+    )
+    .expect_err("artifact metadata errors must not be treated as absence");
+    assert!(
+        error
+            .to_string()
+            .contains("inspect native supervisor artifact"),
+        "{error:#}"
+    );
+    assert!(!ctx_daemon_runtime::daemon_root_path(temp.path())
+        .join("supervisor.json")
+        .exists());
+    Ok(())
+}
+
+#[test]
+fn manager_loss_after_partial_registration_preserves_state_and_falls_back() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend {
+        fail_install_after_registration: true,
+        manager_unavailable_after_install: true,
+        ..FakeSupervisorBackend::default()
+    };
+
+    let result = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &backend,
+    )?;
+    assert_eq!(result, DaemonSupervisorStart::ManagerUnavailable);
+    let state = backend.state.lock().unwrap();
+    assert!(state.registered);
+    assert_eq!(state.installs, 1);
+    assert_eq!(state.disables, 0);
+    drop(state);
+
+    let report = stored_supervisor_report(temp.path());
+    assert_eq!(report["status"], "manager_unavailable");
+    assert!(report["limitation"]
+        .as_str()
+        .is_some_and(|value| value.contains("state was preserved")));
+    Ok(())
+}
+
+#[test]
+fn manager_loss_during_partial_cleanup_is_a_degraded_fallback() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend {
+        fail_install_without_registration: true,
+        fail_disable: true,
+        manager_unavailable_on_disable_failure: true,
+        ..FakeSupervisorBackend::default()
+    };
+
+    let result = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &backend,
+    )?;
+    assert_eq!(result, DaemonSupervisorStart::ManagerUnavailable);
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.installs, 1);
+    assert_eq!(state.disables, 1);
+    assert!(state.manager_unavailable);
+    drop(state);
+    assert_eq!(
+        stored_supervisor_report(temp.path())["status"],
+        "manager_unavailable"
+    );
+    Ok(())
+}
+
+#[test]
+fn manager_unavailable_upgrade_receipt_waits_for_lock_and_preserves_fence() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_root = temp.path().to_path_buf();
+    let executable = data_root.join("ctx");
+    let held_lock = SupervisorInstallationLock::acquire(&data_root)?;
+    let backend = Arc::new(FakeSupervisorBackend::with_registration(Some(4_242)));
+    backend.state.lock().unwrap().manager_unavailable = true;
+    let fence_released = Arc::new(AtomicBool::new(false));
+
+    let worker_backend = Arc::clone(&backend);
+    let worker_root = data_root.clone();
+    let worker_executable = executable.clone();
+    let worker_released = Arc::clone(&fence_released);
+    let worker = std::thread::spawn(move || {
+        let mut fence = TestSupervisorUpgradeFence(Some(move || {
+            worker_released.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+        resume_daemon_supervisor_after_upgrade_with(
+            &worker_root,
+            &worker_executable,
+            worker_backend.as_ref(),
+            &mut fence,
+        )
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while backend.state.lock().unwrap().manager_probes == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "upgrade manager preflight did not reach the held installation lock"
+        );
+        std::thread::yield_now();
+    }
+    assert!(!fence_released.load(Ordering::SeqCst));
+    assert!(!ctx_daemon_runtime::daemon_root_path(&data_root)
+        .join("supervisor.json")
+        .exists());
+
+    drop(held_lock);
+    assert_eq!(
+        worker.join().expect("join manager-unavailable upgrade")?,
+        DaemonSupervisorUpgradeResume::ManagerUnavailable
+    );
+    assert!(!fence_released.load(Ordering::SeqCst));
+    assert_eq!(
+        stored_supervisor_report(&data_root)["status"],
+        "manager_unavailable"
+    );
+    Ok(())
+}
+
+#[test]
+fn operational_manager_cleanup_and_probe_integrity_failures_remain_fatal() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let cleanup_failure = FakeSupervisorBackend {
+        fail_install_without_registration: true,
+        fail_disable: true,
+        ..FakeSupervisorBackend::default()
+    };
+    let error = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &cleanup_failure,
+    )
+    .expect_err("an operational manager cleanup failure must remain fatal");
+    assert!(format!("{error:#}").contains("fake installer failed"));
+    assert_eq!(cleanup_failure.state.lock().unwrap().disables, 1);
+
+    let probe_failure = FakeSupervisorBackend {
+        manager_probe_error: true,
+        ..FakeSupervisorBackend::default()
+    };
+    let error = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &probe_failure,
+    )
+    .expect_err("manager identity/probe errors must remain fatal");
+    assert!(error.to_string().contains("identity probe failed"));
+    let state = probe_failure.state.lock().unwrap();
+    assert_eq!(state.installs, 0);
+    assert_eq!(state.disables, 0);
+    drop(state);
+
+    let ownership_failure = FakeSupervisorBackend {
+        mutation_preparation_error: true,
+        ..FakeSupervisorBackend::default()
+    };
+    let error = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &ownership_failure,
+    )
+    .expect_err("daemon ownership preparation failures must remain fatal");
+    assert!(error.to_string().contains("ownership preparation failed"));
+    let state = ownership_failure.state.lock().unwrap();
+    assert_eq!(state.mutation_preparations, 1);
+    assert_eq!(state.installs, 0);
+    assert_eq!(state.disables, 0);
+    Ok(())
+}
+
+#[test]
+fn operational_manager_without_an_identity_verified_owner_remains_fatal() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend {
+        fail_start: true,
+        ..FakeSupervisorBackend::with_registration(None)
+    };
+
+    let error = ensure_native_supervisor_with(
+        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &backend,
+    )
+    .expect_err("operational manager ownership failures must not degrade to fallback");
+    assert!(
+        format!("{error:#}").contains("identity-verified daemon ownership"),
+        "{error:#}"
+    );
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.starts, 1);
+    assert_eq!(state.installs, 0);
+    drop(state);
+    assert_eq!(
+        stored_supervisor_report(temp.path())["status"],
+        "registered_not_running"
+    );
+    Ok(())
+}
+
+#[test]
+fn unavailable_manager_prevents_native_disable_mutation() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let backend = FakeSupervisorBackend::with_registration(Some(4_242));
+    backend.state.lock().unwrap().manager_unavailable = true;
+
+    let error = disable_native_supervisor_candidate_with(
+        temp.path(),
+        Some(temp.path().join("ctx")),
+        &backend,
+    )
+    .expect_err("disable must preserve native state while its manager is unavailable");
+    assert!(
+        error
+            .to_string()
+            .contains("no registration state was changed"),
+        "{error:#}"
+    );
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.manager_probes, 1);
+    assert_eq!(state.disables, 0);
+    assert!(state.registered);
+    Ok(())
+}
+
+#[test]
 fn upgrade_handoff_releases_fence_before_native_manager_start() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let executable = temp.path().join("ctx");
@@ -913,6 +1291,46 @@ fn status_revalidates_registration_and_live_owner_instead_of_replaying_receipt()
     assert_eq!(stale["status"], "stale_registration");
     assert_eq!(stale["registration_verified"], false);
     assert_eq!(stale["live_owner_verified"], false);
+    Ok(())
+}
+
+#[test]
+fn status_reports_manager_unavailability_without_registration_or_lock_mutation() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("ctx");
+    let backend = FakeSupervisorBackend::with_registration(Some(4_242));
+    write_installed_receipt(
+        temp.path(),
+        &executable,
+        backend.artifact_path(temp.path())?,
+        4_242,
+        Some(supervisor_environment_snapshot()?.contract_report()),
+    )?;
+    let receipt_path =
+        super::super::paths_status::daemon_root_path(temp.path()).join("supervisor.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
+    receipt["environment_snapshot"]["sha256"] = json!("0".repeat(64));
+    super::super::paths_status::write_private_json_file(&receipt_path, &receipt)?;
+    backend.state.lock().unwrap().manager_unavailable = true;
+
+    let report = revalidated_supervisor_report_with(temp.path(), &backend);
+    assert_eq!(report["status"], "manager_unavailable");
+    assert_eq!(report["registration_verified"], false);
+    assert_eq!(report["live_owner_verified"], false);
+    assert_eq!(report["owner_pid"], Value::Null);
+    assert_eq!(report["autostart_supported"], false);
+    assert_eq!(report["restart_supported"], false);
+    assert_eq!(
+        report["environment_snapshot"]["restart_required"], false,
+        "manager unavailability must remain the actionable persistence limitation"
+    );
+    let state = backend.state.lock().unwrap();
+    assert_eq!(state.manager_probes, 1);
+    assert_eq!(state.registration_probes, 0);
+    drop(state);
+    assert!(!ctx_daemon_runtime::daemon_root_path(temp.path())
+        .join("supervisor-installation.lock")
+        .exists());
     Ok(())
 }
 

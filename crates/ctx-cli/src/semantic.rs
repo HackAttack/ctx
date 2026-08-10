@@ -42,7 +42,7 @@ pub(crate) mod daemon_service_ports;
 mod daemon_status;
 mod daemon_supervisor;
 mod source_status;
-pub(crate) use source_status::source_epoch_status_report;
+pub(crate) use source_status::{current_rejected_record_count, source_epoch_status_report};
 mod source_backed_pro_catch_up;
 pub(crate) use ctx_daemon_service::wait_for_completed_generation as wait_for_source_backed_pro_generation;
 pub(crate) use ctx_daemon_service::{
@@ -62,11 +62,13 @@ pub(crate) use source_backed_refresh_coordinator::{
 mod daemon_autostart;
 #[allow(unused_imports)]
 pub(crate) use daemon_autostart::{
-    autostart_daemon_and_wait, begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,
+    autostart_daemon_and_wait, autostart_daemon_for_setup_and_wait,
+    begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,
     begin_legacy_daemon_upgrade_handoff, complete_replacement_daemon_handoff,
     daemon_autostart_suppression_reason, finish_replacement_daemon_handoff,
     mark_replacement_helper_handoff, maybe_autostart_daemon,
-    replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonUpgradeHandoff,
+    replacement_helper_owns_daemon_handoff, DaemonHandoff, DaemonSetupHandoff,
+    DaemonUpgradeHandoff,
 };
 mod health_search;
 #[cfg(test)]

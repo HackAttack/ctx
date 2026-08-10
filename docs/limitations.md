@@ -35,12 +35,20 @@ shipped.
 
 - Imports are explicit unless non-JSON `ctx setup`, native-provider
   `ctx import`, or `ctx daemon run` starts ctx-owned local daemon maintenance.
-  Setup/import autostart uses the normal background daemon profile and exits
-  after it becomes idle; explicit `ctx daemon run` runs the same coordinator in
-  the foreground. Use
+  Setup/import autostart uses the normal persistent background daemon profile;
+  explicit `ctx daemon run` runs the same coordinator in the foreground. Use
   `ctx setup --no-daemon` or `ctx import --no-daemon` for a one-run autostart
   opt-out. Semantic catch-up runs only when the required local model cache
   already exists.
+- Automatic restart of continuous refresh for a hosted managed install requires
+  an operational native current-user service manager: systemd-user on Linux,
+  the launchd GUI user domain on macOS, or Task Scheduler on Windows. When that
+  manager is unavailable, setup and eligible imports use the same daemon
+  coordinator with a finite idle exit and report a typed
+  `continuous_refresh_unavailable` limitation; initial indexing and manual
+  refresh remain supported. Unmanaged installs and custom data roots instead
+  use the persistent CLI-self-healing fallback, without automatic restart after
+  logout or reboot.
 - Current importers use idempotent rescans.
 - `--resume` is reported in output but is not a universal provider cursor
   contract.

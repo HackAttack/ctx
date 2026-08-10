@@ -512,9 +512,12 @@ fn classify_inventory_disposition(
         );
     }
     if publication.route_results.is_empty() {
+        if complete_inventory_routes.is_empty() && previous_nonempty_routes.is_empty() {
+            return SourceBackedInventoryDisposition::AuthoritativeEmpty(Vec::new());
+        }
         return SourceBackedInventoryDisposition::UnsupportedOrUnavailable(
             ZeroSourcePublicationBlocked::new(
-                "zero-source publication has no executable certified route",
+                "zero-source publication has no terminal route authority for retained or discovered routes",
             ),
         );
     }

@@ -30,18 +30,37 @@ pub(crate) fn autostart_daemon_and_wait(
     config: &AppConfig,
     trigger: DaemonTriggerCommandArg,
 ) -> Result<DaemonHandoff> {
+    Ok(autostart_daemon_for_setup_and_wait(data_root, config, trigger)?.handoff)
+}
+
+pub(crate) fn autostart_daemon_for_setup_and_wait(
+    data_root: &Path,
+    config: &AppConfig,
+    trigger: DaemonTriggerCommandArg,
+) -> Result<DaemonSetupHandoff> {
     if hosted_uninstall_fences_daemon_autostart() {
         return Err(anyhow!(
             "ctx daemon start was suppressed (hosted_uninstall_active); retry after it clears or run `ctx setup --no-daemon`"
         ));
     }
-    if daemon_autostart_suppression_reason().is_none() {
-        super::super::daemon_supervisor::ensure_daemon_supervisor(data_root)
-            .context("establish persistent ctx daemon supervision")?;
-    }
+    let (bounded_unsupervised, requires_initial_refresh_wait) =
+        if daemon_autostart_suppression_reason().is_none() {
+            daemon_supervisor_launch_policy(
+                super::super::daemon_supervisor::ensure_daemon_supervisor(data_root)
+                    .context("establish ctx daemon supervision")?,
+            )
+        } else {
+            (false, false)
+        };
     let mut recovery_attempted = false;
     loop {
-        let request = request_daemon_autostart(data_root, config, trigger).map_err(|error| {
+        let request = request_daemon_autostart(
+            data_root,
+            config,
+            trigger,
+            bounded_unsupervised,
+        )
+        .map_err(|error| {
             if error.is::<BinaryIdentityHandoffError>() {
                 error
             } else {
@@ -110,7 +129,13 @@ pub(crate) fn autostart_daemon_and_wait(
             },
         );
         match handoff {
-            Ok(handoff) => return Ok(handoff),
+            Ok(handoff) => {
+                return Ok(DaemonSetupHandoff {
+                    handoff,
+                    bounded_unsupervised,
+                    requires_initial_refresh_wait,
+                })
+            }
             Err(error)
                 if !recovery_attempted
                     && daemon_autostart_suppression_reason().is_none()
@@ -129,6 +154,16 @@ pub(crate) fn autostart_daemon_and_wait(
                 ));
             }
         }
+    }
+}
+
+pub(super) const fn daemon_supervisor_launch_policy(
+    start: super::super::daemon_supervisor::DaemonSupervisorStart,
+) -> (bool, bool) {
+    match start {
+        super::super::daemon_supervisor::DaemonSupervisorStart::Native => (false, false),
+        super::super::daemon_supervisor::DaemonSupervisorStart::Fallback => (false, false),
+        super::super::daemon_supervisor::DaemonSupervisorStart::ManagerUnavailable => (true, true),
     }
 }
 
@@ -259,6 +294,7 @@ pub(super) fn request_daemon_autostart(
     data_root: &Path,
     config: &AppConfig,
     trigger: DaemonTriggerCommandArg,
+    bounded_unsupervised: bool,
 ) -> Result<DaemonAutostartRequest> {
     if hosted_uninstall_fences_daemon_autostart() {
         return Ok(DaemonAutostartRequest::Suppressed(
@@ -331,7 +367,11 @@ pub(super) fn request_daemon_autostart(
             return Err(error);
         }
     };
-    let launch = configured_daemon_autostart_command(&exe, data_root, trigger, None);
+    let launch = if bounded_unsupervised {
+        configured_unsupervised_daemon_autostart_command(&exe, data_root, trigger, None)
+    } else {
+        configured_daemon_autostart_command(&exe, data_root, trigger, None)
+    };
     match launch.and_then(spawn_daemon_child) {
         Ok(child) => Ok(DaemonAutostartRequest::Spawned(child)),
         Err(error) => {
@@ -453,27 +493,22 @@ fn daemon_handoff_observation(
     let lock_pid = super::super::paths_status::read_pid_lock_file(&daemon_lock_path(data_root));
     let lock_active = lock_pid.is_some_and(|pid| daemon_lock_is_owned_by(data_root, pid));
     let now_ms = utc_now().timestamp_millis();
-    let observation = daemon_handoff_observation_from(
+    let refresh_job_path = daemon_core_refresh_job_path(data_root);
+    let refresh_job = read_daemon_job_status(&refresh_job_path);
+    let (observation, active_refresh) = daemon_handoff_observation_with_refresh_job_from(
         status.as_ref(),
+        refresh_job.as_ref(),
         lock_pid,
         lock_active,
         expected_failure_pid,
         Some(expected_config),
-        now_ms,
-    );
-    let refresh_job = read_daemon_job_status(&daemon_core_refresh_job_path(data_root));
-    let active_refresh = daemon_owned_source_refresh_is_active(
-        status.as_ref(),
-        refresh_job.as_ref(),
-        lock_pid,
-        None,
-        None,
+        daemon_job_modified_at_ms(&refresh_job_path),
         now_ms,
     );
     // The daemon's first scheduler tick can enter a long synchronous refresh
     // before setup gets an endpoint response. The base observation has already
-    // verified fresh status, lock ownership, and applied config; a refresh
-    // started by that same daemon is sufficient bounded handoff evidence.
+    // verified fresh lifecycle or same-owner refresh authority, lock ownership,
+    // and applied config; that refresh is sufficient bounded handoff evidence.
     if matches!(observation, DaemonHandoffObservation::Running(_)) && active_refresh {
         return observation;
     }
@@ -654,12 +689,65 @@ fn daemon_source_refresh_endpoint_is_usable(
     })
 }
 
+#[cfg(test)]
 pub(super) fn daemon_handoff_observation_from(
     status: Option<&Value>,
     lock_pid: Option<u32>,
     lock_active: bool,
     expected_failure_pid: Option<u32>,
     expected_config: Option<&AppConfig>,
+    now_ms: i64,
+) -> DaemonHandoffObservation {
+    daemon_handoff_observation_with_refresh_authority_from(
+        status,
+        lock_pid,
+        lock_active,
+        expected_failure_pid,
+        expected_config,
+        false,
+        now_ms,
+    )
+}
+
+pub(super) fn daemon_handoff_observation_with_refresh_job_from(
+    status: Option<&Value>,
+    refresh_job: Option<&Value>,
+    lock_pid: Option<u32>,
+    lock_active: bool,
+    expected_failure_pid: Option<u32>,
+    expected_config: Option<&AppConfig>,
+    refresh_job_modified_at_ms: Option<i64>,
+    now_ms: i64,
+) -> (DaemonHandoffObservation, bool) {
+    let active_refresh = daemon_owned_source_refresh_is_active(
+        status,
+        refresh_job,
+        lock_pid,
+        None,
+        refresh_job_modified_at_ms,
+        now_ms,
+    );
+    (
+        daemon_handoff_observation_with_refresh_authority_from(
+            status,
+            lock_pid,
+            lock_active,
+            expected_failure_pid,
+            expected_config,
+            active_refresh,
+            now_ms,
+        ),
+        active_refresh,
+    )
+}
+
+pub(super) fn daemon_handoff_observation_with_refresh_authority_from(
+    status: Option<&Value>,
+    lock_pid: Option<u32>,
+    lock_active: bool,
+    expected_failure_pid: Option<u32>,
+    expected_config: Option<&AppConfig>,
+    active_refresh: bool,
     now_ms: i64,
 ) -> DaemonHandoffObservation {
     let Some(status) = status else {
@@ -704,7 +792,7 @@ pub(super) fn daemon_handoff_observation_from(
     {
         return DaemonHandoffObservation::Pending;
     }
-    if !heartbeat_is_fresh() {
+    if !heartbeat_is_fresh() && !active_refresh {
         return DaemonHandoffObservation::Pending;
     }
     match status
@@ -736,7 +824,7 @@ pub(super) fn daemon_handoff_observation_from(
     let Some(heartbeat_at_ms) = status
         .get("heartbeat_at_ms")
         .and_then(Value::as_i64)
-        .filter(|_| heartbeat_is_fresh())
+        .filter(|heartbeat_at_ms| *heartbeat_at_ms > 0)
     else {
         return DaemonHandoffObservation::Pending;
     };
@@ -1007,18 +1095,54 @@ pub(super) fn configured_daemon_autostart_command(
     trigger: DaemonTriggerCommandArg,
     handoff_token: Option<&str>,
 ) -> io::Result<NormalizedLaunch> {
+    configured_daemon_autostart_command_with_default_idle_exit(
+        exe,
+        data_root,
+        trigger,
+        handoff_token,
+        None,
+    )
+}
+
+pub(super) fn configured_unsupervised_daemon_autostart_command(
+    exe: &Path,
+    data_root: &Path,
+    trigger: DaemonTriggerCommandArg,
+    handoff_token: Option<&str>,
+) -> io::Result<NormalizedLaunch> {
+    configured_daemon_autostart_command_with_default_idle_exit(
+        exe,
+        data_root,
+        trigger,
+        handoff_token,
+        Some(DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS),
+    )
+}
+
+fn configured_daemon_autostart_command_with_default_idle_exit(
+    exe: &Path,
+    data_root: &Path,
+    trigger: DaemonTriggerCommandArg,
+    handoff_token: Option<&str>,
+    default_idle_exit: Option<u64>,
+) -> io::Result<NormalizedLaunch> {
     let mut overrides = BTreeMap::new();
     if let Some(mode) = env::var_os(DAEMON_MODE_ENV) {
         overrides.insert(OsString::from(DAEMON_MODE_ENV), mode);
     }
+    let configured_idle_exit = daemon_autostart_u64_env(
+        "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
+        DAEMON_IDLE_EXIT_SECONDS_CAP,
+    );
+    let idle_exit = match default_idle_exit {
+        Some(maximum) => Some(configured_idle_exit.unwrap_or(maximum).min(maximum)),
+        None => configured_idle_exit,
+    };
     daemon_autostart_command_with_environment_overrides(
         exe,
         data_root,
         trigger,
-        daemon_autostart_u64_env(
-            "CTX_DAEMON_AUTOSTART_IDLE_EXIT_SECONDS",
-            DAEMON_IDLE_EXIT_SECONDS_CAP,
-        ),
+        idle_exit,
         daemon_autostart_u64_env("CTX_DAEMON_AUTOSTART_LOOP_INTERVAL_SECONDS", 3_600),
         handoff_token,
         overrides,

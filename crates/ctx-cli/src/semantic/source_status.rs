@@ -172,23 +172,28 @@ fn refresh_report(job: Option<&Value>, generation_id: Option<&str>, daemon: &Val
         .and_then(|receipt| receipt.get("outcome"))
         .or_else(|| job.get("outcome"))
         .and_then(Value::as_str);
-    let (status, reason) = match request_state {
-        Some("published")
-            if generation_matches
-                && matches!(
-                    outcome,
-                    Some(
-                        "completed_with_rejections"
-                            | "completed_with_source_failures"
-                            | "completed_with_rejections_and_source_failures"
-                    )
-                ) =>
-        {
-            (
-                "partial",
-                Some(outcome.unwrap_or("refresh_completed_partially")),
+    let source_failures = request_outcome
+        .and_then(|receipt| receipt.get("source_failure_total"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let has_source_failures = source_failures > 0
+        || matches!(
+            outcome,
+            Some(
+                "completed_with_source_failures" | "completed_with_rejections_and_source_failures"
             )
-        }
+        );
+    let retryable = job
+        .get("structured_outcome")
+        .and_then(|outcome| outcome.get("retryable"))
+        .and_then(Value::as_bool)
+        .or_else(|| job.get("retryable").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let (status, reason) = match request_state {
+        Some("published") if generation_matches && (has_source_failures || retryable) => (
+            "partial",
+            Some(outcome.unwrap_or("refresh_completed_partially")),
+        ),
         Some("published") if generation_matches => ("ready", None),
         Some("admission_pending" | "queued" | "running") => {
             ("pending", Some("core_refresh_pending"))
@@ -230,6 +235,15 @@ fn refresh_report(job: Option<&Value>, generation_id: Option<&str>, daemon: &Val
         "rejected_record_total": request_outcome
             .and_then(|receipt| receipt.get("rejected_record_total")),
     }))
+}
+
+pub(crate) fn current_rejected_record_count(report: &Value) -> u64 {
+    report
+        .get("refresh")
+        .and_then(|refresh| refresh.get("current"))
+        .and_then(|current| current.get("current_rejected_records"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
 }
 
 fn history_epoch_report(lexical: &Value, index: Option<&VerifiedIndex>) -> Value {

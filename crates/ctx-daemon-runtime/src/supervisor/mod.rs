@@ -1,9 +1,10 @@
 use std::{
+    fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Context, Error, Result};
 
 mod artifact;
 mod lock;
@@ -20,7 +21,18 @@ pub use windows::*;
 const SUPERVISOR_HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SupervisorManagerOperability {
+    Operational,
+    Unavailable { reason: String },
+}
+
 pub trait NativeSupervisorBackend<E>: Sync {
+    fn probe_manager(&self, data_root: &Path) -> Result<SupervisorManagerOperability>;
+    /// Perform any owner handoff required before native registration state may
+    /// be changed. The runtime calls this only after an operational manager
+    /// probe, so an unavailable manager leaves all existing state untouched.
+    fn prepare_mutation(&self, data_root: &Path, executable: &Path) -> Result<()>;
     fn artifact_path(&self, data_root: &Path) -> Result<Option<PathBuf>>;
     fn install(&self, data_root: &Path, executable: &Path, environment: &E) -> Result<PathBuf>;
     fn disable(&self, data_root: &Path) -> Result<Option<PathBuf>>;
@@ -47,6 +59,12 @@ pub enum SupervisorEnsureOutcome {
         error: Error,
         cleanup_error: Option<Error>,
     },
+    ManagerUnavailable {
+        artifact: Option<PathBuf>,
+        reason: String,
+        native_state_preserved: bool,
+        preceding_error: Option<String>,
+    },
 }
 
 pub fn ensure_native_supervisor_with<E>(
@@ -55,7 +73,11 @@ pub fn ensure_native_supervisor_with<E>(
     environment: &E,
     backend: &dyn NativeSupervisorBackend<E>,
 ) -> Result<SupervisorEnsureOutcome> {
+    if let Some(outcome) = manager_unavailable_after_probe(data_root, backend, false, None)? {
+        return Ok(outcome);
+    }
     let artifact = backend.artifact_path(data_root)?;
+    backend.prepare_mutation(data_root, executable)?;
     if backend.verify_registration(data_root, executable).is_ok() {
         match backend.verify_live_owner(data_root, executable) {
             Ok(owner_pid) => {
@@ -66,6 +88,16 @@ pub fn ensure_native_supervisor_with<E>(
                 });
             }
             Err(initial_live_error) => {
+                if let Some(outcome) = manager_unavailable_after_probe(
+                    data_root,
+                    backend,
+                    true,
+                    Some(format!(
+                        "initial live-owner verification: {initial_live_error:#}"
+                    )),
+                )? {
+                    return Ok(outcome);
+                }
                 return match backend
                     .start(data_root)
                     .and_then(|()| wait_for_native_live_owner(data_root, executable, backend))
@@ -75,15 +107,37 @@ pub fn ensure_native_supervisor_with<E>(
                         owner_pid,
                         environment_installed: false,
                     }),
-                    Err(recovery_error) => Ok(SupervisorEnsureOutcome::RegisteredNotRunning {
-                        artifact,
-                        initial_error: initial_live_error,
-                        recovery_error,
-                        environment_installed: false,
-                    }),
+                    Err(recovery_error) => {
+                        let preceding_error = format!(
+                            "initial live-owner verification: {initial_live_error:#}; recovery: {recovery_error:#}"
+                        );
+                        if let Some(outcome) = manager_unavailable_after_probe(
+                            data_root,
+                            backend,
+                            true,
+                            Some(preceding_error),
+                        )? {
+                            Ok(outcome)
+                        } else {
+                            Ok(SupervisorEnsureOutcome::RegisteredNotRunning {
+                                artifact,
+                                initial_error: initial_live_error,
+                                recovery_error,
+                                environment_installed: false,
+                            })
+                        }
+                    }
                 };
             }
         }
+    }
+
+    // Registration verification can execute an external manager command. Probe
+    // again immediately before the first native mutation so a manager that
+    // disappeared during that read-only check never leaves a new partial
+    // registration behind.
+    if let Some(outcome) = manager_unavailable_after_probe(data_root, backend, false, None)? {
+        return Ok(outcome);
     }
 
     let installation = backend
@@ -98,39 +152,136 @@ pub fn ensure_native_supervisor_with<E>(
             owner_pid,
             environment_installed: true,
         }),
-        Err(error) if backend.verify_registration(data_root, executable).is_ok() => {
-            let recovery = backend
-                .verify_live_owner(data_root, executable)
-                .or_else(|_| {
-                    backend.start(data_root)?;
-                    wait_for_native_live_owner(data_root, executable, backend)
-                });
-            match recovery {
-                Ok(owner_pid) => Ok(SupervisorEnsureOutcome::Native {
-                    artifact,
-                    owner_pid,
-                    environment_installed: true,
-                }),
-                Err(recovery_error) => Ok(SupervisorEnsureOutcome::RegisteredNotRunning {
-                    artifact,
-                    initial_error: error,
-                    recovery_error,
-                    environment_installed: true,
-                }),
+        Err(error) => {
+            let installation_error = format!("native supervisor installation: {error:#}");
+            if let Some(outcome) = manager_unavailable_after_probe(
+                data_root,
+                backend,
+                true,
+                Some(installation_error.clone()),
+            )? {
+                return Ok(outcome);
+            }
+            let registration = backend.verify_registration(data_root, executable);
+            if registration.is_ok() {
+                let recovery = match backend.verify_live_owner(data_root, executable) {
+                    Ok(owner_pid) => Ok(owner_pid),
+                    Err(live_error) => {
+                        if let Some(outcome) = manager_unavailable_after_probe(
+                            data_root,
+                            backend,
+                            true,
+                            Some(format!(
+                                "{installation_error}; live-owner verification: {live_error:#}"
+                            )),
+                        )? {
+                            return Ok(outcome);
+                        }
+                        backend.start(data_root).and_then(|()| {
+                            wait_for_native_live_owner(data_root, executable, backend)
+                        })
+                    }
+                };
+                match recovery {
+                    Ok(owner_pid) => Ok(SupervisorEnsureOutcome::Native {
+                        artifact,
+                        owner_pid,
+                        environment_installed: true,
+                    }),
+                    Err(recovery_error) => {
+                        let preceding_error = format!(
+                            "{installation_error}; registration recovery: {recovery_error:#}"
+                        );
+                        if let Some(outcome) = manager_unavailable_after_probe(
+                            data_root,
+                            backend,
+                            true,
+                            Some(preceding_error),
+                        )? {
+                            Ok(outcome)
+                        } else {
+                            Ok(SupervisorEnsureOutcome::RegisteredNotRunning {
+                                artifact,
+                                initial_error: error,
+                                recovery_error,
+                                environment_installed: true,
+                            })
+                        }
+                    }
+                }
+            } else {
+                let registration_error = registration
+                    .expect_err("failed native registration verification must carry an error");
+                if let Some(outcome) = manager_unavailable_after_probe(
+                    data_root,
+                    backend,
+                    true,
+                    Some(format!(
+                        "{installation_error}; registration verification: {registration_error:#}"
+                    )),
+                )? {
+                    return Ok(outcome);
+                }
+                let cleanup_error = backend.disable(data_root).err();
+                if let Some(cleanup_error) = cleanup_error.as_ref() {
+                    let preceding_error = format!(
+                        "{installation_error}; native supervisor cleanup: {cleanup_error:#}"
+                    );
+                    if let Some(outcome) = manager_unavailable_after_probe(
+                        data_root,
+                        backend,
+                        true,
+                        Some(preceding_error),
+                    )? {
+                        return Ok(outcome);
+                    }
+                }
+                Ok(SupervisorEnsureOutcome::InstallFailed {
+                    artifact: if cleanup_error.is_some() {
+                        backend.artifact_path(data_root)?
+                    } else {
+                        None
+                    },
+                    error,
+                    cleanup_error,
+                })
             }
         }
-        Err(error) => {
-            let cleanup_error = backend.disable(data_root).err();
-            Ok(SupervisorEnsureOutcome::InstallFailed {
-                artifact: if cleanup_error.is_some() {
-                    backend.artifact_path(data_root)?
-                } else {
-                    None
-                },
-                error,
-                cleanup_error,
-            })
-        }
+    }
+}
+
+fn manager_unavailable_after_probe<E>(
+    data_root: &Path,
+    backend: &dyn NativeSupervisorBackend<E>,
+    native_state_may_remain: bool,
+    preceding_error: Option<String>,
+) -> Result<Option<SupervisorEnsureOutcome>> {
+    let SupervisorManagerOperability::Unavailable { reason } = backend.probe_manager(data_root)?
+    else {
+        return Ok(None);
+    };
+    let artifact = backend.artifact_path(data_root)?;
+    let artifact_present = artifact
+        .as_deref()
+        .map(supervisor_artifact_present)
+        .transpose()?
+        .unwrap_or(false);
+    Ok(Some(SupervisorEnsureOutcome::ManagerUnavailable {
+        artifact: (artifact_present || native_state_may_remain)
+            .then_some(artifact)
+            .flatten(),
+        reason,
+        native_state_preserved: native_state_may_remain || artifact_present,
+        preceding_error,
+    }))
+}
+
+fn supervisor_artifact_present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("inspect native supervisor artifact {}", path.display())),
     }
 }
 
@@ -170,6 +321,12 @@ pub enum SupervisorResumeOutcome {
         artifact: Option<PathBuf>,
         error: Error,
     },
+    ManagerUnavailable {
+        artifact: Option<PathBuf>,
+        reason: String,
+        native_state_preserved: bool,
+        preceding_error: Option<String>,
+    },
 }
 
 pub fn resume_native_supervisor_with<E>(
@@ -178,8 +335,28 @@ pub fn resume_native_supervisor_with<E>(
     backend: &dyn NativeSupervisorBackend<E>,
     upgrade_fence: &mut dyn SupervisorUpgradeFence,
 ) -> Result<SupervisorResumeOutcome> {
+    if let Some(outcome) = manager_unavailable_resume_after_probe(data_root, backend, false, None)?
+    {
+        return Ok(outcome);
+    }
     if backend.verify_registration(data_root, executable).is_err() {
+        if let Some(outcome) = manager_unavailable_resume_after_probe(
+            data_root,
+            backend,
+            true,
+            Some("native registration could not be verified".to_owned()),
+        )? {
+            return Ok(outcome);
+        }
         return Ok(SupervisorResumeOutcome::Fallback);
+    }
+    if let Some(outcome) = manager_unavailable_resume_after_probe(
+        data_root,
+        backend,
+        true,
+        Some("native registration was verified before upgrade-fence release".to_owned()),
+    )? {
+        return Ok(outcome);
     }
     upgrade_fence.release()?;
     let owner = backend
@@ -193,11 +370,51 @@ pub fn resume_native_supervisor_with<E>(
             artifact: backend.artifact_path(data_root)?,
             owner_pid,
         }),
-        Err(error) => Ok(SupervisorResumeOutcome::RegisteredNotRunning {
-            artifact: backend.artifact_path(data_root)?,
-            error,
-        }),
+        Err(error) => {
+            let preceding_error = format!("native supervisor resume: {error:#}");
+            if let Some(outcome) = manager_unavailable_resume_after_probe(
+                data_root,
+                backend,
+                true,
+                Some(preceding_error),
+            )? {
+                Ok(outcome)
+            } else {
+                Ok(SupervisorResumeOutcome::RegisteredNotRunning {
+                    artifact: backend.artifact_path(data_root)?,
+                    error,
+                })
+            }
+        }
     }
+}
+
+fn manager_unavailable_resume_after_probe<E>(
+    data_root: &Path,
+    backend: &dyn NativeSupervisorBackend<E>,
+    native_state_may_remain: bool,
+    preceding_error: Option<String>,
+) -> Result<Option<SupervisorResumeOutcome>> {
+    let Some(SupervisorEnsureOutcome::ManagerUnavailable {
+        artifact,
+        reason,
+        native_state_preserved,
+        preceding_error,
+    }) = manager_unavailable_after_probe(
+        data_root,
+        backend,
+        native_state_may_remain,
+        preceding_error,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(SupervisorResumeOutcome::ManagerUnavailable {
+        artifact,
+        reason,
+        native_state_preserved,
+        preceding_error,
+    }))
 }
 
 #[cfg(test)]
@@ -233,6 +450,16 @@ mod tests {
     }
 
     impl NativeSupervisorBackend<()> for StubBackend {
+        fn probe_manager(&self, _data_root: &Path) -> Result<SupervisorManagerOperability> {
+            self.record("probe_manager");
+            Ok(SupervisorManagerOperability::Operational)
+        }
+
+        fn prepare_mutation(&self, _data_root: &Path, _executable: &Path) -> Result<()> {
+            self.record("prepare_mutation");
+            Ok(())
+        }
+
         fn artifact_path(&self, _data_root: &Path) -> Result<Option<PathBuf>> {
             self.record("artifact_path");
             Ok(Some(PathBuf::from("/tmp/ctx.service")))
@@ -309,7 +536,13 @@ mod tests {
         ));
         assert_eq!(
             backend.calls(),
-            ["artifact_path", "verify_registration", "verify_live_owner"]
+            [
+                "probe_manager",
+                "artifact_path",
+                "prepare_mutation",
+                "verify_registration",
+                "verify_live_owner"
+            ]
         );
     }
 
@@ -334,10 +567,15 @@ mod tests {
         assert_eq!(
             backend.calls(),
             [
+                "probe_manager",
                 "artifact_path",
+                "prepare_mutation",
                 "verify_registration",
+                "probe_manager",
                 "install",
+                "probe_manager",
                 "verify_registration",
+                "probe_manager",
                 "disable"
             ]
         );
@@ -356,6 +594,9 @@ mod tests {
         .unwrap();
         assert!(matches!(outcome, SupervisorResumeOutcome::Fallback));
         assert!(!fence.released);
-        assert_eq!(backend.calls(), ["verify_registration"]);
+        assert_eq!(
+            backend.calls(),
+            ["probe_manager", "verify_registration", "probe_manager"]
+        );
     }
 }

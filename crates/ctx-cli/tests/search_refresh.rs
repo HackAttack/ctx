@@ -232,10 +232,7 @@ fn assert_source_generation_ready(temp: &TempDir, expected_generation: &str) -> 
         .as_u64()
         .unwrap_or_default()
         != 0
-        || status["refresh"]["rejected_record_total"]
-            .as_u64()
-            .unwrap_or_default()
-            != 0
+        || status["refresh"]["structured_outcome"]["retryable"] == true
     {
         "partial"
     } else {

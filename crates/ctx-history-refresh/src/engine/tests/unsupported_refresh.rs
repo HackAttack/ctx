@@ -216,6 +216,35 @@ fn executable_empty_inventory_publishes_v2_authority_and_survives_restart() {
 }
 
 #[test]
+fn genuinely_empty_catalog_publishes_a_verified_noop_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, _, discovery) = discovery_fixture(temp.path());
+
+    let publication = run_report(
+        &discovery,
+        DiscoveryReport {
+            sources: Vec::new(),
+            issues: Vec::new(),
+        },
+        &data_root,
+        &index_root,
+    )
+    .unwrap();
+    assert_eq!(publication.certified_source_count, 0);
+    assert!(publication.route_results.is_empty());
+    assert!(publication.zero_source_authority.is_empty());
+
+    let restarted = VerifiedIndex::open(&index_root).unwrap();
+    assert!(verified_generation_is_query_ready(&restarted).unwrap());
+    let metadata = SourceBackedPublicationMetadata::decode(&restarted).unwrap();
+    assert_eq!(metadata.refresh_scope, SourceBackedRefreshScope::All);
+    assert!(metadata.certifies_generation(&restarted));
+}
+
+#[test]
 fn confirmed_deletion_can_publish_empty_but_mixed_unavailable_cannot() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
