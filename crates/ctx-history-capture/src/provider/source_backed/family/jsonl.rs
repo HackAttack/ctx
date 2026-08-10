@@ -19,6 +19,7 @@ mod identity;
 mod physical;
 mod revalidation;
 mod route;
+mod terminal_authority;
 
 pub(crate) use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
@@ -51,6 +52,7 @@ pub(crate) use route::{
     JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
     JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
+pub(crate) use terminal_authority::{JsonlTerminalAuthority, JsonlTerminalObservationRegion};
 const PREFIX_HASH_DOMAIN: &[u8] = b"ctx-direct-jsonl-nativepath-prefix-v1\0";
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
