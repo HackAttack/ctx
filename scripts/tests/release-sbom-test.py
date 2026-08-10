@@ -30,6 +30,7 @@ TANTIVY_FEATURES = (
 )
 WORKSPACE_PACKAGES = (
     ("ctx", "crates/ctx-cli"),
+    ("ctx-agent-integrations", "crates/ctx-agent-integrations"),
     ("ctx-client-observability", "crates/ctx-client-observability"),
     ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
     ("ctx-history-core", "crates/ctx-history-core"),
@@ -141,6 +142,7 @@ class ReleaseSbomTest(unittest.TestCase):
 [workspace]
 members = [
   "crates/ctx-cli",
+  "crates/ctx-agent-integrations",
   "crates/ctx-client-observability",
   "crates/ctx-daemon-runtime",
   "crates/ctx-history-core",
@@ -168,20 +170,24 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             manifest.parent.mkdir(parents=True)
             dependencies = {
                 "ctx": (
+                    "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
                     "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
+                "ctx-agent-integrations": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }"
+                ),
                 "ctx-client-observability": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }"
+                ),
+                "ctx-daemon-runtime": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
                 "ctx-history-index": (
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "tantivy.workspace = true"
-                ),
-                "ctx-daemon-runtime": (
-                    "ctx-history-core = { path = \"../ctx-history-core\" }"
                 ),
                 "ctx-semantic-model": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
@@ -232,6 +238,7 @@ repository = "https://example.invalid/{name}"
 
         inventory_labels = [
             "@@//crates/ctx-cli:ctx",
+            "@@//crates/ctx-agent-integrations:ctx_agent_integrations",
             "@@//crates/ctx-client-observability:ctx_client_observability",
             "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
             "@@//crates/ctx-history-core:ctx_history_core",
@@ -319,6 +326,7 @@ repository = "https://example.invalid/{name}"
                 "ctx",
                 "0.26.0",
                 (
+                    "ctx-agent-integrations",
                     "ctx-client-observability",
                     "ctx-history-core",
                     "ctx-daemon-runtime 1.0.0",
@@ -327,6 +335,11 @@ repository = "https://example.invalid/{name}"
                     "ctx-semantic-model",
                     "ctx-upgrade-engine",
                 ),
+            ),
+            self.package(
+                "ctx-agent-integrations",
+                "0.26.0",
+                ("ctx-history-core",),
             ),
             self.package(
                 "ctx-client-observability",

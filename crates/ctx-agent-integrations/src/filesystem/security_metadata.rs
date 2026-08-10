@@ -38,7 +38,10 @@ fn copy_unix_security(source: &Path, destination: &File) -> io::Result<()> {
     if unsafe { libc::fchown(destination_fd, metadata.uid(), metadata.gid()) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    if unsafe { libc::fchmod(destination_fd, metadata.mode()) } != 0 {
+    // File-type bits are not inputs to fchmod, and masking keeps the value
+    // representable on Unix platforms whose mode_t is narrower than u32.
+    let mode = (metadata.mode() & 0o7777) as libc::mode_t;
+    if unsafe { libc::fchmod(destination_fd, mode) } != 0 {
         return Err(io::Error::last_os_error());
     }
     copy_platform_acl(&source, destination)

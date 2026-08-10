@@ -48,7 +48,7 @@ fn lineage_models(root: &Path, selected: &CoreEventRecord) -> (Value, Value, Val
         0,
         0,
         None,
-        crate::presentation_limit::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap();
     (cli, mcp, compact)

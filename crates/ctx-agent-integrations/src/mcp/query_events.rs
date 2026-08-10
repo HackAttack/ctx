@@ -2,14 +2,13 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    invalid_tool_request, optional_string, optional_usize, MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+    invalid_tool_request, optional_string, optional_usize, MCP_DEFAULT_EVENT_QUERY_LIMIT,
+    MCP_MAX_EVENT_QUERY_LIMIT, MCP_MIN_EVENT_QUERY_LIMIT, MCP_PRESENTATION_MAX_OUTPUT_BYTES,
 };
 use crate::tool_backend::{
     QueryEventFilters, QueryEventsRequest, ToolBackendError, ToolEventContent,
     ToolEventRangeDirection, ToolEventRangeScope, ToolOperation,
 };
-
-const DEFAULT_EVENT_QUERY_LIMIT: u64 = 10_000;
 
 pub(super) fn query_events_operation(arguments: &Value) -> Result<ToolOperation, ToolBackendError> {
     let providers = optional_strings(arguments, "providers")?;
@@ -56,7 +55,12 @@ pub(super) fn query_events_operation(arguments: &Value) -> Result<ToolOperation,
     let limit = optional_usize(arguments, "limit")?
         .map(usize_to_u64)
         .transpose()?
-        .unwrap_or(DEFAULT_EVENT_QUERY_LIMIT);
+        .unwrap_or(MCP_DEFAULT_EVENT_QUERY_LIMIT);
+    if !(MCP_MIN_EVENT_QUERY_LIMIT..=MCP_MAX_EVENT_QUERY_LIMIT).contains(&limit) {
+        return Err(invalid_tool_request(format!(
+            "limit must be between {MCP_MIN_EVENT_QUERY_LIMIT} and {MCP_MAX_EVENT_QUERY_LIMIT}"
+        )));
+    }
     let content = optional_content_projection(arguments)?;
     Ok(ToolOperation::QueryEvents(QueryEventsRequest {
         since,
@@ -130,5 +134,55 @@ fn optional_content_projection(arguments: &Value) -> Result<ToolEventContent, To
         Some(_) => Err(invalid_tool_request(
             "content must be one of full, text, none",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::mcp::McpToolKind;
+
+    fn query_events_limit(operation: ToolOperation) -> u64 {
+        let ToolOperation::QueryEvents(request) = operation else {
+            panic!("expected query_events operation");
+        };
+        request.limit
+    }
+
+    #[test]
+    fn query_events_schema_and_parser_share_the_exact_limit_contract() {
+        let definitions = super::super::tool_definitions(Vec::new());
+        let query_events = definitions
+            .iter()
+            .find(|tool| tool["name"] == McpToolKind::QueryEvents.tool_name())
+            .unwrap();
+        let schema = &query_events["inputSchema"]["properties"]["limit"];
+        assert_eq!(schema["minimum"], MCP_MIN_EVENT_QUERY_LIMIT);
+        assert_eq!(schema["maximum"], MCP_MAX_EVENT_QUERY_LIMIT);
+        assert_eq!(schema["default"], MCP_DEFAULT_EVENT_QUERY_LIMIT);
+
+        assert_eq!(
+            query_events_limit(query_events_operation(&json!({})).unwrap()),
+            MCP_DEFAULT_EVENT_QUERY_LIMIT
+        );
+        assert_eq!(
+            query_events_limit(
+                query_events_operation(&json!({"limit": MCP_MIN_EVENT_QUERY_LIMIT})).unwrap()
+            ),
+            MCP_MIN_EVENT_QUERY_LIMIT
+        );
+        assert_eq!(
+            query_events_limit(
+                query_events_operation(&json!({"limit": MCP_MAX_EVENT_QUERY_LIMIT})).unwrap()
+            ),
+            MCP_MAX_EVENT_QUERY_LIMIT
+        );
+
+        for invalid in [MCP_MIN_EVENT_QUERY_LIMIT - 1, MCP_MAX_EVENT_QUERY_LIMIT + 1] {
+            let error = query_events_operation(&json!({"limit": invalid})).unwrap_err();
+            assert_eq!(error.to_string(), "limit must be between 1 and 10000000");
+        }
     }
 }

@@ -1,8 +1,13 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt as _;
 
 use anyhow::{anyhow, Context, Result};
 use fs2::FileExt as _;
@@ -117,7 +122,6 @@ fn replace_file(source: &Path, target: &Path, _replacing: bool) -> io::Result<()
 
 #[cfg(windows)]
 fn replace_file(source: &Path, target: &Path, replacing: bool) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
         REPLACEFILE_WRITE_THROUGH,

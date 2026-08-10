@@ -1,8 +1,3 @@
-#[cfg(test)]
-use std::{fs, io, path::Path};
-
-#[cfg(test)]
-use anyhow::Context;
 use anyhow::{anyhow, Result};
 use ctx_agent_integrations::mcp_config::{
     execute_install, execute_status, McpInstallRequest, McpInstallResult, McpStatusRequest,
@@ -19,8 +14,6 @@ use crate::{
     },
 };
 
-#[cfg(test)]
-use super::format::ConfigKind;
 use super::{
     format::{self, ConfigStatus},
     registry::McpTarget,
@@ -135,9 +128,9 @@ pub(super) fn run_status(
             })
         );
     } else {
-        let recovery_command = status_install_command(&args, &results);
+        let recovery_command = status_install_command(&args, results);
         let document =
-            render_status_results(ui.stdout_context(), &results, recovery_command.as_deref());
+            render_status_results(ui.stdout_context(), results, recovery_command.as_deref());
         ui.write_stdout(&document)?;
     }
     Ok(())
@@ -145,135 +138,6 @@ pub(super) fn run_status(
 
 fn dedupe_agents(agents: impl IntoIterator<Item = McpAgentArg>) -> Vec<McpAgentArg> {
     ctx_agent_integrations::mcp_config::dedupe_agents(agents)
-}
-
-#[cfg(test)]
-fn install_target(target: &McpTarget, force: bool) -> McpInstallResult {
-    let previous = status_target(target);
-    if previous.status == ConfigStatus::Current {
-        return McpInstallResult {
-            target: target.clone(),
-            success: true,
-            previous_status: previous.status,
-            status: ConfigStatus::Current,
-            already_installed: true,
-            modified: false,
-            error: None,
-        };
-    }
-    if matches!(
-        previous.status,
-        ConfigStatus::Unsupported | ConfigStatus::Invalid
-    ) {
-        return McpInstallResult {
-            target: target.clone(),
-            success: false,
-            previous_status: previous.status,
-            status: previous.status,
-            already_installed: false,
-            modified: false,
-            error: previous.error,
-        };
-    }
-    if previous.status == ConfigStatus::Conflict && !force {
-        return McpInstallResult {
-            target: target.clone(),
-            success: false,
-            previous_status: previous.status,
-            status: previous.status,
-            already_installed: false,
-            modified: false,
-            error: Some(
-                "existing ctx MCP server has different command or args; rerun with --force to overwrite"
-                    .to_owned(),
-            ),
-        };
-    }
-    let result = write_target(target, force);
-    match result {
-        Ok(()) => McpInstallResult {
-            target: target.clone(),
-            success: true,
-            previous_status: previous.status,
-            status: ConfigStatus::Current,
-            already_installed: false,
-            modified: true,
-            error: None,
-        },
-        Err(err) => McpInstallResult {
-            target: target.clone(),
-            success: false,
-            previous_status: previous.status,
-            status: ConfigStatus::Invalid,
-            already_installed: false,
-            modified: false,
-            error: Some(err.to_string()),
-        },
-    }
-}
-
-#[cfg(test)]
-fn status_target(target: &McpTarget) -> McpStatusResult {
-    let Some(path) = target.path.as_ref() else {
-        return McpStatusResult {
-            target: target.clone(),
-            status: ConfigStatus::Unsupported,
-            error: target.unsupported_reason.clone(),
-        };
-    };
-    let Some(kind) = target.kind else {
-        return McpStatusResult {
-            target: target.clone(),
-            status: ConfigStatus::Unsupported,
-            error: target.unsupported_reason.clone(),
-        };
-    };
-    match read_target_status(path, kind) {
-        Ok(status) => McpStatusResult {
-            target: target.clone(),
-            status,
-            error: None,
-        },
-        Err(err) => McpStatusResult {
-            target: target.clone(),
-            status: ConfigStatus::Invalid,
-            error: Some(err.to_string()),
-        },
-    }
-}
-
-#[cfg(test)]
-fn read_target_status(path: &Path, kind: ConfigKind) -> Result<ConfigStatus> {
-    let body = match fs::read_to_string(path) {
-        Ok(body) => body,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(ConfigStatus::Missing),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    if body.trim().is_empty() {
-        return Ok(ConfigStatus::Missing);
-    }
-    format::status(&body, kind, path)
-}
-
-#[cfg(test)]
-fn write_target(target: &McpTarget, force: bool) -> Result<()> {
-    let path = target
-        .path
-        .as_ref()
-        .ok_or_else(|| anyhow!("unsupported MCP target"))?;
-    let kind = target
-        .kind
-        .ok_or_else(|| anyhow!("unsupported MCP target"))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    let existing = match fs::read_to_string(path) {
-        Ok(body) => body,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    let body = format::upsert(&existing, kind, force, path)?;
-    fs::write(path, body).with_context(|| format!("write {}", path.display()))
 }
 
 fn mcp_install_result_json(result: &McpInstallResult) -> Value {
@@ -552,6 +416,7 @@ mod tests {
 
     use super::*;
     use crate::ui::{ColorMode, StreamKind, TestContext, Token};
+    use ctx_agent_integrations::mcp_config::{install_target, status_target};
 
     fn render_context(width: usize, color: ColorMode) -> RenderContext {
         RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))

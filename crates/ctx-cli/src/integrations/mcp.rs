@@ -10,8 +10,6 @@ pub(crate) use ctx_agent_integrations::mcp_config::{McpAgentArg, McpPathContext}
 
 mod format {
     pub(super) use ctx_agent_integrations::mcp_config::{server_command, ConfigStatus};
-    #[cfg(test)]
-    pub(super) use ctx_agent_integrations::mcp_config::{status, upsert, ConfigKind};
 }
 
 mod registry {

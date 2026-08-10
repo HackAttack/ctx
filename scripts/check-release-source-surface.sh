@@ -31,6 +31,7 @@ source_paths=(
   docs
   skills
   scripts
+  crates/ctx-agent-integrations/src
   crates/ctx-cli/src
   crates/ctx-client-observability/src
   crates/ctx-daemon-runtime/src
