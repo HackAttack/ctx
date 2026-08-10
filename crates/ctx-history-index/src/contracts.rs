@@ -7,8 +7,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    current_core_record_contract_fingerprint, hex,
-    identity::is_generation_id,
+    current_core_record_contract_fingerprint, hex, is_generation_id,
     policy::{
         current_source_generation_policy_hash, LEXICAL_SCHEMA_REVISION, LEXICAL_TOKENIZER_REVISION,
     },
@@ -26,7 +25,6 @@ pub const LEXICAL_SCHEMA_VERSION: u32 = LEXICAL_SCHEMA_REVISION;
 pub const LEXICAL_ANALYZER_VERSION: u32 = LEXICAL_TOKENIZER_REVISION;
 pub const MAX_PUBLICATION_METADATA_BYTES: usize = 48 * 1024;
 
-pub(crate) const MANIFEST_DIRECTORY: &str = "ctx-generations";
 pub(crate) const COMMIT_PAYLOAD_VERSION: u32 = 2;
 pub(crate) const INDEX_MEMORY_MIN_PER_THREAD: usize = 15_000_000;
 pub(crate) const MAX_DOCUMENT_METADATA_BYTES: usize = 64 * 1024;
@@ -461,6 +459,74 @@ pub enum IndexError {
     },
     #[error("manifest Core-record aggregate is invalid for source {0}")]
     CoreRecordAggregateMismatch(String),
+}
+
+impl From<ctx_history_index_generation::GenerationError> for IndexError {
+    fn from(error: ctx_history_index_generation::GenerationError) -> Self {
+        use ctx_history_index_generation::GenerationError;
+
+        match error {
+            GenerationError::Io(error) => Self::Io(error),
+            GenerationError::Json(error) => Self::Json(error),
+            GenerationError::Tantivy(error) => Self::Tantivy(error),
+            GenerationError::MissingActiveGenerationPointer => Self::MissingActiveGenerationPointer,
+            GenerationError::UnsupportedActiveGenerationPointer(version) => {
+                Self::UnsupportedActiveGenerationPointer(version)
+            }
+            GenerationError::InvalidActiveGenerationPointer => Self::InvalidActiveGenerationPointer,
+            GenerationError::InvalidGenerationRetentionLease => {
+                Self::InvalidGenerationRetentionLease
+            }
+            GenerationError::UnsupportedGenerationRetentionLease(version) => {
+                Self::UnsupportedGenerationRetentionLease(version)
+            }
+            GenerationError::InvalidGenerationRetentionLeaseOwner => {
+                Self::InvalidGenerationRetentionLeaseOwner
+            }
+            GenerationError::GenerationRetentionLeaseTargetNotRetained {
+                requested_generation_id,
+            } => Self::GenerationRetentionLeaseTargetNotRetained {
+                requested_generation_id,
+            },
+            GenerationError::GenerationRetentionLeaseConflict {
+                retained_generation_id,
+                owner_kind,
+            } => Self::GenerationRetentionLeaseConflict {
+                retained_generation_id,
+                owner_kind,
+            },
+            GenerationError::GenerationRetentionLeaseOwnerMismatch => {
+                Self::GenerationRetentionLeaseOwnerMismatch
+            }
+            GenerationError::InvalidGenerationId => Self::InvalidGenerationId,
+            GenerationError::MissingManifest(generation_id) => Self::MissingManifest(generation_id),
+            GenerationError::ManifestDigestMismatch { expected, actual } => {
+                Self::ManifestDigestMismatch { expected, actual }
+            }
+            GenerationError::IndexSettingsMismatch => {
+                Self::IndexSettingsMismatch(LEXICAL_SCHEMA_VERSION)
+            }
+            GenerationError::ConcurrentGenerationChange => Self::ConcurrentGenerationChange,
+            GenerationError::ChecksumMismatch => Self::ChecksumMismatch,
+            GenerationError::CurrentRepublishSourceTopology(detail) => {
+                Self::CurrentRepublishSourceTopology(detail)
+            }
+            GenerationError::CurrentRepublishFileLimit { actual, maximum } => {
+                Self::CurrentRepublishFileLimit { actual, maximum }
+            }
+            GenerationError::CurrentRepublishByteLimit { actual, maximum } => {
+                Self::CurrentRepublishByteLimit { actual, maximum }
+            }
+            GenerationError::CurrentRepublishInsufficientHeadroom {
+                required,
+                available,
+            } => Self::CurrentRepublishInsufficientHeadroom {
+                required,
+                available,
+            },
+            GenerationError::CountOverflow => Self::CountOverflow,
+        }
+    }
 }
 
 /// A predecessor migration whose atomic pointer replacement became visible,

@@ -2,18 +2,23 @@ use tantivy::Index;
 
 use crate::Result;
 
-use super::super::super::generation::CandidateGeneration;
+use crate::CandidateGeneration;
 
-pub(in crate::publication::republish) struct RepublishCandidate {
-    pub(in crate::publication::republish) directory_name: String,
-    pub(in crate::publication::republish) index: Index,
+pub struct RepublishCandidate {
+    directory_name: String,
+    index: Index,
     authentication: CandidateAuthentication,
 }
 
 pub(super) enum CandidateAuthentication {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     DescriptorClone(super::unix::CandidateGuard),
-    #[cfg(any(test, target_os = "windows", target_os = "freebsd"))]
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        target_os = "windows",
+        target_os = "freebsd"
+    ))]
     Portable(super::portable::CandidateGuard),
 }
 
@@ -29,16 +34,29 @@ impl RepublishCandidate {
         }
     }
 
-    pub(in crate::publication::republish) fn validate_binding(&self) -> Result<()> {
+    pub fn directory_name(&self) -> &str {
+        &self.directory_name
+    }
+
+    pub fn index(&self) -> &Index {
+        &self.index
+    }
+
+    pub fn validate_binding(&self) -> Result<()> {
         match &self.authentication {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             CandidateAuthentication::DescriptorClone(guard) => guard.validate_binding(),
-            #[cfg(any(test, target_os = "windows", target_os = "freebsd"))]
+            #[cfg(any(
+                test,
+                feature = "test-support",
+                target_os = "windows",
+                target_os = "freebsd"
+            ))]
             CandidateAuthentication::Portable(guard) => guard.validate_binding(),
         }
     }
 
-    pub(in crate::publication::republish) fn discard(self) {
+    pub fn discard(self) {
         let Self {
             index,
             authentication,
@@ -48,7 +66,12 @@ impl RepublishCandidate {
         match authentication {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             CandidateAuthentication::DescriptorClone(guard) => guard.discard(),
-            #[cfg(any(test, target_os = "windows", target_os = "freebsd"))]
+            #[cfg(any(
+                test,
+                feature = "test-support",
+                target_os = "windows",
+                target_os = "freebsd"
+            ))]
             CandidateAuthentication::Portable(guard) => guard.discard(),
         }
     }

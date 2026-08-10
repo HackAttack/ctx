@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
 use ctx_history_core::{CoreRecord, SourceKey, StableEntityId};
-use sha2::{Digest, Sha256};
 use tantivy::{schema::IndexRecordOption, Searcher, Term};
 use uuid::Uuid;
 
-use crate::{Fields, IndexError, Result};
+use crate::{hex, Fields, IndexError, Result};
 
 pub(crate) fn prior_core_record(
     searcher: &Searcher,
@@ -80,25 +79,4 @@ pub(crate) fn register_compact_identity(
             })
         }
     }
-}
-
-pub(crate) fn sha256_hex(value: &[u8]) -> String {
-    hex(&Sha256::digest(value))
-}
-
-pub(crate) fn is_generation_id(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-pub(crate) fn hex(value: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(value.len() * 2);
-    for byte in value {
-        encoded.push(DIGITS[(byte >> 4) as usize] as char);
-        encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }

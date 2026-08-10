@@ -13,7 +13,7 @@ use std::{
 };
 
 use super::{entry_kind, require_regular, ObjectIdentity};
-use crate::{IndexError, Result};
+use crate::{GenerationError as IndexError, Result};
 
 pub(super) fn open_directory_path(path: &Path) -> io::Result<File> {
     OpenOptions::new()

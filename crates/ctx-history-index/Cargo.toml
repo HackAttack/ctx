@@ -11,10 +11,9 @@ publish = false
 
 [dependencies]
 base64.workspace = true
-crc32fast = "1.5"
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index-generation = { path = "../ctx-history-index-generation" }
 ctx-semantic-model = { path = "../ctx-semantic-model" }
-libc.workspace = true
 memmap2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,12 +23,6 @@ thiserror.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-    "Wdk_Foundation",
-    "Wdk_Storage_FileSystem",
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-] }
+[dev-dependencies]
+ctx-history-index-generation = { path = "../ctx-history-index-generation", features = ["test-support"] }
+libc.workspace = true

@@ -282,7 +282,7 @@ impl PreparationBase {
             Some(&pointer),
             self.slot.physical_integrity_digest(),
         )
-        .map_err(|error| self.rebuild_required(error))?;
+        .map_err(|error| self.rebuild_required(error.into()))?;
         *verified = true;
         Ok(())
     }

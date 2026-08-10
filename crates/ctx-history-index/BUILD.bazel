@@ -31,6 +31,13 @@ PROD_SRCS = glob(
 
 CTX_HISTORY_INDEX_DEPS = [
     "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-index-generation:lib",
+    "//crates/ctx-semantic-model:lib",
+]
+
+CTX_HISTORY_INDEX_TEST_DEPS = [
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-index-generation:test_support_lib",
     "//crates/ctx-semantic-model:lib",
 ]
 
@@ -60,7 +67,7 @@ ctx_rust_test(
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + CTX_HISTORY_INDEX_DEPS,
+    ) + CTX_HISTORY_INDEX_TEST_DEPS,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -83,7 +90,7 @@ ctx_rust_test(
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + CTX_HISTORY_INDEX_DEPS,
+    ) + CTX_HISTORY_INDEX_TEST_DEPS,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -118,7 +125,7 @@ ctx_rust_test(
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + CTX_HISTORY_INDEX_DEPS,
+    ) + CTX_HISTORY_INDEX_TEST_DEPS,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -157,7 +164,7 @@ ctx_rust_test(
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + CTX_HISTORY_INDEX_DEPS,
+    ) + CTX_HISTORY_INDEX_TEST_DEPS,
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

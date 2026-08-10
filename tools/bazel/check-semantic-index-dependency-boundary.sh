@@ -27,6 +27,7 @@ for target in lib test_support_lib; do
   expected_internal="${tmp}/${target}-expected-internal.txt"
   printf '%s\n' \
     '//crates/ctx-history-core:lib' \
+    '//crates/ctx-history-index-generation:lib' \
     '//crates/ctx-history-index:lib' \
     "//crates/ctx-semantic-index:${target}" \
     '//crates/ctx-semantic-model:lib' >"${expected_internal}"
