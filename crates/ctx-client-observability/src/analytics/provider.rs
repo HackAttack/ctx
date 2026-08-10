@@ -1,42 +1,42 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::time::Duration;
 
 use ctx_history_core::CaptureProvider;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use super::duration_bucket;
 use super::{
     bytes_bucket, count_bucket, BytesBucket, CountBucket, DurationBucket, Outcome, Surface,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshTrigger {
-    #[cfg(test)]
+pub enum ProviderRefreshTrigger {
+    #[cfg(any(test, feature = "test-support"))]
     Setup,
     Import,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Search,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Daemon,
 }
 
 impl ProviderRefreshTrigger {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Setup => "setup",
             Self::Import => "import",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Search => "search",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Daemon => "daemon",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshSourceMode {
-    #[cfg(test)]
+pub enum ProviderRefreshSourceMode {
+    #[cfg(any(test, feature = "test-support"))]
     Discovered,
     ExplicitPath,
     ExplicitFormat,
@@ -44,9 +44,9 @@ pub(crate) enum ProviderRefreshSourceMode {
 }
 
 impl ProviderRefreshSourceMode {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Discovered => "discovered",
             Self::ExplicitPath => "explicit_path",
             Self::ExplicitFormat => "explicit_format",
@@ -56,13 +56,13 @@ impl ProviderRefreshSourceMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshChange {
+pub enum ProviderRefreshChange {
     Changed,
     NoOp,
 }
 
 impl ProviderRefreshChange {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Changed => "changed",
             Self::NoOp => "no_op",
@@ -71,7 +71,7 @@ impl ProviderRefreshChange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshContentEvidence {
+pub enum ProviderRefreshContentEvidence {
     None,
     Accepted,
     Mixed,
@@ -79,7 +79,7 @@ pub(crate) enum ProviderRefreshContentEvidence {
 }
 
 impl ProviderRefreshContentEvidence {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Accepted => "accepted",
@@ -90,38 +90,38 @@ impl ProviderRefreshContentEvidence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshWorkKind {
+pub enum ProviderRefreshWorkKind {
     NoOp,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Fresh,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Append,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Rewrite,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Truncate,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Replace,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Retire,
     Mixed,
 }
 
 impl ProviderRefreshWorkKind {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::NoOp => "no_op",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Fresh => "fresh",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Append => "append",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Rewrite => "rewrite",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Truncate => "truncate",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Replace => "replace",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Retire => "retire",
             Self::Mixed => "mixed",
         }
@@ -129,14 +129,14 @@ impl ProviderRefreshWorkKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshResult {
+pub enum ProviderRefreshResult {
     Complete,
     Partial,
     Failure,
 }
 
 impl ProviderRefreshResult {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Complete => "complete",
             Self::Partial => "partial",
@@ -146,7 +146,7 @@ impl ProviderRefreshResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderCoreResult {
+pub enum ProviderCoreResult {
     NoOp,
     Complete,
     Partial,
@@ -155,7 +155,7 @@ pub(crate) enum ProviderCoreResult {
 }
 
 impl ProviderCoreResult {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::NoOp => "no_op",
             Self::Complete => "complete",
@@ -171,7 +171,7 @@ impl ProviderCoreResult {
     dead_code,
     reason = "the public telemetry vocabulary retains Pro lifecycle outcomes used by released event consumers"
 )]
-pub(crate) enum ProviderProResult {
+pub enum ProviderProResult {
     NotRequested,
     Unavailable,
     NoOp,
@@ -183,7 +183,7 @@ pub(crate) enum ProviderProResult {
 }
 
 impl ProviderProResult {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::NotRequested => "not_requested",
             Self::Unavailable => "unavailable",
@@ -198,25 +198,25 @@ impl ProviderProResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshFailureScope {
+pub enum ProviderRefreshFailureScope {
     None,
     Record,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Source,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     System,
     Mixed,
     Unknown,
 }
 
 impl ProviderRefreshFailureScope {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Record => "record",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Source => "source",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::System => "system",
             Self::Mixed => "mixed",
             Self::Unknown => "unknown",
@@ -225,57 +225,57 @@ impl ProviderRefreshFailureScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRefreshFailureType {
+pub enum ProviderRefreshFailureType {
     None,
     RecordRejection,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     UnsupportedSchema,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     NotFound,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Permission,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     SourceDatabase,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     MalformedSource,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Store,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     WorkerPanic,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     SystemIo,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     System,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Other,
     Mixed,
     Unknown,
 }
 
 impl ProviderRefreshFailureType {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::RecordRejection => "record_rejection",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::UnsupportedSchema => "unsupported_schema",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::NotFound => "not_found",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Permission => "permission",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::SourceDatabase => "source_database",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::MalformedSource => "malformed_source",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Store => "store",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::WorkerPanic => "worker_panic",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::SystemIo => "system_io",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::System => "system",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Other => "other",
             Self::Mixed => "mixed",
             Self::Unknown => "unknown",
@@ -284,21 +284,21 @@ impl ProviderRefreshFailureType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProviderRefreshCountsV1 {
-    pub(crate) sources: CountBucket,
-    pub(crate) source_files: CountBucket,
-    pub(crate) sessions: CountBucket,
-    pub(crate) events: CountBucket,
-    pub(crate) edges: CountBucket,
-    pub(crate) skips: CountBucket,
-    pub(crate) rejections: CountBucket,
-    pub(crate) failures: CountBucket,
-    pub(crate) bytes: BytesBucket,
+pub struct ProviderRefreshCountsV1 {
+    pub sources: CountBucket,
+    pub source_files: CountBucket,
+    pub sessions: CountBucket,
+    pub events: CountBucket,
+    pub edges: CountBucket,
+    pub skips: CountBucket,
+    pub rejections: CountBucket,
+    pub failures: CountBucket,
+    pub bytes: BytesBucket,
 }
 
 impl ProviderRefreshCountsV1 {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         sources: u64,
         source_files: u64,
         sessions: u64,
@@ -324,17 +324,14 @@ impl ProviderRefreshCountsV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProviderRefreshPerformanceV1 {
-    pub(crate) cpu_duration: DurationBucket,
-    pub(crate) observed_process_peak_rss: Option<BytesBucket>,
+pub struct ProviderRefreshPerformanceV1 {
+    pub cpu_duration: DurationBucket,
+    pub observed_process_peak_rss: Option<BytesBucket>,
 }
 
 impl ProviderRefreshPerformanceV1 {
-    #[cfg(test)]
-    pub(crate) fn new(
-        cpu_duration: Duration,
-        observed_process_peak_rss_bytes: Option<u64>,
-    ) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new(cpu_duration: Duration, observed_process_peak_rss_bytes: Option<u64>) -> Self {
         Self {
             cpu_duration: duration_bucket(cpu_duration),
             observed_process_peak_rss: observed_process_peak_rss_bytes.map(bytes_bucket),
@@ -343,41 +340,41 @@ impl ProviderRefreshPerformanceV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ForegroundProviderRefreshV1 {
+pub struct ForegroundProviderRefreshV1 {
     /// Absent only for one provider-neutral, all-provider source publication.
-    pub(crate) provider: Option<CaptureProvider>,
-    pub(crate) trigger: ProviderRefreshTrigger,
+    pub provider: Option<CaptureProvider>,
+    pub trigger: ProviderRefreshTrigger,
     /// Absent when a global publication may contain discovered and explicit
     /// catalog routes together.
-    pub(crate) source_mode: Option<ProviderRefreshSourceMode>,
-    pub(crate) change: ProviderRefreshChange,
-    pub(crate) content_evidence: ProviderRefreshContentEvidence,
-    pub(crate) work_kind: Option<ProviderRefreshWorkKind>,
-    pub(crate) refresh_result: ProviderRefreshResult,
-    pub(crate) core_result: ProviderCoreResult,
-    pub(crate) canonical_pro_result: ProviderProResult,
-    pub(crate) output_pro_result: ProviderProResult,
-    pub(crate) failure_scope: ProviderRefreshFailureScope,
-    pub(crate) failure_type: ProviderRefreshFailureType,
-    pub(crate) work_remaining: bool,
-    pub(crate) retired_records: Option<CountBucket>,
+    pub source_mode: Option<ProviderRefreshSourceMode>,
+    pub change: ProviderRefreshChange,
+    pub content_evidence: ProviderRefreshContentEvidence,
+    pub work_kind: Option<ProviderRefreshWorkKind>,
+    pub refresh_result: ProviderRefreshResult,
+    pub core_result: ProviderCoreResult,
+    pub canonical_pro_result: ProviderProResult,
+    pub output_pro_result: ProviderProResult,
+    pub failure_scope: ProviderRefreshFailureScope,
+    pub failure_type: ProviderRefreshFailureType,
+    pub work_remaining: bool,
+    pub retired_records: Option<CountBucket>,
     /// Per-run counts are omitted when only current generation cardinalities
     /// are authoritative.
-    pub(crate) counts: Option<ProviderRefreshCountsV1>,
-    pub(crate) performance: Option<ProviderRefreshPerformanceV1>,
+    pub counts: Option<ProviderRefreshCountsV1>,
+    pub performance: Option<ProviderRefreshPerformanceV1>,
 }
 
 #[derive(Debug)]
-pub(crate) struct ProviderRefreshCompletedV1 {
-    pub(crate) surface: Surface,
-    pub(crate) outcome: Outcome,
-    pub(crate) duration: DurationBucket,
-    pub(crate) foreground: Option<ForegroundProviderRefreshV1>,
+pub struct ProviderRefreshCompletedV1 {
+    pub surface: Surface,
+    pub outcome: Outcome,
+    pub duration: DurationBucket,
+    pub foreground: Option<ForegroundProviderRefreshV1>,
 }
 
 impl ProviderRefreshCompletedV1 {
-    #[cfg(test)]
-    pub(crate) fn new(surface: Surface, outcome: Outcome, duration: Duration) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new(surface: Surface, outcome: Outcome, duration: Duration) -> Self {
         Self {
             surface,
             outcome,
@@ -386,8 +383,8 @@ impl ProviderRefreshCompletedV1 {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn foreground(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn foreground(
         outcome: Outcome,
         duration: Duration,
         foreground: ForegroundProviderRefreshV1,
@@ -400,7 +397,7 @@ impl ProviderRefreshCompletedV1 {
         }
     }
 
-    pub(crate) fn foreground_bucketed(
+    pub fn foreground_bucketed(
         outcome: Outcome,
         duration: DurationBucket,
         foreground: ForegroundProviderRefreshV1,

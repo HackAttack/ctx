@@ -44,6 +44,7 @@ mod local_usage;
 mod mcp;
 mod net;
 mod observability_composition;
+mod observability_product;
 mod operation_descriptor;
 mod output;
 mod presentation_limit;

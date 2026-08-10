@@ -1,9 +1,7 @@
 use std::time::Duration;
 
-use crate::progress::ProgressArg;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CountBucket {
+pub enum CountBucket {
     Zero,
     One,
     TwoToFive,
@@ -33,7 +31,7 @@ impl CountBucket {
     }
 }
 
-pub(crate) fn count_bucket(count: u64) -> CountBucket {
+pub fn count_bucket(count: u64) -> CountBucket {
     match count {
         0 => CountBucket::Zero,
         1 => CountBucket::One,
@@ -49,7 +47,7 @@ pub(crate) fn count_bucket(count: u64) -> CountBucket {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BytesBucket {
+pub enum BytesBucket {
     Zero,
     UnderOneHundredKb,
     OneHundredKbToOneMb,
@@ -85,7 +83,7 @@ impl BytesBucket {
     }
 }
 
-pub(crate) fn bytes_bucket(bytes: u64) -> BytesBucket {
+pub fn bytes_bucket(bytes: u64) -> BytesBucket {
     match bytes {
         0 => BytesBucket::Zero,
         1..=102_399 => BytesBucket::UnderOneHundredKb,
@@ -104,7 +102,7 @@ pub(crate) fn bytes_bucket(bytes: u64) -> BytesBucket {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TextLengthBucket {
+pub enum TextLengthBucket {
     Zero,
     OneToTwenty,
     TwentyOneToOneHundred,
@@ -124,7 +122,7 @@ impl TextLengthBucket {
     }
 }
 
-pub(crate) fn text_length_bucket(chars: usize) -> TextLengthBucket {
+pub fn text_length_bucket(chars: usize) -> TextLengthBucket {
     match chars {
         0 => TextLengthBucket::Zero,
         1..=20 => TextLengthBucket::OneToTwenty,
@@ -135,7 +133,7 @@ pub(crate) fn text_length_bucket(chars: usize) -> TextLengthBucket {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DurationBucket {
+pub enum DurationBucket {
     Unknown,
     UnderOneHundredMs,
     UnderOneSecond,
@@ -163,7 +161,7 @@ impl DurationBucket {
     }
 }
 
-pub(crate) fn duration_bucket(duration: Duration) -> DurationBucket {
+pub fn duration_bucket(duration: Duration) -> DurationBucket {
     match duration.as_millis() {
         0..=99 => DurationBucket::UnderOneHundredMs,
         100..=999 => DurationBucket::UnderOneSecond,
@@ -177,7 +175,7 @@ pub(crate) fn duration_bucket(duration: Duration) -> DurationBucket {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProgressMode {
+pub enum ProgressMode {
     Auto,
     Plain,
     Json,
@@ -185,15 +183,6 @@ pub(crate) enum ProgressMode {
 }
 
 impl ProgressMode {
-    pub(crate) fn from_arg(value: ProgressArg) -> Self {
-        match value {
-            ProgressArg::Auto => Self::Auto,
-            ProgressArg::Plain => Self::Plain,
-            ProgressArg::Json => Self::Json,
-            ProgressArg::None => Self::None,
-        }
-    }
-
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",

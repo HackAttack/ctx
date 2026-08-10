@@ -4,11 +4,9 @@ use std::{
     time::Duration,
 };
 
-use serde_json::Value;
-
 use super::{
-    mcp_search_context_targets, resolved_mcp_context_target, store, LocalUsageStorageAuthority,
-    McpContextTarget, McpInvocation, Outcome, UsageControlRevision,
+    store, LocalUsageStorageAuthority, McpCompletionFacts, McpContextTarget, McpCorrelationFact,
+    McpInvocation, Outcome, UsageControlRevision, UsageControlSnapshot,
 };
 
 pub(super) const CONTEXT_CORRELATION_MAX_RECORDS: usize = 1_024;
@@ -63,76 +61,65 @@ impl<K: Eq + Hash> EphemeralContextCorrelation<K> {
     }
 }
 
-pub(crate) struct McpUsageRecorder {
+pub struct McpUsageRecorder {
     storage: LocalUsageStorageAuthority,
-    control: crate::observability_composition::LocalUsageControlAuthority,
+    control: Box<dyn FnMut() -> UsageControlSnapshot>,
     enabled: bool,
     control_revision: Option<UsageControlRevision>,
     context: EphemeralContextCorrelation<McpContextTarget>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     trace: Option<std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>>,
 }
 
 impl McpUsageRecorder {
-    pub(crate) fn start_authorized(
+    pub fn start(
         storage: LocalUsageStorageAuthority,
-        mut control: crate::observability_composition::LocalUsageControlAuthority,
+        mut control: impl FnMut() -> UsageControlSnapshot + 'static,
     ) -> Self {
-        let snapshot = control.snapshot();
+        let snapshot = control();
         Self {
             storage,
-            control,
+            control: Box::new(control),
             enabled: snapshot.enabled(),
             control_revision: snapshot.revision().cloned(),
             context: EphemeralContextCorrelation::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             trace: None,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn start(data_root: std::path::PathBuf) -> Self {
-        Self::start_authorized(
-            crate::observability_composition::local_usage_storage_authority(&data_root),
-            crate::observability_composition::LocalUsageControlAuthority::new(data_root),
-        )
-    }
-
-    pub(crate) fn record_delivered(
+    pub fn record_delivered(
         &mut self,
         invocation: McpInvocation,
-        response: &Value,
         duration: Duration,
-        serialized_response_bytes: usize,
+        facts: impl FnOnce() -> McpCompletionFacts,
     ) {
         self.refresh_control();
         if !self.enabled {
             return;
         }
-        let operation = invocation.completed(response, duration, serialized_response_bytes);
+        let facts = facts();
+        let operation = invocation.completed(&facts, duration);
         let mut next_context = self.context.clone();
         if operation.outcome == Outcome::Success {
-            Self::apply_delivered_correlation(&mut next_context, &invocation, response);
+            Self::apply_delivered_correlation(&mut next_context, &facts);
         }
         if store::record_authorized(&self.storage, operation).is_ok() {
             self.context = next_context;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(trace) = &self.trace {
                 trace.lock().unwrap().push("local_usage");
             }
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_test_trace(
-        &mut self,
-        trace: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
-    ) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_test_trace(&mut self, trace: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>) {
         self.trace = Some(trace);
     }
 
     fn refresh_control(&mut self) {
-        let snapshot = self.control.snapshot();
+        let snapshot = (self.control)();
         if !snapshot.available()
             || snapshot.revision().is_none()
             || self.control_revision.as_ref() != snapshot.revision()
@@ -146,29 +133,27 @@ impl McpUsageRecorder {
 
     fn apply_delivered_correlation(
         context: &mut EphemeralContextCorrelation<McpContextTarget>,
-        invocation: &McpInvocation,
-        response: &Value,
+        facts: &McpCompletionFacts,
     ) -> bool {
-        if invocation.operation == crate::operation_descriptor::LocalUsageOperation::Search {
-            for target in mcp_search_context_targets(response) {
-                context.record_found(target);
+        let mut opened = false;
+        for fact in &facts.correlation {
+            match fact {
+                McpCorrelationFact::Found(target) => {
+                    context.record_found(*target);
+                }
+                McpCorrelationFact::Opened(target) => {
+                    opened |= context.record_opened(target);
+                }
             }
-            return false;
         }
-        // Never correlate on the caller-supplied selector: show accepts UUID
-        // prefixes. Only the canonical full ID returned by the successful
-        // result is eligible. Missing canonical IDs make correlation
-        // unavailable for that delivery.
-        resolved_mcp_context_target(invocation.operation, response)
-            .is_some_and(|target| context.record_opened(&target))
+        opened
     }
 
     #[cfg(test)]
     pub(in crate::local_usage) fn correlate_delivered_for_test(
         &mut self,
-        invocation: &McpInvocation,
-        response: &Value,
+        facts: &McpCompletionFacts,
     ) -> bool {
-        Self::apply_delivered_correlation(&mut self.context, invocation, response)
+        Self::apply_delivered_correlation(&mut self.context, facts)
     }
 }

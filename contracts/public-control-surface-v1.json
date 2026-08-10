@@ -166,7 +166,7 @@
   ],
   "deprecated_compatibility_consumers": [
     {
-      "path": "crates/ctx-cli/src/analytics/operation.rs",
+      "path": "crates/ctx-client-observability/src/analytics/operation.rs",
       "purpose": "Classify handler-emitted deprecated control IDs for aggregate telemetry without reading environment variables.",
       "controls": [
         "CTX_DAEMON_OFF",

@@ -1,5 +1,3 @@
-use std::{cell::Cell, env, path::Path};
-
 use anyhow::Result;
 use chrono::Timelike;
 use ctx_history_core::{utc_now, CaptureProvider};
@@ -7,9 +5,7 @@ use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 use crate::{
-    config::AppConfig,
-    execution_capabilities::{self, CapabilitySnapshotV1},
-    net,
+    execution_capabilities::{CapabilitySnapshotV1, PendingSnapshot},
     operation_descriptor::{CliOperation, OperationDescriptor},
 };
 
@@ -17,51 +13,22 @@ use super::*;
 
 const MAX_EVENTS_PER_REQUEST: usize = 50;
 
-thread_local! {
-    static DELIVERY_FAILURE_OUTPUT_QUIET: Cell<bool> = const { Cell::new(false) };
+pub struct AnalyticsDeliveryAuthority<'a> {
+    pub app_version: &'a str,
+    pub client_profile_id: &'a str,
+    pub data_root_id: &'a str,
+    pub install_attempt_id: Option<&'a str>,
+    pub capability_snapshot: Option<PendingSnapshot>,
 }
 
-struct DeliveryFailureOutputGuard {
-    previous: bool,
-}
-
-pub(crate) fn quiet_delivery_failure_output(quiet: bool) -> impl Drop {
-    let previous = DELIVERY_FAILURE_OUTPUT_QUIET.replace(quiet);
-    DeliveryFailureOutputGuard { previous }
-}
-
-impl Drop for DeliveryFailureOutputGuard {
-    fn drop(&mut self) {
-        DELIVERY_FAILURE_OUTPUT_QUIET.set(self.previous);
+pub fn deliver_batch(
+    authority: &mut AnalyticsDeliveryAuthority<'_>,
+    events: &[PublicEventV1],
+    mut post: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
     }
-}
-
-fn delivery_failure_output_allowed() -> bool {
-    !DELIVERY_FAILURE_OUTPUT_QUIET.get()
-}
-
-pub(crate) fn send_batch(data_root: &Path, config: &AppConfig, events: &[PublicEventV1]) {
-    if events.is_empty()
-        || !config.analytics.enabled
-        || env::var_os("CTX_ANALYTICS_DRY_RUN").is_some()
-    {
-        return;
-    }
-    if let Err(err) = send_batch_inner(data_root, config, events) {
-        if !delivery_failure_output_allowed() {
-            return;
-        }
-        if env::var_os("CTX_ANALYTICS_DEBUG").is_some() {
-            eprintln!("ctx analytics delivery failed: {err:#}");
-        }
-    }
-}
-
-fn send_batch_inner(data_root: &Path, config: &AppConfig, events: &[PublicEventV1]) -> Result<()> {
-    let client_profile_id = crate::identity::device_id(data_root)?;
-    let data_root_id = crate::identity::installation_id(data_root)?;
-    let install_marker = ctx_upgrade_engine::current_exe_install_marker();
-    let mut capability_snapshot = execution_capabilities::pending(data_root).ok().flatten();
     let occurred_at = minute_rounded_now();
     let serialized = events
         .iter()
@@ -72,27 +39,31 @@ fn send_batch_inner(data_root: &Path, config: &AppConfig, events: &[PublicEventV
                 occurred_at,
                 (index < MAX_EVENTS_PER_REQUEST)
                     .then(|| {
-                        capability_snapshot
+                        authority
+                            .capability_snapshot
                             .as_ref()
                             .map(|pending| pending.snapshot())
                     })
                     .flatten(),
-                install_marker
-                    .as_ref()
-                    .map(|marker| marker.install_attempt_id.as_str()),
+                authority.install_attempt_id,
             )
         })
         .collect::<Vec<_>>();
-    let snapshot_attached = capability_snapshot.is_some();
+    let snapshot_attached = authority.capability_snapshot.is_some();
     post_event_chunks(
         &serialized,
         snapshot_attached,
         |chunk| {
-            let body = serialize_batch_body(&client_profile_id, &data_root_id, chunk)?;
-            net::post_telemetry_json(&config.analytics.endpoint, &body)
+            let body = serialize_batch_body(
+                authority.app_version,
+                authority.client_profile_id,
+                authority.data_root_id,
+                chunk,
+            )?;
+            post(&body)
         },
         || {
-            if let Some(snapshot) = capability_snapshot.take() {
+            if let Some(snapshot) = authority.capability_snapshot.take() {
                 snapshot.mark_reported()?;
             }
             Ok(())
@@ -101,6 +72,7 @@ fn send_batch_inner(data_root: &Path, config: &AppConfig, events: &[PublicEventV
 }
 
 fn serialize_batch_body(
+    app_version: &str,
     client_profile_id: &str,
     data_root_id: &str,
     events: &[Value],
@@ -108,7 +80,7 @@ fn serialize_batch_body(
     let payload = json!({
         "client_profile_id": client_profile_id,
         "data_root_id": data_root_id,
-        "app_version": env!("CARGO_PKG_VERSION"),
+        "app_version": app_version,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "events": events,
@@ -821,30 +793,6 @@ fn insert_optional_provider(
 mod tests {
     use super::*;
 
-    #[test]
-    fn quiet_scope_blocks_debug_output_without_muting_human_or_daemon_callers() {
-        assert!(delivery_failure_output_allowed());
-        {
-            let _machine = quiet_delivery_failure_output(true);
-            assert!(
-                !delivery_failure_output_allowed(),
-                "an explicit debug request must stop at this gate in machine mode"
-            );
-            {
-                let _nested_human = quiet_delivery_failure_output(false);
-                assert!(delivery_failure_output_allowed());
-            }
-            assert!(!delivery_failure_output_allowed());
-        }
-        assert!(delivery_failure_output_allowed());
-        assert!(
-            std::thread::spawn(delivery_failure_output_allowed)
-                .join()
-                .unwrap(),
-            "daemon and other sender threads retain debug output by default"
-        );
-    }
-
     fn numbered_events(count: usize) -> Vec<Value> {
         (0..count).map(|index| json!({ "index": index })).collect()
     }
@@ -867,7 +815,7 @@ mod tests {
                 &events,
                 false,
                 |chunk| {
-                    let body = serialize_batch_body("client", "root", chunk)?;
+                    let body = serialize_batch_body("1.0.0", "client", "root", chunk)?;
                     payloads.push(serde_json::from_slice::<Value>(&body)?);
                     Ok(())
                 },

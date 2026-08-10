@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use super::CountBucket;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonStartModeV1 {
+pub enum DaemonStartModeV1 {
     Manual,
     Auto,
 }
@@ -18,7 +18,7 @@ impl DaemonStartModeV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonSupervisorV1 {
+pub enum DaemonSupervisorV1 {
     User,
     CliAutostart,
 }
@@ -33,7 +33,7 @@ impl DaemonSupervisorV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonTriggerV1 {
+pub enum DaemonTriggerV1 {
     Setup,
     Import,
     Search,
@@ -50,14 +50,14 @@ impl DaemonTriggerV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DaemonRunFactsV1 {
+pub struct DaemonRunFactsV1 {
     start_mode: DaemonStartModeV1,
     supervisor: DaemonSupervisorV1,
     trigger: Option<DaemonTriggerV1>,
 }
 
 impl DaemonRunFactsV1 {
-    pub(crate) fn new(
+    pub fn new(
         start_mode: DaemonStartModeV1,
         supervisor: DaemonSupervisorV1,
         trigger: Option<DaemonTriggerV1>,
@@ -71,7 +71,7 @@ impl DaemonRunFactsV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonCycleResultV1 {
+pub enum DaemonCycleResultV1 {
     Work,
     NoWork,
     Failure,
@@ -88,7 +88,7 @@ impl DaemonCycleResultV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonHistoryFreshnessV1 {
+pub enum DaemonHistoryFreshnessV1 {
     Current,
     Backoff,
     Failed,
@@ -107,8 +107,8 @@ impl DaemonHistoryFreshnessV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonBacklogV1 {
-    #[cfg(test)]
+pub enum DaemonBacklogV1 {
+    #[cfg(any(test, feature = "test-support"))]
     Bucket(CountBucket),
     Unknown,
 }
@@ -116,7 +116,7 @@ pub(crate) enum DaemonBacklogV1 {
 impl DaemonBacklogV1 {
     fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Bucket(bucket) => bucket.as_str(),
             Self::Unknown => "unknown",
         }
@@ -124,10 +124,10 @@ impl DaemonBacklogV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonCoverageV1 {
-    #[cfg(test)]
+pub enum DaemonCoverageV1 {
+    #[cfg(any(test, feature = "test-support"))]
     Complete,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Dirty,
     Unknown,
 }
@@ -135,9 +135,9 @@ pub(crate) enum DaemonCoverageV1 {
 impl DaemonCoverageV1 {
     fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Complete => "complete",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Dirty => "dirty",
             Self::Unknown => "unknown",
         }
@@ -145,7 +145,7 @@ impl DaemonCoverageV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonBackoffV1 {
+pub enum DaemonBackoffV1 {
     None,
     History,
 }
@@ -160,7 +160,7 @@ impl DaemonBackoffV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DaemonCycleStateV1 {
+pub struct DaemonCycleStateV1 {
     history_freshness: DaemonHistoryFreshnessV1,
     semantic_backlog: DaemonBacklogV1,
     semantic_coverage: DaemonCoverageV1,
@@ -168,7 +168,7 @@ pub(crate) struct DaemonCycleStateV1 {
 }
 
 impl DaemonCycleStateV1 {
-    pub(crate) fn new(
+    pub fn new(
         history_freshness: DaemonHistoryFreshnessV1,
         semantic_backlog: DaemonBacklogV1,
         semantic_coverage: DaemonCoverageV1,
@@ -182,7 +182,7 @@ impl DaemonCycleStateV1 {
         }
     }
 
-    pub(crate) fn unknown() -> Self {
+    pub fn unknown() -> Self {
         Self::new(
             DaemonHistoryFreshnessV1::Unknown,
             DaemonBacklogV1::Unknown,
@@ -191,13 +191,13 @@ impl DaemonCycleStateV1 {
         )
     }
 
-    pub(crate) fn retry_backoff(self) -> DaemonBackoffV1 {
+    pub fn retry_backoff(self) -> DaemonBackoffV1 {
         self.retry_backoff
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DaemonCycleFactsV1 {
+pub struct DaemonCycleFactsV1 {
     run: DaemonRunFactsV1,
     result: DaemonCycleResultV1,
     coalesced_cycles: CountBucket,
@@ -205,7 +205,7 @@ pub(crate) struct DaemonCycleFactsV1 {
 }
 
 impl DaemonCycleFactsV1 {
-    pub(crate) fn new(
+    pub fn new(
         run: DaemonRunFactsV1,
         result: DaemonCycleResultV1,
         coalesced_cycles: CountBucket,
@@ -221,26 +221,26 @@ impl DaemonCycleFactsV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DaemonRuntimeSnapshotV1 {
+pub struct DaemonRuntimeSnapshotV1 {
     run: DaemonRunFactsV1,
     state: DaemonCycleStateV1,
 }
 
 impl DaemonRuntimeSnapshotV1 {
-    pub(crate) fn new(run: DaemonRunFactsV1, state: DaemonCycleStateV1) -> Self {
+    pub fn new(run: DaemonRunFactsV1, state: DaemonCycleStateV1) -> Self {
         Self { run, state }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonOperationV1 {
+pub enum DaemonOperationV1 {
     Enable,
     Disable,
     Status,
 }
 
 impl DaemonOperationV1 {
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Enable => "enable",
             Self::Disable => "disable",
@@ -248,7 +248,7 @@ impl DaemonOperationV1 {
         }
     }
 
-    pub(crate) fn insert_properties(self, _properties: &mut Map<String, Value>) {}
+    pub fn insert_properties(self, _properties: &mut Map<String, Value>) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,47 +286,44 @@ enum DaemonRuntimePayloadV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DaemonRuntimeObservationV1(DaemonRuntimePayloadV1);
+pub struct DaemonRuntimeObservationV1(DaemonRuntimePayloadV1);
 
 #[allow(dead_code, non_upper_case_globals)]
 impl DaemonRuntimeObservationV1 {
     // Empty typed constants retain the original public fixture seams. Runtime
     // producers use the constructors below so daemon facts remain fixed and closed.
-    pub(crate) const Ready: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Ready));
-    pub(crate) const Stopped: Self =
-        Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Stopped));
-    pub(crate) const Recovered: Self =
-        Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Recovered));
-    pub(crate) const Failed: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Failed));
-    pub(crate) const Cycle: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Cycle));
-    pub(crate) const Liveness: Self =
-        Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Liveness));
+    pub const Ready: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Ready));
+    pub const Stopped: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Stopped));
+    pub const Recovered: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Recovered));
+    pub const Failed: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Failed));
+    pub const Cycle: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Cycle));
+    pub const Liveness: Self = Self(DaemonRuntimePayloadV1::Bare(DaemonRuntimeKindV1::Liveness));
 
-    pub(crate) fn ready(run: DaemonRunFactsV1) -> Self {
+    pub fn ready(run: DaemonRunFactsV1) -> Self {
         Self(DaemonRuntimePayloadV1::Ready(run))
     }
 
-    pub(crate) fn stopped(snapshot: DaemonRuntimeSnapshotV1) -> Self {
+    pub fn stopped(snapshot: DaemonRuntimeSnapshotV1) -> Self {
         Self(DaemonRuntimePayloadV1::Stopped(snapshot))
     }
 
-    pub(crate) fn recovered(snapshot: DaemonRuntimeSnapshotV1) -> Self {
+    pub fn recovered(snapshot: DaemonRuntimeSnapshotV1) -> Self {
         Self(DaemonRuntimePayloadV1::Recovered(snapshot))
     }
 
-    pub(crate) fn failed(snapshot: DaemonRuntimeSnapshotV1) -> Self {
+    pub fn failed(snapshot: DaemonRuntimeSnapshotV1) -> Self {
         Self(DaemonRuntimePayloadV1::Failed(snapshot))
     }
 
-    pub(crate) fn cycle(cycle: DaemonCycleFactsV1) -> Self {
+    pub fn cycle(cycle: DaemonCycleFactsV1) -> Self {
         Self(DaemonRuntimePayloadV1::Cycle(cycle))
     }
 
-    pub(crate) fn liveness(snapshot: DaemonRuntimeSnapshotV1) -> Self {
+    pub fn liveness(snapshot: DaemonRuntimeSnapshotV1) -> Self {
         Self(DaemonRuntimePayloadV1::Liveness(snapshot))
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self.0 {
             DaemonRuntimePayloadV1::Bare(kind) => kind.as_str(),
             DaemonRuntimePayloadV1::Ready(_) => DaemonRuntimeKindV1::Ready.as_str(),
@@ -338,7 +335,7 @@ impl DaemonRuntimeObservationV1 {
         }
     }
 
-    pub(crate) fn insert_properties(self, properties: &mut Map<String, Value>) {
+    pub fn insert_properties(self, properties: &mut Map<String, Value>) {
         match self.0 {
             DaemonRuntimePayloadV1::Bare(_) => {}
             DaemonRuntimePayloadV1::Ready(run) => insert_run_properties(properties, run),

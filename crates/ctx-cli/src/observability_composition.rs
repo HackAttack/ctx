@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    analytics::{pro_operation_event, Outcome, PublicEventV1},
+    analytics::{pro_operation_event, AnalyticsDeliveryAuthority, Outcome, PublicEventV1},
     config::{AppConfig, LocalUsageConfigResolver, LocalUsageConfigState},
     local_usage::{UsageControlRevision, UsageControlSnapshot},
 };
@@ -22,22 +22,55 @@ pub(crate) fn tool_product_event(
 
 const LOCAL_USAGE_DATABASE_FILE: &str = "usage.sqlite";
 
-/// Exact-path capability minted only by outer observability composition.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LocalUsageStorageAuthority {
-    database_path: PathBuf,
+pub(crate) fn local_usage_storage_authority(
+    data_root: &Path,
+) -> crate::local_usage::LocalUsageStorageAuthority {
+    crate::local_usage::LocalUsageStorageAuthority::new(
+        data_root.join(LOCAL_USAGE_DATABASE_FILE),
+        env!("CARGO_PKG_VERSION"),
+    )
 }
 
-impl LocalUsageStorageAuthority {
-    pub(crate) fn database_path(&self) -> &Path {
-        &self.database_path
-    }
-}
+const CAPABILITY_CLAIM_FILE: &str = "execution-capabilities-v1.claim";
+const CAPABILITY_REPORTED_FILE: &str = "execution-capabilities-v1.reported";
 
-pub(crate) fn local_usage_storage_authority(data_root: &Path) -> LocalUsageStorageAuthority {
-    LocalUsageStorageAuthority {
-        database_path: data_root.join(LOCAL_USAGE_DATABASE_FILE),
+pub(crate) fn deliver_analytics_batch(
+    data_root: &Path,
+    config: &AppConfig,
+    events: &[PublicEventV1],
+) -> anyhow::Result<()> {
+    if events.is_empty()
+        || !config.analytics.enabled
+        || std::env::var_os("CTX_ANALYTICS_DRY_RUN").is_some()
+    {
+        return Ok(());
     }
+    let client_profile_id = crate::identity::device_id(data_root)?;
+    let data_root_id = crate::identity::installation_id(data_root)?;
+    let capability_authority =
+        crate::execution_capabilities::ExecutionCapabilityStorageAuthority::new(
+            crate::identity::device_state_path(CAPABILITY_CLAIM_FILE, data_root)?,
+            crate::identity::device_state_path(CAPABILITY_REPORTED_FILE, data_root)?,
+        );
+    let capability_snapshot = crate::execution_capabilities::pending(
+        &capability_authority,
+        crate::identity::create_private_file,
+    )
+    .ok()
+    .flatten();
+    let install_marker = ctx_upgrade_engine::current_exe_install_marker();
+    let mut authority = AnalyticsDeliveryAuthority {
+        app_version: env!("CARGO_PKG_VERSION"),
+        client_profile_id: &client_profile_id,
+        data_root_id: &data_root_id,
+        install_attempt_id: install_marker
+            .as_ref()
+            .map(|marker| marker.install_attempt_id.as_str()),
+        capability_snapshot,
+    };
+    ctx_client_observability::analytics::deliver_batch(&mut authority, events, |body| {
+        crate::net::post_telemetry_json(&config.analytics.endpoint, body)
+    })
 }
 
 pub(crate) const fn usage_control_snapshot(enabled: bool) -> UsageControlSnapshot {
@@ -142,5 +175,97 @@ mod tests {
             local_usage_storage_authority(root).database_path(),
             root.join("usage.sqlite")
         );
+    }
+
+    #[test]
+    fn selected_telemetry_contract_inventory_hashes_match_the_running_public_source() {
+        use sha2::{Digest, Sha256};
+
+        let provenance: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/telemetry-v1/source-provenance.json"
+        ))
+        .unwrap();
+        assert_eq!(provenance["repository"], "ctxrs/ctx");
+        assert_eq!(
+            provenance["base_commit"],
+            "a4acd13f53fab3fdf27ebe20f580c2b087e99fb8"
+        );
+        assert_eq!(provenance["provenance_kind"], "content_addressed_candidate");
+        assert_eq!(
+            provenance["scope"],
+            "selected_typed_telemetry_contract_inventory"
+        );
+        assert!(
+            provenance.get("state").is_none(),
+            "content provenance must not claim a transient worktree state"
+        );
+        let files = provenance["files"].as_object().unwrap();
+        let sources = [
+            (
+                "crates/ctx-client-observability/src/analytics/operation.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/operation.rs")
+                    .as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/daemon.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/daemon.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/mcp.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/mcp.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/runtime.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/runtime.rs")
+                    .as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/pro.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/pro.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/buckets.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/buckets.rs")
+                    .as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/provider.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/provider.rs")
+                    .as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/product.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/product.rs")
+                    .as_slice(),
+            ),
+            (
+                "crates/ctx-client-observability/src/analytics/sender.rs",
+                include_bytes!("../../ctx-client-observability/src/analytics/sender.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-cli/src/upgrade/command.rs",
+                include_bytes!("upgrade/command.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-cli/src/upgrade/ports.rs",
+                include_bytes!("upgrade/ports.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs",
+                include_bytes!("../../ctx-upgrade-engine/src/upgrade/command/daemon.rs").as_slice(),
+            ),
+            (
+                "crates/ctx-upgrade-engine/src/upgrade/state.rs",
+                include_bytes!("../../ctx-upgrade-engine/src/upgrade/state.rs").as_slice(),
+            ),
+        ];
+        assert_eq!(files.len(), sources.len());
+        for (path, source) in sources {
+            let digest = Sha256::digest(source)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(files[path], digest, "stale telemetry provenance for {path}");
+        }
     }
 }

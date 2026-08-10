@@ -1,13 +1,11 @@
 use serde_json::{json, Map, Value};
 
 use crate::operation_descriptor::McpOperation;
-#[cfg(test)]
-use crate::operation_descriptor::McpOperationKind;
 
 use super::{count_bucket, CountBucket};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpMethodV1 {
+pub enum McpMethodV1 {
     ToolsCall,
     Unknown,
     Missing,
@@ -24,7 +22,7 @@ impl McpMethodV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpErrorLayerV1 {
+pub enum McpErrorLayerV1 {
     Input,
     JsonRpc,
     Tool,
@@ -43,7 +41,7 @@ impl McpErrorLayerV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpErrorClassV1 {
+pub enum McpErrorClassV1 {
     InvalidUtf8,
     LineTooLarge,
     InvalidJson,
@@ -80,7 +78,7 @@ impl McpErrorClassV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpResponseBoundV1 {
+pub enum McpResponseBoundV1 {
     WithinLimit,
     Replaced,
 }
@@ -95,16 +93,16 @@ impl McpResponseBoundV1 {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct McpResultMetadataV1 {
-    pub(crate) result_count: Option<CountBucket>,
-    pub(crate) zero_result: Option<bool>,
-    pub(crate) result_truncated: Option<bool>,
-    pub(crate) events_truncated: Option<bool>,
-    pub(crate) response_bound: Option<McpResponseBoundV1>,
+pub struct McpResultMetadataV1 {
+    pub result_count: Option<CountBucket>,
+    pub zero_result: Option<bool>,
+    pub result_truncated: Option<bool>,
+    pub events_truncated: Option<bool>,
+    pub response_bound: Option<McpResponseBoundV1>,
 }
 
 impl McpResultMetadataV1 {
-    pub(crate) fn with_result_count(mut self, count: usize) -> Self {
+    pub fn with_result_count(mut self, count: usize) -> Self {
         self.result_count = Some(count_bucket(count as u64));
         self.zero_result = Some(count == 0);
         self
@@ -112,13 +110,13 @@ impl McpResultMetadataV1 {
 }
 
 impl McpOperation {
-    pub(crate) fn name(&self) -> &'static str {
-        self.kind().tool_name()
+    pub fn name(&self) -> &'static str {
+        self.tool_dimension()
     }
 
-    pub(crate) fn insert_properties(&self, properties: &mut Map<String, Value>) {
+    pub fn insert_properties(&self, properties: &mut Map<String, Value>) {
         properties.insert("method".to_owned(), json!(self.method().as_str()));
-        properties.insert("tool".to_owned(), json!(self.kind().tool_name()));
+        properties.insert("tool".to_owned(), json!(self.tool_dimension()));
         insert_optional_enum(
             properties,
             "error_layer",
@@ -143,20 +141,20 @@ impl McpOperation {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct McpLifecycleCountsV1 {
-    pub(crate) requests: u64,
-    pub(crate) tool_requests: u64,
-    pub(crate) tool_failures: u64,
-    pub(crate) malformed_requests: u64,
-    pub(crate) pings: u64,
-    pub(crate) tools_lists: u64,
-    pub(crate) initialized_notifications: u64,
-    pub(crate) unknown_notifications: u64,
-    pub(crate) telemetry_dropped: u64,
+pub struct McpLifecycleCountsV1 {
+    pub requests: u64,
+    pub tool_requests: u64,
+    pub tool_failures: u64,
+    pub malformed_requests: u64,
+    pub pings: u64,
+    pub tools_lists: u64,
+    pub initialized_notifications: u64,
+    pub unknown_notifications: u64,
+    pub telemetry_dropped: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpStopReasonV1 {
+pub enum McpStopReasonV1 {
     Eof,
     StdinReadError,
     ResponseSerializeError,
@@ -183,7 +181,7 @@ enum McpRuntimePhaseV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct McpRuntimeObservationV1 {
+pub struct McpRuntimeObservationV1 {
     phase: McpRuntimePhaseV1,
     initialized: bool,
     stop_reason: Option<McpStopReasonV1>,
@@ -192,7 +190,7 @@ pub(crate) struct McpRuntimeObservationV1 {
 
 #[allow(dead_code, non_upper_case_globals)]
 impl McpRuntimeObservationV1 {
-    pub(crate) const Initialized: Self = Self::initialized(McpLifecycleCountsV1 {
+    pub const Initialized: Self = Self::initialized(McpLifecycleCountsV1 {
         requests: 0,
         tool_requests: 0,
         tool_failures: 0,
@@ -203,7 +201,7 @@ impl McpRuntimeObservationV1 {
         unknown_notifications: 0,
         telemetry_dropped: 0,
     });
-    pub(crate) const Stopped: Self = Self::stopped(
+    pub const Stopped: Self = Self::stopped(
         false,
         McpStopReasonV1::Eof,
         McpLifecycleCountsV1 {
@@ -219,7 +217,7 @@ impl McpRuntimeObservationV1 {
         },
     );
 
-    pub(crate) const fn initialized(counts: McpLifecycleCountsV1) -> Self {
+    pub const fn initialized(counts: McpLifecycleCountsV1) -> Self {
         Self {
             phase: McpRuntimePhaseV1::Initialized,
             initialized: true,
@@ -228,7 +226,7 @@ impl McpRuntimeObservationV1 {
         }
     }
 
-    pub(crate) const fn stopped(
+    pub const fn stopped(
         initialized: bool,
         reason: McpStopReasonV1,
         counts: McpLifecycleCountsV1,
@@ -241,14 +239,14 @@ impl McpRuntimeObservationV1 {
         }
     }
 
-    pub(crate) fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self.phase {
             McpRuntimePhaseV1::Initialized => "initialized",
             McpRuntimePhaseV1::Stopped => "stopped",
         }
     }
 
-    pub(crate) fn insert_properties(&self, properties: &mut Map<String, Value>) {
+    pub fn insert_properties(&self, properties: &mut Map<String, Value>) {
         properties.insert("initialized".to_owned(), json!(self.initialized));
         insert_optional_enum(
             properties,
@@ -332,10 +330,11 @@ fn insert_count(properties: &mut Map<String, Value>, key: &'static str, value: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation_descriptor::ObservedMcpProductOperation;
 
     #[test]
     fn tool_names_and_properties_are_closed_and_content_free() {
-        let operation = McpOperation::tool_call(McpOperationKind::Search)
+        let operation = McpOperation::tool_call(ObservedMcpProductOperation::Search)
             .with_result(McpResultMetadataV1::default().with_result_count(0))
             .with_error(McpErrorLayerV1::Tool, McpErrorClassV1::ToolFailure);
         let mut properties = Map::new();
@@ -362,13 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tool_names_collapse_without_preserving_input() {
-        let sensitive = "SELECT secret FROM private_table WHERE token = 'raw'";
-        assert_eq!(
-            McpOperationKind::from_tool_name(Some(sensitive)),
-            McpOperationKind::Unknown
-        );
-        assert_eq!(McpOperationKind::Unknown.tool_name(), "unknown");
+    fn unknown_tool_observation_cannot_preserve_input() {
+        assert_eq!(McpOperation::unknown_tool().name(), "unknown");
     }
 
     #[test]

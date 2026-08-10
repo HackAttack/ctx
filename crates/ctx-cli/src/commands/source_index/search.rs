@@ -360,7 +360,11 @@ fn run_search_inner<P: HistorySemanticPort>(
     let refresh_started = Instant::now();
     let refresh = refresh_for_search(&request, &data_root)?;
     let initial_refresh_duration = refresh_started.elapsed();
-    telemetry.refresh_mode = Some(request.refresh);
+    telemetry.refresh_mode = Some(match request.refresh {
+        RefreshArg::Background => crate::analytics::RefreshMode::Background,
+        RefreshArg::Off => crate::analytics::RefreshMode::Off,
+        RefreshArg::Wait => crate::analytics::RefreshMode::Wait,
+    });
 
     let query_started = Instant::now();
     let (value, collection, index, refresh_status, refresh_source_count) =
@@ -390,8 +394,12 @@ fn run_search_inner<P: HistorySemanticPort>(
             .filter(|term| !term.is_empty())
             .count() as u64,
     ));
-    telemetry.backend_requested = Some(collection.requested_backend);
-    telemetry.backend_effective = Some(collection.effective_backend);
+    telemetry.backend_requested = Some(crate::observability_product::search_backend(
+        collection.requested_backend,
+    ));
+    telemetry.backend_effective = Some(crate::observability_product::search_backend(
+        collection.effective_backend,
+    ));
     telemetry.has_indexed_content_after = Some(index.document_count() > 0);
     telemetry.result_count = Some(count_bucket(collection.result_window.hits.len() as u64));
     telemetry.citation_count = Some(count_bucket(collection.result_window.hits.len() as u64));

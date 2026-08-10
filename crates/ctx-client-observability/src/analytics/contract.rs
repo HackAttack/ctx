@@ -1,7 +1,7 @@
 use super::{OperationCompletedV1, ProviderRefreshCompletedV1, RuntimeObservationV1};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Surface {
+pub enum Surface {
     Cli,
     Mcp,
     ProHost,
@@ -9,7 +9,7 @@ pub(crate) enum Surface {
 }
 
 impl Surface {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Cli => "cli",
             Self::Mcp => "mcp",
@@ -20,13 +20,13 @@ impl Surface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Outcome {
+pub enum Outcome {
     Success,
     Failure,
 }
 
 impl Outcome {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
             Self::Failure => "failure",
@@ -35,13 +35,13 @@ impl Outcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutputKind {
+pub enum OutputKind {
     Human,
     Json,
 }
 
 impl OutputKind {
-    pub(crate) fn from_json_output(json_output: bool) -> Self {
+    pub fn from_json_output(json_output: bool) -> Self {
         if json_output {
             Self::Json
         } else {
@@ -49,7 +49,7 @@ impl OutputKind {
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Human => "human",
             Self::Json => "json",
@@ -58,7 +58,7 @@ impl OutputKind {
 }
 
 #[derive(Debug)]
-pub(crate) enum PublicEventV1 {
+pub enum PublicEventV1 {
     OperationCompleted(OperationCompletedV1),
     ProviderRefreshCompleted(ProviderRefreshCompletedV1),
     RuntimeObservation(RuntimeObservationV1),
