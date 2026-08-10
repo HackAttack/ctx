@@ -25,8 +25,20 @@ mod tests {
 
     #[test]
     fn output_contract_debug_shapes_are_stable() {
-        assert_eq!(format!("{:?}", OutputObservationKind::Command), "Command");
-        assert_eq!(format!("{:?}", OutputOutcome::Timeout), "Timeout");
+        for (value, spelling) in [
+            (OutputObservationKind::Command, "Command"),
+            (OutputObservationKind::Tool, "Tool"),
+        ] {
+            assert_eq!(format!("{value:?}"), spelling);
+        }
+        for (value, spelling) in [
+            (OutputOutcome::Success, "Success"),
+            (OutputOutcome::Failure, "Failure"),
+            (OutputOutcome::Timeout, "Timeout"),
+            (OutputOutcome::Unknown, "Unknown"),
+        ] {
+            assert_eq!(format!("{value:?}"), spelling);
+        }
         assert_eq!(
             format!(
                 "{:?}",

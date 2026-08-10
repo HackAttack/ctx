@@ -38,6 +38,7 @@ source_paths=(
   crates/ctx-upgrade-engine/src
   crates/ctx-history-capture/src
   crates/ctx-history-query/src
+  crates/ctx-history-capture-model/src
   crates/ctx-history-search/src
 )
 

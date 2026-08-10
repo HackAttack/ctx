@@ -152,20 +152,71 @@ mod tests {
 
     #[test]
     fn source_status_and_failure_strings_are_stable() {
-        assert_eq!(ProviderSourceStatus::Available.as_str(), "available");
-        assert_eq!(ProviderSourceStatus::Unsupported.as_str(), "unsupported");
+        for (value, spelling) in [
+            (ProviderSourceStatus::Available, "available"),
+            (ProviderSourceStatus::Empty, "empty"),
+            (ProviderSourceStatus::Unknown, "unknown"),
+            (ProviderSourceStatus::Missing, "missing"),
+            (ProviderSourceStatus::Unsupported, "unsupported"),
+        ] {
+            assert_eq!(value.as_str(), spelling);
+        }
         assert_eq!(
             ProviderSourceStatusReason::BlockedAuthOrEncryption.as_str(),
             "blocked_auth_or_encryption"
         );
-        assert_eq!(
-            ProviderSourceFailureKind::SchemaIncompatible.to_string(),
-            "schema_incompatible"
-        );
-        assert_eq!(
-            ProviderSourceFailureKind::SourceDatabase.to_string(),
-            "source_database"
-        );
+        for (value, spelling) in [
+            (ProviderSourceFailureKind::NotFound, "not_found"),
+            (ProviderSourceFailureKind::Permission, "permission"),
+            (ProviderSourceFailureKind::Locked, "locked"),
+            (ProviderSourceFailureKind::Corrupt, "corrupt"),
+            (
+                ProviderSourceFailureKind::SchemaIncompatible,
+                "schema_incompatible",
+            ),
+            (ProviderSourceFailureKind::InvalidSource, "invalid_source"),
+            (ProviderSourceFailureKind::SourceChanged, "source_changed"),
+            (ProviderSourceFailureKind::SourceDatabase, "source_database"),
+            (ProviderSourceFailureKind::Io, "io"),
+        ] {
+            assert_eq!(value.to_string(), spelling);
+        }
+    }
+
+    #[test]
+    fn source_enum_debug_spellings_are_stable() {
+        for (value, spelling) in [
+            (DiscoveryIssueKind::NoDiskHistory, "NoDiskHistory"),
+            (
+                DiscoveryIssueKind::SelectorUnreconstructible,
+                "SelectorUnreconstructible",
+            ),
+            (
+                DiscoveryIssueKind::InsufficientOfficialEvidence,
+                "InsufficientOfficialEvidence",
+            ),
+        ] {
+            assert_eq!(format!("{value:?}"), spelling);
+        }
+        for (value, spelling) in [
+            (ProviderSourceKind::NativeHistory, "NativeHistory"),
+            (ProviderSourceKind::DetectionOnly, "DetectionOnly"),
+        ] {
+            assert_eq!(format!("{value:?}"), spelling);
+        }
+        for (value, spelling) in [
+            (ProviderImportSupport::Native, "Native"),
+            (ProviderImportSupport::Explicit, "Explicit"),
+            (ProviderImportSupport::Unsupported, "Unsupported"),
+        ] {
+            assert_eq!(format!("{value:?}"), spelling);
+        }
+        for (value, spelling) in [
+            (ProviderCatalogSupport::Native, "Native"),
+            (ProviderCatalogSupport::None, "None"),
+        ] {
+            assert_eq!(format!("{value:?}"), spelling);
+        }
     }
 
     #[test]

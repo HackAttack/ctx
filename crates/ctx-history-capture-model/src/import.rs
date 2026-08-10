@@ -105,6 +105,32 @@ mod tests {
     }
 
     #[test]
+    fn catalog_summary_wire_shape_and_round_trip_are_stable() {
+        let summary = CatalogSummary {
+            source_files: 1,
+            source_bytes: 2,
+            cataloged_sessions: 3,
+            cached_sessions: 4,
+            parsed_sessions: 5,
+            skipped_sessions: 6,
+            failed_sessions: 7,
+            failures: vec![ProviderImportFailure {
+                line: 8,
+                error: "catalog failure".to_owned(),
+            }],
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert_eq!(
+            json,
+            r#"{"source_files":1,"source_bytes":2,"cataloged_sessions":3,"cached_sessions":4,"parsed_sessions":5,"skipped_sessions":6,"failed_sessions":7,"failures":[{"line":8,"error":"catalog failure"}]}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<CatalogSummary>(&json).unwrap(),
+            summary
+        );
+    }
+
+    #[test]
     fn work_result_strings_and_merge_are_stable() {
         assert_eq!(ProviderImportWorkResult::Changed.as_str(), "changed");
         assert_eq!(ProviderImportWorkResult::NoOp.as_str(), "no_op");
