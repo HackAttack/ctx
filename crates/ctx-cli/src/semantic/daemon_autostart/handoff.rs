@@ -223,7 +223,7 @@ fn normalize_daemon_upgrade_handoff_input(
     expected_executable: &Path,
     allow_cooperative_grace: bool,
 ) -> Result<DaemonUpgradeHandoffInput> {
-    if !crate::upgrade::is_valid_upgrade_attempt_id(upgrade_attempt_id) {
+    if !ctx_upgrade_engine::is_valid_upgrade_attempt_id(upgrade_attempt_id) {
         return Err(anyhow!(
             "invalid upgrade attempt identity for daemon handoff"
         ));
@@ -745,7 +745,7 @@ pub(crate) fn begin_current_daemon_upgrade_handoff(
     upgrade_attempt_id: &str,
     restart_trigger: DaemonTriggerCommandArg,
 ) -> Result<DaemonUpgradeHandoff> {
-    if !crate::upgrade::is_valid_upgrade_attempt_id(upgrade_attempt_id) {
+    if !ctx_upgrade_engine::is_valid_upgrade_attempt_id(upgrade_attempt_id) {
         return Err(anyhow!(
             "invalid upgrade attempt identity for daemon handoff"
         ));

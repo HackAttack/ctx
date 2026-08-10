@@ -22,7 +22,7 @@ pub(crate) fn daemon_autostart_suppression_reason() -> Option<&'static str> {
 }
 
 pub(super) fn hosted_uninstall_fences_daemon_autostart() -> bool {
-    crate::upgrade::installation_hosted_uninstall_is_active().unwrap_or(true)
+    ctx_upgrade_engine::installation_hosted_uninstall_is_active().unwrap_or(true)
 }
 
 pub(crate) fn autostart_daemon_and_wait(
@@ -295,7 +295,7 @@ pub(super) fn request_daemon_autostart(
     if !daemon_autostart_allowed(data_root, config) {
         return Ok(DaemonAutostartRequest::Suppressed("not_allowed"));
     }
-    if crate::upgrade::installation_upgrade_is_active().unwrap_or(false) {
+    if ctx_upgrade_engine::installation_upgrade_is_active().unwrap_or(false) {
         return Ok(DaemonAutostartRequest::Suppressed(
             "installation_upgrade_active",
         ));
@@ -1013,7 +1013,7 @@ pub(super) fn spawn_daemon_child_for_upgrade_handoff(
     launch: DetachedDaemonLaunch,
     replacement_executable: &Path,
 ) -> io::Result<Child> {
-    if crate::upgrade::installation_hosted_uninstall_is_active_for_executable(
+    if ctx_upgrade_engine::installation_hosted_uninstall_is_active_for_executable(
         replacement_executable,
     )
     .unwrap_or(true)

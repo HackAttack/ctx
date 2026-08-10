@@ -58,13 +58,13 @@ pub(in crate::semantic) fn resume_completed_installation_daemons(data_root: &Pat
     if current_process_owns_daemon_upgrade_handoff(data_root) {
         return Ok(());
     }
-    if crate::upgrade::installation_upgrade_is_active()? {
+    if ctx_upgrade_engine::installation_upgrade_is_active()? {
         return Ok(());
     }
-    let Some(attempt_id) = crate::upgrade::terminal_installation_upgrade_attempt_id()? else {
+    let Some(attempt_id) = ctx_upgrade_engine::terminal_installation_upgrade_attempt_id()? else {
         return Ok(());
     };
-    let executable = crate::upgrade::installation_executable_path()?;
+    let executable = ctx_upgrade_engine::installation_executable_path()?;
     restart_acknowledged_installation_daemons(&executable, &attempt_id, Some(data_root))
 }
 

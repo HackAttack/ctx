@@ -9,6 +9,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use ctx_history_core::utc_now;
 use ctx_semantic_model::SharedSemanticRuntime;
+use ctx_upgrade_engine::{DaemonUpgradeLease, DaemonUpgradePort, PreparedDaemonUpgrade};
 use serde_json::{json, Value};
 
 use crate::{
@@ -415,9 +416,14 @@ pub(super) fn run_daemon_inner(
             runtime.config.daemon.enabled,
             runtime.config.daemon.mode,
         ) {
-            prepared_auto_upgrade =
-                crate::upgrade::prepare_daemon_auto_upgrade(data_root, &runtime.config)
-                    .unwrap_or(None);
+            prepared_auto_upgrade = crate::upgrade::ports::engine()
+                .prepare_automatic(
+                    &crate::upgrade::ports::AUTOMATIC_POLICY,
+                    &crate::upgrade::ports::UPGRADE_OBSERVER,
+                    data_root,
+                    &runtime.config,
+                )
+                .unwrap_or(None);
         }
         let events = telemetry.ready_events(recovered_previous_run, Instant::now());
         send_daemon_events(data_root, &events);
@@ -506,9 +512,14 @@ pub(super) fn run_daemon_inner(
                     runtime.config.daemon.mode,
                 )
             {
-                prepared_auto_upgrade =
-                    crate::upgrade::prepare_daemon_auto_upgrade(data_root, &runtime.config)
-                        .unwrap_or(None);
+                prepared_auto_upgrade = crate::upgrade::ports::engine()
+                    .prepare_automatic(
+                        &crate::upgrade::ports::AUTOMATIC_POLICY,
+                        &crate::upgrade::ports::UPGRADE_OBSERVER,
+                        data_root,
+                        &runtime.config,
+                    )
+                    .unwrap_or(None);
             }
             if prepared_auto_upgrade.is_none()
                 && !runtime.config.daemon.mode.runs_only_source_refresh()
@@ -727,15 +738,13 @@ pub(super) fn run_daemon_inner(
 
         if let Some(attempt_id) = prepared_auto_upgrade
             .as_ref()
-            .and_then(crate::upgrade::PreparedDaemonUpgrade::attempt_id)
+            .and_then(PreparedDaemonUpgrade::attempt_id)
         {
-            auto_upgrade_handoff = Some(
-                super::daemon_autostart::begin_current_daemon_upgrade_handoff(
-                    data_root,
-                    attempt_id,
-                    upgrade_restart_trigger,
-                )?,
-            );
+            auto_upgrade_handoff = Some(crate::upgrade::ports::DAEMON_UPGRADE.begin_current(
+                data_root,
+                attempt_id,
+                upgrade_restart_trigger.as_str(),
+            )?);
         }
         let failure_message = failed.then(|| {
             let core_refresh = read_daemon_job_status(&daemon_core_refresh_job_path(data_root));
@@ -780,9 +789,9 @@ pub(super) fn run_daemon_inner(
     };
     let upgrade_attempt_id = prepared_auto_upgrade
         .as_ref()
-        .and_then(crate::upgrade::PreparedDaemonUpgrade::attempt_id)
+        .and_then(PreparedDaemonUpgrade::attempt_id)
         .map(str::to_owned)
-        .or(crate::upgrade::active_installation_upgrade_attempt_id()?);
+        .or(ctx_upgrade_engine::active_installation_upgrade_attempt_id()?);
     if let Some(attempt_id) = upgrade_attempt_id.as_deref() {
         installation_daemon_lease.acknowledge(attempt_id)?;
     } else {
@@ -795,7 +804,9 @@ pub(super) fn run_daemon_inner(
     let events = telemetry.stopped_events(failed, Instant::now());
     send_daemon_events(data_root, &events);
     if let Some(prepared) = prepared_auto_upgrade {
-        crate::upgrade::finish_daemon_auto_upgrade(
+        crate::upgrade::ports::engine().finish_automatic(
+            &crate::upgrade::ports::AUTOMATIC_POLICY,
+            &crate::upgrade::ports::UPGRADE_OBSERVER,
             prepared,
             (
                 upgrade_restart_trigger.as_str(),

@@ -10,14 +10,9 @@ use crate::{
         RenderContext, Ui,
     },
 };
-
-use super::super::{
-    install::{
-        current_install_path, managed_install_marker_for_current_exe, InstallMarker,
-        ManagedInstallMarker,
-    },
-    path::{path_diagnostics, PathDiagnostics},
-    state::{read_state_json, STATE_SCHEMA_VERSION},
+use ctx_upgrade_engine::{
+    current_install_path, managed_install_marker_for_current_exe, path_diagnostics,
+    read_state_json, InstallMarker, ManagedInstallMarker, STATE_SCHEMA_VERSION,
 };
 
 pub(super) fn render_status(
@@ -32,7 +27,7 @@ pub(super) fn render_status(
             "status": "never_checked"
         })
     });
-    let current_version = env!("CARGO_PKG_VERSION");
+    let current_version = super::super::ports::product_identity().version();
     let current_exe = current_install_path().ok();
     let path_diagnostics = current_exe
         .as_ref()
@@ -70,7 +65,9 @@ pub(super) fn render_status(
             "reason": format!("{error:#}"),
         }),
     };
-    let path = path_diagnostics.as_ref().map(PathDiagnostics::json);
+    let path = path_diagnostics
+        .as_ref()
+        .map(super::super::presentation::path_diagnostics_json);
     let pro = crate::pro::lifecycle_status_json(data_root);
     let value = json!({
         "schema_version": 1,
@@ -85,7 +82,7 @@ pub(super) fn render_status(
         "path": path.as_ref(),
         "warnings": path_diagnostics
             .as_ref()
-            .map(|diagnostics| diagnostics.warnings.clone())
+            .map(|diagnostics| diagnostics.warnings().to_vec())
             .unwrap_or_default(),
         "pro": pro,
     });
@@ -110,7 +107,7 @@ pub(super) fn render_status(
         let Some(diagnostics) = &path_diagnostics else {
             return Ok(());
         };
-        for warning in &diagnostics.warnings {
+        for warning in diagnostics.warnings() {
             let warning = outcome(
                 ui.stderr_context(),
                 Outcome {

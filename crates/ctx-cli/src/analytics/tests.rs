@@ -276,7 +276,7 @@ fn selected_telemetry_contract_inventory_hashes_match_the_running_public_source(
     assert_eq!(provenance["repository"], "ctxrs/ctx");
     assert_eq!(
         provenance["base_commit"],
-        "985f06e8e14cbdb6cb19106ec5ad658a305f7eaa"
+        "ad39d1b762aca14303680caea49cc67bfa9ec3f2"
     );
     assert_eq!(provenance["provenance_kind"], "content_addressed_candidate");
     assert_eq!(
@@ -330,12 +330,16 @@ fn selected_telemetry_contract_inventory_hashes_match_the_running_public_source(
             include_bytes!("../upgrade/command.rs").as_slice(),
         ),
         (
-            "crates/ctx-cli/src/upgrade/command/daemon.rs",
-            include_bytes!("../upgrade/command/daemon.rs").as_slice(),
+            "crates/ctx-cli/src/upgrade/ports.rs",
+            include_bytes!("../upgrade/ports.rs").as_slice(),
         ),
         (
-            "crates/ctx-cli/src/upgrade/state.rs",
-            include_bytes!("../upgrade/state.rs").as_slice(),
+            "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs",
+            include_bytes!("../../../ctx-upgrade-engine/src/upgrade/command/daemon.rs").as_slice(),
+        ),
+        (
+            "crates/ctx-upgrade-engine/src/upgrade/state.rs",
+            include_bytes!("../../../ctx-upgrade-engine/src/upgrade/state.rs").as_slice(),
         ),
     ];
     assert_eq!(files.len(), sources.len());

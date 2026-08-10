@@ -11,9 +11,9 @@ mkdir -p \
   "${fixture}/contracts" \
   "${fixture}/contracts/stable-defaults" \
   "${fixture}/crates/ctx-cli/src/analytics" \
-  "${fixture}/crates/ctx-cli/src/upgrade" \
   "${fixture}/crates/ctx-cli/src" \
   "${fixture}/crates/ctx-cli/tests" \
+  "${fixture}/crates/ctx-upgrade-engine/src/upgrade" \
   "${fixture}/scripts" \
   "${fixture}/docs"
 cp "${repo_root}/contracts/public-control-surface-v1.json" "${fixture}/contracts/"
@@ -25,8 +25,8 @@ cp "${repo_root}/crates/ctx-cli/src/analytics/operation.rs" \
   "${fixture}/crates/ctx-cli/src/analytics/"
 cp "${repo_root}/crates/ctx-cli/src/config_tests.rs" "${fixture}/crates/ctx-cli/src/"
 cp "${repo_root}/crates/ctx-cli/src/process_environment.rs" "${fixture}/crates/ctx-cli/src/"
-cp "${repo_root}/crates/ctx-cli/src/upgrade/metadata.rs" \
-  "${fixture}/crates/ctx-cli/src/upgrade/"
+cp "${repo_root}/crates/ctx-upgrade-engine/src/upgrade/metadata.rs" \
+  "${fixture}/crates/ctx-upgrade-engine/src/upgrade/"
 cp "${repo_root}/crates/ctx-cli/tests/upgrade.rs" "${fixture}/crates/ctx-cli/tests/"
 cp "${repo_root}/scripts/smoke-daemon-semantic-release.ps1" "${fixture}/scripts/"
 cp "${repo_root}/scripts/smoke-daemon-semantic-release.sh" "${fixture}/scripts/"

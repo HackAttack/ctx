@@ -128,7 +128,7 @@
       ]
     },
     {
-      "path": "crates/ctx-cli/src/upgrade/metadata.rs",
+      "path": "crates/ctx-upgrade-engine/src/upgrade/metadata.rs",
       "purpose": "Assert that retired ambient release-authority variables cannot change production metadata trust.",
       "controls": [
         "CTX_FUNCTIONS_BASE",

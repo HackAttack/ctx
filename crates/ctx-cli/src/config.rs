@@ -329,7 +329,7 @@ impl AppConfig {
             Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
         }
         config.apply_env(deprecated_controls)?;
-        if crate::install_marker::current_exe_is_staging_dogfood() {
+        if ctx_upgrade_engine::current_exe_is_staging_dogfood() {
             config.upgrade.auto = AutoUpgradeMode::Off.as_str().to_owned();
         }
         Ok(config)

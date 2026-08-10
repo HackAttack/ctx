@@ -50,13 +50,13 @@ pub(super) fn render_outcome(
     ui: &mut Ui,
 ) -> Result<()> {
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&upgrade.json())?);
+        println!("{}", serde_json::to_string_pretty(&outcome_json(upgrade))?);
         return Ok(());
     }
 
     let document = render_upgrade_outcome_human(ui.stdout_context(), upgrade);
     ui.write_stdout(&document)?;
-    for warning in &upgrade.warnings {
+    for warning in upgrade.warnings() {
         let warning = outcome(
             ui.stderr_context(),
             UiOutcome {
@@ -68,6 +68,40 @@ pub(super) fn render_outcome(
         ui.write_stderr(&warning)?;
     }
     Ok(())
+}
+
+fn outcome_json(upgrade: &UpgradeOutcome) -> Value {
+    let plan = upgrade.plan();
+    json!({
+        "schema_version": 1,
+        "command": upgrade.command(),
+        "ok": true,
+        "status": upgrade.status(),
+        "message": upgrade.message(),
+        "current_version": plan.map(|plan| if upgrade.applied() {
+            plan.latest_version()
+        } else {
+            plan.current_version()
+        }),
+        "latest_version": plan.map(ctx_upgrade_engine::UpgradePlan::latest_version),
+        "update_available": plan
+            .map(|plan| !upgrade.applied() && plan.update_available())
+            .unwrap_or(false),
+        "update_was_available": plan
+            .map(ctx_upgrade_engine::UpgradePlan::update_available)
+            .unwrap_or(false),
+        "channel": plan.map(ctx_upgrade_engine::UpgradePlan::channel),
+        "platform": plan.map(ctx_upgrade_engine::UpgradePlan::platform),
+        "metadata_url": plan.map(ctx_upgrade_engine::UpgradePlan::metadata_url),
+        "artifact_url": plan.map(ctx_upgrade_engine::UpgradePlan::artifact_url),
+        "install_path": plan.map(|plan| plan.install_path().display().to_string()),
+        "managed": plan.map(ctx_upgrade_engine::UpgradePlan::managed).unwrap_or(false),
+        "path": plan.map(|plan| super::super::presentation::path_diagnostics_json(plan.path())),
+        "applied": upgrade.applied(),
+        "dry_run": upgrade.dry_run(),
+        "warnings": upgrade.warnings(),
+        "upgrade_attempt_id": upgrade.attempt_id(),
+    })
 }
 
 pub(super) fn render_error(result: Result<()>, human_output: bool, ui: &mut Ui) -> Result<()> {
@@ -122,7 +156,7 @@ fn render_upgrade_integrity_error_human(
 }
 
 fn render_upgrade_outcome_human(context: &RenderContext, upgrade: &UpgradeOutcome) -> Document {
-    let state = match upgrade.status {
+    let state = match upgrade.status() {
         "up_to_date" | "applied" => OutcomeState::Success,
         "available" | "dry_run" | "scheduled" => OutcomeState::Neutral,
         _ => OutcomeState::Neutral,
@@ -131,14 +165,17 @@ fn render_upgrade_outcome_human(context: &RenderContext, upgrade: &UpgradeOutcom
         context,
         UiOutcome {
             state,
-            title: &upgrade.message,
+            title: upgrade.message(),
             detail: None,
         },
     );
 
-    if let Some(plan) = &upgrade.plan {
-        let current_version =
-            displayed_current_version(upgrade.applied, &plan.current_version, &plan.latest_version);
+    if let Some(plan) = upgrade.plan() {
+        let current_version = displayed_current_version(
+            upgrade.applied(),
+            plan.current_version(),
+            plan.latest_version(),
+        );
         document.push_blank();
         document.append(section(
             "Release",
@@ -146,14 +183,14 @@ fn render_upgrade_outcome_human(context: &RenderContext, upgrade: &UpgradeOutcom
                 context,
                 &[
                     Field::new("Current", current_version),
-                    Field::new("Latest", &plan.latest_version),
-                    Field::new("Channel", &plan.channel),
+                    Field::new("Latest", plan.latest_version()),
+                    Field::new("Channel", plan.channel()),
                 ],
             ),
         ));
     }
 
-    let next = match upgrade.status {
+    let next = match upgrade.status() {
         "available" | "dry_run" => Some("ctx upgrade"),
         _ => None,
     };
@@ -205,16 +242,12 @@ mod tests {
 
     #[test]
     fn available_upgrade_is_outcome_first_and_actionable() {
-        let upgrade = UpgradeOutcome {
-            command: "upgrade_check",
-            status: "available",
-            message: "ctx 1.1.0 is available (current 1.0.0, channel stable).".to_owned(),
-            plan: None,
-            applied: false,
-            dry_run: false,
-            warnings: Vec::new(),
-            attempt_id: None,
-        };
+        let upgrade = UpgradeOutcome::for_test(
+            "upgrade_check",
+            "available",
+            "ctx 1.1.0 is available (current 1.0.0, channel stable).",
+            false,
+        );
         for width in [32, 48, 80, 120] {
             let context = context(width);
             let document = render_upgrade_outcome_human(&context, &upgrade);
@@ -227,16 +260,8 @@ mod tests {
 
     #[test]
     fn applied_upgrade_has_no_redundant_next_step() {
-        let upgrade = UpgradeOutcome {
-            command: "upgrade",
-            status: "applied",
-            message: "Upgraded ctx 1.0.0 to 1.1.0.".to_owned(),
-            plan: None,
-            applied: true,
-            dry_run: false,
-            warnings: Vec::new(),
-            attempt_id: None,
-        };
+        let upgrade =
+            UpgradeOutcome::for_test("upgrade", "applied", "Upgraded ctx 1.0.0 to 1.1.0.", true);
         let rendered = render_upgrade_outcome_human(&context(80), &upgrade).render_plain();
         assert_eq!(rendered, "✓ Upgraded ctx 1.0.0 to 1.1.0.\n");
         assert_eq!(displayed_current_version(true, "1.0.0", "1.1.0"), "1.1.0");

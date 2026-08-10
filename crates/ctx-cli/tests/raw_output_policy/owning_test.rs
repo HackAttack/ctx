@@ -86,6 +86,7 @@ fn parse_identity(identity: &str) -> Result<(String, String), String> {
     if path != "tests/raw_output_policy.rs"
         && path != "tests/raw_output_policy/self_tests.rs"
         && !path.starts_with("src/")
+        && !path.starts_with("crates/ctx-upgrade-engine/src/")
     {
         return Err("owning test source is outside the source-checked test roots".to_owned());
     }
@@ -102,8 +103,20 @@ fn read_test_source(path: &str) -> Result<String, String> {
     match path {
         "tests/raw_output_policy.rs" => Ok(POLICY_TEST_SOURCE.to_owned()),
         "tests/raw_output_policy/self_tests.rs" => Ok(POLICY_SELF_TEST_SOURCE.to_owned()),
-        _ => fs::read_to_string(package_root().join(path))
-            .map_err(|error| format!("cannot read owning test source {path}: {error}")),
+        _ => {
+            let package_root = package_root();
+            let source = if path.starts_with("crates/") {
+                package_root
+                    .parent()
+                    .and_then(Path::parent)
+                    .expect("ctx-cli package belongs to the workspace crates directory")
+                    .join(path)
+            } else {
+                package_root.join(path)
+            };
+            fs::read_to_string(source)
+                .map_err(|error| format!("cannot read owning test source {path}: {error}"))
+        }
     }
 }
 
