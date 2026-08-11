@@ -16,8 +16,10 @@ serde_json.workspace = true
 sha2.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-refresh = { path = "../ctx-history-refresh" }
 ctx-history-source-discovery = { path = "../ctx-history-source-discovery" }
 ctx-history-source-io = { path = "../ctx-history-source-io" }
 
 [dev-dependencies]
+ctx-history-refresh = { path = "../ctx-history-refresh", features = ["test-support"] }
 tempfile.workspace = true

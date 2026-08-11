@@ -2,6 +2,67 @@ use ctx_history_capture_model::{ProviderImportSummary, ProviderImportWorkResult}
 
 use crate::SourceStats;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportOutcome {
+    Success,
+    Failure,
+    CompletedWithRejections,
+    CompletedWithSourceFailures,
+    CompletedWithRejectionsAndSourceFailures,
+}
+
+impl ImportOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::CompletedWithRejections => "completed_with_rejections",
+            Self::CompletedWithSourceFailures => "completed_with_source_failures",
+            Self::CompletedWithRejectionsAndSourceFailures => {
+                "completed_with_rejections_and_source_failures"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportFailureScope {
+    None,
+    Record,
+    Source,
+    RecordAndSource,
+}
+
+impl ImportFailureScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Record => "record",
+            Self::Source => "source",
+            Self::RecordAndSource => "record_and_source",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportFailureType {
+    None,
+    RecordRejection,
+    SourceFailure,
+    RecordRejectionAndSourceFailure,
+}
+
+impl ImportFailureType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::RecordRejection => "record_rejection",
+            Self::SourceFailure => "source_failure",
+            Self::RecordRejectionAndSourceFailure => "record_rejection_and_source_failure",
+        }
+    }
+}
+
 /// Typed outcome totals. Presentation layers decide which fields are rendered;
 /// these facts do not imply a per-record or per-run Core delta.
 #[derive(Debug, Clone, Default)]
@@ -41,6 +102,34 @@ impl ImportTotals {
     pub fn reported_source_failures(&self) -> usize {
         self.failed_sources
     }
+    pub fn outcome(&self) -> (ImportOutcome, ImportFailureScope) {
+        if !self.has_usable_source_result() && self.failed_sources > 0 {
+            return (ImportOutcome::Failure, ImportFailureScope::Source);
+        }
+        match (self.failed_sources > 0, self.failed > 0) {
+            (false, false) => (ImportOutcome::Success, ImportFailureScope::None),
+            (false, true) => (
+                ImportOutcome::CompletedWithRejections,
+                ImportFailureScope::Record,
+            ),
+            (true, false) => (
+                ImportOutcome::CompletedWithSourceFailures,
+                ImportFailureScope::Source,
+            ),
+            (true, true) => (
+                ImportOutcome::CompletedWithRejectionsAndSourceFailures,
+                ImportFailureScope::RecordAndSource,
+            ),
+        }
+    }
+    pub fn failure_type(&self) -> ImportFailureType {
+        match (self.failed_sources > 0, self.failed > 0) {
+            (false, false) => ImportFailureType::None,
+            (false, true) => ImportFailureType::RecordRejection,
+            (true, false) => ImportFailureType::SourceFailure,
+            (true, true) => ImportFailureType::RecordRejectionAndSourceFailure,
+        }
+    }
     pub fn add(&mut self, summary: &ProviderImportSummary, stats: &SourceStats) {
         self.per_run_counts_available = true;
         self.source_files += stats.files;
@@ -57,5 +146,54 @@ impl ImportTotals {
         self.failed += summary.failed;
         self.capture_work_remaining |= summary.work_remaining;
         self.work_result = self.work_result.merge(summary.work_result());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_outcomes_preserve_failure_and_partial_truth() {
+        for (failed_sources, rejected, outcome, scope, failure_type) in [
+            (0, 0, "success", "none", "none"),
+            (
+                0,
+                2,
+                "completed_with_rejections",
+                "record",
+                "record_rejection",
+            ),
+            (
+                2,
+                0,
+                "completed_with_source_failures",
+                "source",
+                "source_failure",
+            ),
+            (
+                2,
+                3,
+                "completed_with_rejections_and_source_failures",
+                "record_and_source",
+                "record_rejection_and_source_failure",
+            ),
+        ] {
+            let totals = ImportTotals {
+                failed_sources,
+                failed: rejected,
+                current_source_count: Some(1),
+                ..ImportTotals::default()
+            };
+            let (actual_outcome, actual_scope) = totals.outcome();
+            assert_eq!(actual_outcome.as_str(), outcome);
+            assert_eq!(actual_scope.as_str(), scope);
+            assert_eq!(totals.failure_type().as_str(), failure_type);
+        }
+        let failed = ImportTotals {
+            failed_sources: 1,
+            ..ImportTotals::default()
+        };
+        assert_eq!(failed.outcome().0, ImportOutcome::Failure);
     }
 }

@@ -26,6 +26,9 @@ INGEST_APPLICATION_DEPS = [
     "//crates/ctx-history-source-io:lib",
 ]
 
+INGEST_APPLICATION_PROD_DEPS = INGEST_APPLICATION_DEPS + ["//crates/ctx-history-refresh:lib"]
+INGEST_APPLICATION_TEST_DEPS = INGEST_APPLICATION_DEPS + ["//crates/ctx-history-refresh:test_support_lib"]
+
 rust_library(
     name = "lib",
     srcs = PROD_SRCS,
@@ -33,7 +36,20 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + INGEST_APPLICATION_DEPS,
+    deps = all_crate_deps(normal = True) + INGEST_APPLICATION_PROD_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+rust_library(
+    name = "qualification_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_history_ingest_application",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + INGEST_APPLICATION_PROD_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
 )
@@ -46,7 +62,7 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + INGEST_APPLICATION_DEPS,
+    deps = all_crate_deps(normal = True) + INGEST_APPLICATION_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
 )
@@ -58,7 +74,7 @@ ctx_rust_test(
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True) + INGEST_APPLICATION_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + INGEST_APPLICATION_TEST_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
 )
