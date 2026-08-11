@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -202,7 +203,9 @@ class MacosLlvmAuthorityTests(unittest.TestCase):
         forged_marker = self.root / "forged-ran"
 
         def substitute(snapshot: Path) -> None:
+            os.chmod(snapshot, 0o700)
             snapshot.rename(retained)
+            os.chmod(retained, 0o500)
             (snapshot / "bin").mkdir(parents=True)
             forged = snapshot / "bin/llvm-readobj"
             forged.write_text(
@@ -221,6 +224,64 @@ class MacosLlvmAuthorityTests(unittest.TestCase):
             )
         self.assertEqual(status, 0)
         self.assertTrue(approved_marker.exists())
+        self.assertFalse(forged_marker.exists())
+
+    def test_execution_does_not_depend_on_executable_dev_fd(self) -> None:
+        self.create()
+        approved_marker = self.root / "approved-ran"
+        observed_path = self.root / "observed-exec-path"
+        native_execve = os.execve
+
+        def reject_descriptor_exec(
+            path: str,
+            argv: list[str],
+            environment: dict[str, str],
+        ) -> None:
+            path_text = os.fspath(path)
+            observed_path.write_text(path_text, encoding="utf-8")
+            if path_text.startswith("/dev/fd/"):
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), path_text)
+            native_execve(path, argv, environment)
+
+        with (
+            mock.patch.dict(os.environ, {"APPROVED_TOOL_MARKER": str(approved_marker)}),
+            mock.patch.object(AUTHORITY.os, "execve", side_effect=reject_descriptor_exec),
+        ):
+            status = AUTHORITY.run_verified_tool(
+                self.snapshot,
+                "readobj",
+                ("--version",),
+                FIXTURE_POLICY,
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(observed_path.read_text(encoding="utf-8"), "bin/llvm-readobj")
+        self.assertTrue(approved_marker.exists())
+
+    def test_mutation_at_execution_boundary_is_rejected(self) -> None:
+        self.create()
+        forged_marker = self.root / "forged-ran"
+
+        def mutate(snapshot: Path) -> None:
+            os.chmod(snapshot, 0o700)
+            os.chmod(snapshot / "bin", 0o700)
+            reader = snapshot / "bin/llvm-readobj"
+            os.chmod(reader, 0o700)
+            reader.write_text(
+                f"#!/bin/sh\n: > {forged_marker}\nexit 99\n",
+                encoding="utf-8",
+            )
+            os.chmod(reader, 0o500)
+            os.chmod(snapshot / "bin", 0o500)
+            os.chmod(snapshot, 0o500)
+
+        with self.assertRaisesRegex(AUTHORITY.AuthorityError, "digest changed"):
+            AUTHORITY.run_verified_tool(
+                self.snapshot,
+                "readobj",
+                ("--version",),
+                FIXTURE_POLICY,
+                before_exec=mutate,
+            )
         self.assertFalse(forged_marker.exists())
 
     def test_matching_unapproved_version_is_rejected_without_execution(self) -> None:
