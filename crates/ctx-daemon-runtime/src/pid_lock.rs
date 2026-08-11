@@ -35,6 +35,47 @@ impl DaemonLock {
         Ok(PidFileLock::acquire(&daemon_lock_path(data_root), payload)?
             .map(|inner| Self { _inner: inner }))
     }
+
+    pub fn started_at_ms(&self) -> Option<i64> {
+        self._inner
+            .payload
+            .get("started_at_ms")
+            .and_then(Value::as_i64)
+            .filter(|started_at_ms| *started_at_ms > 0)
+    }
+}
+
+/// Excludes daemon ownership for a bounded cleanup transition without
+/// publishing the cleanup process as a daemon owner.
+pub struct DaemonQuiescenceGuard {
+    _guard: fs::File,
+}
+
+impl DaemonQuiescenceGuard {
+    pub fn acquire(data_root: &Path) -> Result<Option<Self>> {
+        ctx_history_core::platform_security::establish_private_data_root(data_root)?;
+        create_private_dir_all(&daemon_root_path(data_root))?;
+        let lock_path = daemon_lock_path(data_root);
+        let guard_path = pid_lock_guard_path(&lock_path);
+        let (guard, _) = open_or_create_pid_lock_file(&guard_path).with_context(|| {
+            format!("open ctx daemon quiescence guard {}", guard_path.display())
+        })?;
+        secure_private_file_permissions(&guard_path)?;
+        if !try_lock_pid_file(&guard)? {
+            return Ok(None);
+        }
+        let metadata = read_pid_lock_json(&lock_path);
+        let legacy_owner_is_live = lock_path.exists()
+            && metadata
+                .as_ref()
+                .is_some_and(|value| !pid_lock_uses_advisory_protocol(value))
+            && !legacy_pid_lock_value_is_stale(&lock_path, metadata.as_ref());
+        if legacy_owner_is_live {
+            let _ = fs2::FileExt::unlock(&guard);
+            return Ok(None);
+        }
+        Ok(Some(Self { _guard: guard }))
+    }
 }
 
 pub struct PidFileLock {
@@ -317,4 +358,19 @@ pub fn unknown_process_lock_reports_running(
 
 fn json_i64(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(Value::as_i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiescence_guard_excludes_daemon_replacement_until_cleanup_finishes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let quiescence = DaemonQuiescenceGuard::acquire(temp.path())?.expect("quiescence guard");
+        assert!(DaemonLock::acquire(temp.path())?.is_none());
+        drop(quiescence);
+        assert!(DaemonLock::acquire(temp.path())?.is_some());
+        Ok(())
+    }
 }

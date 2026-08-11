@@ -114,7 +114,7 @@ pub fn handoff_marker_state_at(path: &Path, stale_after: Duration) -> HandoffMar
         return HandoffMarkerState::Terminal;
     }
     let pid_key = match phase {
-        "scheduled" => "helper_pid",
+        "scheduled" | "finalizing" => "helper_pid",
         "preparing" | "ready" => "owner_pid",
         _ => return HandoffMarkerState::CorruptOrUnreadable,
     };

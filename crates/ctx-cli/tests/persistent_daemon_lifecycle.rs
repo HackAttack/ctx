@@ -637,6 +637,52 @@ mod native {
     }
 
     #[test]
+    fn live_readiness_rejoins_while_the_main_scheduler_is_blocked() {
+        let _serial = TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let harness = Harness::new();
+        write_codex_session(harness.home(), "blocked scheduler readiness oracle");
+        harness.setup_wait();
+        harness.json(&["daemon", "disable", "--format=json"]);
+
+        let block = harness
+            .root()
+            .join(".block-daemon-main-after-ready-for-test");
+        let blocked = harness
+            .root()
+            .join(".daemon-main-blocked-after-ready-for-test");
+        fs::write(&block, b"block\n").unwrap();
+        let started = harness.json(&["daemon", "enable", "--format=json"]);
+        let pid = json_u32(&started, "pid").expect("daemon pid");
+        let deadline = Instant::now() + OBSERVATION_TIMEOUT;
+        while !blocked.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "daemon did not reach Ready fence"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let owner = read_lock(harness.root()).expect("daemon owner lock");
+
+        let status_path = harness.root().join("daemon/status.json");
+        let mut status = read_json_file(&status_path);
+        status["heartbeat_at_ms"] = json!(1);
+        fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
+        fs::remove_file(harness.root().join("daemon/jobs/core-refresh.json")).unwrap();
+
+        let rejoined = harness.json(&["daemon", "enable", "--format=json"]);
+        assert_eq!(json_u32(&rejoined, "pid"), Some(pid), "{rejoined:#}");
+        assert_eq!(
+            read_lock(harness.root()).expect("rejoined owner")["owner_id"],
+            owner["owner_id"]
+        );
+
+        fs::remove_file(block).unwrap();
+        harness.json(&["daemon", "disable", "--format=json"]);
+    }
+
+    #[test]
     fn explicit_finite_idle_daemon_exits_without_orphaning() {
         let _serial = TEST_SERIAL
             .lock()

@@ -15,8 +15,9 @@ use super::{
         daemon_wakeup::DaemonWakeup,
         paths_status::lower_semantic_worker_priority,
         query_service::{
-            ctx_authenticated_request_handler, daemon_query_service_transport_supported,
-            start_daemon_query_service, start_daemon_source_refresh_service, DaemonQueryService,
+            ctx_authenticated_request_handler_with_lifecycle,
+            daemon_query_service_transport_supported, start_daemon_query_service,
+            start_daemon_source_refresh_service, DaemonLifecycleState, DaemonQueryService,
         },
     },
     DaemonRuntime,
@@ -115,6 +116,7 @@ pub(super) fn reload_daemon_runtime_config(
     refresh_service: &mut Option<DaemonQueryService>,
     reload: &mut DaemonConfigReloadState,
     wakeup: &Arc<DaemonWakeup>,
+    lifecycle: &Arc<DaemonLifecycleState>,
     config_port: &'static dyn DaemonConfigPort,
 ) -> DaemonConfigReloadOutcome {
     let config = match config_port.load(data_root) {
@@ -146,12 +148,13 @@ pub(super) fn reload_daemon_runtime_config(
             ));
             return DaemonConfigReloadOutcome::Continue;
         };
-        let handler = ctx_authenticated_request_handler(
+        let handler = ctx_authenticated_request_handler_with_lifecycle(
             data_root,
             runtime.semantic_runtime.clone(),
             source_refresh,
             Arc::clone(wakeup),
             config_port,
+            Arc::clone(lifecycle),
         );
         let started = start_daemon_source_refresh_service(data_root, handler, Arc::clone(wakeup));
         match started {
@@ -169,12 +172,13 @@ pub(super) fn reload_daemon_runtime_config(
             ));
             return DaemonConfigReloadOutcome::Continue;
         };
-        let handler = ctx_authenticated_request_handler(
+        let handler = ctx_authenticated_request_handler_with_lifecycle(
             data_root,
             runtime.semantic_runtime.clone(),
             source_refresh,
             Arc::clone(wakeup),
             config_port,
+            Arc::clone(lifecycle),
         );
         match start_daemon_query_service(data_root, handler, Arc::clone(wakeup)) {
             Ok(service) => {

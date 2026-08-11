@@ -1,10 +1,9 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     time::Instant,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde_json::json;
 
 use crate::{
@@ -18,15 +17,9 @@ use super::{
         daemon_report_failure_message, render_daemon_disable_receipt, render_daemon_enable_receipt,
         render_daemon_prepare_uninstall_receipt, render_daemon_status_human, DaemonStatusView,
     },
-    paths_status::{daemon_lock_is_active, daemon_report_with_disabled_status},
-    query_service::{
-        daemon_service_endpoint_path, read_daemon_service_endpoint_identity, DaemonIpcService,
-    },
+    paths_status::daemon_report_with_disabled_status,
 };
 use crate::ui::Ui;
-
-#[cfg(unix)]
-use super::query_service::DaemonQueryEndpoint;
 
 pub(in crate::semantic) mod control;
 #[cfg(test)]

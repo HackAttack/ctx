@@ -47,10 +47,6 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         ctx_upgrade_engine::installation_upgrade_is_active()
     }
 
-    fn daemon_upgrade_handoff_fences_start(&self, data_root: &Path) -> bool {
-        super::daemon_autostart::daemon_upgrade_handoff_fences_start(data_root)
-    }
-
     fn daemon_config(
         &self,
         data_root: &Path,
@@ -63,12 +59,12 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         })
     }
 
-    fn write_restart_request(
+    fn defer_restart_for_upgrade_handoff(
         &self,
         data_root: &Path,
         trigger: ctx_daemon_application::DaemonTrigger,
-    ) -> Result<PathBuf> {
-        super::daemon_autostart::write_daemon_restart_request(
+    ) -> Result<Option<ctx_daemon_runtime::DaemonHandoffRestartDeferral>> {
+        super::daemon_autostart::defer_restart_for_upgrade_handoff(
             data_root,
             daemon_trigger_arg(trigger),
             &uuid::Uuid::now_v7().to_string(),
@@ -82,7 +78,7 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         timeout: Duration,
         response_limit: u64,
     ) -> Result<Option<Value>> {
-        super::query_service::daemon_source_refresh_request(
+        ctx_daemon_service::daemon_source_refresh_request(
             data_root,
             request,
             timeout,
@@ -158,7 +154,7 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         timeout: Duration,
         response_limit: u64,
     ) -> Result<()> {
-        super::query_service::daemon_source_refresh_request(
+        ctx_daemon_service::daemon_source_refresh_request(
             data_root,
             crate::compact_json(serde_json::json!({
                 "schema_version": 1,

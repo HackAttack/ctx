@@ -3,15 +3,15 @@ mod transport;
 
 #[cfg(all(test, unix))]
 pub(crate) use server::bind_daemon_query_listener;
-pub(crate) use server::{
-    ctx_authenticated_request_handler, daemon_can_begin_idle_shutdown,
-    observe_daemon_query_activity, start_daemon_query_service, start_daemon_source_refresh_service,
-    DaemonQueryActivity, DaemonQueryService,
-};
 #[cfg(test)]
 pub(crate) use server::{
-    start_daemon_query_service_with_request_timeout,
+    ctx_authenticated_request_handler, start_daemon_query_service_with_request_timeout,
     start_daemon_source_refresh_service_with_request_timeout,
+};
+pub(crate) use server::{
+    ctx_authenticated_request_handler_with_lifecycle, daemon_can_begin_idle_shutdown,
+    observe_daemon_query_activity, start_daemon_query_service, start_daemon_source_refresh_service,
+    DaemonLifecycleState, DaemonQueryActivity, DaemonQueryService,
 };
 #[cfg(all(feature = "test-support", not(test)))]
 pub(crate) use transport::write_daemon_service_endpoint;

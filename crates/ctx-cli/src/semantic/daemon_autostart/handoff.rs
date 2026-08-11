@@ -1,7 +1,10 @@
 use super::*;
 
-use ctx_daemon_runtime::terminate_identity_verified_legacy_daemon;
 pub(super) use ctx_daemon_runtime::terminate_identity_verified_residual_daemon;
+use ctx_daemon_runtime::{
+    daemon_upgrade_handoff_path, daemon_upgrade_restart_request_root,
+    terminate_identity_verified_legacy_daemon, DaemonLifecycleTransitionLock,
+};
 
 struct CurrentHandoffSupervisorFence<'a> {
     handoff: &'a mut DaemonUpgradeHandoff,
@@ -24,21 +27,13 @@ impl super::super::daemon_supervisor::DaemonSupervisorUpgradeFence
     for ReplacementHandoffSupervisorFence<'_>
 {
     fn release(&mut self) -> Result<()> {
-        write_daemon_upgrade_handoff(self.data_root, self.handoff_id, "completed", None)
+        ctx_daemon_runtime::terminalize_daemon_handoff_for_restart(self.data_root, self.handoff_id)
     }
 }
 
 pub(in crate::semantic) fn terminate_current_executable_daemon(data_root: &Path) -> Result<()> {
     let executable = env::current_exe().context("resolve current ctx executable")?;
     terminate_identity_verified_residual_daemon(data_root, &executable)
-}
-
-fn daemon_upgrade_handoff_path(data_root: &Path) -> PathBuf {
-    ctx_daemon_runtime::daemon_upgrade_handoff_path(data_root)
-}
-
-fn daemon_upgrade_restart_request_root(data_root: &Path) -> PathBuf {
-    ctx_daemon_runtime::daemon_upgrade_restart_request_root(data_root)
 }
 
 const DAEMON_UNINSTALL_ABORT_AFTER_DISABLE_ENV: &str =
@@ -83,6 +78,7 @@ pub(in crate::semantic) fn daemon_upgrade_handoff_blocks_current_process(data_ro
     }
 }
 
+#[cfg(test)]
 pub(in crate::semantic) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
     !matches!(
         daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)),
@@ -125,17 +121,17 @@ trait CooperativeStopPort: Send {
     fn request_stop(&mut self);
 }
 
-struct SourceRefreshCooperativeStopPort {
+struct LifecycleCooperativeStopPort {
     data_root: PathBuf,
 }
 
-impl CooperativeStopPort for SourceRefreshCooperativeStopPort {
+impl CooperativeStopPort for LifecycleCooperativeStopPort {
     fn request_stop(&mut self) {
-        let _ = daemon_source_refresh_request(
+        let _ = ctx_daemon_service::daemon_source_refresh_request(
             &self.data_root,
             compact_json(json!({
                 "schema_version": 1,
-                "op": "lifecycle_wakeup",
+                "op": "upgrade_handoff",
             })),
             DAEMON_HEALTH_TIMEOUT,
             DAEMON_HEALTH_RESPONSE_MAX_BYTES,
@@ -176,7 +172,7 @@ fn normalize_daemon_upgrade_handoff_input(
         allow_cooperative_grace,
         handoff_path: daemon_upgrade_handoff_path(data_root),
         restart_request_root: daemon_upgrade_restart_request_root(data_root),
-        cooperative_stop: Box::new(SourceRefreshCooperativeStopPort {
+        cooperative_stop: Box::new(LifecycleCooperativeStopPort {
             data_root: data_root.to_path_buf(),
         }),
     })
@@ -232,6 +228,7 @@ impl DaemonUpgradeHandoff {
     /// identity-validated current-format executable restored at the install
     /// path. The restored process consumes this request while fixing forward.
     pub(crate) fn release_for_current_format_reexec(mut self) -> Result<()> {
+        let _transition = DaemonLifecycleTransitionLock::acquire(&self.data_root)?;
         if read_daemon_restart_request(&self.data_root).is_none() {
             if let Some(label) = self.persisted_restart_label.as_deref() {
                 write_daemon_restart_request_at(
@@ -295,7 +292,6 @@ impl DaemonUpgradeHandoff {
                 }
             }
         }
-        remove_daemon_restart_requests(&self.data_root);
         restart_acknowledged_installation_daemons_with(
             executable,
             self.fence.handoff_id(),
@@ -355,7 +351,22 @@ impl DaemonUpgradeHandoff {
     }
 
     fn complete_release(&mut self) -> Result<()> {
-        self.fence.complete()
+        ctx_daemon_runtime::complete_daemon_handoff_and_acknowledge(
+            &self.data_root,
+            &mut self.fence,
+        )
+    }
+}
+
+impl Drop for DaemonUpgradeHandoff {
+    fn drop(&mut self) {
+        if !self.fence.is_armed() {
+            return;
+        }
+        if let Ok(_transition) = DaemonLifecycleTransitionLock::acquire(&self.data_root) {
+            let _ = self.fence.abort_and_disarm();
+        }
+        self.fence.disarm();
     }
 }
 
@@ -405,6 +416,7 @@ fn begin_daemon_upgrade_handoff_with(
         restart_request_root,
         mut cooperative_stop,
     } = input;
+    let lifecycle_transition = DaemonLifecycleTransitionLock::acquire(&data_root)?;
     match daemon_upgrade_handoff_state_at(&handoff_path) {
         DaemonUpgradeHandoffState::Active => {
             return Err(anyhow!(
@@ -425,6 +437,7 @@ fn begin_daemon_upgrade_handoff_with(
         persisted_restart_label.as_deref(),
         cooperative_stop.as_mut(),
     )?;
+    drop(lifecycle_transition);
     let handoff = DaemonUpgradeHandoff {
         data_root: data_root.to_path_buf(),
         fence: ctx_daemon_runtime::DurableHandoffFence::armed(handoff_path.clone(), handoff_id),
@@ -611,7 +624,7 @@ fn quiesce_daemon_roots(roots: &BTreeSet<PathBuf>, expected_executable: &Path) -
 }
 
 fn request_disabled_daemon_shutdown(data_root: &Path) {
-    let _ = daemon_source_refresh_request(
+    let _ = ctx_daemon_service::daemon_source_refresh_request(
         data_root,
         compact_json(json!({
             "schema_version": 1,
@@ -635,7 +648,10 @@ fn wait_for_daemon_lifecycle_release(data_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The caller must hold an external uninstall/quiescence fence that excludes
+/// new transition participants for this data root.
 fn remove_daemon_lifecycle_coordination(data_root: &Path) -> Result<()> {
+    let lifecycle_transition = DaemonLifecycleTransitionLock::acquire(data_root)?;
     remove_daemon_restart_requests(data_root);
     let root = daemon_root_path(data_root);
     for path in [
@@ -657,7 +673,7 @@ fn remove_daemon_lifecycle_coordination(data_root: &Path) -> Result<()> {
             }
         }
     }
-    Ok(())
+    lifecycle_transition.remove_after_quiescence()
 }
 
 /// Fence new daemon starts while the daemon that owns `data_root` is still
@@ -709,6 +725,7 @@ fn begin_current_daemon_upgrade_handoff_with(
         handoff_path,
         restart_request_root,
     } = input;
+    let _lifecycle_transition = DaemonLifecycleTransitionLock::acquire(&data_root)?;
     if !daemon_lock_is_active(&data_root) {
         return Err(anyhow!(
             "automatic upgrade handoff requires current daemon ownership"
@@ -816,26 +833,30 @@ pub(crate) fn complete_replacement_daemon_handoff(
             ));
         }
     }
-    let captured_restart = if let Some((trigger, idle_exit, loop_interval)) = restart {
-        Some((
+    let captured_restart = restart
+        .map(|(trigger, idle_exit, loop_interval)| {
             parse_daemon_trigger(Some(trigger))
-                .ok_or_else(|| anyhow!("replacement daemon handoff has an invalid trigger"))?,
-            idle_exit,
-            loop_interval,
-        ))
-    } else {
-        None
-    };
-    let requested_trigger = read_daemon_restart_request(data_root).map(|(_path, trigger)| trigger);
-    if let Some(trigger) = captured_restart
-        .map(|(trigger, _, _)| trigger)
-        .or(requested_trigger)
-    {
+                .map(|trigger| (trigger, idle_exit, loop_interval))
+                .ok_or_else(|| anyhow!("replacement daemon handoff has an invalid trigger"))
+        })
+        .transpose()?;
+    let selected_restart = ctx_daemon_runtime::close_daemon_handoff_restart_intake(
+        data_root,
+        handoff_id,
+        captured_restart.map(|(trigger, _, _)| trigger.as_str()),
+    )?;
+    if let Some(selected_restart) = selected_restart {
+        let trigger = parse_daemon_trigger(Some(&selected_restart))
+            .ok_or_else(|| anyhow!("replacement daemon handoff has an invalid restart request"))?;
         if !daemon_lock_is_active(data_root) {
             // Recreate the durable acknowledgement token if an earlier ready
             // daemon consumed it and then exited before handoff completion.
             if read_daemon_restart_request(data_root).is_none() {
-                write_daemon_restart_request(data_root, trigger, handoff_id)?;
+                ctx_daemon_runtime::write_finalizing_daemon_restart_request(
+                    data_root,
+                    handoff_id,
+                    trigger.as_str(),
+                )?;
             }
             let mut upgrade_fence = ReplacementHandoffSupervisorFence {
                 data_root,
@@ -912,14 +933,7 @@ pub(crate) fn complete_replacement_daemon_handoff(
 /// durable and its installation lock has been released.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn finish_replacement_daemon_handoff(data_root: &Path, handoff_id: &str) -> Result<()> {
-    if read_daemon_upgrade_handoff(data_root)
-        .as_ref()
-        .and_then(|value| value.get("handoff_id").and_then(Value::as_str))
-        != Some(handoff_id)
-    {
-        return Ok(());
-    }
-    write_daemon_upgrade_handoff(data_root, handoff_id, "completed", None)
+    ctx_daemon_runtime::finish_replacement_daemon_handoff(data_root, handoff_id)
 }
 
 pub(crate) fn replacement_helper_owns_daemon_handoff(
@@ -966,10 +980,23 @@ pub(in crate::semantic) fn write_daemon_restart_request(
     trigger: DaemonTriggerCommandArg,
     request_id: &str,
 ) -> Result<PathBuf> {
-    write_daemon_restart_request_at(
-        &daemon_upgrade_restart_request_root(data_root),
+    ctx_daemon_runtime::write_daemon_restart_request_if_intake_open(
+        data_root,
         trigger.as_str(),
         request_id,
+    )
+}
+
+pub(in crate::semantic) fn defer_restart_for_upgrade_handoff(
+    data_root: &Path,
+    trigger: DaemonTriggerCommandArg,
+    request_id: &str,
+) -> Result<Option<ctx_daemon_runtime::DaemonHandoffRestartDeferral>> {
+    ctx_daemon_runtime::defer_restart_for_active_daemon_handoff(
+        data_root,
+        trigger.as_str(),
+        request_id,
+        DAEMON_UPGRADE_HANDOFF_STALE_AFTER,
     )
 }
 

@@ -5,17 +5,17 @@ use std::{
     fmt, fs, io,
     path::Path,
     process::Child,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
 use ctx_daemon_runtime::{
     daemon_lock_is_active, daemon_lock_is_owned_by, daemon_lock_is_stale,
     daemon_lock_matches_executable, daemon_lock_path, executable_sha256, pid_from_lock_json,
-    read_daemon_job_status, read_daemon_status, read_pid_lock_file, read_pid_lock_json,
-    spawn_detached, write_daemon_status, NormalizedLaunch,
+    read_daemon_status, read_pid_lock_json, spawn_detached, write_daemon_status,
+    DaemonHandoffRestartDeferral, NormalizedLaunch,
 };
-use ctx_daemon_service::{daemon_core_refresh_job_path, DAEMON_IDLE_EXIT_SECONDS_CAP};
+use ctx_daemon_service::DAEMON_IDLE_EXIT_SECONDS_CAP;
 use ctx_history_core::utc_now;
 use serde_json::{json, Value};
 
@@ -65,8 +65,7 @@ struct DaemonHandoffTimeout;
 
 impl fmt::Display for DaemonHandoffTimeout {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .write_str("timed out waiting for running status, heartbeat, and process ownership")
+        formatter.write_str("timed out waiting for live daemon lifecycle readiness")
     }
 }
 
@@ -83,7 +82,7 @@ struct DaemonOwnerIdentity {
 enum DaemonAutostartRequest {
     Suppressed(&'static str),
     Existing(DaemonOwnerIdentity),
-    Deferred(std::path::PathBuf),
+    Deferred(DaemonHandoffRestartDeferral),
     Spawned(Child),
 }
 
@@ -197,29 +196,6 @@ fn read_daemon_owner_identity(data_root: &Path) -> Result<Option<DaemonOwnerIden
     }))
 }
 
-fn daemon_owner_has_active_refresh(data_root: &Path, observed_owner: &DaemonOwnerIdentity) -> bool {
-    let status = read_daemon_status(data_root);
-    let refresh_job_path = daemon_core_refresh_job_path(data_root);
-    let refresh_job = read_daemon_job_status(&refresh_job_path);
-    daemon_owned_source_refresh_is_active(
-        status.as_ref(),
-        refresh_job.as_ref(),
-        Some(observed_owner.pid),
-        Some(observed_owner.started_at_ms),
-        daemon_job_modified_at_ms(&refresh_job_path),
-        utc_now().timestamp_millis(),
-    )
-}
-
-fn daemon_job_modified_at_ms(path: &Path) -> Option<i64> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    let millis = modified
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    i64::try_from(millis).ok()
-}
-
 fn recover_unusable_daemon_owner(
     host: &dyn DaemonApplicationHost,
     data_root: &Path,
@@ -228,16 +204,15 @@ fn recover_unusable_daemon_owner(
     let executable = daemon_autostart_exe()?;
     let terminated = recover_unusable_daemon_owner_with(
         observed_owner,
-        || read_daemon_owner_identity(data_root),
-        || daemon_owner_has_active_refresh(data_root, observed_owner),
         || {
-            Ok(daemon_source_refresh_endpoint_is_usable(
+            Ok(daemon_lifecycle_endpoint_is_ready(
                 host,
                 data_root,
                 observed_owner.pid,
                 DAEMON_HEALTH_TIMEOUT,
             ))
         },
+        || read_daemon_owner_identity(data_root),
         |owner_id| {
             ctx_daemon_runtime::terminate_identity_verified_residual_daemon_owner(
                 data_root,
@@ -259,21 +234,17 @@ fn recover_unusable_daemon_owner(
 
 fn recover_unusable_daemon_owner_with(
     observed_owner: &DaemonOwnerIdentity,
-    mut current_owner: impl FnMut() -> Result<Option<DaemonOwnerIdentity>>,
-    mut active_refresh: impl FnMut() -> bool,
     mut endpoint_usable: impl FnMut() -> Result<bool>,
+    mut current_owner: impl FnMut() -> Result<Option<DaemonOwnerIdentity>>,
     mut terminate: impl FnMut(&str) -> Result<()>,
 ) -> Result<bool> {
-    if current_owner()?.as_ref() != Some(observed_owner) || active_refresh() {
-        return Ok(false);
-    }
     if endpoint_usable()? {
         return Ok(false);
     }
     // The health probe can race a supervisor or another foreground recovery.
     // Revalidate the complete advisory-lock owner identity after the bounded
-    // probe, and re-check active work, before any destructive action.
-    if current_owner()?.as_ref() != Some(observed_owner) || active_refresh() {
+    // probe immediately before any destructive action.
+    if current_owner()?.as_ref() != Some(observed_owner) {
         return Ok(false);
     }
     terminate(&observed_owner.owner_id)?;
@@ -291,6 +262,11 @@ fn request_daemon_autostart(
         return Ok(DaemonAutostartRequest::Suppressed(
             "hosted_uninstall_active",
         ));
+    }
+    if config.enabled {
+        if let Some(deferral) = host.defer_restart_for_upgrade_handoff(data_root, trigger)? {
+            return Ok(DaemonAutostartRequest::Deferred(deferral));
+        }
     }
     // Suppression disables spawning, not reuse. Test harnesses and managed
     // callers can intentionally provide an already-owned daemon while
@@ -326,10 +302,6 @@ fn request_daemon_autostart(
         return Ok(DaemonAutostartRequest::Suppressed(
             "installation_upgrade_active",
         ));
-    }
-    if host.daemon_upgrade_handoff_fences_start(data_root) {
-        let request = host.write_restart_request(data_root, trigger)?;
-        return Ok(DaemonAutostartRequest::Deferred(request));
     }
     let lock_path = daemon_lock_path(data_root);
     if lock_path.exists() && !daemon_lock_is_stale(&lock_path) {
@@ -410,7 +382,14 @@ pub fn start_daemon_and_wait(
                 })?;
         let (mut child, pending_restart_request, existing_owner) = match request {
             DaemonAutostartRequest::Existing(owner) => (None, None, Some(owner)),
-            DaemonAutostartRequest::Deferred(path) => (None, Some(path), None),
+            DaemonAutostartRequest::Deferred(deferral) => (
+                None,
+                match deferral {
+                    DaemonHandoffRestartDeferral::RestartRequest(path) => Some(path),
+                    DaemonHandoffRestartDeferral::ReplacementPending => None,
+                },
+                None,
+            ),
             DaemonAutostartRequest::Spawned(child) => (Some(child), None, None),
             DaemonAutostartRequest::Suppressed(reason) => {
                 return Err(DaemonStartError::Suppressed(reason));
@@ -505,18 +484,16 @@ pub fn handoff_mismatched_daemon_owner(
         .as_ref()
         .and_then(pid_from_lock_json)
         .ok_or_else(binary_identity_handoff_error)?;
-    let response = host
-        .request_lifecycle_wakeup(
-            data_root,
-            compact_json(json!({
-                "schema_version": 1,
-                "op": "supervisor_handoff",
-            })),
-            DAEMON_HEALTH_TIMEOUT,
-            DAEMON_HEALTH_RESPONSE_MAX_BYTES,
-        )
-        .map_err(|_| binary_identity_handoff_error())?;
-    let accepted = response.as_ref().is_some_and(|value| {
+    let response = host.request_lifecycle_wakeup(
+        data_root,
+        compact_json(json!({
+            "schema_version": 1,
+            "op": "supervisor_handoff",
+        })),
+        DAEMON_HEALTH_TIMEOUT,
+        DAEMON_HEALTH_RESPONSE_MAX_BYTES,
+    );
+    let accepted = response.ok().flatten().as_ref().is_some_and(|value| {
         value.get("ok").and_then(Value::as_bool) == Some(true)
             && value
                 .get("pid")
@@ -596,265 +573,64 @@ fn daemon_handoff_observation(
     health_timeout: Duration,
 ) -> DaemonHandoffObservation {
     let status = read_daemon_status(data_root);
-    let lock_pid = read_pid_lock_file(&daemon_lock_path(data_root));
-    let lock_active = lock_pid.is_some_and(|pid| daemon_lock_is_owned_by(data_root, pid));
+    let owner_before_probe = read_daemon_owner_identity(data_root).ok().flatten();
     let now_ms = utc_now().timestamp_millis();
-    let refresh_job_path = daemon_core_refresh_job_path(data_root);
-    let refresh_job = read_daemon_job_status(&refresh_job_path);
-    let (observation, active_refresh) = daemon_handoff_observation_with_refresh_job_from(
+    let observation = daemon_handoff_status_observation_from(
         status.as_ref(),
-        refresh_job.as_ref(),
-        lock_pid,
-        lock_active,
+        owner_before_probe.as_ref(),
         expected_failure_pid,
-        Some(expected_config),
-        daemon_job_modified_at_ms(&refresh_job_path),
+        expected_config,
         now_ms,
     );
-    // The daemon's first scheduler tick can enter a long synchronous refresh
-    // before setup gets an endpoint response. The base observation has already
-    // verified fresh lifecycle or same-owner refresh authority, lock ownership,
-    // and applied config; that refresh is sufficient bounded handoff evidence.
-    if matches!(observation, DaemonHandoffObservation::Running(_)) && active_refresh {
+    if !matches!(observation, DaemonHandoffObservation::Running(_)) {
         return observation;
     }
-    let endpoint_usable = lock_active
-        && !health_timeout.is_zero()
-        && lock_pid.is_some_and(|pid| {
-            daemon_source_refresh_endpoint_is_usable(host, data_root, pid, health_timeout)
-        });
+    let Some(owner_before_probe) = owner_before_probe.as_ref() else {
+        return DaemonHandoffObservation::Pending;
+    };
+    if health_timeout.is_zero()
+        || !daemon_lifecycle_endpoint_is_ready(
+            host,
+            data_root,
+            owner_before_probe.pid,
+            health_timeout,
+        )
+    {
+        return DaemonHandoffObservation::Pending;
+    }
+    let owner_after_probe = read_daemon_owner_identity(data_root).ok().flatten();
     complete_daemon_handoff_observation(
         observation,
-        status.as_ref(),
-        lock_pid,
-        lock_active,
-        expected_config,
-        endpoint_usable,
-        active_refresh,
+        Some(owner_before_probe),
+        owner_after_probe.as_ref(),
+        true,
     )
 }
 
 fn complete_daemon_handoff_observation(
     observation: DaemonHandoffObservation,
-    status: Option<&Value>,
-    lock_pid: Option<u32>,
-    lock_active: bool,
-    expected_config: &DaemonConfigSnapshot,
-    endpoint_usable: bool,
-    active_refresh: bool,
+    owner_before_probe: Option<&DaemonOwnerIdentity>,
+    owner_after_probe: Option<&DaemonOwnerIdentity>,
+    endpoint_ready: bool,
 ) -> DaemonHandoffObservation {
     match observation {
-        DaemonHandoffObservation::Running(handoff) if endpoint_usable || active_refresh => {
+        DaemonHandoffObservation::Running(handoff)
+            if endpoint_ready
+                && owner_before_probe.is_some()
+                && owner_before_probe == owner_after_probe =>
+        {
             DaemonHandoffObservation::Running(handoff)
         }
         DaemonHandoffObservation::Running(_) => DaemonHandoffObservation::Pending,
-        DaemonHandoffObservation::Pending if lock_active && endpoint_usable => {
-            daemon_live_endpoint_observation_from(status, lock_pid, expected_config)
-        }
         observation => observation,
     }
 }
 
-fn daemon_owned_source_refresh_is_active(
-    daemon_status: Option<&Value>,
-    refresh_job: Option<&Value>,
-    lock_pid: Option<u32>,
-    lock_started_at_ms: Option<i64>,
-    refresh_job_modified_at_ms: Option<i64>,
-    now_ms: i64,
-) -> bool {
-    let Some((daemon_status, refresh_job)) = daemon_status.zip(refresh_job) else {
-        return false;
-    };
-    let daemon_started_at_ms = daemon_status
-        .get("started_at_ms")
-        .and_then(Value::as_i64)
-        .filter(|started_at_ms| *started_at_ms > 0);
-    let job_started_at_ms = refresh_job
-        .get("last_run_at_ms")
-        .and_then(Value::as_i64)
-        .filter(|started_at_ms| {
-            // Reject a stale job inherited from an earlier daemon owner and
-            // timestamps too far in the future to be credible.
-            daemon_started_at_ms.is_some_and(|daemon_started| *started_at_ms >= daemon_started)
-                && *started_at_ms
-                    <= now_ms.saturating_add(DAEMON_SETUP_HANDOFF_MAX_FUTURE_HEARTBEAT_MS)
-        });
-    let timestamp_is_fresh = |timestamp: i64| {
-        timestamp > 0
-            && now_ms.saturating_sub(timestamp) <= DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS
-            && timestamp.saturating_sub(now_ms) <= DAEMON_SETUP_HANDOFF_MAX_FUTURE_HEARTBEAT_MS
-    };
-    // A synchronous refresh can delay the daemon lifecycle heartbeat while
-    // coordinator progress continues to rewrite the durable job receipt. Both
-    // are bounded authority; stale `running` fields alone are not a lease.
-    let refresh_authority_is_fresh = daemon_status
-        .get("heartbeat_at_ms")
-        .and_then(Value::as_i64)
-        .is_some_and(timestamp_is_fresh)
-        || refresh_job_modified_at_ms.is_some_and(|modified_at_ms| {
-            job_started_at_ms.is_some_and(|started_at_ms| modified_at_ms >= started_at_ms)
-                && timestamp_is_fresh(modified_at_ms)
-        });
-    daemon_status.get("status").and_then(Value::as_str) == Some("running")
-        && daemon_status
-            .get("pid")
-            .and_then(Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok())
-            == lock_pid
-        && daemon_started_at_ms.is_some()
-        && lock_started_at_ms
-            .is_none_or(|started_at_ms| daemon_started_at_ms == Some(started_at_ms))
-        && job_started_at_ms.is_some()
-        && refresh_authority_is_fresh
-        && refresh_job.get("owner").and_then(Value::as_str) == Some("daemon")
-        && refresh_job.get("kind").and_then(Value::as_str) == Some("core_refresh")
-        && refresh_job.get("status").and_then(Value::as_str) == Some("running")
-        && refresh_job.get("request_state").and_then(Value::as_str) == Some("running")
-        && refresh_job
-            .get("request_id")
-            .and_then(Value::as_str)
-            .is_some_and(|request_id| !request_id.is_empty())
-        && refresh_job
-            .get("progress")
-            .and_then(|progress| progress.get("phase"))
-            .and_then(Value::as_str)
-            .is_some_and(|phase| !phase.is_empty() && phase != "failed")
-        && refresh_job.get("last_error").is_none_or(Value::is_null)
-}
-
-fn daemon_live_endpoint_observation_from(
+fn daemon_handoff_status_observation_from(
     status: Option<&Value>,
-    lock_pid: Option<u32>,
+    owner: Option<&DaemonOwnerIdentity>,
+    expected_failure_pid: Option<u32>,
     expected_config: &DaemonConfigSnapshot,
-) -> DaemonHandoffObservation {
-    let Some(status) = status else {
-        return DaemonHandoffObservation::Pending;
-    };
-    let status_pid = status
-        .get("pid")
-        .and_then(Value::as_u64)
-        .and_then(|pid| u32::try_from(pid).ok());
-    if status.get("status").and_then(Value::as_str) != Some("running")
-        || status_pid.is_none()
-        || status_pid != lock_pid
-    {
-        return DaemonHandoffObservation::Pending;
-    }
-    match status
-        .get("config_reload")
-        .and_then(|reload| reload.get("status"))
-        .and_then(Value::as_str)
-    {
-        Some("failed" | "activation_failed") => {
-            let error = status
-                .get("config_reload")
-                .and_then(|reload| reload.get("last_error"))
-                .and_then(Value::as_str)
-                .or_else(|| status.get("last_error").and_then(Value::as_str))
-                .unwrap_or("daemon configuration failed");
-            return DaemonHandoffObservation::Failed(error.to_owned());
-        }
-        Some("applied") if daemon_applied_config_matches(status, expected_config) => {}
-        _ => return DaemonHandoffObservation::Pending,
-    }
-    let heartbeat_at_ms = status
-        .get("heartbeat_at_ms")
-        .and_then(Value::as_i64)
-        .filter(|heartbeat| *heartbeat > 0)
-        .unwrap_or_default();
-    DaemonHandoffObservation::Running(DaemonHandoff {
-        pid: status_pid.unwrap_or_default(),
-        heartbeat_at_ms,
-    })
-}
-
-fn daemon_source_refresh_endpoint_is_usable(
-    host: &dyn DaemonApplicationHost,
-    data_root: &Path,
-    expected_pid: u32,
-    timeout: Duration,
-) -> bool {
-    host.request_lifecycle_wakeup(
-        data_root,
-        compact_json(json!({
-            "schema_version": 1,
-            "op": "ping",
-        })),
-        timeout,
-        DAEMON_HEALTH_RESPONSE_MAX_BYTES,
-    )
-    .ok()
-    .flatten()
-    .is_some_and(|response| {
-        response.get("ok").and_then(Value::as_bool) == Some(true)
-            && response
-                .get("pid")
-                .and_then(Value::as_u64)
-                .and_then(|pid| u32::try_from(pid).ok())
-                == Some(expected_pid)
-    })
-}
-
-#[cfg(test)]
-fn daemon_handoff_observation_from(
-    status: Option<&Value>,
-    lock_pid: Option<u32>,
-    lock_active: bool,
-    expected_failure_pid: Option<u32>,
-    expected_config: Option<&DaemonConfigSnapshot>,
-    now_ms: i64,
-) -> DaemonHandoffObservation {
-    daemon_handoff_observation_with_refresh_authority_from(
-        status,
-        lock_pid,
-        lock_active,
-        expected_failure_pid,
-        expected_config,
-        false,
-        now_ms,
-    )
-}
-
-fn daemon_handoff_observation_with_refresh_job_from(
-    status: Option<&Value>,
-    refresh_job: Option<&Value>,
-    lock_pid: Option<u32>,
-    lock_active: bool,
-    expected_failure_pid: Option<u32>,
-    expected_config: Option<&DaemonConfigSnapshot>,
-    refresh_job_modified_at_ms: Option<i64>,
-    now_ms: i64,
-) -> (DaemonHandoffObservation, bool) {
-    let active_refresh = daemon_owned_source_refresh_is_active(
-        status,
-        refresh_job,
-        lock_pid,
-        None,
-        refresh_job_modified_at_ms,
-        now_ms,
-    );
-    (
-        daemon_handoff_observation_with_refresh_authority_from(
-            status,
-            lock_pid,
-            lock_active,
-            expected_failure_pid,
-            expected_config,
-            active_refresh,
-            now_ms,
-        ),
-        active_refresh,
-    )
-}
-
-fn daemon_handoff_observation_with_refresh_authority_from(
-    status: Option<&Value>,
-    lock_pid: Option<u32>,
-    lock_active: bool,
-    expected_failure_pid: Option<u32>,
-    expected_config: Option<&DaemonConfigSnapshot>,
-    active_refresh: bool,
     now_ms: i64,
 ) -> DaemonHandoffObservation {
     let Some(status) = status else {
@@ -865,6 +641,10 @@ fn daemon_handoff_observation_with_refresh_authority_from(
         .get("pid")
         .and_then(Value::as_u64)
         .and_then(|pid| u32::try_from(pid).ok());
+    let status_started_at_ms = status
+        .get("started_at_ms")
+        .and_then(Value::as_i64)
+        .filter(|started_at_ms| *started_at_ms > 0);
     let last_error = || {
         status
             .get("last_error")
@@ -884,22 +664,23 @@ fn daemon_handoff_observation_with_refresh_authority_from(
             })
     };
     if status_name == Some("failed") {
-        let belongs_to_request = expected_failure_pid
-            .map(|expected| status_pid == Some(expected))
-            .unwrap_or_else(|| lock_active && status_pid.is_some() && status_pid == lock_pid);
-        if belongs_to_request && heartbeat_is_fresh() {
+        let belongs_to_handoff = owner.is_some_and(|owner| {
+            status_pid == Some(owner.pid)
+                && status_started_at_ms == Some(owner.started_at_ms)
+                && expected_failure_pid.is_none_or(|expected| expected == owner.pid)
+        });
+        if belongs_to_handoff && heartbeat_is_fresh() {
             return DaemonHandoffObservation::Failed(last_error());
         }
         return DaemonHandoffObservation::Pending;
     }
-    if status_name != Some("running")
-        || !lock_active
-        || status_pid.is_none()
-        || status_pid != lock_pid
-    {
+    let Some(owner) = owner else {
         return DaemonHandoffObservation::Pending;
-    }
-    if !heartbeat_is_fresh() && !active_refresh {
+    };
+    if status_name != Some("running")
+        || status_pid != Some(owner.pid)
+        || status_started_at_ms != Some(owner.started_at_ms)
+    {
         return DaemonHandoffObservation::Pending;
     }
     match status
@@ -908,37 +689,62 @@ fn daemon_handoff_observation_with_refresh_authority_from(
         .and_then(Value::as_str)
     {
         Some("failed" | "activation_failed") => {
-            let error = status
-                .get("config_reload")
-                .and_then(|reload| reload.get("last_error"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(last_error);
-            return DaemonHandoffObservation::Failed(error);
-        }
-        Some("pending") => return DaemonHandoffObservation::Pending,
-        Some("applied") => {
-            if expected_config
-                .is_some_and(|expected| !daemon_applied_config_matches(status, expected))
-            {
-                return DaemonHandoffObservation::Pending;
+            if heartbeat_is_fresh() {
+                let error = status
+                    .get("config_reload")
+                    .and_then(|reload| reload.get("last_error"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(last_error);
+                return DaemonHandoffObservation::Failed(error);
             }
+            return DaemonHandoffObservation::Pending;
         }
-        None if expected_config.is_none() => {}
-        None => return DaemonHandoffObservation::Pending,
-        Some(_) => return DaemonHandoffObservation::Pending,
+        Some("applied") if daemon_applied_config_matches(status, expected_config) => {}
+        _ => return DaemonHandoffObservation::Pending,
     }
-    let Some(heartbeat_at_ms) = status
+    let heartbeat_at_ms = status
         .get("heartbeat_at_ms")
         .and_then(Value::as_i64)
-        .filter(|heartbeat_at_ms| *heartbeat_at_ms > 0)
-    else {
-        return DaemonHandoffObservation::Pending;
-    };
+        .filter(|heartbeat| *heartbeat > 0)
+        .unwrap_or_default();
     DaemonHandoffObservation::Running(DaemonHandoff {
-        pid: status_pid.unwrap_or_default(),
+        pid: owner.pid,
         heartbeat_at_ms,
     })
+}
+
+fn daemon_lifecycle_endpoint_is_ready(
+    host: &dyn DaemonApplicationHost,
+    data_root: &Path,
+    expected_pid: u32,
+    timeout: Duration,
+) -> bool {
+    host.request_lifecycle_wakeup(
+        data_root,
+        compact_json(json!({
+            "schema_version": 1,
+            "op": "lifecycle_ping",
+        })),
+        timeout,
+        DAEMON_HEALTH_RESPONSE_MAX_BYTES,
+    )
+    .ok()
+    .flatten()
+    .is_some_and(|response| daemon_lifecycle_ready_response_matches(&response, expected_pid))
+}
+
+fn daemon_lifecycle_ready_response_matches(response: &Value, expected_pid: u32) -> bool {
+    response.get("schema_version").and_then(Value::as_u64) == Some(1)
+        && response.get("ok").and_then(Value::as_bool) == Some(true)
+        && response.get("owner").and_then(Value::as_str) == Some("daemon")
+        && response.get("service").and_then(Value::as_str) == Some("lifecycle")
+        && response
+            .get("pid")
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            == Some(expected_pid)
+        && response.get("readiness").and_then(Value::as_str) == Some("ready")
 }
 
 fn daemon_applied_config_matches(status: &Value, expected: &DaemonConfigSnapshot) -> bool {

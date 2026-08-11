@@ -38,6 +38,7 @@ fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> R
 
     let args = test_daemon_run_args();
     let wakeup = Arc::new(DaemonWakeup::default());
+    let lifecycle = Arc::new(DaemonLifecycleState::starting());
     let mut query_service = None;
     let mut refresh_service = None;
     let mut reload = DaemonConfigReloadState::pending(&config);
@@ -50,6 +51,7 @@ fn interrupted_queue_is_recovered_before_endpoint_accepts_a_new_admission() -> R
             &mut refresh_service,
             &mut reload,
             &wakeup,
+            &lifecycle,
             &crate::test_support::CONFIG,
         ),
         DaemonConfigReloadOutcome::Continue

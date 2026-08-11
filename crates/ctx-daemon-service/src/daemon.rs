@@ -1,6 +1,5 @@
 use std::{
     path::Path,
-    process,
     sync::Arc,
     time::{Duration as StdDuration, Instant},
 };
@@ -9,7 +8,10 @@ use anyhow::{anyhow, Context, Result};
 use ctx_history_core::utc_now;
 use ctx_semantic_model::SharedSemanticRuntime;
 use ctx_upgrade_engine::{DaemonUpgradeLease, DaemonUpgradePort, PreparedDaemonUpgrade};
-use serde_json::{json, Value};
+use serde_json::Value;
+
+#[cfg(test)]
+use serde_json::json;
 
 use crate::{
     analytics::{
@@ -36,11 +38,11 @@ use super::{
     daemon_wakeup::{DaemonWakeup, SourceWatchBatch},
     daemon_worker::write_daemon_lifecycle_status_with_runtime,
     paths_status::{
-        daemon_core_refresh_job_path, read_daemon_job_status, read_daemon_status,
-        write_daemon_status, DaemonLock,
+        daemon_core_refresh_job_path, read_daemon_job_status, read_daemon_status, DaemonLock,
     },
     query_service::{
-        daemon_can_begin_idle_shutdown, observe_daemon_query_activity, DaemonQueryService,
+        daemon_can_begin_idle_shutdown, observe_daemon_query_activity, DaemonLifecycleState,
+        DaemonQueryService,
     },
 };
 
@@ -217,33 +219,31 @@ where
     AP: ctx_upgrade_engine::AutomaticUpgradePolicyProvider<Snapshot = AppConfig>,
     UO: ctx_upgrade_engine::UpgradeObserver<AppConfig>,
 {
-    match run_daemon_inner(args.clone(), data_root, config, ports, upgrade) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let message = format!("{error:#}");
-            let now = utc_now().timestamp_millis();
-            let previous_status = read_daemon_status(data_root);
-            let _ = write_daemon_status(
-                data_root,
-                &json!({
-                    "schema_version": 1,
-                    "status": "failed",
-                    "pid": process::id(),
-                    "heartbeat_at_ms": now,
-                    "finished_at_ms": now,
-                    "start_mode": daemon_run_start_mode(&args).as_str(),
-                    "trigger_command": args.trigger_command.map(DaemonTriggerCommandArg::as_str),
-                    "last_error": message,
-                    "semantic_runtime_active": false,
-                    "config_reload": previous_status
-                        .as_ref()
-                        .and_then(|value| value.get("config_reload"))
-                        .cloned(),
-                }),
-            );
-            Err(error)
-        }
-    }
+    run_daemon_inner(args, data_root, config, ports, upgrade)
+}
+
+fn publish_daemon_fatal_status_while_owned(
+    _lock: &DaemonLock,
+    data_root: &Path,
+    args: &DaemonRunArgs,
+    started_at_ms: i64,
+    error: &anyhow::Error,
+) {
+    let config_reload = read_daemon_status(data_root)
+        .as_ref()
+        .and_then(|status| status.get("config_reload"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let _ = write_daemon_lifecycle_status_with_runtime(
+        data_root,
+        args,
+        "failed",
+        started_at_ms,
+        Some(utc_now().timestamp_millis()),
+        Some(format!("{error:#}")),
+        false,
+        &config_reload,
+    );
 }
 
 fn run_daemon_inner<I, P, D, AP, UO>(
@@ -299,7 +299,12 @@ where
         return Ok(());
     }
     let run_started = Instant::now();
-    let started_at_ms = utc_now().timestamp_millis();
+    // Status and the advisory lock describe one lifecycle owner. Reuse the
+    // lock's timestamp so observers can compare the complete owner identity
+    // without accepting two independently sampled clocks as equivalent.
+    let started_at_ms = lock
+        .started_at_ms()
+        .ok_or_else(|| anyhow!("active daemon lock is missing its start timestamp"))?;
     let recovered_previous_run =
         daemon_previous_status_needs_recovery(read_daemon_status(data_root).as_ref());
     let mut telemetry =
@@ -312,7 +317,7 @@ where
     let upgrade_restart_trigger = args
         .trigger_command
         .unwrap_or(DaemonTriggerCommandArg::Search);
-    let Some(installation_daemon_lease) = ports.installation.acquire(
+    let installation_daemon_lease = match ports.installation.acquire(
         data_root,
         upgrade_restart_trigger,
         idle_exit.map(|duration| duration.as_secs()),
@@ -320,14 +325,22 @@ where
         ports
             .installation
             .current_process_owns_upgrade_handoff(data_root),
-    )?
-    else {
-        drop(lock);
-        return Ok(());
+    ) {
+        Ok(Some(lease)) => lease,
+        Ok(None) => {
+            drop(lock);
+            return Ok(());
+        }
+        Err(error) => {
+            publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
+            drop(lock);
+            return Err(error);
+        }
     };
     let mut prepared_auto_upgrade = None;
     let mut auto_upgrade_handoff = None;
     let wakeup = Arc::new(DaemonWakeup::default());
+    let lifecycle_state = Arc::new(DaemonLifecycleState::starting());
     let active_result = (|| -> Result<bool> {
         let mut failed = false;
         let mut runtime = DaemonRuntime {
@@ -337,6 +350,7 @@ where
         let mut config_reload = DaemonConfigReloadState::pending(&config);
         let mut query_service = None;
         let mut refresh_service = None;
+        let _lifecycle_stopping = lifecycle_state.stopping_guard();
         write_daemon_lifecycle_status_with_runtime(
             data_root,
             &args,
@@ -363,6 +377,7 @@ where
             &mut refresh_service,
             &mut config_reload,
             &wakeup,
+            &lifecycle_state,
             ports.config,
         ) == DaemonConfigReloadOutcome::StopDisabled;
         install_source_watch_ingress(
@@ -415,18 +430,22 @@ where
             WatchCatalogReconcileTrigger::Startup,
             false,
         );
-        // The daemon is ready only after every fallible lifecycle and runtime
-        // initialization step has succeeded. Publish that status before
-        // acknowledging any durable restart request so every parent observes
-        // the same authoritative readiness condition.
-        ports.installation.acknowledge_restart_requests(data_root);
+        // Linearize the final handoff check, Ready publication, and restart
+        // acknowledgement with every writer of durable handoff intent.
+        let lifecycle_ready = !stop_disabled
+            && publish_lifecycle_ready(data_root, &lifecycle_state, ports.installation)?;
+        if lifecycle_ready {
+            ctx_daemon_runtime::block_daemon_main_after_ready_for_test(data_root)?;
+        }
         // This is the sole automatic scheduler authority. The first tick is
         // after readiness; later ticks only revisit installation-scoped
         // cadence/backoff or reconcile a completed helper.
-        if daemon_should_schedule_auto_upgrade(
-            runtime.config.daemon.enabled,
-            runtime.config.daemon.mode,
-        ) {
+        if lifecycle_ready
+            && daemon_should_schedule_auto_upgrade(
+                runtime.config.daemon.enabled,
+                runtime.config.daemon.mode,
+            )
+        {
             prepared_auto_upgrade = upgrade
                 .engine
                 .prepare_automatic(
@@ -437,8 +456,10 @@ where
                 )
                 .unwrap_or(None);
         }
-        let events = telemetry.ready_events(recovered_previous_run, Instant::now());
-        send_daemon_events(ports.observation, data_root, &events);
+        if lifecycle_ready {
+            let events = telemetry.ready_events(recovered_previous_run, Instant::now());
+            send_daemon_events(ports.observation, data_root, &events);
+        }
         let mut idle_since: Option<Instant> = None;
         let mut observed_query_generation = 0;
         let mut observed_refresh_generation = 0;
@@ -454,7 +475,7 @@ where
             // while an explicitly finite test daemon is winding down. Treat
             // that as shutdown and, crucially, do not recreate the deleted
             // root merely to publish a terminal receipt.
-            if !data_root.exists() {
+            if !data_root.exists() || !lifecycle_ready || lifecycle_state.is_stopping() {
                 break;
             }
             if stop_disabled {
@@ -468,6 +489,7 @@ where
                 &mut refresh_service,
                 &mut config_reload,
                 &wakeup,
+                &lifecycle_state,
                 ports.config,
             ) == DaemonConfigReloadOutcome::StopDisabled
             {
@@ -761,6 +783,7 @@ where
             }
         }
 
+        lifecycle_state.mark_stopping();
         if let Some(attempt_id) = prepared_auto_upgrade
             .as_ref()
             .and_then(PreparedDaemonUpgrade::attempt_id)
@@ -793,9 +816,9 @@ where
                 &config_reload.to_json(),
             )?;
         }
-        // Keep daemon ownership until the query service has removed its endpoint
+        // Keep daemon ownership until every IPC service has removed its endpoint
         // and joined its listener thread. Otherwise a replacement can publish a
-        // new endpoint that this service's destructor then removes.
+        // new endpoint that a retiring service's destructor then removes.
         drop(watch_runtime);
         drop(query_service);
         drop(refresh_service);
@@ -805,6 +828,7 @@ where
     let failed = match active_result {
         Ok(failed) => failed,
         Err(error) => {
+            publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
             drop(installation_daemon_lease);
             drop(lock);
             let events = telemetry.fatal_events(Instant::now());
@@ -812,15 +836,25 @@ where
             return Err(error);
         }
     };
-    let upgrade_attempt_id = prepared_auto_upgrade
-        .as_ref()
-        .and_then(PreparedDaemonUpgrade::attempt_id)
-        .map(str::to_owned)
-        .or(ctx_upgrade_engine::active_installation_upgrade_attempt_id()?);
-    if let Some(attempt_id) = upgrade_attempt_id.as_deref() {
-        installation_daemon_lease.acknowledge(attempt_id)?;
-    } else {
-        drop(installation_daemon_lease);
+    let owned_shutdown_result = (|| -> Result<()> {
+        let active_installation_attempt =
+            ctx_upgrade_engine::active_installation_upgrade_attempt_id()?;
+        let upgrade_attempt_id = prepared_auto_upgrade
+            .as_ref()
+            .and_then(PreparedDaemonUpgrade::attempt_id)
+            .map(str::to_owned)
+            .or(active_installation_attempt);
+        if let Some(attempt_id) = upgrade_attempt_id.as_deref() {
+            installation_daemon_lease.acknowledge(attempt_id)?;
+        } else {
+            drop(installation_daemon_lease);
+        }
+        Ok(())
+    })();
+    if let Err(error) = owned_shutdown_result {
+        publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
+        drop(lock);
+        return Err(error);
     }
     drop(lock);
     if let Some(handoff) = auto_upgrade_handoff.as_ref() {
@@ -844,6 +878,19 @@ where
         )?;
     }
     Ok(())
+}
+
+fn publish_lifecycle_ready<I: DaemonInstallationPort>(
+    data_root: &Path,
+    lifecycle: &DaemonLifecycleState,
+    installation: &I,
+) -> Result<bool> {
+    let _transition = ctx_daemon_runtime::DaemonLifecycleTransitionLock::acquire(data_root)?;
+    if installation.upgrade_handoff_blocks_current_process(data_root) || !lifecycle.mark_ready() {
+        return Ok(false);
+    }
+    installation.acknowledge_restart_requests(data_root);
+    Ok(true)
 }
 
 fn recover_source_refresh_before_background_cadence(

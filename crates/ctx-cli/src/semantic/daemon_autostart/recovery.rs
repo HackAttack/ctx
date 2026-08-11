@@ -25,9 +25,13 @@ pub(super) fn restart_acknowledged_installation_daemons_with(
             continue;
         }
         if !daemon_restart_allowed(&restart.data_root)? {
-            remove_daemon_restart_requests(&restart.data_root);
-            let _ = fs::remove_file(restart.registration_path);
-            continue;
+            let _transition =
+                ctx_daemon_runtime::DaemonLifecycleTransitionLock::acquire(&restart.data_root)?;
+            if !daemon_restart_allowed(&restart.data_root)? {
+                remove_daemon_restart_requests(&restart.data_root);
+                let _ = fs::remove_file(restart.registration_path);
+                continue;
+            }
         }
         if daemon_lock_is_active(&restart.data_root) {
             wait_for_daemon_ready_ack(&restart.data_root)?;
