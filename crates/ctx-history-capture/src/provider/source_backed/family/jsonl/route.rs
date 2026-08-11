@@ -328,7 +328,6 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     fn semantic_executor(
         &self,
         _leaf: &JsonlFamilyLeaf,
-        _source_file: Arc<OpenedProviderSourceFile>,
         _checkpoint: Option<&TypedKey>,
         _base_event_lookup: Option<BaseEventIdentityLookup>,
         _mode: JsonlFamilyProjectionMode,

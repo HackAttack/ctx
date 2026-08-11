@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Barrier, Mutex},
 };
 
-use ctx_history_core::{CertifiedSource, EventOrigin, SessionRelationshipKind};
+use ctx_history_core::{CertifiedSource, EventOrigin, SessionRelationshipKind, SourceFrontier};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 use sha2::{Digest, Sha256};
 
@@ -25,6 +25,7 @@ use crate::provider::source_backed::family::jsonl::{
 const CURRENT_PARSER_REVISION: &str =
     "codex-nativepath-core-record-v31-repository-positive-exact-authority";
 const CURRENT_FRONTIER_KIND: &str = "borrowed-jsonl-family-checkpoint-v1";
+const LEGACY_CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -2692,6 +2693,132 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());
     }
+}
+
+#[test]
+fn current_parser_legacy_codex_frontier_migrates_by_full_replacement() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000039";
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [message("legacy-frontier-migration-marker")],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    let current = VerifiedIndex::open(&index_root).unwrap();
+    let old_routes = current.manifest().source_routes().to_vec();
+    let current_certificate = certificate_for(&current, native_session_id);
+    assert_eq!(
+        current_certificate.parser_revision(),
+        CURRENT_PARSER_REVISION
+    );
+    let current_frontier = current_certificate.frontier().unwrap();
+    let legacy_frontier = SourceFrontier::new(
+        LEGACY_CODEX_FRONTIER_KIND,
+        current_frontier.checkpoint().clone(),
+        current_frontier.certified_prefix_bytes(),
+        *current_frontier.certified_prefix_digest(),
+    )
+    .unwrap();
+    let legacy_certificate = CertifiedSource::certify_with_frontier(
+        current_certificate.observation().clone(),
+        current_certificate.observation().clone(),
+        CURRENT_PARSER_REVISION,
+        *current_certificate.content_digest(),
+        current_certificate.counts(),
+        Some(legacy_frontier),
+    )
+    .unwrap();
+    assert_eq!(
+        legacy_certificate.frontier().unwrap().checkpoint_kind(),
+        LEGACY_CODEX_FRONTIER_KIND
+    );
+    let records = records_for(&current, native_session_id);
+    drop(current);
+
+    let mut install_legacy = GenerationWriter::open(&index_root, writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    install_legacy
+        .set_source_route_plan(
+            old_routes
+                .iter()
+                .map(|route| route.route_identity().clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::new(),
+        )
+        .unwrap();
+    for route in &old_routes {
+        install_legacy
+            .begin_source_route_stage(route.route_identity().clone())
+            .unwrap();
+        install_legacy
+            .begin_source(legacy_certificate.observation().source().clone())
+            .unwrap();
+        for record in &records {
+            install_legacy.add_core_record(record.clone()).unwrap();
+        }
+        install_legacy
+            .certify_source(legacy_certificate.clone())
+            .unwrap();
+        install_legacy
+            .finish_source_route_stage(route.route_identity())
+            .unwrap();
+    }
+    install_legacy
+        .set_present_source_routes(old_routes)
+        .unwrap();
+    install_legacy
+        .commit(|target| match target {
+            RevalidationTarget::Source(actual) => actual == &legacy_certificate,
+            RevalidationTarget::Deletion(_) => false,
+        })
+        .unwrap();
+
+    let observed = capture_causal_stage();
+    let migrated_receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(migrated_receipt.failed_routes.is_empty());
+    assert!(migrated_receipt.logical_source_failures.is_empty());
+    let counters = causal_by_id(&observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.replaced_sources, 1);
+    assert_eq!(counters.appended_sources, 0);
+    assert_eq!(counters.writer_mutated_sources, 1);
+
+    let migrated = VerifiedIndex::open(&index_root).unwrap();
+    let migrated_certificate = certificate_for(&migrated, native_session_id);
+    assert_eq!(
+        migrated_certificate.parser_revision(),
+        CURRENT_PARSER_REVISION
+    );
+    assert_eq!(
+        migrated_certificate.frontier().unwrap().checkpoint_kind(),
+        CURRENT_FRONTIER_KIND
+    );
+    assert_eq!(
+        records_for(&migrated, native_session_id)
+            .iter()
+            .filter(|record| {
+                record
+                    .content
+                    .normalized_body
+                    .as_deref()
+                    .is_some_and(|body| body.contains("legacy-frontier-migration-marker"))
+            })
+            .count(),
+        1
+    );
 }
 
 #[test]

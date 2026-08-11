@@ -25,6 +25,8 @@ use crate::{
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 
+const LEGACY_CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
+
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
 ) -> Result<JsonlFileObservation> {
@@ -319,7 +321,7 @@ fn prepare_codex_session_jsonl_scans_v0(
             Some(base) if base.parser_revision() == adapter.parser_revision() => leaves
                 .iter()
                 .find(|leaf| leaf.source().exact_descriptor_eq(&plan.1))
-                .map(|leaf| provider_checkpoint_for_base(adapter, leaf, base))
+                .map(|leaf| codex_provider_checkpoint_for_base(adapter, leaf, base))
                 .transpose()?
                 .flatten(),
             Some(_) | None => None,
@@ -351,6 +353,25 @@ fn prepare_codex_session_jsonl_scans_v0(
         state.stage_pending = true;
     }
     Ok(None)
+}
+
+fn codex_provider_checkpoint_for_base(
+    adapter: &dyn JsonlFamilyAdapter,
+    leaf: &JsonlFamilyLeaf,
+    base: &CertifiedSource,
+) -> Result<Option<TypedKey>> {
+    base.validate_contract()
+        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+    if base
+        .frontier()
+        .is_some_and(|frontier| frontier.checkpoint_kind() == LEGACY_CODEX_FRONTIER_KIND)
+    {
+        // V18 is the released Codex-native envelope that immediately preceded
+        // the shared family checkpoint. Its physical and semantic state cannot
+        // be resumed independently, so migrate it only by a full replacement.
+        return Ok(None);
+    }
+    provider_checkpoint_for_base(adapter, leaf, base)
 }
 
 fn order_codex_session_jsonl_scans_v0(
@@ -674,7 +695,6 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
     fn semantic_executor(
         &self,
         leaf: &JsonlFamilyLeaf,
-        _source_file: Arc<OpenedProviderSourceFile>,
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<BaseEventIdentityLookup>,
         mode: JsonlFamilyProjectionMode,
@@ -952,7 +972,6 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
     fn semantic_executor(
         &self,
         leaf: &JsonlFamilyLeaf,
-        _source_file: Arc<OpenedProviderSourceFile>,
         checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<BaseEventIdentityLookup>,
         mode: JsonlFamilyProjectionMode,

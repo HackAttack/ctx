@@ -834,6 +834,143 @@ impl JsonlFamilyAdapter for IdentityRevisionTestAdapter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SemanticLifecycleBehavior {
+    RetryAppend,
+    Overclassify,
+    StopBeforeTerminal,
+}
+
+#[derive(Debug, Default)]
+struct SemanticLifecycleObservations {
+    constructed_modes: Vec<JsonlFamilyProjectionMode>,
+    preflight_modes: Vec<JsonlFamilyProjectionMode>,
+    page_modes: Vec<JsonlFamilyProjectionMode>,
+    finished_modes: Vec<JsonlFamilyProjectionMode>,
+}
+
+struct SemanticLifecycleTestAdapter {
+    behavior: SemanticLifecycleBehavior,
+    observations: Arc<Mutex<SemanticLifecycleObservations>>,
+}
+
+struct SemanticLifecycleTestExecutor {
+    behavior: SemanticLifecycleBehavior,
+    mode: JsonlFamilyProjectionMode,
+    observations: Arc<Mutex<SemanticLifecycleObservations>>,
+    consumed: u64,
+}
+
+impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {
+    fn preflight(
+        &mut self,
+        _input: &mut JsonlFamilyExecutionIo,
+    ) -> Result<JsonlFamilySemanticPreflight> {
+        self.observations
+            .lock()
+            .unwrap()
+            .preflight_modes
+            .push(self.mode);
+        if self.behavior == SemanticLifecycleBehavior::RetryAppend
+            && self.mode == JsonlFamilyProjectionMode::CertifiedAppend
+        {
+            Ok(JsonlFamilySemanticPreflight::RetryReplacement)
+        } else {
+            Ok(JsonlFamilySemanticPreflight::Ready)
+        }
+    }
+
+    fn next_page(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+        _worker: &mut JsonlFamilyWorkerContext,
+    ) -> Result<Option<JsonlFamilySemanticPage>> {
+        self.observations.lock().unwrap().page_modes.push(self.mode);
+        if self.behavior == SemanticLifecycleBehavior::StopBeforeTerminal {
+            return Ok(None);
+        }
+        let Some(record) = input.next_record()? else {
+            return Ok(None);
+        };
+        let _ = input.record_bytes(record)?;
+        self.consumed = self.consumed.checked_add(1).ok_or_else(|| {
+            CaptureError::InvalidPayload("semantic lifecycle test count overflowed".to_owned())
+        })?;
+        Ok(Some(JsonlFamilySemanticPage::new(Vec::new())))
+    }
+
+    fn finish(self: Box<Self>) -> Result<JsonlFamilySemanticSummary> {
+        self.observations
+            .lock()
+            .unwrap()
+            .finished_modes
+            .push(self.mode);
+        let represented = if self.behavior == SemanticLifecycleBehavior::Overclassify {
+            self.consumed.saturating_add(1)
+        } else {
+            0
+        };
+        Ok(JsonlFamilySemanticSummary::new(represented, 0, None))
+    }
+}
+
+impl JsonlFamilyAdapter for SemanticLifecycleTestAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Pi
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "semantic-lifecycle-test-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        TestAdapter.discover(root)
+    }
+
+    fn projector(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        Err(CaptureError::SystemInvariant(
+            "semantic lifecycle tests require the semantic executor",
+        ))
+    }
+
+    fn semantic_executor(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _checkpoint: Option<&TypedKey>,
+        _base_event_lookup: Option<BaseEventIdentityLookup>,
+        mode: JsonlFamilyProjectionMode,
+    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+        self.observations
+            .lock()
+            .unwrap()
+            .constructed_modes
+            .push(mode);
+        Ok(Some(Box::new(SemanticLifecycleTestExecutor {
+            behavior: self.behavior,
+            mode,
+            observations: Arc::clone(&self.observations),
+            consumed: 0,
+        })))
+    }
+}
+
 struct EmissionTestAdapter {
     project_fanout: usize,
     finish_fanout: usize,
@@ -1495,6 +1632,173 @@ fn provider_checkpoints(receipt: &CommitReceipt) -> Vec<Option<TypedKey>> {
                 .provider_checkpoint
         })
         .collect()
+}
+
+fn prepare_semantic_lifecycle_test(
+    adapter: &SemanticLifecycleTestAdapter,
+    root: &Path,
+    index_root: &Path,
+    base: Option<&CertifiedSource>,
+    publications: &mut Vec<(bool, u64, usize)>,
+) -> Result<leaf::PreparedLeaf> {
+    let inventory = adapter.discover(root)?;
+    let leaf = inventory
+        .leaves()
+        .first()
+        .ok_or(CaptureError::SystemInvariant(
+            "semantic lifecycle test has no leaf",
+        ))?;
+    let writer = GenerationWriter::open(
+        index_root,
+        WriterOptions {
+            indexer_threads: 1,
+            memory_bytes: 15_000_000,
+        },
+    )
+    .unwrap()
+    .into_writer()
+    .unwrap();
+    let mut worker = JsonlFamilyWorkerContext::default();
+    let mut emit = |event| {
+        if let JsonlLeafOutputEvent::Page {
+            append,
+            completed_bytes,
+            records,
+        } = event
+        {
+            publications.push((append, completed_bytes, records.len()));
+        }
+        Ok(())
+    };
+    prepare_leaf(
+        adapter,
+        leaf,
+        base,
+        &writer.base_event_identity_lookup(),
+        &mut worker,
+        &mut JsonlLeafOutput::new(&mut emit),
+    )
+}
+
+#[test]
+fn semantic_retry_restarts_as_replacement_before_emission_and_reports_shared_progress() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("semantic.jsonl");
+    fs::write(&transcript, TEST_RECORD).unwrap();
+    let observations = Arc::new(Mutex::new(SemanticLifecycleObservations::default()));
+    let adapter = SemanticLifecycleTestAdapter {
+        behavior: SemanticLifecycleBehavior::RetryAppend,
+        observations: Arc::clone(&observations),
+    };
+    let index_root = temp.path().join("index");
+    let cold = prepare_semantic_lifecycle_test(&adapter, &root, &index_root, None, &mut Vec::new())
+        .unwrap();
+
+    OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap()
+        .write_all(TEST_RECORD)
+        .unwrap();
+    let mut publications = Vec::new();
+    let replaced = prepare_semantic_lifecycle_test(
+        &adapter,
+        &root,
+        &index_root,
+        Some(&cold.certificate),
+        &mut publications,
+    )
+    .unwrap();
+
+    assert!(replaced.append.is_none());
+    assert_eq!(replaced.certificate.counts().complete_records, 2);
+    assert_eq!(
+        publications,
+        vec![
+            (false, TEST_RECORD.len() as u64, 0),
+            (false, TEST_RECORD.len() as u64, 0),
+        ],
+        "replacement retry must emit only replacement pages with shared-owned byte progress"
+    );
+    let observations = observations.lock().unwrap();
+    assert_eq!(
+        observations.constructed_modes,
+        [
+            JsonlFamilyProjectionMode::Cold,
+            JsonlFamilyProjectionMode::CertifiedAppend,
+            JsonlFamilyProjectionMode::Replacement,
+        ]
+    );
+    assert_eq!(observations.preflight_modes, observations.constructed_modes);
+    assert!(!observations
+        .page_modes
+        .contains(&JsonlFamilyProjectionMode::CertifiedAppend));
+    assert_eq!(
+        observations.finished_modes,
+        [
+            JsonlFamilyProjectionMode::Cold,
+            JsonlFamilyProjectionMode::Replacement,
+        ],
+        "the pre-emission append executor must be discarded without finalization"
+    );
+}
+
+#[test]
+fn semantic_classification_cannot_exceed_shared_physical_records() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("semantic.jsonl"), TEST_RECORD).unwrap();
+    let adapter = SemanticLifecycleTestAdapter {
+        behavior: SemanticLifecycleBehavior::Overclassify,
+        observations: Arc::new(Mutex::new(SemanticLifecycleObservations::default())),
+    };
+    let error = match prepare_semantic_lifecycle_test(
+        &adapter,
+        &root,
+        &temp.path().join("index"),
+        None,
+        &mut Vec::new(),
+    ) {
+        Ok(_) => panic!("overclassified semantic scan unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("semantic classified count exceeds physical records"));
+}
+
+#[test]
+fn semantic_executor_cannot_finalize_before_shared_terminal_input() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("semantic.jsonl"), TEST_RECORD).unwrap();
+    let observations = Arc::new(Mutex::new(SemanticLifecycleObservations::default()));
+    let adapter = SemanticLifecycleTestAdapter {
+        behavior: SemanticLifecycleBehavior::StopBeforeTerminal,
+        observations: Arc::clone(&observations),
+    };
+    let error = match prepare_semantic_lifecycle_test(
+        &adapter,
+        &root,
+        &temp.path().join("index"),
+        None,
+        &mut Vec::new(),
+    ) {
+        Ok(_) => panic!("unterminated semantic scan unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("semantic scan has no terminal checkpoint"));
+    assert_eq!(
+        observations.lock().unwrap().finished_modes,
+        [JsonlFamilyProjectionMode::Cold],
+        "semantic finalization runs, but shared terminal authority still gates certification"
+    );
 }
 
 #[test]

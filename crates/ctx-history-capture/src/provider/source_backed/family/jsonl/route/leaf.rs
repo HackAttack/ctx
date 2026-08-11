@@ -828,7 +828,6 @@ pub(super) fn prepare_leaf(
     };
     if let Some(mut executor) = adapter.semantic_executor(
         &leaf,
-        Arc::clone(&opened),
         resumed.and_then(|checkpoint| checkpoint.provider_checkpoint.as_ref()),
         base.is_some().then(|| base_event_lookup.clone()),
         projection_mode,
@@ -846,7 +845,6 @@ pub(super) fn prepare_leaf(
                 executor = adapter
                     .semantic_executor(
                         &leaf,
-                        Arc::clone(&opened),
                         None,
                         Some(base_event_lookup.clone()),
                         JsonlFamilyProjectionMode::Replacement,
