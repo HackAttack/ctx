@@ -1,8 +1,6 @@
 use super::*;
-use crate::provider::source_backed::family::jsonl::{
-    retained_file_identity, JsonlFileIdentityPolicy,
-};
 use ctx_history_core::SessionRelationshipKind;
+use ctx_history_source_io::SourceIoError;
 
 pub(super) fn trim_jsonl_terminator(mut record: &[u8]) -> &[u8] {
     if record.last() == Some(&b'\r') {
@@ -34,11 +32,10 @@ pub(super) fn observed_opened_file(
     let expected_prefix = source
         .catalog_prefix_sha256
         .ok_or(CaptureError::SourceChangedDuringCapture)?;
-    revalidate_opened_prefix(
-        opened.file(),
-        source.catalog_observation.len,
-        expected_prefix,
-    )?;
+    if opened_file_prefix_sha256(opened.file(), source.catalog_observation.len)? != expected_prefix
+    {
+        return Err(source_changed_during_scan());
+    }
     opened.revalidate_same_object()?;
     // Discovery admitted this ordinary-file identity and froze this refresh's
     // EOF. Growth after that observation is deferred to the next refresh;
@@ -46,25 +43,9 @@ pub(super) fn observed_opened_file(
     Ok(source.catalog_observation.clone())
 }
 
-pub(super) fn revalidate_opened_prefix(
-    file: &File,
-    len: u64,
-    expected_sha256: [u8; 32],
-) -> Result<()> {
-    let mut hasher = Sha256::new();
-    let mut reader = file.try_clone()?;
-    hash_opened_file_range(&mut reader, 0, len, &mut hasher)?;
-    if <[u8; 32]>::from(hasher.finalize()) != expected_sha256 {
-        return Err(source_changed_during_scan());
-    }
-    Ok(())
-}
-
 pub(crate) fn opened_file_prefix_sha256(file: &File, len: u64) -> Result<[u8; 32]> {
-    let mut hasher = Sha256::new();
-    let mut reader = file.try_clone()?;
-    hash_opened_file_range(&mut reader, 0, len, &mut hasher)?;
-    Ok(hasher.finalize().into())
+    ctx_history_source_io::opened_file_prefix_sha256(file, len)
+        .map_err(map_ordinary_file_observation_error)
 }
 
 pub(crate) fn reopen_codex_source_capability(
@@ -100,108 +81,21 @@ pub(crate) fn revalidate_codex_catalog_source_capability(
 }
 
 pub(crate) fn opened_file_observation(path: &Path, file: &File) -> Result<CodexFileObservation> {
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() {
-        return Err(source_changed_during_scan());
-    }
-    let platform_before =
-        retained_file_identity(path, file, &metadata, JsonlFileIdentityPolicy::OrdinaryV2)?;
-    let content_fingerprint = if platform_before.is_some() {
-        None
-    } else {
-        Some(opened_file_content_fingerprint(file, &metadata)?)
-    };
-    let current = file.metadata()?;
-    let platform_after =
-        retained_file_identity(path, file, &current, JsonlFileIdentityPolicy::OrdinaryV2)?;
-    if current.len() != metadata.len()
-        || current.modified().ok() != metadata.modified().ok()
-        || platform_after != platform_before
-    {
-        return Err(source_changed_during_scan());
-    }
+    let observation = ctx_history_source_io::observe_opened_ordinary_file_v2(path, file)
+        .map_err(map_ordinary_file_observation_error)?;
     Ok(CodexFileObservation::from_parts(
-        metadata.len(),
-        metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
-        platform_before.map(|tokens| tokens.stable()),
-        combine_opened_file_token(
-            platform_before.map(|tokens| tokens.change()),
-            content_fingerprint,
-        ),
+        observation.len(),
+        observation.modified_at(),
+        observation.stable_token(),
+        observation.change_token(),
     ))
 }
 
-fn combine_opened_file_token(
-    platform_token: Option<[u8; 32]>,
-    content_fingerprint: Option<[u8; 32]>,
-) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    if let Some(platform_token) = platform_token {
-        hasher.update(b"platform\0");
-        hasher.update(platform_token);
-    } else {
-        hasher.update(b"portable\0");
-        match content_fingerprint {
-            Some(content_fingerprint) => hasher.update(content_fingerprint),
-            None => hasher.update(b"missing-content-fingerprint\0"),
-        }
+fn map_ordinary_file_observation_error(error: SourceIoError) -> CaptureError {
+    match error {
+        SourceIoError::SourceChangedDuringCapture => source_changed_during_scan(),
+        error => error.into(),
     }
-    hasher.finalize().into()
-}
-
-fn opened_file_content_fingerprint(file: &File, metadata: &std::fs::Metadata) -> Result<[u8; 32]> {
-    let len = metadata.len();
-    let mut hasher = Sha256::new();
-    hasher.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    hasher.update(len.to_le_bytes());
-    let mut reader = file.try_clone()?;
-    let original_position = reader.stream_position()?;
-    if len <= ORDINARY_FILE_FULL_FINGERPRINT_MAX_BYTES {
-        hasher.update(b"full\0");
-        hash_opened_file_range(&mut reader, 0, len, &mut hasher)?;
-    } else {
-        hasher.update(b"sparse\0");
-        for offset in opened_file_sparse_sample_offsets(len) {
-            let sample_len = ORDINARY_FILE_SPARSE_SAMPLE_BYTES.min(len.saturating_sub(offset));
-            hasher.update(offset.to_le_bytes());
-            hasher.update(sample_len.to_le_bytes());
-            hash_opened_file_range(&mut reader, offset, sample_len, &mut hasher)?;
-        }
-    }
-    reader.seek(SeekFrom::Start(original_position))?;
-    Ok(hasher.finalize().into())
-}
-
-fn opened_file_sparse_sample_offsets(len: u64) -> std::collections::BTreeSet<u64> {
-    let last = len.saturating_sub(ORDINARY_FILE_SPARSE_SAMPLE_BYTES);
-    [0, len / 4, len / 2, len.saturating_mul(3) / 4, last]
-        .into_iter()
-        .map(|offset| offset.min(last))
-        .collect()
-}
-
-fn hash_opened_file_range(
-    file: &mut File,
-    offset: u64,
-    len: u64,
-    hasher: &mut Sha256,
-) -> Result<()> {
-    file.seek(SeekFrom::Start(offset))?;
-    let mut remaining = len;
-    let mut buffer = [0_u8; 8 * 1024];
-    while remaining > 0 {
-        let take = buffer
-            .len()
-            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        let read = file.read(&mut buffer[..take])?;
-        if read == 0 {
-            return Err(source_changed_during_scan());
-        }
-        hasher.update(&buffer[..read]);
-        remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
-    }
-    Ok(())
 }
 
 pub(super) fn validate_catalog_owner(

@@ -74,6 +74,15 @@ pub(super) fn object_change_token(_stamp: &ObjectStamp) -> [u8; 32] {
     [0; 32]
 }
 
+#[cfg(not(unix))]
+pub(super) fn retained_file_identity(
+    _file: &File,
+    _metadata: &Metadata,
+    _version: super::RetainedFileIdentityVersion,
+) -> Result<Option<([u8; 32], [u8; 32])>, AuthorityOpenError> {
+    Ok(None)
+}
+
 pub(super) fn read_exact_at(_file: &File, _bytes: &mut [u8], _offset: u64) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

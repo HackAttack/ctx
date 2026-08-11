@@ -41,7 +41,6 @@ pub(crate) use framing::{
     JsonlRecordFraming,
 };
 use identity::observe_metadata;
-pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
 pub(crate) use physical::{
     JsonlPhysicalDigest, JsonlPhysicalRecord, JsonlPhysicalStream, JsonlPhysicalStreamPosition,
 };
