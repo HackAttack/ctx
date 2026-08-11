@@ -151,6 +151,10 @@ impl OrdinaryFileObservationV2 {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn modified_at(&self) -> SystemTime {
         self.modified_at
     }
@@ -387,6 +391,25 @@ mod tests {
             hex_digest(combine_ordinary_file_v2_token(None, Some([7; 32]))),
             "32e310c6c69c525e2d74e00ef9f3ebf83d839748d3acdfe428ff071042bc7561"
         );
+    }
+
+    #[test]
+    fn v2_is_empty_tracks_zero_and_nonzero_observations() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let cases: [(&str, &[u8], u64, bool); 2] = [
+            ("empty.jsonl", b"", 0, true),
+            ("nonempty.jsonl", b"content\n", 8, false),
+        ];
+
+        for (name, contents, expected_len, expected_empty) in cases {
+            let path = temp.path().join(name);
+            std::fs::write(&path, contents).unwrap();
+            let file = File::open(&path).unwrap();
+            let observation = observe_opened_ordinary_file_v2(&path, &file).unwrap();
+
+            assert_eq!(observation.len(), expected_len);
+            assert_eq!(observation.is_empty(), expected_empty);
+        }
     }
 
     #[cfg(unix)]
