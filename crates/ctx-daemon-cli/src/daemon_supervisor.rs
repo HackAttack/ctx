@@ -14,23 +14,25 @@ pub(super) use ctx_daemon_application::{
     DaemonSupervisorStart, DaemonSupervisorUpgradeFence, DaemonSupervisorUpgradeResume,
 };
 
-pub(super) struct CliDaemonApplicationHost<'a> {
-    run_config: Option<&'a crate::config::AppConfig>,
+pub(super) struct CliDaemonApplicationHost<'config, 'value> {
+    run_config: Option<&'config crate::config::AppConfig<'value>>,
 }
 
-impl CliDaemonApplicationHost<'_> {
+impl CliDaemonApplicationHost<'_, '_> {
     const fn new() -> Self {
         Self { run_config: None }
     }
 
-    const fn for_daemon_run(config: &crate::config::AppConfig) -> CliDaemonApplicationHost<'_> {
+    const fn for_daemon_run<'config, 'value>(
+        config: &'config crate::config::AppConfig<'value>,
+    ) -> CliDaemonApplicationHost<'config, 'value> {
         CliDaemonApplicationHost {
             run_config: Some(config),
         }
     }
 }
 
-impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<'_> {
+impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<'_, '_> {
     fn hosted_uninstall_active(&self) -> Result<bool> {
         ctx_upgrade_engine::installation_hosted_uninstall_is_active()
     }
@@ -214,7 +216,7 @@ pub(super) fn with_daemon_application<T>(
 }
 
 pub(super) fn with_daemon_run_application<T>(
-    config: &crate::config::AppConfig,
+    config: &crate::config::AppConfig<'_>,
     operation: impl FnOnce(&ctx_daemon_application::DaemonApplication<'_>) -> T,
 ) -> T {
     let host = CliDaemonApplicationHost::for_daemon_run(config);

@@ -3,7 +3,7 @@ use super::*;
 pub fn run_daemon_command(
     args: DaemonArgs,
     data_root: PathBuf,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
     ui: &mut Ui,
 ) -> Result<()> {
     super::super::daemon_supervisor::with_daemon_run_application(config, |application| {

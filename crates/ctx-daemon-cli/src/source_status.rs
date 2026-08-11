@@ -33,7 +33,7 @@ pub struct SourceEpochStatus {
 
 pub fn source_epoch_status_report(
     data_root: &Path,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
 ) -> Result<SourceEpochStatus> {
     source_epoch_status_report_with_pro_query(
         data_root,
@@ -44,7 +44,7 @@ pub fn source_epoch_status_report(
 
 fn source_epoch_status_report_with_pro_query(
     data_root: &Path,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
     query_pro: impl FnOnce(&Path, Option<&VerifiedIndex>) -> Value,
 ) -> Result<SourceEpochStatus> {
     let current_policy = current_source_generation_policy();
@@ -119,7 +119,7 @@ fn attach_catch_up_status(report: &mut Value, status: Option<Value>) {
     }
 }
 
-fn source_daemon_report(data_root: &Path, config: &AppConfig) -> Value {
+fn source_daemon_report(data_root: &Path, config: &AppConfig<'_>) -> Value {
     let mut daemon = daemon_report_with_config(data_root, true, config);
     if let Some(jobs) = daemon.get_mut("jobs").and_then(Value::as_object_mut) {
         jobs.retain(|name, _| matches!(name.as_str(), "core_refresh" | "semantic_index"));
@@ -361,7 +361,11 @@ fn catalog_report(generation_id: Option<&str>, index: Option<&VerifiedIndex>) ->
     }))
 }
 
-fn semantic_report(data_root: &Path, config: &AppConfig, index: Option<&VerifiedIndex>) -> Value {
+fn semantic_report(
+    data_root: &Path,
+    config: &AppConfig<'_>,
+    index: Option<&VerifiedIndex>,
+) -> Value {
     let enabled = config.semantic_search_enabled();
     let path = source_backed_semantic_vector_path(data_root);
     let Some(index) = index else {
