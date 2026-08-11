@@ -2,6 +2,7 @@ use super::*;
 use crate::provider::source_backed::family::jsonl::{
     retained_file_identity, JsonlFileIdentityPolicy,
 };
+use ctx_history_core::SessionRelationshipKind;
 
 pub(super) fn trim_jsonl_terminator(mut record: &[u8]) -> &[u8] {
     if record.last() == Some(&b'\r') {
