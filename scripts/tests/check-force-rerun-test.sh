@@ -18,7 +18,7 @@ fail() {
 
 mkdir -p "${repo_root}/scripts"
 cp "${source_root}/scripts/check.sh" "${repo_root}/scripts/check.sh"
-cp "${source_root}/scripts/tests/fixtures/fake-bazel.sh" "${repo_root}/scripts/bazelw"
+cp "${source_root}/scripts/tests/fixtures/fake-bazel.sh" "${repo_root}/scripts/fake-bazel"
 cat >"${repo_root}/scripts/check-rust-crate-size.py" <<'PY'
 #!/usr/bin/env python3
 import os
@@ -30,9 +30,21 @@ if sys.argv != [sys.argv[0], "--preflight", str(Path.cwd())]:
 with open(os.environ["CTX_FAKE_BAZEL_LOG"], "a", encoding="utf-8") as output:
     print(f"preflight={sys.argv[1]} {sys.argv[2]}", file=output)
 PY
+cat >"${repo_root}/scripts/bazelw" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+"${script_root}/fake-bazel" "$@"
+if [[ "$#" -ge 3 && "$1" == "run" && "$2" == "//:rust_crate_size_preflight" && "$3" == "--" ]]; then
+  shift 3
+  exec "${script_root}/check-rust-crate-size.py" "$@"
+fi
+SH
 chmod +x \
   "${repo_root}/scripts/check.sh" \
   "${repo_root}/scripts/check-rust-crate-size.py" \
+  "${repo_root}/scripts/fake-bazel" \
   "${repo_root}/scripts/bazelw"
 
 export CTX_FAKE_BAZEL_LOG="${test_root}/fake-bazel.log"
@@ -43,9 +55,19 @@ unset RUST_TEST_THREADS
   >"${test_root}/ci.out" 2>"${test_root}/ci.err"
 [[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
   || fail 'ci mode did not run exactly one local preflight'
-head -n 1 "${CTX_FAKE_BAZEL_LOG}" | grep -Fqx \
-  "preflight=--preflight ${repo_root}" \
-  || fail 'ci mode did not run preflight before Bazel'
+expected_preflight="${test_root}/expected-preflight.log"
+cat >"${expected_preflight}" <<EOF
+arg=run
+arg=//:rust_crate_size_preflight
+arg=--
+arg=--preflight
+arg=${repo_root}
+env=RUST_TEST_THREADS=
+preflight=--preflight ${repo_root}
+EOF
+head -n 7 "${CTX_FAKE_BAZEL_LOG}" >"${test_root}/actual-preflight.log"
+cmp -s "${expected_preflight}" "${test_root}/actual-preflight.log" \
+  || fail 'ci mode did not run the exact local preflight before named-mode actions'
 if grep -Fqx 'arg=query' "${CTX_FAKE_BAZEL_LOG}"; then
   fail 'ci mode ran a redundant Bazel query'
 fi
