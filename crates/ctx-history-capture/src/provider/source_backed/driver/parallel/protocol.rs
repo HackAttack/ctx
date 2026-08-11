@@ -9,6 +9,8 @@ use std::{
 };
 
 use ctx_history_capture_model::CoreRecordProgress;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use ctx_history_capture_runtime::{
     CoreMaterialization, CorePreparationError, CoreRouteResourceError,
 };
@@ -453,6 +455,8 @@ pub struct ParallelLeafScanEmitter<'sender, R, E> {
     pub(super) cancellation: &'sender AtomicBool,
     pub(super) resources: SourceBackedRouteResources,
     pub(super) core_record_preparer: IndexCorePreparation,
+    #[cfg(test)]
+    pub(super) successful_resource_acquisitions: Option<&'sender AtomicUsize>,
 }
 
 #[derive(Debug, Error)]
@@ -664,7 +668,11 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         loop {
             self.require_not_cancelled()?;
             match emissions.reserve_bytes(reservation_bytes, &self.resources) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    #[cfg(test)]
+                    self.record_successful_resource_acquisition();
+                    return Ok(());
+                }
                 Err(CorePreparationError::Resource(CoreRouteResourceError::Unavailable {
                     ..
                 })) if reservation_bytes <= route_maximum_bytes => {
@@ -680,6 +688,13 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
             return Err(ParallelLeafScanCancelled);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn record_successful_resource_acquisition(&self) {
+        if let Some(acquisitions) = self.successful_resource_acquisitions {
+            acquisitions.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn complete(

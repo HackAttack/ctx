@@ -579,6 +579,8 @@ fn run_leaf_worker<J, R, E, W, F>(
             cancellation,
             resources: context.resources.clone(),
             core_record_preparer: context.core_record_preparer.clone(),
+            #[cfg(test)]
+            successful_resource_acquisitions: None,
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| scan(worker_state, job, &mut emitter)));
         match outcome {

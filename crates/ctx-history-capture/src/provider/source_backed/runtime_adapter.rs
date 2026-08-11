@@ -186,6 +186,13 @@ mod tests {
             index_preparation_failure_kind(&IndexError::ConcurrentGenerationChange),
             CorePreparationFailureKind::Internal
         );
+        assert_eq!(
+            index_preparation_failure_kind(&IndexError::ActiveGenerationNeedsRebuild {
+                generation_id: "adapter-test-generation".to_owned(),
+                detail: "fixture rebuild required".to_owned(),
+            }),
+            CorePreparationFailureKind::Internal
+        );
     }
 
     #[test]
