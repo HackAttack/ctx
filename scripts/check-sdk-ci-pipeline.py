@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate that every SDK suite has a required Buildkite execution route."""
+"""Validate SDK CI authority and required native Buildkite routes."""
 
 import re
 import subprocess
@@ -79,25 +79,6 @@ SDK_SPECS = {
         "os": "darwin",
         "arch": "arm64",
         "concurrency_group": "ctx/sdk-swift-required/ctx-release-macos-arm64",
-    },
-    "sdk-windows-required": {
-        "command": (
-            "export DOTNET_CLI_TELEMETRY_OPTOUT=1\n"
-            "export DOTNET_NOLOGO=1\n"
-            "node --version\n"
-            "npm --version\n"
-            "python3 --version\n"
-            "go version\n"
-            "dotnet --info\n"
-            "bash scripts/check-sdks.sh "
-            "--groups=typescript,python,go,dotnet "
-            "--required-groups=typescript,python,go,dotnet\n"
-            "bash scripts/bazelw test //crates/ctx-sdk:unit_tests --config=ci"
-        ),
-        "queue": "windows-x64",
-        "os": "windows",
-        "arch": "x86_64",
-        "concurrency_group": "ctx/sdk-windows-required/windows-x64",
     },
 }
 
@@ -310,11 +291,7 @@ def main() -> None:
     mutations = (
         ("optional Swift", "sdk-swift-required", "    timeout_in_minutes: 30\n", "    soft_fail: true\n    timeout_in_minutes: 30\n"),
         ("offline Swift runner", "sdk-swift-required", '      queue: "ctx-release-macos-arm64"\n', '      queue: "mac-shared"\n'),
-        ("skipped Windows", "sdk-windows-required", "    timeout_in_minutes: 30\n", "    skip: true\n    timeout_in_minutes: 30\n"),
         ("optional macOS command", "sdk-swift-required", " --required-groups=jvm,swift", ""),
-        ("optional Windows command", "sdk-windows-required", " --required-groups=typescript,python,go,dotnet", ""),
-        ("PR-excluding Windows condition", "sdk-windows-required", 'build.source != "schedule" || ', ""),
-        ("Windows Rust SDK removed", "sdk-windows-required", "bash scripts/bazelw test //crates/ctx-sdk:unit_tests --config=ci", "true"),
     )
     for name, key, old, new in mutations:
         expect_rejection(

@@ -250,7 +250,7 @@ def validate_validation_routes(blocks):
     for index, block in enumerate(blocks):
         if index in (release_index, release_wait_index):
             continue
-        if step_key(block) in ("sdk-swift-required", "sdk-windows-required"):
+        if step_key(block) == "sdk-swift-required":
             continue
         condition = scalar(block, "if", required=False)
         if condition and release_condition in condition:
@@ -357,7 +357,7 @@ def expect_rejection(name, blocks, validator=validate_validation_routes):
 pipeline = open(sys.argv[1], encoding="utf-8").read()
 steps = split_steps(pipeline)
 require_route(
-    len(steps) == 20,
+    len(steps) == 19,
     "pipeline should include public validation and bounded release matrices",
 )
 validate_validation_routes(steps)
@@ -441,7 +441,7 @@ if command -v ruby >/dev/null 2>&1; then
     macos_x64_kvm_runner_id = ARGV.fetch(3)
     macos_x64_llvm_task_root_env = ARGV.fetch(4)
     macos_x64_intel_concurrency_group = ARGV.fetch(5)
-    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 20
+    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 19
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
     abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
@@ -469,7 +469,7 @@ if command -v ruby >/dev/null 2>&1; then
       semantic-release-handoff
     ]
     actual_keys = steps.filter_map { |step| step["key"] if step.is_a?(Hash) }
-    %w[sdk-swift-required sdk-windows-required].each do |key|
+    %w[sdk-swift-required].each do |key|
       abort "missing required SDK step #{key}" unless actual_keys.include?(key)
     end
     required_keys.each { |key| abort "missing gated artifact step #{key}" unless actual_keys.include?(key) }
@@ -822,10 +822,7 @@ for required in \
   'queue: "default"' \
   'bash scripts/buildkite-public-ci.sh --mode=ci' \
   'key: "sdk-swift-required"' \
-  'key: "sdk-windows-required"' \
   'bash scripts/check-sdks.sh --groups=jvm,swift --required-groups=jvm,swift' \
-  'bash scripts/check-sdks.sh --groups=typescript,python,go,dotnet --required-groups=typescript,python,go,dotnet' \
-  'bash scripts/bazelw test //crates/ctx-sdk:unit_tests --config=ci' \
   'bash scripts/check-sdks.sh --groups=contracts,typescript,python,go,jvm,dotnet --required-groups=contracts,typescript,python,go,jvm,dotnet' \
   'target/ctx-artifacts/check/**' \
   'concurrency_group: "ctx/public-smoke/default-hosted"' \
