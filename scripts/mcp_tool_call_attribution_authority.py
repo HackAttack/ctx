@@ -21,7 +21,7 @@ CONFORMANCE_AUTHORITY = {
     "manifest": CONFORMANCE_MANIFEST,
     "suite_registry": CONFORMANCE_SUITES,
     "manifest_sha256": "d7d31900c62f80ddc7e656347c19ac62021793aef50ad7151e37a6f06d6b9f7f",
-    "suite_registry_sha256": "32e3e9ac4645251c6bdb38aa2877f33e185b7d63d705b6723c0f737b3983da87",
+    "suite_registry_sha256": "fecc57701524031b830b3c0d709470525ad99125937b74f71e07f9375cef2117",
     "manifest_schema_version": 6,
     "capability_revision": 5,
     "status_mapping": {
