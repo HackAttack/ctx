@@ -396,6 +396,21 @@ trusted_infisical() {
     "$@"
 }
 
+trusted_buildkite_injected() {
+  env \
+    -u CTX_LOCAL_MACOS_SIGNING_LIVE_TEST \
+    -u CTX_TEST_ONLY_MACOS_HOST \
+    -u CI \
+    -u GITHUB_ACTIONS \
+    BUILDKITE=true \
+    BUILDKITE_PULL_REQUEST=false \
+    BUILDKITE_BRANCH=main \
+    BUILDKITE_COMMIT=0000000000000000000000000000000000000001 \
+    BUILDKITE_REPO=https://github.com/ctxrs/ctx.git \
+    CTX_MACOS_SIGNING_SECRET_SOURCE=injected \
+    "$@"
+}
+
 "${trust_gate}" >/dev/null
 expect_failure 'forbidden when CI is set' "${test_root}/local-ci-bypass.log" \
   env CI=1 "${trust_gate}"
@@ -427,6 +442,14 @@ touch "${TMPDIR}/fake-openssl-missing-exclusive-flags"
 expect_failure 'lacks required exclusive-trust flag -no-CAstore' \
   "${test_root}/openssl-exclusive-flags.log" "${launcher}" --preflight
 rm -f "${TMPDIR}/fake-openssl-missing-exclusive-flags"
+
+injected_artifact="$(new_artifact buildkite-injected-cli)"
+touch "${TMPDIR}/fake-production-team-digest"
+trusted_buildkite_injected "${launcher}" macos-arm64 cli "${injected_artifact}" \
+  "${test_root}/buildkite-injected-evidence" >/dev/null
+rm -f "${TMPDIR}/fake-production-team-digest"
+[[ ! -e "${TMPDIR}/infisical.log" ]] || \
+  fail "Buildkite-injected signing unexpectedly accessed Infisical"
 
 infisical_artifact="$(new_artifact infisical-cli)"
 touch "${TMPDIR}/fake-production-team-digest"

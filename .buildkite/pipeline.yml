@@ -107,7 +107,7 @@ steps:
         --platform linux-x64 \
         --source-commit "${source_commit}" \
         --output-dir target/public-cli-artifacts \
-        "${smoke_args[@]}"
+        "$${smoke_args[@]}"
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
@@ -151,7 +151,7 @@ steps:
         --platform linux-arm64 \
         --source-commit "${source_commit}" \
         --output-dir target/public-cli-artifacts \
-        "${smoke_args[@]}"
+        "$${smoke_args[@]}"
     agents:
       queue: "linux-arm64"
       os: "linux"
@@ -217,9 +217,9 @@ steps:
       rustup toolchain install "${CTX_RUST_TOOLCHAIN}" --profile minimal
       rustup run "${CTX_RUST_TOOLCHAIN}" cargo check --workspace --all-targets --all-features --locked
       export CTX_MACOS_RELEASE_SIGNING=required
-      export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
-      # Build and smoke processes never receive signing values; only narrow
-      # launcher calls inside construction/transcode scripts fetch them.
+      export CTX_MACOS_SIGNING_SECRET_SOURCE=injected
+      # Buildkite injects signing values for this trusted hosted release job;
+      # narrow launcher calls scrub the signer/notary worker environment.
       scripts/bazelw run //:ctx_release_macos_arm64 --config=release -- \
         --output-dir target/public-cli-artifacts
       scripts/build-onnxruntime-sidecar.sh macos-arm64
@@ -262,7 +262,7 @@ steps:
         cat "${onnx_smoke_root}/smoke.log"
       fi
     agents:
-      queue: "mac-shared"
+      queue: "ctx-release-macos-arm64"
       os: "darwin"
       arch: "arm64"
     concurrency: 1
@@ -520,7 +520,7 @@ steps:
         --output-dir target/semantic-coreml-bundle \
         --archive target/public-cli-artifacts/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz
     agents:
-      queue: "mac-shared"
+      queue: "ctx-release-macos-arm64"
       os: "darwin"
       arch: "arm64"
     concurrency: 1

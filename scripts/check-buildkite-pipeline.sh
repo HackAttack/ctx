@@ -2,6 +2,7 @@
 set -euo pipefail
 
 pipeline=".buildkite/pipeline.yml"
+macos_arm64_hosted_queue="ctx-release-macos-arm64"
 public_ci_script="scripts/buildkite-public-ci.sh"
 sdk_check_script="scripts/check-sdks.sh"
 sdk_pipeline_check_script="scripts/check-sdk-ci-pipeline.py"
@@ -253,9 +254,29 @@ def validate_validation_routes(blocks):
             )
 
 
-def expect_rejection(name, blocks):
+def validate_linux_smoke_arg_escaping(blocks):
+    escaped = '"$${smoke_args[@]}"'
+    unescaped = '"${smoke_args[@]}"'
+    for key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
+        matches = [block for block in blocks if step_key(block) == key]
+        require_route(
+            len(matches) == 1,
+            f"pipeline must define exactly one {key} artifact route",
+        )
+        source = command(matches[0])
+        require_route(
+            escaped in source,
+            f"{key} must escape Bash array expansion for Buildkite upload",
+        )
+        require_route(
+            unescaped not in source,
+            f"{key} must not expose Bash array expansion to Buildkite interpolation",
+        )
+
+
+def expect_rejection(name, blocks, validator=validate_validation_routes):
     try:
-        validate_validation_routes(blocks)
+        validator(blocks)
     except ValidationRouteError as error:
         print(f"Buildkite route parser self-test ok: {name} rejected ({error})")
         return
@@ -271,6 +292,7 @@ require_route(
     "pipeline should include public validation and bounded release matrices",
 )
 validate_validation_routes(steps)
+validate_linux_smoke_arg_escaping(steps)
 expect_rejection(
     "missing nightly route",
     [block for block in steps if step_key(block) != "public-nightly"],
@@ -293,6 +315,18 @@ for block in steps:
     else:
         without_release_wait.append(block)
 expect_rejection("missing release prerequisite wait", without_release_wait)
+for linux_key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
+    mutated = [
+        block.replace('"$${smoke_args[@]}"', '"${smoke_args[@]}"', 1)
+        if step_key(block) == linux_key
+        else block
+        for block in steps
+    ]
+    expect_rejection(
+        f"unescaped {linux_key} smoke args",
+        mutated,
+        validate_linux_smoke_arg_escaping,
+    )
 print(
     "Buildkite route parser ok: ci, nightly, and release select exactly "
     "one validation aggregate"
@@ -305,6 +339,7 @@ if command -v ruby >/dev/null 2>&1; then
     data = YAML.load_file(ARGV.fetch(0))
     abort "pipeline must have steps" unless data.is_a?(Hash) && data["steps"].is_a?(Array)
     steps = data["steps"]
+    macos_arm64_hosted_queue = ARGV.fetch(1)
     abort "pipeline should include public validation and bounded release matrices" unless steps.length == 20
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
@@ -384,18 +419,39 @@ if command -v ruby >/dev/null 2>&1; then
       end
       abort "#{key} still uses the Cargo artifact constructor" if command.include?("build-public-cli-artifact.sh")
     end
-    %w[public-cli-macos-arm64 public-cli-macos-x64].each do |key|
+    macos_arm64_release_steps = {
+      "public-cli-macos-arm64" => "ctx-public-cli-macos-native",
+      "semantic-coreml-archive" => "ctx-public-semantic-coreml",
+    }
+    macos_arm64_physical_queue_markers = %w[mac-shared ctx-m1-mini ctxrunner]
+    macos_arm64_release_steps.each do |key, concurrency_group|
       step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing macOS artifact step #{key}" unless step
-      abort "#{key} must build on the native mac-shared queue" unless step.dig("agents", "queue") == "mac-shared"
+      abort "missing macOS ARM64 release step #{key}" unless step
+      abort "#{key} must use hosted queue #{macos_arm64_hosted_queue}" unless step.dig("agents", "queue") == macos_arm64_hosted_queue
       abort "#{key} must run on Darwin" unless step.dig("agents", "os") == "darwin"
       abort "#{key} must run on Apple Silicon" unless step.dig("agents", "arch") == "arm64"
-      abort "#{key} must serialize native Mac construction" unless step["concurrency"] == 1 && step["concurrency_group"] == "ctx-public-cli-macos-native"
+      abort "#{key} must not require a self-hosted runner class" if step.dig("agents", "ctx-runner-class")
+      macos_arm64_physical_queue_markers.each do |marker|
+        abort "#{key} must not retain physical-M1 marker #{marker}" if step.to_s.include?(marker)
+      end
+      abort "#{key} must serialize hosted Apple Silicon work" unless step["concurrency"] == 1 && step["concurrency_group"] == concurrency_group
+    end
+    macos_x64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64" }
+    abort "missing macOS x64 artifact step" unless macos_x64
+    abort "macos-x64 construction queue changed" unless macos_x64.dig("agents", "queue") == "mac-shared"
+    abort "macos-x64 construction must run on Darwin" unless macos_x64.dig("agents", "os") == "darwin"
+    abort "macos-x64 construction must retain Apple Silicon Rosetta construction" unless macos_x64.dig("agents", "arch") == "arm64"
+    abort "macos-x64 construction serialization changed" unless macos_x64["concurrency"] == 1 && macos_x64["concurrency_group"] == "ctx-public-cli-macos-native"
+    {
+      "public-cli-macos-arm64" => "injected",
+      "public-cli-macos-x64" => "infisical",
+    }.each do |key, secret_source|
+      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
       command = step["command"].to_s
       condition = step["if"].to_s
       abort "#{key} must be restricted to trusted main builds" unless condition.include?(%q{build.branch == "main"}) && condition.include?("build.pull_request.id == null")
       abort "#{key} must require macOS release signing" unless command.include?("CTX_MACOS_RELEASE_SIGNING=required")
-      abort "#{key} must configure the narrow Infisical signing launcher" unless command.include?("CTX_MACOS_SIGNING_SECRET_SOURCE=infisical")
+      abort "#{key} must use #{secret_source} signing values" unless command.include?("CTX_MACOS_SIGNING_SECRET_SOURCE=#{secret_source}")
       abort "#{key} must not access signing secrets before construction" if command.include?("scripts/run-macos-release-signing.sh --preflight")
       abort "#{key} must not inject secrets around a whole build" if command.include?("infisical run")
       evidence = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.signing.json"
@@ -417,7 +473,6 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must serialize native construction" unless step["concurrency"] == 1 && step["concurrency_group"] == concurrency_group
     end
     macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
-    macos_x64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64" }
     abort "macos-x64 construction lane must not claim native smoke" if macos_x64["command"].to_s.include?("smoke-daemon-semantic-release")
     macos_arm64_paths = Array(macos_arm64["artifact_paths"])
     abort "macos-arm64 must upload runtime signing evidence" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json")
@@ -444,6 +499,8 @@ if command -v ruby >/dev/null 2>&1; then
       command = step["command"].to_s
       if key.start_with?("public-cli-linux-")
         abort "#{key} must gate builder-owned final-byte smoke" unless command.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") && command.include?("--native-smoke-dir target/public-cli-native-smoke/#{platform}")
+        abort "#{key} must escape smoke args for Buildkite interpolation" unless command.include?(%q{"$${smoke_args[@]}"})
+        abort "#{key} exposes smoke args to Buildkite interpolation" if command.include?(%q{"${smoke_args[@]}"})
       else
         abort "#{key} must gate packaged ONNX smoke" unless command.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") && command.include?("--runtime-archive")
         abort "#{key} must run the native package smoke" unless command.include?("scripts/run-native-candidate-smoke.sh")
@@ -625,7 +682,7 @@ if command -v ruby >/dev/null 2>&1; then
     abort "Semantic gather must not bind unrelated CLI source state" if gather_command.include?("CTX_PUBLIC_RELEASE_SOURCE_COMMIT") || gather_command.include?("git rev-parse --verify HEAD^{commit}")
     abort "Semantic gather must construct and stage the unsigned handoff" unless gather_command.include?("scripts/stage-semantic-release-handoff.sh")
     abort "public Semantic gather must not sign release metadata" if gather_command.match?(/sign|private/i)
-  ' "${pipeline}"
+  ' "${pipeline}" "${macos_arm64_hosted_queue}"
 fi
 
 for required in \
@@ -660,6 +717,7 @@ for required in \
   'ctx-runner-class: "release-linux-control"' \
   'CTX_PUBLIC_CLI_ARTIFACT_MATRIX' \
   'scripts/release/build-linux-bazel-release.sh' \
+  '$${smoke_args[@]}' \
   '--platform linux-x64' \
   '--platform linux-arm64' \
   '//:ctx_release_windows_x64' \
@@ -677,6 +735,7 @@ for required in \
   'scripts/stage-semantic-release-handoff.sh' \
   'target/semantic-release-handoff/*' \
   'CTX_MACOS_RELEASE_SIGNING=required' \
+  'CTX_MACOS_SIGNING_SECRET_SOURCE=injected' \
   'CTX_MACOS_SIGNING_SECRET_SOURCE=infisical' \
   'scripts/run-macos-release-signing.sh --attest-runtime-archive' \
   'CTX_MACOS_SIGNING_SECRET_DIR' \
@@ -937,23 +996,44 @@ if grep -F -q 'ctx-mac-gui-shared-arm64' "${pipeline}"; then
   exit 1
 fi
 
-for mac_step in public-cli-macos-arm64 public-cli-macos-x64; do
+if grep -Fq 'public-cli-macos-arm64' "${macos_precommand_script}"; then
+  printf 'hosted macOS ARM64 release work must not rely on a self-hosted pre-command hook\n' >&2
+  exit 1
+fi
+
+for mac_step in public-cli-macos-arm64 semantic-coreml-archive; do
   for required in \
-    'queue: "mac-shared"' \
+    "queue: \"${macos_arm64_hosted_queue}\"" \
     'os: "darwin"' \
     'arch: "arm64"' \
-    'concurrency: 1' \
-    'concurrency_group: "ctx-public-cli-macos-native"'; do
+    'concurrency: 1'; do
     if ! awk '
         index($0, "key: \"" step "\"") { in_step = 1 }
         in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
         in_step && index($0, needle) { found = 1 }
         END { exit found ? 0 : 1 }
       ' step="${mac_step}" needle="${required}" "${pipeline}"; then
-      printf '%s artifact step missing required native Mac runner snippet: %s\n' "${mac_step}" "${required}" >&2
+      printf '%s missing required hosted Apple Silicon runner snippet: %s\n' "${mac_step}" "${required}" >&2
       exit 1
     fi
   done
+done
+
+for required in \
+  'queue: "mac-shared"' \
+  'os: "darwin"' \
+  'arch: "arm64"' \
+  'concurrency: 1' \
+  'concurrency_group: "ctx-public-cli-macos-native"'; do
+  if ! awk '
+      index($0, "key: \"public-cli-macos-x64\"") { in_step = 1 }
+      in_step && /^  - label:/ && index($0, "public-cli-macos-x64") == 0 { in_step = 0 }
+      in_step && index($0, needle) { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' needle="${required}" "${pipeline}"; then
+    printf 'macos-x64 artifact construction changed runner snippet: %s\n' "${required}" >&2
+    exit 1
+  fi
 done
 
 if grep -E -q 'release-artifact|r2-|provider-live|OpenRouter|completion-certificate|freebsd-native-release-proof|CTX_PUBLIC_CLI_PERF_GATES|--mode=perf|public-perf' "${pipeline}"; then
