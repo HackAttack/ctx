@@ -586,20 +586,26 @@ def run_verified_tool(
             raise AuthorityError(f"approved LLVM tool mode or owner changed: {tool}")
         if _stable_fd_digest(tool_fd, tool_parent_fd, tool_leaf) != member.snapshot_sha256:
             raise AuthorityError(f"approved LLVM tool digest changed: {tool}")
+        if before_exec is not None:
+            before_exec(snapshot)
         _verify_snapshot_fd(root_fd, policy)
         if _stable_fd_digest(tool_fd, tool_parent_fd, tool_leaf) != member.snapshot_sha256:
             raise AuthorityError(f"approved LLVM tool changed before execution: {tool}")
-        if before_exec is not None:
-            before_exec(snapshot)
-        # Execute the retained, rehashed tool descriptor itself. The child cwd
-        # remains anchored to the retained snapshot root, and the only dynamic
-        # library search path is its closed, relocated lib directory. Renaming
-        # or replacing the caller-visible snapshot cannot redirect either one.
+        # Darwin does not execute /dev/fd entries. Anchor path resolution to the
+        # retained snapshot directory instead, then reverify in the child
+        # immediately before executing the policy-owned relative member path.
+        # Renaming or replacing the caller-visible snapshot cannot redirect the
+        # executable or its closed, relocated library directory.
         child = os.fork()
         if child == 0:
             try:
-                os.set_inheritable(tool_fd, True)
                 os.fchdir(root_fd)
+                _verify_snapshot_fd(root_fd, policy)
+                if (
+                    _stable_fd_digest(tool_fd, tool_parent_fd, tool_leaf)
+                    != member.snapshot_sha256
+                ):
+                    raise AuthorityError(f"approved LLVM tool changed before execution: {tool}")
                 environment = {
                     name: value
                     for name, value in os.environ.items()
@@ -607,12 +613,12 @@ def run_verified_tool(
                 }
                 environment["DYLD_LIBRARY_PATH"] = "lib"
                 os.execve(
-                    f"/dev/fd/{tool_fd}",
+                    member.snapshot,
                     [PurePosixPath(member.snapshot).name, *arguments],
                     environment,
                 )
             except BaseException as error:
-                message = f"error: macOS LLVM authority: descriptor-bound exec failed: {error}\n"
+                message = f"error: macOS LLVM authority: authenticated exec failed: {error}\n"
                 os.write(2, message.encode(errors="replace"))
                 os._exit(127)
         while True:
