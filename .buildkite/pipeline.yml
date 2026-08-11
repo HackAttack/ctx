@@ -486,14 +486,20 @@ steps:
     key: "semantic-model-archives"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
-      mkdir -p target/public-cli-artifacts
+      mkdir -p target/public-cli-artifacts target/semantic-model-sources
+      python3 scripts/semantic-release-assets.py prepare-model \
+        --variant cpu-fp32 \
+        --output-dir target/semantic-model-sources/cpu-fp32
       python3 scripts/semantic-release-assets.py build-model \
         --variant cpu-fp32 \
-        --source "$${CTX_SEMANTIC_MODEL_CPU_SOURCE:?set CTX_SEMANTIC_MODEL_CPU_SOURCE to the pinned offline fp32 snapshot}" \
+        --source target/semantic-model-sources/cpu-fp32 \
         --output-dir target/public-cli-artifacts
+      python3 scripts/semantic-release-assets.py prepare-model \
+        --variant accelerator-o4-fp16 \
+        --output-dir target/semantic-model-sources/accelerator-o4-fp16
       python3 scripts/semantic-release-assets.py build-model \
         --variant accelerator-o4-fp16 \
-        --source "$${CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE:?set CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE to the pinned offline O4 fp16 snapshot}" \
+        --source target/semantic-model-sources/accelerator-o4-fp16 \
         --output-dir target/public-cli-artifacts
     agents:
       queue: "release-linux-managed"
@@ -514,11 +520,13 @@ steps:
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       mkdir -p target/public-cli-artifacts
+      python3 scripts/semantic-release-assets.py prepare-coreml \
+        --output-dir target/semantic-coreml-source
       python3 scripts/semantic-model-bundle/produce.py \
-        --tokenizer "$${CTX_SEMANTIC_COREML_TOKENIZER:?set CTX_SEMANTIC_COREML_TOKENIZER to the pinned offline tokenizer}" \
-        --document-model "$${CTX_SEMANTIC_COREML_DOCUMENT_MODEL:?set CTX_SEMANTIC_COREML_DOCUMENT_MODEL to the pinned document mlpackage}" \
-        --query-model "$${CTX_SEMANTIC_COREML_QUERY_MODEL:?set CTX_SEMANTIC_COREML_QUERY_MODEL to the pinned query mlpackage}" \
-        --model-license "$${CTX_SEMANTIC_COREML_MODEL_LICENSE:?set CTX_SEMANTIC_COREML_MODEL_LICENSE to the pinned model license}" \
+        --tokenizer target/semantic-coreml-source/tokenizer.json \
+        --document-model target/semantic-coreml-source/document.mlpackage \
+        --query-model target/semantic-coreml-source/query.mlpackage \
+        --model-license target/semantic-coreml-source/LICENSES/MODEL_LICENSE.txt \
         --bundle-version 1.0.0 \
         --document-batch-size 16 \
         --query-batch-size 1 \

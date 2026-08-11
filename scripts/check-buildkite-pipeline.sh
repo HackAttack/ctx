@@ -293,6 +293,52 @@ def validate_runtime_parameter_escaping(blocks):
         )
 
 
+def validate_semantic_input_preparation(blocks):
+    ambient_inputs = (
+        "CTX_SEMANTIC_MODEL_CPU_SOURCE",
+        "CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE",
+        "CTX_SEMANTIC_COREML_TOKENIZER",
+        "CTX_SEMANTIC_COREML_DOCUMENT_MODEL",
+        "CTX_SEMANTIC_COREML_QUERY_MODEL",
+        "CTX_SEMANTIC_COREML_MODEL_LICENSE",
+    )
+    pipeline_source = "\n".join(blocks)
+    for name in ambient_inputs:
+        require_route(
+            name not in pipeline_source,
+            f"pipeline retains ambient Semantic input {name}",
+        )
+    contracts = {
+        "semantic-model-archives": (
+            "prepare-model \\\n  --variant cpu-fp32 \\\n"
+            "  --output-dir target/semantic-model-sources/cpu-fp32",
+            "build-model \\\n  --variant cpu-fp32 \\\n"
+            "  --source target/semantic-model-sources/cpu-fp32",
+            "prepare-model \\\n  --variant accelerator-o4-fp16 \\\n"
+            "  --output-dir target/semantic-model-sources/accelerator-o4-fp16",
+            "build-model \\\n  --variant accelerator-o4-fp16 \\\n"
+            "  --source target/semantic-model-sources/accelerator-o4-fp16",
+        ),
+        "semantic-coreml-archive": (
+            "prepare-coreml \\\n  --output-dir target/semantic-coreml-source",
+            "semantic-model-bundle/produce.py",
+            "--tokenizer target/semantic-coreml-source/tokenizer.json",
+            "--document-model target/semantic-coreml-source/document.mlpackage",
+            "--query-model target/semantic-coreml-source/query.mlpackage",
+            "--model-license target/semantic-coreml-source/LICENSES/MODEL_LICENSE.txt",
+        ),
+    }
+    for key, snippets in contracts.items():
+        matches = [block for block in blocks if step_key(block) == key]
+        require_route(len(matches) == 1, f"pipeline must define exactly one {key}")
+        source = command(matches[0])
+        positions = [source.find(snippet) for snippet in snippets]
+        require_route(
+            all(position >= 0 for position in positions) and positions == sorted(positions),
+            f"{key} must prepare pinned inputs before offline packaging",
+        )
+
+
 def expect_rejection(name, blocks, validator=validate_validation_routes):
     try:
         validator(blocks)
@@ -313,6 +359,7 @@ require_route(
 validate_validation_routes(steps)
 validate_linux_smoke_arg_escaping(steps)
 validate_runtime_parameter_escaping(steps)
+validate_semantic_input_preparation(steps)
 expect_rejection(
     "missing nightly route",
     [block for block in steps if step_key(block) != "public-nightly"],
@@ -347,20 +394,31 @@ for linux_key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
         mutated,
         validate_linux_smoke_arg_escaping,
     )
-required_parameter = (
-    "$${CTX_SEMANTIC_MODEL_CPU_SOURCE:?set CTX_SEMANTIC_MODEL_CPU_SOURCE "
-    "to the pinned offline fp32 snapshot}"
-)
-mutated_required_parameter = [
-    block.replace(required_parameter, required_parameter[1:], 1)
+mutated_ambient_semantic_input = [
+    block.replace(
+        "--source target/semantic-model-sources/cpu-fp32",
+        "--source $${CTX_SEMANTIC_MODEL_CPU_SOURCE}",
+        1,
+    )
     if step_key(block) == "semantic-model-archives"
     else block
     for block in steps
 ]
 expect_rejection(
-    "unescaped runtime required parameter",
-    mutated_required_parameter,
-    validate_runtime_parameter_escaping,
+    "ambient Semantic model input",
+    mutated_ambient_semantic_input,
+    validate_semantic_input_preparation,
+)
+mutated_missing_preparation = [
+    block.replace("prepare-model", "skip-model-preparation", 1)
+    if step_key(block) == "semantic-model-archives"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "missing pinned Semantic preparation",
+    mutated_missing_preparation,
+    validate_semantic_input_preparation,
 )
 print(
     "Buildkite route parser ok: ci, nightly, and release select exactly "

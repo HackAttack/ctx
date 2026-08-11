@@ -433,7 +433,194 @@ class ArchiveTests(unittest.TestCase):
                 archive_tool.extract_checked("zip", archive, root / "out", "onnxruntime.dll")
 
 
+def tar_xz_fixture(entries: list[tuple[str, str, bytes]]) -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w:xz", format=tarfile.PAX_FORMAT) as bundle:
+        for name, kind, body in entries:
+            member = tarfile.TarInfo(name)
+            member.uid = member.gid = 0
+            member.uname = member.gname = ""
+            member.mtime = 0
+            if kind == "directory":
+                member.type = tarfile.DIRTYPE
+                member.mode = 0o755
+                bundle.addfile(member)
+            elif kind == "file":
+                member.type = tarfile.REGTYPE
+                member.mode = 0o644
+                member.size = len(body)
+                bundle.addfile(member, io.BytesIO(body))
+            elif kind == "symlink":
+                member.type = tarfile.SYMTYPE
+                member.mode = 0o777
+                member.linkname = "../escape"
+                bundle.addfile(member)
+            else:
+                raise AssertionError(f"unknown fixture kind: {kind}")
+    return output.getvalue()
+
+
+def coreml_archive_fixture() -> tuple[bytes, dict[str, bytes]]:
+    manifest = json.dumps(
+        {
+            "artifacts": {
+                "document_model": "document.mlpackage",
+                "query_model": "query.mlpackage",
+                "tokenizer": "tokenizer.json",
+            },
+            "bundle_id": "ctx.multilingual-e5-small.coreml.fp16",
+            "bundle_version": "1.0.0",
+            "model": {
+                "id": "intfloat/multilingual-e5-small",
+                "source_revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+            },
+        },
+        sort_keys=True,
+    ).encode()
+    payloads = {
+        "LICENSES/MODEL_LICENSE.txt": b"model license\r\n",
+        "document.mlpackage/Data/model.bin": b"document",
+        "manifest.json": manifest,
+        "query.mlpackage/Data/model.bin": b"query",
+        "tokenizer.json": b'{"tokenizer":true}\n',
+    }
+    root = semantic_release_assets.COREML_ARCHIVE_ROOT
+    entries = [(root, "directory", b"")]
+    for directory in (
+        "LICENSES",
+        "document.mlpackage",
+        "document.mlpackage/Data",
+        "query.mlpackage",
+        "query.mlpackage/Data",
+    ):
+        entries.append((f"{root}/{directory}", "directory", b""))
+    entries.extend(
+        (f"{root}/{relative}", "file", body)
+        for relative, body in payloads.items()
+    )
+    return tar_xz_fixture(entries), payloads
+
+
 class SemanticReleaseAssetTests(unittest.TestCase):
+    def test_semantic_source_authorities_preserve_exact_public_pins(self) -> None:
+        self.assertEqual(
+            (
+                semantic_release_assets.MODEL_REVISION,
+                semantic_release_assets.MODEL_REVISION_URL,
+                semantic_release_assets.MODEL_VARIANTS["cpu-fp32"]["upstream_onnx"],
+                semantic_release_assets.MODEL_VARIANTS["cpu-fp32"]["onnx_size"],
+                semantic_release_assets.MODEL_VARIANTS["cpu-fp32"]["onnx_sha256"],
+                semantic_release_assets.MODEL_VARIANTS["accelerator-o4-fp16"][
+                    "upstream_onnx"
+                ],
+                semantic_release_assets.MODEL_VARIANTS["accelerator-o4-fp16"][
+                    "onnx_size"
+                ],
+                semantic_release_assets.MODEL_VARIANTS["accelerator-o4-fp16"][
+                    "onnx_sha256"
+                ],
+            ),
+            (
+                "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+                "https://huggingface.co/intfloat/multilingual-e5-small/resolve/"
+                "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+                "onnx/model.onnx",
+                470_268_510,
+                "ca456c06b3a9505ddfd9131408916dd79290368331e7d76bb621f1cba6bc8665",
+                "onnx/model_O4.onnx",
+                235_052_531,
+                "4654c156f3e4171abc9c716cdb771bf9116455d15ac1aab364aeeede0e3205b0",
+            ),
+        )
+        self.assertEqual(
+            (
+                semantic_release_assets.COREML_ARCHIVE_URL,
+                semantic_release_assets.COREML_ARCHIVE_SIZE,
+                semantic_release_assets.COREML_ARCHIVE_SHA256,
+                semantic_release_assets.COREML_MANIFEST_SHA256,
+            ),
+            (
+                "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/"
+                "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz",
+                423_600_648,
+                "94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e",
+                "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6",
+            ),
+        )
+        self.assertEqual(
+            (
+                len(semantic_release_assets.MODEL_LICENSE),
+                hashlib.sha256(semantic_release_assets.MODEL_LICENSE).hexdigest(),
+            ),
+            semantic_release_assets.COMMON_MODEL_FILES["LICENSE"],
+        )
+
+    def test_downloader_rejects_missing_and_tampered_content(self) -> None:
+        expected = b"good"
+        for response in (OSError("missing"), io.BytesIO(b"evil")):
+            with self.subTest(
+                kind=type(response).__name__
+            ), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "download"
+                with mock.patch.object(
+                    semantic_release_assets.urllib.request,
+                    "urlopen",
+                    side_effect=response if isinstance(response, OSError) else None,
+                    return_value=None if isinstance(response, OSError) else response,
+                ), self.assertRaises((OSError, semantic_release_assets.AssetError)):
+                    semantic_release_assets.download_exact_url(
+                        "https://example.invalid/input",
+                        output,
+                        len(expected),
+                        hashlib.sha256(expected).hexdigest(),
+                    )
+                self.assertFalse(output.exists())
+
+    def test_coreml_preparation_safely_derives_all_offline_inputs(self) -> None:
+        archive, payloads = coreml_archive_fixture()
+        archive_sha256 = hashlib.sha256(archive).hexdigest()
+        manifest = payloads["manifest.json"]
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "prepared"
+            with mock.patch.object(
+                semantic_release_assets, "COREML_ARCHIVE_SIZE", len(archive)
+            ), mock.patch.object(
+                semantic_release_assets, "COREML_ARCHIVE_SHA256", archive_sha256
+            ), mock.patch.object(
+                semantic_release_assets,
+                "COREML_MANIFEST_SHA256",
+                hashlib.sha256(manifest).hexdigest(),
+            ), mock.patch.object(
+                semantic_release_assets.urllib.request,
+                "urlopen",
+                return_value=io.BytesIO(archive),
+            ):
+                semantic_release_assets.prepare_coreml_source(
+                    Namespace(output_dir=output)
+                )
+
+            for name, relative in semantic_release_assets.COREML_SOURCE_PATHS.items():
+                path = output.joinpath(*relative.split("/"))
+                self.assertEqual(path.is_dir(), name.endswith("_model"))
+
+    def test_coreml_extraction_rejects_traversal_and_links(self) -> None:
+        root_name = semantic_release_assets.COREML_ARCHIVE_ROOT
+        for label, entry in (
+            ("traversal", (f"{root_name}/../escape", "file", b"bad")),
+            ("symlink", (f"{root_name}/link", "symlink", b"")),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = root / "bad.tar.xz"
+                archive.write_bytes(
+                    tar_xz_fixture([(root_name, "directory", b""), entry])
+                )
+                output = root / "output"
+                with self.assertRaises(semantic_release_assets.AssetError):
+                    semantic_release_assets.extract_coreml_archive(archive, output)
+                self.assertFalse(output.exists())
+                self.assertFalse((root / "escape").exists())
+
     def test_nested_asset_records_compare_as_one_sorted_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -485,6 +672,7 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                 common = {
                     relative: (len(payloads[relative]), hashlib.sha256(payloads[relative]).hexdigest())
                     for relative in (
+                        "LICENSE",
                         "config.json",
                         "special_tokens_map.json",
                         "tokenizer.json",
@@ -494,6 +682,7 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                 selected = {
                     "asset_id": asset_id,
                     "artifact": artifact,
+                    "upstream_onnx": "onnx/model.onnx",
                     "onnx_size": len(payloads["onnx/model.onnx"]),
                     "onnx_sha256": hashlib.sha256(
                         payloads["onnx/model.onnx"]
