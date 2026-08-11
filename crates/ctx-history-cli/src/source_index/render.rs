@@ -1,4 +1,5 @@
 use std::{
+    io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -11,22 +12,21 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
-    commands::mcp_tool_call::{
-        append_mcp_tool_call_markdown, append_mcp_tool_call_text, MCP_TOOL_CALL_JSON_GUIDANCE,
-    },
+    append_mcp_tool_call_markdown, append_mcp_tool_call_text,
     output::{compact_json, OutputFormat},
     presentation_limit::{
         enforce_presentation_cli_output_limit, enforce_presentation_output_limit,
         CLI_PRESENTATION_MAX_OUTPUT_BYTES,
     },
     transcript::{shell_quote_arg, write_output},
+    MCP_TOOL_CALL_JSON_GUIDANCE,
 };
 
 use super::search::{
     semantic_reason_code, NormalizedSearchQuery, SearchCollection, SearchPresentation,
     SourceSearchRequest,
 };
-use crate::RefreshArg;
+use crate::RefreshMode as RefreshArg;
 
 mod human;
 mod locate;
@@ -38,7 +38,7 @@ pub(super) use search::{render_search_document, render_search_not_ready_document
 pub(super) use show::render_show_document;
 
 #[cfg(test)]
-pub(in crate::commands::source_index) use ctx_history_read_application::{
+pub(in crate::source_index) use ctx_history_read_application::{
     search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES, SEARCH_SNIPPET_MAX_CHARS,
 };
 
@@ -226,6 +226,7 @@ pub(super) fn write_show_value(
     format: OutputFormat,
     out: Option<PathBuf>,
     event_id: Uuid,
+    stdout: &mut dyn Write,
 ) -> Result<usize> {
     let body = match format {
         OutputFormat::Json => serde_json::to_string_pretty(&value)?,
@@ -244,7 +245,7 @@ pub(super) fn write_show_value(
     } else {
         stdout_body_bytes(&body)
     };
-    write_output(body, out).map(|()| output_bytes)
+    write_output(body, out, stdout).map(|()| output_bytes)
 }
 
 fn render_show_jsonl(value: &Value) -> Result<String> {

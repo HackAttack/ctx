@@ -237,9 +237,7 @@ pub(crate) fn active_generation_race_error_json() -> Value {
     })
 }
 
-pub(crate) fn generation_query_authority_error_json(
-    error: &GenerationQueryAuthorityError,
-) -> Value {
+pub fn generation_query_authority_error_json(error: &GenerationQueryAuthorityError) -> Value {
     let detail = error.to_string();
     json!({
         "error": detail.clone(),

@@ -20,9 +20,8 @@ use uuid::Uuid;
 
 use crate::{
     analytics::{count_bucket, ShowTelemetry},
-    commands::mcp_tool_call::{
-        append_mcp_tool_call_markdown, append_mcp_tool_call_text, MCP_TOOL_CALL_JSON_GUIDANCE,
-    },
+    append_mcp_tool_call_markdown, append_mcp_tool_call_text,
+    cli::{ShowArgs, ShowTarget},
     local_usage::{CliUsage, ResultObservationAction},
     output::{compact_json, OutputFormat},
     presentation_limit::{
@@ -30,9 +29,9 @@ use crate::{
         CLI_PRESENTATION_MAX_OUTPUT_BYTES,
     },
     provider_args::ProviderArg,
-    transcript::{TranscriptMode, TranscriptOutput},
+    transcript::TranscriptOutput,
     ui::{canonical_human_output_bytes, RenderContext, Ui},
-    ShowArgs, ShowTarget,
+    TranscriptMode, MCP_TOOL_CALL_JSON_GUIDANCE,
 };
 
 use super::{
@@ -46,7 +45,7 @@ use super::{
 
 #[cfg(test)]
 pub(crate) use mcp::{mcp_show_event, mcp_show_event_with_compact, mcp_show_session};
-pub(crate) use mcp::{mcp_show_event_application, mcp_show_session_application};
+pub use mcp::{mcp_show_event_application, mcp_show_session_application};
 #[cfg(test)]
 pub(super) use render::{event_window_value, render_event_values};
 pub(super) use render::{render_event_value, session_transcript_value};
@@ -56,7 +55,7 @@ const PRESENTATION_MAX_EVENT_WINDOW_EVENTS: usize = MAX_SESSION_EVENT_COORDINATE
 
 /// Typed failures exposed by the transport-neutral show application boundary.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ShowApplicationError {
+pub enum ShowApplicationError {
     #[error(
         "History changed while ctx was opening the searchable generation. Retry the same request."
     )]
@@ -178,7 +177,7 @@ impl From<PresentationOutputLimitError> for ShowApplicationError {
 
 pub(super) type ShowApplicationResult<T> = std::result::Result<T, ShowApplicationError>;
 
-pub(crate) fn run_show(
+pub fn run_show(
     args: ShowArgs,
     data_root: PathBuf,
     telemetry: &mut ShowTelemetry,
@@ -265,6 +264,7 @@ fn run_show_inner(
                     args.format,
                     None,
                     selected.event_id.as_uuid(),
+                    ui.stdout_writer(),
                 )?
             };
             local_usage.set_result_observation(

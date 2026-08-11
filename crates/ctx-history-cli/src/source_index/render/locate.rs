@@ -6,7 +6,7 @@ use super::human::{push_field, push_heading};
 
 const LABEL_WIDTH: usize = 16;
 
-pub(in crate::commands::source_index) fn render_locate_document(
+pub(in crate::source_index) fn render_locate_document(
     value: &Value,
     context: &RenderContext,
 ) -> Document {

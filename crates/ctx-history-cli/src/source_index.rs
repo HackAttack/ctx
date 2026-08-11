@@ -7,20 +7,20 @@ mod shared;
 mod show;
 
 pub(crate) use compact_presentation::open_generation_read;
-pub(crate) use copied_lineage::copied_lineage_summary;
-pub(crate) use locate::run_locate;
+pub use copied_lineage::copied_lineage_summary;
+pub use locate::run_locate;
 #[cfg(test)]
 use search::mcp_search;
-#[cfg(test)]
-pub(crate) use search::source_search_request;
-pub(crate) use search::{
+pub use search::source_search_request;
+pub use search::{
     mcp_search_with_compact, normalize_mcp_search_request, run_search,
-    validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
+    run_search_with_observations, validate_explicit_semantic_scope, McpSearchError,
+    SourceSearchRequest,
 };
-pub(crate) use shared::generation_query_authority_error_json;
+pub use shared::generation_query_authority_error_json;
 #[cfg(test)]
 pub(crate) use show::{mcp_show_event, mcp_show_event_with_compact};
-pub(crate) use show::{
+pub use show::{
     mcp_show_event_application, mcp_show_session_application, run_show, ShowApplicationError,
 };
 

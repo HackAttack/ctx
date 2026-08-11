@@ -9,13 +9,13 @@ use ctx_history_read_application::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{output::OutputFormat, transcript::TranscriptMode};
+use crate::{output::OutputFormat, TranscriptMode};
 
 use super::{
     render, session_event_mode, show_event_application_error, ShowApplicationError,
     ShowApplicationResult, CLI_SESSION_EVENT_PAGE_ITEMS,
 };
-use crate::commands::source_index::{
+use crate::source_index::{
     open_generation_read, render::enforce_json_output_limit, shared::externalize_query_error,
 };
 
@@ -45,7 +45,7 @@ pub(crate) fn mcp_show_session_with_compact(
         .map_err(ShowApplicationError::into_cli_error)
 }
 
-pub(crate) fn mcp_show_session_application(
+pub fn mcp_show_session_application(
     data_root: &Path,
     id: &str,
     mode: TranscriptMode,
@@ -127,7 +127,7 @@ pub(crate) fn mcp_show_event_with_compact(
         .map_err(ShowApplicationError::into_cli_error)
 }
 
-pub(crate) fn mcp_show_event_application(
+pub fn mcp_show_event_application(
     data_root: &Path,
     id: &str,
     before: usize,

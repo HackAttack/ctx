@@ -9,17 +9,18 @@ use anyhow::Result;
 mod artifact;
 use artifact::{atomic_write_output, AtomicOutputFile};
 
-pub fn write_output(body: String, out: Option<PathBuf>) -> Result<()> {
+pub fn write_output(body: String, out: Option<PathBuf>, stdout: &mut dyn Write) -> Result<()> {
     if let Some(out) = out {
         if let Some(parent) = out.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
         atomic_write_output(&out, body.as_bytes())?;
     } else {
-        print!("{body}");
+        stdout.write_all(body.as_bytes())?;
         if !body.ends_with('\n') {
-            println!();
+            stdout.write_all(b"\n")?;
         }
+        stdout.flush()?;
     }
     Ok(())
 }

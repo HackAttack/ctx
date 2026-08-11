@@ -1,23 +1,23 @@
 use serde_json::Value;
 
-use crate::ui::sanitize_untrusted_history_body_for_terminal;
+use ctx_terminal::sanitize_untrusted_history_body_for_terminal;
 
 /// Human-oriented views stay compact even though Core preserves up to 64 KiB
 /// for each exact component. Machine formats always retain the full strings.
-pub(crate) const MCP_TOOL_CALL_DISPLAY_MAX_CHARS: usize = 256;
-pub(crate) const MCP_TOOL_CALL_JSON_GUIDANCE: &str =
+pub const MCP_TOOL_CALL_DISPLAY_MAX_CHARS: usize = 256;
+pub const MCP_TOOL_CALL_JSON_GUIDANCE: &str =
     "MCP identity display truncated; use --format json or --format jsonl for exact values.";
-pub(crate) const MCP_TOOL_CALL_STRUCTURED_GUIDANCE: &str =
+pub const MCP_TOOL_CALL_STRUCTURED_GUIDANCE: &str =
     "MCP identity display truncated; inspect structuredContent for exact JSON values.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct McpToolCallDisplay {
-    pub(crate) server: String,
-    pub(crate) tool: String,
-    pub(crate) truncated: bool,
+pub struct McpToolCallDisplay {
+    pub server: String,
+    pub tool: String,
+    pub truncated: bool,
 }
 
-pub(crate) fn mcp_tool_call_display(event: &Value) -> Option<McpToolCallDisplay> {
+pub fn mcp_tool_call_display(event: &Value) -> Option<McpToolCallDisplay> {
     let attribution = event.get("mcp_tool_call")?;
     let (server, server_truncated) = display_component(attribution.get("server")?.as_str()?);
     let (tool, tool_truncated) = display_component(attribution.get("tool")?.as_str()?);
@@ -28,7 +28,7 @@ pub(crate) fn mcp_tool_call_display(event: &Value) -> Option<McpToolCallDisplay>
     })
 }
 
-pub(crate) fn escape_markdown_structure(value: &str) -> String {
+pub fn escape_markdown_structure(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         if matches!(
@@ -60,7 +60,7 @@ pub(crate) fn escape_markdown_structure(value: &str) -> String {
     escaped
 }
 
-pub(crate) fn append_mcp_tool_call_text(
+pub fn append_mcp_tool_call_text(
     output: &mut String,
     event: &Value,
     indent: &str,
@@ -78,7 +78,7 @@ pub(crate) fn append_mcp_tool_call_text(
     true
 }
 
-pub(crate) fn append_mcp_tool_call_markdown(output: &mut String, event: &Value) -> bool {
+pub fn append_mcp_tool_call_markdown(output: &mut String, event: &Value) -> bool {
     let Some(attribution) = mcp_tool_call_display(event) else {
         return false;
     };

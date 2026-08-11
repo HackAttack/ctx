@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use super::{EventContentProjection, EventQueryError};
 
-pub(crate) fn render_event(
+pub fn render_event(
     event: &CoreEventRecord,
     projection: EventContentProjection,
 ) -> std::result::Result<Value, EventQueryError> {

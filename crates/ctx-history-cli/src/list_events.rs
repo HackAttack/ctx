@@ -2,8 +2,9 @@ use std::{io::Write, path::Path, path::PathBuf};
 
 use anyhow::Result;
 use ctx_history_index::{
-    CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeError, CoreEventRangeFilters,
-    CoreEventRangePage, CoreEventRangeSelection, IndexError, VerifiedIndex,
+    CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeDirection, CoreEventRangeError,
+    CoreEventRangeFilters, CoreEventRangePage, CoreEventRangeScope, CoreEventRangeSelection,
+    IndexError, VerifiedIndex,
 };
 use ctx_history_refresh::{verify_generation_query_authority, GenerationQueryAuthorityError};
 use serde_json::{json, Value};
@@ -19,19 +20,18 @@ use crate::{
 mod render;
 mod request;
 
-#[cfg(test)]
-use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
-pub(crate) use ctx_history_read_application::{
+pub use ctx_history_read_application::{
     mcp_event_query_core_record_bytes, DEFAULT_EVENT_QUERY_LIMIT, EVENT_QUERY_PAGE_BYTES,
     EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION, MAX_EVENT_QUERY_WIRE_RECORD_BYTES,
 };
-pub(crate) use render::render_event;
-pub(crate) use request::{
-    EventContentProjection, EventQueryFormat, EventQueryWireRequest, ListEventsArgs,
+pub use render::render_event;
+pub use request::{
+    EventContentProjection, EventContentProjectionArg, EventQueryDirection, EventQueryFormat,
+    EventQueryScope, EventQueryWireRequest, ListEventsArgs,
 };
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum EventQueryError {
+pub enum EventQueryError {
     #[error(transparent)]
     GenerationAuthority(#[from] GenerationQueryAuthorityError),
     #[error(transparent)]
@@ -56,7 +56,7 @@ pub(crate) enum EventQueryError {
     Io(#[from] std::io::Error),
 }
 
-pub(crate) fn run(
+pub fn run(
     args: ListEventsArgs,
     data_root: PathBuf,
     telemetry: &mut ShowTelemetry,
@@ -93,12 +93,18 @@ fn execute(
     data_root: &Path,
     writer: &mut dyn Write,
 ) -> std::result::Result<usize, EventQueryError> {
-    let selection = selection_from_args(&args)?;
+    let args = crate::ListEventsRequest::from(&args);
+    let selection = selection_from_request(&args)?;
     let cursor = args.cursor.as_deref().map(decode_cursor).transpose()?;
     let limit = validated_limit(args.limit)?;
-    let request = EventQueryWireRequest::from_selection(&selection, args.content.into(), limit);
+    let content = match args.content {
+        crate::ListEventsContentProjection::Full => EventContentProjection::Full,
+        crate::ListEventsContentProjection::Text => EventContentProjection::Text,
+        crate::ListEventsContentProjection::None => EventContentProjection::None,
+    };
+    let request = EventQueryWireRequest::from_selection(&selection, content, limit);
     match args.format {
-        EventQueryFormat::Json => {
+        crate::OutputFormat::Json => {
             let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
                 open_event_range_generation(data_root, read)
             };
@@ -113,17 +119,18 @@ fn execute(
             writer.flush()?;
             Ok(page.items)
         }
-        EventQueryFormat::Jsonl => {
+        crate::OutputFormat::Jsonl => {
             write_jsonl_pages(data_root, &selection, cursor, &request, writer, || {})
         }
+        _ => unreachable!("list-events execution accepts only JSON and JSONL formats"),
     }
 }
 
-pub(crate) fn validated_limit(limit: u64) -> std::result::Result<usize, EventQueryError> {
+pub fn validated_limit(limit: u64) -> std::result::Result<usize, EventQueryError> {
     ctx_history_read_application::validated_event_limit(limit).map_err(Into::into)
 }
 
-pub(crate) fn selection(
+pub fn selection(
     since: Option<&str>,
     until: Option<&str>,
     filters: CoreEventRangeFilters,
@@ -131,14 +138,14 @@ pub(crate) fn selection(
     ctx_history_read_application::event_range_selection(since, until, filters).map_err(Into::into)
 }
 
-fn selection_from_args(
-    args: &ListEventsArgs,
+pub fn selection_from_request(
+    args: &crate::ListEventsRequest,
 ) -> std::result::Result<CoreEventRangeSelection, EventQueryError> {
     selection(
         args.since.as_deref(),
         args.until.as_deref(),
         CoreEventRangeFilters {
-            providers: args.provider.clone(),
+            providers: args.providers.clone(),
             source_identity: parse_uuid("source", args.source.as_deref())?,
             history_source: args.history_source.clone(),
             provider_key: args.provider_key.clone(),
@@ -153,11 +160,25 @@ fn selection_from_args(
             event_type: args.event_type.clone(),
             role: args.role.clone(),
             agent_type: args.agent_type.clone(),
-            scope: args.scope.into(),
+            scope: match args.scope {
+                crate::ListEventsScope::All => CoreEventRangeScope::All,
+                crate::ListEventsScope::Primary => CoreEventRangeScope::Primary,
+                crate::ListEventsScope::Subagent => CoreEventRangeScope::Subagent,
+            },
             file: args.file.clone(),
-            direction: args.direction.into(),
+            direction: match args.direction {
+                crate::ListEventsDirection::Ascending => CoreEventRangeDirection::Ascending,
+                crate::ListEventsDirection::Descending => CoreEventRangeDirection::Descending,
+            },
         },
     )
+}
+
+#[cfg(test)]
+fn selection_from_args(
+    args: &ListEventsArgs,
+) -> std::result::Result<CoreEventRangeSelection, EventQueryError> {
+    selection_from_request(&crate::ListEventsRequest::from(args))
 }
 
 #[cfg(test)]
@@ -236,7 +257,7 @@ struct EncodedPage {
     items: usize,
 }
 
-pub(crate) fn event_range_page_value(
+pub fn event_range_page_value(
     data_root: &Path,
     selection: &CoreEventRangeSelection,
     cursor: Option<&CoreEventRangeCursor>,
@@ -611,9 +632,7 @@ fn enforce_wire_record_cap(actual: usize) -> std::result::Result<(), EventQueryE
     Ok(())
 }
 
-pub(crate) fn decode_cursor(
-    encoded: &str,
-) -> std::result::Result<CoreEventRangeCursor, EventQueryError> {
+pub fn decode_cursor(encoded: &str) -> std::result::Result<CoreEventRangeCursor, EventQueryError> {
     ctx_history_read_application::decode_event_range_cursor(encoded).map_err(Into::into)
 }
 
@@ -628,7 +647,7 @@ pub(crate) fn parse_uuid(
     ctx_history_read_application::parse_event_query_uuid(field, value).map_err(Into::into)
 }
 
-pub(crate) fn event_query_error_value(error: &EventQueryError) -> Value {
+pub fn event_query_error_value(error: &EventQueryError) -> Value {
     let output_limit_exceeded = matches!(
         error,
         EventQueryError::Range(CoreEventRangeError::RecordExceedsStrictBudget { .. })
@@ -714,5 +733,5 @@ impl From<IndexError> for EventQueryError {
 }
 
 #[cfg(test)]
-#[path = "events/tests.rs"]
+#[path = "list_events/tests.rs"]
 mod tests;

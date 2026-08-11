@@ -1,6 +1,7 @@
 use std::io::Write as _;
 
 use clap::Parser as _;
+use ctx_history_cli::{MCP_TOOL_CALL_DISPLAY_MAX_CHARS, MCP_TOOL_CALL_JSON_GUIDANCE};
 use ctx_history_core::MAX_CORE_CONTENT_BYTES;
 use serde_json::{json, Value};
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -13,7 +14,6 @@ use super::{
 };
 use crate::{
     cli::Cli,
-    commands::mcp_tool_call::{MCP_TOOL_CALL_DISPLAY_MAX_CHARS, MCP_TOOL_CALL_JSON_GUIDANCE},
     ui::{
         canonical_human_output_bytes, is_copyable_atom, ColorMode, Document, RenderContext,
         StreamKind, TestContext, Token,

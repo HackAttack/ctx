@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use anyhow::Result;
+
 /// The single immutable configuration snapshot supplied for one history
 /// invocation. Host-specific configuration representations never cross this
 /// boundary.
@@ -8,6 +10,45 @@ pub struct HistoryCliConfig {
     pub daemon_enabled: bool,
     pub semantic_search_enabled: bool,
     pub local_usage_enabled: bool,
+}
+
+/// A command-local projection of the daemon-owned configuration snapshot.
+/// It deliberately carries no mutable host configuration authority.
+#[derive(Debug, Clone)]
+pub(crate) struct AppConfig {
+    pub(crate) daemon: DaemonConfig,
+    pub(crate) local_usage: LocalUsageConfig,
+    semantic_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DaemonConfig {
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LocalUsageConfig {
+    pub(crate) enabled: bool,
+}
+
+impl AppConfig {
+    pub(crate) fn load(data_root: &Path) -> Result<Self> {
+        let config = ctx_daemon_cli::AppConfig::load(data_root)?;
+        Ok(Self {
+            daemon: DaemonConfig {
+                enabled: config.daemon.enabled,
+            },
+            // Usage persistence is final-binary-owned; this only permits the
+            // existing bounded draft computation before that adapter decides
+            // whether to retain it.
+            local_usage: LocalUsageConfig { enabled: true },
+            semantic_enabled: config.semantic_search_enabled(),
+        })
+    }
+
+    pub(crate) const fn semantic_search_enabled(&self) -> bool {
+        self.semantic_enabled
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -30,6 +71,10 @@ impl ConfigPortError {
 /// snapshot conversion. This port intentionally does not expose the host's
 /// full configuration object.
 pub trait HistoryCliConfigPort {
+    /// Returns the sole immutable snapshot for an invocation. Command bodies
+    /// must reuse this value rather than re-reading host configuration.
+    fn snapshot(&self, data_root: &Path) -> Result<HistoryCliConfig, ConfigPortError>;
+
     fn ensure_default_config(&mut self, data_root: &Path) -> Result<(), ConfigPortError>;
 
     fn set_semantic_search_enabled(

@@ -38,6 +38,51 @@ pub enum RefreshMode {
     Wait,
 }
 
+impl RefreshMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Off => "off",
+            Self::Wait => "wait",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchBackend {
+    Hybrid,
+    Lexical,
+    Semantic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchContentScope {
+    All,
+    Transcript,
+    Calls,
+    Outputs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListEventsScope {
+    All,
+    Primary,
+    Subagent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListEventsDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListEventsContentProjection {
+    Full,
+    Text,
+    None,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
     CtxHistoryJsonlV1,
@@ -57,10 +102,12 @@ pub struct SearchRequest {
     pub since: Option<String>,
     pub primary_only: bool,
     pub include_subagents: bool,
+    pub content_scope: SearchContentScope,
     pub event_type: Option<String>,
     pub file: Option<PathBuf>,
     pub session: Option<String>,
     pub events: bool,
+    pub backend: Option<SearchBackend>,
     pub semantic_weight: f32,
     pub refresh: RefreshMode,
     pub include_current_session: bool,
@@ -96,7 +143,10 @@ pub enum LocateRequest {
         provider_session: Option<String>,
         format: OutputFormat,
     },
-    Event { id: String, format: OutputFormat },
+    Event {
+        id: String,
+        format: OutputFormat,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +177,9 @@ pub struct ListEventsRequest {
     pub cursor: Option<String>,
     pub limit: u64,
     pub format: OutputFormat,
+    pub scope: ListEventsScope,
+    pub direction: ListEventsDirection,
+    pub content: ListEventsContentProjection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,5 +242,166 @@ mod tests {
         });
 
         assert!(matches!(request, SourceIndexRequest::Show(_)));
+    }
+
+    #[test]
+    fn search_request_preserves_every_scope_backend_pair_for_execution() {
+        use crate::{
+            cli::{ContentScopeArg, SearchArgs, SearchBackendArg},
+            source_index::source_search_request,
+        };
+
+        for (scope_arg, expected_scope) in [
+            (
+                ContentScopeArg::All,
+                ctx_history_index::SearchContentScope::All,
+            ),
+            (
+                ContentScopeArg::Transcript,
+                ctx_history_index::SearchContentScope::Transcript,
+            ),
+            (
+                ContentScopeArg::Calls,
+                ctx_history_index::SearchContentScope::Calls,
+            ),
+            (
+                ContentScopeArg::Outputs,
+                ctx_history_index::SearchContentScope::Outputs,
+            ),
+        ] {
+            for (backend_arg, expected_backend) in [
+                (
+                    SearchBackendArg::Hybrid,
+                    ctx_history_read_application::SearchBackend::Hybrid,
+                ),
+                (
+                    SearchBackendArg::Lexical,
+                    ctx_history_read_application::SearchBackend::Lexical,
+                ),
+                (
+                    SearchBackendArg::Semantic,
+                    ctx_history_read_application::SearchBackend::Semantic,
+                ),
+            ] {
+                let request = SearchRequest::from(&SearchArgs {
+                    query: Some("needle".to_owned()),
+                    term: vec!["extra".to_owned()],
+                    limit: 7,
+                    provider: None,
+                    history_source: Some("history".to_owned()),
+                    provider_key: Some("key".to_owned()),
+                    source_id: Some("source".to_owned()),
+                    source_format: Some("jsonl".to_owned()),
+                    workspace: Some("workspace".to_owned()),
+                    since: Some("2026-01-01".to_owned()),
+                    primary_only: true,
+                    include_subagents: true,
+                    content_scope: Some(scope_arg),
+                    event_type: Some("message".to_owned()),
+                    file: Some(PathBuf::from("src/lib.rs")),
+                    session: Some("session".to_owned()),
+                    events: false,
+                    backend: Some(backend_arg),
+                    semantic_weight: 0.25,
+                    refresh: RefreshMode::Wait,
+                    include_current_session: true,
+                    format: crate::JsonOutputFormat::Json,
+                    verbose: true,
+                });
+                let execution = source_search_request(&request);
+                assert_eq!(execution.content_scope, expected_scope);
+                assert_eq!(execution.backend, Some(expected_backend));
+                assert!(
+                    execution.events,
+                    "a session selector must retain event-result semantics"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_events_request_preserves_every_scope_direction_content_pair_for_execution() {
+        use crate::{
+            list_events::{
+                selection_from_request, EventContentProjection, EventContentProjectionArg,
+                EventQueryDirection, EventQueryScope, EventQueryWireRequest, ListEventsArgs,
+            },
+            ListEventsContentProjection, ListEventsDirection, ListEventsScope,
+        };
+        use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
+
+        for (scope, expected_scope, expected_core_scope) in [
+            (
+                EventQueryScope::All,
+                ListEventsScope::All,
+                CoreEventRangeScope::All,
+            ),
+            (
+                EventQueryScope::Primary,
+                ListEventsScope::Primary,
+                CoreEventRangeScope::Primary,
+            ),
+            (
+                EventQueryScope::Subagent,
+                ListEventsScope::Subagent,
+                CoreEventRangeScope::Subagent,
+            ),
+        ] {
+            for (direction, expected_direction, expected_core_direction) in [
+                (
+                    EventQueryDirection::Ascending,
+                    ListEventsDirection::Ascending,
+                    CoreEventRangeDirection::Ascending,
+                ),
+                (
+                    EventQueryDirection::Descending,
+                    ListEventsDirection::Descending,
+                    CoreEventRangeDirection::Descending,
+                ),
+            ] {
+                for (content, expected_content, expected_wire_content) in [
+                    (
+                        EventContentProjectionArg::Full,
+                        ListEventsContentProjection::Full,
+                        EventContentProjection::Full,
+                    ),
+                    (
+                        EventContentProjectionArg::Text,
+                        ListEventsContentProjection::Text,
+                        EventContentProjection::Text,
+                    ),
+                    (
+                        EventContentProjectionArg::None,
+                        ListEventsContentProjection::None,
+                        EventContentProjection::None,
+                    ),
+                ] {
+                    let parsed = ListEventsArgs {
+                        scope,
+                        direction,
+                        content,
+                        limit: 9,
+                        provider: vec!["codex".to_owned()],
+                        workspace: Some("workspace".to_owned()),
+                        ..ListEventsArgs::default()
+                    };
+                    let request = ListEventsRequest::from(&parsed);
+                    assert_eq!(request.scope, expected_scope);
+                    assert_eq!(request.direction, expected_direction);
+                    assert_eq!(request.content, expected_content);
+
+                    let selection = selection_from_request(&request).unwrap();
+                    assert_eq!(selection.filters().scope, expected_core_scope);
+                    assert_eq!(selection.filters().direction, expected_core_direction);
+                    let projection = match request.content {
+                        ListEventsContentProjection::Full => EventContentProjection::Full,
+                        ListEventsContentProjection::Text => EventContentProjection::Text,
+                        ListEventsContentProjection::None => EventContentProjection::None,
+                    };
+                    let wire = EventQueryWireRequest::from_selection(&selection, projection, 9);
+                    assert_eq!(wire.content, expected_wire_content);
+                }
+            }
+        }
     }
 }

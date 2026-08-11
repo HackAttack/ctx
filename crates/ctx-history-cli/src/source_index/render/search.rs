@@ -16,7 +16,7 @@ const CARD_INDENT: usize = 3;
 const CARD_LABEL_WIDTH: usize = 7;
 const VERBOSE_LABEL_WIDTH: usize = 16;
 
-pub(in crate::commands::source_index) fn render_search_not_ready_document(
+pub(in crate::source_index) fn render_search_not_ready_document(
     context: &RenderContext,
 ) -> Document {
     let mut document = diagnostic(
@@ -44,7 +44,7 @@ pub(in crate::commands::source_index) fn render_search_not_ready_document(
     document
 }
 
-pub(in crate::commands::source_index) fn render_search_document(
+pub(in crate::source_index) fn render_search_document(
     value: &Value,
     verbose: bool,
     context: &RenderContext,

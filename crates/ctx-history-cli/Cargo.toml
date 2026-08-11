@@ -18,7 +18,14 @@ uuid.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-ingest-application = { path = "../ctx-history-ingest-application" }
+ctx-history-index = { path = "../ctx-history-index" }
 ctx-history-read-application = { path = "../ctx-history-read-application" }
+ctx-history-refresh = { path = "../ctx-history-refresh" }
+ctx-daemon-cli = { path = "../ctx-daemon-cli" }
+ctx-client-observability = { path = "../ctx-client-observability" }
+ctx-terminal = { path = "../ctx-terminal" }
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

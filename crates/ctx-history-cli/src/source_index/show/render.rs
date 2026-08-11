@@ -4,7 +4,7 @@ use ctx_history_index::{CoreEventRecord, SessionRecord};
 use serde_json::Value;
 
 use crate::presentation_limit::PresentationOutputLimitError;
-use crate::{output::OutputFormat, transcript::TranscriptMode};
+use crate::{output::OutputFormat, TranscriptMode};
 
 pub(super) fn structured_format(
     format: OutputFormat,
@@ -28,7 +28,7 @@ pub(super) fn structured_mode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::commands::source_index) fn session_transcript_value(
+pub(in crate::source_index) fn session_transcript_value(
     session: &SessionRecord,
     mode: TranscriptMode,
     format: OutputFormat,
@@ -47,7 +47,7 @@ pub(in crate::commands::source_index) fn session_transcript_value(
 }
 
 #[cfg(test)]
-pub(in crate::commands::source_index) fn event_window_value(
+pub(in crate::source_index) fn event_window_value(
     selected: &CoreEventRecord,
     format: OutputFormat,
     rendered: Vec<Value>,
@@ -56,7 +56,7 @@ pub(in crate::commands::source_index) fn event_window_value(
 }
 
 #[cfg(test)]
-pub(in crate::commands::source_index) fn render_event_values(
+pub(in crate::source_index) fn render_event_values(
     events: &[&CoreEventRecord],
     output_limit_bytes: usize,
 ) -> Result<Vec<Value>> {
@@ -64,7 +64,7 @@ pub(in crate::commands::source_index) fn render_event_values(
         .map_err(map_read_model_error)
 }
 
-pub(in crate::commands::source_index) fn render_event_value(event: &CoreEventRecord) -> Value {
+pub(in crate::source_index) fn render_event_value(event: &CoreEventRecord) -> Value {
     ctx_history_read_application::render_show_event_read_model(event)
 }
 

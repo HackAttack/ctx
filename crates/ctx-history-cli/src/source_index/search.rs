@@ -20,19 +20,21 @@ use crate::{
     analytics::{
         count_bucket, duration_bucket, text_length_bucket, RefreshStatus, SearchTelemetry,
     },
+    cli::SearchArgs,
     config,
     local_usage::{CliUsage, ResultObservationAction, SearchContextObservation},
     output::{print_json, JsonOutputFormat},
-    semantic::{
-        coordinate_source_backed_refresh, wait_for_daemon_query_service,
-        PinnedSourceBackedGeneration, SourceBackedRefreshDaemonUnavailable,
-        SourceBackedRefreshMode, SourceBackedRefreshObservation,
-    },
+    semantic::{coordinate_source_backed_refresh, pin_active_verified_generation},
     ui::{
         canonical_human_output_bytes, diagnostic, Action, Diagnostic, DiagnosticLevel, Document,
         RenderContext, Ui,
     },
-    RefreshArg, SearchArgs, SearchBackendArg,
+    RefreshMode,
+};
+use ctx_daemon_cli::{
+    wait_for_daemon_query_service, PinnedSourceBackedGeneration, SemanticNotReady,
+    SemanticQueryAdapter, SourceBackedRefreshDaemonUnavailable, SourceBackedRefreshMode,
+    SourceBackedRefreshObservation,
 };
 
 use super::{
@@ -46,18 +48,18 @@ use super::{
         ActiveGenerationRaceCommand,
     },
 };
+use ctx_history_read_application::SearchBackend;
 
-pub(in crate::commands::source_index) use hydration::SearchPresentation;
+pub(in crate::source_index) use hydration::SearchPresentation;
 #[cfg(test)]
 pub(super) use hydration::{
     presentations_for_search_hits_with_budget, SearchPresentationHydrationBudget,
     SearchPresentationRetentionBudgetExceeded, SEARCH_PRESENTATION_HYDRATION_BUDGET,
     SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES,
 };
-#[cfg(test)]
-pub(crate) use query::source_search_request;
+pub use query::source_search_request;
 pub(super) use query::NormalizedSearchQuery;
-pub(crate) use query::SourceSearchRequest;
+pub use query::SourceSearchRequest;
 #[cfg(test)]
 pub(super) use query::{index_search_filters, resolve_source_search_backend};
 use query::{source_search_policy, unsupported_semantic_scope};
@@ -68,6 +70,7 @@ pub(crate) use semantic_port::{
 };
 
 const MAX_USAGE_CONTEXT_EVENTS_PER_SESSION: usize = 256;
+type RefreshArg = RefreshMode;
 pub(super) const MISSING_INDEX_ERROR: &str =
     "the Core index does not exist; retry with daemon refresh enabled";
 const QUEUED_WITHOUT_GENERATION_ERROR: &str =
@@ -83,7 +86,7 @@ pub(super) enum SourceSearchFailure {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum McpSearchError {
+pub enum McpSearchError {
     #[error("source-backed semantic search is not ready ({code}): {detail}")]
     SemanticNotReady {
         code: &'static str,
@@ -283,12 +286,31 @@ pub(super) struct RefreshOutcome {
     pub(super) source_count: usize,
 }
 
-pub(crate) fn run_search(
+pub fn run_search(
     args: SearchArgs,
     data_root: PathBuf,
     telemetry: &mut SearchTelemetry,
     local_usage: &mut CliUsage,
     ui: &mut Ui,
+) -> Result<()> {
+    let mut observations = NoopObservability;
+    run_search_with_observations(
+        args,
+        data_root,
+        telemetry,
+        local_usage,
+        ui,
+        &mut observations,
+    )
+}
+
+pub fn run_search_with_observations(
+    args: SearchArgs,
+    data_root: PathBuf,
+    telemetry: &mut SearchTelemetry,
+    local_usage: &mut CliUsage,
+    ui: &mut Ui,
+    observations: &mut dyn crate::ObservabilityPort,
 ) -> Result<()> {
     let human_output = args.format != JsonOutputFormat::Json;
     let semantic_port = crate::semantic::SemanticQueryAdapter::new(&data_root);
@@ -298,6 +320,7 @@ pub(crate) fn run_search(
         telemetry,
         local_usage,
         ui,
+        observations,
         &semantic_port,
     )
     .map_err(SourceSearchFailure::into_anyhow);
@@ -310,13 +333,15 @@ fn run_search_inner<P: HistorySemanticPort>(
     telemetry: &mut SearchTelemetry,
     local_usage: &mut CliUsage,
     ui: &mut Ui,
+    observations: &mut dyn crate::ObservabilityPort,
     semantic_port: &P,
 ) -> SourceSearchResult<()> {
     let config = config::AppConfig::load(&data_root)?;
     let refresh_mode = args.refresh;
     let policy = source_search_policy(&config);
+    let request = crate::SearchRequest::from(&args);
     let plan =
-        ctx_history_read_application::plan_search(query::source_search_request(&args), policy)?;
+        ctx_history_read_application::plan_search(query::source_search_request(&request), policy)?;
     let request = plan.request();
     let requested_backend = request.backend.unwrap_or(policy.default_backend);
     let semantic_weight = request.semantic_weight;
@@ -331,10 +356,10 @@ fn run_search_inner<P: HistorySemanticPort>(
         && policy.semantic == SemanticAvailability::Available
         && matches!(
             requested_backend,
-            SearchBackendArg::Semantic | SearchBackendArg::Hybrid
+            SearchBackend::Semantic | SearchBackend::Hybrid
         )
         && unsupported_semantic_scope(&request).is_none()
-        && !(requested_backend == SearchBackendArg::Hybrid && semantic_weight == 0.0)
+        && !(requested_backend == SearchBackend::Hybrid && semantic_weight == 0.0)
     {
         wait_for_daemon_query_service(&data_root, Duration::from_secs(3));
     }
@@ -371,10 +396,10 @@ fn run_search_inner<P: HistorySemanticPort>(
     telemetry.query_duration = Some(duration_bucket(query_duration));
     telemetry.query_length = Some(text_length_bucket(query_length));
     telemetry.query_term_count = Some(count_bucket(query_terms as u64));
-    telemetry.backend_requested = Some(crate::observability_product::search_backend(
+    telemetry.backend_requested = Some(crate::analytics::search_backend(
         collection.requested_backend,
     ));
-    telemetry.backend_effective = Some(crate::observability_product::search_backend(
+    telemetry.backend_effective = Some(crate::analytics::search_backend(
         collection.effective_backend,
     ));
     telemetry.has_indexed_content_after = Some(index.document_count() > 0);
@@ -410,10 +435,51 @@ fn run_search_inner<P: HistorySemanticPort>(
         output_bytes
     };
     telemetry.render_duration = Some(duration_bucket(render_started.elapsed()));
+    let render_duration = render_started.elapsed();
     local_usage.set_result_observation(ResultObservationAction::Search, result_count, 0, 0);
     local_usage.set_search_context_observation(search_context);
     local_usage.set_measured_output_bytes(output_bytes);
+    observations.observe(crate::HistoryCliObservation::search(
+        crate::SearchExecutionObservation {
+            refresh_mode: match refresh_mode {
+                RefreshArg::Background => crate::RefreshObservationMode::Background,
+                RefreshArg::Off => crate::RefreshObservationMode::Off,
+                RefreshArg::Wait => crate::RefreshObservationMode::Wait,
+            },
+            refresh_status: match refresh_status {
+                "existing_generation" => crate::RefreshObservationStatus::ExistingGeneration,
+                "daemon_background" => crate::RefreshObservationStatus::DaemonBackground,
+                "daemon_unavailable" => crate::RefreshObservationStatus::DaemonUnavailable,
+                _ => crate::RefreshObservationStatus::Completed,
+            },
+            refresh_source_count: refresh_source_count as u64,
+            refresh_duration: initial_refresh_duration,
+            query_duration,
+            render_duration,
+            backend_requested: match collection.requested_backend {
+                SearchBackend::Hybrid => crate::SearchBackend::Hybrid,
+                SearchBackend::Lexical => crate::SearchBackend::Lexical,
+                SearchBackend::Semantic => crate::SearchBackend::Semantic,
+            },
+            backend_effective: match collection.effective_backend {
+                SearchBackend::Hybrid => crate::SearchBackend::Hybrid,
+                SearchBackend::Lexical => crate::SearchBackend::Lexical,
+                SearchBackend::Semantic => crate::SearchBackend::Semantic,
+            },
+            result_count: result_count as u64,
+            citation_count: collection.result_window.hits.len() as u64,
+            zero_result: collection.result_window.hits.is_empty(),
+            has_indexed_content_after: index.document_count() > 0,
+        },
+        output_bytes as u64,
+    ));
     Ok(())
+}
+
+struct NoopObservability;
+
+impl crate::ObservabilityPort for NoopObservability {
+    fn observe(&mut self, _observation: crate::HistoryCliObservation) {}
 }
 
 pub(super) fn render_search_error<T>(
@@ -496,23 +562,21 @@ pub(crate) fn mcp_search(
     request: SourceSearchRequest,
     data_root: &Path,
 ) -> std::result::Result<(Value, SearchContextObservation), McpSearchError> {
-    let config = config::AppConfig::load(data_root)
-        .map_err(|error| SourceSearchFailure::from(error).into_mcp())?;
-    mcp_search_with_compact(request, data_root, &config)
-        .map(|(value, observation, _)| (value, observation))
+    mcp_search_with_compact(request, data_root).map(|(value, observation, _)| (value, observation))
 }
 
-pub(crate) fn mcp_search_with_compact(
+pub fn mcp_search_with_compact(
     request: SourceSearchRequest,
     data_root: &Path,
-    config: &config::AppConfig,
 ) -> std::result::Result<(Value, SearchContextObservation, Value), McpSearchError> {
+    let config = config::AppConfig::load(data_root)
+        .map_err(|error| SourceSearchFailure::from(error).into_mcp())?;
     let semantic_port = crate::semantic::SemanticQueryAdapter::new(data_root);
-    mcp_search_inner(request, data_root, config, &semantic_port)
+    mcp_search_inner(request, data_root, &config, &semantic_port)
         .map_err(SourceSearchFailure::into_mcp)
 }
 
-pub(crate) fn normalize_mcp_search_request(
+pub fn normalize_mcp_search_request(
     request: &mut SourceSearchRequest,
 ) -> std::result::Result<(), McpSearchError> {
     ctx_history_read_application::normalize_search_request(request)
@@ -544,10 +608,10 @@ fn mcp_search_inner<P: HistorySemanticPort>(
     Ok((value, observation, compact_value))
 }
 
-pub(crate) fn validate_explicit_semantic_scope(
+pub fn validate_explicit_semantic_scope(
     request: &SourceSearchRequest,
 ) -> std::result::Result<(), McpSearchError> {
-    if request.backend == Some(SearchBackendArg::Semantic) {
+    if request.backend == Some(SearchBackend::Semantic) {
         if let Some(not_ready) = unsupported_semantic_scope(request) {
             return Err(SourceSearchFailure::Semantic(not_ready).into_mcp());
         }
@@ -710,7 +774,7 @@ pub(super) fn search_existing_generation(
     refresh_source_count: usize,
 ) -> Result<(Value, SearchCollection, VerifiedIndex)> {
     let policy = ctx_history_read_application::SearchPolicy {
-        default_backend: request.backend.unwrap_or(SearchBackendArg::Lexical),
+        default_backend: request.backend.unwrap_or(SearchBackend::Lexical),
         semantic: SemanticAvailability::Available,
     };
     let mut request = request.clone();

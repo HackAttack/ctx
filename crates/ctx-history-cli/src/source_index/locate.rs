@@ -7,7 +7,7 @@ use ctx_history_read_application::{
 };
 
 use crate::{
-    commands::locate::{LocateArgs, LocateTarget},
+    cli::{LocateArgs, LocateTarget},
     local_usage::{CliUsage, ResultObservationAction},
     output::print_json,
     ui::{canonical_human_output_bytes, Ui},
@@ -19,7 +19,7 @@ use super::{
     shared::{externalize_query_error, index_root, open_index},
 };
 
-pub(crate) fn run_locate(
+pub fn run_locate(
     args: LocateArgs,
     data_root: PathBuf,
     local_usage: &mut CliUsage,

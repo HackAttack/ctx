@@ -1,9 +1,7 @@
+use crate::{mcp_tool_call_display, MCP_TOOL_CALL_JSON_GUIDANCE};
 use serde_json::Value;
 
-use crate::{
-    commands::mcp_tool_call::{mcp_tool_call_display, MCP_TOOL_CALL_JSON_GUIDANCE},
-    ui::{Document, Line, RenderContext, Span, Token},
-};
+use crate::ui::{Document, Line, RenderContext, Span, Token};
 
 use super::human::{display_width, push_field, push_heading, push_prefixed, push_wrapped};
 
@@ -13,7 +11,7 @@ const EVENT_LABEL_WIDTH: usize = 5;
 const MCP_EVENT_LABEL_WIDTH: usize = 10;
 const LINEAGE_EVENT_LABEL_WIDTH: usize = 16;
 
-pub(in crate::commands::source_index) fn render_show_document(
+pub(in crate::source_index) fn render_show_document(
     value: &Value,
     context: &RenderContext,
 ) -> Document {
@@ -183,7 +181,7 @@ fn render_copied_lineage(document: &mut Document, context: &RenderContext, value
     }
 }
 
-pub(in crate::commands::source_index) fn render_session_header_document(
+pub(in crate::source_index) fn render_session_header_document(
     value: &Value,
     context: &RenderContext,
 ) -> Document {
@@ -192,7 +190,7 @@ pub(in crate::commands::source_index) fn render_session_header_document(
     document
 }
 
-pub(in crate::commands::source_index) fn render_session_event_document(
+pub(in crate::source_index) fn render_session_event_document(
     event: &Value,
     context: &RenderContext,
     position: usize,
@@ -203,14 +201,14 @@ pub(in crate::commands::source_index) fn render_session_event_document(
     document
 }
 
-pub(in crate::commands::source_index) fn render_session_empty_document() -> Document {
+pub(in crate::source_index) fn render_session_empty_document() -> Document {
     let mut document = Document::new();
     document.push_blank();
     push_heading(&mut document, "No transcript events.", Token::Warning);
     document
 }
 
-pub(in crate::commands::source_index) fn render_session_truncated_document(
+pub(in crate::source_index) fn render_session_truncated_document(
     max_events: Option<u64>,
     context: &RenderContext,
 ) -> Document {
