@@ -15,14 +15,11 @@ use super::super::absolute_lexical_path;
 use super::PromptLine;
 use crate::{
     common::io::OpenedProviderSourceFile,
-    provider::source_backed::{
-        family::jsonl::{
-            jsonl_single_file_inventory, JsonlFamilyAdapter, JsonlFamilyAppendMode,
-            JsonlFamilyBaseScope, JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-            JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilyWorkerContext,
-            JsonlOversizedRecordPolicy, JsonlRecordRef,
-        },
-        SourceBackedRouteErrorKind,
+    provider::source_backed::family::jsonl::{
+        jsonl_single_file_inventory, JsonlFamilyAdapter, JsonlFamilyAppendMode,
+        JsonlFamilyBaseScope, JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+        JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilyWorkerContext,
+        JsonlOversizedRecordPolicy, JsonlRecordRef,
     },
     CaptureError,
 };
@@ -151,15 +148,6 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
         jsonl_single_file_inventory(self.provider(), root, self.source.clone(), PATH_KIND)
     }
 
-    fn discovery_error_kind(&self, error: &CaptureError) -> SourceBackedRouteErrorKind {
-        if matches!(error, CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
-        {
-            SourceBackedRouteErrorKind::Unavailable
-        } else {
-            SourceBackedRouteErrorKind::InvalidSource
-        }
-    }
-
     fn projector(
         &self,
         leaf: &JsonlFamilyLeaf,
@@ -173,13 +161,6 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
             source: self.source.clone(),
             rejected_records: 0,
         }))
-    }
-
-    fn base_source_path(
-        &self,
-        _certificate: &ctx_history_core::CertifiedSource,
-    ) -> crate::Result<PathBuf> {
-        Ok(self.route_path().to_owned())
     }
 }
 

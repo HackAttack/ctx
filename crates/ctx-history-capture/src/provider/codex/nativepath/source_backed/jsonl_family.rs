@@ -1,28 +1,23 @@
 use std::{collections::BTreeMap, sync::Mutex};
 
-use chrono::{DateTime, Utc};
-
 #[cfg(any(test, ctx_codex_causal_qualification))]
 use super::causal::CodexCausalLedgerV1;
 use super::*;
 use crate::{
-    common::io::OpenedProviderSourceFile,
     provider::source_backed::{
         family::jsonl::{
             observe_opened_file, observe_opened_file_allow_append, provider_checkpoint_for_base,
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
             JsonlFamilyExecutionIo, JsonlFamilyInventory, JsonlFamilyInventoryMode,
             JsonlFamilyLeaf, JsonlFamilyMembershipObservation, JsonlFamilyProjectionMode,
-            JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
-            JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
-            JsonlFamilyWorkerContext, JsonlFileObservation, JsonlRecordFraming,
+            JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
+            JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
+            JsonlFileObservation, JsonlRecordFraming,
         },
         SourceBackedRouteErrorKind,
     },
     Result,
 };
-
-type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 
 const LEGACY_CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
 
@@ -190,22 +185,6 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
     }
 }
 
-fn codex_semantic_executor_v0(
-    state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
-    leaf: &JsonlFamilyLeaf,
-    checkpoint: Option<&TypedKey>,
-    base_event_lookup: Option<BaseEventIdentityLookup>,
-    projection_mode: JsonlFamilyProjectionMode,
-) -> Result<Box<dyn JsonlFamilySemanticExecutor>> {
-    Ok(Box::new(CodexSessionSemanticExecutorV0::new(
-        state,
-        leaf,
-        checkpoint,
-        base_event_lookup,
-        projection_mode,
-    )?))
-}
-
 fn codex_family_state_error() -> CaptureError {
     CaptureError::InvalidPayload("Codex JSONL family state lock was poisoned".to_owned())
 }
@@ -217,13 +196,16 @@ fn prepare_codex_session_jsonl_scans_v0(
     bases: &HashMap<[u8; 32], &CertifiedSource>,
 ) -> Result<Option<usize>> {
     let mut state = state.lock().map_err(|_| codex_family_state_error())?;
-    if leaves
-        .iter()
-        .any(|leaf| !state.plans.contains_key(leaf.source()))
-    {
-        return Err(CaptureError::InvalidPayload(
-            "Codex JSONL family selected an unplanned leaf".to_owned(),
-        ));
+    let mut leaves_by_descriptor = HashMap::with_capacity(leaves.len());
+    for leaf in leaves {
+        if !state.plans.contains_key(leaf.source()) {
+            return Err(CaptureError::InvalidPayload(
+                "Codex JSONL family selected an unplanned leaf".to_owned(),
+            ));
+        }
+        leaves_by_descriptor
+            .entry(leaf.source().exact_descriptor_digest())
+            .or_insert(leaf);
     }
     let mut hydrated = HashMap::with_capacity(state.plans.len());
     for (_, plan) in std::mem::take(&mut state.plans) {
@@ -232,12 +214,15 @@ fn prepare_codex_session_jsonl_scans_v0(
             .copied()
             .filter(|base| base.observation().source().exact_descriptor_eq(&plan.1));
         let provider_checkpoint = match base {
-            Some(base) if base.parser_revision() == adapter.parser_revision() => leaves
-                .iter()
-                .find(|leaf| leaf.source().exact_descriptor_eq(&plan.1))
-                .map(|leaf| codex_provider_checkpoint_for_base(adapter, leaf, base))
-                .transpose()?
-                .flatten(),
+            Some(base) if base.parser_revision() == adapter.parser_revision() => {
+                leaves_by_descriptor
+                    .get(&plan.1.exact_descriptor_digest())
+                    .copied()
+                    .filter(|leaf| leaf.source().exact_descriptor_eq(&plan.1))
+                    .map(|leaf| codex_provider_checkpoint_for_base(adapter, leaf, base))
+                    .transpose()?
+                    .flatten()
+            }
             Some(_) | None => None,
         };
         let (plan, work, exact_replay) =
@@ -280,19 +265,6 @@ fn codex_provider_checkpoint_for_base(
         return Ok(None);
     }
     provider_checkpoint_for_base(adapter, leaf, base)
-}
-
-fn order_codex_session_jsonl_scans_v0(
-    _state: &Mutex<CodexSessionJsonlFamilyStateV0>,
-    leaves: &mut [JsonlFamilyLeaf],
-) -> Result<()> {
-    leaves.sort_by(|left, right| {
-        left.source()
-            .identity()
-            .digest()
-            .cmp(&right.source().identity().digest())
-    });
-    Ok(())
 }
 
 fn install_prepared_state_v0(
@@ -567,15 +539,27 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
     }
 
     fn discovery_error_kind(&self, error: &CaptureError) -> SourceBackedRouteErrorKind {
-        codex_discovery_error_kind(error)
-    }
-
-    fn scan_error_kind(&self, error: &CaptureError) -> SourceBackedRouteErrorKind {
-        codex_scan_error_kind(error)
+        match error {
+            CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                SourceBackedRouteErrorKind::Unavailable
+            }
+            CaptureError::SystemIo { source, .. }
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                SourceBackedRouteErrorKind::ResourceUnavailable
+            }
+            _ => SourceBackedRouteErrorKind::InvalidSource,
+        }
     }
 
     fn order_leaf_scans(&self, leaves: &mut [JsonlFamilyLeaf]) -> Result<()> {
-        order_codex_session_jsonl_scans_v0(&self.state, leaves)
+        leaves.sort_by(|left, right| {
+            left.source()
+                .identity()
+                .digest()
+                .cmp(&right.source().identity().digest())
+        });
+        Ok(())
     }
 
     fn prepare_leaf_scans(
@@ -586,17 +570,6 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
         prepare_codex_session_jsonl_scans_v0(self, &self.state, leaves, bases)
     }
 
-    fn projector(
-        &self,
-        _leaf: &JsonlFamilyLeaf,
-        _source_file: Arc<OpenedProviderSourceFile>,
-        _imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>> {
-        Err(CaptureError::SystemInvariant(
-            "Codex JSONL leaves require the native semantic executor",
-        ))
-    }
-
     fn semantic_executor(
         &self,
         leaf: &JsonlFamilyLeaf,
@@ -604,14 +577,13 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
         base_event_lookup: Option<BaseEventIdentityLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
-        codex_semantic_executor_v0(
+        Ok(Some(Box::new(CodexSessionSemanticExecutorV0::new(
             Arc::clone(&self.state),
             leaf,
             checkpoint,
             base_event_lookup,
             mode,
-        )
-        .map(Some)
+        )?)))
     }
 
     fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
@@ -626,44 +598,5 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
                 "Codex generation route has no base source path",
             ))
         }
-    }
-}
-
-fn codex_discovery_error_kind(error: &CaptureError) -> SourceBackedRouteErrorKind {
-    if let Some(kind) = codex_systemic_error_kind(error) {
-        return kind;
-    }
-    match error {
-        CaptureError::SourceChangedDuringCapture => SourceBackedRouteErrorKind::SourceChanged,
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            SourceBackedRouteErrorKind::Unavailable
-        }
-        _ => SourceBackedRouteErrorKind::InvalidSource,
-    }
-}
-
-fn codex_scan_error_kind(error: &CaptureError) -> SourceBackedRouteErrorKind {
-    if let Some(kind) = codex_systemic_error_kind(error) {
-        return kind;
-    }
-    match error {
-        CaptureError::SourceChangedDuringCapture => SourceBackedRouteErrorKind::SourceChanged,
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            SourceBackedRouteErrorKind::SourceChanged
-        }
-        _ => SourceBackedRouteErrorKind::InvalidSource,
-    }
-}
-
-fn codex_systemic_error_kind(error: &CaptureError) -> Option<SourceBackedRouteErrorKind> {
-    match error {
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        CaptureError::Io(_) | CaptureError::SystemIo { .. } => {
-            Some(SourceBackedRouteErrorKind::ResourceUnavailable)
-        }
-        CaptureError::SystemInvariant(_) | CaptureError::WorkerPanicked(_) => {
-            Some(SourceBackedRouteErrorKind::Internal)
-        }
-        _ => None,
     }
 }

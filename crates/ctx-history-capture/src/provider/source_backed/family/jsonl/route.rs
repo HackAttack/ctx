@@ -1568,6 +1568,9 @@ fn normalized_jsonl_error_kind(error: &CaptureError) -> Option<SourceBackedRoute
         CaptureError::Io(_) | CaptureError::SystemIo { .. } => {
             Some(SourceBackedRouteErrorKind::ResourceUnavailable)
         }
+        CaptureError::SystemInvariant(_) | CaptureError::WorkerPanicked(_) => {
+            Some(SourceBackedRouteErrorKind::Internal)
+        }
         _ => None,
     }
 }

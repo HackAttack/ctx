@@ -161,9 +161,6 @@ impl CodexSemanticCheckpoint {
 
     pub(super) fn decode_key(key: &TypedKey) -> serde_json::Result<Self> {
         match key {
-            // Candidate checkpoints used Bytes. The compact representation is
-            // the same versioned JSON carried directly as UTF-8.
-            TypedKey::Bytes(bytes) => Self::decode(bytes),
             TypedKey::Utf8(json) => Self::decode(json.as_bytes()),
             _ => Err(<serde_json::Error as serde::de::Error>::custom(
                 "Codex semantic checkpoint has an invalid key type",
@@ -278,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_codec_round_trips_both_key_generations_without_event_bodies() {
+    fn semantic_codec_round_trips_compact_key_without_event_bodies() {
         let secret = "event-body-secret-must-not-survive";
         let checkpoint = checkpoint();
 
@@ -300,11 +297,7 @@ mod tests {
             CodexSemanticCheckpoint::decode_key(&compact).unwrap(),
             checkpoint
         );
-        let bytes_key = TypedKey::bytes(bytes).unwrap();
-        assert_eq!(
-            CodexSemanticCheckpoint::decode_key(&bytes_key).unwrap(),
-            checkpoint
-        );
+        assert!(CodexSemanticCheckpoint::decode_key(&TypedKey::bytes(bytes).unwrap()).is_err());
     }
 
     #[test]

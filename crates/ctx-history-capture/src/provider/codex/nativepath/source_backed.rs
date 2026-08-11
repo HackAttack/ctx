@@ -51,6 +51,8 @@ const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
 const CODEX_PARSER_REVISION: &str =
     "codex-nativepath-core-record-v31-repository-positive-exact-authority";
 
+type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
+
 #[derive(Debug, Error)]
 pub enum CodexSourceBackedErrorV0 {
     #[error(transparent)]

@@ -6,8 +6,6 @@ use std::{
 
 use super::*;
 
-type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
-
 #[derive(Debug, Clone)]
 enum CodexGenerationParticipantV0 {
     SessionTree {

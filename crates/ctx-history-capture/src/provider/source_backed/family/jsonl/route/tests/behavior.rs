@@ -1151,6 +1151,14 @@ fn jsonl_terminal_drift_and_io_failures_keep_distinct_route_kinds() {
         Some(SourceBackedRouteErrorKind::ResourceUnavailable)
     );
     assert_eq!(
+        normalized_jsonl_error_kind(&CaptureError::SystemInvariant("broken route")),
+        Some(SourceBackedRouteErrorKind::Internal)
+    );
+    assert_eq!(
+        normalized_jsonl_error_kind(&CaptureError::WorkerPanicked("broken worker")),
+        Some(SourceBackedRouteErrorKind::Internal)
+    );
+    assert_eq!(
         route_scan(
             &TestAdapter,
             CaptureError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
