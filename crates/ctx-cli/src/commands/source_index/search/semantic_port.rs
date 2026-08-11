@@ -1,4 +1,5 @@
+#[cfg(test)]
+pub use ctx_history_read_application::HistorySemanticBatch;
 pub use ctx_history_read_application::{
-    HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
-    SemanticAvailability, SemanticReason,
+    HistorySemanticError, HistorySemanticPort, SemanticAvailability, SemanticReason,
 };

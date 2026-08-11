@@ -31,7 +31,7 @@ impl super::super::daemon_supervisor::DaemonSupervisorUpgradeFence
     }
 }
 
-pub(in crate::semantic) fn terminate_current_executable_daemon(data_root: &Path) -> Result<()> {
+pub(crate) fn terminate_current_executable_daemon(data_root: &Path) -> Result<()> {
     let executable = env::current_exe().context("resolve current ctx executable")?;
     terminate_identity_verified_residual_daemon(data_root, &executable)
 }
@@ -68,7 +68,7 @@ fn daemon_upgrade_handoff_is_active_at(path: &Path) -> bool {
     daemon_upgrade_handoff_state_at(path) == DaemonUpgradeHandoffState::Active
 }
 
-pub(in crate::semantic) fn daemon_upgrade_handoff_blocks_current_process(data_root: &Path) -> bool {
+pub(crate) fn daemon_upgrade_handoff_blocks_current_process(data_root: &Path) -> bool {
     match daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)) {
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal => false,
         DaemonUpgradeHandoffState::CorruptOrUnreadable => true,
@@ -79,14 +79,14 @@ pub(in crate::semantic) fn daemon_upgrade_handoff_blocks_current_process(data_ro
 }
 
 #[cfg(test)]
-pub(in crate::semantic) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
+pub(crate) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
     !matches!(
         daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)),
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal
     )
 }
 
-pub(in crate::semantic) fn current_process_owns_daemon_upgrade_handoff(data_root: &Path) -> bool {
+pub(crate) fn current_process_owns_daemon_upgrade_handoff(data_root: &Path) -> bool {
     let token = env::var(DAEMON_UPGRADE_HANDOFF_TOKEN_ENV).ok();
     current_process_owns_daemon_upgrade_handoff_with_token(data_root, token.as_deref())
 }
@@ -178,7 +178,7 @@ fn normalize_daemon_upgrade_handoff_input(
     })
 }
 
-pub(crate) struct DaemonUpgradeHandoff {
+pub struct DaemonUpgradeHandoff {
     data_root: PathBuf,
     fence: ctx_daemon_runtime::DurableHandoffFence,
     installation_executable: PathBuf,
@@ -196,7 +196,7 @@ impl UpgradeHandoffRestartAuthority {
 }
 
 impl DaemonUpgradeHandoff {
-    pub(crate) fn wait_for_installation_quiescence(&self) -> Result<()> {
+    pub fn wait_for_installation_quiescence(&self) -> Result<()> {
         wait_for_installation_daemon_quiescence_for(
             &self.installation_executable,
             self.fence.handoff_id(),
@@ -206,7 +206,7 @@ impl DaemonUpgradeHandoff {
 
     /// Capture the effective auto-daemon restart request in data that can be
     /// embedded in a durable platform replacement helper.
-    pub(crate) fn replacement_restart(&self) -> Option<(&'static str, u64, u64)> {
+    pub fn replacement_restart(&self) -> Option<(&'static str, u64, u64)> {
         let trigger = self
             .persisted_restart_label
             .as_deref()
@@ -227,7 +227,7 @@ impl DaemonUpgradeHandoff {
     /// Preserve daemon restart intent while schema-2 recovery re-executes the
     /// identity-validated current-format executable restored at the install
     /// path. The restored process consumes this request while fixing forward.
-    pub(crate) fn release_for_current_format_reexec(mut self) -> Result<()> {
+    pub fn release_for_current_format_reexec(mut self) -> Result<()> {
         let _transition = DaemonLifecycleTransitionLock::acquire(&self.data_root)?;
         if read_daemon_restart_request(&self.data_root).is_none() {
             if let Some(label) = self.persisted_restart_label.as_deref() {
@@ -244,7 +244,7 @@ impl DaemonUpgradeHandoff {
 
     /// Release the upgrade fence and restart the current auto-daemon after a
     /// verified forward publication succeeds.
-    pub(crate) fn resume_with(mut self, executable: &Path) -> Result<()> {
+    pub fn resume_with(mut self, executable: &Path) -> Result<()> {
         let restart_authority = self.authenticated_restart_authority(executable)?;
         let restart_trigger = self
             .persisted_restart_label
@@ -331,7 +331,7 @@ impl DaemonUpgradeHandoff {
     /// Keep the fence owned by a platform replacement helper after apply
     /// returns `Scheduled`. Autostart remains blocked while that helper is live
     /// and becomes eligible only after it exits.
-    pub(crate) fn transfer_to_replacement_helper(mut self, helper_pid: u32) -> Result<()> {
+    pub fn transfer_to_replacement_helper(mut self, helper_pid: u32) -> Result<()> {
         let already_transferred =
             read_daemon_upgrade_handoff(&self.data_root).is_some_and(|value| {
                 value.get("handoff_id").and_then(Value::as_str) == Some(self.fence.handoff_id())
@@ -375,7 +375,7 @@ impl Drop for DaemonUpgradeHandoff {
 ///
 /// The actual upgrade owner must already hold the upgrade transaction lock.
 /// This handoff deliberately does not schedule or serialize upgrades.
-pub(crate) fn begin_daemon_upgrade_handoff(
+pub fn begin_daemon_upgrade_handoff(
     data_root: &Path,
     upgrade_attempt_id: &str,
 ) -> Result<DaemonUpgradeHandoff> {
@@ -389,7 +389,7 @@ pub(crate) fn begin_daemon_upgrade_handoff(
     begin_daemon_upgrade_handoff_with(input)
 }
 
-pub(crate) fn begin_legacy_daemon_upgrade_handoff(
+pub fn begin_legacy_daemon_upgrade_handoff(
     data_root: &Path,
     upgrade_attempt_id: &str,
     expected_executable: &Path,
@@ -500,7 +500,7 @@ fn persist_handoff_before_cooperative_stop(
 /// Hosted uninstallers call this command before deleting the installed
 /// executable. Each phase is idempotent so an interrupted uninstaller can
 /// invoke it again safely.
-pub(crate) fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
+pub fn prepare_daemon_uninstall(data_root: &Path) -> Result<Value> {
     let expected_executable =
         env::current_exe().context("resolve installed ctx executable before uninstall")?;
     let canonical_root =
@@ -680,7 +680,7 @@ fn remove_daemon_lifecycle_coordination(data_root: &Path) -> Result<()> {
 /// quiescing. Unlike the manual path, this must not wait for the daemon lock:
 /// the caller is that daemon and will release the lock only after this fence is
 /// durable.
-pub(crate) fn begin_current_daemon_upgrade_handoff(
+pub fn begin_current_daemon_upgrade_handoff(
     data_root: &Path,
     upgrade_attempt_id: &str,
     restart_trigger: DaemonTriggerCommandArg,
@@ -795,7 +795,7 @@ fn pause_after_installation_quiescence_for_test() -> Result<()> {
 /// receipt. This closes the parent-exit window in which a live replacement
 /// helper could otherwise lose the daemon-start fence.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn mark_replacement_helper_handoff(
+pub fn mark_replacement_helper_handoff(
     data_root: &Path,
     handoff_id: &str,
     helper_pid: u32,
@@ -820,7 +820,7 @@ pub(crate) fn mark_replacement_helper_handoff(
 /// running, or the replacement process owns the existing daemon lifecycle
 /// lock; a successful `spawn` alone is never treated as readiness.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn complete_replacement_daemon_handoff(
+pub fn complete_replacement_daemon_handoff(
     data_root: &Path,
     executable: &Path,
     handoff_id: &str,
@@ -932,11 +932,11 @@ pub(crate) fn complete_replacement_daemon_handoff(
 /// Mark the helper-owned handoff complete only after its terminal journal is
 /// durable and its installation lock has been released.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn finish_replacement_daemon_handoff(data_root: &Path, handoff_id: &str) -> Result<()> {
+pub fn finish_replacement_daemon_handoff(data_root: &Path, handoff_id: &str) -> Result<()> {
     ctx_daemon_runtime::finish_replacement_daemon_handoff(data_root, handoff_id)
 }
 
-pub(crate) fn replacement_helper_owns_daemon_handoff(
+pub fn replacement_helper_owns_daemon_handoff(
     data_root: &Path,
     handoff_id: &str,
     helper_pid: u32,
@@ -975,7 +975,7 @@ fn write_daemon_upgrade_handoff_at(
     ctx_daemon_runtime::write_handoff_marker_at(handoff_path, handoff_id, phase, helper_pid)
 }
 
-pub(in crate::semantic) fn write_daemon_restart_request(
+pub(crate) fn write_daemon_restart_request(
     data_root: &Path,
     trigger: DaemonTriggerCommandArg,
     request_id: &str,
@@ -987,7 +987,7 @@ pub(in crate::semantic) fn write_daemon_restart_request(
     )
 }
 
-pub(in crate::semantic) fn defer_restart_for_upgrade_handoff(
+pub(crate) fn defer_restart_for_upgrade_handoff(
     data_root: &Path,
     trigger: DaemonTriggerCommandArg,
     request_id: &str,
@@ -1012,7 +1012,7 @@ fn write_daemon_restart_request_at(
     )
 }
 
-pub(in crate::semantic) fn read_daemon_restart_request(
+pub(crate) fn read_daemon_restart_request(
     data_root: &Path,
 ) -> Option<(PathBuf, DaemonTriggerCommandArg)> {
     ctx_daemon_runtime::read_restart_requests_at(&daemon_upgrade_restart_request_root(data_root))
@@ -1036,7 +1036,7 @@ pub(super) fn remove_daemon_restart_requests(data_root: &Path) {
     ctx_daemon_runtime::remove_restart_requests_at(&daemon_upgrade_restart_request_root(data_root));
 }
 
-pub(in crate::semantic) fn acknowledge_daemon_restart_requests(data_root: &Path) {
+pub(crate) fn acknowledge_daemon_restart_requests(data_root: &Path) {
     remove_daemon_restart_requests(data_root);
 }
 

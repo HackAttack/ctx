@@ -35,6 +35,7 @@ source_paths=(
   crates/ctx-agent-integrations/src
   crates/ctx-cli/src
   crates/ctx-client-observability/src
+  crates/ctx-daemon-cli/src
   crates/ctx-daemon-application/src
   crates/ctx-daemon-runtime/src
   crates/ctx-upgrade-engine/src

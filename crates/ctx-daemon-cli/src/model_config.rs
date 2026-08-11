@@ -75,7 +75,7 @@ fn env_usize(name: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
-pub(crate) fn semantic_worker_cache_dir(data_root: &Path) -> PathBuf {
+pub fn semantic_worker_cache_dir(data_root: &Path) -> PathBuf {
     semantic_worker_cache_dir_from_environment(data_root, &SemanticHostEnvironment::current())
 }
 
@@ -134,7 +134,7 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-pub(crate) fn semantic_runtime_cache_dir(data_root: &Path) -> PathBuf {
+pub fn semantic_runtime_cache_dir(data_root: &Path) -> PathBuf {
     semantic_runtime_cache_dir_for_model_cache(&semantic_worker_cache_dir(data_root))
 }
 

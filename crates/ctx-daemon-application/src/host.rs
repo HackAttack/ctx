@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn service_failure_is_preserved_without_a_retry() {
+    fn service_failure_after_admission_is_preserved_without_retry() {
         let service_calls = Cell::new(0);
 
         let error = run_daemon_host_with(

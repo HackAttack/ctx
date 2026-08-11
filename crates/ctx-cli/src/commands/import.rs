@@ -19,8 +19,6 @@ mod report;
 use application_adapter::{run_application_import, ApplicationImportContext};
 pub(crate) use ctx_history_ingest_application::SourceStats;
 pub(crate) use entry::{import_report_analytics_outcome, import_report_failure_type, run_import};
-#[cfg(test)]
-pub(crate) use explicit_source_catalog::load_explicit_source_catalog_authority;
 pub(crate) use explicit_source_catalog::ExplicitSourceCatalogAuthority;
 pub(crate) use provider_refresh::{ProviderRefreshCollector, ProviderRefreshRuntimeFacts};
 

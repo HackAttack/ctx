@@ -14,23 +14,25 @@ pub(super) use ctx_daemon_application::{
     DaemonSupervisorStart, DaemonSupervisorUpgradeFence, DaemonSupervisorUpgradeResume,
 };
 
-pub(super) struct CliDaemonApplicationHost<'a> {
-    run_config: Option<&'a crate::config::AppConfig>,
+pub(super) struct CliDaemonApplicationHost<'config, 'value> {
+    run_config: Option<&'config crate::config::AppConfig<'value>>,
 }
 
-impl CliDaemonApplicationHost<'_> {
+impl CliDaemonApplicationHost<'_, '_> {
     const fn new() -> Self {
         Self { run_config: None }
     }
 
-    const fn for_daemon_run(config: &crate::config::AppConfig) -> CliDaemonApplicationHost<'_> {
+    const fn for_daemon_run<'config, 'value>(
+        config: &'config crate::config::AppConfig<'value>,
+    ) -> CliDaemonApplicationHost<'config, 'value> {
         CliDaemonApplicationHost {
             run_config: Some(config),
         }
     }
 }
 
-impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<'_> {
+impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<'_, '_> {
     fn hosted_uninstall_active(&self) -> Result<bool> {
         ctx_upgrade_engine::installation_hosted_uninstall_is_active()
     }
@@ -95,53 +97,10 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         data_root: &Path,
         request: ctx_daemon_application::DaemonHostRunRequest,
     ) -> Result<()> {
-        use ctx_daemon_service::{
-            DaemonRunArgs, DaemonStartMode, DaemonSupervisor, DaemonTrigger, DaemonUpgradePorts,
-        };
-
         let config = self
             .run_config
             .ok_or_else(|| anyhow::anyhow!("daemon run host is missing its borrowed config"))?;
-        let service_args = DaemonRunArgs {
-            idle_exit_seconds: request.idle_exit_seconds,
-            loop_interval_seconds: request.loop_interval_seconds,
-            max_chunks: request.max_chunks,
-            max_seconds: None,
-            force: request.force,
-            start_mode: request.start_mode.map(|mode| match mode {
-                ctx_daemon_application::DaemonHostStartMode::Manual => DaemonStartMode::Manual,
-                ctx_daemon_application::DaemonHostStartMode::Auto => DaemonStartMode::Auto,
-            }),
-            trigger_command: request.trigger.map(|trigger| match trigger {
-                ctx_daemon_application::DaemonTrigger::Setup => DaemonTrigger::Setup,
-                ctx_daemon_application::DaemonTrigger::Import => DaemonTrigger::Import,
-                ctx_daemon_application::DaemonTrigger::Search => DaemonTrigger::Search,
-            }),
-            supervisor: if matches!(
-                request.start_mode,
-                Some(ctx_daemon_application::DaemonHostStartMode::Auto)
-            ) && super::health_search::semantic_env_flag(
-                super::runtime_limits::DAEMON_BACKGROUND_CHILD_ENV,
-            ) {
-                DaemonSupervisor::CliAutostart
-            } else {
-                DaemonSupervisor::User
-            },
-        };
-        let engine = crate::upgrade::ports::engine();
-        let upgrade = DaemonUpgradePorts {
-            engine: &engine,
-            daemon: &crate::upgrade::ports::DAEMON_UPGRADE,
-            automatic_policy: &crate::upgrade::ports::AUTOMATIC_POLICY,
-            observer: &crate::upgrade::ports::UPGRADE_OBSERVER,
-        };
-        ctx_daemon_service::run_daemon(
-            service_args,
-            data_root,
-            super::daemon_service_ports::config_snapshot(config),
-            &super::daemon_service_ports::PORTS,
-            &upgrade,
-        )
+        crate::composition::host().run_daemon_service(data_root, request, config)
     }
 
     fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()> {
@@ -257,7 +216,7 @@ pub(super) fn with_daemon_application<T>(
 }
 
 pub(super) fn with_daemon_run_application<T>(
-    config: &crate::config::AppConfig,
+    config: &crate::config::AppConfig<'_>,
     operation: impl FnOnce(&ctx_daemon_application::DaemonApplication<'_>) -> T,
 ) -> T {
     let host = CliDaemonApplicationHost::for_daemon_run(config);

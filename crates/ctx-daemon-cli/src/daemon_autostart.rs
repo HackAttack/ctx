@@ -39,7 +39,7 @@ mod recovery;
 
 #[cfg(test)]
 use autostart::handoff_mismatched_daemon_owner;
-pub(crate) use autostart::{
+pub use autostart::{
     autostart_daemon_and_wait, autostart_daemon_for_setup_and_wait,
     daemon_autostart_suppression_reason, maybe_autostart_daemon,
 };
@@ -52,14 +52,14 @@ use autostart::{
 use autostart::{daemon_autostart_allowed, daemon_supervisor_launch_policy};
 #[cfg(test)]
 use handoff::daemon_upgrade_handoff_is_active;
-pub(crate) use handoff::prepare_daemon_uninstall;
+pub use handoff::prepare_daemon_uninstall;
 use handoff::remove_daemon_restart_requests;
 pub(super) use handoff::{
     acknowledge_daemon_restart_requests, current_process_owns_daemon_upgrade_handoff,
     daemon_upgrade_handoff_blocks_current_process, defer_restart_for_upgrade_handoff,
     read_daemon_restart_request, terminate_current_executable_daemon, write_daemon_restart_request,
 };
-pub(crate) use handoff::{
+pub use handoff::{
     begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,
     begin_legacy_daemon_upgrade_handoff, complete_replacement_daemon_handoff,
     finish_replacement_daemon_handoff, mark_replacement_helper_handoff,
@@ -103,15 +103,15 @@ const DAEMON_HEALTH_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
 const DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DaemonHandoff {
-    pub(crate) pid: u32,
-    pub(crate) heartbeat_at_ms: i64,
+pub struct DaemonHandoff {
+    pub pid: u32,
+    pub heartbeat_at_ms: i64,
 }
 
-pub(crate) struct DaemonSetupHandoff {
-    pub(crate) handoff: DaemonHandoff,
-    pub(crate) bounded_unsupervised: bool,
-    pub(crate) requires_initial_refresh_wait: bool,
+pub struct DaemonSetupHandoff {
+    pub handoff: DaemonHandoff,
+    pub bounded_unsupervised: bool,
+    pub requires_initial_refresh_wait: bool,
 }
 
 #[cfg(test)]

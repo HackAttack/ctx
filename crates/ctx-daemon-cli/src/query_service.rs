@@ -27,7 +27,7 @@ fn daemon_query_service_ping(data_root: &Path) -> Result<bool> {
         == Some(true))
 }
 
-pub(crate) fn wait_for_daemon_query_service(data_root: &Path, timeout: Duration) -> bool {
+pub fn wait_for_daemon_query_service(data_root: &Path, timeout: Duration) -> bool {
     if !ctx_semantic_model::semantic_query_service_supported() {
         return false;
     }

@@ -61,9 +61,10 @@ pub(crate) use query::SourceSearchRequest;
 #[cfg(test)]
 pub(super) use query::{index_search_filters, resolve_source_search_backend};
 use query::{source_search_policy, unsupported_semantic_scope};
+#[cfg(test)]
+use semantic_port::HistorySemanticBatch;
 pub(crate) use semantic_port::{
-    HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
-    SemanticAvailability, SemanticReason,
+    HistorySemanticError, HistorySemanticPort, SemanticAvailability, SemanticReason,
 };
 
 const MAX_USAGE_CONTEXT_EVENTS_PER_SESSION: usize = 256;

@@ -1,8 +1,7 @@
 use super::*;
 use std::{
     cell::{Cell, RefCell},
-    fs, io,
-    sync::{Arc, Mutex},
+    fs,
 };
 
 use ctx_history_core::{
@@ -11,33 +10,6 @@ use ctx_history_core::{
     SourceObservation, TypedKey,
 };
 use ctx_history_index::{GenerationWriter, WriterOptions};
-
-use crate::{
-    analytics::StatusTelemetry,
-    output::JsonOutputFormat,
-    ui::{ColorMode, RenderContext, StreamKind, TestContext, Ui},
-    StatusArgs,
-};
-
-#[derive(Clone, Default)]
-struct SharedWriter(Arc<Mutex<Vec<u8>>>);
-
-impl SharedWriter {
-    fn text(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
-    }
-}
-
-impl io::Write for SharedWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();
@@ -92,7 +64,7 @@ fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String)
     )
     .unwrap();
     let generation_id = publication.receipt().generation_id.clone();
-    let catalog = load_explicit_source_catalog_authority(&data_root).unwrap();
+    let catalog = ctx_history_refresh::explicit_source_catalog_authority_for_test(0);
     super::super::paths_status::write_daemon_job_status(
         &daemon_core_refresh_job_path(&data_root),
         &json!({
@@ -629,103 +601,6 @@ fn catalog_status_reports_automatic_roots_and_request_scoped_explicit_overlays()
 
     let pending = catalog_report(None, None);
     assert_eq!(pending["status"], "pending");
-}
-
-#[test]
-fn core_publication_is_ready_in_json_and_human_status() {
-    let (_temp, data_root, generation_id) = core_publication_fixture();
-    let config = AppConfig::default();
-    let json_status = crate::commands::status::status_read_model(&data_root, &config)
-        .unwrap()
-        .report;
-
-    assert_eq!(json_status["lexical"]["status"], "ready");
-    assert_eq!(json_status["lexical"]["generation_id"], generation_id);
-    assert!(json_status.get("catalog").is_none());
-    assert_eq!(json_status["refresh"]["status"], "ready");
-    assert_eq!(
-        json_status["refresh"]["published_generation"],
-        generation_id
-    );
-    assert!(json_status.get("relational").is_none());
-
-    let stdout = SharedWriter::default();
-    let stdout_copy = stdout.clone();
-    let stdout_context =
-        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, 80).color(ColorMode::Never));
-    let stderr_context =
-        RenderContext::for_test(TestContext::tty(StreamKind::Stderr, 80).color(ColorMode::Never));
-    let mut ui = Ui::with_writers(
-        stdout,
-        stdout_context,
-        SharedWriter::default(),
-        stderr_context,
-    );
-    crate::commands::status::run_status(
-        StatusArgs {
-            format: JsonOutputFormat::Text,
-            usage: None,
-        },
-        data_root,
-        false,
-        &mut StatusTelemetry::default(),
-        &mut ui,
-    )
-    .unwrap();
-    let rendered = stdout_copy
-        .text()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(rendered.contains("Search ready"), "{rendered}");
-    assert!(!rendered.contains("Session view"), "{rendered}");
-    assert!(!rendered.contains("Catalog pending"), "{rendered}");
-    assert!(!rendered.contains("source refresh pending"), "{rendered}");
-}
-
-#[test]
-fn public_status_model_pins_core_once_and_queries_pro_once() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("missing");
-    let (status, counts) = count_public_status_snapshot_reads(|| {
-        crate::commands::status::status_read_model(&data_root, &AppConfig::default())
-    });
-
-    status.unwrap();
-    assert_eq!(
-        counts,
-        StatusSnapshotReadCounts {
-            core_pins: 1,
-            pro_queries: 1,
-        }
-    );
-}
-
-#[test]
-fn corrupt_core_and_unavailable_pro_remain_typed_in_one_snapshot() {
-    let (_temp, data_root, _generation_id) = core_publication_fixture();
-    fs::write(
-        data_root.join("search/lexical/active-generation.json"),
-        b"{corrupt",
-    )
-    .unwrap();
-
-    let (status, counts) = count_public_status_snapshot_reads(|| {
-        crate::commands::status::status_read_model(&data_root, &AppConfig::default())
-    });
-    let status = status.unwrap().report;
-
-    assert_eq!(counts.core_pins, 1);
-    assert_eq!(counts.pro_queries, 1);
-    assert_eq!(status["lexical"]["status"], "unavailable");
-    assert_eq!(
-        status["lexical"]["reason"],
-        "generation_verification_failed"
-    );
-    assert_eq!(status["pro"]["installed"], false);
-    assert_eq!(status["pro"]["state"], "not_setup");
-    assert_eq!(status["pro_projection"]["status"], "unavailable");
-    assert_eq!(status["pro_projection"]["reason"], "pro_not_installed");
 }
 
 #[test]

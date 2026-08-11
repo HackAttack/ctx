@@ -1,9 +1,9 @@
 use super::*;
 
-pub(crate) fn run_daemon_command(
+pub fn run_daemon_command(
     args: DaemonArgs,
     data_root: PathBuf,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
     ui: &mut Ui,
 ) -> Result<()> {
     super::super::daemon_supervisor::with_daemon_run_application(config, |application| {
@@ -163,9 +163,7 @@ fn run_daemon_disable(
     Ok(())
 }
 
-pub(in crate::semantic) fn remove_released_daemon_service_artifacts(
-    data_root: &Path,
-) -> Result<()> {
+pub(crate) fn remove_released_daemon_service_artifacts(data_root: &Path) -> Result<()> {
     let endpoint_paths = [
         ctx_daemon_service::DaemonIpcService::SemanticQuery,
         ctx_daemon_service::DaemonIpcService::SourceRefresh,

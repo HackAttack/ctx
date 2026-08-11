@@ -7,7 +7,7 @@ use super::{
     render_daemon_disable_receipt, render_daemon_enable_receipt,
     render_daemon_prepare_uninstall_receipt, render_daemon_status_human, DaemonStatusView,
 };
-use crate::ui::{ColorMode, Document, RenderContext, StreamKind, TestContext};
+use ctx_terminal::{ColorMode, Document, RenderContext, StreamKind, TestContext};
 
 fn context(width: usize) -> RenderContext {
     RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(ColorMode::Never))

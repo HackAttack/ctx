@@ -127,23 +127,6 @@ pub(crate) fn status_read_model(
     status_read_model_authorized(data_root, config, &storage, &control)
 }
 
-#[cfg(test)]
-pub(crate) fn run_status(
-    args: StatusArgs,
-    data_root: std::path::PathBuf,
-    quiet: bool,
-    telemetry: &mut StatusTelemetry,
-    ui: &mut Ui,
-) -> Result<()> {
-    let config = load_status_config(&data_root).unwrap_or_default();
-    let storage = crate::observability_composition::local_usage_storage_authority(&data_root);
-    let control =
-        crate::observability_composition::usage_control_snapshot(config.local_usage.enabled);
-    run_status_authorized(
-        args, &data_root, &config, quiet, telemetry, &storage, &control, ui,
-    )
-}
-
 fn render_status_human(
     context: &RenderContext,
     report: &Value,
@@ -437,6 +420,7 @@ fn compact_usage_health_json(report: &local_usage::UsageReport) -> Value {
 mod tests {
     use std::{fs, io::Write as _};
 
+    use ctx_history_index::{GenerationWriter, WriterOptions};
     use unicode_width::UnicodeWidthStr as _;
 
     use super::*;
@@ -541,6 +525,88 @@ mod tests {
             assert!(!rendered.contains("\nNext\n"));
             assert_fits(&document, &context);
         }
+    }
+
+    #[test]
+    fn published_core_generation_flows_through_final_status_composition() {
+        crate::semantic::initialize().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let data_root = root.path().join("data");
+        let route_identity = "ab".repeat(32);
+        let publication = GenerationWriter::open(
+            data_root.join("search/lexical"),
+            WriterOptions::default(),
+        )
+        .unwrap()
+        .into_writer()
+        .unwrap()
+        .commit_with_publication_metadata(
+            |_| true,
+            |context| {
+                let generation_id = context.generation_id().to_owned();
+                let route = ctx_history_index::SourceRouteIdentity::from_sha256(
+                    route_identity.clone(),
+                )
+                .map_err(|error| {
+                    ctx_history_index::IndexError::PublicationMetadata(error.to_string())
+                })?;
+                let receipt = ctx_history_refresh::SourceBackedRefreshReceipt {
+                    previous_generation: None,
+                    published_generation: generation_id.clone(),
+                    generation_changed: true,
+                    published_explicit_source_catalog: None,
+                    current: ctx_history_refresh::SourceBackedRefreshCurrent::default(),
+                    route_results: vec![
+                        ctx_history_refresh::SourceBackedRefreshRouteResult::succeeded(
+                            route_identity.clone(),
+                            true,
+                        ),
+                    ],
+                    zero_source_authority: vec![
+                        ctx_history_refresh::SourceBackedZeroSourceAuthority {
+                            generation_id,
+                            route_identity: route,
+                            kind: ctx_history_refresh::SourceBackedZeroSourceAuthorityKind::CompleteEmptyInventory,
+                        },
+                    ],
+                    catalog_route_bindings: Vec::new(),
+                };
+                serde_json::to_vec(&json!({
+                    "version": 2,
+                    "request_id": "final-status-composition",
+                    "operation": "refresh",
+                    "refresh_scope": {"kind": "all"},
+                    "receipt": receipt.to_json(),
+                    "route_observations": [null],
+                }))
+                .map_err(|error| {
+                    ctx_history_index::IndexError::PublicationMetadata(error.to_string())
+                })
+            },
+        )
+        .unwrap();
+        let generation_id = publication.receipt().generation_id.clone();
+
+        let config = config::AppConfig::default();
+        let status = status_read_model(&data_root, &config).unwrap();
+        assert_eq!(status.report["lexical"]["status"], "ready");
+        assert_eq!(status.report["lexical"]["generation_id"], generation_id);
+        assert!(status.report.get("catalog").is_none());
+
+        let rendered = render_status_human(
+            &context(80, ColorMode::Never),
+            &status.report,
+            &data_root,
+            &data_root.join(CONFIG_FILE),
+            &status.report["upgrade"],
+            &status.report["pro"],
+            &status.local_usage,
+        )
+        .render_plain();
+        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains("Search ready"), "{rendered}");
+        assert!(!rendered.contains("Session view"), "{rendered}");
+        assert!(!rendered.contains("Catalog"), "{rendered}");
     }
 
     #[test]

@@ -4,11 +4,11 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use ctx_terminal::{print_json, Ui};
 use serde_json::json;
 
 use crate::{
     config::{AppConfig, CONFIG_FILE},
-    output::print_json,
     DaemonArgs, DaemonCommand, DaemonDisableArgs, DaemonRunArgs, DaemonStartModeArg, FormatArgs,
 };
 
@@ -19,12 +19,11 @@ use super::{
     },
     paths_status::daemon_report_with_disabled_status,
 };
-use crate::ui::Ui;
 
-pub(in crate::semantic) mod control;
+pub(crate) mod control;
 #[cfg(test)]
 mod seam_tests;
-pub(crate) use control::run_daemon_command;
+pub use control::run_daemon_command;
 
 fn run_daemon(
     application: &ctx_daemon_application::DaemonApplication<'_>,
@@ -63,7 +62,7 @@ fn run_daemon(
     }
     if let Some(message) = failure {
         if !args.format.is_json() {
-            return Err(crate::dispatch::rendered_cli_error());
+            return Err(crate::RenderedCliError.into());
         }
         return Err(anyhow!(message));
     }

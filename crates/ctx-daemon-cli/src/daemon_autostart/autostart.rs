@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn application_config(config: &AppConfig) -> ctx_daemon_application::DaemonConfigSnapshot {
+fn application_config(config: &AppConfig<'_>) -> ctx_daemon_application::DaemonConfigSnapshot {
     ctx_daemon_application::DaemonConfigSnapshot {
         enabled: config.daemon.enabled,
         mode: super::super::daemon_supervisor::daemon_mode(config.daemon.mode),
@@ -15,7 +15,7 @@ fn application_trigger(trigger: DaemonTriggerCommandArg) -> ctx_daemon_applicati
 }
 
 #[cfg(test)]
-pub(super) fn daemon_autostart_allowed(data_root: &Path, config: &AppConfig) -> bool {
+pub(super) fn daemon_autostart_allowed(data_root: &Path, config: &AppConfig<'_>) -> bool {
     ctx_daemon_application::daemon_autostart_allowed(data_root, &application_config(config))
 }
 
@@ -29,13 +29,13 @@ pub(super) const fn daemon_supervisor_launch_policy(
     }
 }
 
-pub(crate) fn daemon_autostart_suppression_reason() -> Option<&'static str> {
+pub fn daemon_autostart_suppression_reason() -> Option<&'static str> {
     ctx_daemon_application::daemon_autostart_suppression_reason()
 }
 
-pub(crate) fn maybe_autostart_daemon(
+pub fn maybe_autostart_daemon(
     data_root: &Path,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
     trigger: DaemonTriggerCommandArg,
 ) {
     super::super::daemon_supervisor::with_daemon_application(|application| {
@@ -60,17 +60,17 @@ pub(crate) fn maybe_autostart_daemon(
     });
 }
 
-pub(crate) fn autostart_daemon_and_wait(
+pub fn autostart_daemon_and_wait(
     data_root: &Path,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
     trigger: DaemonTriggerCommandArg,
 ) -> Result<DaemonHandoff> {
     Ok(autostart_daemon_for_setup_and_wait(data_root, config, trigger)?.handoff)
 }
 
-pub(crate) fn autostart_daemon_for_setup_and_wait(
+pub fn autostart_daemon_for_setup_and_wait(
     data_root: &Path,
-    config: &AppConfig,
+    config: &AppConfig<'_>,
     trigger: DaemonTriggerCommandArg,
 ) -> Result<DaemonSetupHandoff> {
     super::super::daemon_supervisor::with_daemon_application(|application| {

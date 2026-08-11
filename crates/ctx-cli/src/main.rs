@@ -73,10 +73,9 @@ mod parser_prop_tests;
 #[cfg(test)]
 pub(crate) use cli::MAX_SEARCH_LIMIT;
 pub(crate) use cli::{
-    Cli, DaemonArgs, DaemonCommand, DaemonDisableArgs, DaemonRunArgs, DaemonStartModeArg,
-    DaemonTriggerCommandArg, DoctorArgs, FormatArgs, ImportArgs, ListArgs, ListTarget, SearchArgs,
-    SetupArgs, ShowArgs, ShowTarget, SourcesArgs, StatsArgs, StatusArgs, UsageStatusMode,
-    MAX_EVENT_WINDOW,
+    Cli, DaemonArgs, DaemonCommand, DaemonStartModeArg, DaemonTriggerCommandArg, DoctorArgs,
+    ImportArgs, ListArgs, ListTarget, SearchArgs, SetupArgs, ShowArgs, ShowTarget, SourcesArgs,
+    StatsArgs, StatusArgs, UsageStatusMode, MAX_EVENT_WINDOW,
 };
 pub(crate) use commands::locate::LocateTarget;
 pub(crate) use commands::search::CliRefreshArg as RefreshArg;

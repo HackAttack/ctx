@@ -19,7 +19,7 @@ pub(super) fn daemon_semantic_job_path(data_root: &Path) -> PathBuf {
     ctx_daemon_service::daemon_semantic_job_path(data_root)
 }
 
-fn application_config(config: &AppConfig) -> ctx_daemon_application::DaemonConfigSnapshot {
+fn application_config(config: &AppConfig<'_>) -> ctx_daemon_application::DaemonConfigSnapshot {
     ctx_daemon_application::DaemonConfigSnapshot {
         enabled: config.daemon.enabled,
         mode: super::daemon_supervisor::daemon_mode(config.daemon.mode),
@@ -44,7 +44,7 @@ pub(super) fn daemon_report_with_disabled_status(
 pub(super) fn daemon_report_with_config(
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
-    current_config: &AppConfig,
+    current_config: &AppConfig<'_>,
 ) -> Value {
     super::daemon_supervisor::with_daemon_application(|application| {
         daemon_report_with_config_and_application(
@@ -56,7 +56,7 @@ pub(super) fn daemon_report_with_config(
     })
 }
 
-pub(in crate::semantic) fn daemon_report_with_application(
+pub(crate) fn daemon_report_with_application(
     application: &ctx_daemon_application::DaemonApplication<'_>,
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
@@ -74,7 +74,7 @@ fn daemon_report_with_config_and_application(
     application: &ctx_daemon_application::DaemonApplication<'_>,
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
-    current_config: Option<&AppConfig>,
+    current_config: Option<&AppConfig<'_>>,
 ) -> Value {
     let current_application_config = current_config.map(application_config);
     let preparation = application.prepare_daemon_status(
@@ -100,7 +100,7 @@ fn daemon_semantic_job_report(
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
     context: ctx_daemon_application::DaemonSemanticStatusContext<'_>,
-    current_config: Option<&AppConfig>,
+    current_config: Option<&AppConfig<'_>>,
 ) -> Value {
     let reload = context.config_reload;
     let daemon_enabled = reload
