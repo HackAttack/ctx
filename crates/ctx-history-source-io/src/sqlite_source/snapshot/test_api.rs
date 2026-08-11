@@ -12,8 +12,7 @@ fn open_with_hooks(
     match open_root_handle_sqlite_source_snapshot_with_progress_and_hooks(
         authority,
         database_name,
-        policy,
-        limits,
+        SqliteSourceSnapshotOptions::new(policy, limits),
         after_parent_retention,
         after_database_copy,
         before_source_revalidation,
