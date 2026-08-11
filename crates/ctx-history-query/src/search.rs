@@ -13,11 +13,10 @@ use uuid::Uuid;
 use crate::{
     normalize_source_identity_filters, parse_since_filter, resolve_session_with_refs,
     CompactRefResolver, HistorySemanticBatch, HistorySemanticError, HistorySemanticPort,
-    HistorySemanticQuery, SourceIdentityFilterArgs, SourceIdentityFilters,
+    HistorySemanticQuery, SemanticAvailability, SemanticReason, SourceIdentityFilterArgs,
+    SourceIdentityFilters,
 };
 
-const LEGACY_ACTIVE_SESSION_PROVIDER_ENV: &str = "CODEX_THREAD_ID";
-const LEGACY_ACTIVE_SESSION_PROVIDER: CaptureProvider = CaptureProvider::Codex;
 const MAX_SESSION_DIVERSITY_CANDIDATES: usize = 64 * 1024;
 const MIN_CANDIDATE_BATCH: usize = 256;
 const CANDIDATE_OVERSAMPLE: usize = 8;
@@ -61,45 +60,7 @@ impl FromStr for SearchBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchRefreshMode {
-    Background,
-    Off,
-    Wait,
-}
-
-impl SearchRefreshMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Background => "background",
-            Self::Off => "off",
-            Self::Wait => "wait",
-        }
-    }
-}
-
-impl fmt::Display for SearchRefreshMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for SearchRefreshMode {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "background" => Ok(Self::Background),
-            "off" => Ok(Self::Off),
-            "wait" => Ok(Self::Wait),
-            other => Err(format!(
-                "invalid search refresh mode {other:?}; expected background, off, or wait"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchRequest {
     pub query: String,
     pub terms: Vec<String>,
@@ -121,9 +82,34 @@ pub struct SearchRequest {
     pub include_current_session: bool,
     pub backend: Option<SearchBackend>,
     pub semantic_weight: f32,
-    pub semantic_enabled: bool,
-    pub semantic_daemon_enabled: bool,
-    pub refresh: SearchRefreshMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveSessionExclusion {
+    pub provider: String,
+    pub provider_session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchPolicy {
+    pub default_backend: SearchBackend,
+    pub semantic: SemanticAvailability,
+}
+
+impl SearchPolicy {
+    pub const fn lexical_only(reason: SemanticReason) -> Self {
+        Self {
+            default_backend: SearchBackend::Lexical,
+            semantic: SemanticAvailability::Unavailable(reason),
+        }
+    }
+
+    pub const fn semantic_available() -> Self {
+        Self {
+            default_backend: SearchBackend::Hybrid,
+            semantic: SemanticAvailability::Available,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,33 +154,18 @@ impl NormalizedSearchQuery {
         &self.display
     }
 
-    pub fn shell_arguments(&self) -> String {
-        let mut arguments = Vec::with_capacity(self.alternatives.len().saturating_mul(2));
-        if let Some(positional) = self.positional.as_deref() {
-            arguments.push(shell_quote_arg(positional));
-        }
-        for term in &self.terms {
-            arguments.push(format!("--term={}", shell_quote_arg(term)));
-        }
-        arguments.join(" ")
+    pub fn positional(&self) -> Option<&str> {
+        self.positional.as_deref()
+    }
+
+    pub fn terms(&self) -> &[String] {
+        &self.terms
     }
 }
 
 fn normalized_query_alternative(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
-}
-
-fn shell_quote_arg(value: &str) -> String {
-    if !value.is_empty()
-        && value.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '-' | '_' | '.' | '/' | ':' | '@')
-        })
-    {
-        return value.to_owned();
-    }
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 pub fn validate_search_request(request: &SearchRequest) -> Result<()> {
@@ -220,7 +191,7 @@ pub fn validate_search_request(request: &SearchRequest) -> Result<()> {
             .is_some_and(|provider| provider != CaptureProvider::Custom)
     {
         return Err(anyhow!(
-            "custom history source filters can only be combined with --provider custom"
+            "custom history source filters require the custom provider"
         ));
     }
     let has_query = !NormalizedSearchQuery::from_request(request).is_empty();
@@ -275,9 +246,9 @@ fn normalized_request_source_identity_filters(
     })
 }
 
-pub fn resolve_search_backend<P: HistorySemanticPort>(
+pub fn resolve_search_backend(
     request: &SearchRequest,
-    semantic_port: &P,
+    policy: SearchPolicy,
 ) -> std::result::Result<SearchBackend, HistorySemanticError> {
     if request.backend.is_none()
         && NormalizedSearchQuery::from_request(request).is_empty()
@@ -291,32 +262,16 @@ pub fn resolve_search_backend<P: HistorySemanticPort>(
         }
     }
     match request.backend {
-        Some(SearchBackend::Semantic) if !request.semantic_enabled => {
-            Err(HistorySemanticError::not_ready(
-                "semantic_disabled",
-                "semantic search is disabled. Set [search] semantic = true in ctx config to enable local semantic search",
-                false,
-            ))
-        }
         Some(SearchBackend::Semantic)
-            if semantic_port.capability() == crate::SemanticCapability::Unavailable =>
+            if matches!(policy.semantic, SemanticAvailability::Unavailable(_)) =>
         {
-            Err(HistorySemanticError::not_ready(
-                "semantic_unsupported",
-                "local semantic search is not supported on this platform yet. Set [search] semantic = false or use --backend lexical",
-                false,
-            ))
-        }
-        Some(SearchBackend::Semantic) if !request.semantic_daemon_enabled => {
-            Err(HistorySemanticError::not_ready(
-                "semantic_daemon_disabled",
-                "local semantic search requires the ctx daemon. Set [daemon] enabled = true, set [search] semantic = false, or use --backend lexical",
-                false,
-            ))
+            let SemanticAvailability::Unavailable(reason) = policy.semantic else {
+                unreachable!("guard requires unavailable semantic policy")
+            };
+            Err(unavailable_semantic_error(reason))
         }
         Some(value) => Ok(value),
-        None if request.semantic_enabled => Ok(SearchBackend::Hybrid),
-        None => Ok(SearchBackend::Lexical),
+        None => Ok(policy.default_backend),
     }
 }
 
@@ -328,10 +283,8 @@ pub fn unsupported_semantic_scope(request: &SearchRequest) -> Option<HistorySema
     };
     if let Some(content_scope) = content_scope {
         return Some(HistorySemanticError::not_ready(
-            "semantic_content_scope_unsupported",
-            format!(
-                "semantic retrieval does not support content scope '{content_scope}'; use --backend lexical or choose --content-scope all|transcript"
-            ),
+            SemanticReason::ContentScopeUnsupported,
+            format!("semantic retrieval does not support content scope '{content_scope}'"),
             false,
         ));
     }
@@ -342,27 +295,43 @@ pub fn unsupported_semantic_scope(request: &SearchRequest) -> Option<HistorySema
         .and_then(|value| value.parse::<EventType>().ok())
         .filter(|event_type| *event_type != EventType::Message)?;
     Some(HistorySemanticError::not_ready(
-        "semantic_event_type_unsupported",
+        SemanticReason::EventTypeUnsupported,
         format!(
-            "semantic retrieval does not support event type '{}'; use --backend lexical or remove --event-type",
+            "semantic retrieval does not support event type '{}'",
             event_type.as_str()
         ),
         false,
     ))
 }
 
+fn unavailable_semantic_error(reason: SemanticReason) -> HistorySemanticError {
+    let detail = match reason {
+        SemanticReason::PolicyDisabled => "semantic retrieval is disabled by policy",
+        SemanticReason::PlatformUnsupported => {
+            "semantic retrieval is unavailable for this execution capability"
+        }
+        SemanticReason::ExecutionUnavailable => {
+            "semantic retrieval execution is unavailable by policy"
+        }
+        _ => "semantic retrieval is unavailable",
+    };
+    HistorySemanticError::not_ready(reason, detail, false)
+}
+
 pub fn search_filters(
     request: &SearchRequest,
     index: &VerifiedIndex,
+    active_session: Option<&ActiveSessionExclusion>,
 ) -> Result<EventSearchFilters> {
     let references = CompactRefResolver::new(index, None);
-    search_filters_with_refs(request, index, &references)
+    search_filters_with_refs(request, index, &references, active_session)
 }
 
 pub fn search_filters_with_refs(
     request: &SearchRequest,
     index: &VerifiedIndex,
     references: &CompactRefResolver<'_>,
+    active_session: Option<&ActiveSessionExclusion>,
 ) -> Result<EventSearchFilters> {
     let source_identity = normalized_request_source_identity_filters(request)?;
     let session_id = request
@@ -389,11 +358,9 @@ pub fn search_filters_with_refs(
         .transpose()?
         .map(|since| since.timestamp_millis());
     let exclude_session_tree = (!request.include_current_session && session_id.is_none())
-        .then(|| std::env::var(LEGACY_ACTIVE_SESSION_PROVIDER_ENV).ok())
+        .then_some(active_session)
         .flatten()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .map(|provider_session_id| excluded_active_session_tree(index, provider_session_id))
+        .map(|active_session| excluded_active_session_tree(index, active_session))
         .transpose()?;
     Ok(EventSearchFilters {
         session_id,
@@ -432,11 +399,11 @@ fn normalized_optional_text(value: Option<&str>) -> Option<String> {
 
 fn excluded_active_session_tree(
     index: &VerifiedIndex,
-    provider_session_id: String,
+    active_session: &ActiveSessionExclusion,
 ) -> Result<ExcludedSessionTree> {
     let sessions = index.sessions_by_provider_session_id(
-        &provider_session_id,
-        Some(LEGACY_ACTIVE_SESSION_PROVIDER.as_str()),
+        &active_session.provider_session_id,
+        Some(&active_session.provider),
     )?;
     let session_id = match sessions.as_slice() {
         [session] => Some(session.root_session_id.as_uuid()),
@@ -446,8 +413,8 @@ fn excluded_active_session_tree(
         _ => None,
     };
     Ok(ExcludedSessionTree {
-        provider: LEGACY_ACTIVE_SESSION_PROVIDER.as_str().to_owned(),
-        provider_session_id,
+        provider: active_session.provider.clone(),
+        provider_session_id: active_session.provider_session_id.clone(),
         session_id,
     })
 }
@@ -486,7 +453,7 @@ pub struct SearchResultWindow {
 
 #[derive(Debug, Clone)]
 pub struct SemanticFallbackDiagnostics {
-    pub code: &'static str,
+    pub reason: Option<SemanticReason>,
     pub detail: String,
 }
 
@@ -548,9 +515,10 @@ pub fn collect_search_hits<P: HistorySemanticPort>(
     request: &SearchRequest,
     index: &VerifiedIndex,
     filters: &EventSearchFilters,
+    semantic: SemanticAvailability,
     semantic_port: &P,
 ) -> SearchExecutionResult<SearchCollection> {
-    let prepared = prepare_semantic_search(request, index, filters)?;
+    let prepared = prepare_semantic_search(request, index, filters, semantic)?;
     let (requested_backend, normalized_query) = match prepared {
         PreparedSemanticSearch::Complete(collection) => return Ok(collection),
         PreparedSemanticSearch::Query {
@@ -585,6 +553,7 @@ pub fn collect_search_hits_using<SemanticSearch>(
     request: &SearchRequest,
     index: &VerifiedIndex,
     filters: &EventSearchFilters,
+    semantic: SemanticAvailability,
     semantic_search: SemanticSearch,
 ) -> SearchExecutionResult<SearchCollection>
 where
@@ -594,7 +563,7 @@ where
         usize,
     ) -> std::result::Result<HistorySemanticBatch, HistorySemanticError>,
 {
-    let prepared = prepare_semantic_search(request, index, filters)?;
+    let prepared = prepare_semantic_search(request, index, filters, semantic)?;
     let (requested_backend, normalized_query) = match prepared {
         PreparedSemanticSearch::Complete(collection) => return Ok(collection),
         PreparedSemanticSearch::Query {
@@ -624,6 +593,7 @@ fn prepare_semantic_search(
     request: &SearchRequest,
     index: &VerifiedIndex,
     filters: &EventSearchFilters,
+    semantic: SemanticAvailability,
 ) -> SearchExecutionResult<PreparedSemanticSearch> {
     let requested_backend = request.backend.unwrap_or(SearchBackend::Lexical);
     let semantic_weight = request.semantic_weight;
@@ -655,27 +625,17 @@ fn prepare_semantic_search(
         )
         .map(PreparedSemanticSearch::Complete);
     }
-    if !request.semantic_enabled || !request.semantic_daemon_enabled {
-        let not_ready = if request.semantic_enabled {
-            HistorySemanticError::not_ready(
-                "semantic_daemon_disabled",
-                "local semantic retrieval is unavailable because the ctx daemon is disabled",
-                false,
-            )
-        } else {
-            HistorySemanticError::not_ready(
-                "semantic_disabled",
-                "local semantic retrieval is disabled",
-                false,
-            )
-        };
+    if let SemanticAvailability::Unavailable(reason) = semantic {
+        let not_ready = unavailable_semantic_error(reason);
         if requested_backend == SearchBackend::Semantic {
             return Err(not_ready.into());
         }
-        let status = if request.semantic_enabled {
-            "unavailable"
-        } else {
-            "disabled"
+        let status = match reason {
+            SemanticReason::PolicyDisabled => "disabled",
+            SemanticReason::ContentScopeUnsupported
+            | SemanticReason::EventTypeUnsupported
+            | SemanticReason::PlatformUnsupported => "unsupported",
+            _ => "unavailable",
         };
         return lexical_fallback(
             request,
@@ -741,7 +701,7 @@ fn lexical_fallback_with_diagnostics(
         "query_count": queries.len(),
         "queries": semantic_query_diagnostics,
         "fallback": {
-            "code": fallback.code,
+            "reason": format!("{:?}", fallback.reason),
             "detail": fallback.detail,
         },
     }));
@@ -852,7 +812,7 @@ where
 
 fn semantic_fallback_diagnostics(error: &HistorySemanticError) -> SemanticFallbackDiagnostics {
     SemanticFallbackDiagnostics {
-        code: error.code(),
+        reason: error.reason(),
         detail: error.detail().to_owned(),
     }
 }
@@ -1064,31 +1024,26 @@ mod tests {
             include_current_session: false,
             backend: Some(SearchBackend::Lexical),
             semantic_weight: 0.35,
-            semantic_enabled: false,
-            semantic_daemon_enabled: false,
-            refresh: SearchRefreshMode::Off,
         }
     }
 
     #[test]
-    fn normalized_query_preserves_or_order_and_shell_contract() {
+    fn normalized_query_preserves_typed_argument_order() {
         let query = NormalizedSearchQuery::from_request(&request());
         assert_eq!(query.texts(), vec!["first query", "second query"]);
         assert_eq!(query.display(), "first query OR second query");
-        assert_eq!(
-            query.shell_arguments(),
-            "'first query' --term='second query'"
-        );
+        assert_eq!(query.positional(), Some("first query"));
+        assert_eq!(query.terms(), &["second query"]);
     }
 
     #[test]
     fn custom_source_filter_rejects_noncustom_provider() {
         let mut request = request();
         request.history_source = Some("plugin/source".to_owned());
-        request.provider = Some(CaptureProvider::Codex);
+        request.provider = Some(CaptureProvider::Claude);
         assert_eq!(
             validate_search_request(&request).unwrap_err().to_string(),
-            "custom history source filters can only be combined with --provider custom"
+            "custom history source filters require the custom provider"
         );
     }
 
@@ -1098,7 +1053,10 @@ mod tests {
         request.backend = Some(SearchBackend::Semantic);
         request.content_scope = SearchContentScope::Outputs;
         let error = unsupported_semantic_scope(&request).unwrap();
-        assert_eq!(error.code(), "semantic_content_scope_unsupported");
+        assert_eq!(
+            error.reason(),
+            Some(SemanticReason::ContentScopeUnsupported)
+        );
         assert!(!error.retryable());
     }
 

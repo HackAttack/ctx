@@ -77,9 +77,8 @@ pub(crate) use cli::{
     MAX_EVENT_WINDOW,
 };
 pub(crate) use commands::locate::LocateTarget;
-pub(crate) use ctx_history_query::{
-    SearchBackend as SearchBackendArg, SearchRefreshMode as RefreshArg,
-};
+pub(crate) use commands::search::CliRefreshArg as RefreshArg;
+pub(crate) use ctx_history_query::SearchBackend as SearchBackendArg;
 pub(crate) use output::compact_json;
 pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};

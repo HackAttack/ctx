@@ -43,9 +43,105 @@ impl ActiveGenerationRaceCommand {
 #[cfg(test)]
 pub(super) use ctx_history_query::{resolve_core_event, resolve_session};
 pub(super) use ctx_history_query::{
-    resolve_core_event_with_refs, resolve_session_with_refs, validate_ctx_id,
-    validate_session_selector, MissingLookupError, MissingLookupKind,
+    validate_ctx_id, validate_session_selector, MissingLookupError, MissingLookupKind,
 };
+
+pub(super) fn externalize_query_error(error: anyhow::Error) -> anyhow::Error {
+    if let Some(limit) = error.downcast_ref::<ctx_history_query::ContentQueryLimitError>() {
+        return anyhow::Error::new(crate::presentation_limit::PresentationOutputLimitError {
+            event_id: limit.event_id,
+            actual_bytes: limit.actual_bytes,
+            maximum_bytes: limit.maximum_bytes,
+        });
+    }
+    let detail = error
+        .downcast_ref::<ctx_history_query::SelectorError>()
+        .map(selector_error_detail)
+        .or_else(|| {
+            error
+                .downcast_ref::<ctx_history_query::CompactRefResolveError>()
+                .and_then(compact_ref_error_detail)
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<ctx_history_query::EventWindowLimitError>()
+                .map(|limit| {
+                    format!(
+                        "Core presentation selected at least {} events; the presentation limit is {} events",
+                        limit.actual_events, limit.maximum_events
+                    )
+                })
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<ctx_history_query::EncodedCoreQueryLimitError>()
+                .map(|limit| {
+                    format!(
+                        "stored Core encoding through ctx event {} requires {} bytes; the presentation retention limit is {} bytes",
+                        limit.event_id, limit.actual_bytes, limit.maximum_bytes
+                    )
+                })
+        });
+    detail.map(anyhow::Error::msg).unwrap_or(error)
+}
+
+fn selector_error_detail(error: &ctx_history_query::SelectorError) -> String {
+    use ctx_history_query::SelectorError;
+
+    match error {
+        SelectorError::PrefixTooShort { kind, minimum } => format!(
+            "{kind} id prefix must be at least {minimum} hex characters, or pass a full ctx UUID"
+        ),
+        SelectorError::InvalidId { kind } => format!(
+            "{kind} id must be a full ctx UUID or an unambiguous hex prefix from verbose search output"
+        ),
+        SelectorError::EmptyProviderSession => "provider session ID must not be empty".to_owned(),
+        SelectorError::ConflictingSessionSelectors => {
+            "pass either a ctx session ID or --provider-session, not both".to_owned()
+        }
+        SelectorError::MissingSessionSelector => {
+            "Core session lookup requires a ctx session ID or --provider-session".to_owned()
+        }
+        SelectorError::ProviderSessionNotFound {
+            provider_session_id,
+        } => format!(
+            "provider session {provider_session_id:?} was not found in the Core generation"
+        ),
+        SelectorError::ProviderSessionAmbiguous {
+            provider_session_id,
+            first,
+            second,
+        } => format!(
+            "provider session {provider_session_id:?} is ambiguous; first matches are {first} and {second}; pass --provider or a ctx session ID"
+        ),
+        SelectorError::ProviderMismatch {
+            session_id,
+            actual,
+            requested,
+        } => format!(
+            "Core session {session_id} belongs to provider {actual}, not {requested}"
+        ),
+    }
+}
+
+fn compact_ref_error_detail(error: &ctx_history_query::CompactRefResolveError) -> Option<String> {
+    let ctx_history_query::CompactRefResolveError::Ambiguous {
+        namespace,
+        reference,
+        first,
+        second,
+    } = error
+    else {
+        return None;
+    };
+    let ctx_id_name = match namespace {
+        ctx_history_query::CompactRefNamespace::Event => "ctx_event_id",
+        ctx_history_query::CompactRefNamespace::Session => "ctx_session_id",
+    };
+    Some(format!(
+        "{namespace} id prefix {reference:?} is ambiguous; conflicting full IDs are {first} and {second}; use a longer {ctx_id_name} or a full UUID"
+    ))
+}
 
 pub(super) fn resolve_lookup_for_output<T>(
     result: Result<T>,

@@ -31,20 +31,20 @@ impl SourceIdentityFilters {
 pub fn normalize_source_identity_filters(
     input: SourceIdentityFilterArgs,
 ) -> Result<SourceIdentityFilters> {
-    let history_source = normalize_source_identity_filter("history-source", input.history_source)?;
+    let history_source = normalize_source_identity_filter("history_source", input.history_source)?;
     if history_source
         .as_deref()
         .is_some_and(|value| !value.contains('/'))
     {
         return Err(anyhow!(
-            "--history-source expects plugin/source or provider_key/source_id"
+            "history_source expects plugin/source or provider_key/source_id"
         ));
     }
     Ok(SourceIdentityFilters {
         history_source,
-        provider_key: normalize_source_identity_filter("provider-key", input.provider_key)?,
-        source_id: normalize_source_identity_filter("source-id", input.source_id)?,
-        source_format: normalize_source_identity_filter("source-format", input.source_format)?,
+        provider_key: normalize_source_identity_filter("provider_key", input.provider_key)?,
+        source_id: normalize_source_identity_filter("source_id", input.source_id)?,
+        source_format: normalize_source_identity_filter("source_format", input.source_format)?,
     })
 }
 
@@ -57,10 +57,10 @@ pub fn normalize_source_identity_filter(
     };
     let value = value.trim();
     if value.is_empty() {
-        return Err(anyhow!("--{label} cannot be empty"));
+        return Err(anyhow!("{label} cannot be empty"));
     }
     if value.chars().any(char::is_control) {
-        return Err(anyhow!("--{label} cannot contain control characters"));
+        return Err(anyhow!("{label} cannot contain control characters"));
     }
     Ok(Some(value.to_owned()))
 }
@@ -70,15 +70,15 @@ pub fn parse_since_filter(value: &str) -> Result<chrono::DateTime<Utc>> {
     if let Some(days) = trimmed.strip_suffix('d') {
         let days: i64 = days
             .parse()
-            .with_context(|| format!("invalid --since day window: {value}"))?;
+            .with_context(|| format!("invalid since day window: {value}"))?;
         let duration = Duration::try_days(days)
-            .ok_or_else(|| anyhow!("invalid --since day window: {value}: value too large"))?;
+            .ok_or_else(|| anyhow!("invalid since day window: {value}: value too large"))?;
         let since = utc_now()
             .checked_sub_signed(duration)
-            .ok_or_else(|| anyhow!("invalid --since day window: {value}: value too large"))?;
+            .ok_or_else(|| anyhow!("invalid since day window: {value}: value too large"))?;
         return Ok(since);
     }
     Ok(chrono::DateTime::parse_from_rfc3339(trimmed)
-        .with_context(|| format!("invalid --since value: {value}"))?
+        .with_context(|| format!("invalid since value: {value}"))?
         .with_timezone(&Utc))
 }

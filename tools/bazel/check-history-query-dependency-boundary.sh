@@ -74,6 +74,36 @@ if grep -REn --include='*.rs' \
   echo 'forbidden source dependency in ctx-history-query' >&2
   exit 1
 fi
+if grep -REn --include='*.rs' \
+  'std::env|std::process|process::Command|Command::new|CODEX_THREAD_ID|CaptureProvider::Codex' \
+  "${query_root}/src"; then
+  echo 'environment, process, or caller identity leaked into ctx-history-query' >&2
+  exit 1
+fi
+if grep -REn --include='*.rs' \
+  'SearchRefreshMode|RefreshArg|semantic_daemon|DaemonConfig|SearchConfig|SourceBackedRefresh' \
+  "${query_root}/src"; then
+  echo 'daemon, configuration, or refresh lifecycle interpretation leaked into ctx-history-query' >&2
+  exit 1
+fi
+if grep -REn --include='*.rs' \
+  'clap::|OutputFormat|shell_quote|suggested_next_commands|--[[:alnum:]][[:alnum:]-]*|ctx (search|show|setup|doctor)' \
+  "${query_root}/src"; then
+  echo 'transport or presentation behavior leaked into ctx-history-query' >&2
+  exit 1
+fi
+if grep -REn --include='*.rs' \
+  '/home/[[:alnum:]_.-]+|/Users/[[:alnum:]_.-]+|ctx-private|ctx-multi-repo-workspace|\.ctx/worktrees' \
+  "${query_root}/src"; then
+  echo 'private host or workspace path leaked into ctx-history-query' >&2
+  exit 1
+fi
+if grep -REn --include='*.rs' \
+  '[Ww]ork [Rr]ecorder|ctx publish|ctx evidence|ctx link-pr|ctx context|ctx uninstall|auto[_-]update|CTX_UPDATE|provider-live|completion-certificate|dashboard export|upsert_github|write[_-]shim' \
+  "${query_root}/src"; then
+  echo 'retired product or legacy control surface leaked into ctx-history-query' >&2
+  exit 1
+fi
 
 physical_lines="$(find "${query_root}/src" -type f -name '*.rs' -print0 \
   | xargs -0 awk 'END { print NR }')"

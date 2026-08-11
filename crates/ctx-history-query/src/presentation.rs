@@ -18,12 +18,10 @@ const SEARCH_CORE_RECORD_BUDGET: CoreEventPageBudget =
 pub const SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES: usize =
     MAX_SEARCH_RESULTS * SEARCH_SNIPPET_MAX_BYTES;
 
-/// Compact, non-authoritative search state derived from one complete stored
-/// Core record. Event metadata is borrowed from the already compact result
-/// window; only the snippet is newly retained.
+/// Bounded query result state derived from one complete stored Core record.
 #[derive(Debug, PartialEq, Eq)]
-pub struct SearchPresentation<'event> {
-    pub event: &'event SearchEventMetadata,
+pub struct SearchPresentation {
+    pub event_id: Uuid,
     pub snippet: String,
     pub snippet_truncated: bool,
 }
@@ -59,11 +57,11 @@ impl fmt::Display for SearchPresentationRetentionBudgetExceeded {
 
 impl std::error::Error for SearchPresentationRetentionBudgetExceeded {}
 
-pub fn presentations_for_search_hits<'event>(
+pub(crate) fn presentations_for_search_hits(
     index: &VerifiedIndex,
-    hits: &'event [SearchHit],
+    hits: &[SearchHit],
     query: &NormalizedSearchQuery,
-) -> Result<Vec<SearchPresentation<'event>>> {
+) -> Result<Vec<SearchPresentation>> {
     presentations_for_search_hits_with_budget(
         index,
         hits,
@@ -72,12 +70,12 @@ pub fn presentations_for_search_hits<'event>(
     )
 }
 
-pub fn presentations_for_search_hits_with_budget<'event>(
+pub fn presentations_for_search_hits_with_budget(
     index: &VerifiedIndex,
-    hits: &'event [SearchHit],
+    hits: &[SearchHit],
     query: &NormalizedSearchQuery,
     budget: SearchPresentationHydrationBudget,
-) -> Result<Vec<SearchPresentation<'event>>> {
+) -> Result<Vec<SearchPresentation>> {
     if budget.maximum_retained_snippet_bytes == 0 {
         return Err(anyhow!(
             "search presentation hydration budget must be positive"
@@ -148,11 +146,11 @@ pub fn presentations_for_search_hits_with_budget<'event>(
     Ok(presentations)
 }
 
-fn search_presentation_projection<'event>(
+fn search_presentation_projection(
     record: CoreEventRecord,
-    expected_event: &'event SearchEventMetadata,
+    expected_event: &SearchEventMetadata,
     query_texts: &[&str],
-) -> Result<(SearchPresentation<'event>, usize)> {
+) -> Result<(SearchPresentation, usize)> {
     let CoreEventRecord { event, core_record } = record;
     if event.event_id != core_record.event_id
         || event.session_id != core_record.session_id
@@ -178,7 +176,7 @@ fn search_presentation_projection<'event>(
     drop(event);
     Ok((
         SearchPresentation {
-            event: expected_event,
+            event_id: expected_event.event_id,
             snippet,
             snippet_truncated,
         },

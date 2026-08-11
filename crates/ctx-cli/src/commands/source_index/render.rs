@@ -23,8 +23,10 @@ use crate::{
 };
 
 use super::search::{
-    NormalizedSearchQuery, SearchCollection, SearchHit, SearchPresentation, SourceSearchRequest,
+    semantic_reason_code, NormalizedSearchQuery, SearchCollection, SearchHit, SearchPresentation,
+    SourceSearchRequest,
 };
+use crate::RefreshArg;
 
 mod human;
 mod locate;
@@ -50,14 +52,15 @@ pub(super) fn stdout_body_bytes(body: &str) -> usize {
         .saturating_add(usize::from(!body.ends_with('\n')))
 }
 
-struct SearchJsonInput<'input, 'event> {
+struct SearchJsonInput<'input> {
     request: &'input SourceSearchRequest,
     data_root: &'input Path,
     index: &'input VerifiedIndex,
     collection: &'input SearchCollection,
     filters: &'input EventSearchFilters,
-    presentations: &'input [SearchPresentation<'event>],
+    presentations: &'input [SearchPresentation],
     copied_lineages: &'input [Value],
+    refresh_mode: RefreshArg,
     metrics: SearchRenderMetrics<'input>,
 }
 
@@ -69,13 +72,13 @@ struct SearchRenderMetrics<'a> {
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn search_json<'event>(
+pub(super) fn search_json(
     request: &SourceSearchRequest,
     data_root: &Path,
     index: &VerifiedIndex,
     collection: &SearchCollection,
     filters: &EventSearchFilters,
-    presentations: &[SearchPresentation<'event>],
+    presentations: &[SearchPresentation],
     refresh_status: &str,
     refresh_source_count: usize,
     query_duration: Duration,
@@ -100,6 +103,7 @@ pub(super) fn search_json<'event>(
         filters,
         presentations,
         &copied_lineages,
+        RefreshArg::Off,
         refresh_status,
         refresh_source_count,
         query_duration,
@@ -107,14 +111,15 @@ pub(super) fn search_json<'event>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn search_json_with_lineages<'event>(
+pub(super) fn search_json_with_lineages(
     request: &SourceSearchRequest,
     data_root: &Path,
     index: &VerifiedIndex,
     collection: &SearchCollection,
     filters: &EventSearchFilters,
-    presentations: &[SearchPresentation<'event>],
+    presentations: &[SearchPresentation],
     copied_lineages: &[Value],
+    refresh_mode: RefreshArg,
     refresh_status: &str,
     refresh_source_count: usize,
     query_duration: Duration,
@@ -127,6 +132,7 @@ pub(super) fn search_json_with_lineages<'event>(
         filters,
         presentations,
         copied_lineages,
+        refresh_mode,
         metrics: SearchRenderMetrics {
             refresh_status,
             refresh_source_count,
@@ -135,7 +141,7 @@ pub(super) fn search_json_with_lineages<'event>(
     })
 }
 
-fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
+fn render_search_json(input: SearchJsonInput<'_>) -> Result<Value> {
     let SearchJsonInput {
         request,
         data_root,
@@ -144,6 +150,7 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
         filters,
         presentations,
         copied_lineages,
+        refresh_mode,
         metrics,
     } = input;
     let normalized_query = NormalizedSearchQuery::from_request(request);
@@ -171,10 +178,10 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
         .zip(copied_lineages)
         .enumerate()
         .map(|(offset, ((hit, presentation), copied_lineage))| {
-            if presentation.event.event_id != hit.event.event_id {
+            if presentation.event_id != hit.event.event_id {
                 return Err(anyhow!(
-                    "pinned Core lookup returned an out-of-order search presentation for event {}",
-                    hit.event.event_id
+                    "out-of-order search presentation for event {}",
+                    presentation.event_id
                 ));
             }
             search_result_json(
@@ -189,6 +196,7 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
         })
         .collect::<Result<Vec<_>>>()?;
     let phase_attribution = phase_attribution(metrics.query_duration);
+    let semantic_diagnostics = external_semantic_diagnostics(collection);
     Ok(compact_json(json!({
         "schema_version": 1,
         "payload_type": "search_results",
@@ -210,7 +218,7 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
             "include_current_session": request.include_current_session.then_some(true),
         },
         "freshness": {
-            "mode": request.refresh.as_str(),
+            "mode": refresh_mode.as_str(),
             "status": metrics.refresh_status,
             "source_count": metrics.refresh_source_count,
         },
@@ -219,9 +227,9 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
             "effective_mode": collection.effective_backend.as_str(),
             "semantic_weight": collection.semantic_weight,
             "semantic_status": collection.semantic_status,
-            "semantic_fallback_code": collection.semantic_fallback.as_ref().map(|fallback| fallback.code),
-            "semantic_fallback": collection.semantic_fallback.as_ref().map(|fallback| fallback.detail.as_str()),
-            "semantic_diagnostics": collection.semantic_diagnostics,
+            "semantic_fallback_code": collection.semantic_fallback.as_ref().map(semantic_fallback_code),
+            "semantic_fallback": collection.semantic_fallback.as_ref().map(|fallback| semantic_fallback_detail(fallback.reason, &fallback.detail)),
+            "semantic_diagnostics": semantic_diagnostics,
             "index": "core",
             "generation_id": index.generation_id(),
             "indexed_documents": index.document_count(),
@@ -242,9 +250,36 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
     })))
 }
 
+fn semantic_fallback_code(
+    fallback: &ctx_history_query::SemanticFallbackDiagnostics,
+) -> &'static str {
+    fallback
+        .reason
+        .map(semantic_reason_code)
+        .unwrap_or("semantic_query_failed")
+}
+
+fn external_semantic_diagnostics(collection: &SearchCollection) -> Option<Value> {
+    let mut diagnostics = collection.semantic_diagnostics.clone()?;
+    let Some(fallback) = collection.semantic_fallback.as_ref() else {
+        return Some(diagnostics);
+    };
+    let Some(object) = diagnostics.as_object_mut() else {
+        return Some(diagnostics);
+    };
+    object.insert(
+        "fallback".to_owned(),
+        json!({
+            "code": semantic_fallback_code(fallback),
+            "detail": semantic_fallback_detail(fallback.reason, &fallback.detail),
+        }),
+    );
+    Some(diagnostics)
+}
+
 fn search_result_json(
     hit: &SearchHit,
-    presentation: &SearchPresentation<'_>,
+    presentation: &SearchPresentation,
     result_scope: &str,
     query: &NormalizedSearchQuery,
     rank: usize,
@@ -252,7 +287,7 @@ fn search_result_json(
     copied_lineage: &Value,
 ) -> Result<Value> {
     let (snippet, snippet_truncated) = search_snippet(presentation);
-    let event = &presentation.event;
+    let event = &hit.event;
     let event_id = event.event_id;
     let session_id = event.session_id;
     let item_id = if result_scope == "session" {
@@ -270,7 +305,7 @@ fn search_result_json(
     if result_scope == "session" {
         next.insert(0, format!("{command_prefix} show session {session_id}"));
     }
-    let query_arguments = query.shell_arguments();
+    let query_arguments = search_query_command_arguments(query);
     if !query_arguments.is_empty() {
         next.push(format!(
             "{command_prefix} search {query_arguments} --session {session_id}"
@@ -322,13 +357,43 @@ fn search_result_json(
     })))
 }
 
-fn search_snippet<'presentation>(
-    presentation: &'presentation SearchPresentation<'_>,
-) -> (&'presentation str, bool) {
+fn search_snippet(presentation: &SearchPresentation) -> (&str, bool) {
     (
         presentation.snippet.as_str(),
         presentation.snippet_truncated,
     )
+}
+
+fn semantic_fallback_detail(
+    reason: Option<ctx_history_query::SemanticReason>,
+    detail: &str,
+) -> String {
+    match reason {
+        Some(ctx_history_query::SemanticReason::PolicyDisabled) => {
+            "local semantic retrieval is disabled".to_owned()
+        }
+        Some(ctx_history_query::SemanticReason::ExecutionUnavailable) => {
+            "local semantic retrieval is unavailable because the ctx daemon is disabled".to_owned()
+        }
+        Some(ctx_history_query::SemanticReason::ContentScopeUnsupported) => {
+            format!("{detail}; use --backend lexical or choose --content-scope all|transcript")
+        }
+        Some(ctx_history_query::SemanticReason::EventTypeUnsupported) => {
+            format!("{detail}; use --backend lexical or remove --event-type")
+        }
+        _ => detail.to_owned(),
+    }
+}
+
+fn search_query_command_arguments(query: &NormalizedSearchQuery) -> String {
+    let mut arguments = Vec::new();
+    if let Some(positional) = query.positional() {
+        arguments.push(shell_quote_arg(positional));
+    }
+    for term in query.terms() {
+        arguments.push(format!("--term={}", shell_quote_arg(term)));
+    }
+    arguments.join(" ")
 }
 
 pub(super) fn follow_up_command_prefix(data_root: &Path) -> String {

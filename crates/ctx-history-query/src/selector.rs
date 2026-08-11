@@ -17,15 +17,6 @@ pub enum CompactRefNamespace {
     Session,
 }
 
-impl CompactRefNamespace {
-    const fn ctx_id_name(self) -> &'static str {
-        match self {
-            Self::Event => "ctx_event_id",
-            Self::Session => "ctx_session_id",
-        }
-    }
-}
-
 impl fmt::Display for CompactRefNamespace {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -50,8 +41,7 @@ pub enum CompactRefResolveError {
         reference: String,
     },
     #[error(
-        "{namespace} id prefix {reference:?} is ambiguous; conflicting full IDs are {first} and {second}; use a longer {ctx_id_name} or a full UUID",
-        ctx_id_name = namespace.ctx_id_name()
+        "{namespace} id prefix {reference:?} is ambiguous between full IDs {first} and {second}"
     )]
     Ambiguous {
         namespace: CompactRefNamespace,
@@ -202,6 +192,36 @@ pub enum MissingLookupKind {
     Session,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SelectorError {
+    #[error("{kind} id prefix is shorter than {minimum} hexadecimal characters")]
+    PrefixTooShort { kind: String, minimum: usize },
+    #[error("{kind} id is neither a full UUID nor a hexadecimal prefix")]
+    InvalidId { kind: String },
+    #[error("provider session selector is empty")]
+    EmptyProviderSession,
+    #[error("session selectors are mutually exclusive")]
+    ConflictingSessionSelectors,
+    #[error("a session selector is required")]
+    MissingSessionSelector,
+    #[error("provider session {provider_session_id:?} was not found in the Core generation")]
+    ProviderSessionNotFound { provider_session_id: String },
+    #[error(
+        "provider session {provider_session_id:?} is ambiguous between sessions {first} and {second}"
+    )]
+    ProviderSessionAmbiguous {
+        provider_session_id: String,
+        first: Uuid,
+        second: Uuid,
+    },
+    #[error("Core session {session_id} belongs to provider {actual}, not {requested}")]
+    ProviderMismatch {
+        session_id: Uuid,
+        actual: String,
+        requested: String,
+    },
+}
+
 impl MissingLookupKind {
     const fn noun(self) -> &'static str {
         match self {
@@ -305,15 +325,11 @@ pub fn validate_session_selector(
             Ok(())
         }
         (None, Some(provider_session_id)) if provider_session_id.trim().is_empty() => {
-            Err(anyhow!("provider session ID must not be empty"))
+            Err(SelectorError::EmptyProviderSession.into())
         }
         (None, Some(_)) => Ok(()),
-        (Some(_), Some(_)) => Err(anyhow!(
-            "pass either a ctx session ID or --provider-session, not both"
-        )),
-        (None, None) => Err(anyhow!(
-            "Core session lookup requires a ctx session ID or --provider-session"
-        )),
+        (Some(_), Some(_)) => Err(SelectorError::ConflictingSessionSelectors.into()),
+        (None, None) => Err(SelectorError::MissingSessionSelector.into()),
     }
 }
 
@@ -344,25 +360,17 @@ pub fn resolve_show_session_with_refs(
                 provider.map(CaptureProvider::as_str),
             )?,
         )?,
-        (Some(_), Some(_)) => {
-            return Err(anyhow!(
-                "pass either a ctx session ID or --provider-session, not both"
-            ));
-        }
-        (None, None) => {
-            return Err(anyhow!(
-                "Core session lookup requires a ctx session ID or --provider-session"
-            ));
-        }
+        (Some(_), Some(_)) => return Err(SelectorError::ConflictingSessionSelectors.into()),
+        (None, None) => return Err(SelectorError::MissingSessionSelector.into()),
     };
     if let Some(provider) = provider {
         if session.provider != provider.as_str() {
-            return Err(anyhow!(
-                "Core session {} belongs to provider {}, not {}",
-                session.session_id,
-                session.provider,
-                provider
-            ));
+            return Err(SelectorError::ProviderMismatch {
+                session_id: session.session_id.as_uuid(),
+                actual: session.provider,
+                requested: provider.as_str().to_owned(),
+            }
+            .into());
         }
     }
     Ok(session)
@@ -373,15 +381,17 @@ fn select_show_provider_session(
     matches: Vec<SessionRecord>,
 ) -> Result<SessionRecord> {
     match matches.as_slice() {
-        [] => Err(anyhow!(
-            "provider session {provider_session_id:?} was not found in the Core generation"
-        )),
+        [] => Err(SelectorError::ProviderSessionNotFound {
+            provider_session_id: provider_session_id.to_owned(),
+        }
+        .into()),
         [session] => Ok(session.clone()),
-        matches => Err(anyhow!(
-            "provider session {provider_session_id:?} is ambiguous; first matches are {} and {}; pass --provider or a ctx session ID",
-            matches[0].session_id,
-            matches[1].session_id
-        )),
+        matches => Err(SelectorError::ProviderSessionAmbiguous {
+            provider_session_id: provider_session_id.to_owned(),
+            first: matches[0].session_id.as_uuid(),
+            second: matches[1].session_id.as_uuid(),
+        }
+        .into()),
     }
 }
 
@@ -436,18 +446,21 @@ fn push_distinct_match(matches: &mut Vec<Uuid>, candidate: Uuid) {
 fn normalize_uuid_prefix(value: &str, kind: &str) -> Result<String> {
     let prefix = value.trim();
     if prefix.len() < MIN_COMPACT_REF_HEX_LEN {
-        return Err(anyhow!(
-            "{kind} id prefix must be at least {MIN_COMPACT_REF_HEX_LEN} hex characters, or pass a full ctx UUID"
-        ));
+        return Err(SelectorError::PrefixTooShort {
+            kind: kind.to_owned(),
+            minimum: MIN_COMPACT_REF_HEX_LEN,
+        }
+        .into());
     }
     if prefix.contains('-')
         || !prefix
             .chars()
             .all(|character| character.is_ascii_hexdigit())
     {
-        return Err(anyhow!(
-            "{kind} id must be a full ctx UUID or an unambiguous hex prefix from verbose search output"
-        ));
+        return Err(SelectorError::InvalidId {
+            kind: kind.to_owned(),
+        }
+        .into());
     }
     Ok(prefix.to_ascii_lowercase())
 }
@@ -679,7 +692,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains(&first.to_string()), "{message}");
         assert!(message.contains(&second.to_string()), "{message}");
-        assert!(message.contains("longer ctx_event_id or a full UUID"));
+        assert!(message.contains("is ambiguous between full IDs"));
 
         let mut missing = ProbeWorld::default();
         let error = resolve_with_probe(

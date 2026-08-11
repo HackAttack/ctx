@@ -85,6 +85,10 @@ impl<'index> CompactPresentation<'index> {
         CompactRefResolver::new(self.current, self.retained_peer.as_ref())
     }
 
+    pub(super) fn retained_peer(&self) -> Option<&VerifiedIndex> {
+        self.retained_peer.as_ref()
+    }
+
     pub(super) fn project(&self, value: &Value) -> Result<Value> {
         let mut rendered_ids = RenderedIds::default();
         collect_rendered_ids(value, None, &mut rendered_ids);

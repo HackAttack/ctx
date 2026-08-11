@@ -13,8 +13,8 @@ use serde_json::json;
 
 use super::*;
 use crate::{
-    collect_search_hits, resolve_search_backend, SearchBackend, SearchExecutionError,
-    SearchRefreshMode, SearchRequest,
+    collect_search_hits, resolve_search_backend, SearchBackend, SearchExecutionError, SearchPolicy,
+    SearchRequest,
 };
 
 #[derive(Clone, Default)]
@@ -53,11 +53,6 @@ impl FakeSemanticPort {
 
 impl HistorySemanticPort for FakeSemanticPort {
     type Query<'a> = FakeSemanticQuery;
-
-    fn capability(&self) -> SemanticCapability {
-        self.calls.push("capability");
-        SemanticCapability::Available
-    }
 
     fn begin_query<'a>(
         &'a self,
@@ -149,9 +144,6 @@ fn semantic_request(backend: SearchBackend) -> SearchRequest {
         include_current_session: true,
         backend: Some(backend),
         semantic_weight: 0.35,
-        semantic_enabled: true,
-        semantic_daemon_enabled: true,
-        refresh: SearchRefreshMode::Off,
     }
 }
 
@@ -163,7 +155,13 @@ fn fake_port_begins_once_before_ordered_query_calls() -> Result<()> {
     let port = FakeSemanticPort::ready(calls.clone());
     let request = semantic_request(SearchBackend::Hybrid);
 
-    let collection = collect_search_hits(&request, &index, &EventSearchFilters::default(), &port)?;
+    let collection = collect_search_hits(
+        &request,
+        &index,
+        &EventSearchFilters::default(),
+        SemanticAvailability::Available,
+        &port,
+    )?;
 
     assert_eq!(collection.semantic_status, "ready");
     assert_eq!(collection.semantic_diagnostics.unwrap()["query_count"], 2);
@@ -179,16 +177,15 @@ fn fake_port_begins_once_before_ordered_query_calls() -> Result<()> {
 }
 
 #[test]
-fn backend_resolution_reads_capability_through_the_port() -> Result<()> {
+fn backend_resolution_uses_caller_supplied_capability_policy() -> Result<()> {
     let calls = CallLog::default();
-    let port = FakeSemanticPort::ready(calls.clone());
     let request = semantic_request(SearchBackend::Semantic);
 
     assert_eq!(
-        resolve_search_backend(&request, &port)?,
+        resolve_search_backend(&request, SearchPolicy::semantic_available())?,
         SearchBackend::Semantic
     );
-    assert_eq!(calls.values(), vec!["capability"]);
+    assert!(calls.values().is_empty());
     Ok(())
 }
 
@@ -199,16 +196,29 @@ fn semantic_only_preserves_the_typed_port_error() -> Result<()> {
     let calls = CallLog::default();
     let port = FakeSemanticPort::failing(
         calls.clone(),
-        HistorySemanticError::not_ready("semantic_fixture_not_ready", "fixture unavailable", true),
+        HistorySemanticError::not_ready(
+            SemanticReason::Adapter("semantic_fixture_not_ready"),
+            "fixture unavailable",
+            true,
+        ),
     );
     let request = semantic_request(SearchBackend::Semantic);
 
-    let error =
-        collect_search_hits(&request, &index, &EventSearchFilters::default(), &port).unwrap_err();
+    let error = collect_search_hits(
+        &request,
+        &index,
+        &EventSearchFilters::default(),
+        SemanticAvailability::Available,
+        &port,
+    )
+    .unwrap_err();
     let SearchExecutionError::Semantic(typed) = error else {
         panic!("semantic-only search must preserve the typed port failure");
     };
-    assert_eq!(typed.code(), "semantic_fixture_not_ready");
+    assert_eq!(
+        typed.reason(),
+        Some(SemanticReason::Adapter("semantic_fixture_not_ready"))
+    );
     assert_eq!(typed.detail(), "fixture unavailable");
     assert!(typed.retryable());
     assert_eq!(calls.values(), vec!["begin_query"]);
@@ -226,12 +236,18 @@ fn hybrid_maps_typed_port_failure_to_lexical_fallback() -> Result<()> {
     );
     let request = semantic_request(SearchBackend::Hybrid);
 
-    let collection = collect_search_hits(&request, &index, &EventSearchFilters::default(), &port)?;
+    let collection = collect_search_hits(
+        &request,
+        &index,
+        &EventSearchFilters::default(),
+        SemanticAvailability::Available,
+        &port,
+    )?;
 
     assert_eq!(collection.effective_backend, SearchBackend::Lexical);
     assert_eq!(collection.semantic_status, "unavailable");
     let fallback = collection.semantic_fallback.unwrap();
-    assert_eq!(fallback.code, "semantic_query_failed");
+    assert_eq!(fallback.reason, None);
     assert_eq!(fallback.detail, "fixture transport failed");
     assert_eq!(calls.values(), vec!["begin_query"]);
     Ok(())
@@ -246,7 +262,13 @@ fn zero_weight_hybrid_never_opens_the_semantic_port() -> Result<()> {
     let mut request = semantic_request(SearchBackend::Hybrid);
     request.semantic_weight = 0.0;
 
-    let collection = collect_search_hits(&request, &index, &EventSearchFilters::default(), &port)?;
+    let collection = collect_search_hits(
+        &request,
+        &index,
+        &EventSearchFilters::default(),
+        SemanticAvailability::Available,
+        &port,
+    )?;
 
     assert_eq!(collection.semantic_status, "skipped");
     assert!(calls.values().is_empty());

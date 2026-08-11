@@ -1,14 +1,15 @@
 mod mcp;
 mod render;
 
-use std::{collections::VecDeque, fmt, io::Write, path::PathBuf};
+use std::{fmt, io::Write, path::PathBuf};
 
 use anyhow::{anyhow, Result};
-use ctx_history_core::{EventType, MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES};
+use ctx_history_core::{MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES};
 use ctx_history_index::{
     CoreEventPageBudget, CoreEventRecord, IndexError, SessionEventCursor, SessionRecord,
-    VerifiedIndex, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS, SHOW_COPIED_EVENT_LINEAGE_POLICY,
+    VerifiedIndex, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS,
 };
+use ctx_history_query::{EventWindowBudget, PinnedHistoryQuery, ShowEventRequest};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -31,11 +32,9 @@ use crate::{
 
 use super::{
     compact_presentation::{reference_needs_retained_peer, CompactPresentation},
-    compact_ref::CompactRefResolver,
-    copied_lineage::copied_lineage_value,
     render::{follow_up_command_prefix, render_show_document, write_show_value},
     shared::{
-        index_root, open_index, render_active_generation_race, resolve_core_event_with_refs,
+        externalize_query_error, index_root, open_index, render_active_generation_race,
         resolve_lookup_for_output, validate_ctx_id, validate_session_selector,
         ActiveGenerationRaceCommand,
     },
@@ -49,8 +48,7 @@ use render::event_window_json;
 pub(super) use render::{event_window_value, render_event_values};
 pub(super) use render::{render_event_value, session_transcript_value};
 
-const CORE_PRESENTATION_FETCH_MAX_EVENTS: usize = 200;
-const CLI_SESSION_EVENT_PAGE_ITEMS: usize = CORE_PRESENTATION_FETCH_MAX_EVENTS;
+const CLI_SESSION_EVENT_PAGE_ITEMS: usize = 200;
 const PRESENTATION_MAX_EVENT_WINDOW_EVENTS: usize = MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS;
 
 /// Typed failures exposed by the transport-neutral show application boundary.
@@ -167,55 +165,6 @@ impl From<PresentationOutputLimitError> for ShowApplicationError {
 
 pub(super) type ShowApplicationResult<T> = std::result::Result<T, ShowApplicationError>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PresentationEventLimitError {
-    actual_events: usize,
-    maximum_events: usize,
-}
-
-impl fmt::Display for PresentationEventLimitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "Core presentation selected at least {} events; the presentation limit is {} events",
-            self.actual_events, self.maximum_events
-        )
-    }
-}
-
-impl std::error::Error for PresentationEventLimitError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EncodedCorePresentationLimitError {
-    pub(super) event_id: Uuid,
-    pub(super) actual_bytes: usize,
-    pub(super) maximum_bytes: usize,
-}
-
-impl fmt::Display for EncodedCorePresentationLimitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "stored Core encoding through ctx event {} requires {} bytes; the presentation retention limit is {} bytes",
-            self.event_id, self.actual_bytes, self.maximum_bytes
-        )
-    }
-}
-
-impl std::error::Error for EncodedCorePresentationLimitError {}
-
-#[cfg(test)]
-thread_local! {
-    static CORE_PRESENTATION_FETCH_IDS: std::cell::RefCell<Vec<Uuid>> = const {
-        std::cell::RefCell::new(Vec::new())
-    };
-}
-
-#[cfg(test)]
-pub(super) fn take_core_presentation_fetch_ids() -> Vec<Uuid> {
-    CORE_PRESENTATION_FETCH_IDS.with(|ids| std::mem::take(&mut *ids.borrow_mut()))
-}
-
 pub(crate) fn run_show(
     args: ShowArgs,
     data_root: PathBuf,
@@ -251,25 +200,32 @@ fn run_show_inner(
                 matches!(args.format, OutputFormat::Text | OutputFormat::Markdown)
                     || reference_needs_retained_peer(&args.id),
             )?;
-            let pinned_references = CompactRefResolver::new(&index, None);
-            let input_resolver = compact
-                .as_ref()
-                .map(CompactPresentation::resolver)
-                .unwrap_or(pinned_references);
-            let selected = resolve_lookup_for_output(
-                resolve_core_event_with_refs(&input_resolver, &args.id),
+            let query = PinnedHistoryQuery::new(
+                &index,
+                compact
+                    .as_ref()
+                    .and_then(CompactPresentation::retained_peer),
+            );
+            let result = resolve_lookup_for_output(
+                query
+                    .show_event(&ShowEventRequest {
+                        selector: args.id,
+                        before: args.before,
+                        after: args.after,
+                        window: args.window,
+                        budget: EventWindowBudget {
+                            maximum_events: PRESENTATION_MAX_EVENT_WINDOW_EVENTS,
+                            maximum_encoded_core_bytes: MAX_ENCODED_CORE_RECORD_BYTES,
+                            maximum_content_bytes: CLI_PRESENTATION_MAX_OUTPUT_BYTES,
+                        },
+                    })
+                    .map_err(externalize_query_error),
                 args.format == OutputFormat::Text,
                 r#"ctx search "<query>" --verbose"#,
                 ui,
             )?;
-            let events = event_window(
-                &index,
-                &selected,
-                args.before,
-                args.after,
-                args.window,
-                CLI_PRESENTATION_MAX_OUTPUT_BYTES,
-            )?;
+            let selected = result.selected;
+            let events = result.events;
             telemetry.events_returned = Some(count_bucket(events.len() as u64));
             let mut value = event_window_json(
                 &selected,
@@ -277,11 +233,8 @@ fn run_show_inner(
                 args.format,
                 CLI_PRESENTATION_MAX_OUTPUT_BYTES,
             )?;
-            value["copied_lineage"] = copied_lineage_value(
-                &index,
-                selected.event_id.as_uuid(),
-                SHOW_COPIED_EVENT_LINEAGE_POLICY,
-            )?;
+            value["copied_lineage"] =
+                super::copied_lineage::copied_lineage_read_model(&result.copied_lineage)?;
             let events = value["events"].as_array().map(Vec::as_slice).unwrap_or(&[]);
             let result_count = events.len();
             let content_bytes = serde_json::to_vec(&value["events"])?.len();
@@ -327,18 +280,20 @@ fn run_show_inner(
                         .as_deref()
                         .is_some_and(reference_needs_retained_peer),
             )?;
-            let pinned_references = CompactRefResolver::new(&index, None);
-            let input_resolver = compact
-                .as_ref()
-                .map(CompactPresentation::resolver)
-                .unwrap_or(pinned_references);
+            let query = PinnedHistoryQuery::new(
+                &index,
+                compact
+                    .as_ref()
+                    .and_then(CompactPresentation::retained_peer),
+            );
             let session = resolve_lookup_for_output(
-                resolve_show_session_with_refs(
-                    &input_resolver,
-                    args.id.as_deref(),
-                    args.provider_session.as_deref(),
-                    args.provider.map(ProviderArg::capture_provider),
-                ),
+                query
+                    .show_session(
+                        args.id.as_deref(),
+                        args.provider_session.as_deref(),
+                        args.provider.map(ProviderArg::capture_provider),
+                    )
+                    .map_err(externalize_query_error),
                 human_output,
                 r#"ctx search "<query>" --verbose"#,
                 ui,
@@ -405,40 +360,44 @@ pub(super) fn stream_cli_session(
         writes_stdout,
         compact,
     )?;
-    let mut selector = SessionEventSelector::new(mode);
+    let query =
+        PinnedHistoryQuery::new(index, compact.and_then(CompactPresentation::retained_peer));
     let mut cursor: Option<SessionEventCursor> = None;
     let mut truncated = false;
 
-    'pages: loop {
-        renderer.begin_page();
-        let page = index.core_session_event_page_with_budget(
-            session.session_id.as_uuid(),
-            cursor.as_ref(),
-            CLI_SESSION_EVENT_PAGE_ITEMS,
-            CoreEventPageBudget::new(MAX_ENCODED_CORE_RECORD_BYTES, MAX_CORE_CONTENT_BYTES),
-        )?;
-        let terminal = page.terminal;
-        let next_cursor = page.next_cursor;
-        for event in page.items {
-            for selected in selector.push(event) {
-                if max_events.is_some_and(|maximum| renderer.events_returned() >= maximum) {
-                    truncated = true;
-                    break 'pages;
-                }
-                renderer.emit(selected, compact)?;
-            }
-        }
-        if terminal {
-            if let Some(selected) = selector.finish() {
-                if max_events.is_some_and(|maximum| renderer.events_returned() >= maximum) {
-                    truncated = true;
-                } else {
-                    renderer.emit(selected, compact)?;
-                }
-            }
+    loop {
+        let remaining = max_events
+            .map(|maximum| maximum.saturating_sub(renderer.events_returned()))
+            .unwrap_or(CLI_SESSION_EVENT_PAGE_ITEMS);
+        if remaining == 0 {
+            truncated = true;
             break;
         }
-        cursor = Some(next_cursor.ok_or_else(|| {
+        renderer.begin_page();
+        let page = query.show_session_page(&ctx_history_query::ShowSessionPageRequest {
+            selector: Some(session.session_id.to_string()),
+            provider_session_id: None,
+            provider: None,
+            mode: session_event_mode(mode),
+            cursor: cursor.clone(),
+            limit: remaining.min(CLI_SESSION_EVENT_PAGE_ITEMS),
+            page_items: CLI_SESSION_EVENT_PAGE_ITEMS,
+            page_budget: CoreEventPageBudget::new(
+                MAX_ENCODED_CORE_RECORD_BYTES,
+                MAX_CORE_CONTENT_BYTES,
+            ),
+        })?;
+        for selected in page.events {
+            renderer.emit(selected.event, compact)?;
+        }
+        if !page.has_more {
+            break;
+        }
+        if max_events.is_some_and(|maximum| renderer.events_returned() >= maximum) {
+            truncated = true;
+            break;
+        }
+        cursor = Some(page.next_cursor.ok_or_else(|| {
             anyhow!("nonterminal Core session event page omitted its continuation cursor")
         })?);
     }
@@ -446,56 +405,13 @@ pub(super) fn stream_cli_session(
     renderer.finish(truncated, max_events)
 }
 
-struct SessionEventSelector {
+pub(super) const fn session_event_mode(
     mode: TranscriptMode,
-    pending_assistant: Option<CoreEventRecord>,
-}
-
-impl SessionEventSelector {
-    const fn new(mode: TranscriptMode) -> Self {
-        Self {
-            mode,
-            pending_assistant: None,
-        }
-    }
-
-    fn push(&mut self, event: CoreEventRecord) -> Vec<CoreEventRecord> {
-        match self.mode {
-            TranscriptMode::Log => vec![event],
-            TranscriptMode::Full => {
-                if event.event_type == EventType::Message.as_str()
-                    && matches!(event.role.as_deref(), Some("user" | "assistant" | "system"))
-                {
-                    vec![event]
-                } else {
-                    Vec::new()
-                }
-            }
-            TranscriptMode::Lite => {
-                if event.event_type != EventType::Message.as_str() {
-                    return Vec::new();
-                }
-                match event.role.as_deref() {
-                    Some("user") => {
-                        let mut selected = Vec::with_capacity(2);
-                        if let Some(assistant) = self.pending_assistant.take() {
-                            selected.push(assistant);
-                        }
-                        selected.push(event);
-                        selected
-                    }
-                    Some("assistant") => {
-                        self.pending_assistant = Some(event);
-                        Vec::new()
-                    }
-                    _ => Vec::new(),
-                }
-            }
-        }
-    }
-
-    fn finish(&mut self) -> Option<CoreEventRecord> {
-        self.pending_assistant.take()
+) -> ctx_history_query::SessionEventMode {
+    match mode {
+        TranscriptMode::Full => ctx_history_query::SessionEventMode::Full,
+        TranscriptMode::Lite => ctx_history_query::SessionEventMode::Lite,
+        TranscriptMode::Log => ctx_history_query::SessionEventMode::Log,
     }
 }
 
@@ -886,142 +802,21 @@ pub(super) fn validate_show_target(target: &ShowTarget) -> Result<()> {
     match target {
         ShowTarget::Session(args) => {
             validate_session_selector(args.id.as_deref(), args.provider_session.as_deref())
+                .map_err(externalize_query_error)
         }
-        ShowTarget::Event(args) => validate_ctx_id(&args.id, "event").map(|_| ()),
+        ShowTarget::Event(args) => validate_ctx_id(&args.id, "event")
+            .map(|_| ())
+            .map_err(externalize_query_error),
     }
 }
 
 #[cfg(test)]
-pub(super) use ctx_history_query::resolve_show_session;
-pub(super) use ctx_history_query::resolve_show_session_with_refs;
-
-pub(super) fn event_window(
+pub(super) fn resolve_show_session(
     index: &VerifiedIndex,
-    selected: &CoreEventRecord,
-    before: usize,
-    after: usize,
-    window: Option<usize>,
-    output_limit_bytes: usize,
-) -> Result<Vec<CoreEventRecord>> {
-    let (before, after) = window
-        .map(|window| (window, window))
-        .unwrap_or((before, after));
-    let coordinates = index
-        .session_event_coordinate_window(
-            selected.session_id.as_uuid(),
-            selected.event_id.as_uuid(),
-            before,
-            after,
-        )?
-        .ok_or_else(|| anyhow!("selected event is absent from its pinned Core session"))?;
-    let selected_ids = coordinates
-        .iter()
-        .map(|coordinate| coordinate.event_id)
-        .collect::<Vec<_>>();
-    core_events_by_ids_with_presentation_budget(
-        index,
-        &selected_ids,
-        PRESENTATION_MAX_EVENT_WINDOW_EVENTS,
-        output_limit_bytes,
-    )
-}
-
-fn core_events_by_ids_with_presentation_budget(
-    index: &VerifiedIndex,
-    event_ids: &[Uuid],
-    maximum_events: usize,
-    output_limit_bytes: usize,
-) -> Result<Vec<CoreEventRecord>> {
-    core_events_by_ids_with_presentation_limits(
-        index,
-        event_ids,
-        maximum_events,
-        output_limit_bytes,
-        MAX_ENCODED_CORE_RECORD_BYTES,
-    )
-}
-
-pub(super) fn core_events_by_ids_with_presentation_limits(
-    index: &VerifiedIndex,
-    event_ids: &[Uuid],
-    maximum_events: usize,
-    output_limit_bytes: usize,
-    encoded_core_limit_bytes: usize,
-) -> Result<Vec<CoreEventRecord>> {
-    if event_ids.len() > maximum_events {
-        return Err(anyhow::Error::new(PresentationEventLimitError {
-            actual_events: event_ids.len(),
-            maximum_events,
-        }));
-    }
-
-    let mut pending = VecDeque::new();
-    for chunk in event_ids.chunks(CORE_PRESENTATION_FETCH_MAX_EVENTS) {
-        pending.push_back(chunk);
-    }
-    let mut events = Vec::with_capacity(event_ids.len());
-    let mut retained_content_bytes = 0_usize;
-    let mut retained_encoded_core_bytes = 0_usize;
-    while let Some(ids) = pending.pop_front() {
-        let remaining_content_bytes = output_limit_bytes
-            .saturating_sub(retained_content_bytes)
-            .clamp(1, MAX_CORE_CONTENT_BYTES);
-        let remaining_encoded_core_bytes = encoded_core_limit_bytes
-            .saturating_sub(retained_encoded_core_bytes)
-            .clamp(1, MAX_ENCODED_CORE_RECORD_BYTES);
-        let budget =
-            CoreEventPageBudget::new(remaining_encoded_core_bytes, remaining_content_bytes);
-        #[cfg(test)]
-        CORE_PRESENTATION_FETCH_IDS.with(|fetched| {
-            fetched.borrow_mut().extend_from_slice(ids);
-        });
-        match index.core_events_by_ids_with_budget(
-            ids,
-            CORE_PRESENTATION_FETCH_MAX_EVENTS,
-            budget,
-        )? {
-            Some(batch) => {
-                let event_id = ids.last().copied().unwrap_or_else(Uuid::nil);
-                let actual_encoded_core_bytes =
-                    retained_encoded_core_bytes.saturating_add(batch.encoded_core_bytes);
-                if actual_encoded_core_bytes > encoded_core_limit_bytes {
-                    return Err(anyhow::Error::new(EncodedCorePresentationLimitError {
-                        event_id,
-                        actual_bytes: actual_encoded_core_bytes,
-                        maximum_bytes: encoded_core_limit_bytes,
-                    }));
-                }
-                retained_encoded_core_bytes = actual_encoded_core_bytes;
-                let actual_bytes = retained_content_bytes.saturating_add(batch.content_bytes);
-                enforce_presentation_output_limit(actual_bytes, output_limit_bytes, event_id)?;
-                retained_content_bytes = actual_bytes;
-                events.extend(batch.items);
-            }
-            None if ids.len() > 1 => {
-                let middle = ids.len() / 2;
-                let (left, right) = ids.split_at(middle);
-                pending.push_front(right);
-                pending.push_front(left);
-            }
-            None => {
-                return Err(anyhow!(
-                    "pinned Core generation could not resolve event {} within the remaining {} encoded-byte and {} content-byte presentation budgets",
-                    ids[0],
-                    encoded_core_limit_bytes.saturating_sub(retained_encoded_core_bytes),
-                    output_limit_bytes.saturating_sub(retained_content_bytes),
-                ));
-            }
-        }
-    }
-    if events.len() != event_ids.len()
-        || events
-            .iter()
-            .zip(event_ids)
-            .any(|(event, expected)| event.event_id.as_uuid() != *expected)
-    {
-        return Err(anyhow!(
-            "pinned Core generation did not return the exact requested presentation order"
-        ));
-    }
-    Ok(events)
+    id: Option<&str>,
+    provider_session_id: Option<&str>,
+    provider: Option<ctx_history_core::CaptureProvider>,
+) -> Result<SessionRecord> {
+    ctx_history_query::resolve_show_session(index, id, provider_session_id, provider)
+        .map_err(externalize_query_error)
 }

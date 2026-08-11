@@ -1,25 +1,24 @@
+#[cfg(test)]
 use anyhow::Result;
-use ctx_history_index::{EventSearchFilters, SearchContentScope, VerifiedIndex};
+use ctx_history_index::SearchContentScope;
+#[cfg(test)]
+use ctx_history_index::{EventSearchFilters, VerifiedIndex};
 
 use crate::{
     cli::{CliSearchBackendArg, ContentScopeArg},
-    commands::search::CliRefreshArg,
-    config, RefreshArg, SearchArgs, SearchBackendArg,
+    config, SearchArgs, SearchBackendArg,
 };
 
-use super::super::compact_ref::CompactRefResolver;
 #[cfg(test)]
 use super::semantic_error_into_anyhow;
-use super::semantic_port::{HistorySemanticError, HistorySemanticPort};
+use super::semantic_port::{SemanticAvailability, SemanticReason};
 
-pub(super) use ctx_history_query::{
-    normalize_search_request, unsupported_semantic_scope, validate_search_request,
+pub(super) use ctx_history_query::unsupported_semantic_scope;
+pub(crate) use ctx_history_query::{
+    NormalizedSearchQuery, SearchPolicy, SearchRequest as SourceSearchRequest,
 };
-pub(crate) use ctx_history_query::{NormalizedSearchQuery, SearchRequest as SourceSearchRequest};
 
-pub(in crate::commands::source_index) fn source_search_request(
-    args: &SearchArgs,
-) -> SourceSearchRequest {
+pub(crate) fn source_search_request(args: &SearchArgs) -> SourceSearchRequest {
     SourceSearchRequest {
         query: args.query.clone().unwrap_or_default(),
         terms: args.term.clone(),
@@ -50,27 +49,30 @@ pub(in crate::commands::source_index) fn source_search_request(
             CliSearchBackendArg::Semantic => SearchBackendArg::Semantic,
         }),
         semantic_weight: args.semantic_weight,
-        semantic_enabled: false,
-        semantic_daemon_enabled: false,
-        refresh: match args.refresh {
-            CliRefreshArg::Background => RefreshArg::Background,
-            CliRefreshArg::Off => RefreshArg::Off,
-            CliRefreshArg::Wait => RefreshArg::Wait,
-        },
     }
 }
 
-pub(in crate::commands::source_index) fn resolve_source_search_backend_with_port<
-    P: HistorySemanticPort,
->(
-    request: &SourceSearchRequest,
+pub(in crate::commands::source_index) fn source_search_policy(
     config: &config::AppConfig,
-    semantic_port: &P,
-) -> std::result::Result<SearchBackendArg, HistorySemanticError> {
-    let mut planned = request.clone();
-    planned.semantic_enabled = config.semantic_search_enabled();
-    planned.semantic_daemon_enabled = config.daemon.enabled;
-    ctx_history_query::resolve_search_backend(&planned, semantic_port)
+) -> SearchPolicy {
+    let semantic_enabled = config.semantic_search_enabled();
+    let semantic = if !semantic_enabled {
+        SemanticAvailability::Unavailable(SemanticReason::PolicyDisabled)
+    } else if !crate::semantic::semantic_query_service_supported() {
+        SemanticAvailability::Unavailable(SemanticReason::PlatformUnsupported)
+    } else if !config.daemon.enabled {
+        SemanticAvailability::Unavailable(SemanticReason::ExecutionUnavailable)
+    } else {
+        SemanticAvailability::Available
+    };
+    SearchPolicy {
+        default_backend: if semantic_enabled {
+            SearchBackendArg::Hybrid
+        } else {
+            SearchBackendArg::Lexical
+        },
+        semantic,
+    }
 }
 
 #[cfg(test)]
@@ -78,12 +80,8 @@ pub(in crate::commands::source_index) fn resolve_source_search_backend(
     request: &SourceSearchRequest,
     config: &config::AppConfig,
 ) -> Result<SearchBackendArg> {
-    resolve_source_search_backend_with_port(
-        request,
-        config,
-        &crate::semantic::SemanticQueryAdapter::new(std::path::Path::new("")),
-    )
-    .map_err(semantic_error_into_anyhow)
+    ctx_history_query::resolve_search_backend(request, source_search_policy(config))
+        .map_err(semantic_error_into_anyhow)
 }
 
 #[cfg(test)]
@@ -91,13 +89,5 @@ pub(in crate::commands::source_index) fn index_search_filters(
     request: &SourceSearchRequest,
     index: &VerifiedIndex,
 ) -> Result<EventSearchFilters> {
-    ctx_history_query::search_filters(request, index)
-}
-
-pub(in crate::commands::source_index) fn index_search_filters_with_refs(
-    request: &SourceSearchRequest,
-    index: &VerifiedIndex,
-    references: &CompactRefResolver<'_>,
-) -> Result<EventSearchFilters> {
-    ctx_history_query::search_filters_with_refs(request, index, references)
+    ctx_history_query::search_filters(request, index, None)
 }

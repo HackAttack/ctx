@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ctx_history_core::SourceKey;
 use ctx_history_index::{CoreEventRecord, EventRecord, SessionRecord};
+use ctx_history_query::{LocateRequest, LocateResult, PinnedHistoryQuery};
 use serde_json::{json, Value};
 
 use crate::{
@@ -14,13 +15,8 @@ use crate::{
 
 use super::{
     compact_presentation::{reference_needs_retained_peer, CompactPresentation},
-    compact_ref::CompactRefResolver,
     render::{pretty_json_stdout_bytes, render_locate_document, timestamp_json},
-    shared::{
-        index_root, open_index, resolve_core_event_with_refs, validate_ctx_id,
-        validate_session_selector,
-    },
-    show::resolve_show_session_with_refs,
+    shared::{externalize_query_error, index_root, open_index},
 };
 
 pub(crate) fn run_locate(
@@ -29,7 +25,6 @@ pub(crate) fn run_locate(
     local_usage: &mut CliUsage,
     ui: &mut Ui,
 ) -> Result<()> {
-    validate_locate_target(&args.target)?;
     let index = open_index(&data_root)?;
     let (value, compact_value, json_output) = match args.target {
         LocateTarget::Session(args) => {
@@ -43,28 +38,26 @@ pub(crate) fn run_locate(
                         .as_deref()
                         .is_some_and(reference_needs_retained_peer),
             )?;
-            let pinned_references = CompactRefResolver::new(&index, None);
-            let input_resolver = compact
-                .as_ref()
-                .map(CompactPresentation::resolver)
-                .unwrap_or(pinned_references);
             let provider = args.provider.map(|provider| provider.capture_provider());
-            let session = resolve_show_session_with_refs(
-                &input_resolver,
-                args.id.as_deref(),
-                args.provider_session.as_deref(),
-                provider,
-            )?;
-            let first_event = index
-                .events_for_session(session.session_id.as_uuid())?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    anyhow!(
-                        "session {} has no event in the pinned Core generation",
-                        session.session_id
-                    )
-                })?;
+            let query = PinnedHistoryQuery::new(
+                &index,
+                compact
+                    .as_ref()
+                    .and_then(CompactPresentation::retained_peer),
+            );
+            let LocateResult::Session {
+                session,
+                first_event,
+            } = query
+                .locate(&LocateRequest::Session {
+                    selector: args.id,
+                    provider_session_id: args.provider_session,
+                    provider,
+                })
+                .map_err(externalize_query_error)?
+            else {
+                unreachable!("session locate returns a session result")
+            };
             let value = locate_session_value(&session, &first_event);
             let compact_value = (!json_output)
                 .then(|| {
@@ -83,12 +76,18 @@ pub(crate) fn run_locate(
                 &index_root(&data_root),
                 !json_output || reference_needs_retained_peer(&args.id),
             )?;
-            let pinned_references = CompactRefResolver::new(&index, None);
-            let input_resolver = compact
-                .as_ref()
-                .map(CompactPresentation::resolver)
-                .unwrap_or(pinned_references);
-            let event = resolve_core_event_with_refs(&input_resolver, &args.id)?;
+            let query = PinnedHistoryQuery::new(
+                &index,
+                compact
+                    .as_ref()
+                    .and_then(CompactPresentation::retained_peer),
+            );
+            let LocateResult::Event(event) = query
+                .locate(&LocateRequest::Event { selector: args.id })
+                .map_err(externalize_query_error)?
+            else {
+                unreachable!("event locate returns an event result")
+            };
             let value = locate_event_value(&event);
             let compact_value = (!json_output)
                 .then(|| {
@@ -118,15 +117,6 @@ pub(crate) fn run_locate(
     local_usage.set_result_observation(ResultObservationAction::Locate, 1, 0, content_bytes);
     local_usage.set_measured_output_bytes(output_bytes);
     Ok(())
-}
-
-fn validate_locate_target(target: &LocateTarget) -> Result<()> {
-    match target {
-        LocateTarget::Session(args) => {
-            validate_session_selector(args.id.as_deref(), args.provider_session.as_deref())
-        }
-        LocateTarget::Event(args) => validate_ctx_id(&args.id, "event").map(|_| ()),
-    }
 }
 
 fn locate_session_value(session: &SessionRecord, first_event: &EventRecord) -> Value {

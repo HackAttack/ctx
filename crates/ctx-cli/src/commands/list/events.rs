@@ -1,9 +1,7 @@
 use std::{io::Write, path::Path, path::PathBuf};
 
 use anyhow::Result;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::DateTime;
-use ctx_history_core::{MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES};
+use ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES;
 use ctx_history_index::{
     CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeError, CoreEventRangeFilters,
     CoreEventRangePage, CoreEventRangeSelection, IndexError, VerifiedIndex,
@@ -25,6 +23,7 @@ mod request;
 
 #[cfg(test)]
 use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
+pub(crate) use ctx_history_query::DEFAULT_EVENT_QUERY_LIMIT;
 use render::format_timestamp;
 pub(crate) use render::render_event;
 pub(crate) use request::{
@@ -32,11 +31,8 @@ pub(crate) use request::{
 };
 
 pub(crate) const EVENT_QUERY_SCHEMA_VERSION: u8 = 1;
-pub(crate) const DEFAULT_EVENT_QUERY_LIMIT: u64 = 10_000;
 const EVENT_QUERY_PAGE_ITEMS: usize = 100;
 const EVENT_QUERY_PAGE_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_EVENT_QUERY_LIMIT: u64 = 10_000_000;
-pub(crate) const MAX_EVENT_QUERY_CURSOR_CHARS: usize = 512;
 /// JSON string escaping can expand each admitted Core byte to six wire bytes.
 /// Keep a fixed envelope allowance while retaining a deterministic upper bound.
 pub(crate) const MAX_EVENT_QUERY_WIRE_RECORD_BYTES: usize =
@@ -151,30 +147,7 @@ fn execute(
 }
 
 pub(crate) fn validated_limit(limit: u64) -> std::result::Result<usize, EventQueryError> {
-    validate_resource_limit("limit", limit, 1, MAX_EVENT_QUERY_LIMIT)?;
-    usize::try_from(limit).map_err(|_| EventQueryError::InvalidResourceLimit {
-        field: "limit",
-        requested: limit,
-        minimum: 1,
-        maximum: MAX_EVENT_QUERY_LIMIT,
-    })
-}
-
-fn validate_resource_limit(
-    field: &'static str,
-    requested: u64,
-    minimum: u64,
-    maximum: u64,
-) -> std::result::Result<(), EventQueryError> {
-    if !(minimum..=maximum).contains(&requested) {
-        return Err(EventQueryError::InvalidResourceLimit {
-            field,
-            requested,
-            minimum,
-            maximum,
-        });
-    }
-    Ok(())
+    ctx_history_query::validated_event_limit(limit).map_err(Into::into)
 }
 
 pub(crate) fn selection(
@@ -182,16 +155,7 @@ pub(crate) fn selection(
     until: Option<&str>,
     filters: CoreEventRangeFilters,
 ) -> std::result::Result<CoreEventRangeSelection, EventQueryError> {
-    match (since, until) {
-        (None, None) => CoreEventRangeSelection::all(filters).map_err(Into::into),
-        (Some(since), Some(until)) => CoreEventRangeSelection::with_filters(
-            parse_rfc3339("since", since)?,
-            parse_rfc3339("until", until)?,
-            filters,
-        )
-        .map_err(Into::into),
-        (Some(_), None) | (None, Some(_)) => Err(EventQueryError::IncompleteTimestampRange),
-    }
+    ctx_history_query::event_range_selection(since, until, filters).map_err(Into::into)
 }
 
 fn selection_from_args(
@@ -246,18 +210,18 @@ fn read_page(
     byte_budget: usize,
     strict_budget: Option<CoreEventPageBudget>,
 ) -> std::result::Result<CoreEventRangePage, EventQueryError> {
-    let budget = CoreEventPageBudget::new(byte_budget, byte_budget.min(MAX_CORE_CONTENT_BYTES));
-    match strict_budget {
-        Some(strict_budget) => index.core_event_range_page_with_strict_budget(
-            selection,
-            cursor,
-            page_items,
-            budget,
-            strict_budget,
-        ),
-        None => index.core_event_range_page_with_budget(selection, cursor, page_items, budget),
-    }
-    .map_err(Into::into)
+    let request = ctx_history_query::ListEventsPageRequest {
+        selection: selection.clone(),
+        cursor: cursor.cloned(),
+        limit: u64::try_from(page_items).unwrap_or(u64::MAX),
+        page_items,
+        byte_budget,
+        strict_budget,
+    };
+    ctx_history_query::PinnedHistoryQuery::new(index, None)
+        .list_events_page(&request)
+        .map(|result| result.page)
+        .map_err(Into::into)
 }
 
 struct EncodedPage {
@@ -750,55 +714,18 @@ fn enforce_wire_record_cap(actual: usize) -> std::result::Result<(), EventQueryE
 pub(crate) fn decode_cursor(
     encoded: &str,
 ) -> std::result::Result<CoreEventRangeCursor, EventQueryError> {
-    if encoded.len() > MAX_EVENT_QUERY_CURSOR_CHARS {
-        return Err(EventQueryError::CursorTooLarge {
-            actual: encoded.len(),
-            maximum: MAX_EVENT_QUERY_CURSOR_CHARS,
-        });
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| EventQueryError::InvalidCursorEncoding)?;
-    if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
-        return Err(EventQueryError::InvalidCursorEncoding);
-    }
-    Ok(CoreEventRangeCursor::decode(&bytes)?)
+    ctx_history_query::decode_event_range_cursor(encoded).map_err(Into::into)
 }
 
 pub(crate) fn encode_cursor(cursor: &CoreEventRangeCursor) -> String {
-    URL_SAFE_NO_PAD.encode(cursor.encode())
-}
-
-pub(crate) fn parse_rfc3339(
-    field: &'static str,
-    value: &str,
-) -> std::result::Result<i64, EventQueryError> {
-    let timestamp =
-        DateTime::parse_from_rfc3339(value).map_err(|_| EventQueryError::InvalidTimestamp {
-            field,
-            value: value.to_owned(),
-        })?;
-    if timestamp.timestamp_subsec_nanos() % 1_000_000 != 0 {
-        return Err(EventQueryError::InvalidTimestampPrecision {
-            field,
-            value: value.to_owned(),
-        });
-    }
-    Ok(timestamp.timestamp_millis())
+    ctx_history_query::encode_event_range_cursor(cursor)
 }
 
 pub(crate) fn parse_uuid(
     field: &'static str,
     value: Option<&str>,
 ) -> std::result::Result<Option<Uuid>, EventQueryError> {
-    value
-        .map(|value| {
-            Uuid::parse_str(value).map_err(|_| EventQueryError::InvalidUuid {
-                field,
-                value: value.to_owned(),
-            })
-        })
-        .transpose()
+    ctx_history_query::parse_event_query_uuid(field, value).map_err(Into::into)
 }
 
 pub(crate) fn event_query_error_value(error: &EventQueryError) -> Value {
@@ -865,6 +792,43 @@ pub(crate) fn event_query_error_value(error: &EventQueryError) -> Value {
 impl From<IndexError> for EventQueryError {
     fn from(value: IndexError) -> Self {
         Self::Range(CoreEventRangeError::Index(value))
+    }
+}
+
+impl From<ctx_history_query::ListEventsError> for EventQueryError {
+    fn from(error: ctx_history_query::ListEventsError) -> Self {
+        match error {
+            ctx_history_query::ListEventsError::Range(error) => Self::Range(error),
+            ctx_history_query::ListEventsError::InvalidTimestamp { field, value } => {
+                Self::InvalidTimestamp { field, value }
+            }
+            ctx_history_query::ListEventsError::InvalidTimestampPrecision { field, value } => {
+                Self::InvalidTimestampPrecision { field, value }
+            }
+            ctx_history_query::ListEventsError::IncompleteTimestampRange => {
+                Self::IncompleteTimestampRange
+            }
+            ctx_history_query::ListEventsError::InvalidUuid { field, value } => {
+                Self::InvalidUuid { field, value }
+            }
+            ctx_history_query::ListEventsError::InvalidResourceLimit {
+                field,
+                requested,
+                minimum,
+                maximum,
+            } => Self::InvalidResourceLimit {
+                field,
+                requested,
+                minimum,
+                maximum,
+            },
+            ctx_history_query::ListEventsError::CursorTooLarge { actual, maximum } => {
+                Self::CursorTooLarge { actual, maximum }
+            }
+            ctx_history_query::ListEventsError::InvalidCursorEncoding => {
+                Self::InvalidCursorEncoding
+            }
+        }
     }
 }
 

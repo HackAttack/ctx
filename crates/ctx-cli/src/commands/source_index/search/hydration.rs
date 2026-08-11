@@ -1,4 +1,4 @@
-pub use ctx_history_query::{presentations_for_search_hits, SearchPresentation};
+pub use ctx_history_query::SearchPresentation;
 #[cfg(test)]
 pub use ctx_history_query::{
     presentations_for_search_hits_with_budget, SearchPresentationHydrationBudget,
