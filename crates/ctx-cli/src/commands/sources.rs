@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use serde_json::json;
 
-use ctx_history_capture_model::{
+use ctx_history_capture::{
     DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
@@ -443,7 +443,7 @@ pub(crate) fn source_provider_cli_name(provider: CaptureProvider) -> &'static st
 mod ui_tests {
     use std::{io::Write as _, path::PathBuf};
 
-    use ctx_history_capture_model::{
+    use ctx_history_capture::{
         ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
     };
     use unicode_width::UnicodeWidthStr as _;

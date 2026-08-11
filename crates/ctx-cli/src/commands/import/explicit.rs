@@ -1,9 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use anyhow::{bail, Context, Result};
-use ctx_history_capture_model::{
-    ProviderImportSummary, ProviderImportWorkResult, ProviderSourceStatus,
-};
+use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult, ProviderSourceStatus};
 use serde_json::json;
 
 use crate::{

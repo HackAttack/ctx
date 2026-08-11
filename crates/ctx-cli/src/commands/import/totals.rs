@@ -1,4 +1,4 @@
-use ctx_history_capture_model::{ProviderImportSummary, ProviderImportWorkResult};
+use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult};
 
 use super::SourceStats;
 

@@ -1,8 +1,9 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use ctx_history_capture::{CaptureError, SourceBackedRouteError, SourceBackedRouteErrorKind};
-use ctx_history_capture_model::ProviderSourceFailureKind;
+use ctx_history_capture::{
+    CaptureError, ProviderSourceFailureKind, SourceBackedRouteError, SourceBackedRouteErrorKind,
+};
 
 use crate::commands::import::totals::ImportTotals;
 use crate::commands::import::{
@@ -321,7 +322,7 @@ fn import_outcome_copy(totals: &ImportTotals) -> (OutcomeState, &'static str, St
     (
         OutcomeState::Success,
         "History import completed",
-        if totals.work_result == ctx_history_capture_model::ProviderImportWorkResult::Changed {
+        if totals.work_result == ctx_history_capture::ProviderImportWorkResult::Changed {
             "Local history changed.".to_owned()
         } else {
             "No source changes were found.".to_owned()
@@ -480,7 +481,7 @@ pub(crate) fn import_failure_type(error: &anyhow::Error) -> ImportFailureType {
 mod tests {
     use std::{io::Write as _, path::Path};
 
-    use ctx_history_capture_model::ProviderImportWorkResult;
+    use ctx_history_capture::ProviderImportWorkResult;
     use unicode_width::UnicodeWidthStr as _;
 
     use crate::ui::{ColorMode, StreamKind, TestContext};

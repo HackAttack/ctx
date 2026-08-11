@@ -8,11 +8,8 @@ use serde_json::{json, Value};
 
 use ctx_history_capture::{
     discover_provider_sources_for_provider_report, discover_provider_sources_report,
-    provider_source_status_reason,
-};
-use ctx_history_capture_model::{
-    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderImportSupport, ProviderSource,
-    ProviderSourceStatus,
+    provider_source_status_reason, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport,
+    ProviderImportSupport, ProviderSource, ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
 
@@ -288,8 +285,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ctx_history_capture::provider_source_for_path;
-    use ctx_history_capture_model::ProviderSourceKind;
+    use ctx_history_capture::{provider_source_for_path, ProviderSourceKind};
     use rusqlite::{params, Connection};
 
     fn issue(kind: DiscoveryIssueKind, reason: &'static str) -> DiscoveryIssue {

@@ -3,10 +3,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use ctx_history_capture::{
     discover_provider_sources, source_backed_source_failure_identity,
-    validate_provider_source_roots_outside_data_root, HERMES_STATE_DB_UNSUPPORTED_REASON,
-};
-use ctx_history_capture_model::{
-    DiscoveryIssueKind, ProviderImportWorkResult, ProviderSource, ProviderSourceStatus,
+    validate_provider_source_roots_outside_data_root, DiscoveryIssueKind, ProviderImportWorkResult,
+    ProviderSource, ProviderSourceStatus, HERMES_STATE_DB_UNSUPPORTED_REASON,
 };
 use ctx_history_core::platform_security::establish_private_data_root;
 use serde_json::json;

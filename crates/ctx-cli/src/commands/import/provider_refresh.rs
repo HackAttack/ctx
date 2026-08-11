@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use ctx_history_capture_model::{ProviderImportSummary, ProviderImportWorkResult};
+use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult};
 use ctx_history_core::CaptureProvider;
 
 use crate::analytics::{
