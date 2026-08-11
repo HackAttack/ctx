@@ -21,11 +21,6 @@
   "grandfathered_at": "1f3d26aa000cc7c2708e8aa6ddc835ca529f6a6a",
   "grandfathered": [
     {
-      "path": "crates/ctx-history-source-discovery/src/provider_sources/resolvers/profile_project.rs",
-      "kind": "production",
-      "code_baseline": 1726
-    },
-    {
       "path": "crates/ctx-protocol/src/lib.rs",
       "kind": "production",
       "code_baseline": 1781
