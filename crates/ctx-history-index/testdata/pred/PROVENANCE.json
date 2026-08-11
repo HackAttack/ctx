@@ -1,5 +1,5 @@
 {
-  "command": "testdata/core-predecessor-7552eee7/regenerate.sh",
+  "command": "testdata/pred/regenerate.sh",
   "core_record_contract_fingerprint": "7552eee7cae0695a98f202b02f52cbf5680845cb7bacea4ed754e283bc15f051",
   "files": [
     {

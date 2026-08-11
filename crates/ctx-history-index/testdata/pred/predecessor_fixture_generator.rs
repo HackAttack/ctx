@@ -68,7 +68,7 @@ fn main() {
         "generation_id": receipt.generation_id,
         "physical_integrity_digest": physical_integrity_digest,
         "generator": "predecessor_fixture_generator.rs",
-        "command": "testdata/core-predecessor-7552eee7/regenerate.sh",
+        "command": "testdata/pred/regenerate.sh",
         "sanitization": "synthetic source and records; no user or provider files",
         "files": files,
     });
