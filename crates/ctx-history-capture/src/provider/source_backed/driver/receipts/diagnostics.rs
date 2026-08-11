@@ -155,6 +155,7 @@ impl SourceBackedRecordRejections {
 }
 
 /// Three independently committed certified whole-route absences bound grace.
+#[cfg(test)]
 pub const AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS: u32 =
     ctx_history_index::policy::AUTOMATIC_ROUTE_DELETION_GRACE_OBSERVATIONS;
 

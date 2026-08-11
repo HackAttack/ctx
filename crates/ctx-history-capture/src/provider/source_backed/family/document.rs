@@ -86,8 +86,7 @@ impl<'scan, 'writer> DocumentBaseRoute<'scan, 'writer> {
             return None;
         }
         self.sink
-            .writer
-            .generation_base_certified_source(&self.sink.route_identity, source)
+            .pinned_append_base(source)
             .map(DocumentAppendBase::Generation)
     }
 }

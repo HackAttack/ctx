@@ -6,7 +6,9 @@
 //! dispatch nor storage.
 
 use std::{
+    collections::BTreeSet,
     error::Error,
+    path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -14,7 +16,10 @@ use std::{
 };
 
 use ctx_history_capture_model::SourceRouteIdentity;
-use ctx_history_core::{CertifiedSource, CoreRecord, SourceKey};
+use ctx_history_core::{
+    CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CertifiedSourceInventory,
+    CoreRecord, SourceKey,
+};
 use uuid::Uuid;
 
 /// A borrowed source-route member of an immutable capture snapshot.
@@ -122,6 +127,247 @@ pub trait ImmutableCaptureSnapshot {
     fn source_routes(&self) -> impl ExactSizeIterator<Item = CaptureRouteRef<'_>>;
 
     fn source_route(&self, route_identity: &SourceRouteIdentity) -> Option<CaptureRouteRef<'_>>;
+}
+
+/// Runtime-neutral writer sizing. The index adapter maps this one-for-one to
+/// its concrete writer options.
+#[derive(Debug, Clone)]
+pub struct CaptureLifecycleOptions {
+    pub indexer_threads: usize,
+    pub memory_bytes: usize,
+}
+
+impl Default for CaptureLifecycleOptions {
+    fn default() -> Self {
+        let parallelism = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        Self {
+            indexer_threads: parallelism.clamp(1, 8),
+            memory_bytes: 512 * 1024 * 1024,
+        }
+    }
+}
+
+/// A conclusive present-route snapshot. Its member vector is moved from the
+/// coordinator into the lifecycle implementation without another collection.
+#[derive(Debug)]
+pub struct PresentCaptureRoute {
+    route_identity: SourceRouteIdentity,
+    sources: Vec<SourceKey>,
+}
+
+impl PresentCaptureRoute {
+    pub fn new(route_identity: SourceRouteIdentity, sources: Vec<SourceKey>) -> Self {
+        Self {
+            route_identity,
+            sources,
+        }
+    }
+
+    pub fn into_parts(self) -> (SourceRouteIdentity, Vec<SourceKey>) {
+        (self.route_identity, self.sources)
+    }
+}
+
+/// A route-local certificate offered to a capture revalidation visitor.
+#[derive(Debug, Clone, Copy)]
+pub enum CaptureRevalidationTarget<'a> {
+    Source(&'a CertifiedSource),
+    Deletion(&'a CertifiedSourceDeletion),
+}
+
+/// A recovery that has already committed a predecessor migration but still
+/// requires lifecycle recovery before capture can proceed.
+#[derive(Debug, Clone)]
+pub struct CaptureLifecycleRecovery {
+    generation_id: String,
+    detail: String,
+}
+
+impl CaptureLifecycleRecovery {
+    pub fn new(generation_id: String, detail: String) -> Self {
+        Self {
+            generation_id,
+            detail,
+        }
+    }
+
+    pub fn generation_id(&self) -> &str {
+        &self.generation_id
+    }
+
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+/// Outcome of opening a lifecycle while preserving the locked-base recovery
+/// distinction required by the coordinator.
+pub enum CaptureLifecycleOpenOutcome<L> {
+    Ready(L),
+    Recovered {
+        lifecycle: L,
+        recovery: CaptureLifecycleRecovery,
+    },
+    RecoveryRequired {
+        recovery: CaptureLifecycleRecovery,
+    },
+}
+
+/// Static writer lifecycle for capture coordination.
+///
+/// All concrete storage and publication authority stays behind this generic
+/// port. The nested result returned by `visit_revalidation_targets` preserves
+/// acquisition failures separately from capture visitor failures without type
+/// erasure.
+pub trait CaptureLifecycleSink: Sized {
+    type Error: Error + Send + Sync + 'static;
+    type BaseLookup: BaseEventLookup<Error = Self::Error>;
+    type Preparation: CorePreparationPort<Failure = Self::Error>;
+    type PinnedAppendBase;
+    type Commit;
+    type CommitWithMetadata;
+    type Snapshot<'a>: ImmutableCaptureSnapshot
+    where
+        Self: 'a;
+
+    fn open(
+        root: &Path,
+        options: CaptureLifecycleOptions,
+    ) -> Result<CaptureLifecycleOpenOutcome<Self>, Self::Error>;
+
+    fn base_snapshot(&self) -> Option<Self::Snapshot<'_>>;
+
+    fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource>;
+
+    fn pinned_append_base(
+        &self,
+        route_identity: &SourceRouteIdentity,
+        source: &SourceKey,
+    ) -> Option<Self::PinnedAppendBase>;
+
+    fn pinned_append_base_source(base: &Self::PinnedAppendBase) -> &CertifiedSource;
+
+    fn base_event_lookup(&self) -> Self::BaseLookup;
+
+    fn core_preparation(&self) -> Self::Preparation;
+
+    fn set_route_plan(
+        &mut self,
+        selected: BTreeSet<SourceRouteIdentity>,
+        carried_from_base: BTreeSet<SourceRouteIdentity>,
+    ) -> Result<(), Self::Error>;
+
+    fn begin_route_stage(&mut self, route_identity: SourceRouteIdentity)
+        -> Result<(), Self::Error>;
+
+    fn retain_unstaged_route_members(
+        &mut self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Result<(), Self::Error>;
+
+    fn route_retains_unstaged_members(&self, route_identity: &SourceRouteIdentity) -> bool;
+
+    fn register_route_revalidation(
+        &mut self,
+        route_identity: SourceRouteIdentity,
+        revalidate: impl Fn() -> bool + Send + 'static,
+    ) -> Result<(), Self::Error>;
+
+    fn visit_revalidation_targets<E>(
+        &self,
+        visit: impl for<'a> FnMut(CaptureRevalidationTarget<'a>) -> Result<(), E>,
+    ) -> Result<Result<(), E>, Self::Error>;
+
+    fn finish_route_stage(
+        &mut self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Result<(), Self::Error>;
+
+    fn rollback_route_stage(
+        &mut self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Result<(), Self::Error>;
+
+    fn authorize_carried_route_retirement(
+        &mut self,
+        replacement_route: &SourceRouteIdentity,
+        retired_route: &SourceRouteIdentity,
+    ) -> Result<(), Self::Error>;
+
+    fn retire_carried_route(
+        &mut self,
+        replacement_route: &SourceRouteIdentity,
+        retired_route: &SourceRouteIdentity,
+    ) -> Result<Vec<SourceKey>, Self::Error>;
+
+    fn begin_source_replace(&mut self, source: SourceKey) -> Result<(), Self::Error>;
+
+    fn begin_source_append(&mut self, source: SourceKey) -> Result<&CertifiedSource, Self::Error>;
+
+    fn begin_source_append_from_base(
+        &mut self,
+        base: Self::PinnedAppendBase,
+    ) -> Result<&CertifiedSource, Self::Error>;
+
+    fn add_prepared(
+        &mut self,
+        prepared: <Self::Preparation as CorePreparationPort>::Prepared,
+    ) -> Result<(), Self::Error>;
+
+    fn certify_source(&mut self, certificate: CertifiedSource) -> Result<(), Self::Error>;
+
+    fn certify_source_append(&mut self, append: CertifiedSourceAppend) -> Result<(), Self::Error>;
+
+    fn retain_source(&mut self, certificate: CertifiedSource) -> Result<(), Self::Error>;
+
+    fn certify_complete_inventory(
+        &mut self,
+        inventory: CertifiedSourceInventory,
+    ) -> Result<(), Self::Error>;
+
+    fn delete_source(
+        &mut self,
+        deletion: CertifiedSourceDeletion,
+        inventory: CertifiedSourceInventory,
+    ) -> Result<(), Self::Error>;
+
+    fn carry_failed_route(
+        &mut self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Result<bool, Self::Error>;
+
+    fn observe_missing_route(
+        &mut self,
+        route_identity: SourceRouteIdentity,
+        observed_at_unix_ms: u64,
+        revalidate_missing: impl Fn() -> bool + Send + 'static,
+    ) -> Result<(), Self::Error>;
+
+    fn set_present_routes(&mut self, routes: Vec<PresentCaptureRoute>) -> Result<(), Self::Error>;
+
+    fn commit<F, I>(
+        self,
+        revalidate: F,
+        revalidate_inventory: I,
+    ) -> Result<Self::Commit, Self::Error>
+    where
+        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
+        I: FnMut(&CertifiedSourceInventory) -> bool;
+
+    fn commit_with_metadata<F, I, M>(
+        self,
+        revalidate: F,
+        revalidate_inventory: I,
+        metadata_factory: M,
+    ) -> Result<Self::CommitWithMetadata, Self::Error>
+    where
+        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
+        I: FnMut(&CertifiedSourceInventory) -> bool,
+        M: for<'a> FnOnce(
+            CapturePublicationContext<'a, Self::Snapshot<'a>>,
+        ) -> Result<Vec<u8>, Self::Error>;
 }
 
 /// Move-owned facts from one capture commit, parameterized by its immutable

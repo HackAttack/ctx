@@ -15,7 +15,8 @@ use super::super::{
 };
 use super::*;
 use crate::provider::source_backed::{
-    SourceBackedLogicalSourceFailures, SourceBackedRecordRejections, SourceBackedRouteResources,
+    IndexCaptureLifecycle, SourceBackedLogicalSourceFailures, SourceBackedRecordRejections,
+    SourceBackedRouteResources,
 };
 use crate::repository_attribution::AttributionInput;
 use ctx_history_core::{
@@ -47,10 +48,12 @@ fn test_writer_options() -> WriterOptions {
 macro_rules! capture_test_generation {
     ($adapter:expr, $root:expr, $index_root:expr, $workers:expr, $capture:expr) => {{
         let resident = Mutex::new(FamilyResident::default());
-        let mut writer = GenerationWriter::open($index_root, test_writer_options())
-            .unwrap()
-            .into_writer()
-            .unwrap();
+        let mut writer: IndexCaptureLifecycle =
+            GenerationWriter::open($index_root, test_writer_options())
+                .unwrap()
+                .into_writer()
+                .unwrap()
+                .into();
         let mut owners = HashMap::new();
         let mut complete_inventories = Vec::new();
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
@@ -58,7 +61,7 @@ macro_rules! capture_test_generation {
         let result = {
             let mut sink = SourceBackedGenerationSink {
                 core_record_preparer: writer.core_record_preparer().into(),
-                writer: &mut writer,
+                lifecycle: &mut writer,
                 owners: &mut owners,
                 complete_inventories: &mut complete_inventories,
                 route_index: 0,
@@ -1444,6 +1447,7 @@ fn capture_parallel_test_generation(
         });
     let activity = jsonl_family_scanner_activity();
     let commit = writer
+        .into_writer()
         .commit_with_complete_inventory_revalidation(|_| true, |_| true)
         .unwrap();
     (commit, activity)

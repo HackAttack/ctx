@@ -16,18 +16,15 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::SourceRouteIdentity;
 use ctx_history_capture_runtime::{
-    CapturePublicationContext, CapturePublicationDisposition, CaptureSourceAggregateRef,
-    ImmutableCaptureSnapshot,
+    CaptureLifecycleSink, CapturePublicationContext, CapturePublicationDisposition,
+    CaptureSourceAggregateRef, ImmutableCaptureSnapshot,
 };
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion,
     CertifiedSourceInventory, CoreRecord, ScannedSourceCounts, SourceKey, TypedKey,
 };
-use ctx_history_index::{
-    GenerationBaseCertifiedSource, GenerationWriter, GenerationWriterOpenOutcome, IndexError,
-    RevalidationTarget, SourceRouteSnapshot, WriterOptions,
-};
+use ctx_history_index::{GenerationBaseCertifiedSource, IndexError, WriterOptions};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -103,6 +100,9 @@ mod runtime_adapter;
 mod watch;
 
 pub(crate) use ctx_history_capture_runtime::BaseEventLookup;
+pub use ctx_history_capture_runtime::{
+    CaptureLifecycleOpenOutcome, CaptureRevalidationTarget, PresentCaptureRoute,
+};
 pub use discovery::*;
 pub use driver::*;
 #[cfg(test)]
@@ -114,7 +114,7 @@ pub use registration::*;
 pub(crate) use runtime_adapter::*;
 pub use runtime_adapter::{
     BorrowedIndexManifestView, CommittedIndexManifestView, IndexCaptureCommitReceipt,
-    IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
+    IndexCaptureLifecycle, IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
 };
 pub use watch::*;
 
@@ -122,11 +122,11 @@ pub(crate) fn source_backed_base_sources(
     sink: &SourceBackedGenerationSink<'_>,
     owns: impl Fn(&SourceKey) -> bool,
 ) -> Vec<CertifiedSource> {
-    sink.writer
-        .base_manifest()
+    sink.lifecycle
+        .base_snapshot()
         .map(|manifest| {
             manifest
-                .sources
+                .sources()
                 .iter()
                 .filter(|source| owns(source.observation().source()))
                 .cloned()

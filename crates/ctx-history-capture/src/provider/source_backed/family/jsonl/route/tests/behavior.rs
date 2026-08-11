@@ -710,17 +710,19 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
     }
     let adapter = ParallelTestAdapter;
     let resident = Mutex::new(FamilyResident::default());
-    let mut writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
+    let mut writer: IndexCaptureLifecycle =
+        GenerationWriter::open(temp.path().join("index"), test_writer_options())
+            .unwrap()
+            .into_writer()
+            .unwrap()
+            .into();
     let mut owners = HashMap::new();
     let mut complete_inventories = Vec::new();
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
     let mut record_rejections = SourceBackedRecordRejections::default();
     let mut sink = SourceBackedGenerationSink {
         core_record_preparer: writer.core_record_preparer().into(),
-        writer: &mut writer,
+        lifecycle: &mut writer,
         owners: &mut owners,
         complete_inventories: &mut complete_inventories,
         route_index: 0,
@@ -1224,20 +1226,21 @@ fn serial_and_parallel_jsonl_emission_preserve_resource_unavailable() {
             .unwrap();
         }
         let resident = Mutex::new(FamilyResident::default());
-        let mut writer = GenerationWriter::open(
+        let mut writer: IndexCaptureLifecycle = GenerationWriter::open(
             temp.path().join(format!("index-{workers}")),
             test_writer_options(),
         )
         .unwrap()
         .into_writer()
-        .unwrap();
+        .unwrap()
+        .into();
         let mut owners = HashMap::new();
         let mut complete_inventories = Vec::new();
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
         let mut record_rejections = SourceBackedRecordRejections::default();
         let mut sink = SourceBackedGenerationSink {
             core_record_preparer: writer.core_record_preparer().into(),
-            writer: &mut writer,
+            lifecycle: &mut writer,
             owners: &mut owners,
             complete_inventories: &mut complete_inventories,
             route_index: 0,

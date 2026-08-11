@@ -547,11 +547,12 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         mut route_controls,
         verified_publication,
     ) = {
-        let open = GenerationWriter::open(index_root, writer_options.clone())?;
-        let mut writer = match open {
-            GenerationWriterOpenOutcome::Ready(writer)
-            | GenerationWriterOpenOutcome::RecoveredCommittedMigration { writer, .. } => writer,
-            GenerationWriterOpenOutcome::CommittedMigrationRecoveryRequired { recovery } => {
+        let open =
+            IndexCaptureLifecycle::open_with_writer_options(index_root, writer_options.clone())?;
+        let mut lifecycle = match open {
+            CaptureLifecycleOpenOutcome::Ready(lifecycle)
+            | CaptureLifecycleOpenOutcome::Recovered { lifecycle, .. } => lifecycle,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { recovery } => {
                 return Err(
                     SourceBackedCoordinatorError::CommittedPredecessorMigrationRecovery {
                         generation_id: recovery.generation_id().to_owned(),
@@ -560,14 +561,13 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 );
             }
         };
-        let base_snapshot = writer.base_manifest().map(IndexManifestView::borrowed);
+        let base_snapshot = lifecycle.base_snapshot();
         let base_route_content = source_route_content_fingerprints(base_snapshot.as_ref());
-        let base_route_ids = writer
-            .base_manifest()
-            .map(|manifest| {
-                manifest
+        let base_route_ids = lifecycle
+            .base_snapshot()
+            .map(|snapshot| {
+                snapshot
                     .source_routes()
-                    .iter()
                     .map(|route| route.route_identity().clone())
                     .collect::<BTreeSet<_>>()
             })
@@ -607,7 +607,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         }
         let attempt_selected = selected_route_ids.clone();
         let mut attempt_carried = carried_unselected_route_ids.clone();
-        writer.set_source_route_plan(attempt_selected.clone(), attempt_carried.clone())?;
+        lifecycle.set_route_plan(attempt_selected.clone(), attempt_carried.clone())?;
 
         let automatic_missing_observed_at_unix_ms = source_missing_observation_time();
         let mut owners = HashMap::new();
@@ -645,13 +645,11 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 certified_source_bytes: None,
             }))
             .map_err(SourceBackedCoordinatorError::Progress)?;
-            writer.begin_source_route_stage(route_identity.clone())?;
+            lifecycle.begin_route_stage(route_identity.clone())?;
             if let Some(revalidate) = driver.revalidate_at_publication.as_ref() {
                 let revalidate = Arc::clone(revalidate);
-                writer.register_source_route_publication_revalidation(
-                    route_identity.clone(),
-                    move || revalidate(),
-                )?;
+                lifecycle
+                    .register_route_revalidation(route_identity.clone(), move || revalidate())?;
             }
             let removal_checkpoint = applied_removals.len();
             let logical_failure_checkpoint =
@@ -661,7 +659,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             let record_progress = std::cell::RefCell::new(SourceRecordProgress::default());
             let progress_failure = std::cell::RefCell::new(None::<SourceBackedRouteError>);
             for retired_route in &route.retire_after_success {
-                writer.authorize_carried_source_route_retirement(route_identity, retired_route)?;
+                lifecycle.authorize_carried_route_retirement(route_identity, retired_route)?;
             }
             let scan_result = {
                 let progress_callback = std::cell::RefCell::new(&mut report_progress);
@@ -736,9 +734,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         }
                     }
                 };
-                let core_record_preparer = writer.core_record_preparer().into();
+                let core_record_preparer = lifecycle.core_preparation();
                 let mut sink = SourceBackedGenerationSink {
-                    writer: &mut writer,
+                    lifecycle: &mut lifecycle,
                     core_record_preparer,
                     owners: &mut owners,
                     complete_inventories: &mut complete_inventory_owners,
@@ -811,15 +809,15 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         .map(|candidate| candidate.route_identity.clone())
                         .collect::<Vec<_>>();
                     for retired_route in &dynamic_retirements {
-                        writer.authorize_carried_source_route_retirement(
+                        lifecycle.authorize_carried_route_retirement(
                             route_identity,
                             retired_route,
                         )?;
                     }
                     let route_is_partial =
-                        writer.source_route_retains_unstaged_members(route_identity);
+                        lifecycle.route_retains_unstaged_members(route_identity);
                     capture_staged_source_route_revalidation_receipts(
-                        &writer,
+                        &lifecycle,
                         route_index,
                         &mut owners,
                     )?;
@@ -854,8 +852,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             .iter()
                             .chain(&dynamic_retirements)
                         {
-                            let retired_sources = writer
-                                .retire_carried_source_route(route_identity, retired_route)?;
+                            let retired_sources =
+                                lifecycle.retire_carried_route(route_identity, retired_route)?;
                             attempt_carried.remove(retired_route);
                             carried_unselected_route_ids.remove(retired_route);
                             for source in retired_sources {
@@ -882,21 +880,20 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                                 }
                             }
                         }
-                        writer.finish_source_route_stage(route_identity)?;
+                        lifecycle.finish_route_stage(route_identity)?;
                         if route_is_partial {
                             partial_routes.insert(route_identity.clone());
                         }
                         successful_this_attempt.insert(route_identity.clone());
                     } else {
-                        writer.rollback_source_route_stage(route_identity)?;
+                        lifecycle.rollback_route_stage(route_identity)?;
                         owners.retain(|_, owner| owner.route_index != route_index);
                         complete_inventory_owners.retain(|owner| owner.route_index != route_index);
                         applied_removals.truncate(removal_checkpoint);
                         logical_source_failures.truncate(logical_failure_checkpoint);
                         record_rejections
                             .truncate(record_rejection_checkpoint.0, record_rejection_checkpoint.1);
-                        let carried_forward =
-                            writer.carry_failed_source_route_from_base(route_identity)?;
+                        let carried_forward = lifecycle.carry_failed_route(route_identity)?;
                         attempt_carried.insert(route_identity.clone());
                         failed_routes.insert(
                             route_identity.clone(),
@@ -916,15 +913,14 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             source,
                         });
                     };
-                    writer.rollback_source_route_stage(route_identity)?;
+                    lifecycle.rollback_route_stage(route_identity)?;
                     owners.retain(|_, owner| owner.route_index != route_index);
                     complete_inventory_owners.retain(|owner| owner.route_index != route_index);
                     applied_removals.truncate(removal_checkpoint);
                     logical_source_failures.truncate(logical_failure_checkpoint);
                     record_rejections
                         .truncate(record_rejection_checkpoint.0, record_rejection_checkpoint.1);
-                    let carried_forward =
-                        writer.carry_failed_source_route_from_base(route_identity)?;
+                    let carried_forward = lifecycle.carry_failed_route(route_identity)?;
                     attempt_carried.insert(route_identity.clone());
                     failed_routes.insert(
                         route_identity.clone(),
@@ -956,7 +952,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             if !attempt_selected.contains(route_identity) {
                 continue;
             }
-            writer.begin_source_route_stage(route_identity.clone())?;
+            lifecycle.begin_route_stage(route_identity.clone())?;
             let history_progress = attempt_history_progress.borrow().snapshot();
             report_progress(source_level_progress(SourceBackedRefreshProgress {
                 phase: "verifying",
@@ -981,8 +977,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 .iter()
                 .all(|path| path_presence(path) == PathPresence::Missing)
             {
-                writer.rollback_source_route_stage(route_identity)?;
-                let carried_forward = writer.carry_failed_source_route_from_base(route_identity)?;
+                lifecycle.rollback_route_stage(route_identity)?;
+                let carried_forward = lifecycle.carry_failed_route(route_identity)?;
                 attempt_carried.insert(route_identity.clone());
                 failed_routes.insert(
                     route_identity.clone(),
@@ -995,17 +991,16 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 );
                 continue;
             }
-            writer.observe_certified_missing_route(
+            lifecycle.observe_missing_route(
                 route_identity.clone(),
                 automatic_missing_observed_at_unix_ms,
-                AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS,
                 move || {
                     paths
                         .iter()
                         .all(|path| path_presence(path) == PathPresence::Missing)
                 },
             )?;
-            writer.finish_source_route_stage(route_identity)?;
+            lifecycle.finish_route_stage(route_identity)?;
             successful_this_attempt.insert(route_identity.clone());
         }
 
@@ -1017,23 +1012,72 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             if route.driver.is_none() || !successful_this_attempt.contains(route_identity) {
                 continue;
             }
-            if partial_routes.contains(route_identity) {
-                continue;
-            }
-            let members = owners
+            let route_owners = owners
                 .values()
                 .filter(|owner| owner.route_index == route_index && owner.present)
-                .map(|owner| owner.source.clone())
+                .chain(
+                    owners
+                        .values()
+                        .filter(|owner| owner.route_index == route_index && !owner.present),
+                )
+                .map(|owner| (owner.source.identity().digest(), owner))
+                .collect::<HashMap<_, _>>();
+            let mut remaining = route_owners;
+            let base_snapshot = lifecycle.base_snapshot();
+            let base_route = base_snapshot
+                .as_ref()
+                .and_then(|base| base.source_route(route_identity))
+                .filter(|_| partial_routes.contains(route_identity));
+            let membership_unchanged = base_route.is_some_and(|snapshot| {
+                remaining.values().all(|owner| {
+                    owner.present
+                        && snapshot
+                            .sources()
+                            .binary_search_by_key(&owner.source.identity().digest(), |member| {
+                                member.identity().digest()
+                            })
+                            .ok()
+                            .and_then(|index| snapshot.sources().get(index))
+                            .is_some_and(|member| member.exact_descriptor_eq(&owner.source))
+                })
+            });
+            if membership_unchanged {
+                present_routes.push(PresentCaptureRoute::new(
+                    route_identity.clone(),
+                    base_route
+                        .expect("checked partial base route")
+                        .sources()
+                        .to_vec(),
+                ));
+                continue;
+            }
+            let mut members = base_route
+                .into_iter()
+                .flat_map(|route| route.sources())
+                .filter_map(|member| {
+                    #[cfg(test)]
+                    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
+                        visits.set(visits.get().saturating_add(1));
+                    });
+                    match remaining.remove(&member.identity().digest()) {
+                        Some(owner) if owner.present => Some(owner.source.clone()),
+                        Some(_) => None,
+                        None => Some(member.clone()),
+                    }
+                })
                 .collect::<Vec<_>>();
-            present_routes.push(SourceRouteSnapshot::present(
-                route_identity.clone(),
-                members,
-            )?);
+            members.extend(
+                remaining
+                    .into_values()
+                    .filter(|owner| owner.present)
+                    .map(|owner| owner.source.clone()),
+            );
+            present_routes.push(PresentCaptureRoute::new(route_identity.clone(), members));
         }
-        writer.set_present_source_routes(present_routes)?;
+        lifecycle.set_present_routes(present_routes)?;
 
         require_complete_base_source_ownership(
-            &writer,
+            &lifecycle,
             registry,
             &owners,
             &complete_inventory_owners,
@@ -1041,13 +1085,13 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             &partial_routes,
         )?;
 
-        let has_carried_source = writer.base_manifest().is_some_and(|base| {
-            base.source_routes().iter().any(|route| {
+        let has_carried_source = lifecycle.base_snapshot().is_some_and(|base| {
+            base.source_routes().any(|route| {
                 attempt_carried.contains(route.route_identity()) && !route.sources().is_empty()
             })
         });
-        let has_successful_retained_source = writer.base_manifest().is_some_and(|base| {
-            base.source_routes().iter().any(|route| {
+        let has_successful_retained_source = lifecycle.base_snapshot().is_some_and(|base| {
+            base.source_routes().any(|route| {
                 successful_this_attempt.contains(route.route_identity())
                     && !route.sources().is_empty()
             })
@@ -1089,10 +1133,10 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         .map_err(SourceBackedCoordinatorError::Progress)?;
         let commit_started = Instant::now();
         run_before_source_backed_commit_hook();
-        let mut revalidate_source = |target: RevalidationTarget<'_>| {
+        let mut revalidate_source = |target: CaptureRevalidationTarget<'_>| {
             let source = match target {
-                RevalidationTarget::Source(source) => source.observation().source(),
-                RevalidationTarget::Deletion(deletion) => deletion.source(),
+                CaptureRevalidationTarget::Source(source) => source.observation().source(),
+                CaptureRevalidationTarget::Deletion(deletion) => deletion.source(),
             };
             let Some(owner) = owners.get(&source.identity().digest()) else {
                 return false;
@@ -1104,13 +1148,13 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 (&owner.revalidation, target),
                 (
                     Some(SourceBackedRouteRevalidation::Source(expected)),
-                    RevalidationTarget::Source(actual)
+                    CaptureRevalidationTarget::Source(actual)
                 ) if *expected == *actual
             ) || matches!(
                 (&owner.revalidation, target),
                 (
                     Some(SourceBackedRouteRevalidation::Deletion(expected)),
-                    RevalidationTarget::Deletion(actual)
+                    CaptureRevalidationTarget::Deletion(actual)
                 ) if *expected == *actual
             )
         };
@@ -1173,26 +1217,24 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             route_controls.insert(route_identity.clone(), control);
         }
         let (commit, verified_publication) = if let Some(factory) = metadata_factory.as_mut() {
-            let published = writer
-                .commit_with_complete_inventory_revalidation_and_publication_metadata(
-                    &mut revalidate_source,
-                    &mut revalidate_inventory,
-                    |publication| {
+            let published = lifecycle.commit_with_metadata(
+                &mut revalidate_source,
+                &mut revalidate_inventory,
+                |publication| {
                         let mut live_route_controls = route_controls.clone();
                         live_route_controls.retain(|route, _| {
-                            publication.manifest().source_route(route).is_some()
+                            publication.snapshot().source_route(route).is_some()
                         });
-                        let capture_publication = capture_publication_context(publication);
                         let outcomes = successful_route_outcomes_for_snapshot(
                             &selected_route_ids,
                             &failed_routes,
                             &logical_source_failures,
                             &base_route_content,
-                            capture_publication.snapshot(),
+                            publication.snapshot(),
                         );
                         prepared_successful_route_outcomes = Some(outcomes.clone());
                         factory(SourceBackedPublicationMetadataContext::new(
-                            capture_publication,
+                            publication,
                             &selected_route_ids,
                             &failed_routes,
                             &logical_source_failures,
@@ -1204,7 +1246,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         ))
                     },
                 )?;
-            let (commit, disposition, verified) = capture_commit_outcome(published).into_parts();
+            let (commit, disposition, verified) = published.into_parts();
             (
                 IndexCaptureCommitReceipt::new(commit),
                 Some(SourceBackedVerifiedPublication {
@@ -1214,10 +1256,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             )
         } else {
             (
-                capture_commit_receipt(writer.commit_with_complete_inventory_revalidation(
-                    &mut revalidate_source,
-                    &mut revalidate_inventory,
-                )?),
+                lifecycle.commit(&mut revalidate_source, &mut revalidate_inventory)?,
                 None,
             )
         };

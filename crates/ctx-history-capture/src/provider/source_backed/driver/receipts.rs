@@ -154,7 +154,7 @@ pub enum SourceBackedCoordinatorError {
 /// The only write surface provider drivers receive. It exposes staging and
 /// certification, but never generation commit.
 pub struct SourceBackedGenerationSink<'writer> {
-    pub(in super::super) writer: &'writer mut GenerationWriter,
+    pub(in super::super) lifecycle: &'writer mut IndexCaptureLifecycle,
     pub(in super::super) core_record_preparer: IndexCorePreparation,
     pub(in super::super) owners: &'writer mut HashMap<[u8; 32], SourceOwner>,
     pub(in super::super) complete_inventories: &'writer mut Vec<CompleteInventoryOwner>,
@@ -190,8 +190,8 @@ impl SourceBackedGenerationSink<'_> {
     pub(crate) fn retain_unstaged_base_route_sources(
         &mut self,
     ) -> SourceBackedCoordinatorResult<()> {
-        self.writer
-            .retain_unstaged_source_route_members(&self.route_identity)?;
+        self.lifecycle
+            .retain_unstaged_route_members(&self.route_identity)?;
         Ok(())
     }
 }
@@ -218,8 +218,8 @@ pub(in super::super) struct CompleteInventoryOwner {
 
 impl SourceBackedGenerationSink<'_> {
     /// Returns the capture-facing lookup pinned to this writer's base generation.
-    pub(crate) fn base_event_lookup(&self) -> super::super::IndexBaseEventLookup {
-        self.writer.base_event_identity_lookup().into()
+    pub(crate) fn base_event_lookup(&self) -> IndexBaseEventLookup {
+        self.lifecycle.base_event_lookup()
     }
 
     pub(crate) fn route_resources(&self) -> SourceBackedRouteResources {
@@ -236,15 +236,15 @@ impl SourceBackedGenerationSink<'_> {
     }
 
     pub fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
-        self.writer.base_manifest().and_then(|manifest| {
-            manifest.sources.iter().find(|candidate| {
-                #[cfg(test)]
-                BASE_SOURCE_MANIFEST_VISITS.with(|visits| {
-                    visits.set(visits.get().saturating_add(1));
-                });
-                candidate.observation().source().exact_descriptor_eq(source)
-            })
-        })
+        self.lifecycle.base_source(source)
+    }
+
+    pub(crate) fn pinned_append_base(
+        &self,
+        source: &SourceKey,
+    ) -> Option<GenerationBaseCertifiedSource> {
+        self.lifecycle
+            .pinned_append_base(&self.route_identity, source)
     }
 
     /// Returns only the prior certified sources retained by this route. A
@@ -253,16 +253,16 @@ impl SourceBackedGenerationSink<'_> {
     pub(crate) fn base_route_sources(
         &self,
     ) -> SourceBackedCoordinatorResult<HashMap<SourceKey, CertifiedSource>> {
-        let Some(manifest) = self.writer.base_manifest() else {
+        let Some(snapshot) = self.lifecycle.base_snapshot() else {
             return Ok(HashMap::new());
         };
-        let Some(route) = manifest.source_route(&self.route_identity) else {
+        let Some(route) = snapshot.source_route(&self.route_identity) else {
             return Ok(HashMap::new());
         };
         let mut sources = HashMap::with_capacity(route.sources().len());
         for source in route.sources() {
-            let certificate = manifest
-                .sources
+            let certificate = snapshot
+                .sources()
                 .iter()
                 .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
                 .cloned()
@@ -282,8 +282,8 @@ impl SourceBackedGenerationSink<'_> {
             owner.route_index != self.route_index && owner.source.exact_descriptor_eq(source)
         });
         owned_in_attempt
-            || self.writer.base_manifest().is_some_and(|manifest| {
-                manifest.source_routes().iter().any(|route| {
+            || self.lifecycle.base_snapshot().is_some_and(|snapshot| {
+                snapshot.source_routes().any(|route| {
                     route.route_identity() != &self.route_identity
                         && route
                             .sources()
@@ -295,7 +295,7 @@ impl SourceBackedGenerationSink<'_> {
 
     pub fn begin_source(&mut self, source: SourceKey) -> SourceBackedCoordinatorResult<()> {
         self.claim_present(&source)?;
-        self.writer.begin_source(source)?;
+        self.lifecycle.begin_source_replace(source)?;
         Ok(())
     }
 
@@ -304,16 +304,23 @@ impl SourceBackedGenerationSink<'_> {
         source: SourceKey,
     ) -> SourceBackedCoordinatorResult<&CertifiedSource> {
         self.claim_present(&source)?;
-        Ok(self.writer.begin_source_append(source)?)
+        self.lifecycle
+            .begin_source_append(source)
+            .map_err(Into::into)
     }
 
     pub(crate) fn begin_source_append_from_base(
         &mut self,
         base: GenerationBaseCertifiedSource,
     ) -> SourceBackedCoordinatorResult<&CertifiedSource> {
-        let source = base.certificate().observation().source().clone();
+        let source = IndexCaptureLifecycle::pinned_append_base_source(&base)
+            .observation()
+            .source()
+            .clone();
         self.claim_present(&source)?;
-        Ok(self.writer.begin_source_append_from_base(base)?)
+        self.lifecycle
+            .begin_source_append_from_base(base)
+            .map_err(Into::into)
     }
 
     pub fn add_core_record(&mut self, record: CoreRecord) -> SourceBackedCoordinatorResult<()> {
@@ -336,7 +343,7 @@ impl SourceBackedGenerationSink<'_> {
         emission: CoreRecordEmission,
     ) -> SourceBackedCoordinatorResult<()> {
         let (prepared, reservation) = emission.into_prepared();
-        self.writer.add_prepared_core_record(prepared)?;
+        self.lifecycle.add_prepared(prepared)?;
         drop(reservation);
         Ok(())
     }
@@ -384,7 +391,7 @@ impl SourceBackedGenerationSink<'_> {
         let progress = batch.progress().clone();
         let (prepared_records, reservation) = batch.into_prepared();
         for prepared in prepared_records {
-            self.writer.add_prepared_core_record(prepared)?;
+            self.lifecycle.add_prepared(prepared)?;
         }
         drop(reservation);
         self.report_record_progress(
@@ -500,7 +507,7 @@ impl SourceBackedGenerationSink<'_> {
         certificate: CertifiedSource,
     ) -> SourceBackedCoordinatorResult<()> {
         let source = certificate.observation().source().clone();
-        self.writer.certify_source(certificate.clone())?;
+        self.lifecycle.certify_source(certificate.clone())?;
         self.record_revalidation(&source, SourceBackedRouteRevalidation::Source(certificate))?;
         Ok(())
     }
@@ -511,7 +518,7 @@ impl SourceBackedGenerationSink<'_> {
     ) -> SourceBackedCoordinatorResult<()> {
         let certificate = append.current().clone();
         let source = certificate.observation().source().clone();
-        self.writer.certify_source_append(append)?;
+        self.lifecycle.certify_source_append(append)?;
         self.record_revalidation(&source, SourceBackedRouteRevalidation::Source(certificate))?;
         Ok(())
     }
@@ -522,7 +529,7 @@ impl SourceBackedGenerationSink<'_> {
     ) -> SourceBackedCoordinatorResult<()> {
         self.claim_present(certificate.observation().source())?;
         let source = certificate.observation().source().clone();
-        self.writer.retain_source(certificate.clone())?;
+        self.lifecycle.retain_source(certificate.clone())?;
         self.record_revalidation(&source, SourceBackedRouteRevalidation::Source(certificate))?;
         Ok(())
     }
@@ -531,7 +538,8 @@ impl SourceBackedGenerationSink<'_> {
         &mut self,
         inventory: CertifiedSourceInventory,
     ) -> SourceBackedCoordinatorResult<()> {
-        self.writer.certify_complete_inventory(inventory.clone())?;
+        self.lifecycle
+            .certify_complete_inventory(inventory.clone())?;
         self.complete_inventories.push(CompleteInventoryOwner {
             route_index: self.route_index,
             inventory,
@@ -548,7 +556,7 @@ impl SourceBackedGenerationSink<'_> {
             return Err(SourceBackedCoordinatorError::InvalidDeletionWitness);
         }
         self.claim_absent(deletion.source())?;
-        self.writer
+        self.lifecycle
             .delete_source(deletion.clone(), inventory.clone())?;
         self.record_revalidation(
             deletion.source(),

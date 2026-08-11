@@ -1,48 +1,49 @@
 use super::*;
 
 pub(super) fn capture_staged_source_route_revalidation_receipts(
-    writer: &GenerationWriter,
+    lifecycle: &impl CaptureLifecycleSink<Error = IndexError>,
     route_index: usize,
     owners: &mut HashMap<[u8; 32], SourceOwner>,
 ) -> SourceBackedCoordinatorResult<()> {
-    for target in writer.active_source_route_revalidation_targets()? {
-        let (source, receipt) = match target {
-            RevalidationTarget::Source(certificate) => (
-                certificate.observation().source(),
-                SourceBackedRouteRevalidation::Source(certificate.clone()),
-            ),
-            RevalidationTarget::Deletion(deletion) => (
-                deletion.source(),
-                SourceBackedRouteRevalidation::Deletion(deletion.clone()),
-            ),
-        };
-        let owner = owners
-            .get_mut(&source.identity().digest())
-            .filter(|owner| {
-                owner.route_index == route_index && owner.source.exact_descriptor_eq(source)
-            })
-            .ok_or(IndexError::WriterInvariant(
-                "active route certificate has no matching source owner",
-            ))?;
-        match (&owner.revalidation, &receipt) {
-            (None, _) => owner.revalidation = Some(receipt),
-            (
-                Some(SourceBackedRouteRevalidation::Source(expected)),
-                SourceBackedRouteRevalidation::Source(actual),
-            ) if expected == actual => {}
-            (
-                Some(SourceBackedRouteRevalidation::Deletion(expected)),
-                SourceBackedRouteRevalidation::Deletion(actual),
-            ) if expected == actual => {}
-            _ => {
-                return Err(IndexError::WriterInvariant(
-                    "active route certificate disagrees with its staged receipt",
-                )
-                .into());
+    lifecycle
+        .visit_revalidation_targets(|target| {
+            let (source, receipt) = match target {
+                CaptureRevalidationTarget::Source(certificate) => (
+                    certificate.observation().source(),
+                    SourceBackedRouteRevalidation::Source(certificate.clone()),
+                ),
+                CaptureRevalidationTarget::Deletion(deletion) => (
+                    deletion.source(),
+                    SourceBackedRouteRevalidation::Deletion(deletion.clone()),
+                ),
+            };
+            let owner = owners
+                .get_mut(&source.identity().digest())
+                .filter(|owner| {
+                    owner.route_index == route_index && owner.source.exact_descriptor_eq(source)
+                })
+                .ok_or(IndexError::WriterInvariant(
+                    "active route certificate has no matching source owner",
+                ))?;
+            match (&owner.revalidation, &receipt) {
+                (None, _) => owner.revalidation = Some(receipt),
+                (
+                    Some(SourceBackedRouteRevalidation::Source(expected)),
+                    SourceBackedRouteRevalidation::Source(actual),
+                ) if expected == actual => {}
+                (
+                    Some(SourceBackedRouteRevalidation::Deletion(expected)),
+                    SourceBackedRouteRevalidation::Deletion(actual),
+                ) if expected == actual => {}
+                _ => {
+                    return Err(IndexError::WriterInvariant(
+                        "active route certificate disagrees with its staged receipt",
+                    ));
+                }
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        })?
+        .map_err(SourceBackedCoordinatorError::Index)
 }
 
 pub(super) fn revalidate_staged_source_route(
@@ -122,14 +123,14 @@ fn route_callback(
 }
 
 pub(super) fn require_complete_base_source_ownership(
-    writer: &GenerationWriter,
+    lifecycle: &impl CaptureLifecycleSink<Error = IndexError>,
     registry: &SourceBackedProviderRegistry,
     owners: &HashMap<[u8; 32], SourceOwner>,
     complete_inventory_owners: &[CompleteInventoryOwner],
     carried_routes: &BTreeSet<SourceRouteIdentity>,
     partial_routes: &BTreeSet<SourceRouteIdentity>,
 ) -> SourceBackedCoordinatorResult<()> {
-    let Some(base) = writer.base_manifest() else {
+    let Some(base) = lifecycle.base_snapshot() else {
         return Ok(());
     };
     for snapshot in base.source_routes() {
