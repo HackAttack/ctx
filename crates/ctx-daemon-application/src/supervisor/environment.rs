@@ -8,7 +8,7 @@ use ctx_history_core::utc_now;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::compact_json;
+use crate::{compact_json, DaemonApplicationHost};
 
 const SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST: &[&str] = &[
     "ALL_PROXY",
@@ -64,6 +64,65 @@ const SUPERVISOR_DAEMON_FIXED_PATH: &str = if cfg!(windows) {
     "/usr/local/bin:/usr/bin:/bin"
 };
 
+// This launch-only subset intentionally lives here so lifecycle policy does
+// not acquire a history-capture or provider-discovery dependency.
+const DISCOVERY_ENV_ALLOWLIST: &[&str] = &[
+    "APPDATA",
+    "ASTRBOT_ROOT",
+    "CLAUDE_CONFIG_DIR",
+    "CLINE_DATA_DIR",
+    "CLINE_DB_DATA_DIR",
+    "CLINE_DIR",
+    "CLINE_SANDBOX",
+    "CLINE_SANDBOX_DATA_DIR",
+    "CLINE_SESSION_DATA_DIR",
+    "CODEBUDDY_CONFIG_DIR",
+    "CODEX_HOME",
+    "CONTINUE_GLOBAL_DIR",
+    "COPILOT_HOME",
+    "CRUSH_GLOBAL_CONFIG",
+    "CRUSH_GLOBAL_DATA",
+    "CURSOR_DATA_DIR",
+    "FILE_STORE",
+    "FILE_STORE_PATH",
+    "FLATPAK_XDG_DATA_HOME",
+    "FORGE_CONFIG",
+    "GEMINI_CLI_HOME",
+    "GOOSE_PATH_ROOT",
+    "HERMES_HOME",
+    "JUNIE_HOME",
+    "KILO_DB",
+    "KIMI_CODE_HOME",
+    "KIRO_HOME",
+    "MIMOCODE_DB",
+    "MIMOCODE_HOME",
+    "MUX_ROOT",
+    "NODE_ENV",
+    "OH_PERSISTENCE_DIR",
+    "OPENCLAW_HOME",
+    "OPENCLAW_STATE_DIR",
+    "OPENHANDS_CONVERSATIONS_DIR",
+    "OPENHANDS_PERSISTENCE_DIR",
+    "OPENHANDS_USER_ID",
+    "OPENCODE_DB",
+    "PI_CODING_AGENT_DIR",
+    "PI_CODING_AGENT_SESSION_DIR",
+    "QODER_CONFIG_DIR",
+    "QWEN_CODE_SYSTEM_DEFAULTS_PATH",
+    "QWEN_CODE_SYSTEM_SETTINGS_PATH",
+    "QWEN_CODE_TRUSTED_FOLDERS_PATH",
+    "QWEN_HOME",
+    "QWEN_RUNTIME_DIR",
+    "SHARED_EVENT_STORAGE_PROVIDER",
+    "VIBE_HOME",
+    "VIBE_SESSION_LOGGING",
+    "VIBE_SESSION_LOGGING__SAVE_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "ZED_STATELESS",
+];
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct SupervisorEnvironmentSnapshot {
     pub(super) values: Vec<(String, String)>,
@@ -89,11 +148,13 @@ impl SupervisorEnvironmentSnapshot {
     }
 }
 
-pub(super) fn supervisor_environment_snapshot() -> Result<SupervisorEnvironmentSnapshot> {
+pub(super) fn supervisor_environment_snapshot(
+    host: &dyn DaemonApplicationHost,
+) -> Result<SupervisorEnvironmentSnapshot> {
     let mut values = BTreeMap::new();
     let hosted_installer_setup =
         env::var_os(HOSTED_INSTALLER_SETUP_ENV).as_deref() == Some(std::ffi::OsStr::new("1"));
-    for name in ctx_history_capture::provider_sources::DISCOVERY_ENV_ALLOWLIST
+    for name in DISCOVERY_ENV_ALLOWLIST
         .iter()
         .chain(SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST)
     {
@@ -117,7 +178,7 @@ pub(super) fn supervisor_environment_snapshot() -> Result<SupervisorEnvironmentS
     values.insert("PATH".to_owned(), SUPERVISOR_DAEMON_FIXED_PATH.to_owned());
     #[cfg(unix)]
     if !values.contains_key("HOME") {
-        if let Some(home) = crate::identity::home_dir() {
+        if let Some(home) = host.home_dir() {
             let home = validated_supervisor_fallback_home(home)?;
             values.insert("HOME".to_owned(), home);
         }
@@ -138,8 +199,8 @@ pub(super) fn supervisor_environment_snapshot() -> Result<SupervisorEnvironmentS
     })
 }
 
-pub(super) fn supervisor_environment_contract_report() -> Value {
-    match supervisor_environment_snapshot() {
+pub(super) fn supervisor_environment_contract_report(host: &dyn DaemonApplicationHost) -> Value {
+    match supervisor_environment_snapshot(host) {
         Ok(snapshot) => snapshot.contract_report(),
         Err(error) => compact_json(json!({
             "schema_version": 1,
@@ -271,7 +332,7 @@ pub(super) fn validated_supervisor_artifact_text<'a>(
 }
 
 fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
-    let mut names = ctx_history_capture::provider_sources::DISCOVERY_ENV_ALLOWLIST.to_vec();
+    let mut names = DISCOVERY_ENV_ALLOWLIST.to_vec();
     names.extend_from_slice(SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST);
     names.push("PATH");
     names.sort_unstable();
@@ -282,6 +343,7 @@ fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestHost;
 
     struct RestoreEnvironment(Vec<(&'static str, Option<OsString>)>);
 
@@ -395,7 +457,7 @@ mod tests {
             "CTX_UPGRADE_CHANNEL",
             "SSL_CERT_FILE",
         ];
-        let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        let _env_lock = crate::test_environment_lock()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let _restore = RestoreEnvironment::capture(NAMES);
@@ -404,7 +466,7 @@ mod tests {
         env::set_var("CTX_UPGRADE_CHANNEL", "staging");
         env::set_var("SSL_CERT_FILE", "/tmp/ctx-supervisor-ca-before.pem");
         env::set_var(HOSTED_INSTALLER_SETUP_ENV, "1");
-        let installer_snapshot = supervisor_environment_snapshot()?;
+        let installer_snapshot = supervisor_environment_snapshot(&TestHost)?;
         let installer_unit = linux_systemd_unit_with_environment(
             Path::new("/usr/local/bin/ctx"),
             Path::new("/home/user/.local/share/ctx"),
@@ -414,7 +476,7 @@ mod tests {
         env::remove_var("CTX_SEARCH_SEMANTIC");
         env::remove_var("CTX_UPGRADE_CHANNEL");
         env::remove_var(HOSTED_INSTALLER_SETUP_ENV);
-        let ordinary_shell_snapshot = supervisor_environment_snapshot()?;
+        let ordinary_shell_snapshot = supervisor_environment_snapshot(&TestHost)?;
         let ordinary_shell_unit = linux_systemd_unit_with_environment(
             Path::new("/usr/local/bin/ctx"),
             Path::new("/home/user/.local/share/ctx"),
@@ -428,7 +490,7 @@ mod tests {
         assert!(!installer_unit.contains("CTX_UPGRADE_CHANNEL"));
 
         env::set_var("SSL_CERT_FILE", "/tmp/ctx-supervisor-ca-after.pem");
-        let persistent_environment_change = supervisor_environment_snapshot()?;
+        let persistent_environment_change = supervisor_environment_snapshot(&TestHost)?;
         assert_ne!(
             ordinary_shell_snapshot.sha256, persistent_environment_change.sha256,
             "persistent daemon environment changes must remain verified"
@@ -447,7 +509,7 @@ mod tests {
             "CTX_SEARCH_SEMANTIC",
             "CTX_UPGRADE_CHANNEL",
         ];
-        let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+        let _env_lock = crate::test_environment_lock()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let _restore = RestoreEnvironment::capture(NAMES);
@@ -455,7 +517,7 @@ mod tests {
         env::remove_var(HOSTED_INSTALLER_SETUP_ENV);
         env::set_var("CTX_SEARCH_SEMANTIC", "true");
         env::set_var("CTX_UPGRADE_CHANNEL", "staging");
-        let snapshot = supervisor_environment_snapshot()?;
+        let snapshot = supervisor_environment_snapshot(&TestHost)?;
         let unit = linux_systemd_unit_with_environment(
             Path::new("/usr/local/bin/ctx"),
             Path::new("/home/user/.local/share/ctx"),

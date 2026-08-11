@@ -4,6 +4,7 @@ members = [
     "crates/ctx-agent-integrations",
     "crates/ctx-cli",
     "crates/ctx-client-observability",
+    "crates/ctx-daemon-application",
     "crates/ctx-daemon-service",
     "crates/ctx-daemon-runtime",
     "crates/ctx-upgrade-engine",

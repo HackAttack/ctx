@@ -1,38 +1,36 @@
+#[cfg(test)]
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    env,
+    collections::BTreeMap,
     ffi::{OsStr, OsString},
-    fs, io,
+};
+use std::{
+    collections::BTreeSet,
+    env, fs, io,
     path::{Path, PathBuf},
     process::{self, Child},
-    time::{Duration as StdDuration, Instant, SystemTime},
+    time::{Duration as StdDuration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
-use ctx_daemon_runtime::{spawn_detached, NormalizedLaunch};
+use ctx_daemon_runtime::NormalizedLaunch;
 use ctx_history_core::utc_now;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::{
-    compact_json,
-    config::{AppConfig, DAEMON_MODE_ENV},
-    DaemonStartModeArg, DaemonTriggerCommandArg,
-};
+#[cfg(test)]
+use crate::config::DAEMON_MODE_ENV;
+use crate::{compact_json, config::AppConfig, DaemonTriggerCommandArg};
 
+#[cfg(test)]
+use super::runtime_limits::{DAEMON_AUTOSTART_OFF_ENV, DAEMON_BACKGROUND_CHILD_ENV};
 use super::{
-    health_search::{create_private_dir_all, semantic_env_flag},
+    health_search::create_private_dir_all,
     paths_status::{
-        daemon_core_refresh_job_path, daemon_lock_is_active, daemon_lock_is_owned_by,
-        daemon_lock_is_stale, daemon_lock_matches_executable, daemon_lock_path, daemon_root_path,
-        executable_sha256, pid_from_lock_json, pid_lock_guard_path, read_daemon_job_status,
-        read_daemon_status, read_pid_lock_json, write_daemon_status, write_private_json_file,
+        daemon_lock_is_active, daemon_lock_is_owned_by, daemon_lock_path, daemon_root_path,
+        pid_lock_guard_path, write_private_json_file,
     },
     query_service::daemon_source_refresh_request,
-    runtime_limits::{
-        DAEMON_AUTOSTART_OFF_ENV, DAEMON_BACKGROUND_CHILD_ENV, DAEMON_IDLE_EXIT_SECONDS_CAP,
-        DAEMON_QUERY_ENDPOINT_FILE,
-    },
+    runtime_limits::{DAEMON_IDLE_EXIT_SECONDS_CAP, DAEMON_QUERY_ENDPOINT_FILE},
 };
 
 mod autostart;
@@ -40,29 +38,24 @@ mod handoff;
 mod installation;
 mod recovery;
 
-pub(super) use autostart::handoff_mismatched_daemon_owner;
+#[cfg(test)]
+use autostart::handoff_mismatched_daemon_owner;
 pub(crate) use autostart::{
     autostart_daemon_and_wait, autostart_daemon_for_setup_and_wait,
     daemon_autostart_suppression_reason, maybe_autostart_daemon,
 };
-#[cfg(test)]
-use autostart::{
-    complete_daemon_handoff_observation, daemon_autostart_allowed, daemon_handoff_observation_from,
-    daemon_handoff_observation_with_refresh_job_from, daemon_live_endpoint_observation_from,
-    daemon_owned_source_refresh_is_active, daemon_supervisor_launch_policy,
-    recover_unusable_daemon_owner_with, wait_for_daemon_handoff_with,
-};
 use autostart::{
     configured_daemon_autostart_command, configured_unsupervised_daemon_autostart_command,
     daemon_autostart_command, daemon_restart_allowed, daemon_restart_trigger, parse_daemon_trigger,
-    request_daemon_autostart, spawn_daemon_child, spawn_daemon_child_for_upgrade_handoff,
+    spawn_daemon_child, spawn_daemon_child_for_upgrade_handoff,
 };
 #[cfg(test)]
-use autostart::{normalized_daemon_launch_for_test, spawn_detached_daemon_child};
-
+use autostart::{daemon_autostart_allowed, daemon_supervisor_launch_policy};
+pub(super) use handoff::daemon_upgrade_handoff_fences_start;
 #[cfg(test)]
 use handoff::daemon_upgrade_handoff_is_active;
 pub(crate) use handoff::prepare_daemon_uninstall;
+use handoff::remove_daemon_restart_requests;
 pub(super) use handoff::{
     acknowledge_daemon_restart_requests, current_process_owns_daemon_upgrade_handoff,
     daemon_upgrade_handoff_blocks_current_process, read_daemon_restart_request,
@@ -74,7 +67,6 @@ pub(crate) use handoff::{
     finish_replacement_daemon_handoff, mark_replacement_helper_handoff,
     replacement_helper_owns_daemon_handoff, DaemonUpgradeHandoff,
 };
-use handoff::{daemon_upgrade_handoff_fences_start, remove_daemon_restart_requests};
 #[cfg(test)]
 use handoff::{read_daemon_upgrade_handoff, write_daemon_upgrade_handoff};
 
@@ -94,40 +86,6 @@ use recovery::{
     wait_for_replacement_daemon,
 };
 
-pub(super) fn daemon_autostart_exe() -> Result<PathBuf> {
-    env::var("CTX_DAEMON_AUTOSTART_EXE")
-        .ok()
-        .map(PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(|| env::current_exe().context("resolve ctx daemon autostart executable"))
-}
-
-pub(super) fn write_daemon_autostart_status(
-    data_root: &Path,
-    trigger: DaemonTriggerCommandArg,
-    status: &str,
-    reason: Option<&str>,
-    last_error: Option<String>,
-    pid: Option<u32>,
-) -> Result<()> {
-    let now = utc_now().timestamp_millis();
-    write_daemon_status(
-        data_root,
-        &compact_json(json!({
-            "schema_version": 1,
-            "status": status,
-            "reason": reason,
-            "pid": pid,
-            "started_at_ms": Value::Null,
-            "heartbeat_at_ms": now,
-            "finished_at_ms": now,
-            "start_mode": DaemonStartModeArg::Auto.as_str(),
-            "trigger_command": trigger.as_str(),
-            "last_error": last_error,
-        })),
-    )
-}
-
 pub(super) fn daemon_autostart_u64_env(name: &str, max: u64) -> Option<u64> {
     env::var(name)
         .ok()
@@ -136,38 +94,12 @@ pub(super) fn daemon_autostart_u64_env(name: &str, max: u64) -> Option<u64> {
         .map(|value| value.min(max))
 }
 
-pub(super) fn maybe_autostart_daemon_inner(
-    data_root: &Path,
-    config: &AppConfig,
-    trigger: DaemonTriggerCommandArg,
-) {
-    if autostart::hosted_uninstall_fences_daemon_autostart() {
-        return;
-    }
-    let bounded_unsupervised = if daemon_autostart_suppression_reason().is_none() {
-        match super::daemon_supervisor::ensure_daemon_supervisor(data_root) {
-            Ok(start) => autostart::daemon_supervisor_launch_policy(start).0,
-            Err(_) => return,
-        }
-    } else {
-        false
-    };
-    let _ = request_daemon_autostart(data_root, config, trigger, bounded_unsupervised);
-}
-
 const DAEMON_UPGRADE_STOP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const DAEMON_UPGRADE_RESTART_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const DAEMON_UPGRADE_POLL_INTERVAL: StdDuration = StdDuration::from_millis(50);
 const DAEMON_UPGRADE_HANDOFF_STALE_AFTER: StdDuration = StdDuration::from_secs(15 * 60);
 const DAEMON_INSTALLATION_QUIESCE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
 const DAEMON_UPGRADE_HANDOFF_TOKEN_ENV: &str = "CTX_DAEMON_UPGRADE_HANDOFF_TOKEN";
-// Foreground setup/import/retrieval must never inherit the supervisor's
-// potentially multi-root recovery horizon. It verifies one usable endpoint
-// promptly; durable supervisor recovery continues independently.
-const DAEMON_SETUP_HANDOFF_POLL_ATTEMPTS: usize = 101;
-const DAEMON_SETUP_HANDOFF_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-const DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS: i64 = 30_000;
-const DAEMON_SETUP_HANDOFF_MAX_FUTURE_HEARTBEAT_MS: i64 = 5_000;
 const DAEMON_HEALTH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 const DAEMON_HEALTH_RESPONSE_MAX_BYTES: u64 = 16 * 1024;
 const DAEMON_UNSUPERVISED_IDLE_EXIT_SECONDS: u64 = 60;
@@ -182,40 +114,6 @@ pub(crate) struct DaemonSetupHandoff {
     pub(crate) handoff: DaemonHandoff,
     pub(crate) bounded_unsupervised: bool,
     pub(crate) requires_initial_refresh_wait: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DaemonHandoffObservation {
-    Pending,
-    Running(DaemonHandoff),
-    Failed(String),
-}
-
-#[derive(Debug)]
-struct DaemonHandoffTimeout;
-
-impl std::fmt::Display for DaemonHandoffTimeout {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .write_str("timed out waiting for running status, heartbeat, and process ownership")
-    }
-}
-
-impl std::error::Error for DaemonHandoffTimeout {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DaemonOwnerIdentity {
-    owner_id: String,
-    pid: u32,
-    started_at_ms: i64,
-    binary_sha256: String,
-}
-
-enum DaemonAutostartRequest {
-    Suppressed(&'static str),
-    Existing(DaemonOwnerIdentity),
-    Deferred(PathBuf),
-    Spawned(Child),
 }
 
 #[cfg(test)]
