@@ -11,17 +11,30 @@ use std::{
 };
 
 use anyhow::Result;
+use ctx_client_observability::analytics::PublicEventV1;
 use ctx_daemon_runtime::NormalizedLaunch;
 use serde_json::Value;
 
+mod control;
+mod host;
 mod lifecycle;
+mod status;
 mod supervisor;
 
+pub use control::{DaemonEnabledUpdate, DaemonEnabledUpdateError};
+pub use host::{
+    DaemonHostRunError, DaemonHostRunRequest, DaemonHostStartMode, DaemonObservedOperation,
+    DAEMON_BACKGROUND_CHILD_ENV,
+};
 pub use lifecycle::{
     configured_daemon_autostart_command, configured_unsupervised_daemon_autostart_command,
     daemon_autostart_allowed, daemon_autostart_command, daemon_autostart_suppression_reason,
     daemon_restart_trigger, parse_persisted_trigger, spawn_detached_daemon_child, DaemonHandoff,
     DaemonStartError,
+};
+pub use status::{
+    DaemonConfigReloadContext, DaemonSemanticStatusContext, DaemonStatusPreparation,
+    DaemonStatusSnapshot,
 };
 pub use supervisor::{
     DaemonSupervisorStart, DaemonSupervisorUpgradeFence, DaemonSupervisorUpgradeResume,
@@ -45,6 +58,31 @@ pub trait DaemonApplicationHost: Send + Sync {
         response_limit: u64,
     ) -> Result<Option<Value>>;
     fn home_dir(&self) -> Option<PathBuf>;
+    fn run_daemon_service(&self, data_root: &Path, request: DaemonHostRunRequest) -> Result<()>;
+    fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()>;
+    fn request_daemon_shutdown(
+        &self,
+        data_root: &Path,
+        timeout: Duration,
+        response_limit: u64,
+    ) -> Result<()>;
+    fn terminate_current_executable_daemon(&self, data_root: &Path) -> Result<()>;
+    fn remove_released_daemon_service_artifacts(&self, data_root: &Path) -> Result<()>;
+    fn cancel_core_finalization_generation_lease(
+        &self,
+        data_root: &Path,
+        reason: &str,
+    ) -> Result<()>;
+    fn observe_source_refresh_endpoint(&self, identity_path: &Path) -> DaemonEndpointObservation;
+    fn deliver_daemon_events(&self, data_root: &Path, events: &[PublicEventV1]);
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DaemonEndpointObservation {
+    pub available: bool,
+    pub transport: Option<String>,
+    pub owner_pid: Option<u32>,
+    pub address: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +103,18 @@ impl DaemonMode {
         match self {
             Self::Full => "full",
             Self::SourceRefreshOnly => "source-refresh-only",
+        }
+    }
+
+    pub const fn runs_only_source_refresh(self) -> bool {
+        matches!(self, Self::SourceRefreshOnly)
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "full" => Some(Self::Full),
+            "source-refresh-only" => Some(Self::SourceRefreshOnly),
+            _ => None,
         }
     }
 }
@@ -126,8 +176,8 @@ impl<'a> DaemonApplication<'a> {
         supervisor::disable_daemon_supervisor(self.host, data_root)
     }
 
-    pub fn daemon_supervisor_report(&self, data_root: &Path) -> Value {
-        supervisor::daemon_supervisor_report(self.host, data_root)
+    pub fn daemon_supervisor_report(&self, data_root: &Path) -> DaemonSupervisorReport {
+        DaemonSupervisorReport::new(supervisor::daemon_supervisor_report(self.host, data_root))
     }
 
     pub fn resume_daemon_supervisor_after_upgrade(
@@ -197,6 +247,67 @@ impl<'a> DaemonApplication<'a> {
     pub fn daemon_restart_allowed(&self, data_root: &Path) -> Result<bool> {
         lifecycle::daemon_restart_allowed(self.host, data_root)
     }
+
+    pub fn run_daemon_host(
+        &self,
+        data_root: &Path,
+        request: DaemonHostRunRequest,
+    ) -> std::result::Result<(), DaemonHostRunError> {
+        host::run_daemon_host(self.host, data_root, request)
+    }
+
+    pub fn observe_daemon_operation(
+        &self,
+        data_root: &Path,
+        operation: DaemonObservedOperation,
+        succeeded: bool,
+        elapsed: Duration,
+    ) {
+        host::observe_daemon_operation(self.host, data_root, operation, succeeded, elapsed);
+    }
+
+    pub fn update_daemon_enabled(
+        &self,
+        data_root: &Path,
+        enabled: bool,
+    ) -> std::result::Result<DaemonEnabledUpdate, DaemonEnabledUpdateError> {
+        control::update_daemon_enabled(self.host, data_root, enabled)
+    }
+
+    pub fn prepare_daemon_status<'b>(
+        &'b self,
+        data_root: &'b Path,
+        disabled_overrides_lifecycle: bool,
+        current_config: Option<&DaemonConfigSnapshot>,
+        default_daemon_enabled: bool,
+    ) -> DaemonStatusPreparation<'b> {
+        status::prepare_daemon_status(
+            self.host,
+            data_root,
+            disabled_overrides_lifecycle,
+            current_config,
+            default_daemon_enabled,
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct DaemonSupervisorReport(Value);
+
+impl DaemonSupervisorReport {
+    pub(crate) fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    pub fn is_persistent(&self) -> bool {
+        self.0.get("status").and_then(Value::as_str) == Some("installed")
+            && self.0.get("registration_verified").and_then(Value::as_bool) == Some(true)
+            && self.0.get("live_owner_verified").and_then(Value::as_bool) == Some(true)
+    }
+
+    pub fn into_json(self) -> Value {
+        self.0
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +360,45 @@ impl DaemonApplicationHost for TestHost {
     fn home_dir(&self) -> Option<PathBuf> {
         std::env::var_os("HOME").map(PathBuf::from)
     }
+
+    fn run_daemon_service(&self, _data_root: &Path, _request: DaemonHostRunRequest) -> Result<()> {
+        Ok(())
+    }
+
+    fn set_daemon_enabled(&self, _data_root: &Path, _enabled: bool) -> Result<()> {
+        Ok(())
+    }
+
+    fn request_daemon_shutdown(
+        &self,
+        _data_root: &Path,
+        _timeout: Duration,
+        _response_limit: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn terminate_current_executable_daemon(&self, _data_root: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    fn remove_released_daemon_service_artifacts(&self, _data_root: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    fn cancel_core_finalization_generation_lease(
+        &self,
+        _data_root: &Path,
+        _reason: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn observe_source_refresh_endpoint(&self, _identity_path: &Path) -> DaemonEndpointObservation {
+        DaemonEndpointObservation::default()
+    }
+
+    fn deliver_daemon_events(&self, _data_root: &Path, _events: &[PublicEventV1]) {}
 }
 
 #[cfg(test)]
@@ -272,4 +422,59 @@ fn compact_json(mut value: Value) -> Value {
     }
     compact(&mut value);
     value
+}
+
+#[cfg(test)]
+mod dto_tests {
+    use super::*;
+
+    #[test]
+    fn daemon_mode_names_and_persisted_parser_are_exact() {
+        assert_eq!(DaemonMode::Full.as_str(), "full");
+        assert_eq!(
+            DaemonMode::SourceRefreshOnly.as_str(),
+            "source-refresh-only"
+        );
+        assert!(!DaemonMode::Full.runs_only_source_refresh());
+        assert!(DaemonMode::SourceRefreshOnly.runs_only_source_refresh());
+        assert_eq!(DaemonMode::parse("full"), Some(DaemonMode::Full));
+        assert_eq!(DaemonMode::parse("FULL"), Some(DaemonMode::Full));
+        assert_eq!(
+            DaemonMode::parse("SOURCE-REFRESH-ONLY"),
+            Some(DaemonMode::SourceRefreshOnly)
+        );
+        assert_eq!(DaemonMode::parse("source_refresh_only"), None);
+        assert_eq!(DaemonMode::parse(" full "), None);
+        assert_eq!(DaemonMode::parse(""), None);
+    }
+
+    #[test]
+    fn trigger_names_and_parser_preserve_the_schema_v1_vocabulary() {
+        for (trigger, name) in [
+            (DaemonTrigger::Setup, "setup"),
+            (DaemonTrigger::Import, "import"),
+            (DaemonTrigger::Search, "search"),
+        ] {
+            assert_eq!(trigger.as_str(), name);
+            assert_eq!(DaemonTrigger::parse_persisted(name), Some(trigger));
+            assert_eq!(parse_persisted_trigger(Some(name)), Some(trigger));
+        }
+        assert_eq!(DaemonTrigger::parse_persisted("SEARCH"), None);
+        assert_eq!(DaemonTrigger::parse_persisted("manual"), None);
+        assert_eq!(DaemonTrigger::parse_persisted("setup "), None);
+        assert_eq!(DaemonTrigger::parse_persisted(""), None);
+        assert_eq!(parse_persisted_trigger(None), None);
+        assert_eq!(parse_persisted_trigger(Some("unknown")), None);
+        assert_eq!(parse_persisted_trigger(Some("Import")), None);
+    }
+
+    #[test]
+    fn absent_endpoint_observation_has_no_invented_identity() {
+        let observation = DaemonEndpointObservation::default();
+
+        assert!(!observation.available);
+        assert_eq!(observation.transport, None);
+        assert_eq!(observation.owner_pid, None);
+        assert_eq!(observation.address, None);
+    }
 }

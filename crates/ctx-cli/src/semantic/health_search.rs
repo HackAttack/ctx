@@ -28,10 +28,3 @@ pub(super) fn json_string(value: &Value, key: &str) -> Option<String> {
 pub(super) fn json_i64(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|value| value.as_i64())
 }
-
-pub(super) fn json_u32(value: &Value, key: &str) -> Option<u32> {
-    value
-        .get(key)
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u32::try_from(value).ok())
-}

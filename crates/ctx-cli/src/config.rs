@@ -65,13 +65,6 @@ pub enum DaemonMode {
 }
 
 impl DaemonMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::SourceRefreshOnly => "source-refresh-only",
-        }
-    }
-
     pub const fn runs_only_source_refresh(self) -> bool {
         matches!(self, Self::SourceRefreshOnly)
     }
