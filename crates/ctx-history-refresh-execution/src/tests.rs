@@ -305,6 +305,45 @@ fn query_readiness_decodes_metadata_before_certifying_generation() {
     .contains("unsupported Core source-refresh publication metadata version"));
 }
 
+#[test]
+fn persisted_metadata_rejects_malformed_route_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let generation_id = publish_pin_source(temp.path(), publication_pin_source_with_anchor(0x97));
+    let publication = test_publication(generation_id.clone());
+    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
+        None,
+        generation_id.clone(),
+        &publication,
+    )
+    .unwrap();
+    let encoded = SourceBackedPublicationMetadata {
+        version: SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+        request_id: "malformed-route-metadata".to_owned(),
+        operation: RefreshOperation::Refresh,
+        refresh_scope: SourceBackedRefreshScope::All,
+        receipt: receipt.to_json(),
+        route_observations: BTreeMap::new(),
+    }
+    .encode()
+    .unwrap();
+    let mut persisted: Value = serde_json::from_slice(&encoded).unwrap();
+    persisted["receipt"]["route_results"] = json!({"AB".repeat(32): ["s", false]});
+
+    let writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    let verified = writer
+        .republish_current_publication_metadata(
+            &generation_id,
+            serde_json::to_vec(&persisted).unwrap(),
+        )
+        .unwrap();
+    let error = SourceBackedPublicationMetadata::decode(&verified).unwrap_err();
+
+    assert!(format!("{error:#}").contains("route identity is invalid"));
+}
+
 #[path = "tests/execution_path.rs"]
 mod execution_path;
 #[path = "tests/receipt.rs"]

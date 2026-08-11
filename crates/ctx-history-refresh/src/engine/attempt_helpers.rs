@@ -285,6 +285,9 @@ pub(super) fn source_backed_refresh_failure_outcome(
         .find_map(|cause| cause.downcast_ref::<SourceBackedCoordinatorError>())
     {
         let (code, class, retryable, retry_advice) = match coordinator_error {
+            SourceBackedCoordinatorError::Index(error) if index_error_is_corruption(error) => {
+                ("index_corruption", "corruption", false, "rebuild_index")
+            }
             SourceBackedCoordinatorError::UnavailableRoute { .. } => (
                 "source_unavailable",
                 "unavailable",
@@ -731,6 +734,12 @@ mod tests {
             ),
             (
                 IndexError::InvalidSourceRouteIdentity.into(),
+                "index_corruption",
+                "corruption",
+                false,
+            ),
+            (
+                SourceBackedCoordinatorError::Index(IndexError::InvalidSourceRouteIdentity).into(),
                 "index_corruption",
                 "corruption",
                 false,

@@ -209,9 +209,10 @@ pub fn required_route_results(
     values
         .iter()
         .map(|(route_identity, value)| {
-            if !is_sha256_identity(route_identity) {
-                bail!("published daemon source refresh route identity is invalid");
-            }
+            let parsed_route_identity = SourceRouteIdentity::from_sha256(route_identity.clone())
+                .map_err(|_| {
+                    anyhow!("published daemon source refresh route identity is invalid")
+                })?;
             let fields = value.as_array().ok_or_else(|| {
                 anyhow!("published daemon source refresh compact route result must be an array")
             })?;
@@ -240,11 +241,16 @@ pub fn required_route_results(
                     })?;
                     let total =
                         required_usize_from_value(fields.get(2), "route source_failure_total")?;
-                    let failures = required_route_source_failures(route_identity, fields.get(3))?;
+                    let failures = required_route_source_failures(
+                        parsed_route_identity.as_str(),
+                        fields.get(3),
+                    )?;
                     let rejected_record_total =
                         required_u64_from_value(fields.get(4), "route rejected_record_total")?;
-                    let rejection_diagnostics =
-                        required_route_rejection_diagnostics(route_identity, fields.get(5))?;
+                    let rejection_diagnostics = required_route_rejection_diagnostics(
+                        parsed_route_identity.as_str(),
+                        fields.get(5),
+                    )?;
                     (
                         SourceBackedRefreshRouteOutcome::Succeeded { changed },
                         total,
@@ -260,7 +266,10 @@ pub fn required_route_results(
                     })?;
                     let total =
                         required_usize_from_value(fields.get(3), "route source_failure_total")?;
-                    let failures = required_route_source_failures(route_identity, fields.get(4))?;
+                    let failures = required_route_source_failures(
+                        parsed_route_identity.as_str(),
+                        fields.get(4),
+                    )?;
                     (
                         SourceBackedRefreshRouteOutcome::Failed {
                             class,
@@ -275,7 +284,7 @@ pub fn required_route_results(
                 _ => bail!("published daemon source refresh route result has inconsistent fields"),
             };
             let result = SourceBackedRefreshRouteResult {
-                route_identity: route_identity.clone(),
+                route_identity: parsed_route_identity.as_str().to_owned(),
                 outcome,
                 source_failure_total,
                 source_failures,

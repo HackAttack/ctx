@@ -1082,15 +1082,19 @@ mod tests {
     }
 
     #[test]
-    fn malformed_deserialized_route_identity_reaches_index_validation() {
-        let snapshot: SourceRouteSnapshot = serde_json::from_str(&format!(
-            "{{\"route_identity\":\"{}\",\"sources\":[],\"missing\":null}}",
-            "AB".repeat(32)
-        ))
+    fn malformed_deserialized_route_identity_reaches_complete_manifest_validation() {
+        let route_identity = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+        let manifest = GenerationManifest::from_parts(
+            Vec::new(),
+            vec![SourceRouteSnapshot::present(route_identity, Vec::new()).unwrap()],
+        )
         .unwrap();
+        let mut persisted = serde_json::to_value(manifest).unwrap();
+        persisted["source_routes"][0]["route_identity"] = serde_json::json!("AB".repeat(32));
+        let loaded: GenerationManifest = serde_json::from_value(persisted).unwrap();
 
         assert!(matches!(
-            snapshot.validate_contract(),
+            loaded.validate_contract(),
             Err(IndexError::InvalidSourceRouteIdentity)
         ));
     }
