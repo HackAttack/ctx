@@ -66,7 +66,7 @@ MCP_ATTRIBUTION_PUBLIC_SUITES = {
         },
     ),
     "mcp_attribution_privacy": struct(
-        target = "//crates/ctx-cli:mcp_attribution_privacy_tests",
+        target = "//crates/ctx-agent-application:mcp_attribution_privacy_tests",
         selected_inventory = False,
         tests = {
             "mcp_attribution_canaries_stay_out_of_search_analytics_usage_and_diagnostics": ["privacy_sinks"],
