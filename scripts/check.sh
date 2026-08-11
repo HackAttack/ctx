@@ -20,7 +20,7 @@ run_bazel() {
 
 run_rust_crate_size_preflight() {
   printf '==> local physical Rust crate-size preflight\n'
-  python3 scripts/check-rust-crate-size.py --preflight "${repo_root}"
+  scripts/bazelw run //:rust_crate_size_preflight -- --preflight "${repo_root}"
 }
 
 usage() {

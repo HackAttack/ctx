@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -505,11 +506,19 @@ class GitTransitionTests(unittest.TestCase):
             gate.previous_accepted_policy(self.checkout.root)
 
 
-class PythonPrerequisiteTests(unittest.TestCase):
-    def test_python_version_check_precedes_tomllib_import(self) -> None:
+class PythonCompatibilityTests(unittest.TestCase):
+    def test_checker_uses_python_310_syntax_and_declared_tomli(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("requires Python 3.11 or newer", source)
-        self.assertLess(source.index("if sys.version_info < (3, 11):"), source.index("import tomllib"))
+        tree = ast.parse(source, filename=str(SCRIPT), feature_version=(3, 10))
+        toml_imports = [
+            (alias.name, alias.asname)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name in {"tomli", "tomllib"}
+        ]
+        self.assertEqual(toml_imports, [("tomli", "tomllib")])
+        self.assertNotIn("sys.version_info", source)
 
 
 if __name__ == "__main__":
