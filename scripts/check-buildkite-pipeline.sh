@@ -274,6 +274,22 @@ def validate_linux_smoke_arg_escaping(blocks):
         )
 
 
+def validate_runtime_parameter_escaping(blocks):
+    unescaped_parameter = re.compile(
+        r"(?<![$])[$](?:[{][^}\n]+[}]|[A-Za-z_][A-Za-z0-9_]*)"
+    )
+    for index, block in enumerate(blocks):
+        if "    command: |\n" not in block:
+            continue
+        match = unescaped_parameter.search(command(block))
+        key = step_key(block) or f"step-{index}"
+        require_route(
+            match is None,
+            f"{key} exposes step-runtime shell parameter {match.group(0) if match else ''} "
+            "to Buildkite upload interpolation",
+        )
+
+
 def expect_rejection(name, blocks, validator=validate_validation_routes):
     try:
         validator(blocks)
@@ -293,6 +309,7 @@ require_route(
 )
 validate_validation_routes(steps)
 validate_linux_smoke_arg_escaping(steps)
+validate_runtime_parameter_escaping(steps)
 expect_rejection(
     "missing nightly route",
     [block for block in steps if step_key(block) != "public-nightly"],
@@ -327,6 +344,21 @@ for linux_key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
         mutated,
         validate_linux_smoke_arg_escaping,
     )
+required_parameter = (
+    "$${CTX_SEMANTIC_MODEL_CPU_SOURCE:?set CTX_SEMANTIC_MODEL_CPU_SOURCE "
+    "to the pinned offline fp32 snapshot}"
+)
+mutated_required_parameter = [
+    block.replace(required_parameter, required_parameter[1:], 1)
+    if step_key(block) == "semantic-model-archives"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "unescaped runtime required parameter",
+    mutated_required_parameter,
+    validate_runtime_parameter_escaping,
+)
 print(
     "Buildkite route parser ok: ci, nightly, and release select exactly "
     "one validation aggregate"
