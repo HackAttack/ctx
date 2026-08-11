@@ -246,10 +246,7 @@ mod tests {
 
     #[test]
     fn search_request_preserves_every_scope_backend_pair_for_execution() {
-        use crate::{
-            cli::{ContentScopeArg, SearchArgs, SearchBackendArg},
-            source_index::source_search_request,
-        };
+        use crate::cli::{ContentScopeArg, SearchArgs, SearchBackendArg};
 
         for (scope_arg, expected_scope) in [
             (
@@ -283,7 +280,7 @@ mod tests {
                     ctx_history_read_application::SearchBackend::Semantic,
                 ),
             ] {
-                let request = SearchRequest::from(&SearchArgs {
+                let request = SearchRequest::from(SearchArgs {
                     query: Some("needle".to_owned()),
                     term: vec!["extra".to_owned()],
                     limit: 7,
@@ -308,7 +305,7 @@ mod tests {
                     format: crate::JsonOutputFormat::Json,
                     verbose: true,
                 });
-                let execution = source_search_request(&request);
+                let execution = ctx_history_read_application::SearchRequest::from(request);
                 assert_eq!(execution.content_scope, expected_scope);
                 assert_eq!(execution.backend, Some(expected_backend));
                 assert!(
@@ -385,19 +382,19 @@ mod tests {
                         workspace: Some("workspace".to_owned()),
                         ..ListEventsArgs::default()
                     };
-                    let request = ListEventsRequest::from(&parsed);
+                    let request = ListEventsRequest::from(parsed);
                     assert_eq!(request.scope, expected_scope);
                     assert_eq!(request.direction, expected_direction);
                     assert_eq!(request.content, expected_content);
 
-                    let selection = selection_from_request(&request).unwrap();
-                    assert_eq!(selection.filters().scope, expected_core_scope);
-                    assert_eq!(selection.filters().direction, expected_core_direction);
                     let projection = match request.content {
                         ListEventsContentProjection::Full => EventContentProjection::Full,
                         ListEventsContentProjection::Text => EventContentProjection::Text,
                         ListEventsContentProjection::None => EventContentProjection::None,
                     };
+                    let selection = selection_from_request(request).unwrap();
+                    assert_eq!(selection.filters().scope, expected_core_scope);
+                    assert_eq!(selection.filters().direction, expected_core_direction);
                     let wire = EventQueryWireRequest::from_selection(&selection, projection, 9);
                     assert_eq!(wire.content, expected_wire_content);
                 }

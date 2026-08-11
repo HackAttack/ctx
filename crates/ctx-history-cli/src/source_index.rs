@@ -11,14 +11,11 @@ pub use copied_lineage::copied_lineage_summary;
 pub use locate::run_locate;
 #[cfg(test)]
 use search::mcp_search;
-pub use search::source_search_request;
 pub use search::{
     mcp_search_with_compact, normalize_mcp_search_request, run_search,
     validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
 };
 pub use shared::generation_query_authority_error_json;
-#[cfg(test)]
-pub(crate) use show::{mcp_show_event, mcp_show_event_with_compact};
 pub use show::{
     mcp_show_event_application, mcp_show_session_application, run_show, ShowApplicationError,
 };

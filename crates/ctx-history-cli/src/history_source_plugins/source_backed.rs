@@ -202,12 +202,20 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history.jsonl");
         let mut file = File::create(&path).unwrap();
-        writeln!(file, "{}", json!({"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"})).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"record_type":"manifest","schema_version":"ctx-history-jsonl-v1"})
+        )
+        .unwrap();
         writeln!(file, "{}", json!({"record_type":"source","provider_key":"example","source_id":"default","source_format":"example-v1"})).unwrap();
 
         let prepared = prepare_source_backed_history_source(source(path.clone()), false).unwrap();
         assert_eq!(prepared.source_path(), path);
-        assert_eq!(prepared.provider_source().source_format, ROUTE_SOURCE_FORMAT);
+        assert_eq!(
+            prepared.provider_source().source_format,
+            ROUTE_SOURCE_FORMAT
+        );
         assert!(!temp.path().join("history-source-plugin-sources").exists());
     }
 
@@ -231,10 +239,16 @@ mod tests {
         writeln!(file, "{}", json!({"record_type":"source","provider_key":"example","source_id":"default","source_format":"example-v1"})).unwrap();
 
         let error = prepare_source_backed_history_source(source(path.clone()), false).unwrap_err();
-        assert!(error.to_string().contains("lineage_contract does not match"), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .contains("lineage_contract does not match"),
+            "{error:#}"
+        );
 
         let mut matched = source(path);
-        matched.lineage_contract = Some(ctx_history_core::CtxHistoryJsonlLineageContract::ProviderNativeV1);
+        matched.lineage_contract =
+            Some(ctx_history_core::CtxHistoryJsonlLineageContract::ProviderNativeV1);
         assert!(prepare_source_backed_history_source(matched, false).is_ok());
     }
 }

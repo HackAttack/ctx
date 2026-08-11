@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use ctx_history_cli::{
-    list_events_selection_from_request, source_search_request, ContentScopeArg,
-    EventContentProjection, EventContentProjectionArg, EventQueryDirection, EventQueryScope,
-    EventQueryWireRequest, JsonOutputFormat, ListEventsArgs, ListEventsContentProjection,
-    ListEventsDirection, ListEventsRequest, ListEventsScope, RefreshMode, SearchArgs,
-    SearchBackend, SearchBackendArg, SearchRequest,
+    list_events_selection_from_request, ContentScopeArg, EventContentProjection,
+    EventContentProjectionArg, EventQueryDirection, EventQueryScope, EventQueryWireRequest,
+    JsonOutputFormat, ListEventsArgs, ListEventsContentProjection, ListEventsDirection,
+    ListEventsRequest, ListEventsScope, RefreshMode, SearchArgs, SearchBackend, SearchBackendArg,
+    SearchRequest,
 };
 use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope, SearchContentScope};
 use ctx_history_read_application::SearchBackend as ExecutionSearchBackend;
@@ -23,7 +23,7 @@ fn search_request_preserves_every_content_scope_and_backend_into_execution() {
             (SearchBackendArg::Lexical, ExecutionSearchBackend::Lexical),
             (SearchBackendArg::Semantic, ExecutionSearchBackend::Semantic),
         ] {
-            let neutral = SearchRequest::from(&SearchArgs {
+            let neutral = SearchRequest::from(SearchArgs {
                 query: Some("needle".to_owned()),
                 term: vec!["other".to_owned()],
                 limit: 17,
@@ -48,7 +48,7 @@ fn search_request_preserves_every_content_scope_and_backend_into_execution() {
                 format: JsonOutputFormat::Json,
                 verbose: true,
             });
-            let execution = source_search_request(&neutral);
+            let execution = ctx_history_read_application::SearchRequest::from(neutral);
             assert_eq!(execution.content_scope, expected_scope);
             assert_eq!(execution.backend, Some(expected_backend));
             assert!(execution.events);
@@ -113,15 +113,20 @@ fn list_request_preserves_every_scope_direction_and_content_projection_into_exec
                     workspace: Some("workspace".to_owned()),
                     ..ListEventsArgs::default()
                 };
-                let neutral = ListEventsRequest::from(&parsed);
+                let neutral = ListEventsRequest::from(parsed);
                 assert_eq!(neutral.scope, expected_scope);
                 assert_eq!(neutral.direction, expected_direction);
                 assert_eq!(neutral.content, expected_content);
 
-                let selection = list_events_selection_from_request(&neutral).unwrap();
+                let projection = match neutral.content {
+                    ListEventsContentProjection::Full => EventContentProjection::Full,
+                    ListEventsContentProjection::Text => EventContentProjection::Text,
+                    ListEventsContentProjection::None => EventContentProjection::None,
+                };
+                let selection = list_events_selection_from_request(neutral).unwrap();
                 assert_eq!(selection.filters().scope, core_scope);
                 assert_eq!(selection.filters().direction, core_direction);
-                let wire = EventQueryWireRequest::from_selection(&selection, wire_content, 11);
+                let wire = EventQueryWireRequest::from_selection(&selection, projection, 11);
                 assert_eq!(wire.content, wire_content);
             }
         }
@@ -155,7 +160,7 @@ fn neutral_search_backend_is_explicit_and_not_reconstructed_from_defaults() {
         format: ctx_history_cli::OutputFormat::Json,
         verbose: false,
     };
-    let execution = source_search_request(&request);
+    let execution = ctx_history_read_application::SearchRequest::from(request);
     assert_eq!(execution.backend, Some(ExecutionSearchBackend::Semantic));
     assert_eq!(execution.content_scope, SearchContentScope::Calls);
 }

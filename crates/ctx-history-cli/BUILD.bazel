@@ -34,6 +34,18 @@ HISTORY_CLI_DEPS = [
     "//crates/ctx-terminal:lib",
 ]
 
+HISTORY_CLI_TEST_SUPPORT_DEPS = [
+    "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-ingest-application:test_support_lib",
+    "//crates/ctx-history-index:lib",
+    "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:test_support_lib",
+    "//crates/ctx-daemon-cli:test_support_lib",
+    "//crates/ctx-client-observability:test_support_lib",
+    "//crates/ctx-terminal:lib",
+]
+
 RUST_SRCS = glob(["src/**/*.rs"])
 
 PROD_SRCS = glob(
@@ -53,6 +65,19 @@ rust_library(
     rustc_env = COMMON_RUSTC_ENV,
 )
 
+rust_library(
+    name = "test_support_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_history_cli",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + HISTORY_CLI_TEST_SUPPORT_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
 ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_SRCS,
@@ -62,6 +87,7 @@ ctx_rust_test(
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal = True, normal_dev = True) + HISTORY_CLI_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    compile_data = glob(["src/source_index/render/goldens/*.txt"]),
     rustc_env = COMMON_RUSTC_ENV,
 )
 

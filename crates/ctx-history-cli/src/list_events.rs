@@ -94,7 +94,6 @@ fn execute(
     writer: &mut dyn Write,
 ) -> std::result::Result<usize, EventQueryError> {
     let args = crate::ListEventsRequest::from(args);
-    let selection = selection_from_request(&args)?;
     let cursor = args.cursor.as_deref().map(decode_cursor).transpose()?;
     let limit = validated_limit(args.limit)?;
     let content = match args.content {
@@ -102,8 +101,10 @@ fn execute(
         crate::ListEventsContentProjection::Text => EventContentProjection::Text,
         crate::ListEventsContentProjection::None => EventContentProjection::None,
     };
+    let format = args.format;
+    let selection = selection_from_request(args)?;
     let request = EventQueryWireRequest::from_selection(&selection, content, limit);
-    match args.format {
+    match format {
         crate::OutputFormat::Json => {
             let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
                 open_event_range_generation(data_root, read)
@@ -139,34 +140,57 @@ pub fn selection(
 }
 
 pub fn selection_from_request(
-    args: &crate::ListEventsRequest,
+    args: crate::ListEventsRequest,
 ) -> std::result::Result<CoreEventRangeSelection, EventQueryError> {
+    let crate::ListEventsRequest {
+        since,
+        until,
+        providers,
+        source,
+        history_source,
+        provider_key,
+        source_id,
+        source_format,
+        provider_session,
+        session,
+        parent_session,
+        root_session,
+        branch,
+        workspace,
+        event_type,
+        role,
+        agent_type,
+        file,
+        scope,
+        direction,
+        ..
+    } = args;
     selection(
-        args.since.as_deref(),
-        args.until.as_deref(),
+        since.as_deref(),
+        until.as_deref(),
         CoreEventRangeFilters {
-            providers: args.providers.clone(),
-            source_identity: parse_uuid("source", args.source.as_deref())?,
-            history_source: args.history_source.clone(),
-            provider_key: args.provider_key.clone(),
-            source_id: args.source_id.clone(),
-            source_format: args.source_format.clone(),
-            provider_session_id: args.provider_session.clone(),
-            session_id: parse_uuid("session", args.session.as_deref())?,
-            parent_session_id: parse_uuid("parent_session", args.parent_session.as_deref())?,
-            root_session_id: parse_uuid("root", args.root_session.as_deref())?,
-            branch: args.branch.clone(),
-            workspace: args.workspace.clone(),
-            event_type: args.event_type.clone(),
-            role: args.role.clone(),
-            agent_type: args.agent_type.clone(),
-            scope: match args.scope {
+            providers,
+            source_identity: parse_uuid("source", source.as_deref())?,
+            history_source,
+            provider_key,
+            source_id,
+            source_format,
+            provider_session_id: provider_session,
+            session_id: parse_uuid("session", session.as_deref())?,
+            parent_session_id: parse_uuid("parent_session", parent_session.as_deref())?,
+            root_session_id: parse_uuid("root", root_session.as_deref())?,
+            branch,
+            workspace,
+            event_type,
+            role,
+            agent_type,
+            scope: match scope {
                 crate::ListEventsScope::All => CoreEventRangeScope::All,
                 crate::ListEventsScope::Primary => CoreEventRangeScope::Primary,
                 crate::ListEventsScope::Subagent => CoreEventRangeScope::Subagent,
             },
-            file: args.file.clone(),
-            direction: match args.direction {
+            file,
+            direction: match direction {
                 crate::ListEventsDirection::Ascending => CoreEventRangeDirection::Ascending,
                 crate::ListEventsDirection::Descending => CoreEventRangeDirection::Descending,
             },

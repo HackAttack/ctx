@@ -118,51 +118,6 @@ impl From<EventQueryDirection> for CoreEventRangeDirection {
     }
 }
 
-impl From<&ListEventsArgs> for ListEventsRequest {
-    fn from(args: &ListEventsArgs) -> Self {
-        Self {
-            since: args.since.clone(),
-            until: args.until.clone(),
-            providers: args.provider.clone(),
-            source: args.source.clone(),
-            history_source: args.history_source.clone(),
-            provider_key: args.provider_key.clone(),
-            source_id: args.source_id.clone(),
-            source_format: args.source_format.clone(),
-            provider_session: args.provider_session.clone(),
-            session: args.session.clone(),
-            parent_session: args.parent_session.clone(),
-            root_session: args.root_session.clone(),
-            branch: args.branch.clone(),
-            workspace: args.workspace.clone(),
-            event_type: args.event_type.clone(),
-            role: args.role.clone(),
-            agent_type: args.agent_type.clone(),
-            file: args.file.clone(),
-            cursor: args.cursor.clone(),
-            limit: args.limit,
-            format: match args.format {
-                EventQueryFormat::Json => OutputFormat::Json,
-                EventQueryFormat::Jsonl => OutputFormat::Jsonl,
-            },
-            scope: match args.scope {
-                EventQueryScope::All => ListEventsScope::All,
-                EventQueryScope::Primary => ListEventsScope::Primary,
-                EventQueryScope::Subagent => ListEventsScope::Subagent,
-            },
-            direction: match args.direction {
-                EventQueryDirection::Ascending => ListEventsDirection::Ascending,
-                EventQueryDirection::Descending => ListEventsDirection::Descending,
-            },
-            content: match args.content {
-                EventContentProjectionArg::Full => ListEventsContentProjection::Full,
-                EventContentProjectionArg::Text => ListEventsContentProjection::Text,
-                EventContentProjectionArg::None => ListEventsContentProjection::None,
-            },
-        }
-    }
-}
-
 impl From<ListEventsArgs> for ListEventsRequest {
     fn from(args: ListEventsArgs) -> Self {
         Self {

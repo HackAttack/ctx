@@ -100,48 +100,6 @@ pub struct LocateEventArgs {
     pub format: JsonOutputFormat,
 }
 
-impl From<&SearchArgs> for SearchRequest {
-    fn from(args: &SearchArgs) -> Self {
-        Self {
-            query: args.query.clone(),
-            terms: args.term.clone(),
-            limit: args.limit,
-            provider: args.provider.clone().map(|value| value.0),
-            history_source: args.history_source.clone(),
-            provider_key: args.provider_key.clone(),
-            source_id: args.source_id.clone(),
-            source_format: args.source_format.clone(),
-            workspace: args.workspace.clone(),
-            since: args.since.clone(),
-            primary_only: args.primary_only,
-            include_subagents: args.include_subagents,
-            content_scope: match args.content_scope.unwrap_or(ContentScopeArg::All) {
-                ContentScopeArg::All => SearchContentScope::All,
-                ContentScopeArg::Transcript => SearchContentScope::Transcript,
-                ContentScopeArg::Calls => SearchContentScope::Calls,
-                ContentScopeArg::Outputs => SearchContentScope::Outputs,
-            },
-            event_type: args.event_type.clone(),
-            file: args.file.clone(),
-            session: args.session.clone(),
-            events: args.events,
-            backend: args.backend.map(|value| match value {
-                SearchBackendArg::Hybrid => SearchBackend::Hybrid,
-                SearchBackendArg::Lexical => SearchBackend::Lexical,
-                SearchBackendArg::Semantic => SearchBackend::Semantic,
-            }),
-            semantic_weight: args.semantic_weight,
-            refresh: args.refresh,
-            include_current_session: args.include_current_session,
-            format: match args.format {
-                JsonOutputFormat::Text => OutputFormat::Text,
-                JsonOutputFormat::Json => OutputFormat::Json,
-            },
-            verbose: args.verbose,
-        }
-    }
-}
-
 impl From<SearchArgs> for SearchRequest {
     fn from(args: SearchArgs) -> Self {
         Self {
@@ -189,7 +147,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{ContentScopeArg, SearchArgs};
-    use crate::{JsonOutputFormat, RefreshMode, SearchBackend, SearchBackendArg, SearchRequest};
+    use crate::{JsonOutputFormat, RefreshMode, SearchBackendArg, SearchRequest};
 
     #[test]
     fn owned_search_conversion_reuses_request_buffers() {
@@ -225,12 +183,16 @@ mod tests {
             verbose: false,
         });
 
-        assert_eq!(request.query.as_deref().unwrap().as_ptr(), query_pointer);
-        assert_eq!(request.terms[0].as_ptr(), term_pointer);
+        let execution = ctx_history_read_application::SearchRequest::from(request);
+        assert_eq!(execution.query.as_ptr(), query_pointer);
+        assert_eq!(execution.terms[0].as_ptr(), term_pointer);
         assert_eq!(
-            request.workspace.as_deref().unwrap().as_ptr(),
+            execution.workspace.as_deref().unwrap().as_ptr(),
             workspace_pointer
         );
-        assert_eq!(request.backend, Some(SearchBackend::Lexical));
+        assert_eq!(
+            execution.backend,
+            Some(ctx_history_read_application::SearchBackend::Lexical)
+        );
     }
 }

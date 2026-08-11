@@ -48,14 +48,6 @@ impl TerminalPort for Ui {
     }
 }
 
-/// Bounded local-usage facts computed by a read command. The final adapter
-/// decides whether and how to persist or deliver them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SearchContextObservation {
-    delivered_bytes: Option<usize>,
-    matched_bytes: Option<usize>,
-}
-
 /// Complete facts from one successful search. This crate measures the command
 /// execution; the final binary alone maps and delivers its analytics schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,29 +74,6 @@ pub enum SearchRefreshStatus {
     DaemonBackground,
     DaemonUnavailable,
     Completed,
-}
-
-impl SearchContextObservation {
-    pub const fn unavailable() -> Self {
-        Self {
-            delivered_bytes: None,
-            matched_bytes: None,
-        }
-    }
-
-    pub fn complete(delivered_bytes: usize, matched_bytes: usize) -> Option<Self> {
-        Some(Self {
-            delivered_bytes: Some(delivered_bytes),
-            matched_bytes: Some(matched_bytes),
-        })
-    }
-
-    pub const fn complete_byte_totals(self) -> Option<(usize, usize)> {
-        match (self.delivered_bytes, self.matched_bytes) {
-            (Some(delivered), Some(matched)) => Some((delivered, matched)),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

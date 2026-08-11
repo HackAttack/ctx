@@ -1,7 +1,3 @@
-use std::path::Path;
-
-use anyhow::Result;
-
 /// The single immutable configuration snapshot supplied for one history
 /// invocation. Host-specific configuration representations never cross this
 /// boundary.
@@ -50,39 +46,6 @@ impl AppConfig {
     pub(crate) const fn semantic_search_enabled(&self) -> bool {
         self.semantic_enabled
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("history CLI configuration operation failed: {message}")]
-pub struct ConfigPortError {
-    pub message: String,
-}
-
-impl ConfigPortError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-/// Configuration mutations that history setup is allowed to request.
-///
-/// The final binary owns parsing, durable writes, and the one post-write
-/// snapshot conversion. This port intentionally does not expose the host's
-/// full configuration object.
-pub trait HistoryCliConfigPort {
-    /// Returns the sole immutable snapshot for an invocation. Command bodies
-    /// must reuse this value rather than re-reading host configuration.
-    fn snapshot(&self, data_root: &Path) -> Result<HistoryCliConfig, ConfigPortError>;
-
-    fn ensure_default_config(&mut self, data_root: &Path) -> Result<(), ConfigPortError>;
-
-    fn set_semantic_search_enabled(
-        &mut self,
-        data_root: &Path,
-        enabled: bool,
-    ) -> Result<HistoryCliConfig, ConfigPortError>;
 }
 
 #[cfg(test)]

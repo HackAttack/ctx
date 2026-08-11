@@ -54,7 +54,6 @@ pub(super) use hydration::{
     SearchPresentationRetentionBudgetExceeded, SEARCH_PRESENTATION_HYDRATION_BUDGET,
     SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES,
 };
-pub use query::source_search_request;
 pub(super) use query::NormalizedSearchQuery;
 pub use query::SourceSearchRequest;
 #[cfg(test)]

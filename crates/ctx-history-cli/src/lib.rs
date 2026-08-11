@@ -46,11 +46,11 @@ pub use provider_args::ProviderArg;
 pub use source_index::{
     copied_lineage_summary, generation_query_authority_error_json, mcp_search_with_compact,
     mcp_show_event_application, mcp_show_session_application, normalize_mcp_search_request,
-    run_locate, run_search, run_show, source_search_request, validate_explicit_semantic_scope,
-    McpSearchError, ShowApplicationError, SourceSearchRequest,
+    run_locate, run_search, run_show, validate_explicit_semantic_scope, McpSearchError,
+    ShowApplicationError, SourceSearchRequest,
 };
 
-pub use config::{ConfigPortError, HistoryCliConfig, HistoryCliConfigPort};
+pub use config::HistoryCliConfig;
 pub use history_source_plugins::{
     discover_history_source_plugins_with_diagnostics, prepare_source_backed_history_source,
     HistorySourcePluginManifestFailure, HistorySourcePluginRefresh, HistorySourcePluginSource,
@@ -62,10 +62,7 @@ pub use mcp_tool_call::{
     MCP_TOOL_CALL_JSON_GUIDANCE, MCP_TOOL_CALL_STRUCTURED_GUIDANCE,
 };
 pub use output::JsonOutputFormat;
-pub use ports::{
-    OutputStream, SearchContextObservation, SearchExecutionObservation, SearchRefreshStatus,
-    TerminalPort,
-};
+pub use ports::{OutputStream, SearchExecutionObservation, SearchRefreshStatus, TerminalPort};
 pub use request::{
     HistoryProvider, ImportFormat, ImportRequest, ListEventsContentProjection, ListEventsDirection,
     ListEventsRequest, ListEventsScope, ListRequest, LocateRequest, OutputFormat, ProgressMode,

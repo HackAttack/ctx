@@ -231,15 +231,13 @@ mod tests {
             "--direction",
             "descending",
         ]));
+        let content = args.content.into();
         let selection = ctx_history_cli::list_events_selection_from_request(
-            &ctx_history_cli::ListEventsRequest::from(&args),
+            ctx_history_cli::ListEventsRequest::from(args),
         )
         .unwrap();
-        let request = ctx_history_cli::EventQueryWireRequest::from_selection(
-            &selection,
-            args.content.into(),
-            10,
-        );
+        let request =
+            ctx_history_cli::EventQueryWireRequest::from_selection(&selection, content, 10);
 
         assert_eq!(request.domain["range"]["since"], "2026-08-01T00:00:00.000Z");
         assert_eq!(
@@ -314,7 +312,7 @@ mod tests {
             "descending",
         ]));
         let selection = ctx_history_cli::list_events_selection_from_request(
-            &ctx_history_cli::ListEventsRequest::from(&args),
+            ctx_history_cli::ListEventsRequest::from(args),
         )
         .unwrap();
         let filters = selection.filters();
