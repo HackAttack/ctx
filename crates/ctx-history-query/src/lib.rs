@@ -21,7 +21,7 @@ mod application_tests;
 pub use application::{plan_search, PinnedHistoryQuery, PlannedSearch, SearchQueryResult};
 pub use filters::{
     normalize_source_identity_filter, normalize_source_identity_filters, parse_since_filter,
-    SourceIdentityFilterArgs, SourceIdentityFilters,
+    SourceIdentityFilterArgs, SourceIdentityFilterError, SourceIdentityFilters,
 };
 pub use list::{
     decode_event_range_cursor, encode_event_range_cursor, event_range_selection,

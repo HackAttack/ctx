@@ -81,8 +81,26 @@ pub(super) fn externalize_query_error(error: anyhow::Error) -> anyhow::Error {
                         limit.event_id, limit.actual_bytes, limit.maximum_bytes
                     )
                 })
+        })
+        .or_else(|| {
+            error
+                .downcast_ref::<ctx_history_query::SourceIdentityFilterError>()
+                .map(source_identity_filter_error_detail)
         });
     detail.map(anyhow::Error::msg).unwrap_or(error)
+}
+
+fn source_identity_filter_error_detail(
+    error: &ctx_history_query::SourceIdentityFilterError,
+) -> String {
+    match error {
+        ctx_history_query::SourceIdentityFilterError::InvalidHistorySource => {
+            "--history-source expects plugin/source or provider_key/source_id".to_owned()
+        }
+        ctx_history_query::SourceIdentityFilterError::CustomProviderRequired => {
+            "custom history source filters can only be combined with --provider custom".to_owned()
+        }
+    }
 }
 
 fn selector_error_detail(error: &ctx_history_query::SelectorError) -> String {

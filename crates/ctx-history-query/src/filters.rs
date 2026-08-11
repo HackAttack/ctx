@@ -1,7 +1,16 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration, Utc};
+use thiserror::Error;
 
 use ctx_history_core::utc_now;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SourceIdentityFilterError {
+    #[error("history_source expects plugin/source or provider_key/source_id")]
+    InvalidHistorySource,
+    #[error("custom history source filters require the custom provider")]
+    CustomProviderRequired,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct SourceIdentityFilterArgs {
@@ -36,9 +45,7 @@ pub fn normalize_source_identity_filters(
         .as_deref()
         .is_some_and(|value| !value.contains('/'))
     {
-        return Err(anyhow!(
-            "history_source expects plugin/source or provider_key/source_id"
-        ));
+        return Err(SourceIdentityFilterError::InvalidHistorySource.into());
     }
     Ok(SourceIdentityFilters {
         history_source,

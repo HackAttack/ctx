@@ -74,7 +74,7 @@ use search::{
     search_existing_generation, shape_search_result_window, source_backed_refresh_mode,
 };
 #[cfg(test)]
-use shared::{index_root, open_index};
+use shared::{externalize_query_error, index_root, open_index};
 #[cfg(test)]
 use show::resolve_show_session;
 

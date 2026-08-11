@@ -190,9 +190,7 @@ pub fn validate_search_request(request: &SearchRequest) -> Result<()> {
             .provider
             .is_some_and(|provider| provider != CaptureProvider::Custom)
     {
-        return Err(anyhow!(
-            "custom history source filters require the custom provider"
-        ));
+        return Err(crate::SourceIdentityFilterError::CustomProviderRequired.into());
     }
     let has_query = !NormalizedSearchQuery::from_request(request).is_empty();
     if !has_query && request.file.is_none() {
