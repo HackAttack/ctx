@@ -100,12 +100,12 @@ steps:
     command: |
       source_commit="$(git rev-parse --verify HEAD^{commit})"
       smoke_args=()
-      if [[ "${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
+      if [[ "$${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_args+=(--native-smoke-dir target/public-cli-native-smoke/linux-x64)
       fi
       scripts/release/build-linux-bazel-release.sh \
         --platform linux-x64 \
-        --source-commit "${source_commit}" \
+        --source-commit "$${source_commit}" \
         --output-dir target/public-cli-artifacts \
         "$${smoke_args[@]}"
     agents:
@@ -144,12 +144,12 @@ steps:
     command: |
       source_commit="$(git rev-parse --verify HEAD^{commit})"
       smoke_args=()
-      if [[ "${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
+      if [[ "$${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_args+=(--native-smoke-dir target/public-cli-native-smoke/linux-aarch64)
       fi
       scripts/release/build-linux-bazel-release.sh \
         --platform linux-arm64 \
-        --source-commit "${source_commit}" \
+        --source-commit "$${source_commit}" \
         --output-dir target/public-cli-artifacts \
         "$${smoke_args[@]}"
     agents:
@@ -214,8 +214,8 @@ steps:
     key: "public-cli-macos-arm64"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
-      rustup toolchain install "${CTX_RUST_TOOLCHAIN}" --profile minimal
-      rustup run "${CTX_RUST_TOOLCHAIN}" cargo check --workspace --all-targets --all-features --locked
+      rustup toolchain install "$${CTX_RUST_TOOLCHAIN}" --profile minimal
+      rustup run "$${CTX_RUST_TOOLCHAIN}" cargo check --workspace --all-targets --all-features --locked
       export CTX_MACOS_RELEASE_SIGNING=required
       export CTX_MACOS_SIGNING_SECRET_SOURCE=injected
       # Buildkite injects signing values for this trusted hosted release job;
@@ -224,43 +224,49 @@ steps:
         --output-dir target/public-cli-artifacts
       scripts/build-onnxruntime-sidecar.sh macos-arm64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-arm64
-      if [[ "${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
+      if [[ "$${CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX:-0}" == "1" ]]; then
         smoke_root="target/public-cli-native-smoke/macos-arm64/coreml"
-        mkdir -p "${smoke_root}"
+        mkdir -p "$${smoke_root}"
         expected_version="$(sed -n 's/^ctx //p' \
           target/public-cli-artifacts/ctx-macos-arm64.version)"
-        [[ -n "${expected_version}" ]]
+        [[ -n "$${expected_version}" ]]
         scripts/run-native-candidate-smoke.sh \
           target/public-cli-artifacts/ctx-macos-arm64 \
           tests/fixtures/custom-history-jsonl/basic.jsonl \
-          "${expected_version}" \
+          "$${expected_version}" \
           target/public-cli-native-smoke/macos-arm64/candidate-smoke.json
         if ! scripts/smoke-daemon-semantic-release.sh \
           --coreml \
           --runtime-platform macos-arm64 \
           --ctx target/public-cli-artifacts/ctx-macos-arm64 \
-          --data-root "${smoke_root}" \
+          --data-root "$${smoke_root}" \
           --require-authoritative \
-          --keep-root >"${smoke_root}/smoke.log" 2>&1; then
-          cat "${smoke_root}/smoke.log"
+          --keep-root >"$${smoke_root}/smoke.log" 2>&1; then
+          cat "$${smoke_root}/smoke.log"
           exit 1
         fi
-        cat "${smoke_root}/smoke.log"
+        cat "$${smoke_root}/smoke.log"
 
         onnx_smoke_root="target/public-cli-native-smoke/macos-arm64/onnxruntime"
-        mkdir -p "${onnx_smoke_root}"
+        mkdir -p "$${onnx_smoke_root}"
         if ! scripts/smoke-daemon-semantic-release.sh \
           --runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz \
           --runtime-platform macos-arm64 \
           --ctx target/public-cli-artifacts/ctx-macos-arm64 \
-          --data-root "${onnx_smoke_root}" \
+          --data-root "$${onnx_smoke_root}" \
           --require-authoritative \
-          --keep-root >"${onnx_smoke_root}/smoke.log" 2>&1; then
-          cat "${onnx_smoke_root}/smoke.log"
+          --keep-root >"$${onnx_smoke_root}/smoke.log" 2>&1; then
+          cat "$${onnx_smoke_root}/smoke.log"
           exit 1
         fi
-        cat "${onnx_smoke_root}/smoke.log"
+        cat "$${onnx_smoke_root}/smoke.log"
       fi
+    secrets:
+      - "APPLE_CODESIGN_CERT_P12_B64"
+      - "APPLE_CODESIGN_CERT_PASSWORD"
+      - "NOTARY_ISSUER"
+      - "NOTARY_KEY_ID"
+      - "NOTARY_KEY_P8_B64"
     agents:
       queue: "ctx-release-macos-arm64"
       os: "darwin"
@@ -353,27 +359,27 @@ steps:
         macos-x64 cli target/public-cli-artifacts/ctx-macos-x64
       expected_version="$(sed -n 's/^ctx //p' \
         target/public-cli-artifacts/ctx-macos-x64.version)"
-      [[ -n "${expected_version}" ]]
+      [[ -n "$${expected_version}" ]]
       scripts/run-native-candidate-smoke.sh \
         target/public-cli-artifacts/ctx-macos-x64 \
         tests/fixtures/custom-history-jsonl/basic.jsonl \
-        "${expected_version}" \
+        "$${expected_version}" \
         target/public-cli-native-smoke/macos-x64-native/candidate-smoke.json
       scripts/build-onnxruntime-sidecar.sh macos-x64
       scripts/stage-github-release-assets.sh --transcode-runtime macos-x64
       smoke_root="target/public-cli-native-smoke/macos-x64-native"
-      mkdir -p "${smoke_root}"
+      mkdir -p "$${smoke_root}"
       if ! scripts/smoke-daemon-semantic-release.sh \
         --runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz \
         --runtime-platform macos-x64 \
         --ctx target/public-cli-artifacts/ctx-macos-x64 \
-        --data-root "${smoke_root}" \
+        --data-root "$${smoke_root}" \
         --require-authoritative \
-        --keep-root >"${smoke_root}/smoke.log" 2>&1; then
-        cat "${smoke_root}/smoke.log"
+        --keep-root >"$${smoke_root}/smoke.log" 2>&1; then
+        cat "$${smoke_root}/smoke.log"
         exit 1
       fi
-      cat "${smoke_root}/smoke.log"
+      cat "$${smoke_root}/smoke.log"
     agents:
       queue: "ctx-mac-gui-shared-x64"
       os: "darwin"
@@ -461,7 +467,7 @@ steps:
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip*" . \
         --step public-cli-windows-x64
-      CTX_PUBLIC_RELEASE_SOURCE_COMMIT="${source_commit}" \
+      CTX_PUBLIC_RELEASE_SOURCE_COMMIT="$${source_commit}" \
         scripts/stage-github-release-assets.sh \
           target/public-cli-artifacts \
           target/github-release-assets \
@@ -483,11 +489,11 @@ steps:
       mkdir -p target/public-cli-artifacts
       python3 scripts/semantic-release-assets.py build-model \
         --variant cpu-fp32 \
-        --source "${CTX_SEMANTIC_MODEL_CPU_SOURCE:?set CTX_SEMANTIC_MODEL_CPU_SOURCE to the pinned offline fp32 snapshot}" \
+        --source "$${CTX_SEMANTIC_MODEL_CPU_SOURCE:?set CTX_SEMANTIC_MODEL_CPU_SOURCE to the pinned offline fp32 snapshot}" \
         --output-dir target/public-cli-artifacts
       python3 scripts/semantic-release-assets.py build-model \
         --variant accelerator-o4-fp16 \
-        --source "${CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE:?set CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE to the pinned offline O4 fp16 snapshot}" \
+        --source "$${CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE:?set CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE to the pinned offline O4 fp16 snapshot}" \
         --output-dir target/public-cli-artifacts
     agents:
       queue: "release-linux-managed"
@@ -509,10 +515,10 @@ steps:
     command: |
       mkdir -p target/public-cli-artifacts
       python3 scripts/semantic-model-bundle/produce.py \
-        --tokenizer "${CTX_SEMANTIC_COREML_TOKENIZER:?set CTX_SEMANTIC_COREML_TOKENIZER to the pinned offline tokenizer}" \
-        --document-model "${CTX_SEMANTIC_COREML_DOCUMENT_MODEL:?set CTX_SEMANTIC_COREML_DOCUMENT_MODEL to the pinned document mlpackage}" \
-        --query-model "${CTX_SEMANTIC_COREML_QUERY_MODEL:?set CTX_SEMANTIC_COREML_QUERY_MODEL to the pinned query mlpackage}" \
-        --model-license "${CTX_SEMANTIC_COREML_MODEL_LICENSE:?set CTX_SEMANTIC_COREML_MODEL_LICENSE to the pinned model license}" \
+        --tokenizer "$${CTX_SEMANTIC_COREML_TOKENIZER:?set CTX_SEMANTIC_COREML_TOKENIZER to the pinned offline tokenizer}" \
+        --document-model "$${CTX_SEMANTIC_COREML_DOCUMENT_MODEL:?set CTX_SEMANTIC_COREML_DOCUMENT_MODEL to the pinned document mlpackage}" \
+        --query-model "$${CTX_SEMANTIC_COREML_QUERY_MODEL:?set CTX_SEMANTIC_COREML_QUERY_MODEL to the pinned query mlpackage}" \
+        --model-license "$${CTX_SEMANTIC_COREML_MODEL_LICENSE:?set CTX_SEMANTIC_COREML_MODEL_LICENSE to the pinned model license}" \
         --bundle-version 1.0.0 \
         --document-batch-size 16 \
         --query-batch-size 1 \
