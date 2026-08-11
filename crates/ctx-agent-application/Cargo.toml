@@ -1,0 +1,20 @@
+[package]
+name = "ctx-agent-application"
+version = "0.26.0"
+description = "Headless MCP application delivery for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+ctx-agent-integrations = { path = "../ctx-agent-integrations" }
+ctx-client-observability = { path = "../ctx-client-observability" }
+serde_json.workspace = true
+
+[dev-dependencies]
+ctx-history-core = { path = "../ctx-history-core" }
+tempfile.workspace = true

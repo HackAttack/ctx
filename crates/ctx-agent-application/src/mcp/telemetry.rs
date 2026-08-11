@@ -1,19 +1,36 @@
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
-use ctx_agent_integrations::mcp::{McpToolKind, RequestDescriptor};
+use ctx_agent_integrations::{
+    mcp::{McpToolKind, RequestDescriptor},
+    tool_backend::{ToolBlameTargetKind, ToolIntegrationReceipt, ToolTransportFacts},
+};
+use ctx_client_observability::{
+    analytics::{
+        pro_helper_connection_outcome, pro_operation_event, McpErrorClassV1, McpResponseBoundV1,
+        McpResultMetadataV1, McpStopReasonV1, Outcome, ProAccessStateV1, ProBlameTargetV1,
+        ProBlameTelemetryV1, ProHelperConnectionOutcomeV1, ProHostOperationV1,
+        ProStatusTelemetryV1, ProSurfaceV1, PublicEventV1,
+    },
+    mcp_observation::{
+        McpDeliveredResponse, McpObservation, McpObservedTool, McpRequestObservation,
+    },
+    operation_descriptor::ObservedMcpProductOperation,
+};
 use serde_json::Value;
 
-use crate::{
-    analytics::{
-        McpErrorClassV1, McpResponseBoundV1, McpResultMetadataV1, McpStopReasonV1, Outcome,
-        PublicEventV1,
-    },
-    config::AppConfig,
-    operation_descriptor::observed_mcp_product_operation,
-};
-use ctx_client_observability::mcp_observation::{
-    McpDeliveredResponse, McpObservation, McpObservedTool, McpRequestObservation,
-};
+fn observed_operation(kind: McpToolKind) -> Option<ObservedMcpProductOperation> {
+    match kind {
+        McpToolKind::Status => Some(ObservedMcpProductOperation::Status),
+        McpToolKind::Sources => Some(ObservedMcpProductOperation::Sources),
+        McpToolKind::Search => Some(ObservedMcpProductOperation::Search),
+        McpToolKind::ShowSession => Some(ObservedMcpProductOperation::ShowSession),
+        McpToolKind::ShowEvent => Some(ObservedMcpProductOperation::ShowEvent),
+        McpToolKind::QueryEvents => Some(ObservedMcpProductOperation::QueryEvents),
+        McpToolKind::Blame => Some(ObservedMcpProductOperation::Blame),
+        McpToolKind::ProStatus => Some(ObservedMcpProductOperation::ProStatus),
+        McpToolKind::Unknown | McpToolKind::Missing => None,
+    }
+}
 
 fn request_observation(descriptor: RequestDescriptor) -> McpRequestObservation {
     match descriptor {
@@ -21,7 +38,7 @@ fn request_observation(descriptor: RequestDescriptor) -> McpRequestObservation {
         RequestDescriptor::Ping => McpRequestObservation::Ping,
         RequestDescriptor::ToolsList => McpRequestObservation::ToolsList,
         RequestDescriptor::ToolCall { operation } => {
-            McpRequestObservation::ToolCall(match observed_mcp_product_operation(operation) {
+            McpRequestObservation::ToolCall(match observed_operation(operation) {
                 Some(operation) => McpObservedTool::Product(operation),
                 None if operation == McpToolKind::Unknown => McpObservedTool::Unknown,
                 None => McpObservedTool::Missing,
@@ -39,41 +56,23 @@ fn request_observation(descriptor: RequestDescriptor) -> McpRequestObservation {
     }
 }
 
-pub(super) struct McpTelemetry {
+pub struct McpTelemetry {
     observation: Option<McpObservation>,
 }
 
 impl McpTelemetry {
-    pub(super) fn start(data_root: PathBuf) -> Self {
-        let enabled = AppConfig::load(&data_root).is_ok_and(|config| config.analytics.enabled);
-        if !enabled {
-            return Self { observation: None };
-        }
-        let delivery_root = data_root.clone();
-        Self {
-            observation: Some(McpObservation::start(move |events| {
-                let Ok(config) = AppConfig::load(&delivery_root) else {
-                    return Ok(());
-                };
-                if !config.analytics.enabled {
-                    return Ok(());
-                }
-                crate::analytics::send_batch(&delivery_root, &config, events);
-                Ok(())
-            })),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn start_for_test(
+    /// Starts telemetry only after the product has authorized it. The injected
+    /// delivery port may re-check opt-out immediately before sending a batch.
+    pub fn start(
+        authorized: bool,
         dispatch: impl Fn(&[PublicEventV1]) -> Result<(), ()> + Send + Sync + 'static,
     ) -> Self {
         Self {
-            observation: Some(McpObservation::start(dispatch)),
+            observation: authorized.then(|| McpObservation::start(dispatch)),
         }
     }
 
-    pub(super) fn record_delivered(
+    pub fn record_delivered(
         &mut self,
         descriptor: RequestDescriptor,
         response: Option<&Value>,
@@ -86,7 +85,7 @@ impl McpTelemetry {
         observation.record_delivered(request_observation(descriptor), delivered, duration);
     }
 
-    pub(super) fn record_response_failure(
+    pub fn record_response_failure(
         &mut self,
         descriptor: RequestDescriptor,
         duration: Duration,
@@ -97,13 +96,13 @@ impl McpTelemetry {
         }
     }
 
-    pub(super) fn submit_pro_event(&self, event: PublicEventV1) {
+    pub fn submit_backend_receipt(&self, receipt: ToolIntegrationReceipt) {
         if let Some(observation) = &self.observation {
-            observation.submit_post_flush_event(event);
+            observation.submit_post_flush_event(backend_receipt_event(receipt));
         }
     }
 
-    pub(super) fn stop(mut self, reason: McpStopReasonV1, outcome: Outcome, duration: Duration) {
+    pub fn stop(mut self, reason: McpStopReasonV1, outcome: Outcome, duration: Duration) {
         if let Some(observation) = self.observation.take() {
             observation.stop(reason, outcome, duration);
         }
@@ -203,34 +202,28 @@ fn result_metadata(operation: McpToolKind, response: &Value) -> McpResultMetadat
             }
             metadata.events_truncated =
                 result.pointer("/truncated/events").and_then(Value::as_bool);
-            if response.get("result").is_some() {
-                metadata.response_bound = Some(
-                    if result.get("error_code").and_then(Value::as_str)
-                        == Some("output_limit_exceeded")
-                    {
-                        McpResponseBoundV1::Replaced
-                    } else {
-                        McpResponseBoundV1::WithinLimit
-                    },
-                );
-            }
+            metadata.response_bound = Some(
+                if result.get("error_code").and_then(Value::as_str) == Some("output_limit_exceeded")
+                {
+                    McpResponseBoundV1::Replaced
+                } else {
+                    McpResponseBoundV1::WithinLimit
+                },
+            );
         }
         McpToolKind::QueryEvents => {
             if let Some(count) = result.get("events").and_then(Value::as_array).map(Vec::len) {
                 metadata = metadata.with_result_count(count);
             }
             metadata.result_truncated = result.get("truncated").and_then(Value::as_bool);
-            if response.get("result").is_some() {
-                metadata.response_bound = Some(
-                    if result.get("error_code").and_then(Value::as_str)
-                        == Some("output_limit_exceeded")
-                    {
-                        McpResponseBoundV1::Replaced
-                    } else {
-                        McpResponseBoundV1::WithinLimit
-                    },
-                );
-            }
+            metadata.response_bound = Some(
+                if result.get("error_code").and_then(Value::as_str) == Some("output_limit_exceeded")
+                {
+                    McpResponseBoundV1::Replaced
+                } else {
+                    McpResponseBoundV1::WithinLimit
+                },
+            );
         }
         McpToolKind::Blame
         | McpToolKind::ProStatus
@@ -239,6 +232,58 @@ fn result_metadata(operation: McpToolKind, response: &Value) -> McpResultMetadat
         | McpToolKind::Missing => {}
     }
     metadata
+}
+
+fn backend_receipt_event(receipt: ToolIntegrationReceipt) -> PublicEventV1 {
+    let operation = match receipt.facts {
+        ToolTransportFacts::ProStatus {
+            access_state,
+            helper_connected,
+            error_code,
+        } => {
+            let mut telemetry = ProStatusTelemetryV1::new(ProSurfaceV1::Mcp);
+            telemetry.access_state = access_state
+                .as_deref()
+                .and_then(ProAccessStateV1::from_safe_name);
+            telemetry.helper_connection = if helper_connected {
+                ProHelperConnectionOutcomeV1::Connected
+            } else {
+                pro_helper_connection_outcome(error_code.as_deref())
+            };
+            if error_code.is_some() {
+                telemetry.fail(error_code.as_deref());
+            }
+            ProHostOperationV1::Status(telemetry)
+        }
+        ToolTransportFacts::Blame {
+            target,
+            result_count,
+            has_more,
+            failure_code,
+        } => {
+            let target = target.map(|target| match target {
+                ToolBlameTargetKind::File => ProBlameTargetV1::File,
+                ToolBlameTargetKind::Commit => ProBlameTargetV1::Commit,
+                ToolBlameTargetKind::PullRequest => ProBlameTargetV1::PullRequest,
+            });
+            let mut telemetry = ProBlameTelemetryV1::new(target, ProSurfaceV1::Mcp);
+            if receipt.success {
+                telemetry.complete(result_count.unwrap_or(0), has_more.unwrap_or(false));
+            } else {
+                telemetry.fail(failure_code);
+            }
+            ProHostOperationV1::Blame(telemetry)
+        }
+    };
+    pro_operation_event(
+        operation,
+        if receipt.success {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        },
+        receipt.duration,
+    )
 }
 
 #[cfg(test)]

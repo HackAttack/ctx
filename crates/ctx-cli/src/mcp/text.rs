@@ -35,7 +35,7 @@ pub(super) fn render_tool_text(value: &Value) -> String {
         _ if value.get("initialized").and_then(Value::as_bool).is_some() => {
             render_status_text(value)
         }
-        _ => render_generic_text(value),
+        _ => ctx_agent_application::mcp::render_generic_tool_text(value),
     }
 }
 
@@ -595,44 +595,6 @@ fn value_to_text(value: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         _ => None,
     }
-}
-
-fn scalar_text(value: &Value) -> String {
-    value_to_text(value).unwrap_or_else(|| match value {
-        Value::Array(values) => format!("[{} values]", values.len()),
-        Value::Object(object) => format!("[{} fields]", object.len()),
-        Value::Null => "null".to_owned(),
-        Value::String(_) | Value::Bool(_) | Value::Number(_) => unreachable!(),
-    })
-}
-
-fn render_generic_text(value: &Value) -> String {
-    let mut out = String::from("ctx tool result\n");
-    match value {
-        Value::Object(object) => {
-            for (key, value) in object.iter().take(12) {
-                match value {
-                    Value::Array(values) => {
-                        out.push_str(&format!("{key}: [{} items]\n", values.len()));
-                    }
-                    Value::Object(fields) => {
-                        out.push_str(&format!("{key}: [{} fields]\n", fields.len()));
-                    }
-                    _ => push_key_value(&mut out, key, Some(value)),
-                }
-            }
-            push_omitted_line(&mut out, object.len(), 12, "fields");
-        }
-        Value::Array(values) => {
-            out.push_str(&format!("items: {}\n", values.len()));
-            for (index, value) in values.iter().take(12).enumerate() {
-                out.push_str(&format!("{}. {}\n", index + 1, scalar_text(value)));
-            }
-            push_omitted_line(&mut out, values.len(), 12, "items");
-        }
-        _ => push_key_value(&mut out, "value", Some(value)),
-    }
-    out
 }
 
 fn table_cell(text: &str, max_chars: usize) -> String {

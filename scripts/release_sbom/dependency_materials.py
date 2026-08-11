@@ -40,6 +40,7 @@ TANTIVY_RESOLVED_FEATURES = [
     "zstd-compression",
 ]
 WORKSPACE_RELEASE_PACKAGES = {
+    "ctx-agent-application",
     "ctx-agent-integrations",
     "ctx-client-observability",
     "ctx-daemon-runtime",
