@@ -487,6 +487,12 @@ impl JsonlReader {
             .complete_prefix_end())
     }
 
+    pub(super) fn execution_certified_prefix_end(&self) -> Option<u64> {
+        self.semantic_append_resume
+            .as_ref()
+            .map(|resume| resume.previous.complete_prefix_end())
+    }
+
     pub(super) fn release_execution_record_buffer(&mut self) -> Result<()> {
         self.physical
             .as_mut()
@@ -1180,6 +1186,10 @@ mod tests {
             None,
         )
         .unwrap();
+        assert_eq!(
+            resumed.execution_certified_prefix_end(),
+            Some(checkpoint.complete_prefix_end())
+        );
         let preflight_start = resumed.execution_position().unwrap();
         finish_semantic_pass(&mut resumed).unwrap();
         assert!(resumed.settle_semantic_preflight(preflight_start).unwrap());

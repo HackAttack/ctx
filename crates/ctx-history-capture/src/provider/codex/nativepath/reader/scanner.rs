@@ -180,7 +180,9 @@ fn observe_semantic_preflight_record(
 }
 
 struct CodexSemanticPreflight {
+    prefix_authority: Option<CodexMcpTerminalAuthority>,
     authority: CodexMcpTerminalAuthority,
+    prefix_repository_candidate_authority: Option<CodexRepositoryCandidateAuthority>,
     repository_candidate_authority: CodexRepositoryCandidateAuthority,
     tool_contexts: BTreeMap<String, CodexToolCallContext>,
     tool_authorities: BTreeMap<String, CodexPendingToolAuthority>,
@@ -192,10 +194,24 @@ struct CodexSemanticPreflight {
     peak_repository_occurrence_cache_bytes: usize,
 }
 
+fn certified_prefix_authority(
+    authority: &CodexMcpTerminalAuthority,
+    repository_candidate_authority: &CodexRepositoryCandidateAuthority,
+    repository_occurrences: &CodexRepositoryOccurrenceCache,
+) -> (CodexMcpTerminalAuthority, CodexRepositoryCandidateAuthority) {
+    let mut repository_candidate_authority = repository_candidate_authority.clone();
+    repository_occurrences.apply_suffix_to(&mut repository_candidate_authority);
+    (authority.clone(), repository_candidate_authority)
+}
+
 fn preflight_semantic_authority(
     input: &mut JsonlFamilyExecutionIo,
     checkpoint: Option<&CodexSemanticCheckpoint>,
 ) -> Result<CodexSemanticPreflight> {
+    let certified_prefix_end = input.certified_prefix_end();
+    let mut certified_prefix_boundary_crossed = false;
+    let mut prefix_authority = None;
+    let mut prefix_repository_candidate_authority = None;
     let mut authority = CodexMcpTerminalAuthority::default();
     let mut repository_candidate_authority = CodexRepositoryCandidateAuthority::default();
     let mut repository_occurrences = CodexRepositoryOccurrenceCache::default();
@@ -226,6 +242,24 @@ fn preflight_semantic_authority(
     while let Some(record) = input.next_record()? {
         bytes_read = bytes_read.saturating_add(record.byte_len());
         peak_record_bytes = peak_record_bytes.max(record.stored_len());
+        if let Some(certified_prefix_end) = certified_prefix_end {
+            if record.byte_start() < certified_prefix_end
+                && record.byte_end_exclusive() > certified_prefix_end
+            {
+                certified_prefix_boundary_crossed = true;
+            } else if !certified_prefix_boundary_crossed
+                && prefix_authority.is_none()
+                && record.byte_start() >= certified_prefix_end
+            {
+                let (mcp, repository) = certified_prefix_authority(
+                    &authority,
+                    &repository_candidate_authority,
+                    &repository_occurrences,
+                );
+                prefix_authority = Some(mcp);
+                prefix_repository_candidate_authority = Some(repository);
+            }
+        }
         if !record.complete() {
             break;
         }
@@ -269,6 +303,18 @@ fn preflight_semantic_authority(
             }
         }
     }
+    if certified_prefix_end.is_some()
+        && prefix_authority.is_none()
+        && !certified_prefix_boundary_crossed
+    {
+        let (mcp, repository) = certified_prefix_authority(
+            &authority,
+            &repository_candidate_authority,
+            &repository_occurrences,
+        );
+        prefix_authority = Some(mcp);
+        prefix_repository_candidate_authority = Some(repository);
+    }
     if tool_authorities.len() != pending_by_span.len() {
         return Err(invalid_checkpoint_proof(
             "pending tool-call authority span is absent from the shared physical replay",
@@ -277,7 +323,9 @@ fn preflight_semantic_authority(
     repository_occurrences.apply_suffix_to(&mut repository_candidate_authority);
     let continuations = restore_pending_continuations(&mut tool_contexts, &tool_authorities)?;
     Ok(CodexSemanticPreflight {
+        prefix_authority,
         authority,
+        prefix_repository_candidate_authority,
         repository_candidate_authority,
         tool_contexts,
         tool_authorities,
@@ -301,20 +349,6 @@ impl CodexNativeScanner {
                 validate_checkpoint_catalog_owner(&source, checkpoint.owner().clone())
             })
             .transpose()?;
-        let mcp_terminal_authority = checkpoint
-            .as_ref()
-            .map(|checkpoint| {
-                CodexMcpTerminalAuthority::from_checkpoint(checkpoint.terminal_authority())
-            })
-            .unwrap_or_default();
-        let repository_candidate_authority = checkpoint
-            .as_ref()
-            .map(|checkpoint| {
-                CodexRepositoryCandidateAuthority::from_checkpoint(
-                    checkpoint.repository_candidate_authority(),
-                )
-            })
-            .unwrap_or_default();
         let local_turn_started = checkpoint
             .as_ref()
             .is_some_and(CodexSemanticCheckpoint::local_turn_started);
@@ -324,8 +358,8 @@ impl CodexNativeScanner {
             tool_contexts: BTreeMap::new(),
             tool_authorities: BTreeMap::new(),
             continuations: BTreeMap::new(),
-            mcp_terminal_authority,
-            repository_candidate_authority,
+            mcp_terminal_authority: CodexMcpTerminalAuthority::default(),
+            repository_candidate_authority: CodexRepositoryCandidateAuthority::default(),
             counters: CodexScanCounters::default(),
             local_turn_started,
             active_core_page: None,
@@ -339,21 +373,17 @@ impl CodexNativeScanner {
         input: &mut JsonlFamilyExecutionIo,
         checkpoint: Option<&CodexSemanticCheckpoint>,
     ) -> Result<bool> {
-        let prior_mcp = checkpoint.map(|checkpoint| {
-            CodexMcpTerminalAuthority::from_checkpoint(checkpoint.terminal_authority())
-        });
-        let prior_repository = checkpoint.map(|checkpoint| {
-            CodexRepositoryCandidateAuthority::from_checkpoint(
-                checkpoint.repository_candidate_authority(),
-            )
-        });
         let preflight = preflight_semantic_authority(input, checkpoint)?;
-        let retry = prior_mcp
+        let retry = preflight
+            .prefix_authority
             .as_ref()
             .is_some_and(|prefix| prefix.appended_suffix_invalidates(&preflight.authority))
-            || prior_repository.as_ref().is_some_and(|prefix| {
-                prefix.appended_suffix_invalidates(&preflight.repository_candidate_authority)
-            });
+            || preflight
+                .prefix_repository_candidate_authority
+                .as_ref()
+                .is_some_and(|prefix| {
+                    prefix.appended_suffix_invalidates(&preflight.repository_candidate_authority)
+                });
         if retry {
             return Ok(true);
         }

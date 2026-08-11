@@ -37,48 +37,6 @@ impl Default for CodexMcpTerminalAuthority {
 }
 
 impl CodexMcpTerminalAuthority {
-    pub(in super::super) fn from_checkpoint(checkpoint: &CodexTerminalAuthorityCheckpoint) -> Self {
-        Self {
-            mcp_call_ids: JsonlCheckpointedTerminalAuthority::from_digest_counts(
-                checkpoint
-                    .mcp_call_ids
-                    .iter()
-                    .map(|entry| (entry.call_id_sha256, entry.candidates)),
-                checkpoint.mcp_exhausted,
-            ),
-            result_call_ids: JsonlCheckpointedTerminalAuthority::from_digest_counts(
-                checkpoint
-                    .result_call_ids
-                    .iter()
-                    .map(|entry| (entry.call_id_sha256, entry.candidates)),
-                checkpoint.result_exhausted,
-            ),
-        }
-    }
-
-    pub(in super::super) fn checkpoint(&self) -> CodexTerminalAuthorityCheckpoint {
-        CodexTerminalAuthorityCheckpoint {
-            mcp_call_ids: self
-                .mcp_call_ids
-                .digest_counts()
-                .map(|(call_id_sha256, candidates)| CodexTerminalAuthorityEntry {
-                    call_id_sha256,
-                    candidates,
-                })
-                .collect(),
-            result_call_ids: self
-                .result_call_ids
-                .digest_counts()
-                .map(|(call_id_sha256, candidates)| CodexTerminalAuthorityEntry {
-                    call_id_sha256,
-                    candidates,
-                })
-                .collect(),
-            mcp_exhausted: self.mcp_call_ids.exhausted(),
-            result_exhausted: self.result_call_ids.exhausted(),
-        }
-    }
-
     pub(in super::super) fn appended_suffix_invalidates(
         &self,
         combined: &CodexMcpTerminalAuthority,
@@ -166,7 +124,7 @@ mod authority_tests {
     use super::*;
 
     #[test]
-    fn compact_authority_uses_full_digests_and_restart_preserves_abstention() {
+    fn authority_uses_full_digests_and_preserves_abstention() {
         let mut prefixes = BTreeMap::<[u8; 2], String>::new();
         let (first, second) = (0..100_000)
             .find_map(|index| {
@@ -197,16 +155,10 @@ mod authority_tests {
         authority.observe_result_call_id(&first);
         assert!(!authority.is_unique_result(&first));
         assert!(authority.is_unique_result(&second));
-
-        let wire = serde_json::to_vec(&authority.checkpoint()).unwrap();
-        let checkpoint = serde_json::from_slice(&wire).unwrap();
-        let restarted = CodexMcpTerminalAuthority::from_checkpoint(&checkpoint);
-        assert!(!restarted.is_unique_result(&first));
-        assert!(restarted.is_unique_result(&second));
     }
 
     #[test]
-    fn compact_authority_capacity_exhaustion_is_durable_unknown() {
+    fn authority_capacity_exhaustion_is_unknown() {
         let mut authority = CodexMcpTerminalAuthority::default();
         for index in 0..MAX_CODEX_MCP_TERMINAL_AUTHORITIES {
             authority.observe_result_call_id(&format!("bounded-authority-{index}"));
@@ -217,12 +169,6 @@ mod authority_tests {
         assert!(!authority.is_unique_result("bounded-authority-0"));
         assert!(!authority.is_unique_result("bounded-authority-overflow"));
         assert!(!authority.is_unique_result("never-observed"));
-
-        let checkpoint = authority.checkpoint();
-        assert!(serde_json::to_vec(&checkpoint).unwrap().len() < 16 * 1024);
-        let restarted = CodexMcpTerminalAuthority::from_checkpoint(&checkpoint);
-        assert!(!restarted.is_unique_result("bounded-authority-0"));
-        assert!(!restarted.is_unique_result("never-observed"));
     }
 }
 

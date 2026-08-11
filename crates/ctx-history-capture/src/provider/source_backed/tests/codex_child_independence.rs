@@ -7,7 +7,6 @@ use std::{
     sync::{Arc, Barrier, Mutex},
 };
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ctx_history_core::{CertifiedSource, EventOrigin, SessionRelationshipKind, SourceFrontier};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 use sha2::{Digest, Sha256};
@@ -458,20 +457,10 @@ fn semantic_checkpoint_envelope(
     )
 }
 
-fn assert_terminal_checkpoint_authority(
-    checkpoint: &serde_json::Value,
-    entries: usize,
-    exhausted: bool,
-) {
-    let authority = &checkpoint["terminal_authority"];
-    assert_eq!(authority["mcp_exhausted"], exhausted);
-    assert_eq!(authority["result_exhausted"], exhausted);
-    for field in ["mcp_call_ids", "result_call_ids"] {
-        let packed = BASE64_STANDARD
-            .decode(authority[field].as_str().unwrap())
-            .unwrap();
-        assert_eq!(packed.len(), entries * 33);
-    }
+fn assert_checkpoint_has_no_authority_snapshots(checkpoint: &serde_json::Value) {
+    assert_eq!(checkpoint["version"], 2);
+    assert!(checkpoint.get("terminal_authority").is_none());
+    assert!(checkpoint.get("repository_candidate_authority").is_none());
 }
 
 fn terminal_authority_events(entries: usize) -> Vec<serde_json::Value> {
@@ -649,7 +638,7 @@ fn refresh_and_assert_descendants(
 }
 
 #[test]
-fn terminal_authority_boundaries_fit_the_final_shared_frontier() {
+fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
     const MAX_AUTHORITY_ENTRIES: usize = 256;
     const MAX_FRONTIER_ENVELOPE_BYTES: usize = 64 * 1024;
 
@@ -680,10 +669,28 @@ fn terminal_authority_boundaries_fit_the_final_shared_frontier() {
         semantic_checkpoint_envelope(&exact, exact_owner);
     assert!(exact_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(exact_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_terminal_checkpoint_authority(&exact_checkpoint, MAX_AUTHORITY_ENTRIES, false);
+    assert_checkpoint_has_no_authority_snapshots(&exact_checkpoint);
     let exact_checkpoint_json = serde_json::to_string(&exact_checkpoint).unwrap();
     assert!(!exact_checkpoint_json.contains("event-body-secret-must-not-reach-checkpoint"));
     drop(exact);
+
+    append_event(
+        &session_path(&exact_sessions, exact_owner),
+        checkpoint_mcp_terminal("mcp-checkpoint-suffix-exhaustion"),
+    );
+    let suffix_exhausted = capture_causal_stage();
+    refresh_source_backed_generation(&exact_index, &exact_registry, writer_options()).unwrap();
+    let suffix_exhausted_counters = causal_by_id(&suffix_exhausted)
+        .get(exact_owner)
+        .unwrap()
+        .counters;
+    assert_eq!(suffix_exhausted_counters.appended_sources, 0);
+    assert_eq!(suffix_exhausted_counters.replaced_sources, 1);
+    let suffix_exhausted = VerifiedIndex::open(&exact_index).unwrap();
+    let (_, _, _, suffix_exhausted_checkpoint) =
+        semantic_checkpoint_envelope(&suffix_exhausted, exact_owner);
+    assert_checkpoint_has_no_authority_snapshots(&suffix_exhausted_checkpoint);
+    drop(suffix_exhausted);
 
     let exhausted_sessions = temp.path().join("exhausted-sessions");
     let exhausted_index = temp.path().join("exhausted-index");
@@ -715,18 +722,25 @@ fn terminal_authority_boundaries_fit_the_final_shared_frontier() {
     ) = semantic_checkpoint_envelope(&exhausted, exhausted_owner);
     assert!(exhausted_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(exhausted_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_terminal_checkpoint_authority(&exhausted_checkpoint, 0, true);
+    assert_checkpoint_has_no_authority_snapshots(&exhausted_checkpoint);
     drop(exhausted);
 
     append_event(
         &session_path(&exhausted_sessions, exhausted_owner),
         checkpoint_mcp_terminal("mcp-checkpoint-after-exhaustion"),
     );
+    let exhausted_append_observed = capture_causal_stage();
     let appended_receipt =
         refresh_source_backed_generation(&exhausted_index, &exhausted_registry, writer_options())
             .unwrap();
     assert!(appended_receipt.failed_routes.is_empty());
     assert!(appended_receipt.logical_source_failures.is_empty());
+    let exhausted_append_counters = causal_by_id(&exhausted_append_observed)
+        .get(exhausted_owner)
+        .unwrap()
+        .counters;
+    assert_eq!(exhausted_append_counters.appended_sources, 1);
+    assert_eq!(exhausted_append_counters.replaced_sources, 0);
     let appended = VerifiedIndex::open(&exhausted_index).unwrap();
     let (
         appended_semantic_bytes,
@@ -736,7 +750,7 @@ fn terminal_authority_boundaries_fit_the_final_shared_frontier() {
     ) = semantic_checkpoint_envelope(&appended, exhausted_owner);
     assert!(appended_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(appended_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_terminal_checkpoint_authority(&appended_checkpoint, 0, true);
+    assert_checkpoint_has_no_authority_snapshots(&appended_checkpoint);
     eprintln!(
         "Codex checkpoint envelopes: exact256 semantic={exact_semantic_bytes} family={exact_family_bytes} frontier={exact_frontier_bytes}; exhausted257 semantic={exhausted_semantic_bytes} family={exhausted_family_bytes} frontier={exhausted_frontier_bytes}; exhausted_append semantic={appended_semantic_bytes} family={appended_family_bytes} frontier={appended_frontier_bytes}"
     );
@@ -1020,6 +1034,10 @@ fn append_after_large_terminal_authority_prefix_replays_combined_authority_once(
     );
     let registry = register_tree(&[&sessions]);
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let initial = VerifiedIndex::open(&index_root).unwrap();
+    let (_, _, _, initial_checkpoint) = semantic_checkpoint_envelope(&initial, native_session_id);
+    assert_checkpoint_has_no_authority_snapshots(&initial_checkpoint);
+    drop(initial);
 
     append_event(&path, message("largeprefixappenduniquetoken"));
     let observed = capture_causal_stage();
@@ -1101,6 +1119,129 @@ fn pending_prefix_call_is_restored_and_completed_by_append_suffix() {
     assert_eq!(
         verified
             .search_event_candidates("pendingprefixcompletedbysuffix", 8)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn legacy_semantic_checkpoint_appends_and_rewrites_without_snapshots() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000004a";
+    let path = session_path(&sessions, native_session_id);
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [message("legacy-semantic-checkpoint-prefix")],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    let current = VerifiedIndex::open(&index_root).unwrap();
+    let routes = current.manifest().source_routes().to_vec();
+    let current_certificate = certificate_for(&current, native_session_id);
+    let current_frontier = current_certificate.frontier().unwrap();
+    let TypedKey::Utf8(family_json) = current_frontier.checkpoint() else {
+        panic!("current Codex family checkpoint must be UTF-8");
+    };
+    let mut family = serde_json::from_str::<serde_json::Value>(family_json).unwrap();
+    let current_semantic = family["provider_checkpoint"]["Utf8"].as_str().unwrap();
+    let mut legacy_semantic = serde_json::from_str::<serde_json::Value>(current_semantic).unwrap();
+    assert_checkpoint_has_no_authority_snapshots(&legacy_semantic);
+    legacy_semantic["version"] = serde_json::json!(1);
+    legacy_semantic["terminal_authority"] = serde_json::json!({
+        "mcp_call_ids": "",
+        "result_call_ids": "",
+        "mcp_exhausted": false,
+        "result_exhausted": false
+    });
+    legacy_semantic["repository_candidate_authority"] = serde_json::json!({
+        "entries": "",
+        "exhausted": false
+    });
+    family["provider_checkpoint"]["Utf8"] =
+        serde_json::json!(serde_json::to_string(&legacy_semantic).unwrap());
+    let legacy_frontier = SourceFrontier::new(
+        CURRENT_FRONTIER_KIND,
+        TypedKey::utf8(serde_json::to_string(&family).unwrap()).unwrap(),
+        current_frontier.certified_prefix_bytes(),
+        *current_frontier.certified_prefix_digest(),
+    )
+    .unwrap();
+    let legacy_certificate = CertifiedSource::certify_with_frontier(
+        current_certificate.observation().clone(),
+        current_certificate.observation().clone(),
+        CURRENT_PARSER_REVISION,
+        *current_certificate.content_digest(),
+        current_certificate.counts(),
+        Some(legacy_frontier),
+    )
+    .unwrap();
+    let records = records_for(&current, native_session_id);
+    drop(current);
+
+    let mut install_legacy = GenerationWriter::open(&index_root, writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    install_legacy
+        .set_source_route_plan(
+            routes
+                .iter()
+                .map(|route| route.route_identity().clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::new(),
+        )
+        .unwrap();
+    for route in &routes {
+        install_legacy
+            .begin_source_route_stage(route.route_identity().clone())
+            .unwrap();
+        for source in route.sources() {
+            assert!(source.exact_descriptor_eq(legacy_certificate.observation().source()));
+            install_legacy
+                .begin_source(legacy_certificate.observation().source().clone())
+                .unwrap();
+            for record in &records {
+                install_legacy.add_core_record(record.clone()).unwrap();
+            }
+            install_legacy
+                .certify_source(legacy_certificate.clone())
+                .unwrap();
+        }
+        install_legacy
+            .finish_source_route_stage(route.route_identity())
+            .unwrap();
+    }
+    install_legacy.set_present_source_routes(routes).unwrap();
+    install_legacy
+        .commit(|target| match target {
+            RevalidationTarget::Source(actual) => actual == &legacy_certificate,
+            RevalidationTarget::Deletion(_) => false,
+        })
+        .unwrap();
+
+    append_event(&path, message("legacycheckpointmigratedsuffixuniquetoken"));
+    let observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let counters = causal_by_id(&observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.appended_sources, 1);
+    assert_eq!(counters.replaced_sources, 0);
+    let migrated = VerifiedIndex::open(&index_root).unwrap();
+    let (_, _, _, migrated_checkpoint) = semantic_checkpoint_envelope(&migrated, native_session_id);
+    assert_checkpoint_has_no_authority_snapshots(&migrated_checkpoint);
+    assert_eq!(
+        migrated
+            .search_event_candidates("legacycheckpointmigratedsuffixuniquetoken", 8)
             .unwrap()
             .len(),
         1

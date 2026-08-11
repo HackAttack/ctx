@@ -20,25 +20,25 @@ pub(super) const MAX_CODEX_MCP_TERMINAL_AUTHORITIES: usize = 256;
 pub(super) const MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CodexTerminalAuthorityEntry {
+struct LegacyCodexTerminalAuthorityEntry {
     pub(super) call_id_sha256: [u8; 32],
     pub(super) candidates: u8,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CodexTerminalAuthorityCheckpoint {
+struct LegacyCodexTerminalAuthorityCheckpoint {
     #[serde(with = "terminal_authority_entries_wire")]
-    pub(super) mcp_call_ids: Vec<CodexTerminalAuthorityEntry>,
+    mcp_call_ids: Vec<LegacyCodexTerminalAuthorityEntry>,
     #[serde(with = "terminal_authority_entries_wire")]
-    pub(super) result_call_ids: Vec<CodexTerminalAuthorityEntry>,
-    pub(super) mcp_exhausted: bool,
-    pub(super) result_exhausted: bool,
+    result_call_ids: Vec<LegacyCodexTerminalAuthorityEntry>,
+    mcp_exhausted: bool,
+    result_exhausted: bool,
 }
 
-impl CodexTerminalAuthorityCheckpoint {
+impl LegacyCodexTerminalAuthorityCheckpoint {
     fn validate_wire_state(&self) -> bool {
-        fn entries_are_valid(entries: &[CodexTerminalAuthorityEntry]) -> bool {
+        fn entries_are_valid(entries: &[LegacyCodexTerminalAuthorityEntry]) -> bool {
             entries.len() <= MAX_CODEX_MCP_TERMINAL_AUTHORITIES
                 && entries
                     .iter()
@@ -63,7 +63,7 @@ mod terminal_authority_entries_wire {
     const ENTRY_BYTES: usize = 33;
 
     pub(super) fn serialize<S>(
-        entries: &[CodexTerminalAuthorityEntry],
+        entries: &[LegacyCodexTerminalAuthorityEntry],
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -79,7 +79,7 @@ mod terminal_authority_entries_wire {
 
     pub(super) fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<Vec<CodexTerminalAuthorityEntry>, D::Error>
+    ) -> Result<Vec<LegacyCodexTerminalAuthorityEntry>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -93,7 +93,7 @@ mod terminal_authority_entries_wire {
         packed
             .chunks_exact(ENTRY_BYTES)
             .map(|entry| {
-                Ok(CodexTerminalAuthorityEntry {
+                Ok(LegacyCodexTerminalAuthorityEntry {
                     call_id_sha256: entry[1..].try_into().map_err(D::Error::custom)?,
                     candidates: entry[0],
                 })
@@ -103,7 +103,7 @@ mod terminal_authority_entries_wire {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CodexRepositoryCandidateAuthorityEntry {
+struct LegacyCodexRepositoryCandidateAuthorityEntry {
     pub(super) call_id_sha256: [u8; 32],
     pub(super) calls: u8,
     pub(super) results: u8,
@@ -111,13 +111,13 @@ pub(super) struct CodexRepositoryCandidateAuthorityEntry {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CodexRepositoryCandidateAuthorityCheckpoint {
+struct LegacyCodexRepositoryCandidateAuthorityCheckpoint {
     #[serde(with = "repository_candidate_authority_entries_wire")]
-    pub(super) entries: Vec<CodexRepositoryCandidateAuthorityEntry>,
-    pub(super) exhausted: bool,
+    entries: Vec<LegacyCodexRepositoryCandidateAuthorityEntry>,
+    exhausted: bool,
 }
 
-impl CodexRepositoryCandidateAuthorityCheckpoint {
+impl LegacyCodexRepositoryCandidateAuthorityCheckpoint {
     fn validate_wire_state(&self) -> bool {
         self.entries.len() <= MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES
             && self
@@ -140,7 +140,7 @@ mod repository_candidate_authority_entries_wire {
     const ENTRY_BYTES: usize = 34;
 
     pub(super) fn serialize<S>(
-        entries: &[CodexRepositoryCandidateAuthorityEntry],
+        entries: &[LegacyCodexRepositoryCandidateAuthorityEntry],
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -157,7 +157,7 @@ mod repository_candidate_authority_entries_wire {
 
     pub(super) fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<Vec<CodexRepositoryCandidateAuthorityEntry>, D::Error>
+    ) -> Result<Vec<LegacyCodexRepositoryCandidateAuthorityEntry>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -171,7 +171,7 @@ mod repository_candidate_authority_entries_wire {
         packed
             .chunks_exact(ENTRY_BYTES)
             .map(|entry| {
-                Ok(CodexRepositoryCandidateAuthorityEntry {
+                Ok(LegacyCodexRepositoryCandidateAuthorityEntry {
                     call_id_sha256: entry[2..].try_into().map_err(D::Error::custom)?,
                     calls: entry[0],
                     results: entry[1],
@@ -376,7 +376,19 @@ impl CodexPendingToolAuthority {
     }
 }
 
-const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 1;
+const LEGACY_CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 1;
+const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCodexSemanticCheckpointV1 {
+    version: u8,
+    pending_tool_authorities: Vec<CodexPendingToolAuthority>,
+    terminal_authority: LegacyCodexTerminalAuthorityCheckpoint,
+    repository_candidate_authority: LegacyCodexRepositoryCandidateAuthorityCheckpoint,
+    owner: CodexSessionRow,
+    local_turn_started: bool,
+}
 
 /// Provider-only continuation state. Physical position, framing, digests,
 /// observations, and lifecycle evidence live exclusively in the enclosing
@@ -386,28 +398,33 @@ const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 1;
 pub(super) struct CodexSemanticCheckpoint {
     version: u8,
     pending_tool_authorities: Vec<CodexPendingToolAuthority>,
-    terminal_authority: CodexTerminalAuthorityCheckpoint,
-    repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
     owner: CodexSessionRow,
     local_turn_started: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CodexSemanticCheckpointWire {
+    LegacyV1(LegacyCodexSemanticCheckpointV1),
+    Current(CodexSemanticCheckpoint),
 }
 
 impl CodexSemanticCheckpoint {
     pub(super) fn new(
         pending_tool_authorities: &[CodexPendingToolAuthority],
-        terminal_authority: CodexTerminalAuthorityCheckpoint,
-        repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
         owner: CodexSessionRow,
         local_turn_started: bool,
     ) -> serde_json::Result<Self> {
         let mut checkpoint = Self {
             version: CODEX_SEMANTIC_CHECKPOINT_VERSION,
             pending_tool_authorities: pending_tool_authorities.to_vec(),
-            terminal_authority,
-            repository_candidate_authority,
             owner,
             local_turn_started,
         };
+        // The maximum owner plus 24 maximum pending authorities still exceeds
+        // the nested key contract. Twenty fit here, but the worst 7,168-byte
+        // path makes that full-family envelope 74,519 bytes (8,983 over the
+        // 65,536-byte maximum); outer shedding retains 16 at 64,939 bytes.
         loop {
             let encoded = serde_json::to_vec(&checkpoint)?;
             if encoded.len() <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
@@ -441,9 +458,13 @@ impl CodexSemanticCheckpoint {
         if bytes.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
             return Err(checkpoint_size_error(bytes.len()));
         }
-        let checkpoint = serde_json::from_slice::<Self>(bytes)?;
-        checkpoint.validate_wire_state()?;
-        Ok(checkpoint)
+        match serde_json::from_slice::<CodexSemanticCheckpointWire>(bytes)? {
+            CodexSemanticCheckpointWire::LegacyV1(checkpoint) => checkpoint.into_current(),
+            CodexSemanticCheckpointWire::Current(checkpoint) => {
+                checkpoint.validate_wire_state()?;
+                Ok(checkpoint)
+            }
+        }
     }
 
     pub(super) fn decode_key(key: &TypedKey) -> serde_json::Result<Self> {
@@ -472,16 +493,6 @@ impl CodexSemanticCheckpoint {
         &self.pending_tool_authorities
     }
 
-    pub(super) fn terminal_authority(&self) -> &CodexTerminalAuthorityCheckpoint {
-        &self.terminal_authority
-    }
-
-    pub(super) fn repository_candidate_authority(
-        &self,
-    ) -> &CodexRepositoryCandidateAuthorityCheckpoint {
-        &self.repository_candidate_authority
-    }
-
     pub(super) fn owner(&self) -> &CodexSessionRow {
         &self.owner
     }
@@ -492,8 +503,6 @@ impl CodexSemanticCheckpoint {
 
     fn validate_wire_state(&self) -> serde_json::Result<()> {
         if self.version != CODEX_SEMANTIC_CHECKPOINT_VERSION
-            || !self.terminal_authority.validate_wire_state()
-            || !self.repository_candidate_authority.validate_wire_state()
             || !pending_tool_authorities_are_valid(
                 &self.pending_tool_authorities,
                 &self.owner,
@@ -505,6 +514,30 @@ impl CodexSemanticCheckpoint {
             ));
         }
         Ok(())
+    }
+}
+
+impl LegacyCodexSemanticCheckpointV1 {
+    fn into_current(self) -> serde_json::Result<CodexSemanticCheckpoint> {
+        if self.version != LEGACY_CODEX_SEMANTIC_CHECKPOINT_VERSION
+            || !self.terminal_authority.validate_wire_state()
+            || !self.repository_candidate_authority.validate_wire_state()
+            || !pending_tool_authorities_are_valid(
+                &self.pending_tool_authorities,
+                &self.owner,
+                self.local_turn_started,
+            )
+        {
+            return Err(serde::de::Error::custom(
+                "invalid legacy Codex semantic checkpoint state",
+            ));
+        }
+        Ok(CodexSemanticCheckpoint {
+            version: CODEX_SEMANTIC_CHECKPOINT_VERSION,
+            pending_tool_authorities: self.pending_tool_authorities,
+            owner: self.owner,
+            local_turn_started: self.local_turn_started,
+        })
     }
 }
 
@@ -629,18 +662,18 @@ mod tests {
         }
     }
 
-    fn terminal_entries(entries: usize) -> Vec<CodexTerminalAuthorityEntry> {
+    fn terminal_entries(entries: usize) -> Vec<LegacyCodexTerminalAuthorityEntry> {
         (0..entries)
-            .map(|index| CodexTerminalAuthorityEntry {
+            .map(|index| LegacyCodexTerminalAuthorityEntry {
                 call_id_sha256: [u8::try_from(index).unwrap(); 32],
                 candidates: 1,
             })
             .collect()
     }
 
-    fn repository_entries(entries: usize) -> Vec<CodexRepositoryCandidateAuthorityEntry> {
+    fn repository_entries(entries: usize) -> Vec<LegacyCodexRepositoryCandidateAuthorityEntry> {
         (0..entries)
-            .map(|index| CodexRepositoryCandidateAuthorityEntry {
+            .map(|index| LegacyCodexRepositoryCandidateAuthorityEntry {
                 call_id_sha256: [u8::try_from(index).unwrap(); 32],
                 calls: 1,
                 results: 1,
@@ -657,20 +690,58 @@ mod tests {
                 1,
                 CodexInvocationOriginV0::UniqueToSession,
             )],
-            CodexTerminalAuthorityCheckpoint {
-                mcp_call_ids: terminal_entries(2),
-                result_call_ids: terminal_entries(2),
-                mcp_exhausted: false,
-                result_exhausted: false,
-            },
-            CodexRepositoryCandidateAuthorityCheckpoint {
-                entries: repository_entries(2),
-                exhausted: false,
-            },
             owner(),
             true,
         )
         .unwrap()
+    }
+
+    fn maximal_pending_authorities() -> Vec<CodexPendingToolAuthority> {
+        (0..MAX_CODEX_TOOL_CONTEXTS)
+            .map(|index| {
+                let mut authority = CodexPendingToolAuthority::new(
+                    &format!("pending-{index}"),
+                    u64::try_from(index * 2 + 1).unwrap(),
+                    u64::try_from(index * 2 + 2).unwrap(),
+                    u64::try_from(index).unwrap(),
+                    CodexInvocationOriginV0::Unproven,
+                );
+                authority.continuation_cell_id = Some(format!(
+                    "cell-{index:02}-{}",
+                    "x".repeat(MAX_CODEX_CONTINUATION_CELL_ID_BYTES - 8)
+                ));
+                authority.continuation_call_id_sha256 = (0..MAX_CODEX_TOOL_CONTEXTS)
+                    .map(|digest| {
+                        let mut value = [u8::try_from(digest + 1).unwrap(); 32];
+                        value[0] = u8::try_from(index + 1).unwrap();
+                        value
+                    })
+                    .collect();
+                authority
+            })
+            .collect()
+    }
+
+    fn legacy_checkpoint(
+        pending_tool_authorities: Vec<CodexPendingToolAuthority>,
+        owner: CodexSessionRow,
+    ) -> LegacyCodexSemanticCheckpointV1 {
+        LegacyCodexSemanticCheckpointV1 {
+            version: LEGACY_CODEX_SEMANTIC_CHECKPOINT_VERSION,
+            pending_tool_authorities,
+            terminal_authority: LegacyCodexTerminalAuthorityCheckpoint {
+                mcp_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
+                result_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
+                mcp_exhausted: false,
+                result_exhausted: false,
+            },
+            repository_candidate_authority: LegacyCodexRepositoryCandidateAuthorityCheckpoint {
+                entries: repository_entries(MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES),
+                exhausted: false,
+            },
+            owner,
+            local_turn_started: true,
+        }
     }
 
     #[test]
@@ -695,6 +766,22 @@ mod tests {
             CodexSemanticCheckpoint::decode_key(&legacy).unwrap(),
             checkpoint
         );
+    }
+
+    #[test]
+    fn legacy_checkpoint_reads_and_reencodes_without_authority_snapshots() {
+        let pending = checkpoint("legacy-checkpoint-call").pending_tool_authorities;
+        let legacy = legacy_checkpoint(pending.clone(), owner());
+        let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+        let migrated = CodexSemanticCheckpoint::decode(&legacy_bytes).unwrap();
+        assert_eq!(migrated.pending_tool_authorities, pending);
+
+        let encoded = migrated.encode().unwrap();
+        let wire = serde_json::from_slice::<serde_json::Value>(&encoded).unwrap();
+        assert_eq!(wire["version"], CODEX_SEMANTIC_CHECKPOINT_VERSION);
+        assert!(wire.get("terminal_authority").is_none());
+        assert!(wire.get("repository_candidate_authority").is_none());
+        assert!(encoded.len() < legacy_bytes.len());
     }
 
     #[test]
@@ -729,7 +816,7 @@ mod tests {
                 .is_err()
         );
 
-        let mut duplicate_terminal = checkpoint.clone();
+        let mut duplicate_terminal = legacy_checkpoint(Vec::new(), owner());
         duplicate_terminal
             .terminal_authority
             .mcp_call_ids
@@ -751,110 +838,65 @@ mod tests {
     }
 
     #[test]
-    fn semantic_codec_sheds_only_pending_evidence_at_the_combined_bounds() {
-        let mut pending = (0..MAX_CODEX_TOOL_CONTEXTS)
-            .map(|index| {
-                let mut authority = CodexPendingToolAuthority::new(
-                    &format!("pending-{index}"),
-                    u64::try_from(index * 2 + 1).unwrap(),
-                    u64::try_from(index * 2 + 2).unwrap(),
-                    u64::try_from(index).unwrap(),
-                    CodexInvocationOriginV0::Unproven,
-                );
-                authority.continuation_cell_id = Some(format!(
-                    "cell-{index:02}-{}",
-                    "x".repeat(MAX_CODEX_CONTINUATION_CELL_ID_BYTES - 8)
-                ));
-                authority.continuation_call_id_sha256 = (0..MAX_CODEX_TOOL_CONTEXTS)
-                    .map(|digest| {
-                        let mut value = [u8::try_from(digest + 1).unwrap(); 32];
-                        value[0] = u8::try_from(index + 1).unwrap();
-                        value
-                    })
-                    .collect();
-                authority
-            })
-            .collect::<Vec<_>>();
-        let terminal = CodexTerminalAuthorityCheckpoint {
-            mcp_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
-            result_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
-            mcp_exhausted: false,
-            result_exhausted: false,
+    fn maximal_semantic_payload_sheds_only_optional_pending_evidence() {
+        let pending = maximal_pending_authorities();
+        let owner = maximal_owner();
+        let unchecked = CodexSemanticCheckpoint {
+            version: CODEX_SEMANTIC_CHECKPOINT_VERSION,
+            pending_tool_authorities: pending.clone(),
+            owner: owner.clone(),
+            local_turn_started: true,
         };
-        let repository = CodexRepositoryCandidateAuthorityCheckpoint {
-            entries: repository_entries(MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES),
-            exhausted: false,
-        };
-        let checkpoint = CodexSemanticCheckpoint::new(
-            &pending,
-            terminal.clone(),
-            repository.clone(),
-            owner(),
-            true,
-        )
-        .unwrap();
+        assert!(
+            serde_json::to_vec(&unchecked).unwrap().len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES
+        );
+
+        let checkpoint = CodexSemanticCheckpoint::new(&pending, owner.clone(), true).unwrap();
         assert!(checkpoint.pending_tool_authorities.len() < pending.len());
-        pending.truncate(checkpoint.pending_tool_authorities.len());
-        assert_eq!(checkpoint.pending_tool_authorities, pending);
-        assert_eq!(checkpoint.terminal_authority, terminal);
-        assert_eq!(checkpoint.repository_candidate_authority, repository);
+        assert_eq!(
+            checkpoint.pending_tool_authorities,
+            pending[..checkpoint.pending_tool_authorities.len()]
+        );
+        assert_eq!(checkpoint.owner, owner);
         assert!(checkpoint.encode().unwrap().len() <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES);
     }
 
     #[test]
-    fn maximal_semantics_shed_pending_until_the_full_family_frontier_fits() {
-        const AUDITED_OVERFLOW_PATH_BYTES: usize = 244;
-
-        let pending = (0..MAX_CODEX_TOOL_CONTEXTS)
-            .map(|index| {
-                let mut authority = CodexPendingToolAuthority::new(
-                    &format!("pending-{index}"),
-                    u64::try_from(index * 2 + 1).unwrap(),
-                    u64::try_from(index * 2 + 2).unwrap(),
-                    u64::try_from(index).unwrap(),
-                    CodexInvocationOriginV0::Unproven,
-                );
-                authority.continuation_cell_id = Some(format!(
-                    "cell-{index:02}-{}",
-                    "x".repeat(MAX_CODEX_CONTINUATION_CELL_ID_BYTES - 8)
-                ));
-                authority.continuation_call_id_sha256 = (0..MAX_CODEX_TOOL_CONTEXTS)
-                    .map(|digest| {
-                        let mut value = [u8::try_from(digest + 1).unwrap(); 32];
-                        value[0] = u8::try_from(index + 1).unwrap();
-                        value
-                    })
-                    .collect();
-                authority
-            })
-            .collect::<Vec<_>>();
-        let terminal = CodexTerminalAuthorityCheckpoint {
-            mcp_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
-            result_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
-            mcp_exhausted: false,
-            result_exhausted: false,
-        };
-        let repository = CodexRepositoryCandidateAuthorityCheckpoint {
-            entries: repository_entries(MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES),
-            exhausted: false,
-        };
+    fn maximal_semantics_fit_the_full_family_frontier_with_exact_legacy_delta() {
+        let pending = maximal_pending_authorities();
         let owner = maximal_owner();
-        let checkpoint = CodexSemanticCheckpoint::new(
-            &pending,
-            terminal.clone(),
-            repository.clone(),
-            owner.clone(),
-            true,
+
+        let mut legacy = legacy_checkpoint(pending.clone(), owner.clone());
+        while serde_json::to_vec(&legacy).unwrap().len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
+            legacy.pending_tool_authorities.pop().unwrap();
+        }
+        assert_eq!(legacy.pending_tool_authorities.len(), 5);
+        let legacy_semantic_bytes = serde_json::to_string(&legacy).unwrap().len();
+        let legacy_key = TypedKey::utf8(serde_json::to_string(&legacy).unwrap()).unwrap();
+        let (legacy_family_bytes, legacy_fits) = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
+            legacy_key,
+            crate::provider::MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES,
         )
         .unwrap();
+        assert_eq!(legacy_family_bytes, 72_932);
+        assert!(!legacy_fits);
+
+        let migrated =
+            CodexSemanticCheckpoint::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let migrated_semantic_bytes = migrated.encode().unwrap().len();
+        let (migrated_family_bytes, migrated_fits) = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
+            migrated.encode_key().unwrap(),
+            crate::provider::MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES,
+        )
+        .unwrap();
+        assert_eq!(legacy_semantic_bytes, 63_969);
+        assert_eq!(migrated_semantic_bytes, 29_658);
+        assert_eq!(migrated_family_bytes, 38_599);
+        assert!(migrated_fits);
+
+        let checkpoint = CodexSemanticCheckpoint::new(&pending, owner.clone(), true).unwrap();
         let mut key = checkpoint.encode_key().unwrap();
         let initial_pending = checkpoint.pending_tool_authorities.len();
-        let audited = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
-            key.clone(),
-            AUDITED_OVERFLOW_PATH_BYTES,
-        )
-        .unwrap();
-        assert_eq!(audited, (66_008, false));
         let (before_bytes, before_fits) = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
             key.clone(),
             crate::provider::MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES,
@@ -879,14 +921,16 @@ mod tests {
             }
         };
         let fitted = CodexSemanticCheckpoint::decode_key(&key).unwrap();
+        assert_eq!(before_bytes, 74_519);
+        assert_eq!(after_bytes, 64_939);
+        assert_eq!(initial_pending, 20);
+        assert_eq!(fitted.pending_tool_authorities.len(), 16);
         assert!(after_fits);
         assert!(after_bytes <= 64 * 1024);
         assert!(fitted.pending_tool_authorities.len() < initial_pending);
-        assert_eq!(fitted.terminal_authority, terminal);
-        assert_eq!(fitted.repository_candidate_authority, repository);
         assert_eq!(fitted.owner, owner);
         eprintln!(
-            "maximal full Codex checkpoint: before={before_bytes} after={after_bytes} pending={}=>{}",
+            "maximal Codex checkpoint: legacy_semantic={legacy_semantic_bytes} migrated_semantic={migrated_semantic_bytes} legacy_family={legacy_family_bytes} migrated_family={migrated_family_bytes}; universal_before={before_bytes} universal_after={after_bytes} pending={}=>{}",
             initial_pending,
             fitted.pending_tool_authorities.len()
         );

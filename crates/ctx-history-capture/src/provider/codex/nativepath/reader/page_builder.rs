@@ -56,8 +56,6 @@ impl CodexNativeScanner {
                 validate_catalog_owner(&self.source, owner.clone())?;
                 CodexSemanticCheckpoint::new(
                     &self.tool_authorities.into_values().collect::<Vec<_>>(),
-                    self.mcp_terminal_authority.checkpoint(),
-                    self.repository_candidate_authority.checkpoint(),
                     owner,
                     self.local_turn_started,
                 )

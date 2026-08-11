@@ -95,44 +95,6 @@ impl CodexRepositoryOccurrenceCache {
 }
 
 impl CodexRepositoryCandidateAuthority {
-    pub(in super::super) fn from_checkpoint(
-        checkpoint: &CodexRepositoryCandidateAuthorityCheckpoint,
-    ) -> Self {
-        Self {
-            entries: checkpoint
-                .entries
-                .iter()
-                .map(|entry| {
-                    (
-                        entry.call_id_sha256,
-                        RepositoryCandidateAuthorityState {
-                            calls: entry.calls,
-                            results: entry.results,
-                        },
-                    )
-                })
-                .collect(),
-            exhausted: checkpoint.exhausted,
-        }
-    }
-
-    pub(in super::super) fn checkpoint(&self) -> CodexRepositoryCandidateAuthorityCheckpoint {
-        CodexRepositoryCandidateAuthorityCheckpoint {
-            entries: self
-                .entries
-                .iter()
-                .map(
-                    |(call_id_sha256, state)| CodexRepositoryCandidateAuthorityEntry {
-                        call_id_sha256: *call_id_sha256,
-                        calls: state.calls,
-                        results: state.results,
-                    },
-                )
-                .collect(),
-            exhausted: self.exhausted,
-        }
-    }
-
     pub(in super::super) fn appended_suffix_invalidates(
         &self,
         combined: &CodexRepositoryCandidateAuthority,
@@ -287,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_result_serial_call_and_overflow_abstain_durably() {
+    fn duplicate_result_serial_call_and_overflow_abstain() {
         let mut duplicate = CodexRepositoryCandidateAuthority::default();
         duplicate.observe_candidate_call("duplicate");
         duplicate.observe_result_if_candidate("duplicate");
@@ -307,8 +269,7 @@ mod tests {
             overflow.observe_result_if_candidate(&call_id);
         }
         assert!(overflow.exhausted);
-        let restarted = CodexRepositoryCandidateAuthority::from_checkpoint(&overflow.checkpoint());
-        assert!(!restarted.is_unique_call_and_result("candidate-0"));
+        assert!(!overflow.is_unique_call_and_result("candidate-0"));
     }
 
     #[test]

@@ -12,12 +12,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     checkpoint::{
-        CodexPendingToolAuthority, CodexRepositoryCandidateAuthorityCheckpoint,
-        CodexRepositoryCandidateAuthorityEntry, CodexSemanticCheckpoint,
-        CodexTerminalAuthorityCheckpoint, CodexTerminalAuthorityEntry,
-        MAX_CODEX_CONTINUATION_CELL_ID_BYTES, MAX_CODEX_MCP_TERMINAL_AUTHORITIES,
-        MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES, MAX_CODEX_TOOL_CALL_ID_BYTES,
-        MAX_CODEX_TOOL_CONTEXTS,
+        CodexPendingToolAuthority, CodexSemanticCheckpoint, MAX_CODEX_CONTINUATION_CELL_ID_BYTES,
+        MAX_CODEX_MCP_TERMINAL_AUTHORITIES, MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES,
+        MAX_CODEX_TOOL_CALL_ID_BYTES, MAX_CODEX_TOOL_CONTEXTS,
     },
     record::{
         classify_codex_record, classify_mcp_terminal_after_selector_ambiguity,
