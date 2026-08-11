@@ -83,6 +83,7 @@ pub(super) fn verified_publication_with_successful_routes(
                         refresh_scope: scope.clone(),
                         receipt: receipt.to_json(),
                         route_observations: metadata_observations.clone(),
+                        route_controls: BTreeMap::new(),
                     }
                     .encode()
                 },

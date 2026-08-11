@@ -1480,7 +1480,7 @@ fn setup_inventories_and_imports_claude_sources_by_default() {
 }
 
 #[test]
-fn clean_multisource_setup_continues_past_unsupported_hermes() {
+fn clean_multisource_setup_imports_hermes_and_preserves_source_bytes() {
     let temp = tempdir();
     write_large_codex_setup_sessions(&temp, 40, 4, 4 * 1024);
     write_large_hermes_setup_db(&temp, 130, 8 * 1024);
@@ -1503,7 +1503,7 @@ fn clean_multisource_setup_continues_past_unsupported_hermes() {
         provider_core_counts(&data_root(&temp), "hermes"),
     );
     assert!((core_counts.0).1 > 0);
-    assert_eq!(core_counts.1, (0, 0));
+    assert!((core_counts.1).1 > 0);
     assert_eq!(fs::read(&hermes_db).unwrap(), hermes_before);
     assert!(!data_root(&temp).join("relational.sqlite").exists());
 
@@ -1518,6 +1518,17 @@ fn clean_multisource_setup_continues_past_unsupported_hermes() {
     ]));
     assert_eq!(codex_search["retrieval"]["generation_id"], generation);
     assert!(!codex_search["results"].as_array().unwrap().is_empty());
+    let hermes_search = json_output(ctx(&temp).args([
+        "search",
+        "hermes setup current",
+        "--provider",
+        "hermes",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_eq!(hermes_search["retrieval"]["generation_id"], generation);
+    assert!(!hermes_search["results"].as_array().unwrap().is_empty());
     let replay = ready_setup(&temp);
     assert_eq!(replay["lexical"]["generation_id"], generation, "{replay:#}");
     wait_for_core_generation(&temp, &generation);

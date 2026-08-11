@@ -3,6 +3,251 @@
 use super::*;
 
 #[test]
+fn queued_exhaustive_route_request_subsumes_incremental_request() {
+    let coordinator = CoreRefreshEngine::new();
+    let route = route_identity(0xe1);
+    let enqueue = |demand| {
+        coordinator
+            .enqueue_with_catalog_metadata(
+                None,
+                SourceRefreshRuntimeMetadata::periodic(),
+                None,
+                SourceBackedRefreshScope::exact([route.clone()]),
+                SourceRefreshLogicalDemand {
+                    admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                    reconciliation_demand: demand,
+                    route_observations: BTreeMap::new(),
+                    request_id: None,
+                    request_fingerprint: None,
+                    admission_pending: false,
+                },
+            )
+            .unwrap()
+    };
+    let exhaustive = enqueue(SourceBackedReconciliationDemand::Exhaustive);
+    let incremental = enqueue(SourceBackedReconciliationDemand::Incremental);
+    assert_eq!(request_id(&incremental), request_id(&exhaustive));
+    assert_eq!(incremental["reconciliation_demand"], "exhaustive");
+}
+
+#[test]
+fn running_incremental_gets_one_exhaustive_manual_successor() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let coordinator = Arc::new(CoreRefreshEngine::new());
+    let incremental = coordinator.enqueue_periodic(&data_root).unwrap();
+    let incremental_id = request_id(&incremental);
+    let (gate, runner_started, runner_release) = RunningRefreshGate::new();
+
+    let exhaustive = std::thread::scope(|scope| {
+        let runner = Arc::clone(&coordinator);
+        scope.spawn(move || {
+            runner
+                .run_next_with(
+                    |_, _| {
+                        runner_started.send(()).expect("signal incremental pass");
+                        let _ = runner_release.recv();
+                        Ok(test_publication("incremental-generation"))
+                    },
+                    || Ok(Some("incremental-generation".to_owned())),
+                    |_| Ok(()),
+                    |_| Ok(()),
+                )
+                .expect("running incremental pass");
+        });
+        gate.wait_until_started();
+
+        let manual_request_id = Uuid::now_v7().to_string();
+        let authority = test_catalog_authority(1, 0xe2);
+        let first = coordinator
+            .enqueue_fresh_catalog_demand_for_test(
+                &data_root,
+                None,
+                manual_request_id.clone(),
+                authority.clone(),
+            )
+            .unwrap();
+        let replay = coordinator
+            .enqueue_fresh_catalog_demand_for_test(&data_root, None, manual_request_id, authority)
+            .unwrap();
+        assert_eq!(first, replay);
+        assert_ne!(request_id(&first), incremental_id);
+        assert_eq!(first["logical_phase"], "waiting");
+        assert_eq!(first["reconciliation_demand"], "exhaustive");
+        gate.release();
+        first
+    });
+
+    let exhaustive_id = request_id(&exhaustive);
+    let successor = coordinator
+        .run_next_with(
+            |_, _| Ok(test_publication("exhaustive-generation")),
+            || Ok(Some("exhaustive-generation".to_owned())),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("manual exhaustive successor");
+    assert_eq!(request_id(&successor.job), exhaustive_id);
+    assert_eq!(successor.job["reconciliation_demand"], "exhaustive");
+    assert!(!coordinator.has_pending_request());
+}
+
+#[test]
+fn concurrent_manual_exhaustive_callers_share_one_queued_exhaustive_successor() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let coordinator = Arc::new(CoreRefreshEngine::new());
+    let incremental = coordinator.enqueue_periodic(&data_root).unwrap();
+    let incremental_id = request_id(&incremental);
+    let (gate, runner_started, runner_release) = RunningRefreshGate::new();
+
+    let (first, second, published_authority) = std::thread::scope(|scope| {
+        let runner = Arc::clone(&coordinator);
+        scope.spawn(move || {
+            runner
+                .run_next_with(
+                    |_, _| {
+                        runner_started.send(()).expect("signal incremental pass");
+                        let _ = runner_release.recv();
+                        Ok(test_publication("incremental-generation"))
+                    },
+                    || Ok(Some("incremental-generation".to_owned())),
+                    |_| Ok(()),
+                    |_| Ok(()),
+                )
+                .expect("running incremental pass");
+        });
+        gate.wait_until_started();
+
+        let authority = test_catalog_authority(1, 0xe3);
+        let first = coordinator
+            .enqueue_fresh_catalog_demand_for_test(
+                &data_root,
+                None,
+                Uuid::now_v7().to_string(),
+                authority.clone(),
+            )
+            .unwrap();
+        let second = coordinator
+            .enqueue_fresh_catalog_demand_for_test(
+                &data_root,
+                None,
+                Uuid::now_v7().to_string(),
+                authority.clone(),
+            )
+            .unwrap();
+        assert_ne!(request_id(&first), request_id(&second));
+        assert_ne!(request_id(&first), incremental_id);
+        assert_eq!(second["physical_attempt_id"], first["request_id"]);
+        assert_eq!(second["reconciliation_demand"], "exhaustive");
+        gate.release();
+        (first, second, authority)
+    });
+
+    let physical_scans = AtomicUsize::new(1);
+    let first_id = request_id(&first);
+    let exhaustive = coordinator
+        .run_next_with(
+            |_, _| {
+                physical_scans.fetch_add(1, Ordering::SeqCst);
+                let mut publication = test_publication("exhaustive-generation");
+                publication.published_explicit_source_catalog = Some(published_authority.clone());
+                Ok(publication)
+            },
+            || Ok(Some("exhaustive-generation".to_owned())),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("one queued exhaustive successor");
+    assert!(!exhaustive.failed, "{:#}", exhaustive.job);
+    assert_eq!(request_id(&exhaustive.job), first_id);
+
+    let second_id = request_id(&second);
+    let waiter = coordinator
+        .resolve_fully_covered_continuation_for_test(&data_root, |_| Ok(BTreeMap::new()))
+        .expect("second exhaustive caller resolves from queued successor");
+    assert_eq!(request_id(&waiter.job), second_id);
+    assert!(!waiter.did_work);
+    assert_eq!(waiter.job["scanned_routes"], 0);
+    assert_eq!(physical_scans.load(Ordering::SeqCst), 2);
+    assert!(!coordinator.has_pending_request());
+}
+
+#[test]
+fn manual_after_queued_safety_exhaustive_attaches_without_second_scan() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let coordinator = CoreRefreshEngine::new();
+    let route = route_identity(0xe4);
+    coordinator.reconcile_watch_routes(
+        [route.clone()],
+        EventWatermark::new(1, 0),
+        ledger_now_ms().saturating_sub(1_000),
+    );
+    let safety = coordinator
+        .enqueue_with_catalog_metadata(
+            None,
+            SourceRefreshRuntimeMetadata::periodic(),
+            None,
+            SourceBackedRefreshScope::exact([route.clone()]),
+            SourceRefreshLogicalDemand {
+                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+                route_observations: BTreeMap::new(),
+                request_id: None,
+                request_fingerprint: None,
+                admission_pending: false,
+            },
+        )
+        .unwrap();
+    let safety_id = request_id(&safety);
+    let authority = test_catalog_authority(1, 0xe4);
+    let manual = coordinator
+        .enqueue_fresh_catalog_demand_for_test(
+            &data_root,
+            None,
+            Uuid::now_v7().to_string(),
+            authority.clone(),
+        )
+        .unwrap();
+    assert_eq!(manual["physical_attempt_id"], safety_id);
+
+    let run = coordinator
+        .run_next_with(
+            |request_id, running| {
+                running.admit_refresh_scope_for_test(request_id, &SourceBackedRefreshScope::All)?;
+                let mut publication = test_publication("safety-exhaustive-generation");
+                publication.published_explicit_source_catalog = Some(authority.clone());
+                publication.route_results = vec![SourceBackedRefreshRouteResult::succeeded(
+                    route.as_str().to_owned(),
+                    true,
+                )];
+                Ok(publication)
+            },
+            || Ok(Some("safety-exhaustive-generation".to_owned())),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("queued safety exhaustive pass");
+    assert!(!run.failed, "{:#}", run.job);
+    assert_eq!(request_id(&run.job), safety_id);
+    assert_eq!(run.job["refresh_scope"]["kind"], "all");
+    assert_eq!(run.job["reconciliation_demand"], "exhaustive");
+
+    let manual_id = request_id(&manual);
+    let waiter = coordinator
+        .resolve_fully_covered_continuation_for_test(&data_root, |_| Ok(BTreeMap::new()))
+        .expect("manual caller resolves from safety exhaustive publication");
+    assert_eq!(request_id(&waiter.job), manual_id);
+    assert!(!waiter.did_work);
+    assert_eq!(waiter.job["scanned_routes"], 0);
+    assert!(!coordinator.has_pending_request());
+}
+
+#[test]
 fn exact_import_overlay_upgrades_queued_route_work_without_rescan() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
@@ -596,6 +841,7 @@ fn manual_all_fresh_after_running_startup_scan_queues_one_successor() {
     let temp = tempfile::tempdir().unwrap();
     let coordinator = Arc::new(CoreRefreshEngine::new());
     let first = coordinator.enqueue_periodic(temp.path()).unwrap();
+    assert_eq!(first["reconciliation_demand"], "incremental");
     let first_request_id = request_id(&first);
     let (gate, runner_started, runner_release) = RunningRefreshGate::new();
 
@@ -642,6 +888,7 @@ fn manual_all_fresh_after_running_startup_scan_queues_one_successor() {
     });
 
     let successor_request_id = request_id(&successor);
+    assert_eq!(successor["reconciliation_demand"], "incremental");
     assert_ne!(successor_request_id, first_request_id);
     assert_eq!(request_id(&replay), successor_request_id);
     assert_eq!(replay["coalesced_requests"], 0);

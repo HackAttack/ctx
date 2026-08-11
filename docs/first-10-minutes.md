@@ -50,7 +50,7 @@ ctx sources --format json
 ```
 
 Expect rows for supported local import providers such as Codex, Pi,
-Antigravity, Claude, OpenCode, Kilo Code, OpenClaw, Gemini, Cursor,
+Antigravity, Claude, OpenCode, Kilo Code, OpenClaw, Hermes Agent, Gemini, Cursor,
 Zed, Copilot CLI, Factory AI Droid, and Warp Terminal restoration SQLite.
 NanoClaw is supported from an exact project CWD or official launchd/systemd
 service registration; AstrBot appears as supported when a bounded `data_v4.db`
@@ -66,8 +66,13 @@ failure, or an authentication/encryption boundary. Inspect `status_reason` and
 or non-plaintext Trae database reports
 `status_reason: "blocked_auth_or_encryption"`.
 
-Hermes `state.db` locations are still discovered, but current schemas appear as
-`status: "unsupported"` and `importable: false`; no path override is available.
+Hermes `state.db` appears as native and importable. On Linux, a non-root ctx
+process with the certified read-only live-WAL path makes new sessions and
+appended records converge on native-watch and search refreshes. Otherwise the
+incremental attempt defers without copying the provider database. Structural
+edits, deletions, and deferred increments reconcile in roughly 60–80 minutes
+with a healthy daemon, or on `ctx import --provider hermes` or
+`ctx import --all`.
 
 ## 4. Re-Run Or Target Imports
 

@@ -47,18 +47,8 @@ where
         validate_selected_provider(host, provider)?;
     }
     host.begin(0)?;
-    let preflight = automatic_source_preflight(host, data_root)
+    automatic_source_preflight(host, data_root)
         .context("validate provider roots before initializing ctx state")?;
-    let data_root_exists = data_root
-        .try_exists()
-        .context("inspect ctx data root before unsupported-source reporting")?;
-    if let Some(source) = preflight
-        .hermes_only_candidate
-        .as_ref()
-        .filter(|_| !preflight.has_importable_source && !data_root_exists)
-    {
-        return unsupported_source_report(request.resume, source, host);
-    }
 
     host.protect_data_root(data_root)
         .context("protect ctx data root before provider refresh")?;

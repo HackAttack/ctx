@@ -848,6 +848,7 @@ fn restart_after_pointer_publication_recovers_exact_receipt_without_recapture() 
                         refresh_scope: scope.clone(),
                         receipt: receipt.to_json(),
                         route_observations: BTreeMap::new(),
+                        route_controls: BTreeMap::new(),
                     }
                     .encode()
                 },

@@ -5,6 +5,7 @@ pub(super) struct AcquiredSqliteConnection {
     pub(super) strategy: SqliteSourceSnapshotStrategy,
     pub(super) copied_bytes: u64,
     pub(super) snapshot_directory: Option<TempDir>,
+    pub(super) live_authority_handle: Option<File>,
     pub(super) snapshot_activity: Option<SqliteSourceSnapshotActivity>,
     pub(super) scratch: Arc<SqliteRouteScratch>,
 }
@@ -82,6 +83,7 @@ impl SqliteSourceReadSnapshot {
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FORCE_NEXT_PINNED_WAL_UNAVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_SNAPSHOT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_SCRATCH_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -89,6 +91,11 @@ thread_local! {
 #[cfg(any(test, feature = "test-support"))]
 pub fn fail_next_opened_snapshot_cleanup_for_test() {
     FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_next_pinned_wal_unavailable_for_test() {
+    FORCE_NEXT_PINNED_WAL_UNAVAILABLE.with(|force| force.set(true));
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -116,6 +123,11 @@ fn take_snapshot_open_failure_for_test() -> bool {
     FAIL_NEXT_SNAPSHOT_OPEN.with(|fail| fail.replace(false))
 }
 
+#[cfg(any(test, feature = "test-support"))]
+fn take_forced_pinned_wal_unavailable_for_test() -> bool {
+    FORCE_NEXT_PINNED_WAL_UNAVAILABLE.with(|force| force.replace(false))
+}
+
 pub(super) fn acquire_sqlite_connection_with_progress<E>(
     snapshot_context: &Arc<SqliteSourceSnapshotContext>,
     family: &SqliteSourceFamily,
@@ -127,6 +139,33 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
     let source_limit = options.limits.maximum_source_bytes;
     let scratch_limit = options.limits.maximum_scratch_bytes;
     let scratch = SqliteRouteScratch::new(snapshot_context, scratch_limit);
+    if options.policy == SqliteSourceSnapshotPolicy::PinnedReadOnlyWal {
+        #[cfg(any(test, feature = "test-support"))]
+        if take_forced_pinned_wal_unavailable_for_test() {
+            return Err(SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "pinned read-only WAL snapshots are unavailable on the simulated platform"
+                    .to_owned(),
+            }
+            .into());
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(SqliteSourceAccessError::SnapshotUnavailable {
+            reason: "pinned read-only WAL snapshots require the Linux unix VFS".to_owned(),
+        }
+        .into());
+        #[cfg(target_os = "linux")]
+        let (connection, live_authority_handle) = open_pinned_read_only_wal(family)?;
+        #[cfg(target_os = "linux")]
+        return Ok(AcquiredSqliteConnection {
+            connection,
+            strategy: SqliteSourceSnapshotStrategy::PinnedReadOnlyWal,
+            copied_bytes: 0,
+            snapshot_directory: None,
+            live_authority_handle: Some(live_authority_handle),
+            snapshot_activity: None,
+            scratch,
+        });
+    }
     let copied_bytes = enforce_snapshot_copy_bounds_with_limit(family, evidence, source_limit)?;
     if options.policy == SqliteSourceSnapshotPolicy::ExactRevision
         && family.wal.is_none()
@@ -139,6 +178,7 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
                 strategy: SqliteSourceSnapshotStrategy::ImmutableMain,
                 copied_bytes: 0,
                 snapshot_directory: None,
+                live_authority_handle: None,
                 snapshot_activity: None,
                 scratch,
             });
@@ -229,9 +269,93 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
         strategy: SqliteSourceSnapshotStrategy::CopiedFamily,
         copied_bytes,
         snapshot_directory: Some(snapshot_directory),
+        live_authority_handle: None,
         snapshot_activity: None,
         scratch,
     })
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::sqlite_source) fn open_pinned_read_only_wal(
+    family: &SqliteSourceFamily,
+) -> SqliteSourceAccessResult<(Connection, File)> {
+    const MINIMUM_READONLY_SHM_SQLITE_VERSION: i32 = 3_046_000;
+    admit_pinned_read_only_wal(
+        unsafe { libc::geteuid() },
+        unsafe { ffi::sqlite3_libversion_number() },
+        !unsafe { ffi::sqlite3_vfs_find(c"unix".as_ptr()) }.is_null(),
+        MINIMUM_READONLY_SHM_SQLITE_VERSION,
+    )?;
+    let authority_handle = family.retain_parent_handle()?;
+    let previous_directory = File::open(".").map_err(|source| SqliteSourceAccessError::Io {
+        operation: "retaining the caller directory before a direct SQLite open",
+        path: PathBuf::from("."),
+        source,
+    })?;
+    if unsafe { libc::unshare(libc::CLONE_FS) } != 0 {
+        return Err(SqliteSourceAccessError::SnapshotUnavailable {
+            reason: format!(
+                "could not isolate the SQLite opener filesystem context: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
+    }
+    if unsafe { libc::fchdir(authority_handle.as_raw_fd()) } != 0 {
+        return Err(SqliteSourceAccessError::Io {
+            operation: "binding the SQLite opener to its retained parent authority",
+            path: family.approved_parent_path().to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let encoded_leaf =
+        url::form_urlencoded::byte_serialize(family.database_name().as_bytes()).collect::<String>();
+    let uri = format!("file:{encoded_leaf}?mode=ro&readonly_shm=1&vfs=unix");
+    let opened = Connection::open_with_flags(
+        &uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    );
+    let restore = unsafe { libc::fchdir(previous_directory.as_raw_fd()) };
+    if restore != 0 {
+        drop(opened);
+        return Err(SqliteSourceAccessError::Io {
+            operation: "restoring the caller directory after a direct SQLite open",
+            path: PathBuf::from("."),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let connection = opened.map_err(|source| {
+        sqlite_error("opening the pinned read-only provider WAL snapshot", source)
+    })?;
+    Ok((connection, authority_handle))
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::sqlite_source) fn admit_pinned_read_only_wal(
+    effective_uid: libc::uid_t,
+    sqlite_version: i32,
+    unix_vfs_available: bool,
+    minimum_sqlite_version: i32,
+) -> SqliteSourceAccessResult<()> {
+    // The unix VFS calls robustFchown() while opening an existing SHM file.
+    // readonly_shm keeps that file descriptor O_RDONLY, but root can still
+    // alter SHM ownership metadata. Refuse the primitive before SQLite open so
+    // the provider family remains byte-for-byte and metadata-for-metadata
+    // untouched.
+    if effective_uid == 0 {
+        return Err(SqliteSourceAccessError::SnapshotUnavailable {
+            reason: "pinned read-only WAL snapshots are disabled for effective UID 0".to_owned(),
+        });
+    }
+    if sqlite_version < minimum_sqlite_version || !unix_vfs_available {
+        return Err(SqliteSourceAccessError::SnapshotUnavailable {
+            reason: "bundled SQLite unix VFS readonly_shm support is unavailable".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

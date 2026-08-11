@@ -192,6 +192,7 @@ struct SourceRouteStageCheckpoint {
     route_deletions: HashSet<SourceKey>,
     observed_missing_routes: HashMap<SourceRouteIdentity, SourceRouteSnapshot>,
     route_publication_revalidation_len: usize,
+    partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
     source_identities: HashMap<Uuid, [u8; 32]>,
 }
 
@@ -276,6 +277,7 @@ pub struct GenerationWriter {
     observed_missing_routes: HashMap<SourceRouteIdentity, SourceRouteSnapshot>,
     route_publication_revalidations:
         Vec<(SourceRouteIdentity, Box<dyn Fn() -> bool + Send + 'static>)>,
+    partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
     source_identities: HashMap<Uuid, [u8; 32]>,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
@@ -546,6 +548,7 @@ impl GenerationWriter {
                 present_source_routes: None,
                 observed_missing_routes: HashMap::new(),
                 route_publication_revalidations: Vec::new(),
+                partially_reconciled_routes: BTreeSet::new(),
                 source_identities,
                 source_route_plan: None,
                 active_source_route_stage: None,
@@ -620,11 +623,13 @@ impl GenerationWriter {
         if !self.observed_missing_routes.is_empty() || !self.route_deletions.is_empty() {
             return Ok(None);
         }
-        if self
-            .present_source_routes
-            .as_ref()
-            .is_some_and(|routes| routes.as_slice() != base.source_routes())
-        {
+        if self.present_source_routes.as_ref().is_some_and(|routes| {
+            routes.len() != base.source_routes().len()
+                || routes
+                    .iter()
+                    .zip(base.source_routes())
+                    .any(|(present, prior)| !present.exact_snapshot_eq(prior))
+        }) {
             // Missing-state reset and route membership changes are manifest
             // mutations even when every Core source is otherwise unchanged.
             return Ok(None);
@@ -633,20 +638,33 @@ impl GenerationWriter {
         // A no-work candidate is a full-inventory claim except for routes
         // explicitly authenticated as exact carry-forward from this locked
         // base. Do not silently carry any other omitted source.
-        if let Some(missing) = base.sources.iter().find(|base_source| {
-            !self
-                .pending
-                .contains_key(&source_token(base_source.observation().source()))
-                && !self.source_is_carried_from_base(base_source.observation().source())
-        }) {
+        if let Some(missing) = base
+            .source_routes()
+            .iter()
+            .filter(|route| {
+                !self
+                    .source_route_plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.carried_from_base.contains(route.route_identity()))
+                    && !self
+                        .partially_reconciled_routes
+                        .contains(route.route_identity())
+            })
+            .flat_map(SourceRouteSnapshot::sources)
+            .find(|source| !self.pending.contains_key(&source_token(source)))
+        {
             return Err(IndexError::IncompleteExactReplayCoverage {
-                source_id: missing.observation().source().identity().to_string(),
+                source_id: missing.identity().to_string(),
             });
         }
         let retained_sources_are_exact = self.pending.values().all(|pending| {
             base.sources
-                .iter()
-                .find(|base_source| {
+                .binary_search_by_key(&pending.source.identity().digest(), |base_source| {
+                    base_source.observation().source().identity().digest()
+                })
+                .ok()
+                .and_then(|index| base.sources.get(index))
+                .filter(|base_source| {
                     base_source
                         .observation()
                         .source()
@@ -696,15 +714,26 @@ impl GenerationWriter {
                 });
             }
         }
-        if let Some(missing) = base.sources.iter().find(|source| {
-            !self.source_is_carried_from_base(source.observation().source())
-                && !self
-                    .pending
-                    .contains_key(&source_token(source.observation().source()))
-                && !covered_sources.contains(&source.observation().source().identity().digest())
-        }) {
+        if let Some(missing) = base
+            .source_routes()
+            .iter()
+            .filter(|route| {
+                !self
+                    .source_route_plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.carried_from_base.contains(route.route_identity()))
+                    && !self
+                        .partially_reconciled_routes
+                        .contains(route.route_identity())
+            })
+            .flat_map(SourceRouteSnapshot::sources)
+            .find(|source| {
+                !self.pending.contains_key(&source_token(source))
+                    && !covered_sources.contains(&source.identity().digest())
+            })
+        {
             return Err(IndexError::IncompleteExactReplayCoverage {
-                source_id: missing.observation().source().identity().to_string(),
+                source_id: missing.identity().to_string(),
             });
         }
         Ok(Some(ExactReplayInventoryWitness { base }))

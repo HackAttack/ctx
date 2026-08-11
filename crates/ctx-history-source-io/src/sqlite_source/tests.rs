@@ -6,10 +6,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(target_os = "linux")]
+use std::{
+    io::Read as _,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 
 use rusqlite::{ffi, params, Connection};
+#[cfg(target_os = "linux")]
+use sha2::Digest as _;
 
 use super::snapshot::{
     fail_next_private_directory_cleanup_for_test, fail_next_private_scratch_close_for_test,
@@ -64,6 +75,62 @@ fn create_persistent_wal(path: &Path) -> Connection {
     connection
 }
 
+#[cfg(target_os = "linux")]
+struct PersistentWalWriterProcess {
+    child: Child,
+}
+
+#[cfg(target_os = "linux")]
+impl PersistentWalWriterProcess {
+    fn start(database: &Path, ready: &Path) -> Self {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sqlite_source::tests::persistent_wal_writer_process_helper",
+                "--nocapture",
+            ])
+            .env("CTX_TEST_PROVIDER_DATABASE", database)
+            .env("CTX_TEST_PROVIDER_READY", ready)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("provider WAL writer exited before readiness: {status}");
+            }
+            assert!(Instant::now() < deadline, "provider WAL writer timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Self { child }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for PersistentWalWriterProcess {
+    fn drop(&mut self) {
+        drop(self.child.stdin.take());
+        if self.child.wait().is_err() {
+            let _ = self.child.kill();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn persistent_wal_writer_process_helper() {
+    let Some(database) = std::env::var_os("CTX_TEST_PROVIDER_DATABASE") else {
+        return;
+    };
+    let ready = PathBuf::from(std::env::var_os("CTX_TEST_PROVIDER_READY").unwrap());
+    let _writer = create_persistent_wal(Path::new(&database));
+    fs::write(ready, b"ready").unwrap();
+    let mut input = Vec::new();
+    std::io::stdin().read_to_end(&mut input).unwrap();
+}
+
 fn retain_parent(path: &Path) -> SqliteSourceDirectoryAuthority {
     retain_parent_in_data_root(crate::test_provider_sqlite_data_root(), path)
 }
@@ -75,9 +142,11 @@ fn retain_parent_in_data_root(data_root: &Path, path: &Path) -> SqliteSourceDire
 }
 
 fn read_values(snapshot: &SqliteSourceReadSnapshot) -> Vec<String> {
-    snapshot
-        .connection()
-        .unwrap()
+    read_values_from_connection(snapshot.connection().unwrap())
+}
+
+fn read_values_from_connection(connection: &Connection) -> Vec<String> {
+    connection
         .prepare("SELECT body FROM messages ORDER BY rowid")
         .unwrap()
         .query_map([], |row| row.get::<_, String>(0))
@@ -92,6 +161,31 @@ fn directory_file_bytes(path: &Path) -> BTreeMap<OsString, Vec<u8>> {
         .map(|entry| {
             let entry = entry.unwrap();
             (entry.file_name(), fs::read(entry.path()).unwrap())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn directory_file_state(
+    path: &Path,
+) -> BTreeMap<OsString, ([u8; 32], u64, u32, i64, i64, i64, i64)> {
+    fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            (
+                entry.file_name(),
+                (
+                    sha2::Sha256::digest(fs::read(entry.path()).unwrap()).into(),
+                    metadata.len(),
+                    metadata.mode(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                ),
+            )
         })
         .collect()
 }
@@ -170,6 +264,222 @@ fn active_wal_retains_one_family_copy_under_one_aggregate_limit() {
     assert_eq!(staging_entries(data_root.path()), 0);
     assert_eq!(directory_file_bytes(temp.path()), before);
     drop(writer);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pinned_read_only_wal_is_zero_write_and_accepts_no_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    let ready = data_root.path().join("provider-ready");
+    let writer = PersistentWalWriterProcess::start(&database, &ready);
+    let before = directory_file_state(temp.path());
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+
+    let opened =
+        authority.open_incremental_snapshot_with_progress(OsStr::new("provider.sqlite"), |_| {
+            Ok::<_, ()>(())
+        });
+    if unsafe { libc::geteuid() } == 0 {
+        assert!(matches!(
+            opened,
+            Err(SqliteSourceProgressError::Source(
+                SqliteSourceAccessError::SnapshotUnavailable { reason }
+            )) if reason.contains("effective UID 0")
+        ));
+        assert_eq!(directory_file_state(temp.path()), before);
+        let counters = authority.snapshot_counters();
+        assert_eq!(counters.pinned_read_only_wal_snapshot_opens(), 0);
+        assert_eq!(counters.copied_snapshot_opens(), 0);
+        assert_eq!(counters.source_bytes_copied(), 0);
+        drop(writer);
+        return;
+    }
+    let snapshot = opened.unwrap();
+    assert_eq!(
+        snapshot.strategy(),
+        SqliteSourceSnapshotStrategy::PinnedReadOnlyWal
+    );
+    assert_eq!(read_values(&snapshot), ["from-wal"]);
+    snapshot.finish().unwrap();
+    assert_eq!(
+        directory_file_state(temp.path()),
+        before,
+        "successful read changed the provider SQLite family"
+    );
+
+    let rejected_write_snapshot = authority
+        .open_incremental_snapshot_with_progress(OsStr::new("provider.sqlite"), |_| Ok::<_, ()>(()))
+        .unwrap();
+    let write = rejected_write_snapshot
+        .connection()
+        .unwrap()
+        .execute("INSERT INTO messages(body) VALUES ('forbidden')", []);
+    assert!(write.is_err());
+    rejected_write_snapshot.finish().unwrap();
+
+    let counters = authority.snapshot_counters();
+    assert_eq!(counters.pinned_read_only_wal_snapshot_opens(), 2);
+    assert_eq!(counters.copied_snapshot_opens(), 0);
+    assert_eq!(counters.source_bytes_copied(), 0);
+    assert_eq!(
+        directory_file_state(temp.path()),
+        before,
+        "rejected write changed the provider SQLite family"
+    );
+    drop(writer);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pinned_read_only_wal_parent_swap_reads_retained_authority_and_fails_terminal_path() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let selected = temp.path().join("selected");
+    let moved = temp.path().join("moved");
+    fs::create_dir(&selected).unwrap();
+    let original_database = selected.join("provider.sqlite");
+    let original_ready = temp.path().join("original-ready");
+    let original_writer = PersistentWalWriterProcess::start(&original_database, &original_ready);
+    let authority = retain_parent(&selected);
+    let family =
+        super::family::SqliteSourceFamily::open(&authority, OsStr::new("provider.sqlite"), || {})
+            .unwrap();
+    let evidence = family.capture_revision_evidence().unwrap();
+
+    fs::rename(&selected, &moved).unwrap();
+    fs::create_dir(&selected).unwrap();
+    let replacement_database = selected.join("provider.sqlite");
+    let replacement = Connection::open(&replacement_database).unwrap();
+    replacement
+        .execute("CREATE TABLE messages (body TEXT NOT NULL)", [])
+        .unwrap();
+    replacement
+        .execute(
+            "INSERT INTO messages(body) VALUES ('outside-authority')",
+            [],
+        )
+        .unwrap();
+
+    let (connection, authority_handle) =
+        super::snapshot::acquisition::open_pinned_read_only_wal(&family).unwrap();
+    super::verify_connection_read_only(&connection).unwrap();
+    super::configure_and_pin_snapshot(&connection).unwrap();
+    let values = connection
+        .prepare("SELECT body FROM messages ORDER BY rowid")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(values, ["from-wal"]);
+    drop(connection);
+    drop(authority_handle);
+    assert!(family.revalidate_database_identity(&evidence).is_err());
+    drop(replacement);
+    drop(original_writer);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pinned_read_only_wal_leaf_swap_fails_terminal_identity_revalidation() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    let original_ready = temp.path().join("original-ready");
+    let original_writer = PersistentWalWriterProcess::start(&database, &original_ready);
+    let authority = retain_parent(temp.path());
+    let family =
+        super::family::SqliteSourceFamily::open(&authority, OsStr::new("provider.sqlite"), || {})
+            .unwrap();
+    let evidence = family.capture_revision_evidence().unwrap();
+
+    let displaced = temp.path().join("displaced");
+    fs::create_dir(&displaced).unwrap();
+    for name in [
+        "provider.sqlite",
+        "provider.sqlite-wal",
+        "provider.sqlite-shm",
+    ] {
+        fs::rename(temp.path().join(name), displaced.join(name)).unwrap();
+    }
+    let replacement_ready = temp.path().join("replacement-ready");
+    let replacement_writer = PersistentWalWriterProcess::start(&database, &replacement_ready);
+    Connection::open(&database)
+        .unwrap()
+        .execute("UPDATE messages SET body = 'replacement'", [])
+        .unwrap();
+
+    let (connection, authority_handle) =
+        super::snapshot::acquisition::open_pinned_read_only_wal(&family).unwrap();
+    super::verify_connection_read_only(&connection).unwrap();
+    super::configure_and_pin_snapshot(&connection).unwrap();
+    assert_eq!(read_values_from_connection(&connection), ["replacement"]);
+    drop(connection);
+    drop(authority_handle);
+    assert!(family.revalidate_database_identity(&evidence).is_err());
+
+    drop(replacement_writer);
+    drop(original_writer);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pinned_read_only_wal_admission_rejects_root_before_sqlite_open() {
+    const MINIMUM: i32 = 3_046_000;
+    let root = super::snapshot::acquisition::admit_pinned_read_only_wal(0, MINIMUM, true, MINIMUM)
+        .unwrap_err();
+    assert!(matches!(
+        root,
+        SqliteSourceAccessError::SnapshotUnavailable { reason }
+            if reason.contains("effective UID 0")
+    ));
+    super::snapshot::acquisition::admit_pinned_read_only_wal(1_000, MINIMUM, true, MINIMUM)
+        .unwrap();
+    assert!(super::snapshot::acquisition::admit_pinned_read_only_wal(
+        1_000,
+        MINIMUM - 1,
+        true,
+        MINIMUM,
+    )
+    .is_err());
+    assert!(super::snapshot::acquisition::admit_pinned_read_only_wal(
+        1_000, MINIMUM, false, MINIMUM,
+    )
+    .is_err());
+}
+
+#[test]
+fn sidecar_free_unavailable_incremental_never_copies_the_database_family() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    create_database(&database, "sidecar-free");
+    assert!(!temp.path().join("provider.sqlite-wal").exists());
+    assert!(!temp.path().join("provider.sqlite-shm").exists());
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+
+    super::snapshot::acquisition::force_next_pinned_wal_unavailable_for_test();
+    let opened =
+        authority.open_incremental_snapshot_with_progress(OsStr::new("provider.sqlite"), |_| {
+            Ok::<_, ()>(())
+        });
+    assert!(matches!(
+        opened,
+        Err(SqliteSourceProgressError::Source(
+            SqliteSourceAccessError::SnapshotUnavailable { .. }
+        ))
+    ));
+    let counters = authority.snapshot_counters();
+    assert_eq!(counters.pinned_read_only_wal_snapshot_opens(), 0);
+    assert_eq!(counters.copied_snapshot_opens(), 0);
+    assert_eq!(counters.source_bytes_copied(), 0);
+    assert_eq!(staging_entries(data_root.path()), 0);
 }
 
 #[cfg(target_os = "linux")]

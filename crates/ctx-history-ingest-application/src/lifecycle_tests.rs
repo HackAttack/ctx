@@ -96,7 +96,6 @@ impl SourceDiscoveryPort for FakeHost {
         ProviderSelectionGuidance {
             display_name: provider.as_str().to_owned(),
             manual_path_command: format!("select {provider}"),
-            unavailable_reason: Some("unsupported fixture".to_owned()),
         }
     }
 }
@@ -300,38 +299,6 @@ fn unsupported_exact_source_never_initializes_progress_or_refreshes() {
     assert_eq!(
         host.events.borrow().as_slice(),
         ["explicit_source", "source_failure_identity"]
-    );
-}
-
-#[test]
-fn cold_hermes_only_automatic_source_reports_unsupported_without_root_or_refresh() {
-    let temp = tempfile::tempdir().unwrap();
-    let source_path = write_source(&temp);
-    let mut hermes = provider_source(source_path.clone(), ProviderSourceStatus::Unsupported);
-    hermes.provider = CaptureProvider::Hermes;
-    hermes.unsupported_reason = Some("Hermes state database is unsupported");
-    let mut host = FakeHost::new(
-        source_path,
-        publication(receipt(
-            None,
-            SourceBackedRefreshRouteResult::succeeded(ROUTE.into(), true),
-        )),
-    );
-    host.all_discovery.sources = vec![hermes];
-
-    let report = run_ingest(
-        &IngestRequest::default(),
-        &temp.path().join("new-ctx-root"),
-        &mut host,
-    )
-    .unwrap();
-
-    assert_eq!(report.totals.failed_sources, 1);
-    assert_eq!(host.refresh_calls.get(), 0);
-    assert_eq!(host.admission_calls.get(), 0);
-    assert_eq!(
-        host.events.borrow().as_slice(),
-        ["begin:0", "discover_all", "source_failure_identity"]
     );
 }
 

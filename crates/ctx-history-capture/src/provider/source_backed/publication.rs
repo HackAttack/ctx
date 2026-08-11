@@ -28,6 +28,21 @@ type SourceBackedPublicationMetadataFactory<'factory> =
         ) -> ctx_history_index::Result<Vec<u8>>
         + 'factory;
 
+#[cfg(test)]
+thread_local! {
+    static PARTIAL_BASE_ROUTE_MEMBER_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_partial_base_route_member_visits() {
+    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn partial_base_route_member_visits() -> u64 {
+    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(std::cell::Cell::get)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SourceBackedRefreshExecutionBudget {
     discovery_duration: Duration,
@@ -88,6 +103,7 @@ pub struct SourceBackedRefreshExecutor {
     writer_options: WriterOptions,
     discovery_duration: Duration,
     work_budget: usize,
+    base_route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 }
 
 impl SourceBackedRefreshExecutor {
@@ -106,7 +122,16 @@ impl SourceBackedRefreshExecutor {
             writer_options,
             discovery_duration,
             work_budget,
+            base_route_controls: BTreeMap::new(),
         }
+    }
+
+    pub fn with_base_route_controls(
+        mut self,
+        controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    ) -> Self {
+        self.base_route_controls = controls;
+        self
     }
 
     pub fn registry(&self) -> &SourceBackedProviderRegistry {
@@ -125,6 +150,7 @@ impl SourceBackedRefreshExecutor {
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
             SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+            &self.base_route_controls,
             move |update| {
                 if update.current_source_progress.is_some() {
                     return Ok(());
@@ -146,6 +172,7 @@ impl SourceBackedRefreshExecutor {
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
             SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+            &self.base_route_controls,
             report_progress,
             None,
         )
@@ -164,6 +191,7 @@ impl SourceBackedRefreshExecutor {
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
             SourceBackedRefreshPlan::isolate(scope),
+            &self.base_route_controls,
             move |update| {
                 if update.current_source_progress.is_some() {
                     return Ok(());
@@ -186,6 +214,27 @@ impl SourceBackedRefreshExecutor {
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
             SourceBackedRefreshPlan::isolate(scope),
+            &self.base_route_controls,
+            report_progress,
+            None,
+        )
+    }
+
+    pub fn refresh_scope_with_detailed_progress_and_reconciliation(
+        &self,
+        index_root: impl AsRef<Path>,
+        scope: SourceBackedRefreshScope,
+        reconciliation_demand: SourceBackedReconciliationDemand,
+        report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
+    ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+        refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
+            index_root,
+            &self.registry,
+            self.writer_options.clone(),
+            SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
+            SourceBackedRefreshPlan::isolate(scope)
+                .with_reconciliation_demand(reconciliation_demand),
+            &self.base_route_controls,
             report_progress,
             None,
         )
@@ -199,6 +248,25 @@ impl SourceBackedRefreshExecutor {
         index_root: impl AsRef<Path>,
         scope: SourceBackedRefreshScope,
         report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
+        metadata_factory: impl for<'a> FnMut(
+            SourceBackedPublicationMetadataContext<'a>,
+        ) -> ctx_history_index::Result<Vec<u8>>,
+    ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+        self.refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+            index_root,
+            scope,
+            SourceBackedReconciliationDemand::Exhaustive,
+            report_progress,
+            metadata_factory,
+        )
+    }
+
+    pub fn refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+        &self,
+        index_root: impl AsRef<Path>,
+        scope: SourceBackedRefreshScope,
+        reconciliation_demand: SourceBackedReconciliationDemand,
+        report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
         mut metadata_factory: impl for<'a> FnMut(
             SourceBackedPublicationMetadataContext<'a>,
         ) -> ctx_history_index::Result<Vec<u8>>,
@@ -208,7 +276,9 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(scope),
+            SourceBackedRefreshPlan::isolate(scope)
+                .with_reconciliation_demand(reconciliation_demand),
+            &self.base_route_controls,
             report_progress,
             Some(&mut metadata_factory),
         )
@@ -238,6 +308,7 @@ pub(crate) fn refresh_source_backed_generation_with_work_budget_for_test(
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
         SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+        &BTreeMap::new(),
         |_| Ok(()),
         None,
     )
@@ -259,6 +330,7 @@ pub(crate) fn refresh_source_backed_generation_with_resource_limits_for_test(
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
         SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All)
             .with_resource_limits(maximum_live_output_bytes, maximum_physical_scratch_bytes),
+        &BTreeMap::new(),
         |_| Ok(()),
         None,
     )
@@ -278,6 +350,7 @@ pub fn refresh_source_backed_generation_with_progress(
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
         SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+        &BTreeMap::new(),
         move |update| {
             if update.current_source_progress.is_some() {
                 return Ok(());
@@ -301,6 +374,7 @@ pub fn refresh_source_backed_generation_with_detailed_progress(
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
         SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::All),
+        &BTreeMap::new(),
         report_progress,
         None,
     )
@@ -319,6 +393,7 @@ pub fn refresh_source_backed_generation_for_routes(
         writer_options,
         SourceBackedRefreshExecutionBudget::new(Duration::ZERO, work_budget),
         SourceBackedRefreshPlan::isolate(SourceBackedRefreshScope::exact(route_identities)),
+        &BTreeMap::new(),
         |_| Ok(()),
         None,
     )
@@ -330,6 +405,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
     writer_options: WriterOptions,
     execution_budget: SourceBackedRefreshExecutionBudget,
     plan: SourceBackedRefreshPlan,
+    base_route_controls: &BTreeMap<SourceRouteIdentity, Vec<u8>>,
     mut report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
     mut metadata_factory: Option<&mut SourceBackedPublicationMetadataFactory<'_>>,
 ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
@@ -417,6 +493,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         complete_inventory_route_ids,
         commit_duration,
         base_route_content,
+        mut route_controls,
         verified_publication,
     ) = {
         let open = GenerationWriter::open(index_root, writer_options.clone())?;
@@ -483,6 +560,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         let automatic_missing_observed_at_unix_ms = source_missing_observation_time();
         let mut owners = HashMap::new();
         let mut complete_inventory_owners = Vec::new();
+        let mut partial_routes = BTreeSet::new();
         let mut applied_removals = Vec::new();
         let mut successful_this_attempt = BTreeSet::new();
         let mut completed_routes = 0;
@@ -595,6 +673,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     applied_removals: &mut applied_removals,
                     route_index,
                     route_identity: route_identity.clone(),
+                    base_route_control: base_route_controls.get(route_identity).cloned(),
                     resources: plan.route_resources(work_budget),
                     logical_source_failures: &mut logical_source_failures,
                     record_rejections: &mut record_rejections,
@@ -626,6 +705,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             }
             match scan_result {
                 Ok(()) => {
+                    let route_is_partial =
+                        writer.source_route_retains_unstaged_members(route_identity);
                     capture_staged_source_route_revalidation_receipts(
                         &writer,
                         route_index,
@@ -681,6 +762,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             }
                         }
                         writer.finish_source_route_stage(route_identity)?;
+                        if route_is_partial {
+                            partial_routes.insert(route_identity.clone());
+                        }
                         successful_this_attempt.insert(route_identity.clone());
                     } else {
                         writer.rollback_source_route_stage(route_identity)?;
@@ -806,11 +890,59 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             if route.driver.is_none() || !successful_this_attempt.contains(route_identity) {
                 continue;
             }
-            let members = owners
+            let route_owners = owners
                 .values()
                 .filter(|owner| owner.route_index == route_index && owner.present)
-                .map(|owner| owner.source.clone())
-                .collect();
+                .chain(
+                    owners
+                        .values()
+                        .filter(|owner| owner.route_index == route_index && !owner.present),
+                )
+                .map(|owner| (owner.source.identity().digest(), owner))
+                .collect::<HashMap<_, _>>();
+            let mut remaining = route_owners;
+            let base_route = writer
+                .base_manifest()
+                .and_then(|base| base.source_route(route_identity))
+                .filter(|_| partial_routes.contains(route_identity));
+            let membership_unchanged = base_route.is_some_and(|snapshot| {
+                remaining.values().all(|owner| {
+                    owner.present
+                        && snapshot
+                            .sources()
+                            .binary_search_by_key(&owner.source.identity().digest(), |member| {
+                                member.identity().digest()
+                            })
+                            .ok()
+                            .and_then(|index| snapshot.sources().get(index))
+                            .is_some_and(|member| member.exact_descriptor_eq(&owner.source))
+                })
+            });
+            if membership_unchanged {
+                present_routes.push(base_route.expect("checked partial base route").clone());
+                continue;
+            }
+            let mut members = base_route
+                .into_iter()
+                .flat_map(ctx_history_index::SourceRouteSnapshot::sources)
+                .filter_map(|member| {
+                    #[cfg(test)]
+                    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
+                        visits.set(visits.get().saturating_add(1));
+                    });
+                    match remaining.remove(&member.identity().digest()) {
+                        Some(owner) if owner.present => Some(owner.source.clone()),
+                        Some(_) => None,
+                        None => Some(member.clone()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            members.extend(
+                remaining
+                    .into_values()
+                    .filter(|owner| owner.present)
+                    .map(|owner| owner.source.clone()),
+            );
             present_routes.push(SourceRouteSnapshot::present(
                 route_identity.clone(),
                 members,
@@ -824,6 +956,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             &owners,
             &complete_inventory_owners,
             &attempt_carried,
+            &partial_routes,
         )?;
 
         let has_carried_source = writer.base_manifest().is_some_and(|base| {
@@ -916,12 +1049,51 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     .cloned(),
             )
             .collect::<BTreeSet<_>>();
+        let mut route_controls = base_route_controls.clone();
+        for route in &registry.routes {
+            let Some(route_identity) = route.metadata.route_identity.as_ref() else {
+                continue;
+            };
+            if !successful_this_attempt.contains(route_identity) {
+                continue;
+            }
+            route_controls.remove(route_identity);
+            let Some(control) = route
+                .driver
+                .as_ref()
+                .and_then(|driver| driver.publication_control.as_ref())
+            else {
+                continue;
+            };
+            let Some(control) =
+                control().map_err(|source| SourceBackedCoordinatorError::RouteScan {
+                    provider: route.metadata.source.provider,
+                    source,
+                })?
+            else {
+                continue;
+            };
+            if control.len() > MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES {
+                return Err(SourceBackedCoordinatorError::RouteScan {
+                    provider: route.metadata.source.provider,
+                    source: SourceBackedRouteError::new(
+                        SourceBackedRouteErrorKind::Internal,
+                        "route publication control exceeds its bounded contract",
+                    ),
+                });
+            }
+            route_controls.insert(route_identity.clone(), control);
+        }
         let (commit, verified_publication) = if let Some(factory) = metadata_factory.as_mut() {
             let published = writer
                 .commit_with_complete_inventory_revalidation_and_publication_metadata(
                     &mut revalidate_source,
                     &mut revalidate_inventory,
                     |publication| {
+                        let mut live_route_controls = route_controls.clone();
+                        live_route_controls.retain(|route, _| {
+                            publication.manifest().source_route(route).is_some()
+                        });
                         let outcomes = successful_route_outcomes_for_manifest(
                             &selected_route_ids,
                             &failed_routes,
@@ -938,6 +1110,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                             &record_rejections,
                             &outcomes,
                             &complete_inventory_route_ids,
+                            &live_route_controls,
                             applied_removals.len(),
                         ))
                     },
@@ -965,6 +1138,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             complete_inventory_route_ids,
             commit_started.elapsed(),
             base_route_content,
+            route_controls,
             verified_publication,
         )
     };
@@ -1016,6 +1190,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
     let certified_source_bytes = commit.certified_source_bytes;
     let sources = commit.manifest().sources.clone();
     let source_failures = bounded_source_failures(failed_routes.values());
+    route_controls.retain(|route, _| commit.manifest().source_route(route).is_some());
     Ok(SourceBackedRefreshReceipt {
         commit,
         sources,
@@ -1037,6 +1212,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             .filter(|failure| failure.carried_forward)
             .map(|failure| failure.route_identity.clone())
             .collect(),
+        route_controls,
         source_failures,
         logical_source_failures,
         record_rejections,

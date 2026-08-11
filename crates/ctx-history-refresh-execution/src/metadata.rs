@@ -1,8 +1,9 @@
 use super::*;
 use ctx_history_index::MAX_PUBLICATION_METADATA_BYTES;
 
-pub const SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 2;
+pub const SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 3;
 const LEGACY_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 1;
+const PREVIOUS_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION: u64 = 2;
 
 /// Provider-neutral query-readiness verdict for one physically verified Core
 /// generation.
@@ -38,6 +39,8 @@ pub struct SourceBackedPublicationMetadata {
     pub receipt: Value,
     #[doc(hidden)]
     pub route_observations: BTreeMap<SourceRouteIdentity, String>,
+    #[doc(hidden)]
+    pub route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 }
 
 impl SourceBackedPublicationMetadata {
@@ -45,7 +48,7 @@ impl SourceBackedPublicationMetadata {
     pub fn encode(&self) -> ctx_history_index::Result<Vec<u8>> {
         if self.version != SOURCE_REFRESH_PUBLICATION_METADATA_VERSION {
             return Err(IndexError::PublicationMetadata(
-                "new Core source-refresh publications must use metadata v2".to_owned(),
+                "new Core source-refresh publications must use metadata v3".to_owned(),
             ));
         }
         validate_v2_receipt(&self.receipt, None, &self.refresh_scope)
@@ -69,6 +72,15 @@ impl SourceBackedPublicationMetadata {
                     .map_or(Value::Null, |observation| json!(observation))
             })
             .collect::<Vec<_>>();
+        if self
+            .route_controls
+            .iter()
+            .any(|(_, control)| control.len() > MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES)
+        {
+            return Err(IndexError::PublicationMetadata(
+                "route control exceeds its bounded contract".to_owned(),
+            ));
+        }
         let encoded = self.encode_with_observations(route_observations)?;
         if encoded.len() <= MAX_PUBLICATION_METADATA_BYTES {
             return Ok(encoded);
@@ -91,6 +103,16 @@ impl SourceBackedPublicationMetadata {
         &self,
         route_observations: Vec<Value>,
     ) -> ctx_history_index::Result<Vec<u8>> {
+        let route_controls = self
+            .route_controls
+            .iter()
+            .map(|(route, control)| {
+                (
+                    route.as_str().to_owned(),
+                    json!(encode_route_control(control)),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
         let value = compact_json(json!({
             "version": self.version,
             "request_id": self.request_id,
@@ -98,6 +120,7 @@ impl SourceBackedPublicationMetadata {
             "refresh_scope": refresh_scope_json(&self.refresh_scope),
             "receipt": self.receipt,
             "route_observations": route_observations,
+            "route_controls": route_controls,
         }));
         serde_json::to_vec(&value)
             .map_err(|error| IndexError::PublicationMetadata(error.to_string()))
@@ -115,17 +138,6 @@ impl SourceBackedPublicationMetadata {
         let fields = value
             .as_object()
             .ok_or_else(|| anyhow!("Core source-refresh publication metadata must be an object"))?;
-        let expected = BTreeSet::from([
-            "operation",
-            "receipt",
-            "refresh_scope",
-            "request_id",
-            "route_observations",
-            "version",
-        ]);
-        if fields.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
-            bail!("Core source-refresh publication metadata has unknown or missing fields");
-        }
         let version = fields
             .get("version")
             .and_then(Value::as_u64)
@@ -133,9 +145,24 @@ impl SourceBackedPublicationMetadata {
         if !matches!(
             version,
             LEGACY_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION
+                | PREVIOUS_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION
                 | SOURCE_REFRESH_PUBLICATION_METADATA_VERSION
         ) {
             bail!("unsupported Core source-refresh publication metadata version");
+        }
+        let mut expected = BTreeSet::from([
+            "operation",
+            "receipt",
+            "refresh_scope",
+            "request_id",
+            "route_observations",
+            "version",
+        ]);
+        if version == SOURCE_REFRESH_PUBLICATION_METADATA_VERSION {
+            expected.insert("route_controls");
+        }
+        if fields.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
+            bail!("Core source-refresh publication metadata has unknown or missing fields");
         }
         let request_id = fields
             .get("request_id")
@@ -159,7 +186,8 @@ impl SourceBackedPublicationMetadata {
                 }
                 validate_receipt_generation(&receipt, index)?;
             }
-            SOURCE_REFRESH_PUBLICATION_METADATA_VERSION => {
+            PREVIOUS_SOURCE_REFRESH_PUBLICATION_METADATA_VERSION
+            | SOURCE_REFRESH_PUBLICATION_METADATA_VERSION => {
                 validate_v2_receipt(&receipt, Some(index), &refresh_scope)?;
             }
             _ => unreachable!("metadata version checked above"),
@@ -188,6 +216,31 @@ impl SourceBackedPublicationMetadata {
                 )
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
+        let live_routes = index
+            .manifest()
+            .source_routes()
+            .iter()
+            .map(|route| route.route_identity().clone())
+            .collect::<BTreeSet<_>>();
+        let route_controls = if version == SOURCE_REFRESH_PUBLICATION_METADATA_VERSION {
+            fields
+                .get("route_controls")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(route, encoded)| {
+                    let route = SourceRouteIdentity::from_sha256(route.clone()).ok()?;
+                    if !live_routes.contains(&route) {
+                        return None;
+                    }
+                    let control = encoded.as_str().and_then(decode_route_control)?;
+                    (control.len() <= MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES)
+                        .then_some((route, control))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         Ok(Self {
             version,
             request_id,
@@ -195,6 +248,7 @@ impl SourceBackedPublicationMetadata {
             refresh_scope,
             receipt,
             route_observations,
+            route_controls,
         })
     }
 
@@ -250,6 +304,37 @@ impl SourceBackedPublicationMetadata {
             None => false,
         }
     }
+}
+
+fn encode_route_control(control: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(control.len().saturating_mul(2));
+    for byte in control {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
+}
+
+fn decode_route_control(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES.saturating_mul(2)
+        || !encoded.len().is_multiple_of(2)
+    {
+        return None;
+    }
+    fn nibble(value: u8) -> Option<u8> {
+        match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            b'A'..=b'F' => Some(value - b'A' + 10),
+            _ => None,
+        }
+    }
+    encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Some((nibble(pair[0])? << 4) | nibble(pair[1])?))
+        .collect()
 }
 
 /// Applies the single publication-authority predicate to a verified Core
@@ -364,6 +449,7 @@ mod tests {
             refresh_scope: SourceBackedRefreshScope::All,
             receipt: Value::Object(receipt.clone()),
             route_observations: BTreeMap::new(),
+            route_controls: BTreeMap::new(),
         }
     }
 

@@ -172,6 +172,33 @@ impl SourceBackedRefreshScope {
     }
 }
 
+/// Provider-content strength requested for one route execution. Route scope
+/// selects *which* sources run; this demand independently selects how deeply
+/// an append-capable provider reconciles them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum SourceBackedReconciliationDemand {
+    Incremental,
+    #[default]
+    Exhaustive,
+}
+
+impl SourceBackedReconciliationDemand {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::Exhaustive => "exhaustive",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "incremental" => Some(Self::Incremental),
+            "exhaustive" => Some(Self::Exhaustive),
+            _ => None,
+        }
+    }
+}
+
 /// Narrow source-authority failures that may be isolated to one route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceBackedSourceFailureClass {

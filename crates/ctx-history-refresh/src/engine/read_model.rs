@@ -94,6 +94,7 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) published_generation: Option<String>,
     pub(super) refresh_scope: SourceBackedRefreshScope,
     pub(super) operation: SourceBackedRefreshOperation,
+    pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(super) requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     pub(super) fresh_after_admitted_snapshot: bool,
     pub(super) request_fingerprint: Option<String>,
@@ -251,6 +252,10 @@ impl SourceBackedRefreshAttempt {
         fields.insert(
             "progress_owner_attempt_state".to_owned(),
             json!(self.state.as_str()),
+        );
+        fields.insert(
+            "reconciliation_demand".to_owned(),
+            json!(self.reconciliation_demand.as_str()),
         );
         if let Some(outcome) = self.structured_outcome_json() {
             fields.insert("structured_outcome".to_owned(), outcome);

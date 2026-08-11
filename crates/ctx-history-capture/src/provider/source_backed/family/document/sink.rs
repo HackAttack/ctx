@@ -436,17 +436,27 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
         mut self,
         terminal: DocumentSourceTerminal,
         replay_fingerprint: Option<DocumentLeafFingerprint>,
+        append_base: Option<CertifiedSource>,
     ) -> SourceBackedRouteResult<CertifiedSource> {
-        let source = self.source()?;
-        if !terminal.source.exact_descriptor_eq(source)
-            || !terminal.opening.source().exact_descriptor_eq(source)
-            || !terminal.closing.source().exact_descriptor_eq(source)
+        let source = self.source()?.clone();
+        if !terminal.source.exact_descriptor_eq(&source)
+            || !terminal.opening.source().exact_descriptor_eq(&source)
+            || !terminal.closing.source().exact_descriptor_eq(&source)
         {
             return Err(document_changed(
                 "document terminal changed its active exact source descriptor",
             ));
         }
-        if terminal.counts.indexed_documents != self.emitted_core_records {
+        let expected_emitted =
+            append_base
+                .as_ref()
+                .map_or(Some(terminal.counts.indexed_documents), |base| {
+                    terminal
+                        .counts
+                        .indexed_documents
+                        .checked_sub(base.counts().indexed_documents)
+                });
+        if expected_emitted != Some(self.emitted_core_records) {
             return Err(document_changed(
                 "document terminal indexed count did not match forwarded Core records",
             ));
@@ -469,6 +479,54 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
             });
         let certificate = terminal.certify(replay_fingerprint)?;
         if let Some(deferred) = self.deferred.take() {
+            if let Some(base) = append_base {
+                let frontier = base.frontier().ok_or_else(|| {
+                    document_changed("document append base has no certified frontier")
+                })?;
+                let append = CertifiedSourceAppend::certify(
+                    &base,
+                    certificate.clone(),
+                    frontier.certified_prefix_bytes(),
+                    *frontier.certified_prefix_digest(),
+                )
+                .map_err(document_contract_error)?;
+                match &mut self.target {
+                    ChangedDocumentTarget::Generation(sink) => {
+                        sink.begin_source_append(source.clone())
+                            .map_err(route_coordinator_error)?;
+                        deferred.replay(|record| {
+                            sink.add_core_record(record)
+                                .map_err(route_coordinator_error)
+                        })?;
+                        sink.certify_source_append(append)
+                            .map_err(route_coordinator_error)?;
+                    }
+                    ChangedDocumentTarget::Parallel(emitter) => {
+                        emitter
+                            .begin(ParallelLeafScanBegin::append(source.clone(), base))
+                            .map_err(|_| {
+                                document_internal("independent document leaf scan was cancelled")
+                            })?;
+                        deferred.replay(|record| {
+                            emitter
+                                .emit_core_record(record)
+                                .map_err(document_emit_error)
+                        })?;
+                        emitter
+                            .complete(ParallelLeafScanComplete::append(
+                                append,
+                                DocumentLeafCompletion {
+                                    certificate: certificate.clone(),
+                                    record_rejections: std::mem::take(&mut self.record_rejections),
+                                },
+                            ))
+                            .map_err(|_| {
+                                document_internal("independent document leaf scan was cancelled")
+                            })?;
+                    }
+                }
+                return Ok(certificate);
+            }
             if retain_core_records {
                 let completion = DocumentLeafCompletion {
                     certificate: certificate.clone(),

@@ -35,6 +35,18 @@ impl SqliteSourceFamily {
         &self.database.name
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn retain_parent_handle(&self) -> SqliteSourceAccessResult<File> {
+        self.authority
+            .directory
+            .try_clone_authority_handle()
+            .map_err(|source| SqliteSourceAccessError::Io {
+                operation: "retaining the SQLite parent for a direct read snapshot",
+                path: self.authority.path.clone(),
+                source,
+            })
+    }
+
     pub(super) fn open(
         authority: &SqliteSourceDirectoryAuthority,
         database_name: &OsStr,
@@ -666,6 +678,9 @@ impl SqliteFamilyEvidence {
 }
 
 impl SqliteSnapshotEvidence {
+    pub(super) fn schema(&self) -> &SqliteSchemaEvidence {
+        &self.schema
+    }
     fn hash_into(&self, digest: &mut Sha256) {
         digest.update(self.schema.schema_version.to_le_bytes());
         digest.update(self.schema.user_version.to_le_bytes());

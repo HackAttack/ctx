@@ -14,7 +14,6 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-#[cfg(test)]
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion,
@@ -46,6 +45,7 @@ use super::providers::{
     deepagents::native_path::source_backed::DeepAgentsDatabaseSelectionV0,
     forgecode::nativepath::source_backed::ForgeCodeSourceSelectionV0,
     goose::{GooseSourceBackedAdapterV0, GooseSourceBackedSelectionV0, GooseSourceRouteV0},
+    hermes::source_backed::{hermes_source_backed_explicit, HermesSourceCandidate},
     junie::nativepath::junie_jsonl_adapter,
     kimi::native_path::source_backed::{KimiSourceBackedCatalog, KimiSourceBackedResolver},
     lingma::native_path::{

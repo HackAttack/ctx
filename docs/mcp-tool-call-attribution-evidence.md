@@ -29,8 +29,8 @@ JSON is the user-facing projection: its `exact`, `not-qualified`, and
 `excluded` states map to the manifest's `supported`, `not_qualified`, and
 `excluded` states. It does not define an independent suite table.
 
-Manifest capability revision 5 freezes 40 providers, 42 base routes, 41 imported
-schema generations, and 45 capability lanes: three `supported`, 41 `not_qualified`,
+Manifest capability revision 5 freezes 41 providers, 43 base routes, 42 imported
+schema generations, and 46 capability lanes: three `supported`, 42 `not_qualified`,
 and one `excluded`. For Codex's session-tree route, only unversioned generation
 1 is supported. Producer versions 0.200.0, 0.201.0, and 0.202.0 are distinct
 `not_qualified` lanes, and the prompt-history route remains `not_qualified`.
@@ -81,7 +81,7 @@ When adding or changing a tuple:
 3. For `exact`, add the executable test IDs. For `not-qualified`, choose one
    primary typed reason and explain secondary defects in `detail`.
 4. Run `python3 scripts/check-mcp-tool-call-attribution-capabilities.py` and the
-   normal docs checks. The checker freezes 40 providers, 42 base routes, 45
-   tuple rows, three exact tuples, 41 not-qualified tuples, and one excluded
+   normal docs checks. The checker freezes 41 providers, 43 base routes, 46
+   tuple rows, three exact tuples, 42 not-qualified tuples, and one excluded
    tuple. When the conformance files are present, it also cross-checks the
    manifest arithmetic, Codex partition, and suite/test references.

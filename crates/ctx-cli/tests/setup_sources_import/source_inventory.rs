@@ -1,8 +1,5 @@
 use super::{ctx, support::*};
 
-const HERMES_UNSUPPORTED_REASON: &str =
-    "current Hermes state.db schemas are unsupported because they lack a provider-owned, transactionally maintained per-session content revision; ctx did not modify the database; retry only with a ctx release that explicitly supports a revision-bearing Hermes schema";
-
 fn source_entries(report: &Value) -> &[Value] {
     report["sources"].as_array().unwrap()
 }
@@ -15,30 +12,6 @@ fn source_entry<'a>(report: &'a Value, provider: &str, source_format: Option<&st
                 && source_format.is_none_or(|format| source["source_format"] == format)
         })
         .unwrap_or_else(|| panic!("missing {provider} source in {report:#}"))
-}
-
-fn assert_unsupported_hermes_source(source: &Value) {
-    assert_eq!(source["status"], "unsupported");
-    assert_eq!(source["import_support"], "unsupported");
-    assert_eq!(source["native_import"], false);
-    assert_eq!(source["importable"], false);
-    assert_eq!(source["unsupported_reason"], HERMES_UNSUPPORTED_REASON);
-}
-
-fn failed_hermes_import(temp: &TempDir, path: Option<&Path>) -> Value {
-    let mut command = ctx(temp);
-    command.args([
-        "import",
-        "--provider",
-        "hermes",
-        "--format=json",
-        "--progress",
-        "none",
-    ]);
-    if let Some(path) = path {
-        command.args(["--path", path.to_str().unwrap()]);
-    }
-    failure_json_output(&mut command)
 }
 
 #[test]
@@ -176,6 +149,7 @@ fn sources_json_reports_typed_discovery_issues_additively() {
 #[test]
 fn sources_lists_supported_personal_agent_provider_defaults() {
     let temp = tempdir();
+    install_default_hermes_fixture(&temp, "hermes-sources-oracle");
     install_default_kilo_fixture(&temp, "kilo-sources-oracle");
     install_default_kiro_fixture(&temp, "kiro-sources-oracle");
     install_default_astrbot_fixture(&temp, "astrbot-sources-oracle");
@@ -191,6 +165,7 @@ fn sources_lists_supported_personal_agent_provider_defaults() {
 
     let sources = json_output(ctx(&temp).args(["sources", "--format=json"]));
     for (provider, source_format) in [
+        ("hermes", "hermes_state_sqlite"),
         ("kilo", "kilo_sqlite"),
         ("kiro_cli", "kiro_cli_sqlite"),
         ("astrbot", "astrbot_data_v4_sqlite"),
@@ -214,9 +189,10 @@ fn sources_lists_supported_personal_agent_provider_defaults() {
 }
 
 #[test]
-fn hermes_sources_and_imports_fail_closed_without_reading_or_writing_state_db() {
+fn hermes_sources_and_imports_are_native_and_read_only() {
     let temp = tempdir();
-    install_default_hermes_fixture(&temp, "Hermes body must remain unread");
+    let query = "hermes-automatic-import-oracle";
+    install_default_hermes_fixture(&temp, query);
     let database = temp.path().join(".hermes/state.db");
     let original = fs::read(&database).unwrap();
 
@@ -225,32 +201,57 @@ fn hermes_sources_and_imports_fail_closed_without_reading_or_writing_state_db() 
     let [source] = source_entries(&sources) else {
         panic!("one Hermes source expected: {sources:#}");
     };
-    assert_unsupported_hermes_source(source);
+    assert_eq!(source["status"], "available");
+    assert_eq!(source["import_support"], "native");
+    assert_eq!(source["native_import"], true);
+    assert_eq!(source["importable"], true);
+    assert!(source["unsupported_reason"].is_null());
     assert_eq!(fs::read(&database).unwrap(), original);
 
     let human = success_stdout(ctx(&temp).args(["sources", "--provider", "hermes"]));
-    assert!(human.contains("hermes history cannot be imported automatically"));
-    assert!(human.contains("ctx did not modify the database"));
-    assert!(!human.contains("ctx import --provider hermes"));
+    assert!(!human.contains("cannot be imported"), "{human}");
     assert_eq!(fs::read(&database).unwrap(), original);
 
-    let automatic = failed_hermes_import(&temp, None);
-    assert_eq!(automatic["failure_scope"], "source", "{automatic:#}");
-    let failure = &automatic["sources"][0];
-    assert_eq!(failure["failure_type"], "unsupported_schema");
-    assert_eq!(failure["source_failure_class"], "incompatible");
-    assert_eq!(failure["carried_forward"], false);
-    assert_eq!(failure["detail"], HERMES_UNSUPPORTED_REASON);
+    let automatic = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "hermes",
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    assert_authoritative_provider_publication(&automatic);
+    assert!(provider_core_counts(&data_root(&temp), "hermes").1 >= 2);
     assert_eq!(fs::read(&database).unwrap(), original);
-    assert!(!data_root(&temp).exists());
 
-    let rewritten = b"a different in-place Hermes schema that is not SQLite".to_vec();
-    fs::write(&database, &rewritten).unwrap();
-    let explicit = failed_hermes_import(&temp, Some(&database));
-    assert_eq!(explicit["failure_scope"], "source", "{explicit:#}");
-    assert_eq!(explicit["sources"], automatic["sources"]);
-    assert_eq!(fs::read(&database).unwrap(), rewritten);
-    assert!(!data_root(&temp).exists());
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "hermes",
+        "--refresh",
+        "off",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&search, "hermes", query, 1, "message");
+
+    let explicit_temp = tempdir();
+    let explicit_query = "hermes-explicit-import-oracle";
+    let explicit_path = PathBuf::from(write_native_hermes_fixture(&explicit_temp, explicit_query));
+    let explicit_original = fs::read(&explicit_path).unwrap();
+    let explicit = json_output(ctx(&explicit_temp).args([
+        "import",
+        "--provider",
+        "hermes",
+        "--path",
+        explicit_path.to_str().unwrap(),
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+    assert_explicit_source_publication(&explicit, "hermes", "hermes_state_sqlite");
+    assert!(provider_core_counts(&data_root(&explicit_temp), "hermes").1 >= 2);
+    assert_eq!(fs::read(&explicit_path).unwrap(), explicit_original);
 }
 
 #[test]

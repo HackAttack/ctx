@@ -9,7 +9,10 @@ use ctx_history_index::{
     PreparedCoreRecordMaterialization,
 };
 
-use super::{SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult};
+use super::{
+    SourceBackedReconciliationDemand, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult,
+};
 
 /// Prepared Core records may retain at most this many exact encoded bytes
 /// while crossing the shared worker-to-writer route envelope. Reservations
@@ -58,6 +61,7 @@ struct SourceBackedRouteByteBudget {
 #[derive(Debug, Clone)]
 pub(crate) struct SourceBackedRouteResources {
     leaf_worker_budget: usize,
+    reconciliation_demand: SourceBackedReconciliationDemand,
     output: Arc<SourceBackedRouteByteBudget>,
     scratch: Arc<SourceBackedRouteByteBudget>,
 }
@@ -78,6 +82,7 @@ impl SourceBackedRouteResources {
     ) -> Self {
         Self {
             leaf_worker_budget: leaf_worker_budget.max(1),
+            reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
             output: Arc::new(SourceBackedRouteByteBudget {
                 maximum: maximum_live_output_bytes,
                 live: AtomicU64::new(0),
@@ -91,6 +96,18 @@ impl SourceBackedRouteResources {
                 successful_reservations: AtomicU64::new(0),
             }),
         }
+    }
+
+    pub(crate) fn with_reconciliation_demand(
+        mut self,
+        demand: SourceBackedReconciliationDemand,
+    ) -> Self {
+        self.reconciliation_demand = demand;
+        self
+    }
+
+    pub(crate) const fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        self.reconciliation_demand
     }
 
     #[cfg(test)]

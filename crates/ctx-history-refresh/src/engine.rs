@@ -43,7 +43,10 @@ use read_model::{
 };
 use runtime_metadata::{canonical_daemon_mode, SourceRefreshRuntimeMetadata};
 pub use runtime_metadata::{RefreshRuntime, RefreshRuntimeMetadata};
-use startup_observation::startup_routes_requiring_refresh;
+use startup_observation::{
+    hermes_routes_requiring_control_recovery, overdue_hermes_exact_routes,
+    startup_routes_requiring_refresh,
+};
 #[cfg(test)]
 pub(crate) use test_support::TestRefreshJournal;
 #[cfg(test)]
@@ -112,6 +115,7 @@ pub(super) struct CoreRefreshEngineState {
     current_published_generation: Option<String>,
     dirty_routes: DirtySourceRoutes,
     known_route_ids: BTreeSet<SourceRouteIdentity>,
+    hermes_routes_requiring_exhaustive_recovery: BTreeSet<SourceRouteIdentity>,
     route_event_watermarks: BTreeMap<SourceRouteIdentity, EventWatermark>,
     route_admissions: BTreeMap<String, Vec<DirtySourceRouteAdmission>>,
     route_admission_watermarks: BTreeMap<String, BTreeMap<SourceRouteIdentity, EventWatermark>>,
@@ -214,6 +218,7 @@ enum SourceRefreshAdmissionRequirement {
 
 struct SourceRefreshLogicalDemand {
     admission: SourceRefreshAdmissionRequirement,
+    reconciliation_demand: SourceBackedReconciliationDemand,
     route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
     request_id: Option<String>,
     request_fingerprint: Option<String>,
@@ -321,6 +326,7 @@ impl CoreRefreshEngine {
                 current_published_generation: None,
                 dirty_routes: DirtySourceRoutes::default(),
                 known_route_ids: BTreeSet::new(),
+                hermes_routes_requiring_exhaustive_recovery: BTreeSet::new(),
                 route_event_watermarks: BTreeMap::new(),
                 route_admissions: BTreeMap::new(),
                 route_admission_watermarks: BTreeMap::new(),
@@ -391,6 +397,9 @@ impl CoreRefreshEngine {
         let routes = routes.into_iter().collect::<BTreeSet<_>>();
         let mut state = self.lock_state();
         state.dirty_routes.retain_exact_routes(&routes);
+        state
+            .hermes_routes_requiring_exhaustive_recovery
+            .retain(|route| routes.contains(route));
         state
             .route_event_watermarks
             .retain(|route, _| routes.contains(route));
@@ -480,7 +489,7 @@ impl CoreRefreshEngine {
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        let dirty = startup_routes_requiring_refresh(
+        let mut dirty = startup_routes_requiring_refresh(
             catalog,
             metadata
                 .as_ref()
@@ -488,7 +497,36 @@ impl CoreRefreshEngine {
             &missing_routes,
             budget,
         );
+        let route_controls = metadata
+            .as_ref()
+            .map(|metadata| &metadata.route_controls)
+            .cloned()
+            .unwrap_or_default();
+        let hermes_routes = catalog
+            .route_ids()
+            .filter(|route| {
+                matches!(
+                    catalog.route_control_expectation(route),
+                    Some(SourceBackedRouteControlExpectation::Hermes { .. })
+                )
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let hermes_control_recovery = hermes_routes_requiring_control_recovery(
+            catalog,
+            &route_controls,
+            i64::try_from(observed_at_ms).unwrap_or(i64::MAX),
+        );
+        dirty.extend(hermes_control_recovery.iter().cloned());
+        dirty.sort();
+        dirty.dedup();
         let mut state = self.lock_state();
+        state
+            .hermes_routes_requiring_exhaustive_recovery
+            .retain(|route| !hermes_routes.contains(route));
+        state
+            .hermes_routes_requiring_exhaustive_recovery
+            .extend(hermes_control_recovery.iter().cloned());
         let dirty = dirty
             .into_iter()
             .filter(|route| state.known_route_ids.contains(route))
@@ -547,6 +585,18 @@ impl CoreRefreshEngine {
     #[cfg(any(test, feature = "test-support"))]
     pub fn scheduled_route_ids_for_test(&self) -> BTreeSet<SourceRouteIdentity> {
         self.lock_state().dirty_routes.route_ids()
+    }
+
+    #[cfg(test)]
+    pub fn active_reconciliation_demand_for_test(
+        &self,
+    ) -> Option<SourceBackedReconciliationDemand> {
+        let state = self.lock_state();
+        state
+            .active_request_id
+            .as_deref()
+            .and_then(|request_id| find_attempt(&state, request_id))
+            .map(|attempt| attempt.reconciliation_demand)
     }
 
     #[cfg(test)]
@@ -611,6 +661,77 @@ impl CoreRefreshEngine {
             .seed_clean_exact_routes(pending, watermark, observed_at_ms))
     }
 
+    /// Inspects only persisted Core Hermes control receipts and queues exact
+    /// route reconciliation when their one-hour deadline is due.
+    pub fn enqueue_overdue_hermes_exact_reconciliation(
+        &self,
+        data_root: &Path,
+        catalog: &SourceBackedWatchCatalog,
+        now_ms: u64,
+    ) -> Result<bool> {
+        let Some(index) = open_published_generation(data_root, self.journal.as_ref())? else {
+            return Ok(false);
+        };
+        let routes = overdue_hermes_exact_routes(
+            &index,
+            i64::try_from(now_ms).unwrap_or(i64::MAX),
+            |route| match catalog.route_control_expectation(route) {
+                Some(SourceBackedRouteControlExpectation::Hermes {
+                    profile_source_descriptor,
+                }) => Some(*profile_source_descriptor),
+                None => None,
+            },
+        );
+        if routes.is_empty() {
+            return Ok(false);
+        }
+        let routes = {
+            let mut state = self.lock_state();
+            let routes = routes
+                .into_iter()
+                .filter(|route| state.known_route_ids.contains(route))
+                .collect::<BTreeSet<_>>();
+            if routes.is_empty() {
+                return Ok(false);
+            }
+            let watermark = state.dirty_routes.seed_watermark();
+            state
+                .dirty_routes
+                .seed_exact_routes(routes.iter().cloned(), watermark, now_ms);
+            routes
+        };
+        let response = match self.enqueue_with_catalog_metadata(
+            Some(index.generation_id().to_owned()),
+            SourceRefreshRuntimeMetadata::periodic(),
+            None,
+            SourceBackedRefreshScope::Exact(routes),
+            SourceRefreshLogicalDemand {
+                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+                route_observations: BTreeMap::new(),
+                request_id: None,
+                request_fingerprint: None,
+                admission_pending: false,
+            },
+        ) {
+            Ok(response) => response,
+            Err(error)
+                if error
+                    .downcast_ref::<SourceBackedRefreshQueueFull>()
+                    .is_some() =>
+            {
+                return Ok(false)
+            }
+            Err(error) => return Err(error),
+        };
+        let request_id = response
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("overdue Hermes exact refresh has no request ID"))?;
+        self.persist_job_status(data_root, request_id)?;
+        Ok(true)
+    }
+
     pub fn enqueue_next_scheduled_refresh(&self, data_root: &Path, now_ms: u64) -> Result<bool> {
         self.enqueue_next_dirty_route_with_cold_all(data_root, now_ms, true)
     }
@@ -638,6 +759,11 @@ impl CoreRefreshEngine {
             if routes.is_empty() {
                 return Ok(false);
             }
+            let requires_exhaustive_recovery = routes.iter().any(|route| {
+                state
+                    .hermes_routes_requiring_exhaustive_recovery
+                    .contains(route)
+            });
             let refresh_scope = if cold_all && observed_generation.is_none() {
                 // A cold generation has no retained routes to carry. Publish
                 // the complete startup inventory atomically instead of one
@@ -646,12 +772,15 @@ impl CoreRefreshEngine {
             } else {
                 SourceBackedRefreshScope::Exact(routes)
             };
-            let attempt = new_refresh_attempt(
+            let mut attempt = new_refresh_attempt(
                 observed_generation,
                 SourceRefreshRuntimeMetadata::periodic(),
                 None,
                 refresh_scope,
             );
+            if requires_exhaustive_recovery {
+                attempt.reconciliation_demand = SourceBackedReconciliationDemand::Exhaustive;
+            }
             let request_id = attempt.request_id.clone();
             state.active_request_id = Some(request_id.clone());
             state.attempts.push_back(attempt);
@@ -845,6 +974,14 @@ impl CoreRefreshEngine {
                     None => state.dirty_routes.acknowledge(&admission),
                 };
                 if acknowledged {
+                    if attempt.as_ref().is_some_and(|attempt| {
+                        attempt.reconciliation_demand
+                            == SourceBackedReconciliationDemand::Exhaustive
+                    }) {
+                        state
+                            .hermes_routes_requiring_exhaustive_recovery
+                            .remove(admission.route());
+                    }
                     covered_route_results.insert(admission.route().clone(), result.clone());
                     if let Some((boundary, observation)) = verified_boundary {
                         certified_routes.insert(
@@ -883,11 +1020,26 @@ impl CoreRefreshEngine {
                 durable_request_id,
             };
         }
-        for continuation in state.manual_all_continuations.values_mut() {
+        let predecessor_reconciliation_demand = attempt
+            .as_ref()
+            .map(|attempt| attempt.reconciliation_demand)
+            .unwrap_or(SourceBackedReconciliationDemand::Incremental);
+        let successor_reconciliation_demands = state
+            .attempts
+            .iter()
+            .map(|attempt| (attempt.request_id.clone(), attempt.reconciliation_demand))
+            .collect::<BTreeMap<_, _>>();
+        for (continuation_id, continuation) in &mut state.manual_all_continuations {
             if continuation.predecessor_request_id != request_id {
                 continue;
             }
             continuation.predecessor_finished = true;
+            if successor_reconciliation_demands
+                .get(continuation_id)
+                .is_some_and(|requested| predecessor_reconciliation_demand < *requested)
+            {
+                continue;
+            }
             if let Some(attempt) = attempt.as_ref() {
                 if let Some(receipt) = attempt.receipt.as_ref() {
                     for (route, admission_observation) in &continuation.admission_route_observations

@@ -55,6 +55,12 @@ pub(crate) fn provider_line_from_index(index: u64) -> usize {
     index.min(usize::MAX as u64) as usize
 }
 
+pub(crate) fn provider_nonnegative_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| {
+        CaptureError::InvalidPayload(format!("{field} must be nonnegative, got {value}"))
+    })
+}
+
 pub(crate) fn provider_timestamp_seconds_to_datetime(value: f64) -> Option<DateTime<Utc>> {
     if !value.is_finite() {
         return None;
@@ -77,6 +83,17 @@ pub(crate) fn provider_timestamp_seconds(
     value
         .and_then(provider_timestamp_seconds_to_datetime)
         .unwrap_or(fallback)
+}
+
+pub(crate) fn provider_required_timestamp_seconds(
+    value: f64,
+    field: &'static str,
+) -> Result<DateTime<Utc>> {
+    provider_timestamp_seconds_to_datetime(value).ok_or_else(|| {
+        CaptureError::InvalidPayload(format!(
+            "{field} is outside representable timestamp range: {value}"
+        ))
+    })
 }
 
 pub(crate) fn provider_timestamp_millis(

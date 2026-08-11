@@ -667,7 +667,7 @@ fn warm_dirty_route_burst_uses_one_bounded_refresh_and_publication() {
 }
 
 #[test]
-fn running_startup_exact_continues_manual_all_without_rescanning() {
+fn running_incremental_startup_exact_promotes_manual_exhaustive_with_full_rescan() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
@@ -706,7 +706,7 @@ fn running_startup_exact_continues_manual_all_without_rescanning() {
                 executor_release.wait();
             } else {
                 assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-                assert_eq!(execution.covered_route_ids, executor_routes);
+                assert!(execution.covered_route_ids.is_empty());
             }
             let mut publication = if first {
                 let rejected_route = selected.iter().next().expect("selected exact route");
@@ -730,6 +730,8 @@ fn running_startup_exact_continues_manual_all_without_rescanning() {
         .unwrap());
     let authority = load_explicit_source_catalog_authority(&data_root).unwrap();
 
+    // Startup exact work is Incremental. A later manual import requires
+    // Exhaustive reconciliation, so it must run one all-route successor.
     let manual = std::thread::scope(|scope| {
         let runner = Arc::clone(&coordinator);
         let runner_root = data_root.clone();
@@ -761,22 +763,22 @@ fn running_startup_exact_continues_manual_all_without_rescanning() {
         routes
             .iter()
             .cloned()
-            .map(|route| (route, 1))
+            .map(|route| (route, 2))
             .collect::<BTreeMap<_, _>>()
     );
     let terminal = coordinator.status(&manual_request_id).unwrap();
     assert_eq!(terminal["request_state"], "published");
-    assert_eq!(terminal["outcome"], "completed_with_rejections");
-    assert_eq!(terminal["generation_changed"], true);
+    assert_eq!(terminal["outcome"], "completed");
+    assert_eq!(terminal["generation_changed"], false);
     assert_eq!(terminal["scanned_routes"], routes.len());
-    assert_eq!(terminal["receipt"]["current"]["removed_source_count"], 1);
+    assert_eq!(terminal["receipt"]["current"]["removed_source_count"], 0);
     assert_eq!(
         terminal["receipt"]["successful_route_total"]
             .as_u64()
             .unwrap() as usize,
         routes.len()
     );
-    assert_eq!(terminal["receipt"]["rejected_record_total"], 1);
+    assert_eq!(terminal["receipt"]["rejected_record_total"], 0);
     assert_eq!(
         terminal["receipt"]["route_results"]
             .as_object()
@@ -785,7 +787,7 @@ fn running_startup_exact_continues_manual_all_without_rescanning() {
             .filter_map(|result| result.as_array())
             .map(|result| result.get(4).and_then(Value::as_u64).unwrap_or(0))
             .sum::<u64>(),
-        1
+        0
     );
     assert!(!coordinator.has_scheduled_route_work());
 }
@@ -822,14 +824,7 @@ fn failed_running_exact_remains_in_manual_all_successor_work() {
                 executor_entered.wait();
                 executor_release.wait();
             } else {
-                assert_eq!(
-                    execution.covered_route_ids,
-                    executor_routes
-                        .iter()
-                        .filter(|route| *route != &executor_first_route)
-                        .cloned()
-                        .collect()
-                );
+                assert!(execution.covered_route_ids.is_empty());
             }
             publish_selected_routes(
                 &execution,
@@ -863,7 +858,7 @@ fn failed_running_exact_remains_in_manual_all_successor_work() {
     let observed = scans.lock().unwrap();
     assert_eq!(observed.get(&first_route), Some(&2));
     for route in routes.iter().filter(|route| *route != &first_route) {
-        assert_eq!(observed.get(route), Some(&1));
+        assert_eq!(observed.get(route), Some(&2));
     }
     assert!(!coordinator.has_scheduled_route_work());
 }
@@ -884,7 +879,6 @@ fn event_during_running_exact_invalidates_manual_all_coverage() {
     let executor_calls = Arc::clone(&calls);
     let executor_entered = Arc::clone(&entered);
     let executor_release = Arc::clone(&release);
-    let executor_first_route = first_route.clone();
     let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
         move |execution: SourceBackedRefreshExecution<'_>| {
             let selected = physically_selected_routes(&execution, &executor_routes);
@@ -899,14 +893,7 @@ fn event_during_running_exact_invalidates_manual_all_coverage() {
                 executor_entered.wait();
                 executor_release.wait();
             } else {
-                assert_eq!(
-                    execution.covered_route_ids,
-                    executor_routes
-                        .iter()
-                        .filter(|route| *route != &executor_first_route)
-                        .cloned()
-                        .collect()
-                );
+                assert!(execution.covered_route_ids.is_empty());
             }
             publish_selected_routes(&execution, &selected, None)
         },
@@ -937,7 +924,7 @@ fn event_during_running_exact_invalidates_manual_all_coverage() {
     let observed = scans.lock().unwrap();
     assert_eq!(observed.get(&first_route), Some(&2));
     for route in routes.iter().filter(|route| *route != &first_route) {
-        assert_eq!(observed.get(route), Some(&1));
+        assert_eq!(observed.get(route), Some(&2));
     }
     assert!(!coordinator.has_scheduled_route_work());
 }
@@ -1142,7 +1129,7 @@ fn exact_route_receipt_failures_back_off_or_block_until_a_new_event() {
 }
 
 #[test]
-fn failed_exact_predecessor_cancels_attached_broad_successor_and_retains_route_retry() {
+fn failed_exhaustive_exact_predecessor_cancels_attached_broad_successor_and_retains_route_retry() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
@@ -1178,9 +1165,22 @@ fn failed_exact_predecessor_cancels_attached_broad_successor_and_retains_route_r
     let coordinator = Arc::new(CoreRefreshEngine::with_executor(executor));
     let observed_at_ms = ledger_now_ms().saturating_sub(1_000);
     coordinator.reconcile_watch_routes([route.clone()], EventWatermark::new(8, 0), observed_at_ms);
-    assert!(coordinator
-        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
-        .unwrap());
+    coordinator
+        .enqueue_with_catalog_metadata(
+            None,
+            SourceRefreshRuntimeMetadata::periodic(),
+            None,
+            SourceBackedRefreshScope::exact([route.clone()]),
+            SourceRefreshLogicalDemand {
+                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+                route_observations: BTreeMap::new(),
+                request_id: None,
+                request_fingerprint: None,
+                admission_pending: false,
+            },
+        )
+        .unwrap();
     let logical_request_id = Uuid::from_u128(0x64).to_string();
     let authority = test_catalog_authority(8, 0);
 

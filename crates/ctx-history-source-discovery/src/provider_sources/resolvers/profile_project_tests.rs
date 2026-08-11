@@ -739,11 +739,8 @@ fn hermes_selects_only_sticky_profile_for_ordinary_operation() {
     let report = report(&context(&home, &cwd), CaptureProvider::Hermes);
     assert_eq!(report.sources.len(), 1);
     assert_eq!(report.sources[0].path, root.join("profiles/work/state.db"));
-    assert_eq!(report.sources[0].status, ProviderSourceStatus::Unsupported);
-    assert_eq!(
-        report.sources[0].unsupported_reason,
-        Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON)
-    );
+    assert_eq!(report.sources[0].status, ProviderSourceStatus::Available);
+    assert!(report.sources[0].unsupported_reason.is_none());
 }
 
 #[test]
@@ -760,22 +757,19 @@ fn hermes_discovery_and_explicit_selection_never_probe_database_content() {
     let [source] = discovered.sources.as_slice() else {
         panic!("one stable Hermes discovery route expected: {discovered:#?}");
     };
-    assert_eq!(source.status, ProviderSourceStatus::Unsupported);
-    assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
-    assert_eq!(source.source_kind, ProviderSourceKind::DetectionOnly);
-    assert_eq!(
-        source.unsupported_reason,
-        Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON)
-    );
+    assert_eq!(source.status, ProviderSourceStatus::Available);
+    assert_eq!(source.import_support, ProviderImportSupport::Native);
+    assert_eq!(source.source_kind, ProviderSourceKind::NativeHistory);
+    assert!(source.unsupported_reason.is_none());
     assert_eq!(
         super::super::super::probes::default_location_probe_calls(),
-        0
+        1
     );
 
     let explicit = provider_source_for_path(CaptureProvider::Hermes, database);
-    assert_eq!(explicit.status, ProviderSourceStatus::Unsupported);
-    assert_eq!(explicit.import_support, ProviderImportSupport::Unsupported);
-    assert_eq!(explicit.source_kind, ProviderSourceKind::DetectionOnly);
+    assert_eq!(explicit.status, ProviderSourceStatus::Available);
+    assert_eq!(explicit.import_support, ProviderImportSupport::Native);
+    assert_eq!(explicit.source_kind, ProviderSourceKind::NativeHistory);
     assert_eq!(explicit.unsupported_reason, source.unsupported_reason);
 }
 

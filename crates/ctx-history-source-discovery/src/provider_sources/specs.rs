@@ -270,11 +270,8 @@ const OPENCLAW_DEFAULTS: &[ProviderDefaultLocation] = &[
 const HERMES_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     path_components: &[".hermes", "state.db"],
     source_format: "hermes_state_sqlite",
-    source_kind: ProviderSourceKind::DetectionOnly,
+    source_kind: ProviderSourceKind::NativeHistory,
 }];
-
-pub const HERMES_STATE_DB_UNSUPPORTED_REASON: &str =
-    "current Hermes state.db schemas are unsupported because they lack a provider-owned, transactionally maintained per-session content revision; ctx did not modify the database; retry only with a ctx release that explicitly supports a revision-bearing Hermes schema";
 
 const NANOCLAW_DEFAULTS: &[ProviderDefaultLocation] = &[];
 
@@ -600,9 +597,9 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
         provider: CaptureProvider::Hermes,
         display_name: "Hermes Agent",
         default_locations: HERMES_DEFAULTS,
-        import_support: ProviderImportSupport::Unsupported,
+        import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
-        unsupported_reason: Some(HERMES_STATE_DB_UNSUPPORTED_REASON),
+        unsupported_reason: None,
     },
     ProviderSourceSpec {
         provider: CaptureProvider::NanoClaw,

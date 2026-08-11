@@ -1,7 +1,7 @@
 use super::*;
 use ctx_history_capture::{
     SourceBackedCurrentSourceProgress as CaptureSourceBackedCurrentSourceProgress,
-    SourceBackedRefreshScope,
+    SourceBackedReconciliationDemand, SourceBackedRefreshScope,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -301,6 +301,7 @@ pub struct PublishedSourceBackedState {
     pub verified_index: Option<VerifiedIndex>,
     pub explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     pub catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
+    pub route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 }
 
 pub trait PublishedSourceBackedStatePort: Send + Sync {
@@ -324,6 +325,7 @@ pub struct SourceBackedRefreshExecution<'a> {
     pub index_root: &'a Path,
     pub request_id: &'a str,
     pub operation: RefreshOperation,
+    pub reconciliation_demand: SourceBackedReconciliationDemand,
     pub explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
     pub scope: SourceBackedRefreshScope,
     pub covered_route_ids: BTreeSet<SourceRouteIdentity>,
@@ -350,11 +352,16 @@ impl<'a> SourceBackedRefreshExecution<'a> {
         published_state: &'a dyn PublishedSourceBackedStatePort,
         report_progress: &'a dyn Fn(SourceBackedRefreshProgressUpdate) -> Result<()>,
     ) -> Self {
+        let reconciliation_demand = match operation {
+            RefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
+            RefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
+        };
         Self {
             data_root,
             index_root,
             request_id,
             operation,
+            reconciliation_demand,
             explicit_source_catalog,
             scope,
             covered_route_ids,
@@ -363,6 +370,11 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             published_state,
             report_progress,
         }
+    }
+
+    pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
+        self.reconciliation_demand = demand;
+        self
     }
 
     #[allow(clippy::too_many_arguments)]

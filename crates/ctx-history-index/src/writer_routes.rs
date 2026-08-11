@@ -160,6 +160,7 @@ impl GenerationWriter {
             route_deletions: self.route_deletions.clone(),
             observed_missing_routes: self.observed_missing_routes.clone(),
             route_publication_revalidation_len: self.route_publication_revalidations.len(),
+            partially_reconciled_routes: self.partially_reconciled_routes.clone(),
             source_identities: self.source_identities.clone(),
         };
         self.active_source_route_stage = Some(checkpoint);
@@ -246,8 +247,29 @@ impl GenerationWriter {
         self.observed_missing_routes = checkpoint.observed_missing_routes;
         self.route_publication_revalidations
             .truncate(checkpoint.route_publication_revalidation_len);
+        self.partially_reconciled_routes = checkpoint.partially_reconciled_routes;
         self.source_identities = checkpoint.source_identities;
         Ok(())
+    }
+
+    /// Marks the active selected route as a bounded incremental update. Its
+    /// unmentioned exact members remain authenticated by the locked base route
+    /// snapshot while staged members replace that base atomically.
+    pub fn retain_unstaged_source_route_members(
+        &mut self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Result<()> {
+        self.require_active_source_route(route_identity)?;
+        self.partially_reconciled_routes
+            .insert(route_identity.clone());
+        Ok(())
+    }
+
+    pub fn source_route_retains_unstaged_members(
+        &self,
+        route_identity: &SourceRouteIdentity,
+    ) -> bool {
+        self.partially_reconciled_routes.contains(route_identity)
     }
 
     /// Authorizes the active route to take ownership from one exact carried
@@ -464,12 +486,9 @@ impl GenerationWriter {
             .as_ref()
             .map(PinnedPublication::manifest)
             .and_then(|base| {
-                base.source_routes().iter().find(|route| {
-                    route.sources().iter().any(|candidate| {
-                        candidate.exact_descriptor_eq(source)
-                            || candidate.is_same_lineage_descriptor_replacement(source)
-                    })
-                })
+                base.source_routes()
+                    .iter()
+                    .find(|route| route_source_with_lineage(route, source).is_some())
             });
         let owner_authorized_for_active = base_owner.is_some_and(|route| {
             self.active_source_route_stage
@@ -525,13 +544,24 @@ impl GenerationWriter {
             .is_some_and(|base| {
                 base.source_routes().iter().any(|route| {
                     plan.carried_from_base.contains(route.route_identity())
-                        && route
-                            .sources()
-                            .iter()
-                            .any(|candidate| candidate.exact_descriptor_eq(source))
+                        && route_source_with_lineage(route, source)
+                            .is_some_and(|candidate| candidate.exact_descriptor_eq(source))
                 })
             })
     }
+}
+
+fn route_source_with_lineage<'a>(
+    route: &'a SourceRouteSnapshot,
+    source: &SourceKey,
+) -> Option<&'a SourceKey> {
+    route
+        .sources()
+        .binary_search_by_key(&source.identity().digest(), |candidate| {
+            candidate.identity().digest()
+        })
+        .ok()
+        .and_then(|index| route.sources().get(index))
 }
 
 fn remove_retired_route_from_plan(

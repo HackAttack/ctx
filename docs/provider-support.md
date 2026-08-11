@@ -37,8 +37,8 @@ event-local capability has its own provider + route + source format + format
 version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 3 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 42 base routes and 45 capability lanes:
-three exact, 41 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 43 base routes and 46 capability lanes:
+three exact, 42 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -70,7 +70,7 @@ support matrix is:
 | CodeBuddy | Supported | `codebuddy_history_json` |
 | Trae | Supported | `trae_state_vscdb` |
 | OpenClaw | Supported | `openclaw_session_jsonl_tree` |
-| Hermes Agent | Unsupported (detected) | `hermes_state_sqlite` |
+| Hermes Agent | Supported | `hermes_state_sqlite` |
 | NanoClaw | Supported | `nanoclaw_project` |
 | AstrBot | Supported | `astrbot_data_v4_sqlite` |
 | Shelley | Supported | `shelley_sqlite` |
@@ -97,11 +97,13 @@ support matrix is:
 | Cline | Supported | `cline_task_directory_json` |
 | Roo Code | Supported | `roo_task_directory_json` |
 
-Hermes discovery retains the stable `hermes_state_sqlite` route and reports
-`status: "unsupported"`, `importable: false`. Current `state.db` schemas do not
-have a provider-owned, transactionally maintained per-session content revision,
-so ctx does not open or modify the database and no explicit-path override is
-available.
+Hermes Agent uses the native `hermes_state_sqlite` route. On Linux, a non-root
+ctx process with the certified read-only live-WAL path makes new sessions and
+appended records converge on native-watch and search refreshes. Where that fast
+path is unavailable, incremental refresh defers without copying the provider
+database. Structural edits, deletions, and deferred increments reconcile in
+roughly 60–80 minutes with a healthy daemon, or on
+`ctx import --provider hermes` or `ctx import --all`.
 
 Factory AI Droid history is discovered automatically at `~/.factory/sessions`.
 An exact path remains available, for example

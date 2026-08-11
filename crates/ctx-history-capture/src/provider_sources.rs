@@ -31,7 +31,7 @@ pub use ctx_history_source_discovery::{
     ProviderSource, ProviderSourceKind, ProviderSourceRootBoundaryError, ProviderSourceSpec,
     ProviderSourceStatus, ProviderSourceStatusReason, WarpDiscoveryUnavailable,
     WarpInstalledPlatform, WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface,
-    DISCOVERY_ENV_ALLOWLIST, HERMES_STATE_DB_UNSUPPORTED_REASON,
+    DISCOVERY_ENV_ALLOWLIST,
 };
 pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
@@ -39,7 +39,8 @@ ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
 pub(crate) use ctx_history_source_io::{count_event_file_io, forbid_ordinary_file_content_open};
 #[cfg(test)]
 pub(crate) use ctx_history_source_io::{
-    fail_next_opened_snapshot_cleanup_for_test, SqliteSourceSnapshotCounters,
+    fail_next_opened_snapshot_cleanup_for_test, force_next_pinned_wal_unavailable_for_test,
+    SqliteSourceSnapshotCounters,
 };
 pub(crate) use ctx_history_source_io::{
     open_root_handle_sqlite_source_snapshot, resource_exhaustion_io_error,

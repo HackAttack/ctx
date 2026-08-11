@@ -244,13 +244,32 @@ impl GenerationWriter {
         }
         self.validate_source_route_plan_complete()?;
         if let Some(witness) = self.exact_replay_inventory_witness()? {
-            for certificate in witness.base.sources.iter().filter(|certificate| {
-                !self.source_is_carried_from_base(certificate.observation().source())
+            for route in witness.base.source_routes().iter().filter(|route| {
+                !self
+                    .source_route_plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.carried_from_base.contains(route.route_identity()))
+                    && !self
+                        .partially_reconciled_routes
+                        .contains(route.route_identity())
             }) {
-                if !revalidate(RevalidationTarget::Source(certificate)) {
-                    return Err(IndexError::SourceInvalidated(
-                        certificate.observation().source().identity().to_string(),
-                    ));
+                for source in route.sources() {
+                    let certificate = witness
+                        .base
+                        .sources
+                        .binary_search_by_key(&source.identity().digest(), |candidate| {
+                            candidate.observation().source().identity().digest()
+                        })
+                        .ok()
+                        .and_then(|index| witness.base.sources.get(index))
+                        .ok_or(IndexError::WriterInvariant(
+                            "validated route member is missing its source certificate",
+                        ))?;
+                    if !revalidate(RevalidationTarget::Source(certificate)) {
+                        return Err(IndexError::SourceInvalidated(
+                            certificate.observation().source().identity().to_string(),
+                        ));
+                    }
                 }
             }
             for inventory in &self.complete_inventories {

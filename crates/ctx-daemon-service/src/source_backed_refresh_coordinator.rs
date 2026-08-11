@@ -171,12 +171,13 @@ pub(crate) fn publish_authoritative_empty_generation_with_route_results_for_test
                     catalog_route_bindings: Vec::new(),
                 };
                 serde_json::to_vec(&json!({
-                    "version": 2,
+                    "version": ctx_history_refresh::SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
                     "request_id": request_id,
                     "operation": operation.as_str(),
                     "refresh_scope": refresh_scope,
                     "receipt": receipt.to_json(),
                     "route_observations": vec![Value::Null; metadata_authority_routes.len()],
+                    "route_controls": {},
                 }))
                 .map_err(|error| IndexError::PublicationMetadata(error.to_string()))
             },

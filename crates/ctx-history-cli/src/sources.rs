@@ -250,24 +250,19 @@ fn render_sources_human(
         let reason = source
             .unsupported_reason
             .unwrap_or("this source format is unsupported");
-        let permanent_schema_gap = source.provider == CaptureProvider::Hermes;
-        let command = (!permanent_schema_gap).then(|| manual_path_guidance(source.provider));
+        let command = manual_path_guidance(source.provider);
         document.push_blank();
         document.append(diagnostic(
             context,
             Diagnostic {
                 level: DiagnosticLevel::Warning,
                 summary: &summary,
-                detail: Some(if permanent_schema_gap {
-                    "This Hermes schema has no safe import path in this ctx release."
-                } else {
-                    "Choose a supported disk-backed history location."
-                }),
+                detail: Some("Choose a supported disk-backed history location."),
                 fields: &[
                     Field::new("Location", &location),
                     Field::new("Reason", reason),
                 ],
-                action: command.as_deref().map(|command| Action { command }),
+                action: Some(Action { command: &command }),
             },
         ));
     }

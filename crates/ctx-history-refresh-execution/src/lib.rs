@@ -32,6 +32,7 @@ use ctx_history_capture::{
     SourceBackedProviderRegistry, SourceBackedRecordRejections, SourceBackedRouteError,
     SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedSourceFailureClass,
     SourceBackedSourceFailures, SourceBackedSuccessfulRouteOutcome,
+    MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 #[cfg(test)]
 use ctx_history_capture_model::DiscoveryIssue;
@@ -53,7 +54,7 @@ use registry_issues::{
 };
 type SourceBackedRefreshOperation = RefreshOperation;
 
-pub use ctx_history_capture::SourceBackedRefreshScope;
+pub use ctx_history_capture::{SourceBackedReconciliationDemand, SourceBackedRefreshScope};
 pub use current_state::SourceBackedRefreshCurrent;
 #[doc(hidden)]
 pub use execution::{

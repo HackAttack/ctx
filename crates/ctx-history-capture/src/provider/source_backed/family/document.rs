@@ -17,10 +17,14 @@ use crate::provider::source_backed::{
     ParallelLeafScanCancelled, ParallelLeafScanComplete, ParallelLeafScanEmitter,
     ParallelLeafScanError, ParallelLeafScanJob, ParallelLeafScanWorkerError,
     SourceBackedCoordinatorResult, SourceBackedCurrentSourceProgress, SourceBackedGenerationSink,
-    SourceBackedProviderRegistry, SourceBackedRecordRejectionDrafts, SourceBackedRouteDriver,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
-    SourceBackedRouteSelection, SourceBackedSelectorAuthority, SourceBackedSourceOutcome,
+    SourceBackedProviderRegistry, SourceBackedReconciliationDemand,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteControlExpectation,
+    SourceBackedRouteDriver, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult, SourceBackedRouteSelection, SourceBackedSelectorAuthority,
+    SourceBackedSourceOutcome,
 };
+#[cfg(test)]
+use crate::provider::source_backed::{SourceBackedRoute, SourceBackedWatchTargetKind};
 use crate::ProviderSource;
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CoreRecord,
@@ -28,6 +32,78 @@ use ctx_history_core::{
 };
 const DOCUMENT_FRONTIER_KIND: &str = "ctx-document-full-snapshot-v1";
 const MAX_PARALLEL_DOCUMENT_LEAF_WORKERS: usize = 4;
+
+#[cfg(test)]
+thread_local! {
+    static DOCUMENT_BASE_ROUTE_SOURCE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_document_base_route_source_visits() {
+    DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn document_base_route_source_visits() -> u64 {
+    DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(std::cell::Cell::get)
+}
+
+pub(crate) struct DocumentBaseRoute<'scan, 'writer> {
+    sink: &'scan mut SourceBackedGenerationSink<'writer>,
+    owns_source: &'scan dyn Fn(&SourceKey) -> bool,
+}
+
+impl<'scan, 'writer> DocumentBaseRoute<'scan, 'writer> {
+    fn new(
+        sink: &'scan mut SourceBackedGenerationSink<'writer>,
+        owns_source: &'scan dyn Fn(&SourceKey) -> bool,
+    ) -> Self {
+        Self { sink, owns_source }
+    }
+
+    pub(crate) fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        self.sink.reconciliation_demand()
+    }
+
+    pub(crate) fn route_control(&self) -> Option<&[u8]> {
+        self.sink.base_route_control()
+    }
+
+    pub(crate) fn report_progress(
+        &mut self,
+        progress: SourceBackedCurrentSourceProgress,
+    ) -> SourceBackedRouteResult<()> {
+        self.sink.report_current_source_progress(progress)
+    }
+
+    pub(crate) fn exact_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+        #[cfg(test)]
+        DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| {
+            visits.set(visits.get().saturating_add(1));
+        });
+        if !(self.owns_source)(source) {
+            return None;
+        }
+        let manifest = self.sink.writer.base_manifest()?;
+        let route = manifest.source_route(&self.sink.route_identity)?;
+        let source_key = source.identity().digest();
+        let member = route
+            .sources()
+            .binary_search_by_key(&source_key, |candidate| candidate.identity().digest())
+            .ok()
+            .and_then(|index| route.sources().get(index))
+            .filter(|candidate| candidate.exact_descriptor_eq(source))?;
+        manifest
+            .sources
+            .binary_search_by_key(&source_key, |candidate| {
+                candidate.observation().source().identity().digest()
+            })
+            .ok()
+            .and_then(|index| manifest.sources.get(index))
+            .filter(|candidate| candidate.observation().source().exact_descriptor_eq(member))
+            .cloned()
+    }
+}
 
 #[derive(Debug, Clone)]
 struct DocumentLeafCompletion {
@@ -50,8 +126,8 @@ mod revalidation;
 #[cfg(test)]
 use revalidation::DocumentMembershipOperations;
 use revalidation::{
-    revalidate_document_inventory, revalidate_document_target, CurrentDocumentSources,
-    DocumentCommitState, ExpectedDocumentRoute,
+    revalidate_document_inventory, revalidate_document_target, revalidate_durable_replay_sources,
+    CurrentDocumentSources, DocumentCommitState, ExpectedDocumentRoute,
 };
 mod sink;
 pub(crate) use sink::ChangedDocumentSink;
@@ -105,6 +181,13 @@ pub(crate) struct CompleteDocumentTree<L, A> {
     pub(crate) tree_fingerprint: [u8; 32],
     pub(crate) leaves: Vec<ObservedDocumentLeaf<L>>,
     pub(crate) authority: A,
+    inventory_scope: DocumentInventoryScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentInventoryScope {
+    Complete,
+    Partial,
 }
 impl<L, A> CompleteDocumentTree<L, A> {
     pub(crate) fn new(
@@ -116,6 +199,20 @@ impl<L, A> CompleteDocumentTree<L, A> {
             tree_fingerprint,
             leaves,
             authority,
+            inventory_scope: DocumentInventoryScope::Complete,
+        }
+    }
+
+    pub(crate) fn new_partial(
+        tree_fingerprint: [u8; 32],
+        leaves: Vec<ObservedDocumentLeaf<L>>,
+        authority: A,
+    ) -> Self {
+        Self {
+            tree_fingerprint,
+            leaves,
+            authority,
+            inventory_scope: DocumentInventoryScope::Partial,
         }
     }
 }
@@ -234,12 +331,41 @@ pub(crate) trait ReplacementDocumentTree: Send + Sync + 'static {
     ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
         self.discover_complete_with_base(base_sources)
     }
+    fn discover_complete_with_reconciliation(
+        &self,
+        base_sources: &[CertifiedSource],
+        _base_route_control: Option<&[u8]>,
+        _reconciliation_demand: SourceBackedReconciliationDemand,
+        report_progress: &mut dyn FnMut(
+            SourceBackedCurrentSourceProgress,
+        ) -> SourceBackedRouteResult<()>,
+    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
+        self.discover_complete_with_progress(base_sources, report_progress)
+    }
+    fn uses_lazy_base_route(&self, _demand: SourceBackedReconciliationDemand) -> bool {
+        false
+    }
+    fn discover_complete_with_lazy_base(
+        &self,
+        _base_route: &mut DocumentBaseRoute<'_, '_>,
+    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
+        Err(document_internal(
+            "document adapter selected lazy base-route discovery without implementing it",
+        ))
+    }
     fn scan_changed(
         &self,
         authority: &Self::TreeAuthority,
         leaf: &Self::Leaf,
         sink: &mut ChangedDocumentSink<'_, '_>,
     ) -> SourceBackedRouteResult<DocumentSourceTerminal>;
+    fn append_base(
+        &self,
+        _authority: &Self::TreeAuthority,
+        _leaf: &Self::Leaf,
+    ) -> Option<CertifiedSource> {
+        None
+    }
     fn revalidate_complete(
         &self,
         tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
@@ -252,6 +378,15 @@ pub(crate) trait ReplacementDocumentTree: Send + Sync + 'static {
     }
     fn has_successful_publication_work(&self) -> bool {
         false
+    }
+    fn publication_control(
+        &self,
+        _tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
+    ) -> SourceBackedRouteResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn route_control_expectation(&self) -> Option<SourceBackedRouteControlExpectation> {
+        None
     }
 }
 
@@ -293,6 +428,29 @@ where
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn register_replacement_document_tree_route_unchecked_for_test<A>(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selector_authority: SourceBackedSelectorAuthority,
+    certified_source_format: &'static str,
+    watch_target_kind: SourceBackedWatchTargetKind,
+    adapter: A,
+) -> SourceBackedCoordinatorResult<()>
+where
+    A: ReplacementDocumentTree,
+{
+    let driver = replacement_document_tree_driver(&source, adapter);
+    registry.register(SourceBackedRoute::explicit_manual_unchecked_for_test(
+        source,
+        selector_authority,
+        certified_source_format,
+        watch_target_kind,
+        driver,
+    )?);
+    Ok(())
+}
+
 fn replacement_document_tree_driver<A>(
     route: &ProviderSource,
     adapter: A,
@@ -319,7 +477,12 @@ where
     let inventory_state = Arc::clone(&state);
     let publication_adapter = Arc::clone(&adapter);
     let publication_state = Arc::clone(&state);
+    let fence_adapter = Arc::clone(&adapter);
+    let fence_state = Arc::clone(&state);
+    let control_adapter = Arc::clone(&adapter);
+    let control_state = Arc::clone(&state);
     let has_successful_publication_work = publication_adapter.has_successful_publication_work();
+    let route_control_expectation = adapter.route_control_expectation();
 
     let mut driver = SourceBackedRouteDriver::new(
         move |sink| {
@@ -341,7 +504,35 @@ where
     )
     .with_complete_inventory_revalidation(move |inventory| {
         revalidate_document_inventory(inventory_adapter.as_ref(), &inventory_state, inventory)
+    })
+    .with_publication_revalidation(move || {
+        let Ok(state) = fence_state.lock() else {
+            return false;
+        };
+        let Some(expected) = state.expected.as_ref() else {
+            return false;
+        };
+        if expected.tree.inventory_scope == DocumentInventoryScope::Complete {
+            return true;
+        }
+        fence_adapter
+            .revalidate_complete(&expected.tree)
+            .is_ok_and(|terminal| terminal == expected.tree.tree_fingerprint)
+            && revalidate_durable_replay_sources(fence_adapter.as_ref(), &expected.tree)
+    })
+    .with_publication_control(move || {
+        let state = control_state
+            .lock()
+            .map_err(|_| document_internal("document commit state lock was poisoned"))?;
+        let expected = state
+            .expected
+            .as_ref()
+            .ok_or_else(|| document_internal("document route has no expected publication"))?;
+        control_adapter.publication_control(&expected.tree)
     });
+    if let Some(expectation) = route_control_expectation {
+        driver = driver.with_route_control_expectation(expectation);
+    }
     if uses_parallel_leaf_workers {
         driver = driver.with_parallel_leaf_workers();
     }
@@ -367,10 +558,29 @@ fn scan_document_tree<A>(
 where
     A: ReplacementDocumentTree,
 {
-    let base_sources = source_backed_base_sources(sink, |source| adapter.owns_source(source));
-    let mut tree = adapter.discover_complete_with_progress(&base_sources, &mut |progress| {
-        sink.report_current_source_progress(progress)
-    })?;
+    let base_route_control = sink.base_route_control().map(<[u8]>::to_vec);
+    let reconciliation_demand = sink.reconciliation_demand();
+    let lazy_base_route = adapter.uses_lazy_base_route(reconciliation_demand);
+    let mut base_sources = if lazy_base_route {
+        Vec::new()
+    } else {
+        source_backed_base_sources(sink, |source| adapter.owns_source(source))
+    };
+    let mut tree = if lazy_base_route {
+        let owns_source = |source: &SourceKey| adapter.owns_source(source);
+        let mut base_route = DocumentBaseRoute::new(sink, &owns_source);
+        adapter.discover_complete_with_lazy_base(&mut base_route)?
+    } else {
+        adapter.discover_complete_with_reconciliation(
+            &base_sources,
+            base_route_control.as_deref(),
+            reconciliation_demand,
+            &mut |progress| sink.report_current_source_progress(progress),
+        )?
+    };
+    if lazy_base_route && tree.inventory_scope == DocumentInventoryScope::Complete {
+        base_sources = source_backed_base_sources(sink, |source| adapter.owns_source(source));
+    }
     validate_unique_leaf_fingerprints(&tree.leaves)?;
     bind_durable_replay_sources(adapter, &mut tree)?;
     let mut replayable = HashMap::new();
@@ -422,6 +632,11 @@ where
         tree.tree_fingerprint,
         current_sources.ordered_inventory_sources(),
     )?;
+    if tree.inventory_scope == DocumentInventoryScope::Partial {
+        sink.retain_unstaged_base_route_sources()
+            .map_err(route_coordinator_error)?;
+        return Ok(ExpectedDocumentRoute::new(tree, certificates, inventory));
+    }
     sink.certify_complete_inventory(inventory.clone())
         .map_err(route_coordinator_error)?;
     for base in &base_sources {
@@ -512,7 +727,8 @@ where
             stage_exact_document_replay(sink, &base)?;
             base
         } else {
-            let mut changed = if observed.replay_from_frontier {
+            let append_base = adapter.append_base(&tree.authority, &observed.provider_leaf);
+            let mut changed = if observed.replay_from_frontier && append_base.is_none() {
                 ChangedDocumentSink::new(sink)
             } else {
                 ChangedDocumentSink::logical(sink)?
@@ -544,6 +760,7 @@ where
                 observed
                     .replay_from_frontier
                     .then_some(observed.fingerprint),
+                append_base,
             )?
         };
         let source = certificate.observation().source().clone();
@@ -756,6 +973,7 @@ where
                     observed
                         .replay_from_frontier
                         .then_some(observed.fingerprint),
+                    adapter.append_base(authority, &observed.provider_leaf),
                 )
         })();
         let record_rejections = changed

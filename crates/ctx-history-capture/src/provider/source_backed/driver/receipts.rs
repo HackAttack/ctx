@@ -7,6 +7,7 @@ pub const MAX_RECORDED_SOURCE_BACKED_FAILURES: usize = 64;
 pub const MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES: usize = 512;
 pub const MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES: usize = 512;
 pub const MAX_RECORDED_SOURCE_BACKED_RECORD_REJECTIONS: usize = 64;
+pub const MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES: usize = 4 * 1024;
 pub const MAX_SOURCE_BACKED_REJECTION_PAYLOAD_TYPE_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -151,6 +152,7 @@ pub struct SourceBackedGenerationSink<'writer> {
     pub(in super::super) applied_removals: &'writer mut Vec<SourceBackedCertifiedRemoval>,
     pub(in super::super) route_index: usize,
     pub(in super::super) route_identity: SourceRouteIdentity,
+    pub(in super::super) base_route_control: Option<Vec<u8>>,
     pub(in super::super) resources: SourceBackedRouteResources,
     pub(in super::super) logical_source_failures: &'writer mut SourceBackedLogicalSourceFailures,
     pub(in super::super) record_rejections: &'writer mut SourceBackedRecordRejections,
@@ -162,6 +164,26 @@ pub struct SourceBackedGenerationSink<'writer> {
     pub(in super::super) current_source_progress: Option<
         &'writer mut dyn FnMut(SourceBackedCurrentSourceProgress) -> SourceBackedRouteResult<()>,
     >,
+}
+
+impl SourceBackedGenerationSink<'_> {
+    pub fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        self.resources.reconciliation_demand()
+    }
+
+    pub(crate) fn base_route_control(&self) -> Option<&[u8]> {
+        self.base_route_control.as_deref()
+    }
+
+    /// Carries unmentioned members of this exact route from the locked Core
+    /// base while changed members are replaced atomically.
+    pub(crate) fn retain_unstaged_base_route_sources(
+        &mut self,
+    ) -> SourceBackedCoordinatorResult<()> {
+        self.writer
+            .retain_unstaged_source_route_members(&self.route_identity)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -577,6 +599,8 @@ type CompleteInventoryRevalidationCallback =
     dyn Fn(&CertifiedSourceInventory) -> SourceBackedRouteResult<bool> + Send + Sync;
 type SuccessfulPublicationCallback = dyn Fn() + Send + Sync;
 type RoutePublicationRevalidationCallback = dyn Fn() -> bool + Send + Sync;
+type RoutePublicationControlCallback =
+    dyn Fn() -> SourceBackedRouteResult<Option<Vec<u8>>> + Send + Sync;
 type WatchTargetsCallback = dyn Fn() -> Option<SourceBackedRouteWatchTargets> + Send + Sync;
 
 #[derive(Debug, Clone, Default)]
@@ -597,7 +621,9 @@ pub struct SourceBackedRouteDriver {
     pub(in super::super) after_successful_publication: Option<Arc<SuccessfulPublicationCallback>>,
     pub(in super::super) revalidate_at_publication:
         Option<Arc<RoutePublicationRevalidationCallback>>,
+    pub(in super::super) publication_control: Option<Arc<RoutePublicationControlCallback>>,
     pub(in super::super) watch_targets: Option<Arc<WatchTargetsCallback>>,
+    pub(in super::super) route_control_expectation: Option<SourceBackedRouteControlExpectation>,
     pub(in super::super) uses_parallel_leaf_workers: bool,
 }
 
@@ -641,7 +667,9 @@ impl SourceBackedRouteDriver {
             revalidate_complete_inventory: None,
             after_successful_publication: None,
             revalidate_at_publication: None,
+            publication_control: None,
             watch_targets: None,
+            route_control_expectation: None,
             uses_parallel_leaf_workers: false,
         }
     }
@@ -671,6 +699,30 @@ impl SourceBackedRouteDriver {
         self
     }
 
+    pub(crate) fn with_publication_revalidation(
+        mut self,
+        revalidate: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.revalidate_at_publication = Some(Arc::new(revalidate));
+        self
+    }
+
+    pub(crate) fn with_publication_control(
+        mut self,
+        control: impl Fn() -> SourceBackedRouteResult<Option<Vec<u8>>> + Send + Sync + 'static,
+    ) -> Self {
+        self.publication_control = Some(Arc::new(control));
+        self
+    }
+
+    pub(crate) fn with_route_control_expectation(
+        mut self,
+        expectation: SourceBackedRouteControlExpectation,
+    ) -> Self {
+        self.route_control_expectation = Some(expectation);
+        self
+    }
+
     /// Installs best-effort work that may run only after atomic publication.
     ///
     /// The callback cannot affect the committed generation and must suppress
@@ -694,6 +746,37 @@ pub struct SourceBackedRoute {
 }
 
 impl SourceBackedRoute {
+    #[cfg(test)]
+    pub(in crate::provider) fn explicit_manual_unchecked_for_test(
+        source: ProviderSource,
+        selector_authority: SourceBackedSelectorAuthority,
+        certified_source_format: &'static str,
+        watch_target_kind: SourceBackedWatchTargetKind,
+        driver: SourceBackedRouteDriver,
+    ) -> SourceBackedCoordinatorResult<Self> {
+        let route_identity = source_backed_route_identity(
+            &source,
+            certified_source_format,
+            SourceBackedRouteSelection::ExplicitManual,
+            selector_authority,
+        )?;
+        Ok(Self {
+            metadata: SourceBackedRouteMetadata {
+                source,
+                certified_source_format,
+                selection: Some(SourceBackedRouteSelection::ExplicitManual),
+                selector_authority,
+                unsupported_reason: None,
+                route_identity: Some(route_identity),
+                watch_target_kind,
+            },
+            driver: Some(driver),
+            certified_missing_paths: Vec::new(),
+            retire_after_success: Vec::new(),
+            codex_generation_participant: None,
+        })
+    }
+
     pub fn automatic(
         source: ProviderSource,
         selector_authority: SourceBackedSelectorAuthority,
@@ -1003,6 +1086,21 @@ fn source_backed_route_identity(
         let path = source.path.as_os_str().as_encoded_bytes();
         digest.update((path.len() as u64).to_be_bytes());
         digest.update(path);
+    } else if source.provider == CaptureProvider::Hermes {
+        let profile =
+            crate::provider::providers::hermes::source_backed::hermes_automatic_profile_name(
+                &source.path,
+            )
+            .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+        if profile != "default" {
+            // Hermes discovery intentionally multiplexes independently owned
+            // named profiles. Keep the historical default route identity, but
+            // give every validated named profile a stable path-independent
+            // logical slot so registry de-duplication cannot collapse them.
+            digest.update(b"\0hermes-profile\0");
+            digest.update((profile.len() as u64).to_be_bytes());
+            digest.update(profile.as_bytes());
+        }
     }
     SourceRouteIdentity::from_sha256(format!("{:x}", digest.finalize())).map_err(Into::into)
 }

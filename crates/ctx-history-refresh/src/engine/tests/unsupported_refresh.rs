@@ -59,11 +59,16 @@ fn replace_metadata_version(index_root: &Path, version: u64) -> VerifiedIndex {
     let mut metadata: Value =
         serde_json::from_slice(current.publication_metadata().unwrap()).unwrap();
     metadata["version"] = json!(version);
-    metadata
-        .get_mut("receipt")
-        .and_then(Value::as_object_mut)
-        .unwrap()
-        .remove("zero_source_authority");
+    if version != SOURCE_REFRESH_PUBLICATION_METADATA_VERSION {
+        metadata.as_object_mut().unwrap().remove("route_controls");
+    }
+    if version == 1 {
+        metadata
+            .get_mut("receipt")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .remove("zero_source_authority");
+    }
     drop(current);
     let writer = ctx_history_index::GenerationWriter::open(index_root, WriterOptions::default())
         .unwrap()

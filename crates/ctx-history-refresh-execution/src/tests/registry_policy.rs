@@ -31,6 +31,13 @@ fn registry_policy_warp_source(path: PathBuf, exists: bool) -> ProviderSource {
     registry_policy_source(CaptureProvider::Warp, path, "warp_sqlite", exists)
 }
 
+fn registry_policy_unsupported_warp_source(path: PathBuf) -> ProviderSource {
+    let mut source = registry_policy_warp_source(path, true);
+    source.status = ProviderSourceStatus::Unsupported;
+    source.unsupported_reason = Some("fixture Warp route is intentionally unsupported");
+    source
+}
+
 fn registry_policy_nanoclaw_source(path: PathBuf) -> ProviderSource {
     registry_policy_source(CaptureProvider::NanoClaw, path, "nanoclaw_project", true)
 }
@@ -179,23 +186,22 @@ fn distinct_nanoclaw_registry_failures_match_retained_automatic_routes() {
 }
 
 #[test]
-fn mixed_codex_and_unsupported_hermes_routes_continue_with_typed_evidence() {
+fn mixed_codex_and_unsupported_warp_routes_continue_with_typed_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
     let (home, _, discovery) = discovery_fixture(temp.path());
     let codex_root = temp.path().join("codex-sessions");
-    let hermes = home.join(".hermes/state.db");
+    let unsupported_warp = home.join("unsupported-warp.sqlite");
     write_registry_policy_codex_rollout(&codex_root);
-    std::fs::create_dir_all(hermes.parent().unwrap()).unwrap();
-    std::fs::write(&hermes, b"Hermes content must not be parsed").unwrap();
+    std::fs::write(&unsupported_warp, b"unsupported content must not be parsed").unwrap();
     let publication = run_report(
         &discovery,
         DiscoveryReport {
             sources: vec![
                 provider_source_for_path(CaptureProvider::Codex, codex_root),
-                provider_source_for_path(CaptureProvider::Hermes, hermes),
+                registry_policy_unsupported_warp_source(unsupported_warp),
             ],
             issues: Vec::new(),
         },
@@ -222,12 +228,12 @@ fn mixed_codex_and_unsupported_hermes_routes_continue_with_typed_evidence() {
         .collect::<Vec<_>>();
     assert_eq!(failures.len(), 1);
     let failure = failures[0];
-    assert_eq!(failure.provider, "hermes");
+    assert_eq!(failure.provider, "warp");
     assert_eq!(failure.class, "incompatible");
     assert!(!failure.carried_forward);
     assert_eq!(
         failure.detail,
-        ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON
+        "fixture Warp route is intentionally unsupported"
     );
     assert!(is_sha256_identity(&failure.route_identity));
     assert!(is_sha256_identity(&failure.source_identity));
@@ -243,21 +249,21 @@ fn mixed_codex_and_unsupported_hermes_routes_continue_with_typed_evidence() {
 }
 
 #[test]
-fn unsupported_hermes_preserves_same_epoch_last_good_route_as_stale() {
+fn unsupported_warp_preserves_same_epoch_last_good_route_as_stale() {
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let index_root = source_backed_index_root(&data_root);
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
     let (home, _, discovery) = discovery_fixture(temp.path());
-    let database = home.join(".hermes/state.db");
+    let database = home.join("unsupported-warp.sqlite");
     std::fs::create_dir_all(database.parent().unwrap()).unwrap();
     std::fs::write(&database, b"not a database and must not be opened").unwrap();
-    let source = provider_source_for_path(CaptureProvider::Hermes, database);
+    let source = registry_policy_unsupported_warp_source(database);
     let route_identity = automatic_source_backed_route_identity(&source).unwrap();
 
     let retained_source = SourceKey::derive(
-        CaptureProvider::Hermes.as_str(),
-        "hermes_state_sqlite",
+        CaptureProvider::Warp.as_str(),
+        "warp_sqlite",
         "session",
         1,
         SourceAnchor::CatalogLineage([0x8d; 32]),
@@ -297,17 +303,17 @@ fn unsupported_hermes_preserves_same_epoch_last_good_route_as_stale() {
 
     assert_eq!(publication.generation_id, retained_generation);
     let [result] = publication.route_results.as_slice() else {
-        panic!("one Hermes route result expected: {publication:#?}");
+        panic!("one unsupported Warp route result expected: {publication:#?}");
     };
     assert_eq!(result.route_identity, route_identity.as_str());
     assert_eq!(result.outcome.failure_class(), Some("incompatible"));
     let [failure] = result.source_failures.as_slice() else {
-        panic!("one Hermes source failure expected: {result:#?}");
+        panic!("one unsupported Warp source failure expected: {result:#?}");
     };
     assert!(failure.carried_forward);
     assert_eq!(
         failure.detail,
-        ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON
+        "fixture Warp route is intentionally unsupported"
     );
     let retained = VerifiedIndex::open(&index_root).unwrap();
     assert_eq!(retained.generation_id(), retained_generation);
@@ -318,7 +324,7 @@ fn unsupported_hermes_preserves_same_epoch_last_good_route_as_stale() {
             .observation()
             .source()
             .provider(),
-        CaptureProvider::Hermes.as_str()
+        CaptureProvider::Warp.as_str()
     );
 }
 

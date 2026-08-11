@@ -214,7 +214,7 @@ where
         && revalidate_durable_replay_sources(adapter, &expected.tree)
 }
 
-fn revalidate_durable_replay_sources<A>(
+pub(super) fn revalidate_durable_replay_sources<A>(
     adapter: &A,
     tree: &CompleteDocumentTree<A::Leaf, A::TreeAuthority>,
 ) -> bool

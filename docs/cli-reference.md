@@ -279,6 +279,7 @@ ctx import --provider mux
 ctx import --provider rovodev
 ctx import --provider junie
 ctx import --provider openclaw
+ctx import --provider hermes
 ctx import --provider nanoclaw --path /path/to/nanoclaw-project
 ctx import --provider astrbot --path /path/to/data/data_v4.db
 ctx import --provider shelley --path ~/.config/shelley/shelley.db
@@ -307,10 +308,13 @@ ctx import --format json
 ctx import --progress json --format json
 ```
 
-`hermes` remains a recognized provider selector for stable diagnostics, but
-current Hermes `state.db` schemas are unsupported. Automatic and exact-path
-requests return a source-scoped `unsupported_schema` result and do not modify
-the database; the selector is not an override.
+`hermes` selects the supported native `state.db` importer. On Linux, a non-root
+ctx process with the certified read-only live-WAL path makes new sessions and
+appended records converge on native-watch and search refreshes. Otherwise the
+incremental attempt defers without copying the provider database. Structural
+edits, deletions, and deferred increments reconcile in roughly 60–80 minutes
+with a healthy daemon, or on `ctx import --provider hermes` or
+`ctx import --all`.
 
 `import` explicitly rebuilds Core history from provider sources. The
 normal first-run path is `ctx setup`, which already imports discovered native

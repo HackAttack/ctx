@@ -675,12 +675,13 @@ pub(crate) fn initialize_authoritative_empty_core(data_root: &Path) -> String {
         .republish_current_publication_metadata(
             &generation_id,
             serde_json::to_vec(&json!({
-                "version": 2,
+                "version": 3,
                 "request_id": "mcp-authoritative-empty-fixture",
                 "operation": "refresh",
                 "refresh_scope": {"kind": "all"},
                 "receipt": receipt,
                 "route_observations": [null],
+                "route_controls": {},
             }))
             .unwrap(),
         )
