@@ -547,12 +547,22 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                 "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6",
             ),
         )
+
+    def test_model_license_authority_preserves_exact_public_pin(self) -> None:
         self.assertEqual(
             (
-                len(semantic_release_assets.MODEL_LICENSE),
-                hashlib.sha256(semantic_release_assets.MODEL_LICENSE).hexdigest(),
+                semantic_release_assets.MODEL_LICENSE_REVISION,
+                semantic_release_assets.MODEL_LICENSE_URL,
+                semantic_release_assets.MODEL_LICENSE_SIZE,
+                semantic_release_assets.MODEL_LICENSE_SHA256,
             ),
-            semantic_release_assets.COMMON_MODEL_FILES["LICENSE"],
+            (
+                "0e31c7c09737df491e7ff74ded19614b884c52b4",
+                "https://raw.githubusercontent.com/microsoft/unilm/"
+                "0e31c7c09737df491e7ff74ded19614b884c52b4/LICENSE",
+                1_104,
+                "904dc4d8749877f1dba1cda48200d2462dccbeb7c134d5e4ef6fa75e0198c8fe",
+            ),
         )
 
     def test_downloader_rejects_missing_and_tampered_content(self) -> None:

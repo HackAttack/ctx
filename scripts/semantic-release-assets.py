@@ -22,6 +22,15 @@ MODEL_VERSION = "1.0.0"
 MODEL_ID = "intfloat/multilingual-e5-small"
 MODEL_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
 MODEL_REVISION_URL = f"https://huggingface.co/{MODEL_ID}/resolve/{MODEL_REVISION}"
+MODEL_LICENSE_REVISION = "0e31c7c09737df491e7ff74ded19614b884c52b4"
+MODEL_LICENSE_URL = (
+    "https://raw.githubusercontent.com/microsoft/unilm/"
+    f"{MODEL_LICENSE_REVISION}/LICENSE"
+)
+MODEL_LICENSE_SIZE = 1_104
+MODEL_LICENSE_SHA256 = (
+    "904dc4d8749877f1dba1cda48200d2462dccbeb7c134d5e4ef6fa75e0198c8fe"
+)
 MODEL_MAX_EXPANDED_BYTES = 768 * 1024 * 1024
 MODEL_PATHS = (
     "LICENSE",
@@ -33,10 +42,7 @@ MODEL_PATHS = (
     "tokenizer_config.json",
 )
 COMMON_MODEL_FILES = {
-    "LICENSE": (
-        1_104,
-        "904dc4d8749877f1dba1cda48200d2462dccbeb7c134d5e4ef6fa75e0198c8fe",
-    ),
+    "LICENSE": (MODEL_LICENSE_SIZE, MODEL_LICENSE_SHA256),
     "config.json": (
         655,
         "69137736cab8b8903a07fe8afaafdda25aac55415a12a55d1bffa9f581abf959",
@@ -131,29 +137,6 @@ COREML_SOURCE_PATHS = {
     "model_license": "LICENSES/MODEL_LICENSE.txt",
 }
 COREML_MAX_DIRECTORIES = 1_024
-MODEL_LICENSE = (
-    "The MIT License (MIT)\r\n"
-    "\r\n"
-    "Copyright (c) Microsoft Corporation\r\n"
-    "\r\n"
-    "Permission is hereby granted, free of charge, to any person obtaining a copy\r\n"
-    'of this software and associated documentation files (the "Software"), to deal\r\n'
-    "in the Software without restriction, including without limitation the rights\r\n"
-    "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\r\n"
-    "copies of the Software, and to permit persons to whom the Software is\r\n"
-    "furnished to do so, subject to the following conditions:\r\n"
-    "\r\n"
-    "The above copyright notice and this permission notice shall be included in all\r\n"
-    "copies or substantial portions of the Software.\r\n"
-    "\r\n"
-    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\r\n'
-    "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\r\n"
-    "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\r\n"
-    "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\r\n"
-    "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\r\n"
-    "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\r\n"
-    "SOFTWARE.\r\n"
-).encode("ascii")
 EXPECTED_ASSETS = {
     "onnx_model": {
         "role": "model",
@@ -453,11 +436,13 @@ def prepare_model_source(args: argparse.Namespace) -> None:
         source.mkdir()
         for relative, expected in COMMON_MODEL_FILES.items():
             destination = source.joinpath(*relative.split("/"))
-            if relative == "LICENSE":
-                destination.write_bytes(MODEL_LICENSE)
-                continue
+            url = (
+                MODEL_LICENSE_URL
+                if relative == "LICENSE"
+                else f"{MODEL_REVISION_URL}/{relative}"
+            )
             download_exact_url(
-                f"{MODEL_REVISION_URL}/{relative}",
+                url,
                 destination,
                 expected[0],
                 expected[1],

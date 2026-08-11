@@ -89,7 +89,8 @@ python scripts/semantic-release-assets.py build-model \
 
 The CPU object is upstream `onnx/model.onnx`; the exact accelerator object is
 upstream `onnx/model_O4.onnx`. Every downloaded file is admitted only at its
-pinned byte size and SHA-256.
+pinned byte size and SHA-256. The model license comes from the immutable
+Microsoft/unilm revision `0e31c7c09737df491e7ff74ded19614b884c52b4`.
 
 These commands produce and re-validate
 `ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz` and
