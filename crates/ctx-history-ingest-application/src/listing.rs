@@ -178,6 +178,16 @@ mod tests {
         fn discover_provider(&self, _: CaptureProvider) -> Result<DiscoveryReport> {
             self.discover_all()
         }
+        fn provider_selection_guidance(
+            &self,
+            provider: CaptureProvider,
+        ) -> crate::ProviderSelectionGuidance {
+            crate::ProviderSelectionGuidance {
+                display_name: provider.as_str().to_owned(),
+                manual_path_command: String::new(),
+                unavailable_reason: None,
+            }
+        }
     }
     fn source(path: &str, status: ProviderSourceStatus) -> ProviderSource {
         ProviderSource {
