@@ -78,6 +78,7 @@ pub(crate) fn daemon_upgrade_handoff_blocks_current_process(data_root: &Path) ->
     }
 }
 
+#[cfg(test)]
 pub(crate) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
     !matches!(
         daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)),
@@ -986,7 +987,7 @@ pub(crate) fn write_daemon_restart_request(
     )
 }
 
-pub(in crate::semantic) fn defer_restart_for_upgrade_handoff(
+pub(crate) fn defer_restart_for_upgrade_handoff(
     data_root: &Path,
     trigger: DaemonTriggerCommandArg,
     request_id: &str,

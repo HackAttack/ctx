@@ -12,8 +12,6 @@ use crate::{
     DaemonArgs, DaemonCommand, DaemonDisableArgs, DaemonRunArgs, DaemonStartModeArg, FormatArgs,
 };
 
-#[cfg(unix)]
-use super::query_service::DaemonQueryEndpoint;
 use super::{
     daemon_status::{
         daemon_report_failure_message, render_daemon_disable_receipt, render_daemon_enable_receipt,
