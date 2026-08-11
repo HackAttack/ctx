@@ -22,6 +22,8 @@ COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-history-cli",
 }
 
+HISTORY_CLI_DEPS = ["//crates/ctx-history-read-application:lib"]
+
 RUST_SRCS = glob(["src/**/*.rs"])
 
 PROD_SRCS = glob(
@@ -36,7 +38,7 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + HISTORY_CLI_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = COMMON_RUSTC_ENV,
 )
@@ -48,7 +50,7 @@ ctx_rust_test(
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + HISTORY_CLI_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
 )

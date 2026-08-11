@@ -10,4 +10,14 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+anyhow.workspace = true
+chrono.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
+ctx-history-read-application = { path = "../ctx-history-read-application" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

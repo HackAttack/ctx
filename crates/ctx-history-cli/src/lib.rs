@@ -8,6 +8,8 @@
 mod config;
 mod ports;
 mod request;
+mod search_filters;
+mod transcript;
 
 pub use config::{ConfigPortError, HistoryCliConfig, HistoryCliConfigPort};
 pub use ports::{
@@ -18,6 +20,8 @@ pub use request::{
     OutputFormat, ProgressMode, RefreshMode, SearchRequest, SetupRequest, ShowRequest,
     SourceIndexRequest, SourcesRequest, TranscriptMode,
 };
+pub use search_filters::parse_since_filter;
+pub use transcript::{shell_quote_arg, write_output, TranscriptOutput};
 
 /// Marks a failure whose command-specific output has already been written.
 /// The final `ctx` dispatch maps this marker to its normal failure exit once,
