@@ -53,13 +53,8 @@ impl CodexNativeScanner {
             .owner
             .take()
             .map(|owner| {
-                validate_catalog_owner(&self.source, owner.clone())?;
-                CodexSemanticCheckpoint::new(
-                    &self.tool_authorities.into_values().collect::<Vec<_>>(),
-                    owner,
-                    self.local_turn_started,
-                )
-                .map_err(CaptureError::from)
+                let owner = validate_catalog_owner(&self.source, owner)?;
+                Ok::<_, CaptureError>(CodexSemanticCheckpoint::new(&owner))
             })
             .transpose()?;
         Ok(CodexSemanticScan {

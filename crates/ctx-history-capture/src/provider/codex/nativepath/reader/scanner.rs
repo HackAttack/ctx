@@ -93,7 +93,7 @@ fn observe_semantic_preflight_record(
     repository_candidate_authority: &mut CodexRepositoryCandidateAuthority,
     repository_occurrences: &mut CodexRepositoryOccurrenceCache,
     repository_candidate_cells: &mut BTreeSet<String>,
-) {
+) -> Option<CodexRecordClass> {
     if result_terminal_authority_is_ambiguous(record) {
         authority.observe_ambiguous_result_terminal();
     }
@@ -111,8 +111,9 @@ fn observe_semantic_preflight_record(
                     probe.call_id.as_deref(),
                 );
             }
+            return Some(probe.class);
         }
-        return;
+        return None;
     };
     if probe.lineage_malformed() {
         repository_occurrences.observe_ambiguous_record();
@@ -127,10 +128,10 @@ fn observe_semantic_preflight_record(
         CodexRecordClass::Retained(super::super::record::CodexRetainedKind::ToolCall) => {
             let Ok(envelope) = serde_json::from_slice::<Value>(record) else {
                 repository_candidate_authority.observe_ambiguous_record();
-                return;
+                return Some(probe.class);
             };
             let Some(payload) = envelope.get("payload") else {
-                return;
+                return Some(probe.class);
             };
             let Some((call_id, context)) =
                 crate::provider::codex::repository::repository_invocation_context(
@@ -138,7 +139,7 @@ fn observe_semantic_preflight_record(
                     Some("/"),
                 )
             else {
-                return;
+                return Some(probe.class);
             };
             if crate::provider::codex::repository::repository_result_candidate(&context)
                 || context
@@ -155,14 +156,14 @@ fn observe_semantic_preflight_record(
                 .as_deref()
                 .filter(|call_id| !call_id.is_empty())
             else {
-                return;
+                return Some(probe.class);
             };
             if !repository_candidate_authority.contains_candidate(call_id) {
-                return;
+                return Some(probe.class);
             }
             let Ok(envelope) = serde_json::from_slice::<Value>(record) else {
                 repository_candidate_authority.observe_ambiguous_record();
-                return;
+                return Some(probe.class);
             };
             if let Some(cell_id) = envelope.get("payload").and_then(|payload| {
                 crate::provider::codex::repository::running_continuation_cell_id(payload)
@@ -177,6 +178,7 @@ fn observe_semantic_preflight_record(
         | CodexRecordClass::Retained(_)
         | CodexRecordClass::Ignored => {}
     }
+    Some(probe.class)
 }
 
 struct CodexSemanticPreflight {
@@ -184,14 +186,41 @@ struct CodexSemanticPreflight {
     authority: CodexMcpTerminalAuthority,
     prefix_repository_candidate_authority: Option<CodexRepositoryCandidateAuthority>,
     repository_candidate_authority: CodexRepositoryCandidateAuthority,
-    tool_contexts: BTreeMap<String, CodexToolCallContext>,
-    tool_authorities: BTreeMap<String, CodexPendingToolAuthority>,
-    continuations: BTreeMap<String, String>,
     bytes_read: u64,
     records_visited: u64,
     peak_record_bytes: usize,
     peak_repository_occurrence_cache_entries: usize,
     peak_repository_occurrence_cache_bytes: usize,
+}
+
+fn replay_semantic_prefix_record(
+    scanner: &mut CodexNativeScanner,
+    class: Option<CodexRecordClass>,
+    bytes: &[u8],
+    raw_ordinal: u64,
+    start_byte: u64,
+    end_byte: u64,
+    record_digest: [u8; 32],
+) -> Result<()> {
+    if !matches!(
+        class,
+        Some(
+            CodexRecordClass::SessionMeta
+                | CodexRecordClass::TurnContext
+                | CodexRecordClass::Retained(super::super::record::CodexRetainedKind::ToolCall)
+                | CodexRecordClass::ExcludedResult(_)
+        )
+    ) {
+        return Ok(());
+    }
+    let counters = scanner.counters;
+    let mut projection =
+        scanner.process_record(bytes, raw_ordinal, start_byte, end_byte, record_digest)?;
+    if let Some(mutation) = projection.context_mutation.take() {
+        scanner.apply_replayed_context_mutation(mutation);
+    }
+    scanner.counters = counters;
+    Ok(())
 }
 
 fn certified_prefix_authority(
@@ -206,7 +235,7 @@ fn certified_prefix_authority(
 
 fn preflight_semantic_authority(
     input: &mut JsonlFamilyExecutionIo,
-    checkpoint: Option<&CodexSemanticCheckpoint>,
+    scanner: &mut CodexNativeScanner,
 ) -> Result<CodexSemanticPreflight> {
     let certified_prefix_end = input.certified_prefix_end();
     let mut certified_prefix_boundary_crossed = false;
@@ -216,26 +245,6 @@ fn preflight_semantic_authority(
     let mut repository_candidate_authority = CodexRepositoryCandidateAuthority::default();
     let mut repository_occurrences = CodexRepositoryOccurrenceCache::default();
     let mut repository_candidate_cells = BTreeSet::new();
-    let mut tool_contexts = BTreeMap::new();
-    let mut tool_authorities = BTreeMap::new();
-    let pending_by_span = checkpoint
-        .map(|checkpoint| {
-            checkpoint
-                .pending_tool_authorities()
-                .iter()
-                .map(|authority| {
-                    (
-                        (
-                            authority.record_start,
-                            authority.record_end,
-                            authority.raw_ordinal,
-                        ),
-                        authority,
-                    )
-                })
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
     let mut bytes_read = 0_u64;
     let mut records_visited = 0_u64;
     let mut peak_record_bytes = 0_usize;
@@ -272,35 +281,33 @@ fn preflight_semantic_authority(
             repository_occurrences.observe_ambiguous_record();
             continue;
         }
-        let bytes = trim_jsonl_terminator(input.record_bytes(record)?);
-        observe_semantic_preflight_record(
+        let record_bytes = input.record_bytes(record)?;
+        let bytes = trim_jsonl_terminator(record_bytes);
+        let class = observe_semantic_preflight_record(
             bytes,
             &mut authority,
             &mut repository_candidate_authority,
             &mut repository_occurrences,
             &mut repository_candidate_cells,
         );
-        let key = (
-            record.byte_start(),
-            record.byte_end_exclusive(),
-            record.physical_ordinal(),
-        );
-        if let (Some(checkpoint), Some(pending)) = (checkpoint, pending_by_span.get(&key)) {
-            let (call_id, context) = decode_pending_tool_authority(
-                bytes,
-                pending,
-                checkpoint.owner(),
-                checkpoint.local_turn_started(),
+        if certified_prefix_end.is_some_and(|prefix_end| record.byte_end_exclusive() <= prefix_end)
+        {
+            scanner.mcp_terminal_authority = authority.clone();
+            scanner.repository_candidate_authority = certified_prefix_authority(
+                &authority,
+                &repository_candidate_authority,
+                &repository_occurrences,
+            )
+            .1;
+            replay_semantic_prefix_record(
+                scanner,
+                class,
+                record_bytes,
+                record.physical_ordinal(),
+                record.byte_start(),
+                record.byte_end_exclusive(),
+                record.sha256(),
             )?;
-            if tool_contexts.insert(call_id.clone(), context).is_some()
-                || tool_authorities
-                    .insert(call_id, (*pending).clone())
-                    .is_some()
-            {
-                return Err(invalid_checkpoint_proof(
-                    "pending tool-call authority correlation is duplicated",
-                ));
-            }
         }
     }
     if certified_prefix_end.is_some()
@@ -315,21 +322,12 @@ fn preflight_semantic_authority(
         prefix_authority = Some(mcp);
         prefix_repository_candidate_authority = Some(repository);
     }
-    if tool_authorities.len() != pending_by_span.len() {
-        return Err(invalid_checkpoint_proof(
-            "pending tool-call authority span is absent from the shared physical replay",
-        ));
-    }
     repository_occurrences.apply_suffix_to(&mut repository_candidate_authority);
-    let continuations = restore_pending_continuations(&mut tool_contexts, &tool_authorities)?;
     Ok(CodexSemanticPreflight {
         prefix_authority,
         authority,
         prefix_repository_candidate_authority,
         repository_candidate_authority,
-        tool_contexts,
-        tool_authorities,
-        continuations,
         bytes_read,
         records_visited,
         peak_record_bytes,
@@ -341,27 +339,18 @@ fn preflight_semantic_authority(
 impl CodexNativeScanner {
     pub(in crate::provider::codex::nativepath) fn new_semantic(
         source: CodexCatalogSource,
-        checkpoint: Option<CodexSemanticCheckpoint>,
+        _checkpoint: Option<CodexSemanticCheckpoint>,
     ) -> Result<Self> {
-        let owner = checkpoint
-            .as_ref()
-            .map(|checkpoint| {
-                validate_checkpoint_catalog_owner(&source, checkpoint.owner().clone())
-            })
-            .transpose()?;
-        let local_turn_started = checkpoint
-            .as_ref()
-            .is_some_and(CodexSemanticCheckpoint::local_turn_started);
         Ok(Self {
             source,
-            owner,
+            owner: None,
             tool_contexts: BTreeMap::new(),
             tool_authorities: BTreeMap::new(),
             continuations: BTreeMap::new(),
             mcp_terminal_authority: CodexMcpTerminalAuthority::default(),
             repository_candidate_authority: CodexRepositoryCandidateAuthority::default(),
             counters: CodexScanCounters::default(),
-            local_turn_started,
+            local_turn_started: false,
             active_core_page: None,
             ready_core_page: None,
             exhausted: false,
@@ -371,9 +360,9 @@ impl CodexNativeScanner {
     pub(in crate::provider::codex::nativepath) fn preflight_semantic(
         &mut self,
         input: &mut JsonlFamilyExecutionIo,
-        checkpoint: Option<&CodexSemanticCheckpoint>,
+        _checkpoint: Option<&CodexSemanticCheckpoint>,
     ) -> Result<bool> {
-        let preflight = preflight_semantic_authority(input, checkpoint)?;
+        let preflight = preflight_semantic_authority(input, self)?;
         let retry = preflight
             .prefix_authority
             .as_ref()
@@ -387,9 +376,6 @@ impl CodexNativeScanner {
         if retry {
             return Ok(true);
         }
-        self.tool_contexts = preflight.tool_contexts;
-        self.tool_authorities = preflight.tool_authorities;
-        self.continuations = preflight.continuations;
         self.mcp_terminal_authority = preflight.authority;
         self.repository_candidate_authority = preflight.repository_candidate_authority;
         self.counters.mcp_terminal_authority_bytes_read = preflight.bytes_read;

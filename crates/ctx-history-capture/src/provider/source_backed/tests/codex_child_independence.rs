@@ -458,9 +458,14 @@ fn semantic_checkpoint_envelope(
 }
 
 fn assert_checkpoint_has_no_authority_snapshots(checkpoint: &serde_json::Value) {
-    assert_eq!(checkpoint["version"], 2);
+    assert_eq!(checkpoint["version"], 1);
+    assert_eq!(checkpoint.as_object().unwrap().len(), 2);
+    assert!(checkpoint.get("pending_tool_authorities").is_none());
     assert!(checkpoint.get("terminal_authority").is_none());
     assert!(checkpoint.get("repository_candidate_authority").is_none());
+    assert!(checkpoint.get("local_turn_started").is_none());
+    assert!(checkpoint.get("owner").is_none());
+    assert_eq!(checkpoint["lineage"].as_object().unwrap().len(), 4);
 }
 
 fn terminal_authority_events(entries: usize) -> Vec<serde_json::Value> {
@@ -1126,108 +1131,157 @@ fn pending_prefix_call_is_restored_and_completed_by_append_suffix() {
 }
 
 #[test]
-fn legacy_semantic_checkpoint_appends_and_rewrites_without_snapshots() {
+fn replayed_checkpoint_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
+    let parent = "019fb000-0000-7000-8000-00000000004b";
+    let child = "019fb000-0000-7000-8000-00000000004c";
+    let path = session_path(&sessions, child);
+    let mut metadata = session_meta(child, SessionRelationshipKind::Forked, Some(parent));
+    metadata["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cli_version");
+    fs::write(
+        &path,
+        jsonl_bytes([
+            metadata,
+            unrelated_tool_call("replayed-child-mcp-call"),
+            exec_call_in("replayed-child-copied-call", command, &repository),
+        ]),
+    )
+    .unwrap();
+    let registry = register_tree(&[&sessions]);
+
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let cold = VerifiedIndex::open(&index_root).unwrap();
+    let cold_snapshot = source_snapshot(&cold, child, "replayed-child-mcp-call");
+    let (_, _, _, cold_checkpoint) = semantic_checkpoint_envelope(&cold, child);
+    assert_checkpoint_has_no_authority_snapshots(&cold_checkpoint);
+    drop(cold);
+
+    let unchanged_observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let unchanged_sources = causal_by_id(&unchanged_observed);
+    assert_exact_zero_work(&unchanged_sources, child, Some(parent));
+    let unchanged = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        source_snapshot(&unchanged, child, "replayed-child-mcp-call"),
+        cold_snapshot
+    );
+    drop(unchanged);
+
+    append_event(
+        &path,
+        mcp_terminal(
+            "replayed-child-mcp-call",
+            "replayed-child-server",
+            "replayedchildmcpattributiontoken",
+        ),
+    );
+    append_event(
+        &path,
+        successful_result(
+            "replayed-child-copied-call",
+            format!("replayedchildcopiedorigintoken\n[main abc1234] exact\n{oid}\n"),
+        ),
+    );
+    let append_observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let append_sources = causal_by_id(&append_observed);
+    assert_eq!(
+        append_sources.get(child).unwrap().counters.appended_sources,
+        1
+    );
+    assert_eq!(
+        append_sources.get(child).unwrap().counters.replaced_sources,
+        0
+    );
+    let appended = VerifiedIndex::open(&index_root).unwrap();
+    let appended_records = records_for(&appended, child);
+    let terminal = appended_records
+        .iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("replayedchildmcpattributiontoken"))
+        })
+        .expect("replayed child MCP terminal record");
+    assert!(terminal.mcp_tool_call.is_some());
+    let copied = appended_records
+        .iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("replayedchildcopiedorigintoken"))
+        })
+        .expect("replayed child copied result record");
+    assert!(
+        matches!(copied.event_origin, EventOrigin::CopiedFromAncestor { .. }),
+        "unexpected copied result: {copied:#?}"
+    );
+    let appended_snapshot = source_snapshot(&appended, child, "replayedchildmcpattributiontoken");
+    let (_, _, _, appended_checkpoint) = semantic_checkpoint_envelope(&appended, child);
+    assert_checkpoint_has_no_authority_snapshots(&appended_checkpoint);
+    drop(appended);
+
+    let cold_final_root = temp.path().join("cold-final-index");
+    refresh_source_backed_generation(&cold_final_root, &registry, writer_options()).unwrap();
+    let cold_final = VerifiedIndex::open(&cold_final_root).unwrap();
+    assert_eq!(
+        source_snapshot(&cold_final, child, "replayedchildmcpattributiontoken"),
+        appended_snapshot
+    );
+}
+
+#[test]
+fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index_root = temp.path().join("index");
     fs::create_dir_all(&sessions).unwrap();
     let native_session_id = "019fb000-0000-7000-8000-00000000004a";
     let path = session_path(&sessions, native_session_id);
+    let pending = (0..24)
+        .map(|index| exec_call(&format!("replayed-pending-{index:02}")))
+        .collect::<Vec<_>>();
     write_session(
         &sessions,
         native_session_id,
         SessionRelationshipKind::Root,
         None,
-        [message("legacy-semantic-checkpoint-prefix")],
+        pending,
     );
     let registry = register_tree(&[&sessions]);
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let initial = VerifiedIndex::open(&index_root).unwrap();
+    let (_, _, _, initial_checkpoint) = semantic_checkpoint_envelope(&initial, native_session_id);
+    assert_checkpoint_has_no_authority_snapshots(&initial_checkpoint);
+    drop(initial);
 
-    let current = VerifiedIndex::open(&index_root).unwrap();
-    let routes = current.manifest().source_routes().to_vec();
-    let current_certificate = certificate_for(&current, native_session_id);
-    let current_frontier = current_certificate.frontier().unwrap();
-    let TypedKey::Utf8(family_json) = current_frontier.checkpoint() else {
-        panic!("current Codex family checkpoint must be UTF-8");
-    };
-    let mut family = serde_json::from_str::<serde_json::Value>(family_json).unwrap();
-    let current_semantic = family["provider_checkpoint"]["Utf8"].as_str().unwrap();
-    let mut legacy_semantic = serde_json::from_str::<serde_json::Value>(current_semantic).unwrap();
-    assert_checkpoint_has_no_authority_snapshots(&legacy_semantic);
-    legacy_semantic["version"] = serde_json::json!(1);
-    legacy_semantic["terminal_authority"] = serde_json::json!({
-        "mcp_call_ids": "",
-        "result_call_ids": "",
-        "mcp_exhausted": false,
-        "result_exhausted": false
-    });
-    legacy_semantic["repository_candidate_authority"] = serde_json::json!({
-        "entries": "",
-        "exhausted": false
-    });
-    family["provider_checkpoint"]["Utf8"] =
-        serde_json::json!(serde_json::to_string(&legacy_semantic).unwrap());
-    let legacy_frontier = SourceFrontier::new(
-        CURRENT_FRONTIER_KIND,
-        TypedKey::utf8(serde_json::to_string(&family).unwrap()).unwrap(),
-        current_frontier.certified_prefix_bytes(),
-        *current_frontier.certified_prefix_digest(),
-    )
-    .unwrap();
-    let legacy_certificate = CertifiedSource::certify_with_frontier(
-        current_certificate.observation().clone(),
-        current_certificate.observation().clone(),
-        CURRENT_PARSER_REVISION,
-        *current_certificate.content_digest(),
-        current_certificate.counts(),
-        Some(legacy_frontier),
-    )
-    .unwrap();
-    let records = records_for(&current, native_session_id);
-    drop(current);
-
-    let mut install_legacy = GenerationWriter::open(&index_root, writer_options())
-        .unwrap()
-        .into_writer()
-        .unwrap();
-    install_legacy
-        .set_source_route_plan(
-            routes
-                .iter()
-                .map(|route| route.route_identity().clone())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::new(),
-        )
-        .unwrap();
-    for route in &routes {
-        install_legacy
-            .begin_source_route_stage(route.route_identity().clone())
-            .unwrap();
-        for source in route.sources() {
-            assert!(source.exact_descriptor_eq(legacy_certificate.observation().source()));
-            install_legacy
-                .begin_source(legacy_certificate.observation().source().clone())
-                .unwrap();
-            for record in &records {
-                install_legacy.add_core_record(record.clone()).unwrap();
-            }
-            install_legacy
-                .certify_source(legacy_certificate.clone())
-                .unwrap();
-        }
-        install_legacy
-            .finish_source_route_stage(route.route_identity())
-            .unwrap();
-    }
-    install_legacy.set_present_source_routes(routes).unwrap();
-    install_legacy
-        .commit(|target| match target {
-            RevalidationTarget::Source(actual) => actual == &legacy_certificate,
-            RevalidationTarget::Deletion(_) => false,
-        })
-        .unwrap();
-
-    append_event(&path, message("legacycheckpointmigratedsuffixuniquetoken"));
+    append_event(
+        &path,
+        exec_result("replayed-pending-23", "twentyfourthpendingcontexttoken"),
+    );
     let observed = capture_causal_stage();
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let counters = causal_by_id(&observed)
@@ -1236,15 +1290,36 @@ fn legacy_semantic_checkpoint_appends_and_rewrites_without_snapshots() {
         .counters;
     assert_eq!(counters.appended_sources, 1);
     assert_eq!(counters.replaced_sources, 0);
-    let migrated = VerifiedIndex::open(&index_root).unwrap();
-    let (_, _, _, migrated_checkpoint) = semantic_checkpoint_envelope(&migrated, native_session_id);
-    assert_checkpoint_has_no_authority_snapshots(&migrated_checkpoint);
+    let appended = VerifiedIndex::open(&index_root).unwrap();
+    let appended_snapshot = source_snapshot(
+        &appended,
+        native_session_id,
+        "twentyfourthpendingcontexttoken",
+    );
+    let result = records_for(&appended, native_session_id)
+        .into_iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("twentyfourthpendingcontexttoken"))
+        })
+        .unwrap();
+    assert_eq!(result.event_type, "command_output");
+    let (_, _, _, checkpoint) = semantic_checkpoint_envelope(&appended, native_session_id);
+    assert_checkpoint_has_no_authority_snapshots(&checkpoint);
+    drop(appended);
+
+    let cold_root = temp.path().join("cold-final-index");
+    refresh_source_backed_generation(&cold_root, &registry, writer_options()).unwrap();
     assert_eq!(
-        migrated
-            .search_event_candidates("legacycheckpointmigratedsuffixuniquetoken", 8)
-            .unwrap()
-            .len(),
-        1
+        source_snapshot(
+            &VerifiedIndex::open(&cold_root).unwrap(),
+            native_session_id,
+            "twentyfourthpendingcontexttoken",
+        ),
+        appended_snapshot
     );
 }
 
