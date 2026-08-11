@@ -18,8 +18,10 @@ init_buildkite_job_tool_env() {
     return 0
   fi
 
-  local base_tmp job_slug tool_root
+  local base_tmp build_path job_slug tool_root
+  local repo_root_resolved repository_cache_resolved repository_contents_resolved
   base_tmp="${TMPDIR:-/tmp}"
+  build_path="${BUILDKITE_BUILD_PATH:-${base_tmp}}"
   job_slug="${BUILDKITE_JOB_ID//[^A-Za-z0-9_.-]/_}"
   tool_root="${CTX_PUBLIC_CI_TOOL_ROOT:-${base_tmp}/ctx-public-ci-${job_slug}}"
 
@@ -31,10 +33,10 @@ init_buildkite_job_tool_env() {
   export CTX_TOOL_ENV_ROOT="${CTX_TOOL_ENV_ROOT:-${tool_root}/tool-env}"
   export BAZELISK_HOME="${BAZELISK_HOME:-${tool_root}/bazelisk-home}"
   export BAZEL_OUTPUT_USER_ROOT="${BAZEL_OUTPUT_USER_ROOT:-${tool_root}/bazel-output}"
-  # Buildkite hosted cache volumes link configured checkout-relative paths to
-  # /cache/bkcache. This stable path is the public CI cache-mount contract;
-  # without a configured volume it remains a safe job-local repository cache.
-  export CTX_PUBLIC_CI_REPOSITORY_CACHE="${CTX_PUBLIC_CI_REPOSITORY_CACHE:-${repo_root}/.buildkite-cache/bazel-repository}"
+  # Keep Bazel's downloaded and materialized repository contents in a
+  # job-owned directory outside the source checkout. The job slug prevents
+  # unsafe cross-job sharing while retaining reuse throughout this job.
+  export CTX_PUBLIC_CI_REPOSITORY_CACHE="${CTX_PUBLIC_CI_REPOSITORY_CACHE:-${build_path%/}/ctx-public-ci-cache/${job_slug}/bazel-repository}"
   export CTX_BAZEL_REPOSITORY_CACHE="${CTX_BAZEL_REPOSITORY_CACHE:-${CTX_PUBLIC_CI_REPOSITORY_CACHE}}"
   mkdir -p \
     "${TMPDIR}" \
@@ -45,9 +47,22 @@ init_buildkite_job_tool_env() {
     "${CTX_TOOL_ENV_ROOT}" \
     "${BAZELISK_HOME}" \
     "${BAZEL_OUTPUT_USER_ROOT}" \
-    "${CTX_BAZEL_REPOSITORY_CACHE}"
+    "${CTX_BAZEL_REPOSITORY_CACHE}/contents"
+
+  repo_root_resolved="$(cd "${repo_root}" && pwd -P)"
+  repository_cache_resolved="$(cd "${CTX_BAZEL_REPOSITORY_CACHE}" && pwd -P)"
+  repository_contents_resolved="$(cd "${CTX_BAZEL_REPOSITORY_CACHE}/contents" && pwd -P)"
+  case "${repository_contents_resolved}/" in
+    "${repo_root_resolved}/"*)
+      printf 'Buildkite Bazel repository contents cache must be outside checkout: %s (checkout: %s)\n' \
+        "${repository_contents_resolved}" "${repo_root_resolved}" >&2
+      exit 64
+      ;;
+  esac
+  export CTX_BAZEL_REPOSITORY_CACHE="${repository_cache_resolved}"
   printf 'Buildkite job tool root: %s\n' "${tool_root}"
   printf 'Buildkite Bazel repository cache: %s\n' "${CTX_BAZEL_REPOSITORY_CACHE}"
+  printf 'Buildkite Bazel repository contents cache: %s\n' "${repository_contents_resolved}"
 }
 
 run_apt_get() {

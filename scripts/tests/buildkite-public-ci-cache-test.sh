@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+public_ci_script="${repo_root}/scripts/buildkite-public-ci.sh"
+test_root="$(mktemp -d "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/ctx-buildkite-cache-test.XXXXXXXX")"
+trap 'rm -rf -- "${test_root}"' EXIT
+
+fail() {
+  printf 'Buildkite public CI cache test failed: %s\n' "$*" >&2
+  exit 1
+}
+
+checkout="${test_root}/builds/host/ctx-public-ci"
+build_path="${test_root}/builds"
+mkdir -p "${checkout}/scripts" "${build_path}"
+
+make_probe() {
+  local source="$1"
+  local output="$2"
+  awk '
+    /^init_buildkite_job_tool_env$/ {
+      print
+      print "printf \047repository_cache=%s\\n\047 \"${CTX_BAZEL_REPOSITORY_CACHE}\""
+      print "printf \047repository_contents=%s\\n\047 \"$(cd \"${CTX_BAZEL_REPOSITORY_CACHE}/contents\" && pwd -P)\""
+      exit
+    }
+    { print }
+  ' "${source}" > "${output}"
+  chmod 0755 "${output}"
+}
+
+probe_env=(
+  "PATH=/usr/bin:/bin"
+  "BUILDKITE=true"
+  "BUILDKITE_BUILD_ID=build-77"
+  "BUILDKITE_BUILD_PATH=${build_path}"
+  "BUILDKITE_BUILD_CHECKOUT_PATH=${checkout}"
+  "BUILDKITE_JOB_ID=job:77/smoke"
+  "TMPDIR=${test_root}/tmp"
+)
+
+run_probe() {
+  env -i "${probe_env[@]}" "$@" bash "${checkout}/scripts/buildkite-public-ci.sh"
+}
+
+make_probe "${public_ci_script}" "${checkout}/scripts/buildkite-public-ci.sh"
+output="$(run_probe)"
+expected_cache="${build_path}/ctx-public-ci-cache/job_77_smoke/bazel-repository"
+expected_contents="${expected_cache}/contents"
+grep -Fqx "repository_cache=${expected_cache}" <<<"${output}" \
+  || fail "representative Buildkite environment resolved the wrong repository cache"
+grep -Fqx "repository_contents=${expected_contents}" <<<"${output}" \
+  || fail "representative Buildkite environment resolved contents inside the wrong root"
+case "${expected_contents}/" in
+  "${checkout}/"*) fail "representative contents cache is inside the checkout" ;;
+esac
+
+unsafe_cache="${checkout}/.buildkite-cache/bazel-repository"
+if run_probe "CTX_BAZEL_REPOSITORY_CACHE=${unsafe_cache}" \
+  >"${test_root}/unsafe.out" 2>"${test_root}/unsafe.err"; then
+  fail "checkout-relative repository cache override was accepted"
+fi
+grep -Fq 'repository contents cache must be outside checkout' "${test_root}/unsafe.err" \
+  || fail "checkout-relative rejection did not explain the cache boundary"
+
+mkdir -p "${checkout}/linked-cache-target"
+ln -s "${checkout}/linked-cache-target" "${test_root}/linked-cache"
+if run_probe "CTX_BAZEL_REPOSITORY_CACHE=${test_root}/linked-cache" \
+  >"${test_root}/linked.out" 2>"${test_root}/linked.err"; then
+  fail "repository cache symlink resolving inside the checkout was accepted"
+fi
+grep -Fq 'repository contents cache must be outside checkout' "${test_root}/linked.err" \
+  || fail "resolved-path rejection did not explain the cache boundary"
+
+python3 - "${public_ci_script}" "${test_root}/mutated-buildkite-public-ci.sh" <<'PY'
+import pathlib
+import sys
+
+source_path = pathlib.Path(sys.argv[1])
+output_path = pathlib.Path(sys.argv[2])
+source = source_path.read_text(encoding="utf-8")
+safe = "${build_path%/}/ctx-public-ci-cache/${job_slug}/bazel-repository"
+unsafe = "${repo_root}/.buildkite-cache/bazel-repository"
+if source.count(safe) != 1:
+    raise SystemExit("expected exactly one authoritative external repository-cache default")
+output_path.write_text(source.replace(safe, unsafe, 1), encoding="utf-8")
+PY
+make_probe "${test_root}/mutated-buildkite-public-ci.sh" \
+  "${checkout}/scripts/buildkite-public-ci.sh"
+if run_probe >"${test_root}/mutation.out" 2>"${test_root}/mutation.err"; then
+  fail "old checkout-relative default mutation was accepted"
+fi
+grep -Fq 'repository contents cache must be outside checkout' "${test_root}/mutation.err" \
+  || fail "old-layout mutation did not exercise the cache-boundary rejection"
+
+printf 'Buildkite public CI cache test ok: repository contents resolve outside checkout\n'
