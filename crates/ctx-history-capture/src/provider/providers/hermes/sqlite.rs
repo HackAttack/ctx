@@ -653,7 +653,7 @@ impl<'connection> HermesRowReader<'connection> {
             format!(" and {visibility}")
         };
         let sql = format!(
-            "select m.rowid, {}, {}, m.role = 'tool' from messages m \
+            "select m.rowid, {}, {} from messages m \
              where m.rowid in ({placeholders}){visibility} order by m.rowid",
             messages.retained_length_expr(),
             messages.storage_class_error_expr(),
@@ -667,7 +667,6 @@ impl<'connection> HermesRowReader<'connection> {
                         rowid: row.get(0)?,
                         retained_bytes: row.get(1)?,
                         storage_error_code: row.get(2)?,
-                        indivisible: row.get::<_, i64>(3)? != 0,
                     })
                 })?
                 .collect();
