@@ -40,13 +40,28 @@ sha2.workspace = true
 """
 
 RUNTIME_BUILD = """\
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+
 rust_library(
     name = "lib",
     deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+ctx_rust_test(
+    name = "unit_tests",
+    deps = all_crate_deps(normal = True, normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 """
 
 JSONL_BUILD = """\
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+
 JSONL_DEPS = [
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-capture-runtime:lib",
@@ -56,6 +71,13 @@ JSONL_DEPS = [
 rust_library(
     name = "lib",
     deps = all_crate_deps(normal = True) + JSONL_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+ctx_rust_test(
+    name = "unit_tests",
+    deps = all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 """
 
@@ -158,6 +180,64 @@ class BoundaryMutationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be a string or inline table"):
             self.validate()
 
+    def test_malformed_workspace_branches_are_rejected(self) -> None:
+        cases = (
+            (
+                "missing workspace",
+                '[package]\nname = "fixture"\n',
+                "root Cargo manifest must define a workspace table",
+            ),
+            (
+                "non-table dependencies",
+                "workspace = { dependencies = 1 }\n",
+                "workspace.dependencies must be a table",
+            ),
+            (
+                "missing inherited dependency",
+                WORKSPACE_CARGO.replace('sha2 = "1"\n', ""),
+                "absent from root workspace.dependencies",
+            ),
+            (
+                "malformed inherited dependency",
+                WORKSPACE_CARGO.replace('sha2 = "1"', "sha2 = 1"),
+                "must be a string or inline table",
+            ),
+            (
+                "recursive workspace inheritance",
+                WORKSPACE_CARGO.replace(
+                    'sha2 = "1"', "sha2 = { workspace = true }"
+                ),
+                "cannot inherit from workspace.dependencies",
+            ),
+            (
+                "invalid workspace package rename",
+                WORKSPACE_CARGO.replace('sha2 = "1"', 'sha2 = { package = "" }'),
+                "invalid package rename",
+            ),
+        )
+        for name, workspace, error in cases:
+            with self.subTest(name=name):
+                self.workspace_manifest.write_text(workspace, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, error):
+                    self.validate()
+                self.workspace_manifest.write_text(WORKSPACE_CARGO, encoding="utf-8")
+
+    def test_malformed_workspace_inheritance_flags_are_rejected(self) -> None:
+        for flag, error in (
+            ('"yes"', "non-boolean workspace inheritance flag"),
+            ("false", "ambiguous workspace = false entry"),
+        ):
+            with self.subTest(flag=flag):
+                self.jsonl_manifest.write_text(
+                    JSONL_CARGO.replace(
+                        "sha2.workspace = true", f"sha2 = {{ workspace = {flag} }}"
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, error):
+                    self.validate()
+                self.jsonl_manifest.write_text(JSONL_CARGO, encoding="utf-8")
+
     def test_runtime_build_dependency_outside_allowlist_is_rejected(self) -> None:
         self.runtime_manifest.write_text(
             RUNTIME_CARGO + '\n[build-dependencies]\ncc = "1"\n',
@@ -184,20 +264,192 @@ class BoundaryMutationTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(ValueError, "Bazel deps must be exactly"):
+        with self.assertRaisesRegex(ValueError, "Bazel rust_library deps must be exactly"):
+            self.validate()
+
+    def test_runtime_production_dependencies_are_enforced(self) -> None:
+        self.runtime_build.write_text(
+            RUNTIME_BUILD.replace(
+                "all_crate_deps(normal = True),",
+                'all_crate_deps(normal = True) + ["//crates/ctx-history-capture:lib"],',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "Bazel rust_library deps must be exactly"):
             self.validate()
 
     def test_loaded_bazel_label_is_rejected(self) -> None:
         self.jsonl_build.write_text(
-            'load("//tools:deps.bzl", "JSONL_DEPS")\n'
-            'rust_library(\n'
-            '    name = "lib",\n'
-            '    deps = all_crate_deps(normal = True) + JSONL_DEPS,\n'
-            ')\n',
+            'load("//tools:deps.bzl", "JSONL_DEPS")\n' + JSONL_BUILD,
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(ValueError, "literal JSONL_DEPS"):
+        with self.assertRaisesRegex(ValueError, "local literal"):
             self.validate()
+
+    def test_jsonl_deps_augmentation_and_reassignment_are_rejected(self) -> None:
+        for name, mutation in (
+            (
+                "augmented assignment",
+                'JSONL_DEPS += ["//crates/ctx-history-index:lib"]\n',
+            ),
+            (
+                "reassignment",
+                'JSONL_DEPS = JSONL_DEPS + ["//crates/ctx-history-index:lib"]\n',
+            ),
+            ("alias reference", "COPIED_DEPS = JSONL_DEPS\n"),
+        ):
+            with self.subTest(name=name):
+                self.jsonl_build.write_text(
+                    JSONL_BUILD.replace(
+                        "\nrust_library(", f"\n{mutation}\nrust_library("
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "JSONL_DEPS"):
+                    self.validate()
+
+    def test_trusted_symbols_require_canonical_load_sources(self) -> None:
+        cases = (
+            ("all_crate_deps", "@crates//:defs.bzl"),
+            ("rust_library", "@rules_rust//rust:defs.bzl"),
+            ("ctx_rust_test", "//tools/bazel:ctx_rust.bzl"),
+        )
+        for symbol, source in cases:
+            with self.subTest(symbol=symbol):
+                self.runtime_build.write_text(
+                    RUNTIME_BUILD.replace(
+                        f'load("{source}", "{symbol}")',
+                        f'load("//untrusted:defs.bzl", "{symbol}")',
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "canonical source"):
+                    self.validate()
+                self.runtime_build.write_text(RUNTIME_BUILD, encoding="utf-8")
+
+    def test_trusted_symbols_cannot_be_rebound(self) -> None:
+        for symbol in ("all_crate_deps", "rust_library", "ctx_rust_test"):
+            with self.subTest(symbol=symbol):
+                self.runtime_build.write_text(
+                    RUNTIME_BUILD + f"\n{symbol} = concealed_symbol\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "may not be rebound"):
+                    self.validate()
+                self.runtime_build.write_text(RUNTIME_BUILD, encoding="utf-8")
+
+    def test_trusted_symbols_cannot_be_loaded_through_aliases(self) -> None:
+        for symbol, source in (
+            ("all_crate_deps", "@crates//:defs.bzl"),
+            ("rust_library", "@rules_rust//rust:defs.bzl"),
+            ("ctx_rust_test", "//tools/bazel:ctx_rust.bzl"),
+        ):
+            with self.subTest(symbol=symbol):
+                self.runtime_build.write_text(
+                    RUNTIME_BUILD.replace(
+                        f'load("{source}", "{symbol}")',
+                        f'load("{source}", concealed = "{symbol}")',
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "without aliasing"):
+                    self.validate()
+                self.runtime_build.write_text(RUNTIME_BUILD, encoding="utf-8")
+
+    def test_ctx_rust_test_dependencies_are_enforced_for_both_packages(self) -> None:
+        cases = (
+            (
+                self.runtime_build,
+                RUNTIME_BUILD,
+                "all_crate_deps(normal = True, normal_dev = True)",
+                'all_crate_deps(normal = True, normal_dev = True) + ["//crates/ctx-history-index:lib"]',
+            ),
+            (
+                self.jsonl_build,
+                JSONL_BUILD,
+                "all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS",
+                'all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS + ["//crates/ctx-history-index-format:lib"]',
+            ),
+        )
+        for build_path, source, allowed, forbidden in cases:
+            with self.subTest(build=build_path.name):
+                build_path.write_text(
+                    source.replace(allowed, forbidden),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "ctx_rust_test #1 deps"):
+                    self.validate()
+                build_path.write_text(source, encoding="utf-8")
+
+    def test_every_ctx_rust_test_is_enforced(self) -> None:
+        self.runtime_build.write_text(
+            RUNTIME_BUILD
+            + """\
+ctx_rust_test(
+    name = "extra_tests",
+    deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/ctx-history-index:lib"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+""",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "ctx_rust_test #2 deps"):
+            self.validate()
+
+    def test_production_proc_macro_dependencies_are_enforced(self) -> None:
+        for build_path, source, forbidden_label in (
+            (
+                self.runtime_build,
+                RUNTIME_BUILD,
+                "//crates/ctx-history-index:lib",
+            ),
+            (
+                self.jsonl_build,
+                JSONL_BUILD,
+                "//crates/ctx-history-index-format:lib",
+            ),
+        ):
+            with self.subTest(build=build_path.name):
+                build_path.write_text(
+                    source.replace(
+                        "all_crate_deps(proc_macro = True),",
+                        f'all_crate_deps(proc_macro = True) + ["{forbidden_label}"],',
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "rust_library proc_macro_deps"):
+                    self.validate()
+                build_path.write_text(source, encoding="utf-8")
+
+    def test_ctx_rust_test_proc_macro_dependencies_are_enforced(self) -> None:
+        for build_path, source, forbidden_label in (
+            (
+                self.runtime_build,
+                RUNTIME_BUILD,
+                "//crates/ctx-history-index:lib",
+            ),
+            (
+                self.jsonl_build,
+                JSONL_BUILD,
+                "//crates/ctx-history-index-format:lib",
+            ),
+        ):
+            with self.subTest(build=build_path.name):
+                build_path.write_text(
+                    source.replace(
+                        "all_crate_deps(proc_macro = True, proc_macro_dev = True)",
+                        "all_crate_deps(proc_macro = True, proc_macro_dev = True) "
+                        f'+ ["{forbidden_label}"]',
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "ctx_rust_test #1 proc_macro_deps"
+                ):
+                    self.validate()
+                build_path.write_text(source, encoding="utf-8")
 
     def test_bazel_comments_do_not_create_false_positive(self) -> None:
         self.jsonl_build.write_text(

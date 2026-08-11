@@ -25,6 +25,11 @@ JSONL_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-core:lib",
 )
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
+CANONICAL_LOAD_SOURCES = {
+    "all_crate_deps": "@crates//:defs.bzl",
+    "rust_library": "@rules_rust//rust:defs.bzl",
+    "ctx_rust_test": "//tools/bazel:ctx_rust.bzl",
+}
 
 
 class BoundaryError(ValueError):
@@ -259,7 +264,9 @@ def _split_top_level(tokens: Sequence[Token]) -> list[list[Token]]:
     return [part for part in parts if part]
 
 
-def _find_call(tokens: Sequence[Token], rule: str, package: str) -> list[Token]:
+def _find_calls(
+    tokens: Sequence[Token], rule: str, package: str
+) -> list[list[Token]]:
     calls: list[list[Token]] = []
     for index, token in enumerate(tokens[:-1]):
         if (
@@ -282,9 +289,7 @@ def _find_call(tokens: Sequence[Token], rule: str, package: str) -> list[Token]:
                     raise BoundaryError(f"{package} Bazel has unbalanced delimiters")
         else:
             raise BoundaryError(f"{package} Bazel has an unterminated {rule} call")
-    if len(calls) != 1:
-        raise BoundaryError(f"{package} Bazel must define exactly one {rule} target")
-    return calls[0]
+    return calls
 
 
 def _named_arguments(call: Sequence[Token], package: str) -> dict[str, list[Token]]:
@@ -313,30 +318,228 @@ def _literal_string_list(tokens: Sequence[Token], package: str, name: str) -> tu
     return tuple(values)
 
 
-def _assignment_values(tokens: Sequence[Token], name: str) -> list[list[Token]]:
-    values: list[list[Token]] = []
-    for index in range(len(tokens) - 2):
-        if (
-            tokens[index].kind == "identifier"
-            and tokens[index].value == name
-            and tokens[index + 1].value == "="
-        ):
+def _assignments(
+    tokens: Sequence[Token], name: str
+) -> list[tuple[str, list[Token]]]:
+    assignments: list[tuple[str, list[Token]]] = []
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier" or token.value != name:
+            continue
+        if index + 1 < len(tokens) and tokens[index + 1].value == "=":
+            operator = "="
             value = tokens[index + 2 :]
-            if not value or value[0].value != "[":
-                values.append(value[:1])
-                continue
-            depth = 0
-            for end, token in enumerate(value):
-                if token.value == "[":
-                    depth += 1
-                elif token.value == "]":
-                    depth -= 1
-                    if depth == 0:
-                        values.append(value[: end + 1])
-                        break
+        elif (
+            index + 2 < len(tokens)
+            and tokens[index + 1].value == "+"
+            and tokens[index + 2].value == "="
+        ):
+            operator = "+="
+            value = tokens[index + 3 :]
+        else:
+            continue
+        if not value or value[0].value != "[":
+            assignments.append((operator, value[:1]))
+            continue
+        depth = 0
+        for end, value_token in enumerate(value):
+            if value_token.value == "[":
+                depth += 1
+            elif value_token.value == "]":
+                depth -= 1
+                if depth == 0:
+                    assignments.append((operator, list(value[: end + 1])))
+                    break
+        else:
+            raise BoundaryError(f"Bazel {name} assignment has unbalanced delimiters")
+    return assignments
+
+
+def _validate_canonical_loads(
+    tokens: Sequence[Token], package: str, reserved_symbols: set[str]
+) -> None:
+    trusted_origins = {symbol: [] for symbol in CANONICAL_LOAD_SOURCES}
+    for call in _find_calls(tokens, "load", package):
+        arguments = _split_top_level(call)
+        if not arguments or len(arguments[0]) != 1 or arguments[0][0].kind != "string":
+            raise BoundaryError(f"{package} Bazel has an unsupported load source")
+        source = arguments[0][0].value
+        for imported in arguments[1:]:
+            if len(imported) == 1 and imported[0].kind == "string":
+                local_name = imported[0].value
+                remote_name = local_name
+            elif (
+                len(imported) == 3
+                and imported[0].kind == "identifier"
+                and imported[1].value == "="
+                and imported[2].kind == "string"
+            ):
+                local_name = imported[0].value
+                remote_name = imported[2].value
             else:
-                raise BoundaryError(f"Bazel {name} assignment has unbalanced delimiters")
-    return values
+                raise BoundaryError(f"{package} Bazel has an unsupported load binding")
+
+            if local_name in reserved_symbols or remote_name in reserved_symbols:
+                raise BoundaryError(
+                    f"{package} Bazel {remote_name} must be a local literal and "
+                    "may not be loaded"
+                )
+            if (
+                local_name not in CANONICAL_LOAD_SOURCES
+                and remote_name not in CANONICAL_LOAD_SOURCES
+            ):
+                continue
+            expected_source = CANONICAL_LOAD_SOURCES.get(local_name)
+            if local_name != remote_name or source != expected_source:
+                raise BoundaryError(
+                    f"{package} Bazel trusted symbol {remote_name!r} must be loaded "
+                    "without aliasing from its canonical source"
+                )
+            trusted_origins[local_name].append(source)
+
+    for symbol, expected_source in CANONICAL_LOAD_SOURCES.items():
+        if trusted_origins[symbol] != [expected_source]:
+            raise BoundaryError(
+                f"{package} Bazel must load {symbol} exactly once from "
+                f"{expected_source}"
+            )
+
+
+def _validate_trusted_symbol_uses(tokens: Sequence[Token], package: str) -> None:
+    for index, token in enumerate(tokens):
+        if token.kind != "identifier" or token.value not in CANONICAL_LOAD_SOURCES:
+            continue
+        previous = tokens[index - 1].value if index else None
+        following = tokens[index + 1].value if index + 1 < len(tokens) else None
+        if following != "(" or previous in {".", "def"}:
+            raise BoundaryError(
+                f"{package} Bazel trusted symbol {token.value} may not be rebound "
+                "or referenced through an alias"
+            )
+
+
+def _validate_dependency_expression(
+    tokens: Sequence[Token],
+    package: str,
+    context: str,
+    generated_flags: dict[str, str],
+    direct_dependencies: str | None = None,
+) -> None:
+    if direct_dependencies is None:
+        valid = _is_all_crate_deps(tokens, **generated_flags)
+    else:
+        plus = [index for index, token in enumerate(tokens) if token.value == "+"]
+        valid = (
+            len(plus) == 1
+            and _is_all_crate_deps(tokens[: plus[0]], **generated_flags)
+            and [token.value for token in tokens[plus[0] + 1 :]]
+            == [direct_dependencies]
+        )
+    if not valid:
+        suffix = f" + {direct_dependencies}" if direct_dependencies else ""
+        rendered_flags = ", ".join(
+            f"{name} = {value}" for name, value in generated_flags.items()
+        )
+        raise BoundaryError(
+            f"{package} Bazel {context} must be exactly "
+            f"all_crate_deps({rendered_flags}){suffix}"
+        )
+
+
+def _validate_rule_dependencies(
+    call: Sequence[Token],
+    package: str,
+    context: str,
+    dependency_flags: dict[str, str],
+    proc_macro_flags: dict[str, str],
+    direct_dependencies: str | None = None,
+) -> dict[str, list[Token]]:
+    arguments = _named_arguments(call, package)
+    name = arguments.get("name")
+    if name is None or len(name) != 1 or name[0].kind != "string":
+        raise BoundaryError(f"{package} Bazel {context} must have a literal name")
+    _validate_dependency_expression(
+        arguments.get("deps", []),
+        package,
+        f"{context} deps",
+        dependency_flags,
+        direct_dependencies,
+    )
+    _validate_dependency_expression(
+        arguments.get("proc_macro_deps", []),
+        package,
+        f"{context} proc_macro_deps",
+        proc_macro_flags,
+    )
+    return arguments
+
+
+def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> None:
+    tokens = _tokenize_starlark(build_path.read_text(encoding="utf-8"), package)
+    _validate_canonical_loads(
+        tokens, package, {"JSONL_DEPS"} if jsonl else set()
+    )
+    _validate_trusted_symbol_uses(tokens, package)
+
+    rust_libraries = _find_calls(tokens, "rust_library", package)
+    if len(rust_libraries) != 1:
+        raise BoundaryError(f"{package} Bazel must define exactly one rust_library target")
+    direct_dependencies = "JSONL_DEPS" if jsonl else None
+    library_arguments = _validate_rule_dependencies(
+        rust_libraries[0],
+        package,
+        "rust_library",
+        {"normal": "True"},
+        {"proc_macro": "True"},
+        direct_dependencies,
+    )
+    if library_arguments["name"][0].value != "lib":
+        raise BoundaryError(f"{package} Bazel rust_library must be named lib")
+
+    rust_tests = _find_calls(tokens, "ctx_rust_test", package)
+    if not rust_tests:
+        raise BoundaryError(f"{package} Bazel must define at least one ctx_rust_test")
+    for index, rust_test in enumerate(rust_tests, start=1):
+        _validate_rule_dependencies(
+            rust_test,
+            package,
+            f"ctx_rust_test #{index}",
+            {"normal": "True", "normal_dev": "True"},
+            {"proc_macro": "True", "proc_macro_dev": "True"},
+            direct_dependencies,
+        )
+
+    if not jsonl:
+        return
+    assignments = _assignments(tokens, "JSONL_DEPS")
+    if len(assignments) != 1 or assignments[0][0] != "=":
+        raise BoundaryError(
+            f"{package} Bazel must define exactly one unaugmented JSONL_DEPS"
+        )
+    if (
+        _literal_string_list(assignments[0][1], package, "JSONL_DEPS")
+        != JSONL_DIRECT_BAZEL_DEPENDENCIES
+    ):
+        raise BoundaryError(f"{package} Bazel direct dependency inventory drifted")
+    expected_uses = 1 + len(rust_libraries) + len(rust_tests)
+    actual_uses = sum(
+        token.kind == "identifier" and token.value == "JSONL_DEPS"
+        for token in tokens
+    )
+    if actual_uses != expected_uses:
+        raise BoundaryError(
+            f"{package} Bazel JSONL_DEPS may only be assigned once and used "
+            "directly by dependency attributes"
+        )
+
+
+def _validate_runtime_bazel(build_path: Path) -> None:
+    _validate_package_bazel(
+        build_path, "ctx-history-capture-runtime", jsonl=False
+    )
+
+
+def _validate_jsonl_bazel(build_path: Path) -> None:
+    _validate_package_bazel(build_path, "ctx-history-jsonl", jsonl=True)
 
 
 def _is_all_crate_deps(tokens: Sequence[Token], **expected: str) -> bool:
@@ -358,54 +561,6 @@ def _is_all_crate_deps(tokens: Sequence[Token], **expected: str) -> bool:
             return False
         actual[argument[0].value] = argument[2].value
     return actual == expected
-
-
-def _validate_runtime_bazel(build_path: Path) -> None:
-    package = "ctx-history-capture-runtime"
-    arguments = _named_arguments(
-        _find_call(
-            _tokenize_starlark(build_path.read_text(encoding="utf-8"), package),
-            "rust_library",
-            package,
-        ),
-        package,
-    )
-    if (
-        arguments.get("name") is None
-        or [token.value for token in arguments["name"]] != ["lib"]
-    ):
-        raise BoundaryError(f"{package} Bazel rust_library must be named lib")
-    if not _is_all_crate_deps(arguments.get("deps", []), normal="True"):
-        raise BoundaryError(
-            f"{package} Bazel deps must be exactly all_crate_deps(normal = True)"
-        )
-
-
-def _validate_jsonl_bazel(build_path: Path) -> None:
-    package = "ctx-history-jsonl"
-    tokens = _tokenize_starlark(build_path.read_text(encoding="utf-8"), package)
-    assignments = _assignment_values(tokens, "JSONL_DEPS")
-    if len(assignments) != 1:
-        raise BoundaryError(f"{package} Bazel must define exactly one literal JSONL_DEPS")
-    if (
-        _literal_string_list(assignments[0], package, "JSONL_DEPS")
-        != JSONL_DIRECT_BAZEL_DEPENDENCIES
-    ):
-        raise BoundaryError(f"{package} Bazel direct dependency inventory drifted")
-    arguments = _named_arguments(_find_call(tokens, "rust_library", package), package)
-    if (
-        arguments.get("name") is None
-        or [token.value for token in arguments["name"]] != ["lib"]
-    ):
-        raise BoundaryError(f"{package} Bazel rust_library must be named lib")
-    deps = arguments.get("deps", [])
-    plus = [index for index, token in enumerate(deps) if token.value == "+"]
-    if len(plus) != 1 or not _is_all_crate_deps(deps[: plus[0]], normal="True") or [
-        token.value for token in deps[plus[0] + 1 :]
-    ] != ["JSONL_DEPS"]:
-        raise BoundaryError(
-            f"{package} Bazel deps must be exactly all_crate_deps(normal = True) + JSONL_DEPS"
-        )
 
 
 def _validate_runtime_manifest(manifest_path: Path, workspace_manifest: dict[str, Any]) -> None:
