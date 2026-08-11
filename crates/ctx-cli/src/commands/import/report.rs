@@ -198,16 +198,20 @@ fn render_import_report_human(context: &RenderContext, report: &IngestReport) ->
 
 const MAX_HUMAN_SOURCE_FAILURES: usize = 3;
 
+struct HumanSourceFailure<'a> {
+    selector: &'a str,
+    provider: &'a str,
+    class: &'a str,
+    carried_forward: bool,
+    detail: &'a str,
+    unsupported_schema: bool,
+}
+
 fn source_failure_fields(report: &IngestReport) -> Vec<(String, String)> {
     let failures = report
         .sources
         .iter()
-        .filter_map(|source| {
-            let IngestSourceOutcome::SourceFailure(failure) = source else {
-                return None;
-            };
-            Some(failure)
-        })
+        .filter_map(human_source_failure)
         .collect::<Vec<_>>();
     let mut fields = failures
         .iter()
@@ -219,17 +223,15 @@ fn source_failure_fields(report: &IngestReport) -> Vec<(String, String)> {
             } else {
                 ""
             };
-            let disposition = (source.failure_type.as_str() == "unsupported_schema")
+            let disposition = source
+                .unsupported_schema
                 .then_some(" is not importable")
                 .unwrap_or_default();
             (
                 format!("Source {}", index.saturating_add(1)),
                 format!(
                     "{}{disposition} ({}, {}{retained}): {}",
-                    source.source_selector,
-                    source.provider,
-                    source.source_failure_class,
-                    source.detail
+                    source.selector, source.provider, source.class, source.detail
                 ),
             )
         })
@@ -262,6 +264,51 @@ fn source_failure_fields(report: &IngestReport) -> Vec<(String, String)> {
         ));
     }
     fields
+}
+
+fn human_source_failure(source: &IngestSourceOutcome) -> Option<HumanSourceFailure<'_>> {
+    match source {
+        IngestSourceOutcome::SourceFailure(failure) => Some(HumanSourceFailure {
+            selector: &failure.source_selector,
+            provider: &failure.provider,
+            class: &failure.source_failure_class,
+            carried_forward: failure.carried_forward,
+            detail: &failure.detail,
+            unsupported_schema: failure.failure_type
+                == ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+        }),
+        IngestSourceOutcome::Exact(exact)
+            if exact.status == ctx_history_ingest_application::IngestStatus::Failure
+                && exact.failure_scope
+                    == ctx_history_ingest_application::IngestFailureScope::Source
+                && exact.route_source_failure_total != 0 =>
+        {
+            Some(HumanSourceFailure {
+                selector: exact
+                    .requested_failure
+                    .as_ref()
+                    .map(|failure| failure.source_selector.as_str())
+                    .unwrap_or(""),
+                provider: exact.provider.as_str(),
+                class: exact
+                    .requested_failure_class
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                carried_forward: exact
+                    .requested_failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.carried_forward),
+                detail: exact
+                    .requested_failure
+                    .as_ref()
+                    .map(|failure| failure.detail.as_str())
+                    .unwrap_or("source failure detail omitted from bounded diagnostics"),
+                unsupported_schema: exact.failure_type
+                    == ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn import_outcome_copy(totals: &ImportTotals) -> (OutcomeState, &'static str, String) {
@@ -522,6 +569,64 @@ mod tests {
         )
     }
 
+    fn failed_exact_report() -> IngestReport {
+        let selector = "/history/codex/sessions.jsonl";
+        report(
+            false,
+            ImportTotals {
+                terminal_route_counts_available: true,
+                failed_sources: 3,
+                work_result: ProviderImportWorkResult::NoOp,
+                ..ImportTotals::default()
+            },
+            vec![IngestSourceOutcome::Exact(
+                ctx_history_ingest_application::ExactPublicationOutcome {
+                    status: ctx_history_ingest_application::IngestStatus::Failure,
+                    failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
+                    failure_type:
+                        ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+                    provider: ctx_history_core::CaptureProvider::Codex,
+                    path: Path::new(selector).to_path_buf(),
+                    source_format: "codex_sessions_jsonl_v1",
+                    stats: ctx_history_ingest_application::SourceStats {
+                        files: 1,
+                        bytes: 8,
+                        change_token: Some([7; 32]),
+                    },
+                    route_identity: "route-1".to_owned(),
+                    catalog_lineage: "lineage-1".to_owned(),
+                    request_overlay:
+                        ctx_history_refresh::explicit_source_catalog_authority_for_test(1),
+                    previous_generation: Some("generation-0".to_owned()),
+                    published_generation: "generation-1".to_owned(),
+                    generation_changed: false,
+                    scanned_routes: 1,
+                    successful_routes: 0,
+                    source_failure_total: 3,
+                    route_source_failure_total: 3,
+                    rejected_record_total: 0,
+                    rejection_diagnostics: Vec::new(),
+                    request_id: Some("request-1".to_owned()),
+                    change: ctx_history_ingest_application::IngestChange::NoOp,
+                    current: ctx_history_refresh::SourceBackedRefreshCurrent::default(),
+                    requested_failure: Some(ctx_history_ingest_application::SourceFailureOutcome {
+                        status: ctx_history_ingest_application::IngestStatus::Failure,
+                        failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
+                        failure_type:
+                            ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+                        source_identity: "source-1".to_owned(),
+                        provider: "codex".to_owned(),
+                        source_failure_class: "incompatible".to_owned(),
+                        carried_forward: true,
+                        source_selector: selector.to_owned(),
+                        detail: "unsupported source schema".to_owned(),
+                    }),
+                    requested_failure_class: Some("incompatible".to_owned()),
+                },
+            )],
+        )
+    }
+
     #[test]
     fn human_import_report_is_outcome_first_and_omits_internal_fields() {
         let report = changed_report();
@@ -694,6 +799,44 @@ mod tests {
         assert!(rendered.contains("/history/2.jsonl"));
         assert!(!rendered.contains("/history/3.jsonl"));
         assert!(rendered.contains("2 source failures were omitted"));
+    }
+
+    #[test]
+    fn failed_exact_route_projects_bounded_human_detail_before_omissions() {
+        let report = failed_exact_report();
+
+        assert_eq!(
+            source_failure_fields(&report),
+            vec![
+                (
+                    "Source 1".to_owned(),
+                    "/history/codex/sessions.jsonl is not importable (codex, incompatible, retained prior data): unsupported source schema".to_owned(),
+                ),
+                (
+                    "Additional".to_owned(),
+                    "2 source failures were omitted".to_owned(),
+                ),
+            ]
+        );
+        let rendered =
+            render_import_report_human(&context(120, ColorMode::Never), &report).render_plain();
+        assert_eq!(
+            rendered,
+            concat!(
+                "✗ History import failed\n",
+                "3 sources failed\n",
+                "\n",
+                "Source failures\n",
+                "Source 1    /history/codex/sessions.jsonl is not importable (codex, incompatible, retained prior data): unsupported\n",
+                "            source schema\n",
+                "Additional  2 source failures were omitted\n",
+                "\n",
+                "Hint: Inspect source availability and import support.\n",
+                "\n",
+                "Next\n",
+                "  ctx sources\n",
+            )
+        );
     }
 
     #[test]
