@@ -107,7 +107,7 @@ Support means ctx can discover or read that harness's persisted local history an
 | Gemini CLI / Antigravity | Supported |
 | Factory AI Droid | Supported |
 | OpenClaw | Supported |
-| Hermes Agent | Supported |
+| Hermes Agent | Detected, unsupported |
 | AstrBot | Supported |
 | NanoClaw | Supported |
 | Shelley | Supported |
