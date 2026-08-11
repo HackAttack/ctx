@@ -3,6 +3,32 @@ use super::*;
 const SQLITE_PRIVATE_SCRATCH_PAGE_BYTES: u64 = 4 * 1024;
 const SQLITE_PRIVATE_SCRATCH_CACHE_KIB: i64 = 512;
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static FAIL_NEXT_PRIVATE_SCRATCH_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_NEXT_PRIVATE_SCRATCH_CLOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(in crate::sqlite_source) fn fail_next_private_scratch_open_for_test() {
+    FAIL_NEXT_PRIVATE_SCRATCH_OPEN.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(in crate::sqlite_source) fn fail_next_private_scratch_close_for_test() {
+    FAIL_NEXT_PRIVATE_SCRATCH_CLOSE.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn take_private_scratch_open_failure_for_test() -> bool {
+    FAIL_NEXT_PRIVATE_SCRATCH_OPEN.with(|fail| fail.replace(false))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn take_private_scratch_close_failure_for_test() -> bool {
+    FAIL_NEXT_PRIVATE_SCRATCH_CLOSE.with(|fail| fail.replace(false))
+}
+
 impl SqliteSourceReadSnapshot {
     /// Runs one bounded external operation against an ordinary SQLite database
     /// in a private ctx-owned directory.
@@ -18,7 +44,7 @@ impl SqliteSourceReadSnapshot {
         use_scratch: impl FnOnce(&Connection, &Path) -> Result<T, E>,
     ) -> Result<T, E>
     where
-        E: From<SqliteSourceAccessError>,
+        E: SqliteSourceErrorComposition,
     {
         self.with_private_scratch_database_inner(prefix, maximum_bytes, use_scratch, |_| {})
     }
@@ -31,7 +57,7 @@ impl SqliteSourceReadSnapshot {
         after_use: impl FnOnce(&Path),
     ) -> Result<T, E>
     where
-        E: From<SqliteSourceAccessError>,
+        E: SqliteSourceErrorComposition,
     {
         self.connection().map_err(E::from)?;
         let reservation = self
@@ -53,28 +79,40 @@ impl SqliteSourceReadSnapshot {
             create_scratch_directory(&self.snapshot_context.data_root, prefix).map_err(E::from)?;
         let scratch_directory_path = directory.path().to_path_buf();
         let scratch_path = directory.path().join("scratch.sqlite");
-        let connection = match Connection::open_with_flags(
-            &scratch_path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        ) {
+        let open_connection = || {
+            Connection::open_with_flags(
+                &scratch_path,
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | OpenFlags::SQLITE_OPEN_CREATE
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
+                    | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        let connection = if take_private_scratch_open_failure_for_test() {
+            Err(rusqlite::Error::InvalidQuery)
+        } else {
+            open_connection()
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let connection = open_connection();
+        let connection = match connection {
             Ok(connection) => connection,
             Err(source) => {
-                let open_error = E::from(scratch_sqlite_error(
+                let open_error = scratch_sqlite_error(
                     "creating the private provider SQLite scratch database",
                     source,
-                ));
-                return match directory.close() {
-                    Ok(()) => Err(open_error),
-                    Err(source) => Err(E::from(scratch_io_error(
-                        "cleaning the private provider SQLite scratch directory",
-                        scratch_directory_path,
-                        source,
-                    ))),
+                );
+                let cleanup = close_private_scratch_directory(directory, scratch_directory_path);
+                let error = match cleanup {
+                    Ok(()) => open_error,
+                    Err(cleanup) => SqliteSourceAccessError::Finalization {
+                        primary: Box::new(open_error),
+                        cleanup: Box::new(cleanup),
+                    },
                 };
+                return Err(E::from(error));
             }
         };
         let operation = (|| {
@@ -166,37 +204,40 @@ impl SqliteSourceReadSnapshot {
         })();
         let exact_scratch_bytes = std::fs::metadata(&scratch_path)
             .map_err(|source| {
-                E::from(scratch_io_error(
+                scratch_io_error(
                     "measuring the private provider SQLite scratch database",
                     scratch_path.clone(),
                     source,
-                ))
+                )
             })
-            .and_then(|metadata| {
-                reservation
-                    .record_exact_bytes(metadata.len())
-                    .map_err(E::from)
-            });
+            .and_then(|metadata| reservation.record_exact_bytes(metadata.len()));
         after_use(directory.path());
+        #[cfg(any(test, feature = "test-support"))]
+        let close = if take_private_scratch_close_failure_for_test() {
+            drop(connection);
+            Err(scratch_sqlite_error(
+                "closing the private provider SQLite scratch database",
+                rusqlite::Error::InvalidQuery,
+            ))
+        } else {
+            connection.close().map_err(|(_, source)| {
+                scratch_sqlite_error(
+                    "closing the private provider SQLite scratch database",
+                    source,
+                )
+            })
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
         let close = connection.close().map_err(|(_, source)| {
-            E::from(scratch_sqlite_error(
+            scratch_sqlite_error(
                 "closing the private provider SQLite scratch database",
                 source,
-            ))
+            )
         });
-        let cleanup = directory.close().map_err(|source| {
-            E::from(scratch_io_error(
-                "cleaning the private provider SQLite scratch directory",
-                scratch_directory_path,
-                source,
-            ))
-        });
-        match (operation, exact_scratch_bytes, close, cleanup) {
-            (_, _, _, Err(cleanup)) => Err(cleanup),
-            (_, _, Err(close), Ok(())) => Err(close),
-            (_, Err(accounting), Ok(()), Ok(())) => Err(accounting),
-            (operation, Ok(()), Ok(()), Ok(())) => operation,
-        }
+        let cleanup = close_private_scratch_directory(directory, scratch_directory_path);
+        let result = combine_scratch_finalization(operation, exact_scratch_bytes);
+        let result = combine_scratch_finalization(result, close);
+        combine_scratch_finalization(result, cleanup)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -208,10 +249,49 @@ impl SqliteSourceReadSnapshot {
         after_use: impl FnOnce(&Path),
     ) -> Result<T, E>
     where
-        E: From<SqliteSourceAccessError>,
+        E: SqliteSourceErrorComposition,
     {
         self.with_private_scratch_database_inner(prefix, maximum_bytes, use_scratch, after_use)
     }
+}
+
+fn combine_scratch_finalization<T, E>(
+    primary: Result<T, E>,
+    finalization: SqliteSourceAccessResult<()>,
+) -> Result<T, E>
+where
+    E: SqliteSourceErrorComposition,
+{
+    match (primary, finalization) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(finalization)) => Err(E::from(finalization)),
+        (Err(primary), Err(finalization)) => {
+            Err(primary.compose_sqlite_source_finalization(finalization))
+        }
+    }
+}
+
+fn close_private_scratch_directory(
+    directory: TempDir,
+    path: PathBuf,
+) -> SqliteSourceAccessResult<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    if take_private_directory_cleanup_failure_for_test() {
+        drop(directory);
+        return Err(scratch_io_error(
+            "cleaning the private provider SQLite scratch directory",
+            path,
+            std::io::Error::other("injected private SQLite directory cleanup failure"),
+        ));
+    }
+    directory.close().map_err(|source| {
+        scratch_io_error(
+            "cleaning the private provider SQLite scratch directory",
+            path,
+            source,
+        )
+    })
 }
 
 fn create_scratch_directory(data_root: &Path, prefix: &str) -> SqliteSourceAccessResult<TempDir> {

@@ -10,6 +10,7 @@ use std::{
 };
 
 use ctx_history_core::CaptureProvider;
+use ctx_history_source_io::SqliteReadFinalizationError;
 use rusqlite::{limits::Limit as SqliteLimit, Connection};
 use serde_json::Value;
 
@@ -29,10 +30,13 @@ use crate::provider::{
 };
 use crate::MAX_PROVIDER_SQLITE_VALUE_BYTES;
 
+#[cfg(test)]
+use super::SqliteSourceDirectoryAuthority;
 use super::{
     observe_ordinary_file, open_ordinary_file_without_following,
     open_root_handle_sqlite_source_snapshot_with_limits, retain_sqlite_source_directory_authority,
-    selectors::sort_paths, types::ProviderDefaultLocation, SqliteSourceSnapshotLimits,
+    selectors::sort_paths, types::ProviderDefaultLocation, SqliteSourceAccessError,
+    SqliteSourceReadSnapshot, SqliteSourceSnapshotLimits,
 };
 
 const SQLITE_PROBE_MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
@@ -44,6 +48,7 @@ const SQLITE_PLAINTEXT_HEADER: &[u8; 16] = b"SQLite format 3\0";
 #[cfg(test)]
 std::thread_local! {
     static DEFAULT_LOCATION_PROBE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_NEXT_SQLITE_PROBE_CONNECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(super) fn default_location_import_probe(
@@ -580,6 +585,34 @@ struct SqliteProbeLimits {
     max_progress_calls: usize,
 }
 
+#[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "typed probe failures are inspected by direct tests"
+    )
+)]
+enum SqliteProbePrimaryError {
+    BudgetExhausted,
+    Connection(SqliteSourceAccessError),
+    Configuration(rusqlite::Error),
+    Query(rusqlite::Error),
+}
+
+type SqliteProbeExecutionError =
+    SqliteReadFinalizationError<SqliteProbePrimaryError, SqliteSourceAccessError>;
+
+#[cfg(test)]
+fn fail_next_sqlite_probe_connection_for_test() {
+    FAIL_NEXT_SQLITE_PROBE_CONNECTION.with(|fail| fail.set(true));
+}
+
+#[cfg(test)]
+fn take_sqlite_probe_connection_failure_for_test() -> bool {
+    FAIL_NEXT_SQLITE_PROBE_CONNECTION.with(|fail| fail.replace(false))
+}
+
 impl Default for SqliteProbeLimits {
     fn default() -> Self {
         Self {
@@ -646,11 +679,33 @@ fn sqlite_structural_probe(
         Err(error) if error.is_provider_path_unavailable() => return BoundedProbe::NotFound,
         Err(_) => return BoundedProbe::IoError,
     };
+    classify_sqlite_probe_execution(execute_sqlite_structural_probe(
+        snapshot,
+        limits,
+        configure_sqlite_probe,
+        query,
+    ))
+}
+
+fn execute_sqlite_structural_probe(
+    snapshot: SqliteSourceReadSnapshot,
+    limits: SqliteProbeLimits,
+    configure: impl FnOnce(&Connection, Duration) -> rusqlite::Result<()>,
+    query: impl FnOnce(&Connection) -> rusqlite::Result<bool>,
+) -> Result<bool, SqliteProbeExecutionError> {
     let exhausted = Arc::new(AtomicBool::new(false));
     let deadline = Instant::now() + limits.deadline;
     let progress_exhausted = Arc::clone(&exhausted);
     let mut progress_calls = 0usize;
-    let query_result = match snapshot.connection() {
+    #[cfg(test)]
+    let connection = if take_sqlite_probe_connection_failure_for_test() {
+        Err(SqliteSourceAccessError::SnapshotNotActive)
+    } else {
+        snapshot.connection()
+    };
+    #[cfg(not(test))]
+    let connection = snapshot.connection();
+    let query_result = match connection {
         Ok(connection) => {
             connection.progress_handler(
                 SQLITE_PROBE_PROGRESS_OPS,
@@ -664,24 +719,42 @@ fn sqlite_structural_probe(
                     stop
                 }),
             );
-            let result = configure_sqlite_probe(connection, limits.deadline)
-                .and_then(|()| query(connection));
+            let result = match configure(connection, limits.deadline) {
+                Ok(()) => query(connection).map_err(SqliteProbePrimaryError::Query),
+                Err(error) => Err(SqliteProbePrimaryError::Configuration(error)),
+            };
             connection.progress_handler(0, None::<fn() -> bool>);
             result
         }
-        Err(_) => return BoundedProbe::IoError,
+        Err(error) => Err(SqliteProbePrimaryError::Connection(error)),
     };
-    let finish_result = snapshot.finish();
-    if exhausted.load(Ordering::Relaxed) {
-        return BoundedProbe::BudgetExhausted;
-    }
-    if finish_result.is_err() {
-        return BoundedProbe::IoError;
-    }
-    match query_result {
+    let primary = if exhausted.load(Ordering::Relaxed) {
+        Err(SqliteProbePrimaryError::BudgetExhausted)
+    } else {
+        query_result
+    };
+    snapshot.finish_with(primary)
+}
+
+fn classify_sqlite_probe_execution(
+    result: Result<bool, SqliteProbeExecutionError>,
+) -> BoundedProbe {
+    match result {
         Ok(true) => BoundedProbe::Found,
         Ok(false) => BoundedProbe::NotFound,
-        Err(_) => BoundedProbe::IoError,
+        Err(SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::BudgetExhausted)) => {
+            BoundedProbe::BudgetExhausted
+        }
+        Err(SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::Connection(error)))
+            if error.is_systemic_resource_failure() =>
+        {
+            BoundedProbe::BudgetExhausted
+        }
+        Err(
+            SqliteReadFinalizationError::Primary(_)
+            | SqliteReadFinalizationError::Finalization(_)
+            | SqliteReadFinalizationError::PrimaryAndFinalization { .. },
+        ) => BoundedProbe::IoError,
     }
 }
 

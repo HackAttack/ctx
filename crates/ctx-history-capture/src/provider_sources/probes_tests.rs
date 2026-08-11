@@ -35,6 +35,29 @@ fn directory_file_bytes(path: &Path) -> BTreeMap<OsString, Vec<u8>> {
         .collect()
 }
 
+fn open_structural_probe_snapshot(
+    data_root: &Path,
+    path: &Path,
+) -> (SqliteSourceDirectoryAuthority, SqliteSourceReadSnapshot) {
+    let parent = path.parent().unwrap();
+    let parent_handle = fs::File::open(parent).unwrap();
+    let authority =
+        retain_sqlite_source_directory_authority(data_root, &parent_handle, parent).unwrap();
+    let snapshot = open_root_handle_sqlite_source_snapshot_with_limits(
+        &authority,
+        path.file_name().unwrap(),
+        SqliteSourceSnapshotLimits::default(),
+    )
+    .unwrap();
+    (authority, snapshot)
+}
+
+fn assert_structural_probe_finished(authority: &SqliteSourceDirectoryAuthority) {
+    let counters = authority.snapshot_counters();
+    assert_eq!(counters.unfinished_drops(), 0);
+    assert_eq!(counters.active_snapshots(), 0);
+}
+
 #[test]
 fn sqlite_probe_reads_committed_live_wal_without_mutating_provider_files() {
     let temp = tempdir();
@@ -346,6 +369,183 @@ fn sqlite_probe_deadline_interrupts_expensive_queries() {
         )
     });
     assert_eq!(outcome, BoundedProbe::BudgetExhausted);
+}
+
+#[test]
+fn sqlite_probe_connection_error_finalizes_and_preserves_cleanup_failure() {
+    let temp = tempdir();
+    let data = tempdir();
+    let path = temp.path().join("connection-finalization.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("create table conversations (id text);")
+        .unwrap();
+    super::super::fail_next_opened_snapshot_cleanup_for_test();
+    let (authority, snapshot) = open_structural_probe_snapshot(data.path(), &path);
+    fail_next_sqlite_probe_connection_for_test();
+
+    let error = execute_sqlite_structural_probe(
+        snapshot,
+        SqliteProbeLimits::default(),
+        configure_sqlite_probe,
+        |_connection| Ok(true),
+    )
+    .unwrap_err();
+
+    match error {
+        SqliteReadFinalizationError::PrimaryAndFinalization {
+            primary: SqliteProbePrimaryError::Connection(primary),
+            finalization,
+        } => {
+            assert!(matches!(
+                primary,
+                SqliteSourceAccessError::SnapshotNotActive
+            ));
+            assert!(finalization
+                .to_string()
+                .contains("injected SQLite snapshot cleanup failure"));
+        }
+        other => panic!("expected connection plus finalization failure, got {other:?}"),
+    }
+    assert_structural_probe_finished(&authority);
+}
+
+#[test]
+fn sqlite_probe_configuration_error_finalizes_and_preserves_cleanup_failure() {
+    let temp = tempdir();
+    let data = tempdir();
+    let path = temp.path().join("configuration-finalization.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("create table conversations (id text);")
+        .unwrap();
+    super::super::fail_next_opened_snapshot_cleanup_for_test();
+    let (authority, snapshot) = open_structural_probe_snapshot(data.path(), &path);
+
+    let error = execute_sqlite_structural_probe(
+        snapshot,
+        SqliteProbeLimits::default(),
+        |_connection, _deadline| Err(rusqlite::Error::InvalidQuery),
+        |_connection| Ok(true),
+    )
+    .unwrap_err();
+
+    match error {
+        SqliteReadFinalizationError::PrimaryAndFinalization {
+            primary: SqliteProbePrimaryError::Configuration(rusqlite::Error::InvalidQuery),
+            finalization,
+        } => assert!(finalization
+            .to_string()
+            .contains("injected SQLite snapshot cleanup failure")),
+        other => panic!("expected configuration plus finalization failure, got {other:?}"),
+    }
+    assert_structural_probe_finished(&authority);
+}
+
+#[test]
+fn sqlite_probe_query_error_finalizes_and_preserves_cleanup_failure() {
+    let temp = tempdir();
+    let data = tempdir();
+    let path = temp.path().join("query-finalization.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("create table conversations (id text);")
+        .unwrap();
+    super::super::fail_next_opened_snapshot_cleanup_for_test();
+    let (authority, snapshot) = open_structural_probe_snapshot(data.path(), &path);
+
+    let error = execute_sqlite_structural_probe(
+        snapshot,
+        SqliteProbeLimits::default(),
+        configure_sqlite_probe,
+        |_connection| Err(rusqlite::Error::InvalidQuery),
+    )
+    .unwrap_err();
+
+    match error {
+        SqliteReadFinalizationError::PrimaryAndFinalization {
+            primary: SqliteProbePrimaryError::Query(rusqlite::Error::InvalidQuery),
+            finalization,
+        } => assert!(finalization
+            .to_string()
+            .contains("injected SQLite snapshot cleanup failure")),
+        other => panic!("expected query plus finalization failure, got {other:?}"),
+    }
+    assert_structural_probe_finished(&authority);
+}
+
+#[test]
+fn sqlite_probe_budget_error_does_not_hide_simultaneous_finalization_failure() {
+    let temp = tempdir();
+    let data = tempdir();
+    let path = temp.path().join("budget-finalization.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("create table conversations (id text);")
+        .unwrap();
+    super::super::fail_next_opened_snapshot_cleanup_for_test();
+    let (authority, snapshot) = open_structural_probe_snapshot(data.path(), &path);
+    let limits = SqliteProbeLimits {
+        deadline: Duration::ZERO,
+        max_progress_calls: usize::MAX,
+        ..SqliteProbeLimits::default()
+    };
+
+    let error =
+        execute_sqlite_structural_probe(snapshot, limits, configure_sqlite_probe, |connection| {
+            connection.query_row(
+                "with recursive counter(value) as (\
+                     values(0) union all select value + 1 from counter where value < 10000000\
+                 ) select max(value) = 10000000 from counter",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+        })
+        .unwrap_err();
+
+    match error {
+        SqliteReadFinalizationError::PrimaryAndFinalization {
+            primary: SqliteProbePrimaryError::BudgetExhausted,
+            finalization,
+        } => assert!(finalization
+            .to_string()
+            .contains("injected SQLite snapshot cleanup failure")),
+        other => panic!("expected budget plus finalization failure, got {other:?}"),
+    }
+    assert_structural_probe_finished(&authority);
+}
+
+#[test]
+fn sqlite_probe_success_still_reports_terminal_revalidation_failure() {
+    let temp = tempdir();
+    let data = tempdir();
+    let path = temp.path().join("revalidation-finalization.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("create table conversations (id text);")
+        .unwrap();
+    let (authority, snapshot) = open_structural_probe_snapshot(data.path(), &path);
+
+    let error = execute_sqlite_structural_probe(
+        snapshot,
+        SqliteProbeLimits::default(),
+        configure_sqlite_probe,
+        |_connection| {
+            let mut source = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            source.write_all(&[0]).unwrap();
+            source.sync_all().unwrap();
+            Ok(true)
+        },
+    )
+    .unwrap_err();
+
+    match error {
+        SqliteReadFinalizationError::Finalization(finalization) => {
+            assert!(finalization.is_source_changed());
+        }
+        other => panic!("expected terminal revalidation failure, got {other:?}"),
+    }
+    assert_structural_probe_finished(&authority);
 }
 
 #[test]

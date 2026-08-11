@@ -22,6 +22,7 @@ fn open_with_hooks(
         Ok(snapshot) => Ok(snapshot),
         Err(SqliteSourceProgressError::Source(error)) => Err(error),
         Err(SqliteSourceProgressError::Progress(never)) => match never {},
+        Err(SqliteSourceProgressError::ProgressAndFinalization { primary, .. }) => match primary {},
     }
 }
 
@@ -34,6 +35,22 @@ pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_snapshot_before_r
         authority,
         database_name,
         SqliteSourceSnapshotPolicy::ExactRevision,
+        SqliteSourceSnapshotLimits::default(),
+        || {},
+        || {},
+        before_source_revalidation,
+    )
+}
+
+pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test(
+    authority: &SqliteSourceDirectoryAuthority,
+    database_name: &OsStr,
+    before_source_revalidation: impl FnOnce(),
+) -> SqliteSourceAccessResult<SqliteSourceReadSnapshot> {
+    open_with_hooks(
+        authority,
+        database_name,
+        SqliteSourceSnapshotPolicy::StablePrivateCopy,
         SqliteSourceSnapshotLimits::default(),
         || {},
         || {},

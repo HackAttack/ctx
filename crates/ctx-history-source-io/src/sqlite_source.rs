@@ -51,7 +51,7 @@ mod diagnostics;
 pub use diagnostics::{
     resource_exhaustion_io_error, rusqlite_busy_or_locked, rusqlite_resource_failure,
     SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
-    SqliteSourceComponent, SqliteSourceProgressError,
+    SqliteSourceComponent, SqliteSourceErrorComposition, SqliteSourceProgressError,
 };
 
 pub type SqliteSourceAccessResult<T> = Result<T, SqliteSourceAccessError>;
@@ -1122,7 +1122,9 @@ use family::{
     SqliteSchemaEvidence, SqliteSnapshotEvidence, SqliteSourceFamily,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use snapshot::fail_next_opened_snapshot_cleanup_for_test;
+pub use snapshot::{
+    fail_next_opened_snapshot_cleanup_for_test, fail_next_private_directory_cleanup_for_test,
+};
 pub use snapshot::{
     open_root_handle_sqlite_source_snapshot, open_root_handle_sqlite_source_snapshot_with_limits,
     retain_sqlite_source_directory_authority, SqliteSourceSnapshotLimits,

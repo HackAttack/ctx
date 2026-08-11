@@ -45,10 +45,7 @@ impl AcquiredSqliteConnection {
             close_private_snapshot_directory(directory, artifact, 0, self.copied_bytes)
         });
         drop(self.snapshot_activity.take());
-        match (close, cleanup) {
-            (_, Err(error)) | (Err(error), Ok(())) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
-        }
+        combine_sqlite_source_cleanup(close, cleanup)
     }
 
     pub(super) fn diagnose_validation_error(
@@ -85,6 +82,7 @@ impl SqliteSourceReadSnapshot {
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_NEXT_SNAPSHOT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_SCRATCH_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -99,6 +97,11 @@ pub fn fail_next_snapshot_write_enospc_for_test() {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub fn fail_next_snapshot_open_for_test() {
+    FAIL_NEXT_SNAPSHOT_OPEN.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn take_opened_snapshot_cleanup_failure_for_test() -> bool {
     FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP.with(|fail| fail.replace(false))
 }
@@ -106,6 +109,11 @@ pub(super) fn take_opened_snapshot_cleanup_failure_for_test() -> bool {
 #[cfg(any(test, feature = "test-support"))]
 fn take_snapshot_write_failure_for_test() -> bool {
     FAIL_NEXT_SCRATCH_WRITE.with(|fail| fail.replace(false))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn take_snapshot_open_failure_for_test() -> bool {
+    FAIL_NEXT_SNAPSHOT_OPEN.with(|fail| fail.replace(false))
 }
 
 pub(super) fn acquire_sqlite_connection_with_progress<E>(
@@ -155,24 +163,44 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
         after_database_copy,
         report_progress,
     )?;
-    let connection = Connection::open_with_flags(
-        &snapshot_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|source| {
-        sqlite_error("opening the ctx-owned provider snapshot", source)
-            .with_exact_provider_content_provenance()
-            .with_diagnostic(
-                SqliteFailurePhase::SourceValidation,
-                SqliteArtifactKind::PrivateSourceCopy,
-                0,
-                copied_bytes,
-                SqliteCleanupStatus::NotRequired,
-            )
-    });
+    let open_connection = || {
+        Connection::open_with_flags(
+            &snapshot_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|source| {
+            sqlite_error("opening the ctx-owned provider snapshot", source)
+                .with_exact_provider_content_provenance()
+                .with_diagnostic(
+                    SqliteFailurePhase::SourceValidation,
+                    SqliteArtifactKind::PrivateSourceCopy,
+                    0,
+                    copied_bytes,
+                    SqliteCleanupStatus::NotRequired,
+                )
+        })
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    let connection = if take_snapshot_open_failure_for_test() {
+        Err(SqliteSourceAccessError::Sqlite {
+            operation: "opening the ctx-owned provider snapshot",
+            source: rusqlite::Error::InvalidQuery,
+        }
+        .with_diagnostic(
+            SqliteFailurePhase::SourceValidation,
+            SqliteArtifactKind::PrivateSourceCopy,
+            0,
+            copied_bytes,
+            SqliteCleanupStatus::NotRequired,
+        ))
+    } else {
+        open_connection()
+    };
+    #[cfg(not(any(test, feature = "test-support")))]
+    let connection = open_connection();
     let connection = match connection {
         Ok(connection) => connection,
         Err(error) => {
@@ -185,7 +213,11 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
                 Ok(()) => Err(error
                     .with_cleanup_status(SqliteCleanupStatus::Succeeded)
                     .into()),
-                Err(cleanup) => Err(cleanup.into()),
+                Err(cleanup) => Err(SqliteSourceAccessError::Finalization {
+                    primary: Box::new(error),
+                    cleanup: Box::new(cleanup),
+                }
+                .into()),
             };
         }
     };
@@ -320,7 +352,7 @@ pub(super) fn copy_sqlite_family_to_ctx_with_progress<E>(
             completed_bytes,
         ) {
             Ok(()) => Err(error),
-            Err(cleanup) => Err(cleanup.into()),
+            Err(cleanup) => Err(error.with_finalization(cleanup)),
         },
     }
 }
@@ -404,6 +436,22 @@ pub fn close_private_snapshot_directory(
     copied_bytes: u64,
 ) -> SqliteSourceAccessResult<()> {
     let path = directory.path().to_path_buf();
+    #[cfg(any(test, feature = "test-support"))]
+    if take_private_directory_cleanup_failure_for_test() {
+        drop(directory);
+        return Err(SqliteSourceAccessError::ScratchIoUnavailable {
+            operation: "removing a ctx-owned SQLite snapshot directory",
+            path,
+            source: std::io::Error::other("injected private SQLite directory cleanup failure"),
+        }
+        .with_diagnostic(
+            SqliteFailurePhase::Cleanup,
+            artifact,
+            copied_pages,
+            copied_bytes,
+            SqliteCleanupStatus::Failed,
+        ));
+    }
     directory.close().map_err(|source| {
         SqliteSourceAccessError::ScratchIoUnavailable {
             operation: "removing a ctx-owned SQLite snapshot directory",

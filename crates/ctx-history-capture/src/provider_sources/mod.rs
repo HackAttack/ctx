@@ -49,8 +49,8 @@ pub(crate) use ctx_history_source_io::{
     resource_exhaustion_io_error, retain_sqlite_source_directory_authority,
     rusqlite_busy_or_locked, rusqlite_resource_failure, SqliteArtifactKind, SqliteCleanupStatus,
     SqliteFailurePhase, SqliteSourceAccessError, SqliteSourceDirectoryAuthority,
-    SqliteSourceEvidence, SqliteSourceProgressError, SqliteSourceReadSnapshot,
-    SqliteSourceSnapshotLimits,
+    SqliteSourceErrorComposition, SqliteSourceEvidence, SqliteSourceProgressError,
+    SqliteSourceReadSnapshot, SqliteSourceSnapshotLimits,
 };
 pub(crate) use resolvers::PathPresence;
 pub(crate) use resolvers::{

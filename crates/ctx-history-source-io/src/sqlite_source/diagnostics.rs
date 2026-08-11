@@ -208,11 +208,55 @@ pub enum SqliteSourceAccessError {
 pub enum SqliteSourceProgressError<E> {
     Source(SqliteSourceAccessError),
     Progress(E),
+    ProgressAndFinalization {
+        primary: E,
+        finalization: SqliteSourceAccessError,
+    },
 }
 
 impl<E> From<SqliteSourceAccessError> for SqliteSourceProgressError<E> {
     fn from(error: SqliteSourceAccessError) -> Self {
         Self::Source(error)
+    }
+}
+
+impl<E> SqliteSourceProgressError<E> {
+    pub(crate) fn with_finalization(self, finalization: SqliteSourceAccessError) -> Self {
+        match self {
+            Self::Source(primary) => Self::Source(SqliteSourceAccessError::Finalization {
+                primary: Box::new(primary),
+                cleanup: Box::new(finalization),
+            }),
+            Self::Progress(primary) => Self::ProgressAndFinalization {
+                primary,
+                finalization,
+            },
+            Self::ProgressAndFinalization {
+                primary,
+                finalization: earlier,
+            } => Self::ProgressAndFinalization {
+                primary,
+                finalization: SqliteSourceAccessError::Finalization {
+                    primary: Box::new(earlier),
+                    cleanup: Box::new(finalization),
+                },
+            },
+        }
+    }
+}
+
+/// Allows a provider-owned callback error to preserve a later physical
+/// SQLite cleanup failure without moving provider semantics into source I/O.
+pub trait SqliteSourceErrorComposition: From<SqliteSourceAccessError> {
+    fn compose_sqlite_source_finalization(self, finalization: SqliteSourceAccessError) -> Self;
+}
+
+impl SqliteSourceErrorComposition for SqliteSourceAccessError {
+    fn compose_sqlite_source_finalization(self, finalization: SqliteSourceAccessError) -> Self {
+        Self::Finalization {
+            primary: Box::new(self),
+            cleanup: Box::new(finalization),
+        }
     }
 }
 

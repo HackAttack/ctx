@@ -10,9 +10,29 @@ use acquisition::*;
 pub(super) use acquisition::{close_private_snapshot_directory, close_private_sqlite_connection};
 #[cfg(any(test, feature = "test-support"))]
 pub use acquisition::{
-    fail_next_opened_snapshot_cleanup_for_test, fail_next_snapshot_write_enospc_for_test,
+    fail_next_opened_snapshot_cleanup_for_test, fail_next_snapshot_open_for_test,
+    fail_next_snapshot_write_enospc_for_test,
 };
 use copy_progress::{copy_sqlite_member_with_progress, report_source_family_copy_progress};
+#[cfg(any(test, feature = "test-support"))]
+pub(in crate::sqlite_source) use scratch::{
+    fail_next_private_scratch_close_for_test, fail_next_private_scratch_open_for_test,
+};
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static FAIL_NEXT_PRIVATE_DIRECTORY_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_next_private_directory_cleanup_for_test() {
+    FAIL_NEXT_PRIVATE_DIRECTORY_CLEANUP.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn take_private_directory_cleanup_failure_for_test() -> bool {
+    FAIL_NEXT_PRIVATE_DIRECTORY_CLEANUP.with(|fail| fail.replace(false))
+}
 
 /// Snapshot-wide scratch policy. The aggregate includes every retained DB/WAL
 /// file and any SQLite-created transient private artifact for this route.
@@ -104,6 +124,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_policy(
         Ok(snapshot) => Ok(snapshot),
         Err(SqliteSourceProgressError::Source(error)) => Err(error),
         Err(SqliteSourceProgressError::Progress(never)) => match never {},
+        Err(SqliteSourceProgressError::ProgressAndFinalization { primary, .. }) => match primary {},
     }
 }
 
@@ -182,7 +203,11 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
                 Ok(()) => Err(error
                     .with_cleanup_status(SqliteCleanupStatus::Succeeded)
                     .into()),
-                Err(cleanup) => Err(cleanup.into()),
+                Err(cleanup) => Err(SqliteSourceAccessError::Finalization {
+                    primary: Box::new(error),
+                    cleanup: Box::new(cleanup),
+                }
+                .into()),
             };
         }
     };
@@ -222,4 +247,5 @@ pub(super) use test_api::{
     open_root_handle_sqlite_source_snapshot_before_revalidation_for_test,
     open_root_handle_sqlite_source_snapshot_with_limit_for_test,
     open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test,
+    open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test,
 };

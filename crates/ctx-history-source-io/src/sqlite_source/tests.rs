@@ -12,10 +12,13 @@ use std::os::unix::fs::symlink;
 use rusqlite::{ffi, params, Connection};
 
 use super::snapshot::{
+    fail_next_private_directory_cleanup_for_test, fail_next_private_scratch_close_for_test,
+    fail_next_private_scratch_open_for_test, fail_next_snapshot_open_for_test,
     fail_next_snapshot_write_enospc_for_test,
     open_root_handle_sqlite_source_snapshot_before_revalidation_for_test,
     open_root_handle_sqlite_source_snapshot_with_limit_for_test,
     open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test,
+    open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test,
 };
 use super::{
     map_revalidation_error, map_revalidation_io_error, open_root_handle_sqlite_source_snapshot,
@@ -266,6 +269,117 @@ fn progress_cancellation_cleans_a_partial_family_copy() {
         SqliteSourceProgressError::Progress("cancelled")
     ));
     assert!(calls > 1);
+    assert_eq!(staging_entries(data_root.path()), 0);
+}
+
+#[test]
+fn progress_cancellation_preserves_simultaneous_cleanup_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE messages(body TEXT NOT NULL);
+             INSERT INTO messages VALUES ('large');
+             CREATE TABLE padding(payload BLOB NOT NULL);
+             INSERT INTO padding VALUES (zeroblob(10485760));",
+        )
+        .unwrap();
+    drop(connection);
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+    let mut calls = 0;
+    fail_next_private_directory_cleanup_for_test();
+
+    let error = authority
+        .open_stable_snapshot_with_progress(OsStr::new("provider.sqlite"), |_| {
+            calls += 1;
+            if calls > 1 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+
+    match error {
+        SqliteSourceProgressError::ProgressAndFinalization {
+            primary,
+            finalization,
+        } => {
+            assert_eq!(primary, "cancelled");
+            assert!(finalization
+                .to_string()
+                .contains("injected private SQLite directory cleanup failure"));
+            assert_eq!(
+                finalization.diagnostic().unwrap().cleanup,
+                SqliteCleanupStatus::Failed
+            );
+        }
+        other => panic!("expected cancellation plus cleanup failure, got {other:?}"),
+    }
+    assert!(calls > 1);
+    assert_eq!(staging_entries(data_root.path()), 0);
+}
+
+#[test]
+fn snapshot_open_preserves_simultaneous_cleanup_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    create_database(&database, "open failure");
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+    fail_next_snapshot_open_for_test();
+    fail_next_private_directory_cleanup_for_test();
+
+    let error = authority
+        .open_stable_snapshot(OsStr::new("provider.sqlite"))
+        .unwrap_err();
+
+    match error {
+        SqliteSourceAccessError::Finalization { primary, cleanup } => {
+            assert!(primary
+                .to_string()
+                .contains("opening the ctx-owned provider snapshot"));
+            assert!(cleanup
+                .to_string()
+                .contains("injected private SQLite directory cleanup failure"));
+        }
+        other => panic!("expected open plus cleanup failure, got {other:?}"),
+    }
+    assert_eq!(staging_entries(data_root.path()), 0);
+}
+
+#[test]
+fn acquisition_revalidation_preserves_simultaneous_cleanup_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    create_database(&database, "revalidation failure");
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+    fail_next_private_directory_cleanup_for_test();
+
+    let error = open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test(
+        &authority,
+        OsStr::new("provider.sqlite"),
+        || {
+            let mut source = fs::OpenOptions::new().append(true).open(&database).unwrap();
+            use std::io::Write as _;
+            source.write_all(&[0]).unwrap();
+            source.sync_all().unwrap();
+        },
+    )
+    .unwrap_err();
+
+    match error {
+        SqliteSourceAccessError::Finalization { primary, cleanup } => {
+            assert!(primary.is_source_changed());
+            assert!(cleanup
+                .to_string()
+                .contains("injected private SQLite directory cleanup failure"));
+        }
+        other => panic!("expected revalidation plus cleanup failure, got {other:?}"),
+    }
     assert_eq!(staging_entries(data_root.path()), 0);
 }
 
