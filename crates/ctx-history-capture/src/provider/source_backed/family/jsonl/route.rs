@@ -733,7 +733,7 @@ impl JsonlFamilyLeaf {
     }
 
     pub(super) fn estimated_scan_bytes(&self) -> u64 {
-        self.observation.length
+        self.observation.length()
     }
 
     pub(crate) fn binding(&self) -> &TypedKey {
@@ -756,7 +756,7 @@ impl JsonlFamilyLeaf {
             return Ok((self.clone(), Arc::new(opened)));
         }
         if self.whole_record
-            || current.length <= self.observation.length
+            || current.length() <= self.observation.length()
             || !self.observation.admits_frozen_prefix_in(&current)
         {
             return Err(CaptureError::SourceChangedDuringCapture);

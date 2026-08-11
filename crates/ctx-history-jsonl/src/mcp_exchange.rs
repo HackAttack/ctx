@@ -3,14 +3,14 @@ use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct JsonlMcpObservedEncodedBytes {
+pub struct JsonlMcpObservedEncodedBytes {
     arguments: Option<u64>,
     payload: Option<u64>,
     infer_missing: bool,
 }
 
 impl JsonlMcpObservedEncodedBytes {
-    pub(crate) const fn exact(arguments: Option<u64>, payload: Option<u64>) -> Self {
+    pub const fn exact(arguments: Option<u64>, payload: Option<u64>) -> Self {
         Self {
             arguments,
             payload,
@@ -18,7 +18,7 @@ impl JsonlMcpObservedEncodedBytes {
         }
     }
 
-    pub(crate) const fn infer_from_present() -> Self {
+    pub const fn infer_from_present() -> Self {
         Self {
             arguments: None,
             payload: None,
@@ -32,7 +32,7 @@ impl JsonlMcpObservedEncodedBytes {
 /// in descending savings order; if the explicit omission shape still cannot
 /// fit, only the optional exchange is dropped.
 #[inline]
-pub(crate) fn fit_jsonl_mcp_exchange(
+pub fn fit_jsonl_mcp_exchange(
     normalized_body: &str,
     structured_content: Option<&Value>,
     exchange: &mut Option<McpExchangeContent>,
@@ -83,7 +83,7 @@ pub(crate) fn fit_jsonl_mcp_exchange(
 }
 
 #[inline]
-pub(crate) fn selected_content_fits(
+pub fn selected_content_fits(
     normalized_body: &str,
     structured_content: Option<&Value>,
     exchange: Option<&McpExchangeContent>,

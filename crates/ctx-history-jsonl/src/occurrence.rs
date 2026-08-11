@@ -8,16 +8,15 @@ use ctx_history_index::BaseEventIdentityLookup;
 /// Assigns contiguous duplicate occurrences for content-shaped JSONL event
 /// identities. Certified appends resume after the immutable Core prefix;
 /// cold and replacement projections restart from zero.
-pub(crate) struct JsonlAppendOccurrenceState<K, S = HashMap<K, u64>> {
+pub struct JsonlAppendOccurrenceState<K, S = HashMap<K, u64>> {
     base_lookup: Option<BaseEventIdentityLookup>,
     next_occurrences: S,
     _key: PhantomData<K>,
 }
 
-pub(crate) type JsonlOrderedAppendOccurrenceState<K> =
-    JsonlAppendOccurrenceState<K, BTreeMap<K, u64>>;
+pub type JsonlOrderedAppendOccurrenceState<K> = JsonlAppendOccurrenceState<K, BTreeMap<K, u64>>;
 
-pub(crate) trait JsonlOccurrenceStorage<K> {
+pub trait JsonlOccurrenceStorage<K> {
     fn get(&self, key: &K) -> Option<u64>;
     fn insert(&mut self, key: K, next_occurrence: u64);
 }
@@ -53,7 +52,7 @@ impl<K, S: Default> Default for JsonlAppendOccurrenceState<K, S> {
 }
 
 impl<K, S: Default + JsonlOccurrenceStorage<K>> JsonlAppendOccurrenceState<K, S> {
-    pub(crate) fn for_append(base_lookup: BaseEventIdentityLookup) -> Self {
+    pub fn for_append(base_lookup: BaseEventIdentityLookup) -> Self {
         Self {
             base_lookup: Some(base_lookup),
             next_occurrences: S::default(),
@@ -61,7 +60,8 @@ impl<K, S: Default + JsonlOccurrenceStorage<K>> JsonlAppendOccurrenceState<K, S>
         }
     }
 
-    pub(crate) fn next<E>(
+    #[inline]
+    pub fn next<E>(
         &mut self,
         key: K,
         mut overflow: impl FnMut() -> E,
@@ -80,8 +80,8 @@ impl<K, S: Default + JsonlOccurrenceStorage<K>> JsonlAppendOccurrenceState<K, S>
         Ok(occurrence)
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_next_occurrence_for_test(&mut self, key: K, next_occurrence: u64) {
+    #[doc(hidden)]
+    pub fn set_next_occurrence_for_test(&mut self, key: K, next_occurrence: u64) {
         self.next_occurrences.insert(key, next_occurrence);
     }
 }

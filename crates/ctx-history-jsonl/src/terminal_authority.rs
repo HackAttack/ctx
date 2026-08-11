@@ -3,25 +3,28 @@ use std::collections::{BTreeMap, HashMap};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlTerminalObservationRegion {
+pub enum JsonlTerminalObservationRegion {
     WholeSource,
     CertifiedPrefix,
     AppendedSuffix,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct JsonlTerminalMultiplicity {
+pub struct JsonlTerminalMultiplicity {
     candidates: u8,
     in_certified_prefix: bool,
     in_appended_suffix: bool,
 }
 
-pub(crate) trait JsonlTerminalStorage: Clone + std::fmt::Debug + Default {
+pub trait JsonlTerminalStorage: Clone + std::fmt::Debug + Default {
     type Iter<'a>: Iterator<Item = (&'a [u8; 32], &'a JsonlTerminalMultiplicity)>
     where
         Self: 'a;
 
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn contains_key(&self, digest: &[u8; 32]) -> bool;
     fn entry_or_default(&mut self, digest: [u8; 32]) -> &mut JsonlTerminalMultiplicity;
     fn get(&self, digest: &[u8; 32]) -> Option<&JsonlTerminalMultiplicity>;
@@ -30,7 +33,7 @@ pub(crate) trait JsonlTerminalStorage: Clone + std::fmt::Debug + Default {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct JsonlHashTerminalStorage(HashMap<[u8; 32], JsonlTerminalMultiplicity>);
+pub struct JsonlHashTerminalStorage(HashMap<[u8; 32], JsonlTerminalMultiplicity>);
 
 impl JsonlTerminalStorage for JsonlHashTerminalStorage {
     type Iter<'a> = std::collections::hash_map::Iter<'a, [u8; 32], JsonlTerminalMultiplicity>;
@@ -61,7 +64,7 @@ impl JsonlTerminalStorage for JsonlHashTerminalStorage {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct JsonlOrderedTerminalStorage(BTreeMap<[u8; 32], JsonlTerminalMultiplicity>);
+pub struct JsonlOrderedTerminalStorage(BTreeMap<[u8; 32], JsonlTerminalMultiplicity>);
 
 impl JsonlTerminalStorage for JsonlOrderedTerminalStorage {
     type Iter<'a> = std::collections::btree_map::Iter<'a, [u8; 32], JsonlTerminalMultiplicity>;
@@ -92,25 +95,26 @@ impl JsonlTerminalStorage for JsonlOrderedTerminalStorage {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct JsonlTerminalAuthorityMap<S: JsonlTerminalStorage> {
+pub struct JsonlTerminalAuthorityMap<S: JsonlTerminalStorage> {
     call_ids: S,
     exhausted: bool,
     available: bool,
 }
 
-pub(crate) type JsonlTerminalAuthority = JsonlTerminalAuthorityMap<JsonlHashTerminalStorage>;
-pub(crate) type JsonlCheckpointedTerminalAuthority =
+pub type JsonlTerminalAuthority = JsonlTerminalAuthorityMap<JsonlHashTerminalStorage>;
+pub type JsonlCheckpointedTerminalAuthority =
     JsonlTerminalAuthorityMap<JsonlOrderedTerminalStorage>;
 
 impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
-    pub(crate) fn available() -> Self {
+    pub fn available() -> Self {
         Self {
             available: true,
             ..Self::default()
         }
     }
 
-    pub(crate) fn observe(
+    #[inline]
+    pub fn observe(
         &mut self,
         domain: &[u8],
         call_id: &str,
@@ -124,7 +128,8 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
         );
     }
 
-    pub(crate) fn observe_digest(
+    #[inline]
+    pub fn observe_digest(
         &mut self,
         digest: [u8; 32],
         region: JsonlTerminalObservationRegion,
@@ -151,11 +156,13 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
         }
     }
 
-    pub(crate) fn is_unique(&self, domain: &[u8], call_id: &str) -> bool {
+    #[inline]
+    pub fn is_unique(&self, domain: &[u8], call_id: &str) -> bool {
         self.is_unique_digest(jsonl_terminal_call_id_digest(domain, call_id))
     }
 
-    pub(crate) fn is_unique_digest(&self, digest: [u8; 32]) -> bool {
+    #[inline]
+    pub fn is_unique_digest(&self, digest: [u8; 32]) -> bool {
         !self.available
             || (!self.exhausted
                 && self
@@ -164,20 +171,20 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
                     .is_some_and(|state| state.candidates == 1))
     }
 
-    pub(crate) fn append_requires_replacement(&self) -> bool {
+    pub fn append_requires_replacement(&self) -> bool {
         self.exhausted
             || self.call_ids.iter().any(|(_, state)| {
                 state.in_certified_prefix && state.in_appended_suffix && state.candidates > 1
             })
     }
 
-    pub(crate) fn observe_ambiguous_terminal(&mut self) {
+    pub fn observe_ambiguous_terminal(&mut self) {
         self.available = true;
         self.call_ids.clear();
         self.exhausted = true;
     }
 
-    pub(crate) fn from_digest_counts(
+    pub fn from_digest_counts(
         entries: impl IntoIterator<Item = ([u8; 32], u8)>,
         exhausted: bool,
     ) -> Self {
@@ -192,17 +199,17 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
         authority
     }
 
-    pub(crate) fn digest_counts(&self) -> impl Iterator<Item = ([u8; 32], u8)> + '_ {
+    pub fn digest_counts(&self) -> impl Iterator<Item = ([u8; 32], u8)> + '_ {
         self.call_ids
             .iter()
             .map(|(digest, state)| (*digest, state.candidates))
     }
 
-    pub(crate) fn exhausted(&self) -> bool {
+    pub fn exhausted(&self) -> bool {
         self.exhausted
     }
 
-    pub(crate) fn positive_claim_invalidated_by(&self, combined: &Self) -> bool {
+    pub fn positive_claim_invalidated_by(&self, combined: &Self) -> bool {
         if !self.available || self.exhausted {
             return false;
         }
@@ -216,13 +223,13 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
         })
     }
 
-    pub(crate) fn entry_count(&self) -> usize {
+    pub fn entry_count(&self) -> usize {
         self.call_ids.len()
     }
 }
 
 #[inline]
-pub(crate) fn jsonl_terminal_call_id_digest(domain: &[u8], call_id: &str) -> [u8; 32] {
+pub fn jsonl_terminal_call_id_digest(domain: &[u8], call_id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(domain);
     hasher.update(call_id.as_bytes());

@@ -4,27 +4,30 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum JsonlPendingExchangeState<T> {
+pub enum JsonlPendingExchangeState<T> {
     Exact(T),
     Ambiguous,
 }
 
 #[derive(Debug)]
-pub(crate) enum JsonlPendingExchangeLookup<T> {
+pub enum JsonlPendingExchangeLookup<T> {
     Exact(T),
     Ambiguous,
     Missing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlPendingExchangeRemember {
+pub enum JsonlPendingExchangeRemember {
     Inserted,
     BecameAmbiguous,
     CapacityExceeded,
 }
 
-pub(crate) trait JsonlPendingExchangeStorage<T> {
+pub trait JsonlPendingExchangeStorage<T> {
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn get_mut(&mut self, identity: &str) -> Option<&mut JsonlPendingExchangeState<T>>;
     fn insert(&mut self, identity: String, state: JsonlPendingExchangeState<T>);
     fn remove(&mut self, identity: &str) -> Option<JsonlPendingExchangeState<T>>;
@@ -66,7 +69,8 @@ impl<T> JsonlPendingExchangeStorage<T> for BTreeMap<String, JsonlPendingExchange
     }
 }
 
-pub(crate) fn remember_pending_exchange<T>(
+#[inline]
+pub fn remember_pending_exchange<T>(
     states: &mut impl JsonlPendingExchangeStorage<T>,
     identity: &str,
     state: JsonlPendingExchangeState<T>,
@@ -83,7 +87,8 @@ pub(crate) fn remember_pending_exchange<T>(
     JsonlPendingExchangeRemember::Inserted
 }
 
-pub(crate) fn take_pending_exchange<T>(
+#[inline]
+pub fn take_pending_exchange<T>(
     states: &mut impl JsonlPendingExchangeStorage<T>,
     identity: Option<&str>,
 ) -> JsonlPendingExchangeLookup<T> {
@@ -96,7 +101,7 @@ pub(crate) fn take_pending_exchange<T>(
     }
 }
 
-pub(crate) fn sorted_pending_exchange_entries<T: Clone>(
+pub fn sorted_pending_exchange_entries<T: Clone>(
     states: &HashMap<String, JsonlPendingExchangeState<T>>,
 ) -> Vec<(String, JsonlPendingExchangeState<T>)> {
     let mut entries = states
@@ -107,7 +112,7 @@ pub(crate) fn sorted_pending_exchange_entries<T: Clone>(
     entries
 }
 
-pub(crate) fn ordered_pending_exchange_entries<T: Clone>(
+pub fn ordered_pending_exchange_entries<T: Clone>(
     states: &BTreeMap<String, JsonlPendingExchangeState<T>>,
 ) -> Vec<(String, JsonlPendingExchangeState<T>)> {
     states
@@ -116,7 +121,7 @@ pub(crate) fn ordered_pending_exchange_entries<T: Clone>(
         .collect()
 }
 
-pub(crate) fn restore_hash_pending_exchange_entries<T>(
+pub fn restore_hash_pending_exchange_entries<T>(
     entries: Vec<(String, JsonlPendingExchangeState<T>)>,
 ) -> Option<HashMap<String, JsonlPendingExchangeState<T>>> {
     let mut restored = HashMap::with_capacity(entries.len());
@@ -128,7 +133,7 @@ pub(crate) fn restore_hash_pending_exchange_entries<T>(
     Some(restored)
 }
 
-pub(crate) fn restore_ordered_pending_exchange_entries<T>(
+pub fn restore_ordered_pending_exchange_entries<T>(
     entries: Vec<(String, JsonlPendingExchangeState<T>)>,
 ) -> Option<BTreeMap<String, JsonlPendingExchangeState<T>>> {
     let mut restored = BTreeMap::new();
