@@ -24,6 +24,17 @@ const RETIRED_CORE_FINGERPRINT: &str =
     "7552eee7cae0695a98f202b02f52cbf5680845cb7bacea4ed754e283bc15f051";
 const RETIRED_SOURCE_GENERATION_POLICY_HASH: &str =
     "e728b5d7b76d04248e9dccc91fc11d915fcbcd714b445090725ba0604b8e8b37";
+const PREDECESSOR_FIXTURE_REPOSITORY_ROOT: &str = "crates/ctx-history-index/testdata/pred";
+// crate_universe runs Cargo with its Git checkout nested beneath the Bazel
+// module-extension work directory. A supported short-root Windows build still
+// spends 103 characters before the dependency's repository-relative path.
+// Retain an explicit buffer for checkout implementations that use MAX_PATH.
+const WINDOWS_MAX_PATH_CHARS: usize = 260;
+const WINDOWS_CARGO_GIT_CHECKOUT_PREFIX_CHARS: usize = 103;
+const WINDOWS_CARGO_GIT_CHECKOUT_MARGIN_CHARS: usize = 8;
+const WINDOWS_CARGO_REPOSITORY_PATH_LIMIT: usize = WINDOWS_MAX_PATH_CHARS
+    - WINDOWS_CARGO_GIT_CHECKOUT_PREFIX_CHARS
+    - WINDOWS_CARGO_GIT_CHECKOUT_MARGIN_CHARS;
 const SUBPROCESS_MODE_ENV: &str = "CTX_CURRENT_REPUBLISH_CHILD";
 const SUBPROCESS_ROOT_ENV: &str = "CTX_CURRENT_REPUBLISH_ROOT";
 const SUBPROCESS_MARKER_ENV: &str = "CTX_CURRENT_REPUBLISH_MARKER";
@@ -94,7 +105,7 @@ impl GoldenPredecessor {
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
-        .join("core-predecessor-7552eee7")
+        .join("pred")
 }
 
 fn copy_fixture_tree(source: &Path, destination: &Path) {
@@ -245,6 +256,24 @@ fn checked_in_predecessor_fixture_has_exact_provenance_and_hashes() {
         .map(|path| format!("index/{path}"))
         .collect::<BTreeSet<_>>();
     assert_eq!(declared, actual);
+}
+
+#[test]
+fn checked_in_predecessor_fixture_fits_windows_cargo_git_checkout_budget() {
+    let (length, path) = fixture_file_paths(&fixture_root())
+        .into_iter()
+        .map(|relative| {
+            let path = format!("{PREDECESSOR_FIXTURE_REPOSITORY_ROOT}/{relative}");
+            (path.len(), path)
+        })
+        .max_by_key(|(length, _)| *length)
+        .unwrap();
+
+    assert!(
+        length <= WINDOWS_CARGO_REPOSITORY_PATH_LIMIT,
+        "predecessor fixture path exceeds the Windows Cargo Git checkout budget: \
+         {length} > {WINDOWS_CARGO_REPOSITORY_PATH_LIMIT}: {path}"
+    );
 }
 
 #[test]
