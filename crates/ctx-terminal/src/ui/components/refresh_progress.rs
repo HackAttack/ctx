@@ -190,7 +190,7 @@ pub struct RefreshLogicalStatus {
     pub physical_attempt_state: RefreshRequestState,
     pub progress_owner_request_id: String,
     pub progress_owner_attempt_state: RefreshRequestState,
-    pub structured_outcome: Option<RefreshStructuredOutcome>,
+    pub structured_outcome: Option<Box<RefreshStructuredOutcome>>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefreshStructuredOutcome {
@@ -289,10 +289,10 @@ impl RefreshCurrentSourceProgress {
 }
 
 pub fn refresh_progress(context: &RenderContext, snapshot: &RefreshProgressSnapshot) -> Document {
-    let completed = snapshot.progress.completed_sources as u64;
+    let completed = snapshot.progress.completed_sources;
     let total = snapshot
         .total_sources_known
-        .then_some(snapshot.progress.total_sources as u64)
+        .then_some(snapshot.progress.total_sources)
         .map(|total| total.max(completed));
     let label = refresh_label(snapshot);
     let mut document = progress(
@@ -518,7 +518,7 @@ mod tests {
                 physical_attempt_state: state,
                 progress_owner_request_id: "physical-attempt".to_owned(),
                 progress_owner_attempt_state: state,
-                structured_outcome: Some(RefreshStructuredOutcome {
+                structured_outcome: Some(Box::new(RefreshStructuredOutcome {
                     code: code.to_owned(),
                     class: class.to_owned(),
                     retryable: false,
@@ -531,7 +531,7 @@ mod tests {
                     retry_advice: None,
                     detail: None,
                     failure,
-                }),
+                })),
             }),
             RefreshProgress {
                 phase: "committed".to_owned(),
