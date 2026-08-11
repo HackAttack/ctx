@@ -1,5 +1,6 @@
 package rs.ctx.agenthistory;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -7,12 +8,18 @@ import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public final class AgentHistoryClientTest {
     private static final String PROCESS_FIXTURE_MODE = "CTX_MCP289_JVM_PROCESS_FIXTURE_MODE";
     private static final String PROCESS_FIXTURE_ROOT_PID = "CTX_MCP289_JVM_PROCESS_FIXTURE_ROOT_PID";
     private static final String PROCESS_FIXTURE_DESCENDANT_PID = "CTX_MCP289_JVM_PROCESS_FIXTURE_DESCENDANT_PID";
     private static final String PROCESS_FIXTURE_COMPLETION = "CTX_MCP289_JVM_PROCESS_FIXTURE_COMPLETION";
+    private static final String PROCESS_FIXTURE_PIPE_READY = "CTX_MCP289_JVM_PROCESS_FIXTURE_PIPE_READY";
+    private static final String PROCESS_FIXTURE_PIPE_RELEASE = "CTX_MCP289_JVM_PROCESS_FIXTURE_PIPE_RELEASE";
 
     public static void main(String[] args) throws Exception {
         wrapsRawStatusAsTypedEnvelope();
@@ -270,18 +277,45 @@ public final class AgentHistoryClientTest {
         if (java.io.File.separatorChar == '\\') {
             return;
         }
+        Path rootPid = absentTempPath("ctx-mcp289-jvm-eof-root-");
+        Path pipeReady = absentTempPath("ctx-mcp289-jvm-eof-ready-");
+        Path pipeRelease = absentTempPath("ctx-mcp289-jvm-eof-release-");
         LocalCliAdapter adapter = new LocalCliAdapter(LocalCliConfig.builder()
                 .ctxPath(mcp289ProcessFixture().toString())
-                .env(PROCESS_FIXTURE_MODE, "short-lived-pipe-owner")
+                .env(PROCESS_FIXTURE_MODE, "gated-pipe-owner")
+                .env(PROCESS_FIXTURE_ROOT_PID, rootPid.toString())
+                .env(PROCESS_FIXTURE_PIPE_READY, pipeReady.toString())
+                .env(PROCESS_FIXTURE_PIPE_RELEASE, pipeRelease.toString())
                 .timeoutMillis(2_000)
                 .build());
 
-        long started = System.nanoTime();
-        String output = adapter.execute(new AgentHistoryOperation("status", List.of("status")));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        long root = -1;
+        try {
+            Future<String> execution = executor.submit(
+                    () -> adapter.execute(new AgentHistoryOperation("status", List.of("status"))));
+            awaitNonEmptyFile(pipeReady, "pipe owner readiness");
+            root = readPid(rootPid);
+            assertProcessStops(root, "successful pipe fixture root");
+            if (execution.isDone()) {
+                throw new AssertionError("pipe EOF wait completed before pipe owner release");
+            }
 
-        assertEquals("{}", output);
-        assertElapsedAtLeast(started, 150, "pipe EOF wait");
-        assertElapsedLessThan(started, 1_500, "pipe EOF wait");
+            Files.writeString(pipeRelease, "release", StandardCharsets.UTF_8);
+            assertEquals("{}", execution.get(2, TimeUnit.SECONDS));
+        } finally {
+            try {
+                Files.writeString(pipeRelease, "release", StandardCharsets.UTF_8);
+            } catch (IOException ignored) {
+                // Best-effort release lets the worker and fixture terminate during cleanup.
+            }
+            executor.shutdown();
+            if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+                executor.awaitTermination(2, TimeUnit.SECONDS);
+            }
+            forceProcessStop(root);
+        }
     }
 
     private static void localCliDeadlineOwnsPipeDescendantsAndForcesCleanup() throws Exception {
@@ -353,8 +387,11 @@ public final class AgentHistoryClientTest {
                 + "    printf '{}\\n'\n"
                 + "    exit 0\n"
                 + "    ;;\n"
-                + "  short-lived-pipe-owner)\n"
-                + "    sh -c 'sleep 0.25' &\n"
+                + "  gated-pipe-owner)\n"
+                + "    echo $$ > \"$" + PROCESS_FIXTURE_ROOT_PID + "\"\n"
+                + "    sh -c 'printf ready > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.01; done' sh \"$"
+                + PROCESS_FIXTURE_PIPE_READY + "\" \"$" + PROCESS_FIXTURE_PIPE_RELEASE + "\" &\n"
+                + "    while [ ! -s \"$" + PROCESS_FIXTURE_PIPE_READY + "\" ]; do sleep 0.01; done\n"
                 + "    printf '{}\\n'\n"
                 + "    exit 0\n"
                 + "    ;;\n"
@@ -384,6 +421,25 @@ public final class AgentHistoryClientTest {
         return Long.parseLong(Files.readString(path, StandardCharsets.UTF_8).trim());
     }
 
+    private static Path absentTempPath(String prefix) throws Exception {
+        Path path = Files.createTempFile(prefix, ".signal");
+        Files.delete(path);
+        path.toFile().deleteOnExit();
+        return path;
+    }
+
+    private static void awaitNonEmptyFile(Path path, String label) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (System.nanoTime() < deadline) {
+            if (Files.isRegularFile(path) && Files.size(path) > 0) {
+                path.toFile().deleteOnExit();
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError(label + " did not complete");
+    }
+
     private static void assertProcessStops(long pid, String label) throws Exception {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
         while (System.nanoTime() < deadline) {
@@ -411,13 +467,6 @@ public final class AgentHistoryClientTest {
         long elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
         if (elapsed >= maximumMillis) {
             throw new AssertionError(label + " exceeded " + maximumMillis + "ms: " + elapsed + "ms");
-        }
-    }
-
-    private static void assertElapsedAtLeast(long started, long minimumMillis, String label) {
-        long elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
-        if (elapsed < minimumMillis) {
-            throw new AssertionError(label + " completed before " + minimumMillis + "ms: " + elapsed + "ms");
         }
     }
 
