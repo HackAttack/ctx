@@ -9,7 +9,7 @@ use ctx_history_index::{
     CoreEventPageBudget, CoreEventRecord, IndexError, SessionEventCursor, SessionRecord,
     VerifiedIndex, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS,
 };
-use ctx_history_query::{EventWindowBudget, PinnedHistoryQuery, ShowEventRequest};
+use ctx_history_read_application::{EventWindowBudget, PinnedHistoryQuery, ShowEventRequest};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -43,7 +43,7 @@ use super::{
 #[cfg(test)]
 pub(crate) use mcp::{mcp_show_event, mcp_show_event_with_compact, mcp_show_session};
 pub(crate) use mcp::{mcp_show_event_application, mcp_show_session_application};
-use render::event_window_json;
+use render::{event_window_json_with_lineage, paginated_session_transcript_value};
 #[cfg(test)]
 pub(super) use render::{event_window_value, render_event_values};
 pub(super) use render::{render_event_value, session_transcript_value};
@@ -108,6 +108,16 @@ impl ShowApplicationError {
         };
         let error = match error.downcast::<ctx_history_refresh::GenerationQueryAuthorityError>() {
             Ok(error) => return Self::GenerationAuthority(error),
+            Err(error) => error,
+        };
+        let error = match error.downcast::<ctx_history_read_application::ReadModelLimitError>() {
+            Ok(error) => {
+                return Self::OutputLimit {
+                    event_id: error.event_id,
+                    actual_bytes: error.actual_bytes,
+                    maximum_bytes: error.maximum_bytes,
+                }
+            }
             Err(error) => error,
         };
         match error.downcast::<PresentationOutputLimitError>() {
@@ -227,14 +237,13 @@ fn run_show_inner(
             let selected = result.selected;
             let events = result.events;
             telemetry.events_returned = Some(count_bucket(events.len() as u64));
-            let mut value = event_window_json(
+            let value = event_window_json_with_lineage(
                 &selected,
                 &events,
+                &result.copied_lineage,
                 args.format,
                 CLI_PRESENTATION_MAX_OUTPUT_BYTES,
             )?;
-            value["copied_lineage"] =
-                super::copied_lineage::copied_lineage_read_model(&result.copied_lineage)?;
             let events = value["events"].as_array().map(Vec::as_slice).unwrap_or(&[]);
             let result_count = events.len();
             let content_bytes = serde_json::to_vec(&value["events"])?.len();
@@ -374,19 +383,20 @@ pub(super) fn stream_cli_session(
             break;
         }
         renderer.begin_page();
-        let page = query.show_session_page(&ctx_history_query::ShowSessionPageRequest {
-            selector: Some(session.session_id.to_string()),
-            provider_session_id: None,
-            provider: None,
-            mode: session_event_mode(mode),
-            cursor: cursor.clone(),
-            limit: remaining.min(CLI_SESSION_EVENT_PAGE_ITEMS),
-            page_items: CLI_SESSION_EVENT_PAGE_ITEMS,
-            page_budget: CoreEventPageBudget::new(
-                MAX_ENCODED_CORE_RECORD_BYTES,
-                MAX_CORE_CONTENT_BYTES,
-            ),
-        })?;
+        let page =
+            query.show_session_page(&ctx_history_read_application::ShowSessionPageRequest {
+                selector: Some(session.session_id.to_string()),
+                provider_session_id: None,
+                provider: None,
+                mode: session_event_mode(mode),
+                cursor: cursor.clone(),
+                limit: remaining.min(CLI_SESSION_EVENT_PAGE_ITEMS),
+                page_items: CLI_SESSION_EVENT_PAGE_ITEMS,
+                page_budget: CoreEventPageBudget::new(
+                    MAX_ENCODED_CORE_RECORD_BYTES,
+                    MAX_CORE_CONTENT_BYTES,
+                ),
+            })?;
         for selected in page.events {
             renderer.emit(selected.event, compact)?;
         }
@@ -407,11 +417,11 @@ pub(super) fn stream_cli_session(
 
 pub(super) const fn session_event_mode(
     mode: TranscriptMode,
-) -> ctx_history_query::SessionEventMode {
+) -> ctx_history_read_application::SessionEventMode {
     match mode {
-        TranscriptMode::Full => ctx_history_query::SessionEventMode::Full,
-        TranscriptMode::Lite => ctx_history_query::SessionEventMode::Lite,
-        TranscriptMode::Log => ctx_history_query::SessionEventMode::Log,
+        TranscriptMode::Full => ctx_history_read_application::SessionEventMode::Full,
+        TranscriptMode::Lite => ctx_history_read_application::SessionEventMode::Lite,
+        TranscriptMode::Log => ctx_history_read_application::SessionEventMode::Log,
     }
 }
 
@@ -817,6 +827,6 @@ pub(super) fn resolve_show_session(
     provider_session_id: Option<&str>,
     provider: Option<ctx_history_core::CaptureProvider>,
 ) -> Result<SessionRecord> {
-    ctx_history_query::resolve_show_session(index, id, provider_session_id, provider)
+    ctx_history_read_application::resolve_show_session(index, id, provider_session_id, provider)
         .map_err(externalize_query_error)
 }

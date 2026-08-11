@@ -41,13 +41,15 @@ impl ActiveGenerationRaceCommand {
 }
 
 #[cfg(test)]
-pub(super) use ctx_history_query::{resolve_core_event, resolve_session};
-pub(super) use ctx_history_query::{
+pub(super) use ctx_history_read_application::{resolve_core_event, resolve_session};
+pub(super) use ctx_history_read_application::{
     validate_ctx_id, validate_session_selector, MissingLookupError, MissingLookupKind,
 };
 
 pub(super) fn externalize_query_error(error: anyhow::Error) -> anyhow::Error {
-    if let Some(limit) = error.downcast_ref::<ctx_history_query::ContentQueryLimitError>() {
+    if let Some(limit) =
+        error.downcast_ref::<ctx_history_read_application::ContentQueryLimitError>()
+    {
         return anyhow::Error::new(crate::presentation_limit::PresentationOutputLimitError {
             event_id: limit.event_id,
             actual_bytes: limit.actual_bytes,
@@ -55,16 +57,16 @@ pub(super) fn externalize_query_error(error: anyhow::Error) -> anyhow::Error {
         });
     }
     let detail = error
-        .downcast_ref::<ctx_history_query::SelectorError>()
+        .downcast_ref::<ctx_history_read_application::SelectorError>()
         .map(selector_error_detail)
         .or_else(|| {
             error
-                .downcast_ref::<ctx_history_query::CompactRefResolveError>()
+                .downcast_ref::<ctx_history_read_application::CompactRefResolveError>()
                 .and_then(compact_ref_error_detail)
         })
         .or_else(|| {
             error
-                .downcast_ref::<ctx_history_query::EventWindowLimitError>()
+                .downcast_ref::<ctx_history_read_application::EventWindowLimitError>()
                 .map(|limit| {
                     format!(
                         "Core presentation selected at least {} events; the presentation limit is {} events",
@@ -74,7 +76,7 @@ pub(super) fn externalize_query_error(error: anyhow::Error) -> anyhow::Error {
         })
         .or_else(|| {
             error
-                .downcast_ref::<ctx_history_query::EncodedCoreQueryLimitError>()
+                .downcast_ref::<ctx_history_read_application::EncodedCoreQueryLimitError>()
                 .map(|limit| {
                     format!(
                         "stored Core encoding through ctx event {} requires {} bytes; the presentation retention limit is {} bytes",
@@ -84,27 +86,27 @@ pub(super) fn externalize_query_error(error: anyhow::Error) -> anyhow::Error {
         })
         .or_else(|| {
             error
-                .downcast_ref::<ctx_history_query::SourceIdentityFilterError>()
+                .downcast_ref::<ctx_history_read_application::SourceIdentityFilterError>()
                 .map(source_identity_filter_error_detail)
         });
     detail.map(anyhow::Error::msg).unwrap_or(error)
 }
 
 fn source_identity_filter_error_detail(
-    error: &ctx_history_query::SourceIdentityFilterError,
+    error: &ctx_history_read_application::SourceIdentityFilterError,
 ) -> String {
     match error {
-        ctx_history_query::SourceIdentityFilterError::InvalidHistorySource => {
+        ctx_history_read_application::SourceIdentityFilterError::InvalidHistorySource => {
             "--history-source expects plugin/source or provider_key/source_id".to_owned()
         }
-        ctx_history_query::SourceIdentityFilterError::CustomProviderRequired => {
+        ctx_history_read_application::SourceIdentityFilterError::CustomProviderRequired => {
             "custom history source filters can only be combined with --provider custom".to_owned()
         }
     }
 }
 
-fn selector_error_detail(error: &ctx_history_query::SelectorError) -> String {
-    use ctx_history_query::SelectorError;
+fn selector_error_detail(error: &ctx_history_read_application::SelectorError) -> String {
+    use ctx_history_read_application::SelectorError;
 
     match error {
         SelectorError::PrefixTooShort { kind, minimum } => format!(
@@ -142,8 +144,10 @@ fn selector_error_detail(error: &ctx_history_query::SelectorError) -> String {
     }
 }
 
-fn compact_ref_error_detail(error: &ctx_history_query::CompactRefResolveError) -> Option<String> {
-    let ctx_history_query::CompactRefResolveError::Ambiguous {
+fn compact_ref_error_detail(
+    error: &ctx_history_read_application::CompactRefResolveError,
+) -> Option<String> {
+    let ctx_history_read_application::CompactRefResolveError::Ambiguous {
         namespace,
         reference,
         first,
@@ -153,8 +157,8 @@ fn compact_ref_error_detail(error: &ctx_history_query::CompactRefResolveError) -
         return None;
     };
     let ctx_id_name = match namespace {
-        ctx_history_query::CompactRefNamespace::Event => "ctx_event_id",
-        ctx_history_query::CompactRefNamespace::Session => "ctx_session_id",
+        ctx_history_read_application::CompactRefNamespace::Event => "ctx_event_id",
+        ctx_history_read_application::CompactRefNamespace::Session => "ctx_session_id",
     };
     Some(format!(
         "{namespace} id prefix {reference:?} is ambiguous; conflicting full IDs are {first} and {second}; use a longer {ctx_id_name} or a full UUID"

@@ -1,15 +1,28 @@
-use anyhow::{anyhow, Result};
-use ctx_history_core::CoreContentPolicyStatus;
-use ctx_history_index::{CoreEventRecord, SessionRecord};
-use serde_json::{json, Value};
+use anyhow::Result;
+use ctx_history_index::{CopiedEventLineage, CoreEventRecord, SessionEventCursor, SessionRecord};
+use serde_json::Value;
 
 use crate::{
-    output::{compact_json, OutputFormat},
-    presentation_limit::{enforce_presentation_output_limit, serialized_json_bytes},
+    output::OutputFormat, presentation_limit::PresentationOutputLimitError,
     transcript::TranscriptMode,
 };
 
-use super::super::render::timestamp_json;
+fn structured_format(format: OutputFormat) -> ctx_history_read_application::StructuredOutputFormat {
+    match format {
+        OutputFormat::Text => ctx_history_read_application::StructuredOutputFormat::Text,
+        OutputFormat::Markdown => ctx_history_read_application::StructuredOutputFormat::Markdown,
+        OutputFormat::Json => ctx_history_read_application::StructuredOutputFormat::Json,
+        OutputFormat::Jsonl => ctx_history_read_application::StructuredOutputFormat::Jsonl,
+    }
+}
+
+fn structured_mode(mode: TranscriptMode) -> ctx_history_read_application::StructuredTranscriptMode {
+    match mode {
+        TranscriptMode::Full => ctx_history_read_application::StructuredTranscriptMode::Full,
+        TranscriptMode::Lite => ctx_history_read_application::StructuredTranscriptMode::Lite,
+        TranscriptMode::Log => ctx_history_read_application::StructuredTranscriptMode::Log,
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::commands::source_index) fn session_transcript_value(
@@ -20,148 +33,82 @@ pub(in crate::commands::source_index) fn session_transcript_value(
     truncated: bool,
     max_events: Option<usize>,
 ) -> Value {
-    let mut value = compact_json(json!({
-        "schema_version": 1,
-        "target": "session",
-        "payload_type": "session_transcript",
-        "ctx_session_id": session.session_id.as_uuid(),
-        "provider": session.provider,
-        "provider_session_id": session.provider_session_id,
-        "mode": mode.as_str(),
-        "format": format.as_str(),
-        "session": {
-            "id": session.session_id.as_uuid(),
-            "item_id": session.session_id.as_uuid(),
-            "record_type": "session",
-            "ctx_session_id": session.session_id.as_uuid(),
-            "provider": session.provider,
-            "provider_session_id": session.provider_session_id,
-            "source_format": session.source_format,
-            "parent_ctx_session_id": session.parent_session_id.map(|id| id.as_uuid()),
-            "root_ctx_session_id": session.root_session_id.as_uuid(),
-            "session_relationship": session.session_relationship,
-            "branch": session.branch,
-            "agent_type": session.agent_type,
-            "is_primary": session.is_primary,
-            "workspace": session.workspace,
-            "cwd": session.cwd,
-        },
-        "truncated": truncated.then(|| json!({
-            "events": true,
-            "max_events": max_events,
-        })),
-    }));
-    value["events"] = Value::Array(rendered);
-    value
+    ctx_history_read_application::session_transcript_read_model(
+        session,
+        structured_mode(mode),
+        structured_format(format),
+        rendered,
+        truncated,
+        max_events,
+    )
 }
 
-pub(super) fn event_window_json(
+pub(super) fn event_window_json_with_lineage(
     selected: &CoreEventRecord,
     events: &[CoreEventRecord],
+    copied_lineage: &CopiedEventLineage,
     format: OutputFormat,
     output_limit_bytes: usize,
 ) -> Result<Value> {
-    let references = events.iter().collect::<Vec<_>>();
-    let rendered = render_event_values(&references, output_limit_bytes)?;
-    event_window_value(selected, format, rendered)
+    ctx_history_read_application::event_window_with_lineage_read_model(
+        selected,
+        events,
+        copied_lineage,
+        structured_format(format),
+        output_limit_bytes,
+    )
+    .map_err(map_read_model_error)
 }
 
+pub(super) fn paginated_session_transcript_value(
+    session: &SessionRecord,
+    mode: TranscriptMode,
+    format: OutputFormat,
+    events: Vec<Value>,
+    limit: usize,
+    has_more: bool,
+    next_cursor: Option<&SessionEventCursor>,
+) -> Result<Value> {
+    ctx_history_read_application::paginated_session_transcript_read_model(
+        session,
+        structured_mode(mode),
+        structured_format(format),
+        events,
+        limit,
+        has_more,
+        next_cursor,
+    )
+}
+
+#[cfg(test)]
 pub(in crate::commands::source_index) fn event_window_value(
     selected: &CoreEventRecord,
     format: OutputFormat,
     rendered: Vec<Value>,
 ) -> Result<Value> {
-    let selected_value = rendered
-        .iter()
-        .find(|event| {
-            event["ctx_event_id"].as_str() == Some(&selected.event_id.as_uuid().to_string())
-        })
-        .cloned()
-        .ok_or_else(|| anyhow!("selected event is absent from its pinned Core event window"))?;
-    let mut value = compact_json(json!({
-        "schema_version": 1,
-        "target": "event",
-        "payload_type": "event_window",
-        "ctx_event_id": selected.event_id.as_uuid(),
-        "ctx_session_id": selected.session_id.as_uuid(),
-        "format": format.as_str(),
-    }));
-    value["event"] = selected_value;
-    value["events"] = Value::Array(rendered);
-    Ok(value)
+    ctx_history_read_application::event_window_value(selected, structured_format(format), rendered)
 }
 
+#[cfg(test)]
 pub(in crate::commands::source_index) fn render_event_values(
     events: &[&CoreEventRecord],
     output_limit_bytes: usize,
 ) -> Result<Vec<Value>> {
-    let mut rendered = Vec::with_capacity(events.len());
-    let mut serialized_event_bytes = 2_usize;
-    for event in events {
-        let content = &event.core_record.content;
-        let content_bytes = serialized_json_bytes(&content.normalized_body)?
-            .saturating_add(serialized_json_bytes(&content.structured_content)?)
-            .saturating_add(serialized_json_bytes(&content.mcp_exchange)?);
-        enforce_presentation_output_limit(
-            serialized_event_bytes.saturating_add(content_bytes),
-            output_limit_bytes,
-            event.event_id.as_uuid(),
-        )?;
-
-        let value = render_event_value(event);
-        serialized_event_bytes = serialized_event_bytes
-            .saturating_add(usize::from(!rendered.is_empty()))
-            .saturating_add(serialized_json_bytes(&value)?);
-        enforce_presentation_output_limit(
-            serialized_event_bytes,
-            output_limit_bytes,
-            event.event_id.as_uuid(),
-        )?;
-        rendered.push(value);
-    }
-    Ok(rendered)
+    ctx_history_read_application::render_event_read_model_values(events, output_limit_bytes)
+        .map_err(map_read_model_error)
 }
 
 pub(in crate::commands::source_index) fn render_event_value(event: &CoreEventRecord) -> Value {
-    let content = &event.core_record.content;
-    let (policy_status, policy_reason, complete) = match &content.policy_status {
-        CoreContentPolicyStatus::Selected => ("selected", None, true),
-        CoreContentPolicyStatus::Redacted { reason } => ("redacted", Some(reason.as_str()), false),
-        CoreContentPolicyStatus::Omitted { reason } => ("omitted", Some(reason.as_str()), false),
-    };
-    let mut rendered = compact_json(json!({
-        "ctx_event_id": event.event_id.as_uuid(),
-        "item_id": event.event_id.as_uuid(),
-        "record_type": "event",
-        "ctx_session_id": event.session_id.as_uuid(),
-        "provider": event.provider,
-        "provider_session_id": event.provider_session_id,
-        "source_format": event.source_format,
-        "parent_ctx_session_id": event.parent_session_id.map(|id| id.as_uuid()),
-        "root_ctx_session_id": event.root_session_id.as_uuid(),
-        "session_relationship": event.session_relationship,
-        "event_origin": super::super::event_origin_json(&event.event_origin),
-        "branch": event.branch,
-        "agent_type": event.agent_type,
-        "is_primary": event.is_primary,
-        "sequence": event.event_sequence,
-        "event_type": event.event_type,
-        "role": event.role,
-        "occurred_at": timestamp_json(event.occurred_at_unix_ms),
-        "workspace": event.workspace,
-        "cwd": event.cwd,
-        "touched_files": event.touched_files,
-        "text": content.normalized_body.as_deref(),
-        "structured_content": content.structured_content.as_ref(),
-        "content": {
-            "complete": complete,
-            "policy_status": policy_status,
-            "policy_reason": policy_reason,
-        },
-    }));
-    if let Some(mcp_exchange) = &content.mcp_exchange {
-        rendered["mcp_exchange"] = json!(mcp_exchange);
+    ctx_history_read_application::render_show_event_read_model(event)
+}
+
+fn map_read_model_error(error: anyhow::Error) -> anyhow::Error {
+    match error.downcast::<ctx_history_read_application::ReadModelLimitError>() {
+        Ok(error) => anyhow::Error::new(PresentationOutputLimitError {
+            event_id: error.event_id,
+            actual_bytes: error.actual_bytes,
+            maximum_bytes: error.maximum_bytes,
+        }),
+        Err(error) => error,
     }
-    crate::commands::mcp_tool_call::insert_mcp_tool_call(&mut rendered, &event.core_record);
-    rendered
 }

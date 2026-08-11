@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use ctx_history_core::SourceKey;
 use ctx_history_index::{CoreEventRecord, EventRecord, SessionRecord};
-use ctx_history_query::{LocateRequest, LocateResult, PinnedHistoryQuery};
+use ctx_history_read_application::{LocateRequest, LocateResult, PinnedHistoryQuery};
 use serde_json::{json, Value};
 
 use crate::{

@@ -64,7 +64,7 @@ fn wire_receipt_uses_the_normalized_selection() {
         "descending",
     ]);
     let selection = selection_from_args(&args).unwrap();
-    let request = EventQueryWireRequest::from_selection(&selection, args.content, 10);
+    let request = EventQueryWireRequest::from_selection(&selection, args.content.into(), 10);
 
     assert_eq!(
         request.domain,

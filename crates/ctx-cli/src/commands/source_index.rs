@@ -1,5 +1,4 @@
 mod compact_presentation;
-mod compact_ref;
 mod copied_lineage;
 mod locate;
 mod render;
@@ -28,23 +27,9 @@ pub(crate) use show::{
     mcp_show_event_application, mcp_show_session_application, run_show, ShowApplicationError,
 };
 
+#[cfg(test)]
 pub(crate) fn event_origin_json(origin: &ctx_history_core::EventOrigin) -> serde_json::Value {
-    match origin {
-        ctx_history_core::EventOrigin::Unknown => serde_json::json!({"kind": "unknown"}),
-        ctx_history_core::EventOrigin::UniqueToSession => {
-            serde_json::json!({"kind": "unique_to_session"})
-        }
-        ctx_history_core::EventOrigin::CopiedFromAncestor {
-            ancestor_session_id,
-            ancestor_event_id,
-            proof,
-        } => serde_json::json!({
-            "kind": "copied_from_ancestor",
-            "ancestor_session_id": ancestor_session_id.as_uuid(),
-            "ancestor_event_id": ancestor_event_id.as_uuid(),
-            "proof": proof,
-        }),
-    }
+    ctx_history_read_application::event_origin_json(origin)
 }
 
 #[cfg(test)]

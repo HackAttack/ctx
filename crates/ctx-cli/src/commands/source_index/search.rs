@@ -241,21 +241,25 @@ impl From<ctx_history_index::IndexError> for SourceSearchFailure {
     }
 }
 
-impl From<ctx_history_query::SearchExecutionError> for SourceSearchFailure {
-    fn from(error: ctx_history_query::SearchExecutionError) -> Self {
+impl From<ctx_history_read_application::SearchExecutionError> for SourceSearchFailure {
+    fn from(error: ctx_history_read_application::SearchExecutionError) -> Self {
         match error {
-            ctx_history_query::SearchExecutionError::Semantic(error) => Self::Semantic(error),
-            ctx_history_query::SearchExecutionError::Index(error) => Self::from(error),
-            ctx_history_query::SearchExecutionError::Application(error) => Self::from(error),
+            ctx_history_read_application::SearchExecutionError::Semantic(error) => {
+                Self::Semantic(error)
+            }
+            ctx_history_read_application::SearchExecutionError::Index(error) => Self::from(error),
+            ctx_history_read_application::SearchExecutionError::Application(error) => {
+                Self::from(error)
+            }
         }
     }
 }
 
 type SourceSearchResult<T> = std::result::Result<T, SourceSearchFailure>;
 
-pub(super) use ctx_history_query::{SearchCollection, SearchHit, SemanticFallbackDiagnostics};
+pub(super) use ctx_history_read_application::{SearchCollection, SemanticFallbackDiagnostics};
 #[cfg(test)]
-pub(super) use ctx_history_query::{SearchEventMetadata, SearchResultWindow};
+pub(super) use ctx_history_read_application::{SearchEventMetadata, SearchHit, SearchResultWindow};
 
 pub(super) struct RefreshOutcome {
     pub(super) pin: PinnedSourceBackedGeneration,
@@ -295,7 +299,8 @@ fn run_search_inner<P: HistorySemanticPort>(
     let config = config::AppConfig::load(&data_root)?;
     let refresh_mode = args.refresh;
     let policy = source_search_policy(&config);
-    let plan = ctx_history_query::plan_search(query::source_search_request(&args), policy)?;
+    let plan =
+        ctx_history_read_application::plan_search(query::source_search_request(&args), policy)?;
     let request = plan.request();
     let requested_backend = request.backend.unwrap_or(policy.default_backend);
     let semantic_weight = request.semantic_weight;
@@ -486,7 +491,7 @@ pub(crate) fn mcp_search_with_compact(
 pub(crate) fn normalize_mcp_search_request(
     request: &mut SourceSearchRequest,
 ) -> std::result::Result<(), McpSearchError> {
-    ctx_history_query::normalize_search_request(request)
+    ctx_history_read_application::normalize_search_request(request)
         .map_err(|error| SourceSearchFailure::from(error).into_mcp())
 }
 
@@ -496,7 +501,7 @@ fn mcp_search_inner<P: HistorySemanticPort>(
     config: &config::AppConfig,
     semantic_port: &P,
 ) -> SourceSearchResult<(Value, SearchContextObservation, Value)> {
-    let plan = ctx_history_query::plan_search(request, source_search_policy(config))?;
+    let plan = ctx_history_read_application::plan_search(request, source_search_policy(config))?;
     let refresh = refresh_for_search(plan.request(), RefreshArg::Off, data_root)?;
     let (value, collection, index, _, _) =
         search_pinned_generation(plan, data_root, RefreshArg::Off, refresh, semantic_port)?;
@@ -586,7 +591,7 @@ pub(super) fn refresh_for_search_with<Coordinate>(
 where
     Coordinate: FnOnce(&Path, SourceBackedRefreshMode) -> Result<SourceBackedRefreshObservation>,
 {
-    ctx_history_query::validate_search_request(request)?;
+    ctx_history_read_application::validate_search_request(request)?;
     let mode = source_backed_refresh_mode(refresh);
     let observation = match coordinate(data_root, mode) {
         Ok(observation) => observation,
@@ -636,7 +641,7 @@ pub(super) fn source_backed_refresh_mode(refresh: RefreshArg) -> SourceBackedRef
 }
 
 fn search_pinned_generation<P: HistorySemanticPort>(
-    plan: ctx_history_query::PlannedSearch,
+    plan: ctx_history_read_application::PlannedSearch,
     data_root: &Path,
     refresh_mode: RefreshArg,
     refresh: RefreshOutcome,
@@ -668,13 +673,13 @@ pub(super) fn search_existing_generation(
     refresh_status: &str,
     refresh_source_count: usize,
 ) -> Result<(Value, SearchCollection, VerifiedIndex)> {
-    let policy = ctx_history_query::SearchPolicy {
+    let policy = ctx_history_read_application::SearchPolicy {
         default_backend: request.backend.unwrap_or(SearchBackendArg::Lexical),
         semantic: SemanticAvailability::Available,
     };
     let mut request = request.clone();
     request.semantic_weight = semantic_weight;
-    let plan = ctx_history_query::plan_search(request, policy)
+    let plan = ctx_history_read_application::plan_search(request, policy)
         .map_err(SourceSearchFailure::from)
         .map_err(SourceSearchFailure::into_anyhow)?;
     search_existing_generation_with_port(
@@ -690,7 +695,7 @@ pub(super) fn search_existing_generation(
 }
 
 fn search_existing_generation_with_port<P: HistorySemanticPort>(
-    plan: ctx_history_query::PlannedSearch,
+    plan: ctx_history_read_application::PlannedSearch,
     index: VerifiedIndex,
     data_root: &Path,
     refresh_mode: RefreshArg,
@@ -709,7 +714,7 @@ fn search_existing_generation_with_port<P: HistorySemanticPort>(
     )?;
     let active_session = active_session_exclusion();
     let query_started = Instant::now();
-    let query = ctx_history_query::PinnedHistoryQuery::new(
+    let query = ctx_history_read_application::PinnedHistoryQuery::new(
         &index,
         input_references
             .as_ref()
@@ -738,13 +743,13 @@ fn search_existing_generation_with_port<P: HistorySemanticPort>(
     Ok((value, result.collection, index))
 }
 
-fn active_session_exclusion() -> Option<ctx_history_query::ActiveSessionExclusion> {
+fn active_session_exclusion() -> Option<ctx_history_read_application::ActiveSessionExclusion> {
     std::env::var("CODEX_THREAD_ID")
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .map(
-            |provider_session_id| ctx_history_query::ActiveSessionExclusion {
+            |provider_session_id| ctx_history_read_application::ActiveSessionExclusion {
                 provider: ctx_history_core::CaptureProvider::Codex.as_str().to_owned(),
                 provider_session_id,
             },
@@ -781,7 +786,7 @@ fn collect_search_hits_with_port<P: HistorySemanticPort>(
 ) -> SourceSearchResult<SearchCollection> {
     let mut planned = request.clone();
     planned.semantic_weight = semantic_weight;
-    ctx_history_query::collect_search_hits(
+    ctx_history_read_application::collect_search_hits(
         &planned,
         index,
         filters,
@@ -811,7 +816,7 @@ where
 {
     let mut planned = request.clone();
     planned.semantic_weight = semantic_weight;
-    ctx_history_query::collect_search_hits_using(
+    ctx_history_read_application::collect_search_hits_using(
         &planned,
         index,
         filters,
@@ -830,4 +835,4 @@ where
 }
 
 #[cfg(test)]
-pub(super) use ctx_history_query::shape_search_result_window;
+pub(super) use ctx_history_read_application::shape_search_result_window;

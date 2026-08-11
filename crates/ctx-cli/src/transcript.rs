@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::ValueEnum;
 
 mod artifact;
@@ -15,16 +15,6 @@ pub(crate) enum TranscriptMode {
     Full,
     Lite,
     Log,
-}
-
-impl TranscriptMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::Lite => "lite",
-            Self::Log => "log",
-        }
-    }
 }
 
 pub(crate) fn write_output(body: String, out: Option<PathBuf>) -> Result<()> {
@@ -96,19 +86,16 @@ impl Write for TranscriptOutput<'_> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_uuid_prefix(value: &str, kind: &str) -> Result<String> {
-    let prefix = value.trim();
-    if prefix.len() < 8 {
-        return Err(anyhow!(
+    ctx_history_read_application::normalize_uuid_prefix(value).map_err(|error| match error {
+        ctx_history_read_application::UuidPrefixError::TooShort => anyhow::anyhow!(
             "{kind} id prefix must be at least 8 hex characters, or pass a full ctx UUID"
-        ));
-    }
-    if prefix.contains('-') || !prefix.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err(anyhow!(
+        ),
+        ctx_history_read_application::UuidPrefixError::InvalidHex => anyhow::anyhow!(
             "{kind} id must be a full ctx UUID or an unambiguous hex prefix from verbose search output"
-        ));
-    }
-    Ok(prefix.to_ascii_lowercase())
+        ),
+    })
 }
 
 pub(crate) fn shell_quote_arg(value: &str) -> String {

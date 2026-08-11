@@ -13,8 +13,8 @@ use crate::{
 use super::semantic_error_into_anyhow;
 use super::semantic_port::{SemanticAvailability, SemanticReason};
 
-pub(super) use ctx_history_query::unsupported_semantic_scope;
-pub(crate) use ctx_history_query::{
+pub(super) use ctx_history_read_application::unsupported_semantic_scope;
+pub(crate) use ctx_history_read_application::{
     NormalizedSearchQuery, SearchPolicy, SearchRequest as SourceSearchRequest,
 };
 
@@ -80,7 +80,7 @@ pub(in crate::commands::source_index) fn resolve_source_search_backend(
     request: &SourceSearchRequest,
     config: &config::AppConfig,
 ) -> Result<SearchBackendArg> {
-    ctx_history_query::resolve_search_backend(request, source_search_policy(config))
+    ctx_history_read_application::resolve_search_backend(request, source_search_policy(config))
         .map_err(semantic_error_into_anyhow)
 }
 
@@ -89,5 +89,5 @@ pub(in crate::commands::source_index) fn index_search_filters(
     request: &SourceSearchRequest,
     index: &VerifiedIndex,
 ) -> Result<EventSearchFilters> {
-    ctx_history_query::search_filters(request, index, None)
+    ctx_history_read_application::search_filters(request, index, None)
 }

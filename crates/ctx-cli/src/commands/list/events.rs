@@ -7,7 +7,6 @@ use ctx_history_index::{
     CoreEventRangePage, CoreEventRangeSelection, IndexError, VerifiedIndex,
 };
 use ctx_history_refresh::{verify_generation_query_authority, GenerationQueryAuthorityError};
-use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -23,15 +22,14 @@ mod request;
 
 #[cfg(test)]
 use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
-pub(crate) use ctx_history_query::DEFAULT_EVENT_QUERY_LIMIT;
-use render::format_timestamp;
+pub(crate) use ctx_history_read_application::{
+    DEFAULT_EVENT_QUERY_LIMIT, EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION,
+};
 pub(crate) use render::render_event;
 pub(crate) use request::{
     EventContentProjection, EventQueryFormat, EventQueryWireRequest, ListEventsArgs,
 };
 
-pub(crate) const EVENT_QUERY_SCHEMA_VERSION: u8 = 1;
-const EVENT_QUERY_PAGE_ITEMS: usize = 100;
 const EVENT_QUERY_PAGE_BYTES: usize = 1024 * 1024;
 /// JSON string escaping can expand each admitted Core byte to six wire bytes.
 /// Keep a fixed envelope allowance while retaining a deterministic upper bound.
@@ -132,7 +130,7 @@ fn execute(
     }
     let limit = validated_limit(args.limit)?;
     let index = open_event_range_index(data_root, cursor.as_ref())?;
-    let request = EventQueryWireRequest::from_selection(&selection, args.content, limit);
+    let request = EventQueryWireRequest::from_selection(&selection, args.content.into(), limit);
     match args.format {
         EventQueryFormat::Json => {
             let page = bounded_page(&index, &selection, cursor.as_ref(), &request, None)?;
@@ -147,7 +145,7 @@ fn execute(
 }
 
 pub(crate) fn validated_limit(limit: u64) -> std::result::Result<usize, EventQueryError> {
-    ctx_history_query::validated_event_limit(limit).map_err(Into::into)
+    ctx_history_read_application::validated_event_limit(limit).map_err(Into::into)
 }
 
 pub(crate) fn selection(
@@ -155,7 +153,7 @@ pub(crate) fn selection(
     until: Option<&str>,
     filters: CoreEventRangeFilters,
 ) -> std::result::Result<CoreEventRangeSelection, EventQueryError> {
-    ctx_history_query::event_range_selection(since, until, filters).map_err(Into::into)
+    ctx_history_read_application::event_range_selection(since, until, filters).map_err(Into::into)
 }
 
 fn selection_from_args(
@@ -210,7 +208,7 @@ fn read_page(
     byte_budget: usize,
     strict_budget: Option<CoreEventPageBudget>,
 ) -> std::result::Result<CoreEventRangePage, EventQueryError> {
-    let request = ctx_history_query::ListEventsPageRequest {
+    let request = ctx_history_read_application::ListEventsPageRequest {
         selection: selection.clone(),
         cursor: cursor.cloned(),
         limit: u64::try_from(page_items).unwrap_or(u64::MAX),
@@ -218,7 +216,7 @@ fn read_page(
         byte_budget,
         strict_budget,
     };
-    ctx_history_query::PinnedHistoryQuery::new(index, None)
+    ctx_history_read_application::PinnedHistoryQuery::new(index, None)
         .list_events_page(&request)
         .map(|result| result.page)
         .map_err(Into::into)
@@ -375,59 +373,6 @@ fn encode_bounded_page(
     Ok(EncodedPage { encoded, items: 1 })
 }
 
-#[derive(Serialize)]
-struct EventQueryReceipt<'a> {
-    schema_version: u8,
-    generation_id: &'a str,
-    domain: &'a Value,
-    filters: &'a Value,
-    direction: &'static str,
-    content: &'static str,
-    limit: usize,
-    terminal: bool,
-    truncated: bool,
-    next_cursor: Option<&'a str>,
-    freshness: EventQueryFreshness,
-    frontier: EventQueryFrontier<'a>,
-}
-
-#[derive(Serialize)]
-struct EventQueryFreshness {
-    mode: &'static str,
-    status: &'static str,
-    source_count: usize,
-    read_only: bool,
-}
-
-#[derive(Serialize)]
-struct EventQueryFrontier<'a> {
-    generation_id: &'a str,
-    cursor: Option<&'a str>,
-    status: &'static str,
-    certified_sources: usize,
-    sources_with_frontier: usize,
-    certified_bytes: u64,
-}
-
-#[derive(Serialize)]
-struct EventQueryPageUsage {
-    items: usize,
-    pages: usize,
-    bytes: usize,
-    encoded_core_bytes: usize,
-    content_bytes: usize,
-    oversized_singleton: bool,
-}
-
-#[derive(Serialize)]
-struct EventQueryPage<'a> {
-    #[serde(flatten)]
-    receipt: EventQueryReceipt<'a>,
-    payload_type: &'static str,
-    events: &'a [Value],
-    usage: EventQueryPageUsage,
-}
-
 #[allow(clippy::too_many_arguments)]
 fn encode_page(
     index: &VerifiedIndex,
@@ -443,18 +388,15 @@ fn encode_page(
 ) -> std::result::Result<Vec<u8>, EventQueryError> {
     let mut bytes = 0_usize;
     loop {
-        let mut encoded = serde_json::to_vec(&EventQueryPage {
-            receipt: event_query_receipt(
-                index,
-                request,
-                generation_id,
-                next_cursor,
-                terminal,
-                truncated,
-            ),
-            payload_type: "event_range_page",
+        let model = ctx_history_read_application::event_query_page_read_model(
+            index,
+            request,
+            generation_id,
             events,
-            usage: EventQueryPageUsage {
+            next_cursor,
+            terminal,
+            truncated,
+            ctx_history_read_application::EventQueryPageUsage {
                 items: events.len(),
                 pages: 1,
                 bytes,
@@ -462,7 +404,8 @@ fn encode_page(
                 content_bytes,
                 oversized_singleton,
             },
-        })?;
+        );
+        let mut encoded = serde_json::to_vec(&model)?;
         let observed = encoded.len().saturating_add(1);
         if observed == bytes {
             encoded.push(b'\n');
@@ -511,13 +454,12 @@ where
             return Err(EventQueryError::NonAdvancingPage);
         }
         for event in &page.items {
-            let record = json!({
-                "schema_version": EVENT_QUERY_SCHEMA_VERSION,
-                "record_type": "event_range_event",
-                "generation_id": page.generation_id,
-                "ordinal": events,
-                "event": render_event(event, request.content)?,
-            });
+            let rendered = render_event(event, request.content)?;
+            let record = ctx_history_read_application::event_query_event_read_model(
+                &page.generation_id,
+                events,
+                rendered,
+            );
             let wire_bytes =
                 crate::presentation_limit::serialized_json_bytes(&record)?.saturating_add(1);
             enforce_wire_record_cap(wire_bytes)?;
@@ -561,24 +503,6 @@ where
     }
 }
 
-#[derive(Serialize)]
-struct EventQueryCompletionUsage {
-    items: usize,
-    pages: usize,
-    bytes: usize,
-    encoded_core_bytes: usize,
-    content_bytes: usize,
-    oversized_singleton_pages: usize,
-}
-
-#[derive(Serialize)]
-struct EventQueryCompletion<'a> {
-    #[serde(flatten)]
-    receipt: EventQueryReceipt<'a>,
-    record_type: &'static str,
-    usage: EventQueryCompletionUsage,
-}
-
 #[allow(clippy::too_many_arguments)]
 fn encode_completion(
     index: &VerifiedIndex,
@@ -596,17 +520,14 @@ fn encode_completion(
 ) -> std::result::Result<Vec<u8>, EventQueryError> {
     let mut bytes = prior_output_bytes;
     loop {
-        let mut encoded = serde_json::to_vec(&EventQueryCompletion {
-            receipt: event_query_receipt(
-                index,
-                request,
-                generation_id,
-                next_cursor,
-                terminal,
-                truncated,
-            ),
-            record_type: "event_range_completion",
-            usage: EventQueryCompletionUsage {
+        let model = ctx_history_read_application::event_query_completion_read_model(
+            index,
+            request,
+            generation_id,
+            next_cursor,
+            terminal,
+            truncated,
+            ctx_history_read_application::EventQueryCompletionUsage {
                 items: events,
                 pages,
                 bytes,
@@ -614,7 +535,8 @@ fn encode_completion(
                 content_bytes,
                 oversized_singleton_pages,
             },
-        })?;
+        );
+        let mut encoded = serde_json::to_vec(&model)?;
         let observed = prior_output_bytes
             .saturating_add(encoded.len())
             .saturating_add(1);
@@ -653,54 +575,6 @@ impl Write for CountingWriter<'_> {
     }
 }
 
-fn event_query_receipt<'a>(
-    index: &VerifiedIndex,
-    request: &'a EventQueryWireRequest,
-    generation_id: &'a str,
-    next_cursor: Option<&'a str>,
-    terminal: bool,
-    truncated: bool,
-) -> EventQueryReceipt<'a> {
-    let sources = &index.manifest().sources;
-    let sources_with_frontier = sources
-        .iter()
-        .filter(|source| source.frontier().is_some())
-        .count();
-    let frontier_status = if sources_with_frontier == 0 {
-        "unavailable"
-    } else if sources_with_frontier == sources.len() {
-        "available"
-    } else {
-        "partial"
-    };
-    EventQueryReceipt {
-        schema_version: EVENT_QUERY_SCHEMA_VERSION,
-        generation_id,
-        domain: &request.domain,
-        filters: &request.filters,
-        direction: request.direction,
-        content: request.content.as_str(),
-        limit: request.limit,
-        terminal,
-        truncated,
-        next_cursor,
-        freshness: EventQueryFreshness {
-            mode: "pinned",
-            status: "not_checked",
-            source_count: sources.len(),
-            read_only: true,
-        },
-        frontier: EventQueryFrontier {
-            generation_id,
-            cursor: next_cursor,
-            status: frontier_status,
-            certified_sources: sources.len(),
-            sources_with_frontier,
-            certified_bytes: index.manifest().certified_source_bytes,
-        },
-    }
-}
-
 fn enforce_wire_record_cap(actual: usize) -> std::result::Result<(), EventQueryError> {
     if actual > MAX_EVENT_QUERY_WIRE_RECORD_BYTES {
         return Err(EventQueryError::WireRecordTooLarge {
@@ -714,18 +588,18 @@ fn enforce_wire_record_cap(actual: usize) -> std::result::Result<(), EventQueryE
 pub(crate) fn decode_cursor(
     encoded: &str,
 ) -> std::result::Result<CoreEventRangeCursor, EventQueryError> {
-    ctx_history_query::decode_event_range_cursor(encoded).map_err(Into::into)
+    ctx_history_read_application::decode_event_range_cursor(encoded).map_err(Into::into)
 }
 
 pub(crate) fn encode_cursor(cursor: &CoreEventRangeCursor) -> String {
-    ctx_history_query::encode_event_range_cursor(cursor)
+    ctx_history_read_application::encode_event_range_cursor(cursor)
 }
 
 pub(crate) fn parse_uuid(
     field: &'static str,
     value: Option<&str>,
 ) -> std::result::Result<Option<Uuid>, EventQueryError> {
-    ctx_history_query::parse_event_query_uuid(field, value).map_err(Into::into)
+    ctx_history_read_application::parse_event_query_uuid(field, value).map_err(Into::into)
 }
 
 pub(crate) fn event_query_error_value(error: &EventQueryError) -> Value {
@@ -795,23 +669,24 @@ impl From<IndexError> for EventQueryError {
     }
 }
 
-impl From<ctx_history_query::ListEventsError> for EventQueryError {
-    fn from(error: ctx_history_query::ListEventsError) -> Self {
+impl From<ctx_history_read_application::ListEventsError> for EventQueryError {
+    fn from(error: ctx_history_read_application::ListEventsError) -> Self {
         match error {
-            ctx_history_query::ListEventsError::Range(error) => Self::Range(error),
-            ctx_history_query::ListEventsError::InvalidTimestamp { field, value } => {
+            ctx_history_read_application::ListEventsError::Range(error) => Self::Range(error),
+            ctx_history_read_application::ListEventsError::InvalidTimestamp { field, value } => {
                 Self::InvalidTimestamp { field, value }
             }
-            ctx_history_query::ListEventsError::InvalidTimestampPrecision { field, value } => {
-                Self::InvalidTimestampPrecision { field, value }
-            }
-            ctx_history_query::ListEventsError::IncompleteTimestampRange => {
+            ctx_history_read_application::ListEventsError::InvalidTimestampPrecision {
+                field,
+                value,
+            } => Self::InvalidTimestampPrecision { field, value },
+            ctx_history_read_application::ListEventsError::IncompleteTimestampRange => {
                 Self::IncompleteTimestampRange
             }
-            ctx_history_query::ListEventsError::InvalidUuid { field, value } => {
+            ctx_history_read_application::ListEventsError::InvalidUuid { field, value } => {
                 Self::InvalidUuid { field, value }
             }
-            ctx_history_query::ListEventsError::InvalidResourceLimit {
+            ctx_history_read_application::ListEventsError::InvalidResourceLimit {
                 field,
                 requested,
                 minimum,
@@ -822,10 +697,10 @@ impl From<ctx_history_query::ListEventsError> for EventQueryError {
                 minimum,
                 maximum,
             },
-            ctx_history_query::ListEventsError::CursorTooLarge { actual, maximum } => {
+            ctx_history_read_application::ListEventsError::CursorTooLarge { actual, maximum } => {
                 Self::CursorTooLarge { actual, maximum }
             }
-            ctx_history_query::ListEventsError::InvalidCursorEncoding => {
+            ctx_history_read_application::ListEventsError::InvalidCursorEncoding => {
                 Self::InvalidCursorEncoding
             }
         }

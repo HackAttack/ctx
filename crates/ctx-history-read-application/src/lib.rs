@@ -1,27 +1,49 @@
-//! Transport-neutral application queries over one pinned Core generation.
+//! Transport-neutral reads and structured read models over one pinned Core generation.
 //!
 //! This crate owns query-domain parsing, selector resolution, search planning,
-//! lexical/semantic ranking, and bounded result contracts. Process lifecycle,
-//! refresh execution, concrete semantic services, and UI rendering remain in
-//! the outer composition layer.
+//! lexical/semantic ranking, bounded result contracts, and structured DTO
+//! composition. Process lifecycle, refresh execution, concrete semantic
+//! services, writers, and terminal rendering remain in the outer composition
+//! layer.
 
 mod application;
+mod compact_presentation;
+mod event_read_model;
 mod filters;
+mod json;
+mod lineage;
 mod list;
 mod locate;
 mod presentation;
 mod search;
+mod search_read_model;
 mod selector;
 mod semantic;
 mod show;
+mod show_read_model;
 
 #[cfg(test)]
 mod application_tests;
 
 pub use application::{plan_search, PinnedHistoryQuery, PlannedSearch, SearchQueryResult};
+pub use compact_presentation::{
+    normalize_uuid_prefix, reference_needs_retained_peer, CompactPresentationProjection,
+    UuidPrefixError,
+};
+pub use event_read_model::{
+    event_query_completion_read_model, event_query_event_read_model, event_query_page_read_model,
+    event_query_receipt, event_query_wire_request, render_event_read_model, EventContentProjection,
+    EventQueryCompletionReadModel, EventQueryCompletionUsage, EventQueryFreshness,
+    EventQueryFrontier, EventQueryPageReadModel, EventQueryPageUsage, EventQueryReceipt,
+    EventQueryWireRequest, EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION,
+};
 pub use filters::{
     normalize_source_identity_filter, normalize_source_identity_filters, parse_since_filter,
     SourceIdentityFilterArgs, SourceIdentityFilterError, SourceIdentityFilters,
+};
+pub use json::{event_origin_json, timestamp_json};
+pub use lineage::{
+    copied_lineage_read_model, copied_lineage_relationship_summary, copied_lineage_summary,
 };
 pub use list::{
     decode_event_range_cursor, encode_event_range_cursor, event_range_selection,
@@ -45,6 +67,10 @@ pub use search::{
     SearchExecutionError, SearchExecutionResult, SearchHit, SearchPolicy, SearchRequest,
     SearchResultWindow, SemanticFallbackDiagnostics,
 };
+pub use search_read_model::{
+    phase_attribution, render_search_json, search_json, search_result_json, search_snippet,
+    semantic_diagnostics_read_model, SearchJsonInput, SearchRenderMetrics, SearchResultCommands,
+};
 pub use selector::{
     resolve_core_event, resolve_core_event_with_refs, resolve_session, resolve_session_with_refs,
     resolve_show_session, resolve_show_session_with_refs, validate_ctx_id,
@@ -60,4 +86,11 @@ pub use show::{
     ContentQueryLimitError, EncodedCoreQueryLimitError, EventWindowBudget, EventWindowLimitError,
     SessionEventMode, ShowEventRequest, ShowEventResult, ShowSessionEvent, ShowSessionPage,
     ShowSessionPageRequest,
+};
+pub use show_read_model::{
+    decode_session_event_cursor, encode_session_event_cursor, event_window_read_model,
+    event_window_value, event_window_with_lineage_read_model,
+    paginated_session_transcript_read_model, render_event_read_model_values,
+    render_show_event_read_model, retain_structured_session_page, session_transcript_read_model,
+    ReadModelLimitError, SessionPageReadModel, StructuredOutputFormat, StructuredTranscriptMode,
 };

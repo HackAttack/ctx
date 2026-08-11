@@ -1,22 +1,17 @@
 use std::path::Path;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ctx_history_core::{MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES};
-use ctx_history_index::{CoreEventPageBudget, CoreEventRecord, SessionEventCursor};
-use ctx_history_query::{
+use ctx_history_index::CoreEventPageBudget;
+use ctx_history_read_application::{
     EventWindowBudget, PinnedHistoryQuery, ShowEventRequest, ShowSessionPageRequest,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{
-    output::{compact_json, OutputFormat},
-    presentation_limit::{enforce_presentation_output_limit, serialized_json_bytes},
-    transcript::TranscriptMode,
-};
+use crate::{output::OutputFormat, transcript::TranscriptMode};
 
 use super::{
-    event_window_json, render_event_value, session_event_mode, session_transcript_value,
+    event_window_json_with_lineage, paginated_session_transcript_value, session_event_mode,
     ShowApplicationError, ShowApplicationResult, CLI_SESSION_EVENT_PAGE_ITEMS,
 };
 use crate::commands::source_index::{
@@ -63,7 +58,10 @@ pub(crate) fn mcp_show_session_application(
     let compact = CompactPresentation::open(&index, &index_root(data_root))
         .map_err(externalize_query_error)
         .map_err(ShowApplicationError::from_application_error)?;
-    let cursor = cursor.map(decode_session_event_cursor).transpose()?;
+    let cursor = cursor
+        .map(ctx_history_read_application::decode_session_event_cursor)
+        .transpose()
+        .map_err(ShowApplicationError::from_application_error)?;
     let query = PinnedHistoryQuery::new(&index, compact.retained_peer());
     let page = query
         .show_session_page(&ShowSessionPageRequest {
@@ -82,17 +80,22 @@ pub(crate) fn mcp_show_session_application(
         .map_err(externalize_query_error)
         .map_err(ShowApplicationError::from_application_error)?;
     let session = page.session;
-    let (rendered, has_more, next_cursor) =
-        render_selected_session_page(page.events, page.has_more, output_limit_bytes)?;
-    let returned = rendered.len();
-    let mut value =
-        session_transcript_value(&session, mode, OutputFormat::Json, rendered, false, None);
-    value["pagination"] = compact_json(json!({
-        "limit": limit,
-        "returned": returned,
-        "has_more": has_more,
-        "next_cursor": next_cursor.as_ref().map(encode_session_event_cursor).transpose()?,
-    }));
+    let rendered = ctx_history_read_application::retain_structured_session_page(
+        page.events,
+        page.has_more,
+        output_limit_bytes,
+    )
+    .map_err(ShowApplicationError::from_application_error)?;
+    let value = paginated_session_transcript_value(
+        &session,
+        mode,
+        OutputFormat::Json,
+        rendered.events,
+        limit,
+        rendered.has_more,
+        rendered.next_cursor.as_ref(),
+    )
+    .map_err(ShowApplicationError::from_application_error)?;
     let event_id = value["events"]
         .as_array()
         .and_then(|events| events.last())
@@ -105,77 +108,6 @@ pub(crate) fn mcp_show_session_application(
         .project(&value)
         .map_err(ShowApplicationError::from_application_error)?;
     Ok((value, compact_value))
-}
-
-fn render_selected_session_page(
-    events: Vec<ctx_history_query::ShowSessionEvent>,
-    query_has_more: bool,
-    output_limit_bytes: usize,
-) -> ShowApplicationResult<(Vec<Value>, bool, Option<SessionEventCursor>)> {
-    let mut selected = Vec::with_capacity(events.len());
-    let mut serialized_event_bytes = 2_usize;
-    let mut continuation = None;
-    let mut output_truncated = false;
-    for selected_event in events {
-        if !retain_mcp_selected_event(
-            selected_event.event,
-            selected_event.cursor_after,
-            output_limit_bytes,
-            &mut selected,
-            &mut serialized_event_bytes,
-            &mut continuation,
-        )? {
-            output_truncated = true;
-            break;
-        }
-    }
-
-    let has_more = query_has_more || output_truncated;
-    if !has_more {
-        continuation = None;
-    }
-    Ok((selected, has_more, continuation))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn retain_mcp_selected_event(
-    event: CoreEventRecord,
-    cursor_after: SessionEventCursor,
-    output_limit_bytes: usize,
-    selected: &mut Vec<Value>,
-    serialized_event_bytes: &mut usize,
-    continuation: &mut Option<SessionEventCursor>,
-) -> ShowApplicationResult<bool> {
-    let event_id = event.event_id.as_uuid();
-    let value = render_event_value(&event);
-    let candidate_bytes = serialized_event_bytes
-        .saturating_add(usize::from(!selected.is_empty()))
-        .saturating_add(serialized_json_bytes(&value).map_err(ShowApplicationError::application)?);
-    if candidate_bytes > output_limit_bytes {
-        if selected.is_empty() {
-            enforce_presentation_output_limit(candidate_bytes, output_limit_bytes, event_id)?;
-        }
-        return Ok(false);
-    }
-    *serialized_event_bytes = candidate_bytes;
-    *continuation = Some(cursor_after);
-    selected.push(value);
-    Ok(true)
-}
-
-fn encode_session_event_cursor(cursor: &SessionEventCursor) -> ShowApplicationResult<String> {
-    Ok(URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(cursor).map_err(ShowApplicationError::application)?))
-}
-
-fn decode_session_event_cursor(encoded: &str) -> ShowApplicationResult<SessionEventCursor> {
-    let invalid = || {
-        ShowApplicationError::from_index(
-            ctx_history_index::IndexError::InvalidSessionEventCursorCoordinate,
-        )
-    };
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| invalid())?;
-    serde_json::from_slice(&bytes).map_err(|_| invalid())
 }
 
 #[cfg(test)]
@@ -232,13 +164,14 @@ pub(crate) fn mcp_show_event_application(
         .map_err(ShowApplicationError::from_application_error)?;
     let selected = result.selected;
     let events = result.events;
-    let mut value = event_window_json(&selected, &events, OutputFormat::Json, output_limit_bytes)
-        .map_err(ShowApplicationError::from_application_error)?;
-    value["copied_lineage"] =
-        crate::commands::source_index::copied_lineage::copied_lineage_read_model(
-            &result.copied_lineage,
-        )
-        .map_err(ShowApplicationError::from_application_error)?;
+    let value = event_window_json_with_lineage(
+        &selected,
+        &events,
+        &result.copied_lineage,
+        OutputFormat::Json,
+        output_limit_bytes,
+    )
+    .map_err(ShowApplicationError::from_application_error)?;
     enforce_json_output_limit(&value, output_limit_bytes, selected.event_id.as_uuid())
         .map_err(ShowApplicationError::from_application_error)?;
     let compact_value = compact

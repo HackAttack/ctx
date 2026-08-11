@@ -1,5 +1,4 @@
-use ctx_history_core::CoreRecord;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::ui::sanitize_untrusted_history_body_for_terminal;
 
@@ -16,24 +15,6 @@ pub(crate) struct McpToolCallDisplay {
     pub(crate) server: String,
     pub(crate) tool: String,
     pub(crate) truncated: bool,
-}
-
-/// Adds the provider-neutral machine field only when Core has exact evidence.
-/// Presentation content projections intentionally do not affect this metadata.
-pub(crate) fn insert_mcp_tool_call(event: &mut Value, record: &CoreRecord) {
-    let Some(attribution) = record.mcp_tool_call.as_ref() else {
-        return;
-    };
-    let Some(object) = event.as_object_mut() else {
-        return;
-    };
-    object.insert(
-        "mcp_tool_call".to_owned(),
-        json!({
-            "server": attribution.server,
-            "tool": attribution.tool,
-        }),
-    );
 }
 
 pub(crate) fn mcp_tool_call_display(event: &Value) -> Option<McpToolCallDisplay> {
