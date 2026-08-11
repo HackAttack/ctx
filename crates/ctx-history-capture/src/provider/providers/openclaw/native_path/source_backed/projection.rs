@@ -369,6 +369,48 @@ fn output_outcome_label(outcome: crate::OutputOutcome) -> &'static str {
 }
 
 impl JsonlFamilyProjector for OpenClawProjector {
+    fn preflight(
+        &mut self,
+        reader: &mut JsonlReader,
+        certified_prefix_end: Option<u64>,
+    ) -> Result<bool> {
+        let mut authority = OpenClawTerminalAuthority::available();
+        let mut certified_prefix_exhausted = false;
+        while reader
+            .visit_page(&mut |record: JsonlRecordRef<'_>| -> Result<()> {
+                let evidence = record.evidence();
+                let region = match certified_prefix_end {
+                    Some(end) if evidence.byte_end_exclusive() <= end => {
+                        JsonlTerminalObservationRegion::CertifiedPrefix
+                    }
+                    Some(_) => JsonlTerminalObservationRegion::AppendedSuffix,
+                    None => JsonlTerminalObservationRegion::WholeSource,
+                };
+                observe_terminal_record(&mut authority, record.bytes(), region);
+                if region == JsonlTerminalObservationRegion::CertifiedPrefix {
+                    certified_prefix_exhausted = authority.exhausted();
+                }
+                Ok(())
+            })?
+            .is_some()
+        {}
+        self.terminal_authority = authority;
+        // An already exhausted prefix had no positive claims to retract, so
+        // later suffixes remain appendable just as they did under the binding
+        // fingerprint. Newly exhausted authority still requires replacement.
+        Ok(certified_prefix_end.is_some()
+            && self.terminal_authority.append_requires_replacement()
+            && (!self.terminal_authority.exhausted() || !certified_prefix_exhausted))
+    }
+
+    fn retry_replacement(&mut self) {
+        self.session.restore(self.replacement_session.clone());
+        self.pending_calls.clear();
+        self.running_processes.clear();
+        self.linkage_capacity_exceeded = false;
+        self.fallback_identities = FallbackEventIdentityState::default();
+    }
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,

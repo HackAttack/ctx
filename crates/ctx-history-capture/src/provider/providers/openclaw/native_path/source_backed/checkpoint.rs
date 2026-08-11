@@ -15,7 +15,7 @@ pub(super) struct RestoredProjectorCheckpoint {
     pub(super) linkage_capacity_exceeded: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionCheckpoint {
     pub(super) provider_session_id: String,
