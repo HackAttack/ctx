@@ -2,6 +2,7 @@
 """Validate that every SDK suite has a required Buildkite execution route."""
 
 import re
+import subprocess
 import sys
 
 
@@ -158,6 +159,77 @@ def validate_linux_route(source: str) -> None:
     )
 
 
+def ubuntu_apt_requests(source: str, npm_preinstalled: bool):
+    start_marker = "run_apt_get() {"
+    end_marker = "\n\nconfigure_bazelisk() {"
+    require(
+        source.count(start_marker) == 1 and source.count(end_marker) == 1,
+        "Linux CI must define one Ubuntu tool installer",
+    )
+    start = source.index(start_marker)
+    end = source.index(end_marker, start)
+    installer = source[start:end]
+    probe = f"""{installer}
+probe_npm_preinstalled="$1"
+dpkg-query() {{
+  local package="${{@: -1}}"
+  if [[ "${{package}}" == "npm" ]]; then
+    return 1
+  fi
+  printf 'install ok installed\\n'
+}}
+command() {{
+  if [[ "$1" == "-v" && "$2" == "npm" ]]; then
+    if [[ "${{probe_npm_preinstalled}}" == "1" ]]; then
+      printf '/opt/node/bin/npm\\n'
+      return 0
+    fi
+    return 1
+  fi
+  if [[ "$1" == "-v" && "$2" == "apt-get" ]]; then
+    printf '/usr/bin/apt-get\\n'
+    return 0
+  fi
+  builtin command "$@"
+}}
+run_apt_get() {{
+  printf 'APT:%s\\n' "$*"
+}}
+install_ubuntu_tools
+"""
+    completed = subprocess.run(
+        ["bash", "-ceu", probe, "--", "1" if npm_preinstalled else "0"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    require(
+        completed.returncode == 0,
+        f"Ubuntu npm capability probe failed: {completed.stderr.strip()}",
+    )
+    return [
+        line.removeprefix("APT:")
+        for line in completed.stdout.splitlines()
+        if line.startswith("APT:")
+    ]
+
+
+def validate_ubuntu_npm_install(source: str) -> None:
+    require(
+        ubuntu_apt_requests(source, npm_preinstalled=True) == [],
+        "preinstalled npm must suppress Ubuntu apt installation",
+    )
+    require(
+        ubuntu_apt_requests(source, npm_preinstalled=False)
+        == [
+            "apt-get -o DPkg::Lock::Timeout=300 update",
+            "env DEBIAN_FRONTEND=noninteractive apt-get "
+            "-o DPkg::Lock::Timeout=300 install -y --no-install-recommends npm",
+        ],
+        "absent npm must request the Ubuntu npm package",
+    )
+
+
 def validate_sdk_runner(source: str) -> None:
     required_commands = (
         'all_groups="contracts,typescript,python,go,jvm,swift,dotnet"',
@@ -182,6 +254,7 @@ def validate_sdk_runner(source: str) -> None:
 def validate(pipeline: str, public_ci: str, sdk_runner: str) -> None:
     validate_sdk_steps(split_steps(pipeline))
     validate_linux_route(public_ci)
+    validate_ubuntu_npm_install(public_ci)
     validate_sdk_runner(sdk_runner)
 
 
@@ -259,6 +332,22 @@ def main() -> None:
         public_ci.replace(
             " --required-groups=contracts,typescript,python,go,jvm,dotnet", "", 1
         ),
+        sdk_runner,
+    )
+    npm_capability_check = (
+        '    if [[ "${package}" == "npm" ]] '
+        "&& command -v npm >/dev/null 2>&1; then\n"
+        "      continue\n"
+        "    fi\n"
+    )
+    require(
+        public_ci.count(npm_capability_check) == 1,
+        "npm capability mutation must match exactly once",
+    )
+    expect_rejection(
+        "preinstalled npm apt conflict",
+        pipeline,
+        public_ci.replace(npm_capability_check, "", 1),
         sdk_runner,
     )
     for label, exact_command in (
