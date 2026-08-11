@@ -55,13 +55,12 @@ steps:
       - "bazel-testlogs/**/*.zip"
       - "target/ctx-artifacts/check/**"
 
-  - label: ":swift: required macOS SDK implementations"
+  - label: ":swift: required macOS Swift SDK implementation"
     key: "sdk-swift-required"
     if: build.source != "schedule" || build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"
     command: |
-      javac -version
       swift --version
-      bash scripts/check-sdks.sh --groups=jvm,swift --required-groups=jvm,swift
+      CTX_SDK_RUN_LOCAL_SMOKE=0 bash scripts/check-sdks.sh --groups=swift --required-groups=swift
     agents:
       queue: "ctx-release-macos-arm64"
       os: "darwin"

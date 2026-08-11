@@ -21,6 +21,10 @@ make_fixture() {
     "${fixture}/crates/ctx-protocol" \
     "${fixture}/crates/ctx-sdk" \
     "${fixture}/sdks/dotnet/src/Ctx.AgentHistory" \
+    "${fixture}/sdks/jvm/scripts" \
+    "${fixture}/sdks/jvm/src/main/java" \
+    "${fixture}/sdks/jvm/src/test/java" \
+    "${fixture}/sdks/jvm/examples" \
     "${fixture}/sdks/python" \
     "${fixture}/sdks/typescript/examples" \
     "${fixture}/sdks/typescript/src" \
@@ -30,10 +34,13 @@ make_fixture() {
   cp "${repo_root}/scripts/check-sdks.sh" "${fixture}/scripts/check-sdks.sh"
   cp "${repo_root}/scripts/check-sdk-no-publish.sh" \
     "${fixture}/scripts/check-sdk-no-publish.sh"
+  cp "${repo_root}/sdks/jvm/scripts/test" \
+    "${fixture}/sdks/jvm/scripts/test"
+  chmod 755 "${fixture}/sdks/jvm/scripts/test"
   # Keep missing-tool mutations independent of the host image. Expose only
   # the base utilities exercised by the fixture; SDK commands are supplied by
   # each case below.
-  for tool in bash cp dirname find grep head mkdir mktemp rm; do
+  for tool in bash cp dirname find grep head mkdir mktemp rm sort; do
     ln -s "$(command -v "${tool}")" "${fixture}/bin/${tool}"
   done
   printf '{"private": true}\n' >"${fixture}/sdks/typescript/package.json"
@@ -42,6 +49,7 @@ make_fixture() {
   printf '[tool.ctx]\npublish = false\n' >"${fixture}/sdks/python/pyproject.toml"
   printf '[package]\npublish = false\n' >"${fixture}/crates/ctx-sdk/Cargo.toml"
   printf '[package]\npublish = false\n' >"${fixture}/crates/ctx-protocol/Cargo.toml"
+  : >"${fixture}/sdks/jvm/README.md"
   printf '<IsPackable>false</IsPackable>\n' \
     >"${fixture}/sdks/dotnet/src/Ctx.AgentHistory/Ctx.AgentHistory.csproj"
   : >"${fixture}/sdks/swift/Package.swift"
@@ -65,6 +73,7 @@ write_executable() {
 run_check() {
   env \
     PATH="${fixture}/bin" \
+    SDK_JVM_FAIL_STAGE="${SDK_JVM_FAIL_STAGE:-}" \
     SDK_TEST_LOG="${log}" \
     bash "${fixture}/scripts/check-sdks.sh" "$@" >"${output}" 2>&1
 }
@@ -94,6 +103,39 @@ write_executable "${fixture}/bin/npm" \
 expect_failure \
   'required SDK group unavailable: typescript (Node.js 20.0+ required; found v18.20.0)' \
   --groups=typescript --required-groups=typescript
+
+make_fixture required-jvm-execution
+write_executable "${fixture}/bin/javac" \
+  'if [[ "${1:-}" == "-version" ]]; then printf "javac 17.0.1\n"; exit 0; fi' \
+  'printf "javac %s\n" "$*" >>"${SDK_TEST_LOG}"' \
+  'if [[ "${SDK_JVM_FAIL_STAGE:-}" == "compile" ]]; then printf "forced JVM compile failure\n" >&2; exit 41; fi'
+write_executable "${fixture}/bin/java" \
+  'printf "java %s\n" "$*" >>"${SDK_TEST_LOG}"' \
+  'case "${SDK_JVM_FAIL_STAGE:-}:$*" in' \
+  '  tests:*AgentHistoryClientTest*) printf "forced JVM tests failure\n" >&2; exit 42 ;;' \
+  '  example:*ToyAgentHistoryApp*) printf "forced JVM example failure\n" >&2; exit 43 ;;' \
+  'esac'
+run_check --groups=jvm --required-groups=jvm
+for completed_stage in compile tests example; do
+  grep -Fq "JVM SDK stage complete: ${completed_stage}" "${output}" \
+    || fail "JVM gate did not observe completed ${completed_stage} stage"
+done
+[[ "$(grep -c '^javac ' "${log}")" == "3" ]] \
+  || fail 'JVM gate did not execute all three compilation stages'
+[[ "$(grep -c '^java ' "${log}")" == "2" ]] \
+  || fail 'JVM gate did not execute tests and example'
+for failed_stage in compile tests example; do
+  : >"${log}"
+  if SDK_JVM_FAIL_STAGE="${failed_stage}" run_check \
+    --groups=jvm --required-groups=jvm; then
+    fail "JVM gate accepted forced ${failed_stage} failure"
+  fi
+  grep -Fq "forced JVM ${failed_stage} failure" "${output}" \
+    || fail "JVM gate did not expose forced ${failed_stage} failure"
+  if grep -Fq "JVM SDK stage complete: ${failed_stage}" "${output}"; then
+    fail "JVM gate emitted completion for failed ${failed_stage} stage"
+  fi
+done
 
 make_fixture contracts-without-rg
 write_executable "${fixture}/bin/python3" \

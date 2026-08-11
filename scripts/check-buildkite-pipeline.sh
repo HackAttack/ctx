@@ -822,7 +822,7 @@ for required in \
   'queue: "default"' \
   'bash scripts/buildkite-public-ci.sh --mode=ci' \
   'key: "sdk-swift-required"' \
-  'bash scripts/check-sdks.sh --groups=jvm,swift --required-groups=jvm,swift' \
+  'CTX_SDK_RUN_LOCAL_SMOKE=0 bash scripts/check-sdks.sh --groups=swift --required-groups=swift' \
   'bash scripts/check-sdks.sh --groups=contracts,typescript,python,go,jvm,dotnet --required-groups=contracts,typescript,python,go,jvm,dotnet' \
   'target/ctx-artifacts/check/**' \
   'concurrency_group: "ctx/public-smoke/default-hosted"' \
