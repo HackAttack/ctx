@@ -582,7 +582,17 @@ fn failed_predecessor_terminalizes_and_recovers_its_attached_fresh_demand() {
     let data_root = temp.path().join("data");
     ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
     let first = CoreRefreshEngine::new();
-    first.enqueue_periodic(&data_root).unwrap();
+    let predecessor_id = Uuid::from_u128(0x5a11ec).to_string();
+    let predecessor = first
+        .enqueue_fresh_catalog_demand_for_test(
+            &data_root,
+            None,
+            predecessor_id.clone(),
+            test_catalog_authority(2, 0),
+        )
+        .expect("exhaustive predecessor");
+    assert_eq!(request_id(&predecessor), predecessor_id);
+    assert_eq!(predecessor["reconciliation_demand"], "exhaustive");
     let successor_id = Uuid::from_u128(0x5a11ed).to_string();
     let successor_authority = test_catalog_authority(3, 0);
     let run = first
