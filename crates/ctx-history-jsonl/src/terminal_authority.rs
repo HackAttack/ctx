@@ -10,11 +10,9 @@ pub enum JsonlTerminalObservationRegion {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct JsonlTerminalMultiplicity {
-    candidates: u8,
-    in_certified_prefix: bool,
-    in_appended_suffix: bool,
-}
+pub struct JsonlTerminalMultiplicity(u8);
+
+const TERMINAL_CANDIDATES_MASK: u8 = 0b0000_0011;
 
 pub trait JsonlTerminalStorage: Clone + std::fmt::Debug + Default {
     type Iter<'a>: Iterator<Item = (&'a [u8; 32], &'a JsonlTerminalMultiplicity)>
@@ -144,21 +142,20 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
             return;
         }
         let state = self.call_ids.entry_or_default(digest);
-        state.candidates = state.candidates.saturating_add(1).min(2);
-        match region {
-            JsonlTerminalObservationRegion::WholeSource => {}
-            JsonlTerminalObservationRegion::CertifiedPrefix => {
-                state.in_certified_prefix = true;
-            }
-            JsonlTerminalObservationRegion::AppendedSuffix => {
-                state.in_appended_suffix = true;
-            }
-        }
+        let candidates = (state.0 & TERMINAL_CANDIDATES_MASK)
+            .saturating_add(1)
+            .min(2);
+        let region_flags = (u8::from(region == JsonlTerminalObservationRegion::CertifiedPrefix)
+            << 2)
+            | (u8::from(region == JsonlTerminalObservationRegion::AppendedSuffix) << 3);
+        state.0 = (state.0 & !TERMINAL_CANDIDATES_MASK) | candidates | region_flags;
     }
 
     #[inline]
     pub fn is_unique(&self, domain: &[u8], call_id: &str) -> bool {
-        self.is_unique_digest(jsonl_terminal_call_id_digest(domain, call_id))
+        !self.available
+            || (!self.exhausted
+                && self.is_unique_digest(jsonl_terminal_call_id_digest(domain, call_id)))
     }
 
     #[inline]
@@ -168,14 +165,34 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
                 && self
                     .call_ids
                     .get(&digest)
-                    .is_some_and(|state| state.candidates == 1))
+                    .is_some_and(|state| state.0 & TERMINAL_CANDIDATES_MASK == 1))
     }
 
     pub fn append_requires_replacement(&self) -> bool {
         self.exhausted
             || self.call_ids.iter().any(|(_, state)| {
-                state.in_certified_prefix && state.in_appended_suffix && state.candidates > 1
+                state.0 & (1 << 2) != 0
+                    && state.0 & (1 << 3) != 0
+                    && state.0 & TERMINAL_CANDIDATES_MASK > 1
             })
+    }
+
+    pub fn ambiguity_fingerprint(&self, domain: &[u8]) -> [u8; 32] {
+        let mut ambiguous = self
+            .call_ids
+            .iter()
+            .filter_map(|(digest, state)| {
+                (state.0 & TERMINAL_CANDIDATES_MASK > 1).then_some(*digest)
+            })
+            .collect::<Vec<_>>();
+        ambiguous.sort_unstable();
+        let mut hasher = Sha256::new();
+        hasher.update(domain);
+        hasher.update([u8::from(self.exhausted)]);
+        for digest in ambiguous {
+            hasher.update(digest);
+        }
+        hasher.finalize().into()
     }
 
     pub fn observe_ambiguous_terminal(&mut self) {
@@ -194,7 +211,8 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
             available: true,
         };
         for (digest, candidates) in entries {
-            authority.call_ids.entry_or_default(digest).candidates = candidates;
+            debug_assert!(candidates <= 2);
+            authority.call_ids.entry_or_default(digest).0 = candidates;
         }
         authority
     }
@@ -202,7 +220,7 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
     pub fn digest_counts(&self) -> impl Iterator<Item = ([u8; 32], u8)> + '_ {
         self.call_ids
             .iter()
-            .map(|(digest, state)| (*digest, state.candidates))
+            .map(|(digest, state)| (*digest, state.0 & TERMINAL_CANDIDATES_MASK))
     }
 
     pub fn exhausted(&self) -> bool {
@@ -214,12 +232,12 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
             return false;
         }
         self.call_ids.iter().any(|(digest, state)| {
-            state.candidates == 1
+            state.0 & TERMINAL_CANDIDATES_MASK == 1
                 && (combined.exhausted
                     || combined
                         .call_ids
                         .get(digest)
-                        .is_none_or(|combined| combined.candidates != 1))
+                        .is_none_or(|combined| combined.0 & TERMINAL_CANDIDATES_MASK != 1))
         })
     }
 
@@ -275,22 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_crossing_the_certified_boundary_requires_replacement() {
-        let mut authority = JsonlTerminalAuthority::available();
-        authority.observe(
-            DOMAIN,
-            "call",
-            JsonlTerminalObservationRegion::CertifiedPrefix,
-            8,
-        );
-        assert!(!authority.append_requires_replacement());
-        authority.observe(
-            DOMAIN,
-            "call",
-            JsonlTerminalObservationRegion::AppendedSuffix,
-            8,
-        );
-        assert!(authority.append_requires_replacement());
+    fn duplicate_boundary_bits_preserve_order_and_same_region_saturation() {
+        use JsonlTerminalObservationRegion::{AppendedSuffix, CertifiedPrefix};
+
+        for (regions, expected) in [
+            ([CertifiedPrefix, AppendedSuffix], true),
+            ([AppendedSuffix, CertifiedPrefix], true),
+            ([CertifiedPrefix, CertifiedPrefix], false),
+            ([AppendedSuffix, AppendedSuffix], false),
+        ] {
+            let mut authority = JsonlTerminalAuthority::available();
+            for region in regions {
+                authority.observe_digest([0; 32], region, 8);
+            }
+            assert_eq!(authority.append_requires_replacement(), expected);
+        }
     }
 
     #[test]
@@ -301,12 +318,16 @@ mod tests {
     #[test]
     fn checkpointed_digest_counts_preserve_positive_claims_and_invalidation() {
         let digest = jsonl_terminal_call_id_digest(DOMAIN, "call");
-        let prefix = JsonlCheckpointedTerminalAuthority::from_digest_counts([(digest, 1)], false);
-        assert_eq!(
-            prefix.digest_counts().collect::<Vec<_>>(),
-            vec![(digest, 1)]
+        let duplicate = jsonl_terminal_call_id_digest(DOMAIN, "duplicate");
+        let prefix = JsonlCheckpointedTerminalAuthority::from_digest_counts(
+            [(digest, 1), (duplicate, 2)],
+            false,
         );
+        let counts = prefix.digest_counts().collect::<BTreeMap<_, _>>();
+        assert_eq!(counts.get(&digest), Some(&1));
+        assert_eq!(counts.get(&duplicate), Some(&2));
         assert!(prefix.is_unique(DOMAIN, "call"));
+        assert!(!prefix.is_unique(DOMAIN, "duplicate"));
 
         let mut combined = prefix.clone();
         combined.observe_digest(digest, JsonlTerminalObservationRegion::WholeSource, 8);
