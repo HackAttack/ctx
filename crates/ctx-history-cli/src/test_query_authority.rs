@@ -4,12 +4,13 @@ use ctx_history_index::{GenerationWriter, SourceRouteIdentity, VerifiedIndex, Wr
 use ctx_history_refresh::{
     SourceBackedRefreshCurrent, SourceBackedRefreshReceipt, SourceBackedRefreshRouteResult,
     SourceBackedZeroSourceAuthority, SourceBackedZeroSourceAuthorityKind,
+    SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
 };
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy)]
 pub(crate) enum EmptyPublicationAuthority {
-    AuthoritativeV2,
+    AuthoritativeCurrent,
     LegacyV1,
     Missing,
     Malformed,
@@ -32,9 +33,12 @@ pub(crate) fn publish_empty_generation(
         return generation_id;
     }
     let metadata = match authority {
-        EmptyPublicationAuthority::AuthoritativeV2 => {
-            publication_metadata(&generation_id, 2, 0, true)
-        }
+        EmptyPublicationAuthority::AuthoritativeCurrent => publication_metadata(
+            &generation_id,
+            SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+            0,
+            true,
+        ),
         EmptyPublicationAuthority::LegacyV1 => publication_metadata(&generation_id, 1, 0, false),
         EmptyPublicationAuthority::Malformed => b"{".to_vec(),
         EmptyPublicationAuthority::UnknownVersion => {
@@ -102,15 +106,18 @@ fn publication_metadata(
             .unwrap()
             .remove("zero_source_authority");
     }
-    serde_json::to_vec(&json!({
+    let mut metadata = json!({
         "version": version,
         "request_id": "query-authority-test",
         "operation": "refresh",
         "refresh_scope": {"kind": "all"},
         "receipt": receipt,
         "route_observations": [Value::Null],
-    }))
-    .unwrap()
+    });
+    if version == SOURCE_REFRESH_PUBLICATION_METADATA_VERSION {
+        metadata["route_controls"] = json!({});
+    }
+    serde_json::to_vec(&metadata).unwrap()
 }
 
 fn republish_metadata(index_root: &Path, generation_id: &str, metadata: Vec<u8>) {
