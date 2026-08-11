@@ -6,7 +6,7 @@ use std::{
 
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
-    JsonlOversizedRecordPolicy, JsonlProbe, JsonlRecordRef,
+    JsonlOversizedRecordPolicy, JsonlProbe, JsonlRecordFraming, JsonlRecordRef,
 };
 use crate::{
     common::io::{
@@ -150,6 +150,13 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         ""
     }
     fn append_mode(&self) -> JsonlFamilyAppendMode;
+
+    /// Selects the physical record framing for ordinary JSONL leaves. The
+    /// family copies this policy into the reader once when the leaf opens;
+    /// whole-record leaves retain their separate exact-file behavior.
+    fn record_framing(&self) -> JsonlRecordFraming {
+        JsonlRecordFraming::ordinary()
+    }
 
     fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
         JsonlOversizedRecordPolicy::RejectSource

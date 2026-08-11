@@ -995,6 +995,104 @@ impl JsonlFamilyAdapter for EmissionTestAdapter {
     }
 }
 
+struct FramingPolicyTestAdapter {
+    projected: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+struct TerminalNulFramingTestAdapter(FramingPolicyTestAdapter);
+
+struct FramingPolicyTestProjector {
+    projected: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl JsonlFamilyProjector for FramingPolicyTestProjector {
+    fn project(
+        &mut self,
+        record: JsonlRecordRef<'_>,
+        _worker: &mut JsonlFamilyWorkerContext,
+        _emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
+    ) -> Result<()> {
+        self.projected.lock().unwrap().push(record.bytes().to_vec());
+        Ok(())
+    }
+}
+
+impl JsonlFamilyAdapter for FramingPolicyTestAdapter {
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Pi
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "framing-policy-test-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        TestAdapter.discover(root)
+    }
+
+    fn projector(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        Ok(Box::new(FramingPolicyTestProjector {
+            projected: Arc::clone(&self.projected),
+        }))
+    }
+}
+
+impl JsonlFamilyAdapter for TerminalNulFramingTestAdapter {
+    fn provider(&self) -> CaptureProvider {
+        self.0.provider()
+    }
+
+    fn source_format(&self) -> &'static str {
+        self.0.source_format()
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        self.0.schema_variant()
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        self.0.parser_revision()
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        self.0.append_mode()
+    }
+
+    fn record_framing(&self) -> JsonlRecordFraming {
+        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES)
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        self.0.discover(root)
+    }
+
+    fn projector(
+        &self,
+        leaf: &JsonlFamilyLeaf,
+        source_file: Arc<OpenedProviderSourceFile>,
+        imported_at: DateTime<Utc>,
+    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        self.0.projector(leaf, source_file, imported_at)
+    }
+}
+
 #[derive(Default)]
 struct CheckpointTestAdapter {
     projection_modes: Mutex<Vec<JsonlFamilyProjectionMode>>,
@@ -1590,6 +1688,91 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
     assert!(error
         .to_string()
         .contains("optimized JSONL leaf emitted a record for another source"));
+}
+
+fn project_framing_policy_fixture(
+    adapter: &dyn JsonlFamilyAdapter,
+    root: &Path,
+    index: &Path,
+) -> CertifiedSource {
+    let inventory = adapter.discover(root).unwrap();
+    let leaf = inventory.leaves().first().unwrap();
+    let writer = GenerationWriter::open(
+        index,
+        WriterOptions {
+            indexer_threads: 1,
+            memory_bytes: 15_000_000,
+        },
+    )
+    .unwrap()
+    .into_writer()
+    .unwrap();
+    let mut worker = JsonlFamilyWorkerContext::default();
+    let mut emit = |_event| Ok(());
+    let mut output = JsonlLeafOutput::new(&mut emit);
+    prepare_leaf(
+        adapter,
+        leaf,
+        None,
+        &writer.base_event_identity_lookup(),
+        &mut worker,
+        &mut output,
+    )
+    .unwrap()
+    .certificate
+}
+
+#[test]
+fn adapter_record_framing_defaults_to_ordinary_tail_compatibility() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("ordinary-sessions");
+    fs::create_dir_all(&root).unwrap();
+    let mut fixture = br#"{"message":"ordinary"}"#.to_vec();
+    fixture.push(b'\n');
+    fixture.extend_from_slice(&[0; 8]);
+    fs::write(root.join("ordinary.jsonl"), &fixture).unwrap();
+    let projected = Arc::new(Mutex::new(Vec::new()));
+    let adapter = FramingPolicyTestAdapter {
+        projected: Arc::clone(&projected),
+    };
+
+    let certificate = project_framing_policy_fixture(&adapter, &root, &temp.path().join("index"));
+
+    assert_eq!(
+        projected.lock().unwrap().as_slice(),
+        [br#"{"message":"ordinary"}"#.to_vec()]
+    );
+    assert_eq!(certificate.counts().complete_records, 1);
+    assert_eq!(certificate.counts().ignored_records, 1);
+    assert_eq!(
+        certificate.counts().certified_bytes,
+        (fixture.len() - 8) as u64
+    );
+}
+
+#[test]
+fn adapter_record_framing_can_select_terminal_nul_padding() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("terminal-nul-sessions");
+    fs::create_dir_all(&root).unwrap();
+    let mut fixture = br#"{"message":"terminal"}"#.to_vec();
+    fixture.push(b'\n');
+    fixture.extend_from_slice(&[0; 8]);
+    fs::write(root.join("terminal.jsonl"), &fixture).unwrap();
+    let projected = Arc::new(Mutex::new(Vec::new()));
+    let adapter = TerminalNulFramingTestAdapter(FramingPolicyTestAdapter {
+        projected: Arc::clone(&projected),
+    });
+
+    let certificate = project_framing_policy_fixture(&adapter, &root, &temp.path().join("index"));
+
+    assert_eq!(
+        projected.lock().unwrap().as_slice(),
+        [br#"{"message":"terminal"}"#.to_vec(), vec![0; 8],]
+    );
+    assert_eq!(certificate.counts().complete_records, 2);
+    assert_eq!(certificate.counts().ignored_records, 2);
+    assert_eq!(certificate.counts().certified_bytes, fixture.len() as u64);
 }
 
 #[test]

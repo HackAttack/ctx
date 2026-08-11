@@ -768,11 +768,12 @@ pub(super) fn prepare_leaf(
             previous_physical.map(|checkpoint| &checkpoint.physical),
         )
     } else {
-        JsonlReader::open(
+        JsonlReader::open_with_record_framing(
             physical_identity(adapter, &leaf),
             Arc::clone(&opened),
             previous_physical.map(|checkpoint| &checkpoint.physical),
             leaf.identity_probe.clone(),
+            adapter.record_framing(),
         )
     }?;
     reader.set_oversized_record_policy(adapter.oversized_record_policy());

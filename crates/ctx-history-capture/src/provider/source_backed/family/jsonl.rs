@@ -109,7 +109,30 @@ impl JsonlReader {
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
     ) -> Result<Self> {
-        Self::open_with_framing(identity, source_file, previous, probe, false)
+        Self::open_with_record_framing(
+            identity,
+            source_file,
+            previous,
+            probe,
+            JsonlRecordFraming::ordinary(),
+        )
+    }
+
+    pub(crate) fn open_with_record_framing(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile>,
+        previous: Option<&JsonlCheckpoint>,
+        probe: Option<JsonlProbe>,
+        record_framing: JsonlRecordFraming,
+    ) -> Result<Self> {
+        Self::open_with_framing(
+            identity,
+            source_file,
+            previous,
+            probe,
+            record_framing,
+            false,
+        )
     }
 
     pub(crate) fn open_whole_record(
@@ -117,7 +140,14 @@ impl JsonlReader {
         source_file: Arc<OpenedProviderSourceFile>,
         previous: Option<&JsonlCheckpoint>,
     ) -> Result<Self> {
-        Self::open_with_framing(identity, source_file, previous, None, true)
+        Self::open_with_framing(
+            identity,
+            source_file,
+            previous,
+            None,
+            JsonlRecordFraming::ordinary(),
+            true,
+        )
     }
 
     fn open_with_framing(
@@ -125,6 +155,7 @@ impl JsonlReader {
         source_file: Arc<OpenedProviderSourceFile>,
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
+        record_framing: JsonlRecordFraming,
         whole_record: bool,
     ) -> Result<Self> {
         source_file.revalidate_same_object()?;
@@ -221,7 +252,7 @@ impl JsonlReader {
                     observation.length(),
                     complete_prefix_end,
                     next_physical_ordinal,
-                    JsonlRecordFraming::ordinary(),
+                    record_framing,
                     JsonlPhysicalDigest::complete(prefix_hasher.clone()),
                     || CaptureError::SourceChangedDuringCapture,
                 )?),
