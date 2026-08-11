@@ -24,7 +24,6 @@ pub(super) struct CodexCausalLedgerV1 {
 
 #[derive(Debug, Default)]
 struct CodexCausalSourceV1 {
-    parent_provider_session_id: Option<String>,
     counters: CodexSourceBackedCountersV0,
 }
 
@@ -32,7 +31,6 @@ impl CodexCausalLedgerV1 {
     pub(super) fn observe_catalog(
         &mut self,
         provider_session_id: &str,
-        parent_provider_session_id: Option<&str>,
         work: CodexCatalogWorkV0,
         exact_replay: bool,
     ) {
@@ -40,7 +38,6 @@ impl CodexCausalLedgerV1 {
             .sources
             .entry(provider_session_id.to_owned())
             .or_default();
-        source.parent_provider_session_id = parent_provider_session_id.map(str::to_owned);
         source.counters.add_catalog_work(work);
         source.counters.writer_exact_replay_sources = source
             .counters
@@ -79,8 +76,11 @@ impl CodexCausalLedgerV1 {
         let descendants = self
             .sources
             .iter()
-            .filter(|(_, source)| {
-                source.parent_provider_session_id.as_deref() == Some(TARGET_PROVIDER_SESSION_ID)
+            // The qualification route and descendant manifest already bound
+            // this workload. Do not reopen unchanged provider bodies merely to
+            // reconstruct a second test-only copy of their Core lineage.
+            .filter(|(provider_session_id, _)| {
+                provider_session_id.as_str() != TARGET_PROVIDER_SESSION_ID
             })
             .map(|(provider_session_id, source)| {
                 CodexCausalDescendantReceiptV1::new(provider_session_id.clone(), source.counters)
@@ -108,7 +108,6 @@ impl CodexCausalLedgerV1 {
             .map(
                 |(provider_session_id, source)| CodexCausalSourceObservationV1 {
                     provider_session_id: provider_session_id.clone(),
-                    parent_provider_session_id: source.parent_provider_session_id.clone(),
                     counters: source.counters,
                 },
             )
@@ -125,7 +124,6 @@ impl CodexCausalLedgerV1 {
 #[derive(Debug, Clone)]
 pub(crate) struct CodexCausalSourceObservationV1 {
     pub(crate) provider_session_id: String,
-    pub(crate) parent_provider_session_id: Option<String>,
     pub(crate) counters: CodexSourceBackedCountersV0,
 }
 

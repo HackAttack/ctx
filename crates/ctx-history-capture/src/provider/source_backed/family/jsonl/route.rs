@@ -4,8 +4,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[cfg(test)]
-use super::JsonlSourceIdentity;
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
     JsonlOversizedRecordPolicy, JsonlProbe, JsonlReader, JsonlRecordFraming, JsonlRecordRef,
@@ -49,7 +47,6 @@ mod leaf;
 pub(crate) use leaf::checkpoint_admitted_revision_for_test;
 #[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
-pub(crate) use leaf::provider_checkpoint_for_base;
 use leaf::{physical_identity, scan_leaves};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
@@ -1183,51 +1180,6 @@ impl FamilyCheckpoint {
                 .checked_add(self.rejected_records)
                 .is_some_and(|classified| classified <= self.physical.next_physical_ordinal())
     }
-}
-
-#[cfg(test)]
-pub(crate) fn full_family_checkpoint_frontier_contract_for_test(
-    provider_checkpoint: TypedKey,
-    source_path_bytes: usize,
-) -> Result<(usize, bool)> {
-    use std::time::UNIX_EPOCH;
-
-    let physical = JsonlCheckpoint::new(
-        JsonlSourceIdentity::new(
-            "codex",
-            "codex-nativepath-core-record-v31-repository-positive-exact-authority",
-            FAMILY_POLICY_REVISION,
-            [u8::MAX; 32],
-            PathBuf::from("p".repeat(source_path_bytes)),
-        ),
-        JsonlFileObservation::new(u64::MAX, UNIX_EPOCH, false, Some([1; 32]), Some([2; 32])),
-        u64::MAX,
-        [u8::MAX; 32],
-        u64::MAX,
-        true,
-    );
-    let checkpoint = FamilyCheckpoint {
-        version: FamilyCheckpoint::VERSION,
-        provider_parser_revision:
-            "codex-nativepath-core-record-v31-repository-positive-exact-authority".to_owned(),
-        event_identity_revision: String::new(),
-        binding_digest: [u8::MAX; 32],
-        physical,
-        admitted_eof_sha256: Some([u8::MAX; 32]),
-        complete_prefix_ends_with_terminal_nul_padding: true,
-        represented_physical_records: u64::MAX,
-        rejected_records: 0,
-        indexed_documents: u64::MAX,
-        provider_checkpoint: Some(provider_checkpoint),
-    };
-    let family_json = serde_json::to_string(&checkpoint)?;
-    // TypedKey's binary contract is one tag byte plus an eight-byte length
-    // prefix. Production does not rely on this calculation; it constructs the
-    // real SourceFrontier below through `fits_frontier_key`.
-    let encoded_key_bytes = family_json
-        .len()
-        .saturating_add(1 + std::mem::size_of::<u64>());
-    Ok((encoded_key_bytes, checkpoint.fits_frontier_key()?))
 }
 
 #[derive(Debug, Clone)]

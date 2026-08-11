@@ -25,9 +25,6 @@ pub(crate) struct CatalogSession {
     pub(crate) source_root: String,
     pub(crate) source_path: String,
     pub(crate) external_session_id: Option<String>,
-    pub(crate) parent_external_session_id: Option<String>,
-    pub(crate) session_relationship: SessionRelationshipKind,
-    pub(crate) advisory_session_id: Option<String>,
     pub(crate) agent_type: AgentType,
     pub(crate) role_hint: Option<String>,
     pub(crate) external_agent_id: Option<String>,
@@ -96,7 +93,7 @@ fn catalog_codex_session_opened(
     let history_base_thread_id = payload
         .and_then(|payload| payload.pointer("/history_base/thread_id"))
         .and_then(Value::as_str);
-    let (parent_external_session_id, session_relationship) = codex_session_relationship(
+    let (_, session_relationship) = codex_session_relationship(
         &source,
         parent_thread_id,
         forked_from_id,
@@ -137,13 +134,6 @@ fn catalog_codex_session_opened(
         source_root: source_root.to_owned(),
         source_path: path.display().to_string(),
         external_session_id,
-        parent_external_session_id,
-        session_relationship,
-        advisory_session_id: payload
-            .and_then(|payload| payload.get("session_id"))
-            .and_then(Value::as_str)
-            .filter(|id| !id.trim().is_empty())
-            .map(str::to_owned),
         agent_type,
         role_hint,
         external_agent_id: payload

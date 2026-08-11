@@ -5,10 +5,9 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    SessionIdentityInput, SessionRelationshipKind, SourceAnchor, SourceKey, StableEntityId,
-    TypedKey,
+    derive_event_id, derive_native_session_id, CaptureProvider, CertifiedSource, CoreRecord,
+    CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceKey,
+    StableEntityId, TypedKey,
 };
 use ctx_history_index::{BaseEventIdentityLookup, IndexError};
 use sha2::{Digest, Sha256};
@@ -71,8 +70,6 @@ pub enum CodexSourceBackedErrorV0 {
     IncompleteCatalog { rejected: usize, failed: usize },
     #[error("Codex catalog source {path:?} has no native session ID")]
     MissingNativeSessionId { path: PathBuf },
-    #[error("Codex source certificate has an unsupported checkpoint kind or payload")]
-    InvalidCheckpoint,
     #[error("Codex scanner emitted a row without lexical body text")]
     MissingLexicalBody,
     #[error("Codex source count overflow")]

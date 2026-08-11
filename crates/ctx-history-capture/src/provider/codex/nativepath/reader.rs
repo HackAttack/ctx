@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     checkpoint::{
-        CodexPendingToolAuthority, CodexSemanticCheckpoint, MAX_CODEX_CONTINUATION_CELL_ID_BYTES,
+        CodexPendingToolAuthority, MAX_CODEX_CONTINUATION_CELL_ID_BYTES,
         MAX_CODEX_MCP_TERMINAL_AUTHORITIES, MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES,
         MAX_CODEX_TOOL_CALL_ID_BYTES, MAX_CODEX_TOOL_CONTEXTS,
     },
@@ -105,7 +105,6 @@ pub(crate) struct CodexNativePage {
 }
 
 pub(super) struct CodexSemanticScan {
-    pub(super) checkpoint: Option<CodexSemanticCheckpoint>,
     pub(super) counters: CodexScanCounters,
 }
 

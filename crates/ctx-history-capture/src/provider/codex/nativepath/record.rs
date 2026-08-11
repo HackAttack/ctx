@@ -715,7 +715,6 @@ struct CodexSessionMetaPayload {
     cli_version: Option<String>,
     #[serde(default)]
     source: Value,
-    session_id: Option<String>,
     parent_thread_id: Option<String>,
     forked_from_id: Option<String>,
     history_base: Option<CodexHistoryBase>,
@@ -766,13 +765,9 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
     {
         return None;
     }
-    let advisory_session_id = payload
-        .session_id
-        .and_then(|value| bounded_nonempty(value, MAX_CODEX_DURABLE_SESSION_ID_BYTES));
     Some(CodexSessionRow {
         native_session_id,
         parent_native_session_id,
-        advisory_session_id,
         root_native_session_id: None,
         session_relationship,
         started_at,
@@ -870,7 +865,7 @@ mod session_relationship_tests {
     }
 
     #[test]
-    fn payload_session_id_remains_advisory_to_the_child_local_parent_claim() {
+    fn payload_session_id_does_not_change_the_child_local_parent_claim() {
         let parent = "019fa000-0000-7000-8000-000000000913";
         let advisory = "019fa000-0000-7000-8000-000000000914";
         let row = parse(serde_json::json!({
@@ -881,7 +876,6 @@ mod session_relationship_tests {
             "forked_from_id": parent,
         }));
         assert_eq!(row.parent_native_session_id.as_deref(), Some(parent));
-        assert_eq!(row.advisory_session_id.as_deref(), Some(advisory));
         assert_eq!(row.root_native_session_id, None);
         assert_eq!(row.session_relationship, SessionRelationshipKind::Forked);
     }

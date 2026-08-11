@@ -6,10 +6,10 @@ use super::*;
 use crate::{
     provider::source_backed::{
         family::jsonl::{
-            observe_opened_file, observe_opened_file_allow_append, provider_checkpoint_for_base,
-            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
-            JsonlFamilyExecutionIo, JsonlFamilyInventory, JsonlFamilyInventoryMode,
-            JsonlFamilyLeaf, JsonlFamilyMembershipObservation, JsonlFamilyProjectionMode,
+            observe_opened_file, observe_opened_file_allow_append, JsonlFamilyAdapter,
+            JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyExecutionIo,
+            JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+            JsonlFamilyMembershipObservation, JsonlFamilyProjectionMode,
             JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
             JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
             JsonlFileObservation, JsonlRecordFraming,
@@ -18,8 +18,6 @@ use crate::{
     },
     Result,
 };
-
-const LEGACY_CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
 
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
@@ -47,9 +45,9 @@ struct CodexSessionSemanticExecutorV0 {
     #[cfg(any(test, ctx_codex_causal_qualification))]
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
     scanner: Option<CodexNativeScanner>,
-    checkpoint: Option<super::super::checkpoint::CodexSemanticCheckpoint>,
     #[cfg(any(test, ctx_codex_causal_qualification))]
     native_session_id: String,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
     projection_mode: JsonlFamilyProjectionMode,
 }
 
@@ -57,7 +55,7 @@ impl CodexSessionSemanticExecutorV0 {
     fn new(
         state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
         leaf: &JsonlFamilyLeaf,
-        checkpoint: Option<&TypedKey>,
+        _checkpoint: Option<&TypedKey>,
         base_event_lookup: Option<BaseEventIdentityLookup>,
         projection_mode: JsonlFamilyProjectionMode,
     ) -> Result<Self> {
@@ -72,16 +70,9 @@ impl CodexSessionSemanticExecutorV0 {
         if plan.0.source_path != leaf.source_path() {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
-        let checkpoint = match (projection_mode, checkpoint) {
-            (JsonlFamilyProjectionMode::CertifiedAppend, Some(checkpoint)) => {
-                // Shared family validation has already certified the source and
-                // physical frontier. Unknown provider-only state removes Codex
-                // append proof; preflight below requests the one safe replacement.
-                super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint).ok()
-            }
-            (JsonlFamilyProjectionMode::CertifiedAppend, None) => None,
-            (JsonlFamilyProjectionMode::Cold | JsonlFamilyProjectionMode::Replacement, _) => None,
-        };
+        // The shared family owns all append authority. Historical Codex
+        // provider payloads are inert; the mandatory semantic preflight below
+        // reconstructs owner and continuation state from the certified prefix.
         let base_event_lookup = match projection_mode {
             JsonlFamilyProjectionMode::CertifiedAppend => Some(base_event_lookup.ok_or(
                 CaptureError::SystemInvariant("Codex semantic append has no base event lookup"),
@@ -93,9 +84,9 @@ impl CodexSessionSemanticExecutorV0 {
             #[cfg(any(test, ctx_codex_causal_qualification))]
             state,
             scanner: Some(scanner),
-            checkpoint,
             #[cfg(any(test, ctx_codex_causal_qualification))]
             native_session_id: plan.2,
+            #[cfg(any(test, ctx_codex_causal_qualification))]
             projection_mode,
         })
     }
@@ -106,11 +97,6 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
         &mut self,
         input: &mut JsonlFamilyExecutionIo,
     ) -> Result<JsonlFamilySemanticPreflight> {
-        if self.projection_mode == JsonlFamilyProjectionMode::CertifiedAppend
-            && self.checkpoint.is_none()
-        {
-            return Ok(JsonlFamilySemanticPreflight::RetryReplacement);
-        }
         let retry = self
             .scanner
             .as_mut()
@@ -151,10 +137,6 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
                 "Codex semantic executor lost its scanner",
             ))?
             .finish_semantic()?;
-        let provider_checkpoint = scan
-            .checkpoint
-            .map(|checkpoint| checkpoint.encode_key().map_err(CaptureError::from))
-            .transpose()?;
         #[cfg(any(test, ctx_codex_causal_qualification))]
         {
             let mut counters = CodexSourceBackedCountersV0 {
@@ -180,7 +162,7 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
         Ok(JsonlFamilySemanticSummary::new(
             scan.counters.retained_records,
             scan.counters.rejected_complete_records,
-            provider_checkpoint,
+            None,
         ))
     }
 }
@@ -195,76 +177,44 @@ fn prepare_codex_session_jsonl_scans_v0(
     leaves: &[JsonlFamilyLeaf],
     bases: &HashMap<[u8; 32], &CertifiedSource>,
 ) -> Result<Option<usize>> {
-    let mut state = state.lock().map_err(|_| codex_family_state_error())?;
-    let mut leaves_by_descriptor = HashMap::with_capacity(leaves.len());
+    let state = state.lock().map_err(|_| codex_family_state_error())?;
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    let mut state = state;
     for leaf in leaves {
         if !state.plans.contains_key(leaf.source()) {
             return Err(CaptureError::InvalidPayload(
                 "Codex JSONL family selected an unplanned leaf".to_owned(),
             ));
         }
-        leaves_by_descriptor
-            .entry(leaf.source().exact_descriptor_digest())
-            .or_insert(leaf);
     }
-    let mut hydrated = HashMap::with_capacity(state.plans.len());
-    for (_, plan) in std::mem::take(&mut state.plans) {
-        let base = bases
-            .get(&plan.1.exact_descriptor_digest())
-            .copied()
-            .filter(|base| base.observation().source().exact_descriptor_eq(&plan.1));
-        let provider_checkpoint = match base {
-            Some(base) if base.parser_revision() == adapter.parser_revision() => {
-                leaves_by_descriptor
-                    .get(&plan.1.exact_descriptor_digest())
-                    .copied()
-                    .filter(|leaf| leaf.source().exact_descriptor_eq(&plan.1))
-                    .map(|leaf| codex_provider_checkpoint_for_base(adapter, leaf, base))
-                    .transpose()?
-                    .flatten()
-            }
-            Some(_) | None => None,
-        };
-        let (plan, work, exact_replay) =
-            super::catalog::hydrate_codex_session_plan_v0(plan, provider_checkpoint.as_ref())?;
-        #[cfg(any(test, ctx_codex_causal_qualification))]
-        {
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    {
+        let observations = state
+            .plans
+            .values()
+            .map(|plan| {
+                let exact_replay =
+                    bases
+                        .get(&plan.1.exact_descriptor_digest())
+                        .is_some_and(|base| {
+                            base.parser_revision() == adapter.parser_revision()
+                                && base.observation().source().exact_descriptor_eq(&plan.1)
+                        });
+                (plan.2.clone(), exact_replay)
+            })
+            .collect::<Vec<_>>();
+        for (native_session_id, exact_replay) in observations {
             state.causal.observe_catalog(
-                &plan.2,
-                plan.0.catalog_parent_native_session_id.as_deref(),
-                work,
+                &native_session_id,
+                super::catalog::CodexCatalogWorkV0::default(),
                 exact_replay,
             );
         }
-        #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-        let _ = (work, exact_replay);
-        hydrated.insert(plan.1.clone(), plan);
-    }
-    state.plans = hydrated;
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    {
         state.stage_pending = true;
     }
+    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
+    let _ = (adapter, bases);
     Ok(None)
-}
-
-fn codex_provider_checkpoint_for_base(
-    adapter: &dyn JsonlFamilyAdapter,
-    leaf: &JsonlFamilyLeaf,
-    base: &CertifiedSource,
-) -> Result<Option<TypedKey>> {
-    base.validate_contract()
-        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-    if base
-        .frontier()
-        .is_some_and(|frontier| frontier.checkpoint_kind() == LEGACY_CODEX_FRONTIER_KIND)
-    {
-        // V18 is the released Codex-native envelope that immediately preceded
-        // the shared family checkpoint. Its physical and semantic state cannot
-        // be resumed independently, so migrate it only by a full replacement.
-        return Ok(None);
-    }
-    provider_checkpoint_for_base(adapter, leaf, base)
 }
 
 fn install_prepared_state_v0(
@@ -496,10 +446,10 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
     }
 
     fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
-        if let Some(roots) = self.generation.session_tree_roots()? {
-            self.discover_tree_family(root, &roots)
-        } else if let Some(input) = self.generation.explicit_session_input()? {
-            self.discover_explicit_family(root, &input)
+        if let Some(roots) = self.generation.session_tree_roots() {
+            self.discover_tree_family(root, roots)
+        } else if let Some(input) = self.generation.explicit_session_input() {
+            self.discover_explicit_family(root, input)
         } else {
             Err(CaptureError::SystemInvariant(
                 "Codex generation route has no discovery authority",
@@ -587,11 +537,11 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
     }
 
     fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
-        if let Some(roots) = self.generation.session_tree_roots()? {
+        if let Some(roots) = self.generation.session_tree_roots() {
             roots.first().cloned().ok_or(CaptureError::SystemInvariant(
                 "Codex JSONL family has no route root",
             ))
-        } else if let Some(input) = self.generation.explicit_session_input()? {
+        } else if let Some(input) = self.generation.explicit_session_input() {
             Ok(input.path().to_path_buf())
         } else {
             Err(CaptureError::SystemInvariant(

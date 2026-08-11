@@ -177,24 +177,6 @@ impl<S: JsonlTerminalStorage> JsonlTerminalAuthorityMap<S> {
             })
     }
 
-    pub fn ambiguity_fingerprint(&self, domain: &[u8]) -> [u8; 32] {
-        let mut ambiguous = self
-            .call_ids
-            .iter()
-            .filter_map(|(digest, state)| {
-                (state.0 & TERMINAL_CANDIDATES_MASK > 1).then_some(*digest)
-            })
-            .collect::<Vec<_>>();
-        ambiguous.sort_unstable();
-        let mut hasher = Sha256::new();
-        hasher.update(domain);
-        hasher.update([u8::from(self.exhausted)]);
-        for digest in ambiguous {
-            hasher.update(digest);
-        }
-        hasher.finalize().into()
-    }
-
     pub fn observe_ambiguous_terminal(&mut self) {
         self.available = true;
         self.call_ids.clear();

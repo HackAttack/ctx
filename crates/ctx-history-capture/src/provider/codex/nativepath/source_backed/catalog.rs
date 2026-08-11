@@ -25,6 +25,7 @@ fn run_after_codex_metadata_inventory_hook() {
     }
 }
 
+#[cfg(any(test, ctx_codex_causal_qualification))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CodexCatalogWorkV0 {
     pub(crate) source_metadata_opens: u64,
@@ -174,7 +175,6 @@ pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
 
 #[derive(Debug)]
 struct CodexMetadataInventoryLeafV0 {
-    source_root: String,
     source_path: PathBuf,
     relative_path: PathBuf,
     observation: CodexFileObservation,
@@ -284,7 +284,6 @@ fn discover_codex_metadata_inventory_root_v0(
                     }
                     opened.revalidate_leaf()?;
                     leaves.push(CodexMetadataInventoryLeafV0 {
-                        source_root: session_root.display().to_string(),
                         source_path,
                         relative_path,
                         observation,
@@ -343,168 +342,13 @@ fn catalog_source_from_path_hint(
         }
     };
     Ok(CodexCatalogSource {
-        source_root: leaf.source_root.clone(),
         source_path: leaf.source_path.clone(),
         catalog_observation: leaf.observation.clone(),
         catalog_prefix_sha256: None,
         catalog_native_session_id: Some(native_session_id.clone()),
-        catalog_parent_native_session_id: None,
-        catalog_session_relationship: SessionRelationshipKind::Root,
-        catalog_advisory_session_id: None,
-        catalog_root_native_session_id: Some(native_session_id),
         authority_root: Some(leaf.authority.clone()),
         authority_relative_path: Some(leaf.relative_path.clone()),
     })
-}
-
-pub(super) fn set_child_local_root(
-    source: &mut CodexCatalogSource,
-    native_session_id: &str,
-) -> CodexSourceBackedResultV0<()> {
-    // A non-root source can certify only the direct-parent claim present in
-    // its own bytes. Resolving a generation-wide root would make the claim
-    // depend on another source and would reintroduce ancestor participation.
-    source.catalog_root_native_session_id = match source.catalog_session_relationship {
-        SessionRelationshipKind::Root => Some(native_session_id.to_owned()),
-        _ => Some(
-            source
-                .catalog_parent_native_session_id
-                .clone()
-                .ok_or(CodexSourceBackedErrorV0::InvalidCheckpoint)?,
-        ),
-    };
-    Ok(())
-}
-
-fn catalog_source_from_body(
-    leaf: &CodexMetadataInventoryLeafV0,
-) -> CodexSourceBackedResultV0<(CodexCatalogSource, bool)> {
-    let opened = leaf.authority.open_file(&leaf.relative_path)?;
-    let admitted = opened_codex_file_observation(&leaf.source_path, opened.file())?;
-    opened.revalidate_leaf()?;
-    if !leaf.observation.admits_append_only_growth(&admitted) {
-        return Err(CodexSourceBackedErrorV0::Capture(
-            CaptureError::SourceChangedDuringCapture,
-        ));
-    }
-    let prefix_sha256 = opened_file_prefix_sha256(opened.file(), leaf.observation.len)?;
-    // The catalog helper revalidates this retained authority before and after
-    // its bounded session-meta read, so a mutation in that window fails closed.
-    let mut catalog = catalog_codex_explicit_session_opened(&leaf.source_path, &opened)?;
-    catalog.source_root = leaf.source_root.clone();
-    let discovery = super::discover_codex_catalog_sources(&[catalog]);
-    if discovery.ineligible != 0 || !discovery.rejections.is_empty() {
-        return Err(CodexSourceBackedErrorV0::IncompleteCatalog {
-            rejected: discovery.rejections.len(),
-            failed: discovery.ineligible,
-        });
-    }
-    let mut sources = discovery.sources;
-    if sources.len() != 1 {
-        return Err(CodexSourceBackedErrorV0::IncompleteCatalog {
-            rejected: sources.len(),
-            failed: 0,
-        });
-    }
-    let mut source = sources
-        .pop()
-        .ok_or(CodexSourceBackedErrorV0::IncompleteCatalog {
-            rejected: 1,
-            failed: 0,
-        })?;
-    // Metadata discovery froze this refresh's EOF. Prove those exact bytes on
-    // the retained ordinary-file authority before handing them to the parser;
-    // growth is intentionally deferred to the next refresh.
-    if !leaf
-        .observation
-        .admits_append_only_growth(&source.catalog_observation)
-    {
-        return Err(CodexSourceBackedErrorV0::Capture(
-            CaptureError::SourceChangedDuringCapture,
-        ));
-    }
-    source.catalog_prefix_sha256 = Some(prefix_sha256);
-    source.catalog_observation = leaf.observation.clone();
-    source.authority_root = Some(leaf.authority.clone());
-    source.authority_relative_path = Some(leaf.relative_path.clone());
-    Ok((source, true))
-}
-
-pub(super) fn hydrate_codex_session_plan_v0(
-    plan: (CodexCatalogSource, SourceKey, String),
-    provider_checkpoint: Option<&TypedKey>,
-) -> CodexSourceBackedResultV0<(
-    (CodexCatalogSource, SourceKey, String),
-    CodexCatalogWorkV0,
-    bool,
-)> {
-    let (mut source, source_key, native_session_id) = plan;
-    if let Some(checkpoint) = provider_checkpoint.and_then(|checkpoint| {
-        super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint).ok()
-    }) {
-        let owner = checkpoint.owner();
-        if owner.native_session_id != native_session_id {
-            return Err(CodexSourceBackedErrorV0::InvalidCheckpoint);
-        }
-        source.catalog_parent_native_session_id = owner.parent_native_session_id.clone();
-        source.catalog_session_relationship = owner.session_relationship;
-        source.catalog_advisory_session_id = owner.advisory_session_id.clone();
-        set_child_local_root(&mut source, &native_session_id)?;
-        return Ok((
-            (source, source_key, native_session_id),
-            CodexCatalogWorkV0::default(),
-            true,
-        ));
-    }
-
-    if source.catalog_prefix_sha256.is_some() {
-        set_child_local_root(&mut source, &native_session_id)?;
-        return Ok((
-            (source, source_key, native_session_id),
-            CodexCatalogWorkV0::default(),
-            false,
-        ));
-    }
-
-    let authority = source
-        .authority_root
-        .clone()
-        .ok_or(CodexSourceBackedErrorV0::Capture(
-            CaptureError::SystemInvariant("Codex deferred source has no retained authority root"),
-        ))?;
-    let relative_path =
-        source
-            .authority_relative_path
-            .clone()
-            .ok_or(CodexSourceBackedErrorV0::Capture(
-                CaptureError::SystemInvariant(
-                    "Codex deferred source has no retained authority path",
-                ),
-            ))?;
-    let leaf = CodexMetadataInventoryLeafV0 {
-        source_root: source.source_root.clone(),
-        source_path: source.source_path.clone(),
-        relative_path,
-        observation: source.catalog_observation.clone(),
-        authority,
-    };
-    let (mut hydrated, _) = catalog_source_from_body(&leaf)?;
-    if hydrated.catalog_native_session_id.as_deref() != Some(native_session_id.as_str()) {
-        return Err(CodexSourceBackedErrorV0::ExplicitSourceIdentityChanged);
-    }
-    set_child_local_root(&mut hydrated, &native_session_id)?;
-    Ok((
-        (hydrated, source_key, native_session_id),
-        CodexCatalogWorkV0 {
-            source_metadata_opens: 1,
-            // The catalog helper reads only its bounded session-meta prefix;
-            // the frozen source length is a conservative read upper bound,
-            // not a claim that the transcript body was scanned.
-            source_metadata_read_upper_bound_bytes: leaf.observation.len,
-            session_meta_parses: 1,
-        },
-        false,
-    ))
 }
 
 fn codex_canonical_native_session_id_path_hint(path: &Path) -> Option<String> {

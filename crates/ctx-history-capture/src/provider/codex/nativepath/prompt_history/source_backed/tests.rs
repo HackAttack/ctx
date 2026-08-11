@@ -8,6 +8,7 @@ use std::{
 use ctx_history_core::TypedKey;
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::provider::source_backed::{
@@ -374,6 +375,10 @@ fn projector_preserves_prompt_identity_and_rejections() {
     assert_eq!(record.occurred_at_unix_ms, Some(1_700_000_000_000));
     assert_eq!(record.role.as_deref(), Some("user"));
     assert!(record.validate_contract().is_ok());
+    assert_eq!(
+        format!("{:x}", Sha256::digest(record.encode_stored().unwrap())),
+        "1171f722185296cf5f225c502e043e2a0f384203ef6b2faadd1940be36616894"
+    );
 
     for invalid in [
         b"not json".as_slice(),

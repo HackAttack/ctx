@@ -4,7 +4,7 @@ use std::{
     time::SystemTime,
 };
 
-use ctx_history_core::{CaptureProvider, SessionRelationshipKind};
+use ctx_history_core::CaptureProvider;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -53,7 +53,6 @@ impl CodexFileObservation {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CodexCatalogSource {
-    pub(crate) source_root: String,
     pub(crate) source_path: PathBuf,
     pub(crate) catalog_observation: CodexFileObservation,
     /// SHA-256 of exactly `catalog_observation.len` bytes from the retained
@@ -61,10 +60,6 @@ pub(crate) struct CodexCatalogSource {
     /// second transcript store.
     pub(crate) catalog_prefix_sha256: Option<[u8; 32]>,
     pub(crate) catalog_native_session_id: Option<String>,
-    pub(crate) catalog_parent_native_session_id: Option<String>,
-    pub(crate) catalog_session_relationship: SessionRelationshipKind,
-    pub(crate) catalog_advisory_session_id: Option<String>,
-    pub(crate) catalog_root_native_session_id: Option<String>,
     pub(crate) authority_root: Option<ProviderSourceRoot>,
     pub(crate) authority_relative_path: Option<PathBuf>,
 }
@@ -138,7 +133,6 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
         .map(decode_change_token)
         .transpose()?;
     Ok(CodexCatalogSource {
-        source_root: session.source_root.clone(),
         source_path: PathBuf::from(&session.source_path),
         catalog_observation: CodexFileObservation {
             len: session.file_size_bytes,
@@ -148,10 +142,6 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
         },
         catalog_prefix_sha256: None,
         catalog_native_session_id: session.external_session_id.clone(),
-        catalog_parent_native_session_id: session.parent_external_session_id.clone(),
-        catalog_session_relationship: session.session_relationship,
-        catalog_advisory_session_id: session.advisory_session_id.clone(),
-        catalog_root_native_session_id: None,
         authority_root: None,
         authority_relative_path: None,
     })
