@@ -127,6 +127,7 @@ pub(super) fn require_complete_base_source_ownership(
     owners: &HashMap<[u8; 32], SourceOwner>,
     complete_inventory_owners: &[CompleteInventoryOwner],
     carried_routes: &BTreeSet<SourceRouteIdentity>,
+    partial_routes: &BTreeSet<SourceRouteIdentity>,
 ) -> SourceBackedCoordinatorResult<()> {
     let Some(base) = writer.base_manifest() else {
         return Ok(());
@@ -158,7 +159,18 @@ pub(super) fn require_complete_base_source_ownership(
                     .iter()
                     .any(|member| member.exact_descriptor_eq(source))
         });
-        if !claimed && !covered_by_missing_route && !covered_by_carried_route {
+        let covered_by_partial_route = base.source_routes().iter().any(|snapshot| {
+            partial_routes.contains(snapshot.route_identity())
+                && snapshot
+                    .sources()
+                    .iter()
+                    .any(|member| member.exact_descriptor_eq(source))
+        });
+        if !claimed
+            && !covered_by_missing_route
+            && !covered_by_carried_route
+            && !covered_by_partial_route
+        {
             return Err(SourceBackedCoordinatorError::UnclaimedBaseSource {
                 source_id: source.identity().to_string(),
             });

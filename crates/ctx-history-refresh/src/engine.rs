@@ -945,11 +945,26 @@ impl CoreRefreshEngine {
                 durable_request_id,
             };
         }
-        for continuation in state.manual_all_continuations.values_mut() {
+        let predecessor_reconciliation_demand = attempt
+            .as_ref()
+            .map(|attempt| attempt.reconciliation_demand)
+            .unwrap_or(SourceBackedReconciliationDemand::Incremental);
+        let successor_reconciliation_demands = state
+            .attempts
+            .iter()
+            .map(|attempt| (attempt.request_id.clone(), attempt.reconciliation_demand))
+            .collect::<BTreeMap<_, _>>();
+        for (continuation_id, continuation) in &mut state.manual_all_continuations {
             if continuation.predecessor_request_id != request_id {
                 continue;
             }
             continuation.predecessor_finished = true;
+            if successor_reconciliation_demands
+                .get(continuation_id)
+                .is_some_and(|requested| predecessor_reconciliation_demand < *requested)
+            {
+                continue;
+            }
             if let Some(attempt) = attempt.as_ref() {
                 if let Some(receipt) = attempt.receipt.as_ref() {
                     for (route, admission_observation) in &continuation.admission_route_observations

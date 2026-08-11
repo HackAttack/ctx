@@ -409,6 +409,12 @@ impl SqliteSourceAccessError {
             || matches!(self, Self::Finalization { primary, cleanup } if primary.is_source_changed() || cleanup.is_source_changed())
     }
 
+    pub fn is_snapshot_unavailable(&self) -> bool {
+        matches!(self, Self::SnapshotUnavailable { .. })
+            || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_snapshot_unavailable())
+            || matches!(self, Self::Finalization { primary, cleanup } if primary.is_snapshot_unavailable() || cleanup.is_snapshot_unavailable())
+    }
+
     pub fn with_diagnostic(
         self,
         phase: SqliteFailurePhase,
@@ -543,7 +549,8 @@ impl SqliteSourceReadSnapshot {
             SqliteCleanupStatus::NotRequired,
         );
         match self.policy {
-            SqliteSourceSnapshotPolicy::ExactRevision => {
+            SqliteSourceSnapshotPolicy::ExactRevision
+            | SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => {
                 error.with_exact_provider_content_provenance()
             }
             SqliteSourceSnapshotPolicy::StablePrivateCopy => error,

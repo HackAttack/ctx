@@ -160,6 +160,7 @@ impl GenerationWriter {
             route_deletions: self.route_deletions.clone(),
             observed_missing_routes: self.observed_missing_routes.clone(),
             route_publication_revalidation_len: self.route_publication_revalidations.len(),
+            partially_reconciled_routes: self.partially_reconciled_routes.clone(),
             source_identities: self.source_identities.clone(),
         };
         self.active_source_route_stage = Some(checkpoint);
@@ -246,8 +247,29 @@ impl GenerationWriter {
         self.observed_missing_routes = checkpoint.observed_missing_routes;
         self.route_publication_revalidations
             .truncate(checkpoint.route_publication_revalidation_len);
+        self.partially_reconciled_routes = checkpoint.partially_reconciled_routes;
         self.source_identities = checkpoint.source_identities;
         Ok(())
+    }
+
+    /// Marks the active selected route as a bounded incremental update. Its
+    /// unmentioned exact members remain authenticated by the locked base route
+    /// snapshot while staged members replace that base atomically.
+    pub fn retain_unstaged_source_route_members(
+        &mut self,
+        route_identity: &SourceRouteIdentity,
+    ) -> Result<()> {
+        self.require_active_source_route(route_identity)?;
+        self.partially_reconciled_routes
+            .insert(route_identity.clone());
+        Ok(())
+    }
+
+    pub fn source_route_retains_unstaged_members(
+        &self,
+        route_identity: &SourceRouteIdentity,
+    ) -> bool {
+        self.partially_reconciled_routes.contains(route_identity)
     }
 
     /// Authorizes the active route to take ownership from one exact carried
@@ -525,6 +547,22 @@ impl GenerationWriter {
             .is_some_and(|base| {
                 base.source_routes().iter().any(|route| {
                     plan.carried_from_base.contains(route.route_identity())
+                        && route
+                            .sources()
+                            .iter()
+                            .any(|candidate| candidate.exact_descriptor_eq(source))
+                })
+            })
+    }
+
+    pub(crate) fn source_is_partially_reconciled_from_base(&self, source: &SourceKey) -> bool {
+        self.base_publication
+            .as_ref()
+            .map(PinnedPublication::manifest)
+            .is_some_and(|base| {
+                base.source_routes().iter().any(|route| {
+                    self.partially_reconciled_routes
+                        .contains(route.route_identity())
                         && route
                             .sources()
                             .iter()

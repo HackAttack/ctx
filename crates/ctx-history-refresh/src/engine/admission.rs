@@ -614,6 +614,12 @@ fn apply_finished_predecessor_coverage(state: &mut CoreRefreshEngineState, reque
     else {
         return;
     };
+    let requested_demand = find_attempt(state, request_id)
+        .map(|attempt| attempt.reconciliation_demand)
+        .unwrap_or(SourceBackedReconciliationDemand::Exhaustive);
+    if predecessor.reconciliation_demand < requested_demand {
+        return;
+    }
     let Some(receipt) = predecessor.receipt.as_ref() else {
         return;
     };

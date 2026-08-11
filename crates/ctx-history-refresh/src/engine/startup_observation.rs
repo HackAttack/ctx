@@ -5,6 +5,9 @@ pub(super) fn overdue_hermes_exact_routes(
     now_ms: i64,
 ) -> BTreeSet<SourceRouteIdentity> {
     let manifest = index.manifest();
+    let route_controls = SourceBackedPublicationMetadata::decode(index)
+        .map(|metadata| metadata.route_controls)
+        .unwrap_or_default();
     manifest
         .source_routes()
         .iter()
@@ -14,15 +17,22 @@ pub(super) fn overdue_hermes_exact_routes(
                 .iter()
                 .map(|source| source.identity().digest())
                 .collect::<BTreeSet<_>>();
-            let certificates = manifest
+            let is_hermes_route = manifest
                 .sources
                 .iter()
                 .filter(|source| {
                     route_sources.contains(&source.observation().source().identity().digest())
                 })
-                .cloned()
-                .collect::<Vec<_>>();
-            ctx_history_capture::hermes_sources_require_exact_reconciliation(&certificates, now_ms)
+                .any(|source| {
+                    source.observation().source().provider()
+                        == ctx_history_core::CaptureProvider::Hermes.as_str()
+                });
+            let control_due = route_controls
+                .get(route.route_identity())
+                .and_then(|control| {
+                    ctx_history_capture::hermes_route_control_exact_due(control, now_ms)
+                });
+            (control_due.unwrap_or(is_hermes_route) && (is_hermes_route || control_due.is_some()))
                 .then(|| route.route_identity().clone())
         })
         .collect()
@@ -68,7 +78,7 @@ mod tests {
     };
     use ctx_history_index::{GenerationWriter, SourceRouteSnapshot, VerifiedIndex, WriterOptions};
 
-    fn hermes_control_index(
+    fn hermes_route_control_index(
         root: &Path,
         route: &SourceRouteIdentity,
         exact_due_at_ms: i64,
@@ -76,15 +86,16 @@ mod tests {
         let source = SourceKey::derive_provider_native(
             CaptureProvider::Hermes.as_str(),
             "hermes_state_sqlite",
-            "hermes-state-control-v1",
+            "hermes-state-session-v1",
             1,
-            "hermes-test-control",
+            "hermes-test-profile\u{1f}session-1",
             TypedKey::U64(1),
         )
         .unwrap();
         let database_identity = [1_u8; 32];
         let schema_evidence = [2_u8; 32];
         let revision = serde_json::to_vec(&serde_json::json!({
+            "kind": "hermes-route-control-v1",
             "version": 1,
             "database_identity": database_identity,
             "schema_evidence": schema_evidence,
@@ -97,8 +108,12 @@ mod tests {
             "outcome": "successful",
         }))
         .unwrap();
-        let observation =
-            SourceObservation::new(source.clone(), "hermes-refresh-control-v1", revision).unwrap();
+        let observation = SourceObservation::new(
+            source.clone(),
+            "hermes-source-backed-v3",
+            b"session-revision".to_vec(),
+        )
+        .unwrap();
         let certificate = CertifiedSource::certify(
             observation.clone(),
             observation,
@@ -120,7 +135,49 @@ mod tests {
             )
             .unwrap()])
             .unwrap();
-        writer.commit(|_| true).unwrap();
+        let request_route = route.clone();
+        writer
+            .commit_with_publication_metadata(
+                |_| true,
+                move |context| {
+                    let publication = SourceBackedRefreshPublication {
+                        generation_id: context.generation_id().to_owned(),
+                        published_explicit_source_catalog: None,
+                        unsupported_routes: 0,
+                        certified_source_count: 1,
+                        certified_source_bytes: 0,
+                        current: SourceBackedRefreshCurrent {
+                            source_count: 1,
+                            ..SourceBackedRefreshCurrent::default()
+                        },
+                        timings: SourceBackedRefreshTimings::default(),
+                        route_results: vec![SourceBackedRefreshRouteResult::succeeded(
+                            request_route.as_str().to_owned(),
+                            true,
+                        )],
+                        zero_source_authority: Vec::new(),
+                        catalog_route_bindings: Vec::new(),
+                        verified_index: None,
+                    };
+                    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
+                        None,
+                        context.generation_id().to_owned(),
+                        &publication,
+                    )
+                    .map_err(|error| IndexError::PublicationMetadata(format!("{error:#}")))?;
+                    SourceBackedPublicationMetadata {
+                        version: SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+                        request_id: "hermes-route-control-test".to_owned(),
+                        operation: SourceBackedRefreshOperation::Refresh,
+                        refresh_scope: SourceBackedRefreshScope::All,
+                        receipt: receipt.to_json(),
+                        route_observations: BTreeMap::new(),
+                        route_controls: BTreeMap::from([(request_route.clone(), revision)]),
+                    }
+                    .encode()
+                },
+            )
+            .unwrap();
         VerifiedIndex::open(root).unwrap()
     }
 
@@ -128,9 +185,9 @@ mod tests {
     fn persisted_hermes_deadline_selects_only_overdue_exact_routes() {
         let temp = tempfile::tempdir().unwrap();
         let route = SourceRouteIdentity::from_sha256("a7".repeat(32)).unwrap();
-        let future = hermes_control_index(&temp.path().join("future"), &route, 1_001);
+        let future = hermes_route_control_index(&temp.path().join("future"), &route, 1_001);
         assert!(overdue_hermes_exact_routes(&future, 1_000).is_empty());
-        let overdue = hermes_control_index(&temp.path().join("overdue"), &route, 1_000);
+        let overdue = hermes_route_control_index(&temp.path().join("overdue"), &route, 1_000);
         assert_eq!(
             overdue_hermes_exact_routes(&overdue, 1_000),
             BTreeSet::from([route])

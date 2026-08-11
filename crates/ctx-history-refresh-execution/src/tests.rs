@@ -24,6 +24,7 @@ impl PublishedSourceBackedStatePort for TestPublishedState {
                 verified_index: None,
                 explicit_source_catalog: None,
                 catalog_route_bindings: Vec::new(),
+                route_controls: BTreeMap::new(),
             });
         }
         let verified_index = match VerifiedIndex::open(&index_root) {
@@ -53,6 +54,7 @@ impl PublishedSourceBackedStatePort for TestPublishedState {
             verified_index,
             explicit_source_catalog,
             catalog_route_bindings,
+            route_controls: BTreeMap::new(),
         })
     }
 }
@@ -262,6 +264,7 @@ fn query_readiness_decodes_metadata_before_certifying_generation() {
         refresh_scope: SourceBackedRefreshScope::All,
         receipt: receipt.to_json(),
         route_observations: BTreeMap::new(),
+        route_controls: BTreeMap::new(),
     }
     .encode()
     .unwrap();

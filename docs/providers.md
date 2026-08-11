@@ -67,12 +67,14 @@ excluded from setup, `--all`, daemon refresh, and search refresh. Removing an
 old automatic probe does not delete indexed history; a still-supported
 compatible path can be selected explicitly.
 
-Hermes Agent is supported through the native `hermes_state_sqlite` route. New
-sessions and appended records converge immediately on native-watch and search
-refreshes. Structural edits and deletions reconcile within one hour with the
-daemon, or immediately after `ctx import --provider hermes` or
-`ctx import --all`. All scans use a read-only SQLite snapshot and never modify
-Hermes history.
+Hermes Agent is supported through the native `hermes_state_sqlite` route. On
+Linux, a non-root ctx process with the certified read-only live-WAL path makes
+new sessions and appended records converge on native-watch and search refreshes.
+Where that fast path is unavailable, incremental refresh defers without copying
+the provider database. Structural edits, deletions, and deferred increments
+reconcile in roughly 60–80 minutes with a healthy daemon, or on
+`ctx import --provider hermes` or `ctx import --all`. All scans are read-only
+and never modify Hermes history.
 
 Interactive discovery captures a fresh allowlisted environment and current
 working directory. A long-lived daemon uses the named environment/CWD snapshot

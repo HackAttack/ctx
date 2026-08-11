@@ -21,10 +21,16 @@ impl PublishedSourceBackedStatePort for RetainedPublishedState<'_> {
         let verified_index = open_published_generation(data_root, self.journal)?;
         let (explicit_source_catalog, catalog_route_bindings) =
             retained_catalog_witness(verified_index.as_ref())?;
+        let route_controls = verified_index
+            .as_ref()
+            .and_then(|index| SourceBackedPublicationMetadata::decode(index).ok())
+            .map(|metadata| metadata.route_controls)
+            .unwrap_or_default();
         Ok(PublishedSourceBackedState {
             verified_index,
             explicit_source_catalog,
             catalog_route_bindings,
+            route_controls,
         })
     }
 }

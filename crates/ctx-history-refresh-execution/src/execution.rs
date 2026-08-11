@@ -7,6 +7,7 @@ pub(super) struct MergedSourceBackedRegistry {
     requested_explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     retained_generation: Option<VerifiedIndex>,
     requested_catalog_route_bindings: Vec<ExplicitSourceCatalogRouteBinding>,
+    previous_route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 }
 
 enum SourceBackedInventoryDisposition {
@@ -205,6 +206,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         requested_explicit_source_catalog,
         retained_generation,
         requested_catalog_route_bindings,
+        previous_route_controls,
     } = build_merged_source_backed_registry(
         discovery,
         report,
@@ -291,6 +293,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         WriterOptions::default()
     };
     let (executor, _issues) = build.into_refresh_executor(writer_options);
+    let executor = executor.with_base_route_controls(previous_route_controls.clone());
     let mut terminal_coverage_error = None;
     let refresh_result = executor
         .refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
@@ -389,6 +392,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
                     previous_generation.as_deref(),
                     &publication,
                     route_observations,
+                    context.route_controls().clone(),
                 )
                 .map_err(|error| IndexError::PublicationMetadata(format!("{error:#}")))
             },
@@ -493,10 +497,12 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         .verified_index
         .as_ref()
         .ok_or_else(|| anyhow!("reused Core refresh publication lost its exact verified pin"))?;
-    if publication.current.source_count == 0
-        && !verify_generation_query_readiness(verified_index)
-            .context("decode Core source-refresh publication authority")?
-            .is_ready()
+    let route_control_changed = receipt.route_controls != previous_route_controls;
+    if route_control_changed
+        || (publication.current.source_count == 0
+            && !verify_generation_query_readiness(verified_index)
+                .context("decode Core source-refresh publication authority")?
+                .is_ready())
     {
         let route_observations = receipt
             .successful_route_outcomes
@@ -523,6 +529,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
             previous_generation.as_deref(),
             &publication,
             route_observations,
+            receipt.route_controls.clone(),
         )?;
         let writer = GenerationWriter::open(index_root, WriterOptions::default())?
             .into_writer()
@@ -642,6 +649,7 @@ fn encode_publication_metadata(
     previous_generation: Option<&str>,
     publication: &SourceBackedRefreshPublication,
     route_observations: BTreeMap<SourceRouteIdentity, String>,
+    route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
 ) -> Result<Vec<u8>> {
     let terminal = SourceBackedRefreshReceipt::from_verified_publication(
         previous_generation.map(str::to_owned),
@@ -655,6 +663,7 @@ fn encode_publication_metadata(
         refresh_scope: scope.clone(),
         receipt: terminal.to_json(),
         route_observations,
+        route_controls,
     }
     .encode()
     .map_err(Into::into)
@@ -962,6 +971,7 @@ pub(super) fn build_merged_source_backed_registry(
         verified_index: retained_generation,
         explicit_source_catalog: previous_explicit_source_catalog,
         catalog_route_bindings: previous_catalog_route_bindings,
+        route_controls: previous_route_controls,
     } = published_state.open_published_state(data_root)?;
     // A request overlay is not the whole durable explicit catalog. Keep every
     // unmatched retained explicit owner out of automatic discovery so those
@@ -1006,5 +1016,6 @@ pub(super) fn build_merged_source_backed_registry(
         requested_explicit_source_catalog: explicit_source_catalog.cloned(),
         retained_generation,
         requested_catalog_route_bindings,
+        previous_route_controls,
     })
 }

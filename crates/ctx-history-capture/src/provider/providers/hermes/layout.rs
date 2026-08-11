@@ -734,7 +734,7 @@ fn qualified_or(columns: &BTreeSet<String>, alias: &str, column: &str, fallback:
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct HermesSessionRow {
     pub(super) id: String,
     pub(super) source: String,

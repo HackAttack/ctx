@@ -66,10 +66,13 @@ failure, or an authentication/encryption boundary. Inspect `status_reason` and
 or non-plaintext Trae database reports
 `status_reason: "blocked_auth_or_encryption"`.
 
-Hermes `state.db` appears as native and importable. New sessions and appended
-records converge immediately on native-watch and search refreshes. Structural
-edits and deletions reconcile within one hour with the daemon, or immediately
-after `ctx import --provider hermes` or `ctx import --all`.
+Hermes `state.db` appears as native and importable. On Linux, a non-root ctx
+process with the certified read-only live-WAL path makes new sessions and
+appended records converge on native-watch and search refreshes. Otherwise the
+incremental attempt defers without copying the provider database. Structural
+edits, deletions, and deferred increments reconcile in roughly 60–80 minutes
+with a healthy daemon, or on `ctx import --provider hermes` or
+`ctx import --all`.
 
 ## 4. Re-Run Or Target Imports
 

@@ -173,17 +173,36 @@ impl CoreRefreshEngine {
         let is_manual_all = admission
             == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot
             && refresh_scope == SourceBackedRefreshScope::All;
-        let mut continuation_predecessor = None;
+        // A later manual exhaustive demand is a logical waiter on the one
+        // already-queued exhaustive successor. It receives its own durable
+        // request identity but cannot manufacture another physical scan.
+        let queued_exhaustive_successor = is_manual_all
+            .then(|| {
+                state.pending_request_ids.iter().find_map(|request_id| {
+                    find_attempt(state, request_id)
+                        .filter(|attempt| {
+                            attempt.state == SourceBackedRefreshState::Queued
+                                && attempt.refresh_scope == SourceBackedRefreshScope::All
+                                && attempt.reconciliation_demand >= reconciliation_demand
+                        })
+                        .map(|attempt| attempt.request_id.clone())
+                })
+            })
+            .flatten();
+        let mut continuation_predecessor = queued_exhaustive_successor.clone();
         if let Some(active_request_id) = state.active_request_id.clone() {
             if let Some(active) = find_attempt_mut(state, &active_request_id) {
                 if active.state.is_active() {
                     if is_manual_all {
-                        if active.state == SourceBackedRefreshState::Queued
-                            || active.reconciliation_demand >= reconciliation_demand
+                        if queued_exhaustive_successor.is_none()
+                            && (active.state == SourceBackedRefreshState::Queued
+                                || active.reconciliation_demand >= reconciliation_demand)
                         {
                             continuation_predecessor = Some(active.request_id.clone());
                         }
-                        if active.state == SourceBackedRefreshState::Queued {
+                        if queued_exhaustive_successor.is_none()
+                            && active.state == SourceBackedRefreshState::Queued
+                        {
                             if let Some(requested_catalog) = requested_catalog.as_ref() {
                                 if active.requested_explicit_source_catalog.is_none() {
                                     active.requested_explicit_source_catalog =
@@ -196,7 +215,7 @@ impl CoreRefreshEngine {
                             let _ = coalesce_attempt(active, metadata.clone());
                             active.coalesced_logical_demands =
                                 active.coalesced_logical_demands.saturating_add(1);
-                        } else {
+                        } else if queued_exhaustive_successor.is_none() {
                             active.coalesced_logical_demands =
                                 active.coalesced_logical_demands.saturating_add(1);
                         }

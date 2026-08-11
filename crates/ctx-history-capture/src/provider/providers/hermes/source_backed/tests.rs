@@ -4,7 +4,7 @@ use ctx_history_core::{
     derive_event_id, CertifiedSource, EventIdentityInput, NativeItemKey, SessionRelationshipKind,
     SourceAnchor, SourceKey, TypedKey,
 };
-use ctx_history_index::{VerifiedIndex, WriterOptions};
+use ctx_history_index::{IndexError, VerifiedIndex, WriterOptions};
 use rusqlite::Connection;
 
 use super::*;
@@ -12,7 +12,9 @@ use crate::{
     provider::source_backed::{
         refresh_source_backed_generation, refresh_source_backed_generation_with_detailed_progress,
         SourceBackedCoordinatorError, SourceBackedCurrentSourceProgressStage,
-        SourceBackedProviderRegistry, SourceBackedRefreshReceipt, SourceBackedRouteErrorKind,
+        SourceBackedProviderRegistry, SourceBackedReconciliationDemand,
+        SourceBackedRefreshExecutor, SourceBackedRefreshReceipt, SourceBackedRefreshScope,
+        SourceBackedRouteErrorKind,
     },
     provider_sources::{
         fail_next_opened_snapshot_cleanup_for_test, provider_source_for_path, SqliteCleanupStatus,
@@ -168,6 +170,35 @@ fn fixture_registry(data_root: &Path, database: &Path) -> SourceBackedProviderRe
     registry
 }
 
+#[test]
+fn automatic_multiplex_profiles_have_distinct_validated_route_sources() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let profiles = temp.path().join("profiles");
+    let alpha = profiles.join("alpha/state.db");
+    let beta = profiles.join("beta-2/state.db");
+    let alpha = HermesSourceCandidate::automatic(
+        &data_root,
+        provider_source_for_path(CaptureProvider::Hermes, alpha),
+    )
+    .unwrap();
+    let beta = HermesSourceCandidate::automatic(
+        &data_root,
+        provider_source_for_path(CaptureProvider::Hermes, beta),
+    )
+    .unwrap();
+    assert_ne!(alpha.source.identity(), beta.source.identity());
+
+    let invalid = profiles.join("Bad.Name/state.db");
+    assert!(matches!(
+        HermesSourceCandidate::automatic(
+            &data_root,
+            provider_source_for_path(CaptureProvider::Hermes, invalid)
+        ),
+        Err(HermesSourceBackedError::InvalidProfilePath(_))
+    ));
+}
+
 fn fixture_writer_options() -> WriterOptions {
     WriterOptions {
         indexer_threads: 1,
@@ -263,10 +294,428 @@ fn cold_fixture(
     reset_logical_row_traversals();
     let cold =
         refresh_source_backed_generation(index_root, &registry, fixture_writer_options()).unwrap();
-    assert_eq!(cold.sources.len(), 3);
+    assert_eq!(cold.sources.len(), 2);
     assert_eq!(logical_row_traversals(), 2);
     assert_eq!(inventory_observation_rows(), 4);
     (registry, candidate, cold)
+}
+
+fn incremental_refresh(
+    index_root: &Path,
+    registry: &SourceBackedProviderRegistry,
+    base: &SourceBackedRefreshReceipt,
+) -> SourceBackedRefreshReceipt {
+    SourceBackedRefreshExecutor::new(registry.clone(), fixture_writer_options())
+        .with_base_route_controls(base.route_controls.clone())
+        .refresh_scope_with_detailed_progress_and_reconciliation(
+            index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Incremental,
+            |_| Ok(()),
+        )
+        .unwrap()
+}
+
+fn exhaustive_refresh(
+    index_root: &Path,
+    registry: &SourceBackedProviderRegistry,
+    base: &SourceBackedRefreshReceipt,
+) -> SourceBackedRefreshReceipt {
+    SourceBackedRefreshExecutor::new(registry.clone(), fixture_writer_options())
+        .with_base_route_controls(base.route_controls.clone())
+        .refresh_scope_with_detailed_progress_and_reconciliation(
+            index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Exhaustive,
+            |_| Ok(()),
+        )
+        .unwrap()
+}
+
+fn rewritten_route_controls(
+    receipt: &SourceBackedRefreshReceipt,
+    rewrite: impl FnOnce(&mut HermesRefreshReceipt),
+) -> std::collections::BTreeMap<ctx_history_index::SourceRouteIdentity, Vec<u8>> {
+    let mut controls = receipt.route_controls.clone();
+    assert_eq!(controls.len(), 1);
+    let control = controls.values_mut().next().unwrap();
+    let mut parsed: HermesRefreshReceipt = serde_json::from_slice(control).unwrap();
+    rewrite(&mut parsed);
+    *control = serde_json::to_vec(&parsed).unwrap();
+    controls
+}
+
+#[test]
+fn production_incremental_noop_and_append_are_delta_proportional() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+    let parent_source = hermes_session_source_key(&candidate.source, PARENT).unwrap();
+    let child_source = hermes_session_source_key(&candidate.source, CHILD).unwrap();
+    let child_certificate = source_certificate(&cold, &child_source).clone();
+
+    reset_logical_row_traversals();
+    let noop = incremental_refresh(&index_root, &registry, &cold);
+    assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(noop.sources, cold.sources);
+    assert_eq!(inventory_observation_rows(), 0);
+    assert_eq!(logical_row_traversals(), 0);
+    assert!(session_scan_receipts().is_empty());
+
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "insert into messages (id, session_id, role, content, timestamp) values
+             (30, 'parent-session', 'assistant', 'incremental append needle', 1782259204.0)",
+            [],
+        )
+        .unwrap();
+    reset_logical_row_traversals();
+    let appended = incremental_refresh(&index_root, &registry, &noop);
+    assert_eq!(appended.sources.len(), 2);
+    assert_eq!(
+        source_certificate(&appended, &child_source),
+        &child_certificate
+    );
+    assert_eq!(inventory_observation_rows(), 1);
+    assert_eq!(logical_row_traversals(), 1);
+    assert_eq!(
+        session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
+        vec![PARENT.to_owned()]
+    );
+    let appended_record = indexed_record(&index_root, &parent_source, PARENT, 30);
+    assert_search_contains(&index_root, "incremental append needle", &appended_record);
+}
+
+#[test]
+fn production_incremental_new_and_empty_sessions_read_only_the_delta() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+    let parent = source_certificate(&cold, &session_source(&candidate, PARENT)).clone();
+    let child = source_certificate(&cold, &session_source(&candidate, CHILD)).clone();
+
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "insert into sessions (id, source, started_at, message_count)
+                 values ('new-empty', 'acp', 1782259210.0, 0),
+                        ('new-full', 'acp', 1782259211.0, 1);
+             insert into messages (id, session_id, role, content, timestamp)
+                 values (30, 'new-full', 'assistant', 'new session delta needle', 1782259212.0);",
+        )
+        .unwrap();
+    reset_logical_row_traversals();
+    let refreshed = incremental_refresh(&index_root, &registry, &cold);
+
+    assert_eq!(refreshed.sources.len(), 4);
+    assert_eq!(inventory_observation_rows(), 3);
+    assert_eq!(logical_row_traversals(), 2);
+    assert_eq!(
+        session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
+        vec!["new-empty".to_owned(), "new-full".to_owned()]
+    );
+    assert_eq!(
+        source_certificate(&refreshed, &session_source(&candidate, PARENT)),
+        &parent
+    );
+    assert_eq!(
+        source_certificate(&refreshed, &session_source(&candidate, CHILD)),
+        &child
+    );
+    let new_source = session_source(&candidate, "new-full");
+    let new_record = indexed_record(&index_root, &new_source, "new-full", 30);
+    assert_search_contains(&index_root, "new session delta needle", &new_record);
+    assert_eq!(
+        source_certificate(&refreshed, &session_source(&candidate, "new-empty"))
+            .counts()
+            .indexed_documents,
+        0
+    );
+}
+
+#[test]
+fn incremental_rewrite_active_flip_and_deletion_stay_stale_until_exhaustive() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+    let parent_source = session_source(&candidate, PARENT);
+    let parent_before = indexed_record(&index_root, &parent_source, PARENT, PARENT_MESSAGE_ID);
+
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "update messages set content = 'same row rewritten', active = 0 where id = ?1",
+            [PARENT_MESSAGE_ID],
+        )
+        .unwrap();
+    reset_logical_row_traversals();
+    let stale_rewrite = incremental_refresh(&index_root, &registry, &cold);
+    assert_eq!(inventory_observation_rows(), 0);
+    assert_eq!(logical_row_traversals(), 0);
+    assert_eq!(
+        indexed_record(&index_root, &parent_source, PARENT, PARENT_MESSAGE_ID),
+        parent_before
+    );
+
+    let exact_rewrite = exhaustive_refresh(&index_root, &registry, &stale_rewrite);
+    assert!(VerifiedIndex::open(&index_root)
+        .unwrap()
+        .core_record_by_id(parent_before.event_id.as_uuid())
+        .unwrap()
+        .is_none());
+    assert!(exact_rewrite.sources.iter().any(|source| source
+        .observation()
+        .source()
+        .exact_descriptor_eq(&parent_source)));
+
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "delete from messages where id = 10;
+             delete from sessions where id = 'parent-session';",
+        )
+        .unwrap();
+    reset_logical_row_traversals();
+    let stale_delete = incremental_refresh(&index_root, &registry, &exact_rewrite);
+    assert_eq!(inventory_observation_rows(), 0);
+    assert!(stale_delete.sources.iter().any(|source| source
+        .observation()
+        .source()
+        .exact_descriptor_eq(&parent_source)));
+
+    let exact_delete = exhaustive_refresh(&index_root, &registry, &stale_delete);
+    assert!(!exact_delete.sources.iter().any(|source| source
+        .observation()
+        .source()
+        .exact_descriptor_eq(&parent_source)));
+    assert_eq!(exact_delete.sources.len(), 1);
+}
+
+#[test]
+fn cursor_regression_and_database_replacement_force_exhaustive_reconciliation() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+
+    let regressed_controls = rewritten_route_controls(&cold, |control| {
+        control.session_rowid = i64::MAX;
+        control.message_rowid = i64::MAX;
+    });
+    reset_logical_row_traversals();
+    let regression = SourceBackedRefreshExecutor::new(registry.clone(), fixture_writer_options())
+        .with_base_route_controls(regressed_controls)
+        .refresh_scope_with_detailed_progress_and_reconciliation(
+            &index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Incremental,
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(inventory_observation_rows(), 4);
+
+    fs::rename(&database, database.with_extension("old")).unwrap();
+    create_fixture(&database);
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "update messages set content = 'replacement database needle' where id = 10",
+            [],
+        )
+        .unwrap();
+    reset_logical_row_traversals();
+    let _replacement = incremental_refresh(&index_root, &registry, &regression);
+    assert_eq!(inventory_observation_rows(), 4);
+    let parent = indexed_record(
+        &index_root,
+        &session_source(&candidate, PARENT),
+        PARENT,
+        PARENT_MESSAGE_ID,
+    );
+    assert_search_contains(&index_root, "replacement database needle", &parent);
+}
+
+#[test]
+fn incremental_cursor_advances_only_with_successful_core_publication() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "insert into messages (id, session_id, role, content, timestamp)
+             values (30, 'parent-session', 'assistant', 'atomic cursor needle', 1782259215.0)",
+            [],
+        )
+        .unwrap();
+
+    let failed = SourceBackedRefreshExecutor::new(registry.clone(), fixture_writer_options())
+        .with_base_route_controls(cold.route_controls.clone())
+        .refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+            &index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Incremental,
+            |_| Ok(()),
+            |_| {
+                Err(IndexError::PublicationMetadata(
+                    "injected Hermes publication failure".into(),
+                ))
+            },
+        );
+    assert!(failed.is_err());
+    assert_eq!(
+        VerifiedIndex::open(&index_root).unwrap().generation_id(),
+        cold.commit.generation_id
+    );
+
+    reset_logical_row_traversals();
+    let retry = incremental_refresh(&index_root, &registry, &cold);
+    assert_eq!(inventory_observation_rows(), 1);
+    assert_eq!(logical_row_traversals(), 1);
+    let record = indexed_record(&index_root, &session_source(&candidate, PARENT), PARENT, 30);
+    assert_search_contains(&index_root, "atomic cursor needle", &record);
+    assert_ne!(retry.route_controls, cold.route_controls);
+}
+
+#[test]
+fn failed_exhaustive_publication_retains_due_control_and_retry_converges() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+    let overdue_controls = rewritten_route_controls(&cold, |control| {
+        control.last_successful_exhaustive_at_ms = 0;
+        control.exact_due_at_ms = 0;
+    });
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "update messages set content = 'exhaustive retry needle' where id = 10",
+            [],
+        )
+        .unwrap();
+
+    let failed = SourceBackedRefreshExecutor::new(registry.clone(), fixture_writer_options())
+        .with_base_route_controls(overdue_controls.clone())
+        .refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+            &index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Exhaustive,
+            |_| Ok(()),
+            |_| {
+                Err(IndexError::PublicationMetadata(
+                    "injected exhaustive failure".into(),
+                ))
+            },
+        );
+    assert!(failed.is_err());
+    assert_eq!(
+        VerifiedIndex::open(&index_root).unwrap().generation_id(),
+        cold.commit.generation_id
+    );
+    let due = overdue_controls.values().next().unwrap();
+    assert_eq!(hermes_route_control_exact_due(due, 1), Some(true));
+
+    let retry = SourceBackedRefreshExecutor::new(registry, fixture_writer_options())
+        .with_base_route_controls(overdue_controls)
+        .refresh_scope_with_detailed_progress_and_reconciliation(
+            &index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Exhaustive,
+            |_| Ok(()),
+        )
+        .unwrap();
+    let record = indexed_record(
+        &index_root,
+        &session_source(&candidate, PARENT),
+        PARENT,
+        PARENT_MESSAGE_ID,
+    );
+    assert_search_contains(&index_root, "exhaustive retry needle", &record);
+    assert_eq!(
+        hermes_route_control_exact_due(retry.route_controls.values().next().unwrap(), 1),
+        Some(false)
+    );
+}
+
+#[test]
+fn exhaustive_profile_removal_cannot_claim_sibling_profile_sources_or_control() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let first_database = temp.path().join("first/state.db");
+    let second_database = temp.path().join("second/state.db");
+    create_fixture(&first_database);
+    create_fixture(&second_database);
+    Connection::open(&second_database)
+        .unwrap()
+        .execute(
+            "update messages set content = 'sibling profile needle' where id = 10",
+            [],
+        )
+        .unwrap();
+    let mut registry = SourceBackedProviderRegistry::new();
+    register_hermes_explicit_source_backed_route(
+        &mut registry,
+        provider_source_for_path(CaptureProvider::Hermes, first_database.clone()),
+        &data_root,
+        SourceAnchor::CatalogLineage([0x48; 32]),
+    )
+    .unwrap();
+    register_hermes_explicit_source_backed_route(
+        &mut registry,
+        provider_source_for_path(CaptureProvider::Hermes, second_database.clone()),
+        &data_root,
+        SourceAnchor::CatalogLineage([0x49; 32]),
+    )
+    .unwrap();
+    let first = candidate(&data_root, &first_database);
+    let second = hermes_source_backed_explicit(
+        &data_root,
+        &second_database,
+        SourceAnchor::CatalogLineage([0x49; 32]),
+    )
+    .unwrap();
+    let cold =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+    assert_eq!(cold.sources.len(), 4);
+    assert_eq!(cold.route_controls.len(), 2);
+    let sibling_source = session_source(&second, PARENT);
+    let sibling_certificate = source_certificate(&cold, &sibling_source).clone();
+
+    Connection::open(&first_database)
+        .unwrap()
+        .execute_batch(
+            "delete from messages where session_id = 'parent-session';
+             delete from sessions where id = 'parent-session';",
+        )
+        .unwrap();
+    let refreshed = exhaustive_refresh(&index_root, &registry, &cold);
+    assert_eq!(refreshed.sources.len(), 3);
+    assert_eq!(refreshed.route_controls.len(), 2);
+    assert_eq!(
+        source_certificate(&refreshed, &sibling_source),
+        &sibling_certificate
+    );
+    assert!(!refreshed.sources.iter().any(|source| {
+        source
+            .observation()
+            .source()
+            .exact_descriptor_eq(&session_source(&first, PARENT))
+    }));
+    let sibling = indexed_record(&index_root, &sibling_source, PARENT, PARENT_MESSAGE_ID);
+    assert_search_contains(&index_root, "sibling profile needle", &sibling);
 }
 
 fn assert_unchanged_session(
@@ -478,7 +927,7 @@ fn parent_delete_and_reappear_remove_and_scan_only_parent_source() {
     let deleted =
         refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
     assert!(session_scan_receipts().is_empty());
-    assert_eq!(deleted.sources.len(), 2);
+    assert_eq!(deleted.sources.len(), 1);
     assert_eq!(deleted.removals.len(), 1);
     assert!(deleted.removals[0]
         .deletion
@@ -517,7 +966,7 @@ fn parent_delete_and_reappear_remove_and_scan_only_parent_source() {
         session_scan_receipts().keys().collect::<Vec<_>>(),
         vec![PARENT]
     );
-    assert_eq!(reappeared.sources.len(), 3);
+    assert_eq!(reappeared.sources.len(), 2);
     assert_eq!(
         indexed_record(&index_root, &parent_source, PARENT, PARENT_MESSAGE_ID).event_id,
         parent_event_id
@@ -656,7 +1105,7 @@ fn delete_and_reappear_reuses_only_the_deleted_session_lineage() {
         session_scan_receipts().keys().collect::<Vec<_>>(),
         vec![CHILD]
     );
-    assert_eq!(reappeared.sources.len(), 3);
+    assert_eq!(reappeared.sources.len(), 2);
     let reappeared_child = indexed_record(&index_root, &child_source, CHILD, CHILD_MESSAGE_ID);
     assert_eq!(reappeared_child.event_id, child_event_id);
     assert_unchanged_session(
@@ -684,7 +1133,7 @@ fn noop_and_one_changed_session_have_linear_inventory_and_changed_body_work() {
     reset_logical_row_traversals();
     let cold =
         refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
-    assert_eq!(cold.sources.len(), SESSIONS + 1);
+    assert_eq!(cold.sources.len(), SESSIONS);
     assert_eq!(logical_row_traversals(), SESSIONS as u64);
     assert_eq!(inventory_observation_rows(), (SESSIONS * 2) as u64);
 
@@ -847,7 +1296,7 @@ fn detailed_progress_reports_backup_inventory_and_changed_session_scan() {
     )
     .unwrap();
 
-    assert_eq!(receipt.sources.len(), 3);
+    assert_eq!(receipt.sources.len(), 2);
     assert!(progress.iter().any(|update| {
         matches!(
             update.stage,

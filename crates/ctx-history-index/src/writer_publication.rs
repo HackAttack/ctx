@@ -246,6 +246,9 @@ impl GenerationWriter {
         if let Some(witness) = self.exact_replay_inventory_witness()? {
             for certificate in witness.base.sources.iter().filter(|certificate| {
                 !self.source_is_carried_from_base(certificate.observation().source())
+                    && !self.source_is_partially_reconciled_from_base(
+                        certificate.observation().source(),
+                    )
             }) {
                 if !revalidate(RevalidationTarget::Source(certificate)) {
                     return Err(IndexError::SourceInvalidated(

@@ -1,6 +1,6 @@
 use super::*;
 
-mod acquisition;
+pub(super) mod acquisition;
 mod copy_progress;
 mod scratch;
 #[cfg(any(test, feature = "test-support"))]
@@ -160,7 +160,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_progress<E>(
 fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
-    options: SqliteSourceSnapshotOptions,
+    mut options: SqliteSourceSnapshotOptions,
     after_parent_retention: impl FnOnce(),
     after_database_copy: impl FnOnce(),
     before_source_revalidation: impl FnOnce(),
@@ -177,7 +177,17 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
                 SqliteCleanupStatus::NotRequired,
             ))
         })?;
-    let native_evidence = family.capture_evidence()?;
+    if options.policy == SqliteSourceSnapshotPolicy::PinnedReadOnlyWal
+        && family.wal.is_none()
+        && family.shared_memory.is_none()
+    {
+        options.policy = SqliteSourceSnapshotPolicy::ExactRevision;
+    }
+    let native_evidence = match options.policy {
+        SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => family.capture_revision_evidence()?,
+        SqliteSourceSnapshotPolicy::ExactRevision
+        | SqliteSourceSnapshotPolicy::StablePrivateCopy => family.capture_evidence()?,
+    };
     let mut acquired = acquire_sqlite_connection_with_progress(
         &authority.snapshot_context,
         &family,
@@ -195,9 +205,25 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
         // The copy and SQLite view become authoritative together. Revalidate
         // the exact source family on both sides of the bounded connection
         // evidence read so a concurrent write cannot escape acquisition.
-        family.revalidate(&native_evidence)?;
+        match options.policy {
+            SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => {
+                family.revalidate_database_identity(&native_evidence)?
+            }
+            SqliteSourceSnapshotPolicy::ExactRevision
+            | SqliteSourceSnapshotPolicy::StablePrivateCopy => {
+                family.revalidate(&native_evidence)?
+            }
+        }
         let sqlite_evidence = capture_sqlite_evidence(&acquired.connection)?;
-        family.revalidate(&native_evidence)?;
+        match options.policy {
+            SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => {
+                family.revalidate_database_identity(&native_evidence)?
+            }
+            SqliteSourceSnapshotPolicy::ExactRevision
+            | SqliteSourceSnapshotPolicy::StablePrivateCopy => {
+                family.revalidate(&native_evidence)?
+            }
+        }
         acquired.finalize_accounting(&authority.snapshot_context)?;
         Ok(sqlite_evidence)
     })();
@@ -224,6 +250,7 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
         strategy,
         copied_bytes,
         snapshot_directory,
+        live_authority_handle,
         snapshot_activity,
         scratch,
     } = acquired;
@@ -234,10 +261,12 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
         sqlite_evidence,
         evidence,
         policy: options.policy,
-        admitted_revision_is_replay_safe: true,
+        admitted_revision_is_replay_safe: options.policy
+            != SqliteSourceSnapshotPolicy::PinnedReadOnlyWal,
         strategy,
         copied_bytes,
         _snapshot_directory: snapshot_directory,
+        _live_authority_handle: live_authority_handle,
         _scratch: scratch,
         snapshot_activity,
         snapshot_context: Arc::clone(&authority.snapshot_context),

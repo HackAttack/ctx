@@ -116,7 +116,7 @@ pub use resolvers::{
     path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
     CrushProjectInventorySelectorError,
 };
-pub use specs::{provider_source_spec, provider_source_specs, HERMES_STATE_DB_UNSUPPORTED_REASON};
+pub use specs::{provider_source_spec, provider_source_specs};
 pub use types::{
     provider_source_status_reason, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport,
     ProviderCatalogSupport, ProviderDefaultLocation, ProviderImportSupport, ProviderSource,

@@ -7,6 +7,7 @@ pub const MAX_RECORDED_SOURCE_BACKED_FAILURES: usize = 64;
 pub const MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES: usize = 512;
 pub const MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES: usize = 512;
 pub const MAX_RECORDED_SOURCE_BACKED_RECORD_REJECTIONS: usize = 64;
+pub const MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES: usize = 4 * 1024;
 pub const MAX_SOURCE_BACKED_REJECTION_PAYLOAD_TYPE_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -151,6 +152,7 @@ pub struct SourceBackedGenerationSink<'writer> {
     pub(in super::super) applied_removals: &'writer mut Vec<SourceBackedCertifiedRemoval>,
     pub(in super::super) route_index: usize,
     pub(in super::super) route_identity: SourceRouteIdentity,
+    pub(in super::super) base_route_control: Option<Vec<u8>>,
     pub(in super::super) resources: SourceBackedRouteResources,
     pub(in super::super) logical_source_failures: &'writer mut SourceBackedLogicalSourceFailures,
     pub(in super::super) record_rejections: &'writer mut SourceBackedRecordRejections,
@@ -167,6 +169,20 @@ pub struct SourceBackedGenerationSink<'writer> {
 impl SourceBackedGenerationSink<'_> {
     pub fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
         self.resources.reconciliation_demand()
+    }
+
+    pub(crate) fn base_route_control(&self) -> Option<&[u8]> {
+        self.base_route_control.as_deref()
+    }
+
+    /// Carries unmentioned members of this exact route from the locked Core
+    /// base while changed members are replaced atomically.
+    pub(crate) fn retain_unstaged_base_route_sources(
+        &mut self,
+    ) -> SourceBackedCoordinatorResult<()> {
+        self.writer
+            .retain_unstaged_source_route_members(&self.route_identity)?;
+        Ok(())
     }
 }
 
@@ -583,6 +599,8 @@ type CompleteInventoryRevalidationCallback =
     dyn Fn(&CertifiedSourceInventory) -> SourceBackedRouteResult<bool> + Send + Sync;
 type SuccessfulPublicationCallback = dyn Fn() + Send + Sync;
 type RoutePublicationRevalidationCallback = dyn Fn() -> bool + Send + Sync;
+type RoutePublicationControlCallback =
+    dyn Fn() -> SourceBackedRouteResult<Option<Vec<u8>>> + Send + Sync;
 type WatchTargetsCallback = dyn Fn() -> Option<SourceBackedRouteWatchTargets> + Send + Sync;
 
 #[derive(Debug, Clone, Default)]
@@ -603,6 +621,7 @@ pub struct SourceBackedRouteDriver {
     pub(in super::super) after_successful_publication: Option<Arc<SuccessfulPublicationCallback>>,
     pub(in super::super) revalidate_at_publication:
         Option<Arc<RoutePublicationRevalidationCallback>>,
+    pub(in super::super) publication_control: Option<Arc<RoutePublicationControlCallback>>,
     pub(in super::super) watch_targets: Option<Arc<WatchTargetsCallback>>,
     pub(in super::super) uses_parallel_leaf_workers: bool,
 }
@@ -647,6 +666,7 @@ impl SourceBackedRouteDriver {
             revalidate_complete_inventory: None,
             after_successful_publication: None,
             revalidate_at_publication: None,
+            publication_control: None,
             watch_targets: None,
             uses_parallel_leaf_workers: false,
         }
@@ -674,6 +694,22 @@ impl SourceBackedRouteDriver {
             + 'static,
     ) -> Self {
         self.revalidate_complete_inventory = Some(Arc::new(revalidate));
+        self
+    }
+
+    pub(crate) fn with_publication_revalidation(
+        mut self,
+        revalidate: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.revalidate_at_publication = Some(Arc::new(revalidate));
+        self
+    }
+
+    pub(crate) fn with_publication_control(
+        mut self,
+        control: impl Fn() -> SourceBackedRouteResult<Option<Vec<u8>>> + Send + Sync + 'static,
+    ) -> Self {
+        self.publication_control = Some(Arc::new(control));
         self
     }
 

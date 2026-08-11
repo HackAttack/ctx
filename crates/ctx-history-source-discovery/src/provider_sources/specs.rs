@@ -273,9 +273,6 @@ const HERMES_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
     source_kind: ProviderSourceKind::NativeHistory,
 }];
 
-pub const HERMES_STATE_DB_UNSUPPORTED_REASON: &str =
-    "current Hermes state.db schemas are unsupported because they lack a provider-owned, transactionally maintained per-session content revision; ctx did not modify the database; retry only with a ctx release that explicitly supports a revision-bearing Hermes schema";
-
 const NANOCLAW_DEFAULTS: &[ProviderDefaultLocation] = &[];
 
 const ASTRBOT_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {

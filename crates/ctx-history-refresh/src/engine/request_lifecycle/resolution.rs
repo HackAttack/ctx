@@ -83,6 +83,10 @@ impl CoreRefreshEngine {
                 return None;
             }
             let predecessor = find_attempt(&state, &continuation.predecessor_request_id)?;
+            let requested = find_attempt(&state, &request_id)?;
+            if predecessor.reconciliation_demand < requested.reconciliation_demand {
+                return None;
+            }
             let publication_receipt = predecessor
                 .publication_receipt
                 .as_ref()
@@ -114,6 +118,10 @@ impl CoreRefreshEngine {
             return None;
         }
         let predecessor = find_attempt(&state, &continuation.predecessor_request_id)?.clone();
+        let requested = find_attempt(&state, &request_id)?;
+        if predecessor.reconciliation_demand < requested.reconciliation_demand {
+            return None;
+        }
         let publication_receipt = predecessor
             .publication_receipt
             .clone()

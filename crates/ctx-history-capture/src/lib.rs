@@ -40,7 +40,6 @@ pub use provider_sources::{
     ProviderSourceRootBoundaryError, ProviderSourceSpec, ProviderSourceStatus,
     ProviderSourceStatusReason, WarpDiscoveryUnavailable, WarpInstalledPlatform,
     WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface, DISCOVERY_ENV_ALLOWLIST,
-    HERMES_STATE_DB_UNSUPPORTED_REASON,
 };
 
 pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
@@ -127,14 +126,9 @@ pub(crate) fn test_provider_sqlite_data_root() -> &'static std::path::Path {
 
 pub(crate) mod provider;
 
-/// Reads only persisted Core certificates; it never opens Hermes provider data.
-pub fn hermes_sources_require_exact_reconciliation(
-    sources: &[ctx_history_core::CertifiedSource],
-    now_ms: i64,
-) -> bool {
-    provider::providers::hermes::source_backed::hermes_sources_require_exact_reconciliation(
-        sources, now_ms,
-    )
+/// Reads only persisted route-control bytes; it never opens Hermes provider data.
+pub fn hermes_route_control_exact_due(control: &[u8], now_ms: i64) -> Option<bool> {
+    provider::providers::hermes::source_backed::hermes_route_control_exact_due(control, now_ms)
 }
 
 pub use provider::adapter::{CaptureWorkLimit, ProviderAdapterContext, ProviderImportOptions};
@@ -173,4 +167,5 @@ pub use provider::source_backed::{
     SourceBackedSuccessfulRouteOutcome, SourceBackedWatchCatalog, SourceBackedWatchTargetKind,
     LANDED_SOURCE_BACKED_ROUTES, MAX_RECORDED_SOURCE_BACKED_FAILURES,
     MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES, MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES,
+    MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };

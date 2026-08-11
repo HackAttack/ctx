@@ -717,7 +717,9 @@ where
             if wake.shutdown {
                 break;
             }
-            let safety_due = wake.timed_out && Instant::now() >= next_safety_reconcile;
+            // Native activity must not starve the safety deadline. A busy or
+            // degraded watcher can keep producing wakes indefinitely.
+            let safety_due = Instant::now() >= next_safety_reconcile;
             let retry_wakeup_due = wake.timed_out && daemon_retry_due(&runtime);
             if retry_wakeup_due {
                 wakeup.record_scheduled_retry_wakeup();
@@ -747,6 +749,12 @@ where
                         source_route_ledger_now_ms(),
                     )?;
                 }
+                watch_runtime.reconcile_catalog_and_route_authority(
+                    data_root,
+                    source_refresh,
+                    WatchCatalogReconcileTrigger::SafetyTimeout,
+                    false,
+                );
             }
             let watch_reconcile_trigger = wake
                 .source_watch

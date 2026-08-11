@@ -32,6 +32,7 @@ use ctx_history_capture::{
     SourceBackedProviderRegistry, SourceBackedRecordRejections, SourceBackedRouteError,
     SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedSourceFailureClass,
     SourceBackedSourceFailures, SourceBackedSuccessfulRouteOutcome,
+    MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 #[cfg(test)]
 use ctx_history_capture_model::DiscoveryIssue;

@@ -192,6 +192,7 @@ struct SourceRouteStageCheckpoint {
     route_deletions: HashSet<SourceKey>,
     observed_missing_routes: HashMap<SourceRouteIdentity, SourceRouteSnapshot>,
     route_publication_revalidation_len: usize,
+    partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
     source_identities: HashMap<Uuid, [u8; 32]>,
 }
 
@@ -276,6 +277,7 @@ pub struct GenerationWriter {
     observed_missing_routes: HashMap<SourceRouteIdentity, SourceRouteSnapshot>,
     route_publication_revalidations:
         Vec<(SourceRouteIdentity, Box<dyn Fn() -> bool + Send + 'static>)>,
+    partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
     source_identities: HashMap<Uuid, [u8; 32]>,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
@@ -546,6 +548,7 @@ impl GenerationWriter {
                 present_source_routes: None,
                 observed_missing_routes: HashMap::new(),
                 route_publication_revalidations: Vec::new(),
+                partially_reconciled_routes: BTreeSet::new(),
                 source_identities,
                 source_route_plan: None,
                 active_source_route_stage: None,
@@ -638,6 +641,8 @@ impl GenerationWriter {
                 .pending
                 .contains_key(&source_token(base_source.observation().source()))
                 && !self.source_is_carried_from_base(base_source.observation().source())
+                && !self
+                    .source_is_partially_reconciled_from_base(base_source.observation().source())
         }) {
             return Err(IndexError::IncompleteExactReplayCoverage {
                 source_id: missing.observation().source().identity().to_string(),
@@ -698,6 +703,7 @@ impl GenerationWriter {
         }
         if let Some(missing) = base.sources.iter().find(|source| {
             !self.source_is_carried_from_base(source.observation().source())
+                && !self.source_is_partially_reconciled_from_base(source.observation().source())
                 && !self
                     .pending
                     .contains_key(&source_token(source.observation().source()))

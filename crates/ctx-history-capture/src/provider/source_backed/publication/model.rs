@@ -222,6 +222,8 @@ pub struct SourceBackedRefreshReceipt {
     pub record_rejections: SourceBackedRecordRejections,
     pub carried_unselected_route_ids: Vec<SourceRouteIdentity>,
     pub carried_failed_route_ids: Vec<SourceRouteIdentity>,
+    /// Durable provider-private state aligned to the exact live route set.
+    pub route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
     pub(super) verified_publication: Option<SourceBackedVerifiedPublication>,
 }
 
@@ -261,6 +263,7 @@ pub struct SourceBackedPublicationMetadataContext<'a> {
     record_rejections: &'a SourceBackedRecordRejections,
     successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
     complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+    route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
     removed_source_count: usize,
 }
 
@@ -273,6 +276,7 @@ impl<'a> SourceBackedPublicationMetadataContext<'a> {
         record_rejections: &'a SourceBackedRecordRejections,
         successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
         complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+        route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
         removed_source_count: usize,
     ) -> Self {
         Self {
@@ -283,6 +287,7 @@ impl<'a> SourceBackedPublicationMetadataContext<'a> {
             record_rejections,
             successful_route_outcomes,
             complete_inventory_route_ids,
+            route_controls,
             removed_source_count,
         }
     }
@@ -307,6 +312,10 @@ impl<'a> SourceBackedPublicationMetadataContext<'a> {
         &self,
     ) -> impl ExactSizeIterator<Item = &SourceRouteIdentity> {
         self.complete_inventory_route_ids.iter()
+    }
+
+    pub fn route_controls(&self) -> &BTreeMap<SourceRouteIdentity, Vec<u8>> {
+        self.route_controls
     }
 
     pub fn failed_routes(&self) -> impl ExactSizeIterator<Item = &SourceBackedFailedRoute> {

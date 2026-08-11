@@ -62,6 +62,7 @@ macro_rules! capture_test_generation {
                 complete_inventories: &mut complete_inventories,
                 route_index: 0,
                 route_identity: test_route_identity(),
+                base_route_control: None,
                 resources: SourceBackedRouteResources::production($workers),
                 logical_source_failures: &mut logical_source_failures,
                 record_rejections: &mut record_rejections,

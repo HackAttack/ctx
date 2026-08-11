@@ -32,6 +32,8 @@ use url::Url;
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
 
 use crate::{
     OpenedProviderSourceFile, OpenedProviderSourcePath, ProviderSourceDirectory,
@@ -60,6 +62,8 @@ pub type SqliteSourceAccessResult<T> = Result<T, SqliteSourceAccessError>;
 pub enum SqliteSourceSnapshotStrategy {
     #[cfg(target_os = "linux")]
     ImmutableMain,
+    #[cfg(target_os = "linux")]
+    PinnedReadOnlyWal,
     CopiedFamily,
 }
 
@@ -71,6 +75,7 @@ pub enum SqliteSourceSnapshotStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SqliteSourceSnapshotPolicy {
     ExactRevision,
+    PinnedReadOnlyWal,
     StablePrivateCopy,
 }
 
@@ -79,6 +84,7 @@ enum SqliteSourceSnapshotPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SqliteSourceSnapshotCounters {
     immutable_snapshot_opens: u64,
+    pinned_read_only_wal_snapshot_opens: u64,
     copied_snapshot_opens: u64,
     source_bytes_copied: u64,
     terminal_fences: u64,
@@ -113,6 +119,10 @@ impl SqliteSourceSnapshotCounters {
 
     pub const fn copied_snapshot_opens(self) -> u64 {
         self.copied_snapshot_opens
+    }
+
+    pub const fn pinned_read_only_wal_snapshot_opens(self) -> u64 {
+        self.pinned_read_only_wal_snapshot_opens
     }
 
     pub const fn source_bytes_copied(self) -> u64 {
@@ -199,6 +209,14 @@ impl SqliteSourceSnapshotContext {
             SqliteSourceSnapshotStrategy::CopiedFamily => {
                 next.copied_snapshot_opens =
                     checked_counter_add(next.copied_snapshot_opens, 1, "copied snapshot opens")?;
+            }
+            #[cfg(target_os = "linux")]
+            SqliteSourceSnapshotStrategy::PinnedReadOnlyWal => {
+                next.pinned_read_only_wal_snapshot_opens = checked_counter_add(
+                    next.pinned_read_only_wal_snapshot_opens,
+                    1,
+                    "direct read-only snapshot opens",
+                )?;
             }
         }
         next.active_snapshots = checked_counter_add(next.active_snapshots, 1, "active snapshots")?;
@@ -670,6 +688,23 @@ impl SqliteSourceDirectoryAuthority {
         )
     }
 
+    /// Opens one named provider DB/WAL view through SQLite's read-only SHM URI
+    /// mode. The pinned transaction is coherent while WAL growth remains
+    /// available to a successor refresh and provider bytes stay untouched.
+    pub fn open_incremental_snapshot_with_progress<E>(
+        &self,
+        database_name: &OsStr,
+        mut report_progress: impl FnMut(SqliteSourceProgress) -> Result<(), E>,
+    ) -> Result<SqliteSourceReadSnapshot, SqliteSourceProgressError<E>> {
+        snapshot::open_root_handle_sqlite_source_snapshot_with_progress(
+            self,
+            database_name,
+            SqliteSourceSnapshotPolicy::PinnedReadOnlyWal,
+            SqliteSourceSnapshotLimits::default(),
+            &mut report_progress,
+        )
+    }
+
     pub fn revalidate(&self) -> SqliteSourceAccessResult<()> {
         let retained = self
             .directory
@@ -791,6 +826,15 @@ impl SqliteSourceTerminalFence {
                     .map_err(map_revalidation_error)?;
                 family.revalidate_database_identity(&self.inner.native_evidence)?;
             }
+            SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => {
+                let family = SqliteSourceFamily::open(&authority, &self.inner.database_name, || {})
+                    .map_err(map_revalidation_error)?;
+                revalidate_live_database_schema(
+                    &family,
+                    &self.inner.native_evidence,
+                    &self.inner.evidence.schema,
+                )?;
+            }
         }
         self.inner.snapshot_context.record_terminal_revalidation()
     }
@@ -846,6 +890,7 @@ pub struct SqliteSourceReadSnapshot {
     strategy: SqliteSourceSnapshotStrategy,
     copied_bytes: u64,
     _snapshot_directory: Option<TempDir>,
+    _live_authority_handle: Option<File>,
     _scratch: Arc<SqliteRouteScratch>,
     snapshot_activity: Option<SqliteSourceSnapshotActivity>,
     snapshot_context: Arc<SqliteSourceSnapshotContext>,
@@ -921,6 +966,9 @@ impl SqliteSourceReadSnapshot {
             .ok_or(SqliteSourceAccessError::SnapshotNotActive)?;
         match self.policy {
             SqliteSourceSnapshotPolicy::ExactRevision => family.revalidate(&self.native_evidence),
+            SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => {
+                family.revalidate_database_identity(&self.native_evidence)
+            }
             SqliteSourceSnapshotPolicy::StablePrivateCopy => {
                 family.revalidate_database_identity(&self.native_evidence)
             }
@@ -1092,6 +1140,39 @@ fn close_snapshot_read_connection(
     );
     let result = combine_sqlite_source_cleanup(clear, rollback);
     combine_sqlite_source_cleanup(result, close)
+}
+
+fn revalidate_live_database_schema(
+    family: &SqliteSourceFamily,
+    native_evidence: &SqliteFamilyEvidence,
+    expected_schema: &SqliteSchemaEvidence,
+) -> SqliteSourceAccessResult<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (family, native_evidence, expected_schema);
+        return Err(SqliteSourceAccessError::SnapshotUnavailable {
+            reason: "pinned read-only WAL snapshots require the Linux unix VFS".to_owned(),
+        });
+    }
+    #[cfg(target_os = "linux")]
+    {
+        family.revalidate_database_identity(native_evidence)?;
+        let (connection, _authority_handle) =
+            snapshot::acquisition::open_pinned_read_only_wal(family)
+                .map_err(map_revalidation_error)?;
+        let validation = (|| {
+            verify_connection_read_only(&connection)?;
+            configure_and_pin_snapshot(&connection)?;
+            let current = capture_sqlite_evidence(&connection)?;
+            if current.schema() != expected_schema {
+                return Err(SqliteSourceAccessError::SourceChanged);
+            }
+            family.revalidate_database_identity(native_evidence)
+        })();
+        let cleanup =
+            close_snapshot_read_connection(connection, SqliteArtifactKind::ProviderDatabase);
+        combine_sqlite_source_cleanup(validation, cleanup).map_err(map_revalidation_error)
+    }
 }
 
 fn combine_sqlite_source_cleanup(

@@ -31,7 +31,7 @@ pub use ctx_history_source_discovery::{
     ProviderSource, ProviderSourceKind, ProviderSourceRootBoundaryError, ProviderSourceSpec,
     ProviderSourceStatus, ProviderSourceStatusReason, WarpDiscoveryUnavailable,
     WarpInstalledPlatform, WarpInstalledSurfaceKey, WarpReleaseChannel, WarpTerminalSurface,
-    DISCOVERY_ENV_ALLOWLIST, HERMES_STATE_DB_UNSUPPORTED_REASON,
+    DISCOVERY_ENV_ALLOWLIST,
 };
 pub use ctx_history_source_io::OrdinaryFileObservation;
 ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);

@@ -92,6 +92,9 @@ fn query_time_corrupt_and_notadb_keep_provider_content_provenance() {
             ctx_history_source_io::SqliteSourceSnapshotStrategy::CopiedFamily => {
                 crate::provider_sources::SqliteArtifactKind::PrivateSourceCopy
             }
+            ctx_history_source_io::SqliteSourceSnapshotStrategy::PinnedReadOnlyWal => {
+                crate::provider_sources::SqliteArtifactKind::ProviderDatabase
+            }
         };
         assert_eq!(
             error.source().diagnostic().unwrap().artifact,

@@ -97,10 +97,13 @@ support matrix is:
 | Cline | Supported | `cline_task_directory_json` |
 | Roo Code | Supported | `roo_task_directory_json` |
 
-Hermes Agent uses the native `hermes_state_sqlite` route. New sessions and
-appended records converge immediately on native-watch and search refreshes.
-Structural edits and deletions reconcile within one hour with the daemon, or
-immediately after `ctx import --provider hermes` or `ctx import --all`.
+Hermes Agent uses the native `hermes_state_sqlite` route. On Linux, a non-root
+ctx process with the certified read-only live-WAL path makes new sessions and
+appended records converge on native-watch and search refreshes. Where that fast
+path is unavailable, incremental refresh defers without copying the provider
+database. Structural edits, deletions, and deferred increments reconcile in
+roughly 60–80 minutes with a healthy daemon, or on
+`ctx import --provider hermes` or `ctx import --all`.
 
 Factory AI Droid history is discovered automatically at `~/.factory/sessions`.
 An exact path remains available, for example

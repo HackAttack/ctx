@@ -74,6 +74,7 @@ fn exact_no_op_restart_migrates_pre_fix_source_count_and_reuses_durable_receipt(
                         refresh_scope: scope.clone(),
                         receipt: receipt.to_json(),
                         route_observations: BTreeMap::new(),
+                        route_controls: BTreeMap::new(),
                     }
                     .encode()
                 },
@@ -320,6 +321,7 @@ fn pointer_crash_recovers_active_receipt_and_preserves_fresh_successor() {
                             refresh_scope: SourceBackedRefreshScope::All,
                             receipt: receipt.to_json(),
                             route_observations: BTreeMap::new(),
+                            route_controls: BTreeMap::new(),
                         }
                         .encode()
                     },
@@ -427,8 +429,8 @@ fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recaptur
             }
 
             assert_eq!(execution.scope, SourceBackedRefreshScope::All);
-            assert_eq!(execution.covered_route_ids.len(), 2);
-            assert_eq!(selected.len(), 1);
+            assert!(execution.covered_route_ids.is_empty());
+            assert_eq!(selected.len(), executor_routes.len());
             let previous_generation = open_verified_index(execution.index_root)
                 .ok()
                 .map(|index| index.generation_id().to_owned());
@@ -485,6 +487,7 @@ fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recaptur
                         refresh_scope: scope.clone(),
                         receipt: receipt.to_json(),
                         route_observations: BTreeMap::new(),
+                        route_controls: BTreeMap::new(),
                     }
                     .encode()
                 },
@@ -536,8 +539,8 @@ fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recaptur
         .clone()
         .expect("exact no-crash continuation receipt");
     assert_eq!(expected_receipt["selected_route_total"], routes.len());
-    assert_eq!(expected_receipt["rejected_record_total"], 1);
-    assert_eq!(expected_receipt["outcome"], "completed_with_rejections");
+    assert_eq!(expected_receipt["rejected_record_total"], 0);
+    assert_eq!(expected_receipt["outcome"], "completed");
     drop(coordinator);
 
     let recaptures = Arc::new(AtomicUsize::new(0));
@@ -560,7 +563,7 @@ fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recaptur
     assert_eq!(recovered["request_id"], manual_request_id);
     assert_eq!(recovered["request_state"], "published");
     assert_eq!(recovered["receipt"], expected_receipt);
-    assert_eq!(recovered["outcome"], "completed_with_rejections");
+    assert_eq!(recovered["outcome"], "completed");
     assert_eq!(
         recovered["receipt"]["route_results"]
             .as_object()
@@ -569,7 +572,7 @@ fn pointer_crash_recovers_exact_manual_all_continuation_receipt_without_recaptur
             .filter_map(Value::as_array)
             .map(|result| result.get(4).and_then(Value::as_u64).unwrap_or(0))
             .sum::<u64>(),
-        1
+        0
     );
 }
 

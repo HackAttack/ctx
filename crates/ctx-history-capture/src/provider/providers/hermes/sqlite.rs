@@ -31,8 +31,11 @@ pub(super) struct HermesSessionIdentityRow {
 pub(super) fn hermes_session_identity_page(
     conn: &Connection,
     after_rowid: Option<i64>,
+    upper_rowid: i64,
 ) -> Result<Vec<HermesSessionIdentityRow>> {
-    let predicate = after_rowid.map(|_| " where rowid > ?1").unwrap_or_default();
+    let predicate = after_rowid
+        .map(|_| " where rowid > ?1 and rowid <= ?2")
+        .unwrap_or(" where rowid <= ?1");
     let sql = format!(
         "select rowid, id from sessions{predicate} order by rowid limit {HERMES_NATIVE_ROW_BATCH}"
     );
@@ -45,8 +48,8 @@ pub(super) fn hermes_session_identity_page(
             })
         };
         match after_rowid {
-            Some(rowid) => statement.query_map([rowid], read)?.collect(),
-            None => statement.query_map([], read)?.collect(),
+            Some(rowid) => statement.query_map([rowid, upper_rowid], read)?.collect(),
+            None => statement.query_map([upper_rowid], read)?.collect(),
         }
     })
 }
@@ -60,14 +63,15 @@ pub(super) struct HermesMessageCursorRow {
 pub(super) fn hermes_message_cursor_page(
     conn: &Connection,
     after_rowid: i64,
+    upper_rowid: i64,
 ) -> Result<Vec<HermesMessageCursorRow>> {
     with_length_preflight(conn, || {
         let mut statement = conn.prepare(&format!(
-            "select rowid, session_id from messages where rowid > ?1 \
+            "select rowid, session_id from messages where rowid > ?1 and rowid <= ?2 \
              order by rowid limit {HERMES_NATIVE_ROW_BATCH}"
         ))?;
         let rows = statement
-            .query_map([after_rowid], |row| {
+            .query_map([after_rowid, upper_rowid], |row| {
                 Ok(HermesMessageCursorRow {
                     rowid: row.get(0)?,
                     provider_session_id: row.get(1)?,
@@ -132,7 +136,7 @@ pub(super) struct HermesLocator {
     pub(super) rowid: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum HermesNativeRecord {
     Session(HermesSessionRow),
     Message {
@@ -143,7 +147,7 @@ pub(super) enum HermesNativeRecord {
     Rejected(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct HermesNativeRow {
     pub(super) ordinal: u64,
     pub(super) locator: HermesLocator,

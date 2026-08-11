@@ -94,12 +94,30 @@ fn automatic_profile(path: &Path) -> HermesSourceBackedResult<String> {
         let profile = parent
             .file_name()
             .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
+            .filter(|name| valid_automatic_profile_name(name))
             .ok_or_else(|| HermesSourceBackedError::InvalidProfilePath(path.to_path_buf()))?;
         Ok(profile.to_owned())
     } else {
         Ok("default".to_owned())
     }
+}
+
+fn valid_automatic_profile_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    name.len() <= 64
+        && !matches!(
+            name,
+            "default" | "hermes" | "test" | "tmp" | "root" | "sudo"
+        )
+        && (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && characters.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-')
+        })
 }
 
 fn hermes_source_key(anchor: SourceAnchor) -> HermesSourceBackedResult<SourceKey> {

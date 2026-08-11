@@ -308,10 +308,13 @@ ctx import --format json
 ctx import --progress json --format json
 ```
 
-`hermes` selects the supported native `state.db` importer. New sessions and
-appended records converge immediately on native-watch and search refreshes.
-Structural edits and deletions reconcile within one hour with the daemon, or
-immediately after `ctx import --provider hermes` or `ctx import --all`.
+`hermes` selects the supported native `state.db` importer. On Linux, a non-root
+ctx process with the certified read-only live-WAL path makes new sessions and
+appended records converge on native-watch and search refreshes. Otherwise the
+incremental attempt defers without copying the provider database. Structural
+edits, deletions, and deferred increments reconcile in roughly 60–80 minutes
+with a healthy daemon, or on `ctx import --provider hermes` or
+`ctx import --all`.
 
 `import` explicitly rebuilds Core history from provider sources. The
 normal first-run path is `ctx setup`, which already imports discovered native

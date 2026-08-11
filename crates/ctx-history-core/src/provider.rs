@@ -342,6 +342,7 @@ mod tests {
             ProviderId::GeminiCli,
             ProviderId::Tabnine,
             ProviderId::Goose,
+            ProviderId::Hermes,
             ProviderId::Kilo,
             ProviderId::KiroCli,
             ProviderId::KimiCodeCli,
@@ -377,6 +378,11 @@ mod tests {
 
         for (id, status, env_name) in [
             (ProviderId::Codex, ProviderSupportStatus::Supported, "Codex"),
+            (
+                ProviderId::Hermes,
+                ProviderSupportStatus::Supported,
+                "Hermes Agent",
+            ),
             (ProviderId::Pi, ProviderSupportStatus::Supported, "Pi"),
         ] {
             let entry = parsed
