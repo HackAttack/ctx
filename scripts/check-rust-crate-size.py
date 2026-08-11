@@ -11,12 +11,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomli as tomllib
 from typing import Any, Iterable
-
-if sys.version_info < (3, 11):
-    raise SystemExit("physical Rust crate-size preflight requires Python 3.11 or newer")
-
-import tomllib
 
 
 HARD_LIMIT = 20_000
@@ -34,7 +30,9 @@ EXCLUDED_DIRECTORY_NAMES = {
     "node_modules",
     "target",
 }
-UPDATE_COMMAND = 'python3 scripts/check-rust-crate-size.py --update-ratchets "$PWD"'
+UPDATE_COMMAND = (
+    'scripts/bazelw run //:rust_crate_size_preflight -- --update-ratchets "$PWD"'
+)
 
 
 class GateError(RuntimeError):
