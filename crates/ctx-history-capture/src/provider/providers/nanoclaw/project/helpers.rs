@@ -81,11 +81,28 @@ pub(super) fn nanoclaw_sqlite_access_error(
     if matches!(error, SqliteSourceAccessError::SourceChanged) {
         return CaptureError::SourceChangedDuringCapture;
     }
+    let retry_decision = match sqlite_retry_decision(&error) {
+        SqliteRetryDecision::DoNotRetry => "do_not_retry",
+        SqliteRetryDecision::DoNotRetryCorrupt => "do_not_retry_corrupt",
+        SqliteRetryDecision::RetryBusyOrLocked => "retry_busy_or_locked",
+        SqliteRetryDecision::RetrySourceTransition => "retry_source_transition",
+        SqliteRetryDecision::RouteFatalResource => "route_fatal_resource",
+    };
+    let detail = error.to_string();
+    let detail = if let Some(cleanup) = detail.find(" cleanup_status=") {
+        format!(
+            "{} retry_decision={retry_decision}{}",
+            &detail[..cleanup],
+            &detail[cleanup..]
+        )
+    } else {
+        format!("{detail} retry_decision={retry_decision}")
+    };
     CaptureError::ProviderSource {
         provider: "nanoclaw",
         path: path.to_path_buf(),
         kind: ProviderSourceFailureKind::SourceDatabase,
-        detail: error.to_string(),
+        detail,
     }
 }
 

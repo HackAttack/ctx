@@ -172,6 +172,39 @@ fn active_wal_retains_one_family_copy_under_one_aggregate_limit() {
     drop(writer);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn active_source_family_contract_sqlite_keeps_a_pinned_view_and_fails_changed_writer_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    let writer = create_persistent_wal(&database);
+    let parent = retain_parent(temp.path());
+    let snapshot =
+        open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite")).unwrap();
+    assert_eq!(read_values(&snapshot), ["from-wal"]);
+    let snapshot_directory = snapshot.snapshot_directory().unwrap().to_path_buf();
+
+    writer
+        .execute("INSERT INTO messages (body) VALUES ('later')", [])
+        .unwrap();
+    assert_eq!(read_values(&snapshot), ["from-wal"]);
+    assert!(matches!(
+        snapshot.seal(),
+        Err(SqliteSourceAccessError::SourceChanged)
+    ));
+    assert!(!snapshot_directory.exists());
+    let counters = parent.snapshot_counters();
+    assert_eq!(counters.copied_snapshot_opens(), 1);
+    assert_eq!(counters.terminal_fences(), 0);
+    assert_eq!(counters.active_snapshots(), 0);
+    assert_eq!(counters.active_snapshot_bytes(), 0);
+
+    let replacement =
+        open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite")).unwrap();
+    assert_eq!(read_values(&replacement), ["from-wal", "later"]);
+    replacement.finish().unwrap();
+}
+
 #[test]
 fn near_limit_rejection_happens_before_any_scratch_write() {
     let temp = tempfile::tempdir().unwrap();

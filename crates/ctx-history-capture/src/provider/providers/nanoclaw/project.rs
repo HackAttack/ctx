@@ -16,7 +16,7 @@ use crate::provider::provider_safe_path_segment;
 use crate::provider::sqlite::sqlite_component_change_token;
 use crate::provider::sqlite::{
     combine_sqlite_errors, combine_sqlite_finalization, open_provider_sqlite_readonly,
-    ReadOnlySqliteConnection,
+    sqlite_retry_decision, ReadOnlySqliteConnection, SqliteRetryDecision,
 };
 use crate::provider_sources::{
     observe_ordinary_file, open_root_handle_sqlite_source_snapshot,
