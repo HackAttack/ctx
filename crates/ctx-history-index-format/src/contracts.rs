@@ -1,3 +1,4 @@
+use ctx_history_capture_model::{SourceRouteIdentity, SourceRouteIdentityError};
 use ctx_history_core::{
     CertifiedSource, CoreRecordError, ProjectionContractError, SourceKey, CORE_RECORD_VERSION,
     IDENTITY_VERSION,
@@ -528,6 +529,12 @@ impl From<ctx_history_index_generation::GenerationError> for IndexError {
     }
 }
 
+impl From<SourceRouteIdentityError> for IndexError {
+    fn from(_: SourceRouteIdentityError) -> Self {
+        Self::InvalidSourceRouteIdentity
+    }
+}
+
 /// A predecessor migration whose atomic pointer replacement became visible,
 /// but whose durability or subsequent pointer reconciliation was uncertain.
 ///
@@ -674,33 +681,6 @@ impl SourceRouteMissingState {
     }
 }
 
-/// Exact identity of one selected ingestion route. The digest is derived by
-/// discovery from the provider, format, selection authority, and exact local
-/// route locator; paths themselves do not enter Core or Pro records.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SourceRouteIdentity(String);
-
-impl SourceRouteIdentity {
-    pub fn from_sha256(value: String) -> Result<Self> {
-        if !is_sha256_hex(&value) {
-            return Err(IndexError::InvalidSourceRouteIdentity);
-        }
-        Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn validate_contract(&self) -> Result<()> {
-        if !is_sha256_hex(&self.0) {
-            return Err(IndexError::InvalidSourceRouteIdentity);
-        }
-        Ok(())
-    }
-}
-
 /// Generation-authoritative membership of one route. `missing` is present
 /// only during active whole-route absence grace; lifetime removed routes are
 /// deliberately absent from the manifest.
@@ -760,14 +740,14 @@ impl SourceRouteSnapshot {
     }
 
     fn validate_contract(&self) -> Result<()> {
-        self.route_identity.validate_contract()?;
+        self.route_identity.validate().map_err(IndexError::from)?;
         if self
             .sources
             .windows(2)
             .any(|pair| source_sort_key(&pair[0]) >= source_sort_key(&pair[1]))
         {
             return Err(IndexError::NonCanonicalSourceRouteMembers(
-                self.route_identity.0.clone(),
+                self.route_identity.as_str().to_owned(),
             ));
         }
         for source in self.sources.iter() {
@@ -776,10 +756,10 @@ impl SourceRouteSnapshot {
         if let Some(missing) = &self.missing {
             if self.sources.is_empty() {
                 return Err(IndexError::EmptyMissingSourceRoute(
-                    self.route_identity.0.clone(),
+                    self.route_identity.as_str().to_owned(),
                 ));
             }
-            missing.validate_contract(&self.route_identity.0)?;
+            missing.validate_contract(self.route_identity.as_str())?;
         }
         Ok(())
     }
@@ -1071,6 +1051,49 @@ pub fn implicit_source_routes(sources: &[CertifiedSource]) -> Result<Vec<SourceR
             SourceRouteSnapshot::present(route_identity, vec![source_key])
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_route_snapshot_and_generation_wire_contract_remain_stable() {
+        let route_identity = SourceRouteIdentity::from_sha256("ab".repeat(32)).unwrap();
+        let snapshot = SourceRouteSnapshot::present(route_identity, Vec::new()).unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&snapshot).unwrap(),
+            format!(
+                "{{\"route_identity\":\"{}\",\"sources\":[],\"missing\":null}}",
+                "ab".repeat(32)
+            )
+        );
+
+        let manifest = GenerationManifest::from_parts(Vec::new(), vec![snapshot]).unwrap();
+        assert_eq!(
+            serde_json::to_string(&manifest).unwrap(),
+            "{\"manifest_version\":8,\"identity_version\":1,\"core_record_version\":2,\"core_record_contract_fingerprint\":\"22b962275535fd0cc54944023976b9e2b18bcdb065c0105c77531dba7dd63ca5\",\"lexical_schema_version\":20,\"lexical_analyzer_version\":2,\"policy_schema_hash\":\"4b40caf3bb25bb9f373632b416d6b04058f17a626d10cabf1af36acf4eff18e4\",\"indexed_documents\":0,\"certified_source_bytes\":0,\"sources\":[],\"core_record_aggregates\":[],\"source_routes\":[{\"route_identity\":\"abababababababababababababababababababababababababababababababab\",\"sources\":[],\"missing\":null}]}",
+        );
+        assert_eq!(
+            manifest.generation_id().unwrap(),
+            "5d87ae9b6b405f4284fe4f8dc71ad60a8ab689b760b13a23cc629ac22ea64d0d"
+        );
+    }
+
+    #[test]
+    fn malformed_deserialized_route_identity_reaches_index_validation() {
+        let snapshot: SourceRouteSnapshot = serde_json::from_str(&format!(
+            "{{\"route_identity\":\"{}\",\"sources\":[],\"missing\":null}}",
+            "AB".repeat(32)
+        ))
+        .unwrap();
+
+        assert!(matches!(
+            snapshot.validate_contract(),
+            Err(IndexError::InvalidSourceRouteIdentity)
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

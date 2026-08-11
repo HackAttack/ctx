@@ -429,7 +429,9 @@ fn receipt_route_ids(receipt: &Value) -> Result<Vec<SourceRouteIdentity>> {
     routes
         .keys()
         .cloned()
-        .map(SourceRouteIdentity::from_sha256)
+        .map(|route| {
+            SourceRouteIdentity::from_sha256(route).map_err(ctx_history_index::IndexError::from)
+        })
         .collect::<ctx_history_index::Result<Vec<_>>>()
         .map_err(Into::into)
 }

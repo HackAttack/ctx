@@ -9,6 +9,7 @@ mod import;
 mod output;
 mod progress;
 mod record;
+mod route;
 mod source;
 
 pub use exact_json::{
@@ -27,6 +28,7 @@ pub use progress::{
     SourceRecordProgressSnapshot,
 };
 pub use record::RecordDigest;
+pub use route::{SourceRouteIdentity, SourceRouteIdentityError};
 pub use source::{
     DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderCatalogSupport,
     ProviderDefaultLocation, ProviderImportSupport, ProviderSource, ProviderSourceFailureKind,

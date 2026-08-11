@@ -730,6 +730,12 @@ mod tests {
                 false,
             ),
             (
+                IndexError::InvalidSourceRouteIdentity.into(),
+                "index_corruption",
+                "corruption",
+                false,
+            ),
+            (
                 IndexError::SchemaMismatch(1).into(),
                 "index_incompatible",
                 "incompatible",

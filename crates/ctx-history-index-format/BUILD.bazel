@@ -21,6 +21,7 @@ RUST_SRCS = glob(["src/**/*.rs"])
 PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
 
 FORMAT_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-index-generation:lib",
     "//crates/ctx-semantic-model:lib",
@@ -47,6 +48,7 @@ rust_library(
     edition = crate_edition(),
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
+        "//crates/ctx-history-capture-model:lib",
         "//crates/ctx-history-core:lib",
         "//crates/ctx-history-index-generation:test_support_lib",
         "//crates/ctx-semantic-model:lib",
@@ -64,6 +66,7 @@ ctx_rust_test(
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
+        "//crates/ctx-history-capture-model:lib",
         "//crates/ctx-history-core:lib",
         "//crates/ctx-history-index-generation:test_support_lib",
         "//crates/ctx-semantic-model:lib",

@@ -21,10 +21,11 @@ mod verification_record;
 pub use contracts::{
     CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount, GenerationManifest,
     IndexError, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
-    SourceRouteIdentity, SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
+    SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
     LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
     MAX_PUBLICATION_METADATA_BYTES,
 };
+pub use ctx_history_capture_model::SourceRouteIdentity;
 #[doc(hidden)]
 pub use policy::is_semantic_candidate;
 pub use policy::{

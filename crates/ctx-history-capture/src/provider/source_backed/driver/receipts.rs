@@ -1225,5 +1225,23 @@ fn source_backed_route_identity(
             digest.update(profile.as_bytes());
         }
     }
-    SourceRouteIdentity::from_sha256(format!("{:x}", digest.finalize())).map_err(Into::into)
+    SourceRouteIdentity::from_sha256(format!("{:x}", digest.finalize()))
+        .map_err(|_| invalid_source_route_identity())
+}
+
+fn invalid_source_route_identity() -> SourceBackedCoordinatorError {
+    SourceBackedCoordinatorError::Index(IndexError::InvalidSourceRouteIdentity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_identity_validation_remains_an_index_coordinator_error() {
+        assert!(matches!(
+            invalid_source_route_identity(),
+            SourceBackedCoordinatorError::Index(IndexError::InvalidSourceRouteIdentity)
+        ));
+    }
 }

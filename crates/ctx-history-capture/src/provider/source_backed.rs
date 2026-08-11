@@ -16,6 +16,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_capture_model::{
     CoreRecordBatchProgress, CoreRecordProgress, SourceBackedRecordProgressDelta,
+    SourceRouteIdentity,
 };
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
@@ -25,8 +26,8 @@ use ctx_history_core::{
 use ctx_history_index::{
     CommitReceipt, CoreRecordPreparer, GenerationBaseCertifiedSource, GenerationManifest,
     GenerationWriter, GenerationWriterOpenOutcome, IndexError, PublicationDisposition,
-    PublicationMetadataContext, RevalidationTarget, SourceRouteIdentity, SourceRouteSnapshot,
-    VerifiedIndex, WriterOptions,
+    PublicationMetadataContext, RevalidationTarget, SourceRouteSnapshot, VerifiedIndex,
+    WriterOptions,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
