@@ -4,6 +4,7 @@ set -euo pipefail
 pipeline=".buildkite/pipeline.yml"
 macos_arm64_hosted_queue="ctx-release-macos-arm64"
 public_ci_script="scripts/buildkite-public-ci.sh"
+public_ci_cache_test="scripts/tests/buildkite-public-ci-cache-test.sh"
 sdk_check_script="scripts/check-sdks.sh"
 sdk_pipeline_check_script="scripts/check-sdk-ci-pipeline.py"
 sdk_required_groups_test="scripts/tests/check-sdks-required-groups-test.sh"
@@ -25,6 +26,7 @@ semantic_append_script="scripts/append-semantic-release-metadata.sh"
 staging_script="scripts/stage-github-release-assets.sh"
 test -f "${pipeline}"
 test -f "${public_ci_script}"
+test -f "${public_ci_cache_test}"
 test -f "${sdk_check_script}"
 test -f "${sdk_pipeline_check_script}"
 test -f "${sdk_required_groups_test}"
@@ -51,6 +53,7 @@ if [[ -e ".github/workflows/public-ci.yml" ]]; then
 fi
 
 bash "${sdk_required_groups_test}"
+bash "${public_ci_cache_test}"
 python3 "${sdk_pipeline_check_script}" \
   "${pipeline}" "${public_ci_script}" "${sdk_check_script}"
 
@@ -742,9 +745,11 @@ for required in \
   'CTX_RUST_TOOLCHAIN: "1.97.1"' \
   'CTX_BAZELISK_VERSION: "v1.29.0"' \
   'BUILDKITE_JOB_ID' \
+  'BUILDKITE_BUILD_PATH' \
   'CTX_PUBLIC_CI_TOOL_ROOT' \
   'CTX_PUBLIC_CI_REPOSITORY_CACHE' \
-  '.buildkite-cache/bazel-repository' \
+  'ctx-public-ci-cache' \
+  'repository contents cache must be outside checkout' \
   'CTX_BAZEL_REPOSITORY_CACHE' \
   'dpkg-query' \
   'default-jdk-headless' \
