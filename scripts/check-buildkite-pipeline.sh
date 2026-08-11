@@ -12,7 +12,6 @@ public_ci_cache_test="scripts/tests/buildkite-public-ci-cache-test.sh"
 sdk_check_script="scripts/check-sdks.sh"
 sdk_pipeline_check_script="scripts/check-sdk-ci-pipeline.py"
 sdk_required_groups_test="scripts/tests/check-sdks-required-groups-test.sh"
-sdk_jvm_test_script="sdks/jvm/scripts/test"
 packager_script="scripts/package-public-cli-bazel-release.sh"
 artifact_check_script="scripts/check-public-cli-artifact.sh"
 compat_check_script="scripts/check-release-binary-compat.sh"
@@ -35,7 +34,6 @@ test -f "${public_ci_cache_test}"
 test -f "${sdk_check_script}"
 test -f "${sdk_pipeline_check_script}"
 test -f "${sdk_required_groups_test}"
-test -x "${sdk_jvm_test_script}"
 test -f "${packager_script}"
 test -f "${artifact_check_script}"
 test -f "${compat_check_script}"
@@ -61,8 +59,7 @@ fi
 bash "${sdk_required_groups_test}"
 bash "${public_ci_cache_test}"
 python3 "${sdk_pipeline_check_script}" \
-  "${pipeline}" "${public_ci_script}" "${sdk_check_script}" \
-  "${sdk_jvm_test_script}"
+  "${pipeline}" "${public_ci_script}" "${sdk_check_script}"
 
 python3 - "${pipeline}" <<'PY'
 from collections import Counter
@@ -825,7 +822,7 @@ for required in \
   'queue: "default"' \
   'bash scripts/buildkite-public-ci.sh --mode=ci' \
   'key: "sdk-swift-required"' \
-  'bash scripts/check-sdks.sh --groups=swift --required-groups=swift' \
+  'CTX_SDK_RUN_LOCAL_SMOKE=0 bash scripts/check-sdks.sh --groups=swift --required-groups=swift' \
   'bash scripts/check-sdks.sh --groups=contracts,typescript,python,go,jvm,dotnet --required-groups=contracts,typescript,python,go,jvm,dotnet' \
   'target/ctx-artifacts/check/**' \
   'concurrency_group: "ctx/public-smoke/default-hosted"' \

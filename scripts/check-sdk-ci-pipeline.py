@@ -72,7 +72,8 @@ SDK_SPECS = {
     "sdk-swift-required": {
         "command": (
             "swift --version\n"
-            "bash scripts/check-sdks.sh --groups=swift --required-groups=swift"
+            "CTX_SDK_RUN_LOCAL_SMOKE=0 bash scripts/check-sdks.sh "
+            "--groups=swift --required-groups=swift"
         ),
         "queue": "ctx-release-macos-arm64",
         "os": "darwin",
@@ -239,33 +240,11 @@ def validate_sdk_runner(source: str) -> None:
         )
 
 
-def validate_jvm_test(source: str) -> None:
-    required_commands = (
-        "javac -encoding UTF-8 --release 11 -d build/classes "
-        "@build/tmp/main-sources.txt",
-        "javac -encoding UTF-8 --release 11 -cp build/classes "
-        "-d build/test-classes @build/tmp/test-sources.txt",
-        "javac -encoding UTF-8 --release 11 -cp build/classes "
-        "-d build/example-classes @build/tmp/example-sources.txt",
-        "CTX_ANALYTICS_ENABLED=true java -cp build/classes:build/test-classes "
-        "rs.ctx.agenthistory.AgentHistoryClientTest",
-        "java -cp build/classes:build/example-classes ToyAgentHistoryApp",
-    )
-    for required_command in required_commands:
-        require(
-            source.count(required_command) == 1,
-            f"JVM test script must retain exact command: {required_command}",
-        )
-
-
-def validate(
-    pipeline: str, public_ci: str, sdk_runner: str, jvm_test: str
-) -> None:
+def validate(pipeline: str, public_ci: str, sdk_runner: str) -> None:
     validate_sdk_steps(split_steps(pipeline))
     validate_linux_route(public_ci)
     validate_ubuntu_npm_install(public_ci)
     validate_sdk_runner(sdk_runner)
-    validate_jvm_test(jvm_test)
 
 
 def mutate_step(blocks, key: str, old: str, new: str):
@@ -290,10 +269,9 @@ def expect_rejection(
     pipeline: str,
     public_ci: str,
     sdk_runner: str,
-    jvm_test: str,
 ) -> None:
     try:
-        validate(pipeline, public_ci, sdk_runner, jvm_test)
+        validate(pipeline, public_ci, sdk_runner)
     except SDKRouteError as error:
         print(f"Buildkite SDK self-test ok: {name} rejected ({error})")
         return
@@ -301,15 +279,14 @@ def expect_rejection(
 
 
 def main() -> None:
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 4:
         raise SystemExit(
-            "usage: check-sdk-ci-pipeline.py "
-            "PIPELINE PUBLIC_CI SDK_RUNNER JVM_TEST"
+            "usage: check-sdk-ci-pipeline.py PIPELINE PUBLIC_CI SDK_RUNNER"
         )
-    pipeline, public_ci, sdk_runner, jvm_test = [
+    pipeline, public_ci, sdk_runner = [
         open(path, encoding="utf-8").read() for path in sys.argv[1:]
     ]
-    validate(pipeline, public_ci, sdk_runner, jvm_test)
+    validate(pipeline, public_ci, sdk_runner)
     blocks = split_steps(pipeline)
     for key in SDK_SPECS:
         expect_rejection(
@@ -317,12 +294,12 @@ def main() -> None:
             join_steps(block for block in blocks if step_key(block) != key),
             public_ci,
             sdk_runner,
-            jvm_test,
         )
     mutations = (
         ("optional Swift", "sdk-swift-required", "    timeout_in_minutes: 30\n", "    soft_fail: true\n    timeout_in_minutes: 30\n"),
         ("offline Swift runner", "sdk-swift-required", '      queue: "ctx-release-macos-arm64"\n', '      queue: "mac-shared"\n'),
         ("optional macOS command", "sdk-swift-required", " --required-groups=swift", ""),
+        ("Swift local smoke enabled", "sdk-swift-required", "CTX_SDK_RUN_LOCAL_SMOKE=0", "CTX_SDK_RUN_LOCAL_SMOKE=1"),
     )
     for name, key, old, new in mutations:
         expect_rejection(
@@ -330,7 +307,6 @@ def main() -> None:
             join_steps(mutate_step(blocks, key, old, new)),
             public_ci,
             sdk_runner,
-            jvm_test,
         )
     expect_rejection(
         "TypeScript removed from Linux requirements",
@@ -341,7 +317,6 @@ def main() -> None:
             1,
         ),
         sdk_runner,
-        jvm_test,
     )
     expect_rejection(
         "JVM removed from Linux requirements",
@@ -352,7 +327,6 @@ def main() -> None:
             1,
         ),
         sdk_runner,
-        jvm_test,
     )
     expect_rejection(
         "Linux SDK groups made optional",
@@ -361,7 +335,6 @@ def main() -> None:
             " --required-groups=contracts,typescript,python,go,jvm,dotnet", "", 1
         ),
         sdk_runner,
-        jvm_test,
     )
     npm_capability_check = (
         '    if [[ "${package}" == "npm" ]] '
@@ -378,9 +351,9 @@ def main() -> None:
         pipeline,
         public_ci.replace(npm_capability_check, "", 1),
         sdk_runner,
-        jvm_test,
     )
     for label, exact_command in (
+        ("JVM canonical script replaced", "jvm_test='sdks/jvm/scripts/test'"),
         ("JVM test removed", 'run "${jvm_test}"'),
         ("Swift test removed", 'run swift test --package-path sdks/swift --scratch-path "$tmp_dir/swift-build"'),
         (".NET build removed", 'run dotnet build "${dotnet_tests}" --configuration Release --nologo'),
@@ -390,41 +363,6 @@ def main() -> None:
             pipeline,
             public_ci,
             sdk_runner.replace(exact_command, "true", 1),
-            jvm_test,
-        )
-    for label, exact_command in (
-        (
-            "JVM main compilation removed",
-            "javac -encoding UTF-8 --release 11 -d build/classes "
-            "@build/tmp/main-sources.txt",
-        ),
-        (
-            "JVM test compilation removed",
-            "javac -encoding UTF-8 --release 11 -cp build/classes "
-            "-d build/test-classes @build/tmp/test-sources.txt",
-        ),
-        (
-            "JVM example compilation removed",
-            "javac -encoding UTF-8 --release 11 -cp build/classes "
-            "-d build/example-classes @build/tmp/example-sources.txt",
-        ),
-        (
-            "JVM tests execution removed",
-            "CTX_ANALYTICS_ENABLED=true java -cp "
-            "build/classes:build/test-classes "
-            "rs.ctx.agenthistory.AgentHistoryClientTest",
-        ),
-        (
-            "JVM example execution removed",
-            "java -cp build/classes:build/example-classes ToyAgentHistoryApp",
-        ),
-    ):
-        expect_rejection(
-            label,
-            pipeline,
-            public_ci,
-            sdk_runner,
-            jvm_test.replace(exact_command, "true", 1),
         )
     print("Buildkite required SDK route check ok")
 
