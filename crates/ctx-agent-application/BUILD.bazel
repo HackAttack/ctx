@@ -1,0 +1,137 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
+load(":test_targets.bzl", "agent_application_binary_contract")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "test_targets.bzl",
+])
+
+loc_check_inputs(name = "loc_check_inputs")
+
+filegroup(
+    name = "cargo_package_data",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+)
+
+COMMON_RUSTC_ENV = {
+    "CARGO_MANIFEST_DIR": "crates/ctx-agent-application",
+}
+
+RUST_SRCS = glob(["src/**/*.rs"])
+PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
+
+CTX_AGENT_APPLICATION_DEPS = [
+    "//crates/ctx-agent-integrations:lib",
+    "//crates/ctx-client-observability:lib",
+]
+
+rust_library(
+    name = "lib",
+    srcs = PROD_SRCS,
+    crate_name = "ctx_agent_application",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + CTX_AGENT_APPLICATION_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+rust_library(
+    name = "test_support_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_agent_application",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/ctx-agent-integrations:lib",
+        "//crates/ctx-client-observability:test_support_lib",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+ctx_rust_test(
+    name = "unit_tests",
+    srcs = RUST_SRCS,
+    crate_name = "ctx_agent_application",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + CTX_AGENT_APPLICATION_DEPS + [
+        "//crates/ctx-history-core:lib",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+agent_application_binary_contract(
+    name = "integrations_tests",
+    src = "tests/contracts/integrations.rs",
+)
+
+agent_application_binary_contract(
+    name = "integrations_mcp_tests",
+    src = "tests/contracts/integrations_mcp.rs",
+)
+
+agent_application_binary_contract(
+    name = "mcp_tests",
+    src = "tests/contracts/mcp.rs",
+    extra_srcs = ["tests/contracts/mcp/input_validation.rs"],
+    fixtures = True,
+)
+
+agent_application_binary_contract(
+    name = "mcp_attribution_privacy_tests",
+    src = "tests/contracts/mcp_attribution_privacy.rs",
+    extra_deps = ["//crates/ctx-history-core:lib"],
+    fixtures = True,
+    tags = [
+        "privacy",
+        "provider-conformance",
+    ],
+)
+
+agent_application_binary_contract(
+    name = "mcp_integration_e2e_tests",
+    src = "tests/contracts/mcp_integration_e2e.rs",
+    extra_crates = [
+        "serde_yaml",
+        "toml_edit",
+    ],
+    tags = ["integration"],
+)
+
+agent_application_binary_contract(
+    name = "mcp_local_usage_v2_tests",
+    src = "tests/contracts/mcp_local_usage_v2.rs",
+    fixtures = True,
+    tags = ["privacy"],
+)
+
+agent_application_binary_contract(
+    name = "mcp_telemetry_tests",
+    src = "tests/contracts/mcp_telemetry.rs",
+)
+
+agent_application_binary_contract(
+    name = "skill_tests",
+    src = "tests/contracts/skill.rs",
+    extra_crates = ["sha2"],
+)
+
+agent_application_binary_contract(
+    name = "slash_command_e2e_tests",
+    src = "tests/contracts/slash_command_e2e.rs",
+    tags = ["integration"],
+)

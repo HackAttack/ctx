@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use support::*;
 
 const CURRENT_BUNDLED_SKILL_BODY: &str =
-    include_str!("../../../skills/ctx-agent-history-search/SKILL.md");
+    include_str!("../../../../skills/ctx-agent-history-search/SKILL.md");
 
 fn human_stdout(command: &mut assert_cmd::Command) -> String {
     let output = command.assert().success().get_output().clone();
@@ -273,7 +273,7 @@ fn skill_install_backfills_current_metadata_without_rewriting_body() {
 
     let metadata: Value =
         serde_json::from_slice(&fs::read(skill_dir.join(".ctx-skill.json")).unwrap()).unwrap();
-    assert_eq!(metadata["ctx_cli_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(metadata["ctx_cli_version"], ctx_product_version(&temp));
 }
 
 #[test]

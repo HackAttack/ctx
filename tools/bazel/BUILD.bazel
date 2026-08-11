@@ -6,6 +6,7 @@ load(":mold_toolchain.bzl", "mold_toolchain_files")
 load(":release_routes_test.bzl", "release_route_analysis_test_suite")
 
 exports_files([
+    "check_agent_application_boundary.py",
     "check_agent_integrations_boundary.py",
     "check-client-observability-boundary.sh",
     "check-cli-build-cfg.sh",

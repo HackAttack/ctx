@@ -30,6 +30,7 @@ TANTIVY_FEATURES = (
 )
 WORKSPACE_PACKAGES = (
     ("ctx", "crates/ctx-cli"),
+    ("ctx-agent-application", "crates/ctx-agent-application"),
     ("ctx-agent-integrations", "crates/ctx-agent-integrations"),
     ("ctx-client-observability", "crates/ctx-client-observability"),
     ("ctx-daemon-runtime", "crates/ctx-daemon-runtime"),
@@ -144,6 +145,7 @@ class ReleaseSbomTest(unittest.TestCase):
 [workspace]
 members = [
   "crates/ctx-cli",
+  "crates/ctx-agent-application",
   "crates/ctx-agent-integrations",
   "crates/ctx-client-observability",
   "crates/ctx-daemon-runtime",
@@ -179,6 +181,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             manifest.parent.mkdir(parents=True)
             dependencies = {
                 "ctx": (
+                    "ctx-agent-application = { path = \"../ctx-agent-application\" }\n"
                     "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
                     "ctx-client-observability = { path = \"../ctx-client-observability\" }\n"
                     "ctx-daemon-runtime = { path = \"../ctx-daemon-runtime\" }\n"
@@ -192,6 +195,10 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                 ),
                 "ctx-agent-integrations": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
+                ),
+                "ctx-agent-application": (
+                    "ctx-agent-integrations = { path = \"../ctx-agent-integrations\" }\n"
+                    "ctx-client-observability = { path = \"../ctx-client-observability\" }"
                 ),
                 "ctx-client-observability": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
@@ -283,6 +290,7 @@ repository = "https://example.invalid/{name}"
 
         inventory_labels = [
             "@@//crates/ctx-cli:ctx",
+            "@@//crates/ctx-agent-application:ctx_agent_application",
             "@@//crates/ctx-agent-integrations:ctx_agent_integrations",
             "@@//crates/ctx-client-observability:ctx_client_observability",
             "@@//crates/ctx-daemon-runtime:ctx_daemon_runtime",
@@ -378,6 +386,7 @@ repository = "https://example.invalid/{name}"
                 "ctx",
                 "0.26.0",
                 (
+                    "ctx-agent-application",
                     "ctx-agent-integrations",
                     "ctx-client-observability",
                     "ctx-history-core",
@@ -392,6 +401,11 @@ repository = "https://example.invalid/{name}"
                     "ctx-terminal 1.0.0",
                     "ctx-upgrade-engine",
                 ),
+            ),
+            self.package(
+                "ctx-agent-application",
+                "0.26.0",
+                ("ctx-agent-integrations", "ctx-client-observability"),
             ),
             self.package(
                 "ctx-agent-integrations",

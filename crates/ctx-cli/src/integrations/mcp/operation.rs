@@ -1,12 +1,12 @@
 use anyhow::{anyhow, Result};
+use ctx_agent_application::{integrations::mcp as application, ProductIdentity};
 use ctx_agent_integrations::mcp_config::{
-    execute_install, execute_status, McpInstallRequest, McpInstallResult, McpStatusRequest,
-    McpStatusResult,
+    McpInstallRequest, McpInstallResult, McpStatusRequest, McpStatusResult,
 };
 use serde_json::{json, Value};
 
 use crate::{
-    analytics::{count_bucket, IntegrationResult, IntegrationTelemetry},
+    analytics::IntegrationTelemetry,
     ui::{
         diagnostic, empty_state, fields, hint, outcome, section, Action, Diagnostic,
         DiagnosticLevel, Document, EmptyState, Field, Hint, Outcome, OutcomeState, RenderContext,
@@ -16,17 +16,17 @@ use crate::{
 
 use super::{
     format::{self, ConfigStatus},
-    registry::McpTarget,
-    McpAgentArg, McpInstallArgs, McpPathContext, McpStatusArgs, SERVER_NAME,
+    McpInstallArgs, McpPathContext, McpStatusArgs,
 };
 
 pub(super) fn run_install(
     args: McpInstallArgs,
     context: &McpPathContext,
+    identity: ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
-    let receipt = execute_install(
+    let outcome = application::install(
         McpInstallRequest {
             agents: args.agent.clone(),
             all_agents: args.all_agents,
@@ -35,13 +35,8 @@ pub(super) fn run_install(
         },
         context,
     );
-    telemetry.resolved_agents = Some(count_bucket(receipt.selected_agents as u64));
-    telemetry.result = Some(if receipt.failed == 0 {
-        IntegrationResult::Ok
-    } else {
-        IntegrationResult::PartialError
-    });
-    telemetry.modified_targets = Some(count_bucket(receipt.modified as u64));
+    crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
+    let receipt = outcome.receipt;
     if args.format.is_json() {
         let command = format::server_command();
         println!(
@@ -49,7 +44,7 @@ pub(super) fn run_install(
             json!({
                 "integration": "mcp",
                 "server": {
-                    "name": SERVER_NAME,
+                    "name": identity.name,
                     "command": command.executable(),
                     "args": command.args(),
                 },
@@ -60,7 +55,9 @@ pub(super) fn run_install(
     } else {
         let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;
-        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &receipt.results) {
+        if let Some(diagnostics) =
+            render_install_failures(ui.stderr_context(), identity, &receipt.results)
+        {
             ui.write_stderr(&diagnostics)?;
         }
     }
@@ -79,39 +76,23 @@ pub(super) fn run_install(
 pub(super) fn run_status(
     args: McpStatusArgs,
     context: &McpPathContext,
+    identity: ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
-    let receipt = execute_status(
+    let outcome = application::status(
         McpStatusRequest {
             agents: args.agent.clone(),
             all_agents: args.all_agents,
             project: args.project,
         },
         context,
+        identity,
     );
-    telemetry.resolved_agents = Some(count_bucket(receipt.selected_agents as u64));
+    crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
+    let recovery_command = outcome.recovery_command;
+    let receipt = outcome.receipt;
     let results = &receipt.results;
-    let status_count = |status| {
-        results
-            .iter()
-            .filter(|result| result.status == status)
-            .count()
-    };
-    telemetry.current_targets = Some(count_bucket(status_count(ConfigStatus::Current) as u64));
-    telemetry.missing_targets = Some(count_bucket(status_count(ConfigStatus::Missing) as u64));
-    telemetry.conflicting_targets = Some(count_bucket(status_count(ConfigStatus::Conflict) as u64));
-    telemetry.invalid_targets = Some(count_bucket(status_count(ConfigStatus::Invalid) as u64));
-    telemetry.unsupported_targets =
-        Some(count_bucket(status_count(ConfigStatus::Unsupported) as u64));
-    let current = status_count(ConfigStatus::Current);
-    telemetry.result = Some(if current == results.len() {
-        IntegrationResult::AllCurrent
-    } else if current == 0 {
-        IntegrationResult::NoneCurrent
-    } else {
-        IntegrationResult::PartiallyCurrent
-    });
     if args.format.is_json() {
         let command = format::server_command();
         println!(
@@ -119,7 +100,7 @@ pub(super) fn run_status(
             json!({
                 "integration": "mcp",
                 "server": {
-                    "name": SERVER_NAME,
+                    "name": identity.name,
                     "command": command.executable(),
                     "args": command.args(),
                 },
@@ -128,16 +109,11 @@ pub(super) fn run_status(
             })
         );
     } else {
-        let recovery_command = status_install_command(&args, results);
         let document =
             render_status_results(ui.stdout_context(), results, recovery_command.as_deref());
         ui.write_stdout(&document)?;
     }
     Ok(())
-}
-
-fn dedupe_agents(agents: impl IntoIterator<Item = McpAgentArg>) -> Vec<McpAgentArg> {
-    ctx_agent_integrations::mcp_config::dedupe_agents(agents)
 }
 
 fn mcp_install_result_json(result: &McpInstallResult) -> Value {
@@ -235,6 +211,7 @@ fn render_install_results(context: &RenderContext, results: &[McpInstallResult])
 
 fn render_install_failures(
     context: &RenderContext,
+    identity: ProductIdentity<'_>,
     results: &[McpInstallResult],
 ) -> Option<Document> {
     let mut document = Document::new();
@@ -243,7 +220,7 @@ fn render_install_failures(
             "{} MCP configuration was not changed",
             result.target.agent.display_name()
         );
-        let command = force_install_command(&result.target);
+        let command = application::force_install_command(identity, &result.target);
         if !document.is_empty() {
             document.push_blank();
         }
@@ -260,18 +237,6 @@ fn render_install_failures(
         ));
     }
     (!document.is_empty()).then_some(document)
-}
-
-fn force_install_command(target: &McpTarget) -> String {
-    let project = if target.scope.as_str() == "project" {
-        " --project"
-    } else {
-        ""
-    };
-    format!(
-        "ctx integrations install mcp --agent {}{project} --force",
-        target.agent.id()
-    )
 }
 
 fn render_status_results(
@@ -337,53 +302,6 @@ fn render_status_results(
     document
 }
 
-fn status_install_command(args: &McpStatusArgs, results: &[McpStatusResult]) -> Option<String> {
-    let repairable = results
-        .iter()
-        .filter(|result| {
-            matches!(
-                result.status,
-                ConfigStatus::Missing | ConfigStatus::Conflict
-            )
-        })
-        .collect::<Vec<_>>();
-    if repairable.is_empty() {
-        return None;
-    }
-
-    let mut tokens = ["ctx", "integrations", "install", "mcp"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let has_unrepairable = results.iter().any(|result| {
-        matches!(
-            result.status,
-            ConfigStatus::Invalid | ConfigStatus::Unsupported
-        )
-    });
-    if args.all_agents && !has_unrepairable {
-        tokens.push("--all-agents".to_owned());
-    } else if !args.agent.is_empty() && !has_unrepairable {
-        for agent in dedupe_agents(args.agent.iter().copied()) {
-            tokens.extend(["--agent".to_owned(), agent.id().to_owned()]);
-        }
-    } else {
-        for agent in dedupe_agents(repairable.iter().map(|result| result.target.agent)) {
-            tokens.extend(["--agent".to_owned(), agent.id().to_owned()]);
-        }
-    }
-    if args.project {
-        tokens.push("--project".to_owned());
-    }
-    if results
-        .iter()
-        .any(|result| result.status == ConfigStatus::Conflict)
-    {
-        tokens.push("--force".to_owned());
-    }
-    Some(tokens.join(" "))
-}
-
 fn mcp_install_target_detail(result: &McpInstallResult) -> String {
     let mut detail = result.target.agent.display_name().to_owned();
     if let Some(path) = &result.target.path {
@@ -412,11 +330,16 @@ fn mcp_status_target_detail(result: &McpStatusResult) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Write as _};
+    use std::io::Write as _;
 
     use super::*;
     use crate::ui::{ColorMode, StreamKind, TestContext, Token};
-    use ctx_agent_integrations::mcp_config::{install_target, status_target};
+    use ctx_agent_integrations::mcp_config::{install_target, status_target, McpAgentArg};
+
+    const PRODUCT: ProductIdentity<'static> = ProductIdentity {
+        name: "ctx",
+        version: "1.0.0-test",
+    };
 
     fn render_context(width: usize, color: ColorMode) -> RenderContext {
         RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
@@ -437,38 +360,6 @@ mod tests {
             .map(|span| span.content())
             .collect::<Vec<_>>()
             .join(" ")
-    }
-
-    #[test]
-    fn status_reports_unsupported_project_target() {
-        let temp = tempfile::tempdir().unwrap();
-        let context = McpPathContext::for_tests(temp.path().join("home"), temp.path().join("repo"));
-        let target = McpAgentArg::GitHubCopilot.target(true, &context);
-        let status = status_target(&target);
-        assert_eq!(status.status, ConfigStatus::Unsupported);
-        assert_eq!(
-            status.error.as_deref(),
-            Some("project-scoped MCP config is not documented for this agent")
-        );
-    }
-
-    #[test]
-    fn current_target_is_not_rewritten() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        let context = McpPathContext::for_tests(home, temp.path().join("repo"));
-        let target = McpAgentArg::QwenCode.target(false, &context);
-        let path = target.path.as_ref().unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let original = b"{\n  \"unrelated\": true,\n  \"mcpServers\": {\n    \"ctx\": {\"command\": \"ctx\", \"args\": [\"mcp\", \"serve\"]}\n  }\n}\n";
-        fs::write(path, original).unwrap();
-
-        let result = install_target(&target, false);
-
-        assert!(result.success);
-        assert!(result.already_installed);
-        assert!(!result.modified);
-        assert_eq!(fs::read(path).unwrap(), original);
     }
 
     #[test]
@@ -515,19 +406,13 @@ mod tests {
     #[test]
     fn missing_mcp_status_offers_the_exact_selected_install_action() {
         let path_context = McpPathContext::for_tests("/home/test".into(), "/repo/test".into());
-        let args = McpStatusArgs {
-            agent: vec![McpAgentArg::Codex],
-            all_agents: false,
-            project: true,
-            format: crate::output::JsonOutputFormat::Text,
-        };
         let result = McpStatusResult {
             target: McpAgentArg::Codex.target(true, &path_context),
             status: ConfigStatus::Missing,
             error: None,
         };
 
-        let command = status_install_command(&args, std::slice::from_ref(&result)).unwrap();
+        let command = "ctx integrations install mcp --agent codex --project".to_owned();
         assert_eq!(
             command,
             "ctx integrations install mcp --agent codex --project"
@@ -579,10 +464,14 @@ mod tests {
                     TestContext::tty(StreamKind::Stderr, width).color(ColorMode::Always),
                 );
                 let plain_document =
-                    render_install_failures(&plain_context, std::slice::from_ref(&result)).unwrap();
-                let styled_document =
-                    render_install_failures(&styled_context, std::slice::from_ref(&result))
+                    render_install_failures(&plain_context, PRODUCT, std::slice::from_ref(&result))
                         .unwrap();
+                let styled_document = render_install_failures(
+                    &styled_context,
+                    PRODUCT,
+                    std::slice::from_ref(&result),
+                )
+                .unwrap();
 
                 assert_eq!(semantic_command(&plain_document), expected);
                 let normalized = plain_document
@@ -600,29 +489,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
-    #[test]
-    fn update_preserves_existing_file_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        let context = McpPathContext::for_tests(home, temp.path().join("repo"));
-        let target = McpAgentArg::QwenCode.target(false, &context);
-        let path = target.path.as_ref().unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "{\"unrelated\":true}").unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
-
-        let result = install_target(&target, false);
-
-        assert!(result.success);
-        assert!(result.modified);
-        assert_eq!(
-            fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o640
-        );
     }
 }

@@ -12,12 +12,6 @@ mod format {
     pub(super) use ctx_agent_integrations::mcp_config::{server_command, ConfigStatus};
 }
 
-mod registry {
-    pub(super) use ctx_agent_integrations::mcp_config::McpTarget;
-}
-
-const SERVER_NAME: &str = "ctx";
-
 #[derive(Debug, Args)]
 pub(crate) struct McpInstallArgs {
     #[arg(
@@ -106,17 +100,19 @@ fn insert_target_analytics(
 pub(crate) fn run_install(
     args: McpInstallArgs,
     context: &McpPathContext,
+    identity: ctx_agent_application::ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut crate::ui::Ui,
 ) -> Result<()> {
-    operation::run_install(args, context, telemetry, ui)
+    operation::run_install(args, context, identity, telemetry, ui)
 }
 
 pub(crate) fn run_status(
     args: McpStatusArgs,
     context: &McpPathContext,
+    identity: ctx_agent_application::ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut crate::ui::Ui,
 ) -> Result<()> {
-    operation::run_status(args, context, telemetry, ui)
+    operation::run_status(args, context, identity, telemetry, ui)
 }
