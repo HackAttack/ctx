@@ -479,6 +479,13 @@ pub(super) struct CodexRecordProbe<'a> {
     lineage_malformed: bool,
 }
 
+#[derive(Debug)]
+pub(super) struct CodexRepositoryOccurrenceProbe<'a> {
+    pub(super) class: CodexRecordClass,
+    pub(super) call_id: Option<Cow<'a, str>>,
+    pub(super) selector_malformed: bool,
+}
+
 impl CodexRecordProbe<'_> {
     pub(super) const fn lineage_malformed(&self) -> bool {
         self.lineage_malformed
@@ -540,6 +547,60 @@ pub(super) fn classify_codex_record(line: &[u8]) -> serde_json::Result<CodexReco
         output,
         lineage_malformed,
     })
+}
+
+/// Classifies only the exact selectors needed to count repository-capable
+/// call/result occurrences. Nested payload bodies are consumed without value
+/// construction, and duplicate envelope/payload lineage selectors remain
+/// explicitly fail-closed.
+pub(super) fn classify_codex_repository_occurrence(
+    line: &[u8],
+) -> serde_json::Result<CodexRepositoryOccurrenceProbe<'_>> {
+    let envelope = serde_json::from_slice::<CodexEnvelopeProbe<'_>>(line)?;
+    let item_type = envelope
+        .payload
+        .as_ref()
+        .and_then(|payload| payload.item_type.as_ref().map(CodexText::as_str));
+    let class = codex_record_class(
+        envelope.record_type.as_ref().map_or("", CodexText::as_str),
+        item_type,
+    );
+    let selector_malformed = envelope.lineage_malformed
+        || envelope
+            .payload
+            .as_ref()
+            .is_some_and(|payload| payload.lineage_malformed);
+    Ok(CodexRepositoryOccurrenceProbe {
+        class,
+        call_id: envelope
+            .payload
+            .and_then(|payload| payload.call_id.map(|call_id| call_id.value)),
+        selector_malformed,
+    })
+}
+
+#[cfg(test)]
+mod repository_occurrence_tests {
+    use super::*;
+
+    #[test]
+    fn repository_occurrence_ignores_nested_duplicates_but_rejects_selector_duplicates() {
+        let unrelated_nested_duplicate = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"exact-call","unrelated":{"same":1,"same":2}}}"#;
+        let probe = classify_codex_repository_occurrence(unrelated_nested_duplicate).unwrap();
+        assert_eq!(
+            probe.class,
+            CodexRecordClass::Retained(CodexRetainedKind::ToolCall)
+        );
+        assert_eq!(probe.call_id.as_deref(), Some("exact-call"));
+        assert!(!probe.selector_malformed);
+
+        let duplicate_call_id = br#"{"type":"response_item","payload":{"type":"function_call","call_id":"first","call_id":"second"}}"#;
+        assert!(
+            classify_codex_repository_occurrence(duplicate_call_id)
+                .unwrap()
+                .selector_malformed
+        );
+    }
 }
 
 /// Recovers only the canonical MCP terminal shape when the strict selector
@@ -677,6 +738,8 @@ struct CodexTurnContextEnvelope {
 #[derive(Debug, Deserialize)]
 struct CodexTurnContextPayload {
     cwd: String,
+    #[serde(default)]
+    turn_id: Option<String>,
 }
 
 pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
@@ -751,9 +814,17 @@ pub(super) fn parse_session_meta(line: &[u8]) -> Option<CodexSessionRow> {
     })
 }
 
-pub(super) fn parse_turn_context_cwd(line: &[u8]) -> Option<String> {
+pub(super) fn parse_turn_context(line: &[u8]) -> Option<(String, Option<String>)> {
     let envelope = serde_json::from_slice::<CodexTurnContextEnvelope>(line).ok()?;
-    bounded_nonempty(envelope.payload.cwd, MAX_CODEX_DURABLE_CWD_BYTES)
+    let cwd = bounded_nonempty(envelope.payload.cwd, MAX_CODEX_DURABLE_CWD_BYTES)?;
+    let turn_id = match envelope.payload.turn_id {
+        Some(turn_id) => Some(bounded_nonempty(
+            turn_id,
+            MAX_CODEX_DURABLE_SESSION_ID_BYTES,
+        )?),
+        None => None,
+    };
+    Some((cwd, turn_id))
 }
 
 fn nonempty(value: String) -> Option<String> {

@@ -116,6 +116,7 @@ impl CodexNativeScanner {
             owner: self.owner,
             pending_tool_authorities: self.tool_authorities.into_values().collect(),
             terminal_authority: self.mcp_terminal_authority.checkpoint(),
+            repository_candidate_authority: self.repository_candidate_authority.checkpoint(),
             incomplete_tail: self.incomplete_tail,
             counters: self.counters,
             local_turn_started: self.local_turn_started,

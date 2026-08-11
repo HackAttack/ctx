@@ -36,7 +36,8 @@ use crate::{
         PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES, PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
     },
     provider::codex::{
-        catalog::catalog_codex_explicit_session_opened, nativepath::opened_codex_file_observation,
+        catalog::catalog_codex_explicit_session_opened, events::CodexInvocationOriginV0,
+        nativepath::opened_codex_file_observation,
     },
     CaptureError, CODEX_SESSION_SOURCE_FORMAT,
 };
@@ -47,8 +48,9 @@ const CODEX_LOGICAL_SESSION_KIND: &str = "codex-session";
 const CODEX_LOGICAL_EVENT_KIND: &str = "codex-event";
 const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
 const CODEX_SOURCE_REVISION_KIND: &str = "codex-ordinary-file-observation-v1";
-const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v14";
-const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-record-v27-bounded-exact-origin";
+const CODEX_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
+const CODEX_PARSER_REVISION: &str =
+    "codex-nativepath-core-record-v31-repository-positive-exact-authority";
 
 #[derive(Debug, Error)]
 pub enum CodexSourceBackedErrorV0 {
@@ -127,8 +129,14 @@ pub struct CodexSourceBackedCountersV0 {
     pub scanner_bytes_read: u64,
     pub checkpoint_validation_bytes: u64,
     pub mcp_terminal_authority_bytes_read: u64,
+    pub repository_candidate_authority_bytes_read: u64,
+    pub repository_candidate_authority_records_visited: u64,
     pub peak_mcp_terminal_authority_entries: usize,
     pub peak_mcp_terminal_authority_bytes: usize,
+    pub peak_repository_candidate_authority_entries: usize,
+    pub peak_repository_candidate_authority_bytes: usize,
+    pub peak_repository_occurrence_cache_entries: usize,
+    pub peak_repository_occurrence_cache_bytes: usize,
     pub prefiltered_records: u64,
     pub structural_json_parses: u64,
     pub typed_json_parses: u64,
@@ -179,6 +187,8 @@ impl CodexSourceBackedCountersV0 {
             scanner_bytes_read,
             checkpoint_validation_bytes,
             mcp_terminal_authority_bytes_read,
+            repository_candidate_authority_bytes_read,
+            repository_candidate_authority_records_visited,
             prefiltered_records,
             structural_json_parses,
             typed_json_parses,
@@ -201,6 +211,18 @@ impl CodexSourceBackedCountersV0 {
         self.peak_mcp_terminal_authority_bytes = self
             .peak_mcp_terminal_authority_bytes
             .max(other.peak_mcp_terminal_authority_bytes);
+        self.peak_repository_candidate_authority_entries = self
+            .peak_repository_candidate_authority_entries
+            .max(other.peak_repository_candidate_authority_entries);
+        self.peak_repository_candidate_authority_bytes = self
+            .peak_repository_candidate_authority_bytes
+            .max(other.peak_repository_candidate_authority_bytes);
+        self.peak_repository_occurrence_cache_entries = self
+            .peak_repository_occurrence_cache_entries
+            .max(other.peak_repository_occurrence_cache_entries);
+        self.peak_repository_occurrence_cache_bytes = self
+            .peak_repository_occurrence_cache_bytes
+            .max(other.peak_repository_occurrence_cache_bytes);
     }
 
     pub(crate) fn add_catalog_work(&mut self, work: CodexCatalogWorkV0) {
@@ -242,12 +264,30 @@ impl CodexSourceBackedCountersV0 {
         self.mcp_terminal_authority_bytes_read = self
             .mcp_terminal_authority_bytes_read
             .saturating_add(scan.mcp_terminal_authority_bytes_read);
+        self.repository_candidate_authority_bytes_read = self
+            .repository_candidate_authority_bytes_read
+            .saturating_add(scan.repository_candidate_authority_bytes_read);
+        self.repository_candidate_authority_records_visited = self
+            .repository_candidate_authority_records_visited
+            .saturating_add(scan.repository_candidate_authority_records_visited);
         self.peak_mcp_terminal_authority_entries = self
             .peak_mcp_terminal_authority_entries
             .max(scan.peak_mcp_terminal_authority_entries);
         self.peak_mcp_terminal_authority_bytes = self
             .peak_mcp_terminal_authority_bytes
             .max(scan.peak_mcp_terminal_authority_bytes);
+        self.peak_repository_candidate_authority_entries = self
+            .peak_repository_candidate_authority_entries
+            .max(scan.peak_repository_candidate_authority_entries);
+        self.peak_repository_candidate_authority_bytes = self
+            .peak_repository_candidate_authority_bytes
+            .max(scan.peak_repository_candidate_authority_bytes);
+        self.peak_repository_occurrence_cache_entries = self
+            .peak_repository_occurrence_cache_entries
+            .max(scan.peak_repository_occurrence_cache_entries);
+        self.peak_repository_occurrence_cache_bytes = self
+            .peak_repository_occurrence_cache_bytes
+            .max(scan.peak_repository_occurrence_cache_bytes);
         self.prefiltered_records = self
             .prefiltered_records
             .saturating_add(scan.prefiltered_records);
@@ -292,10 +332,6 @@ mod generation;
 mod identity;
 mod ingestion;
 mod jsonl_family;
-mod origin;
-
-use origin::CodexOutcomeOriginV0;
-
 use catalog::discover_codex_session_tree_inventory_v0;
 #[cfg(test)]
 pub(crate) use catalog::install_after_codex_metadata_inventory_hook;
@@ -328,20 +364,32 @@ mod counter_tests {
     use super::*;
 
     #[test]
-    fn aggregation_sums_mcp_reads_and_takes_mcp_peaks() {
+    fn aggregation_sums_authority_reads_and_takes_authority_peaks() {
         let mut total = CodexSourceBackedCountersV0 {
             mcp_terminal_authority_bytes_read: 11,
+            repository_candidate_authority_bytes_read: 17,
+            repository_candidate_authority_records_visited: 2,
             peak_mcp_terminal_authority_entries: 7,
             peak_mcp_terminal_authority_bytes: 70,
+            peak_repository_occurrence_cache_entries: 8,
+            peak_repository_occurrence_cache_bytes: 80,
             ..CodexSourceBackedCountersV0::default()
         };
         total.add_assign(CodexSourceBackedCountersV0 {
             mcp_terminal_authority_bytes_read: 13,
+            repository_candidate_authority_bytes_read: 19,
+            repository_candidate_authority_records_visited: 3,
             peak_mcp_terminal_authority_entries: 5,
             peak_mcp_terminal_authority_bytes: 90,
+            peak_repository_occurrence_cache_entries: 6,
+            peak_repository_occurrence_cache_bytes: 100,
             ..CodexSourceBackedCountersV0::default()
         });
         assert_eq!(total.mcp_terminal_authority_bytes_read, 24);
+        assert_eq!(total.repository_candidate_authority_bytes_read, 36);
+        assert_eq!(total.repository_candidate_authority_records_visited, 5);
+        assert_eq!(total.peak_repository_occurrence_cache_entries, 8);
+        assert_eq!(total.peak_repository_occurrence_cache_bytes, 100);
         assert_eq!(total.peak_mcp_terminal_authority_entries, 7);
         assert_eq!(total.peak_mcp_terminal_authority_bytes, 90);
     }
