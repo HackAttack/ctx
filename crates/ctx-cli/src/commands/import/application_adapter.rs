@@ -1,10 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ctx_history_capture::{
-    discover_provider_sources, source_backed_source_failure_identity, DiscoveryReport,
-    ProviderSource, HERMES_STATE_DB_UNSUPPORTED_REASON,
-};
+use ctx_history_capture::{source_backed_source_failure_identity, DiscoveryReport, ProviderSource};
 use ctx_history_core::{platform_security::establish_private_data_root, CaptureProvider};
 use ctx_history_ingest_application::{
     CaptureAdmissionPort, HistorySourcePluginSource, IngestProgressPort, IngestPublication,
@@ -20,9 +17,6 @@ use crate::{
     },
     history_source_plugins::prepare_source_backed_history_source,
     progress::{format_bytes, ProgressReporter},
-    provider_sources::{
-        discovered_sources_for_provider_report, manual_path_guidance, provider_cli_name,
-    },
     ImportArgs,
 };
 
@@ -65,6 +59,7 @@ pub(super) fn run_application_import(
         no_daemon: context.args.no_daemon,
     };
     let mut host = CliIngestHost {
+        home: crate::identity::home_dir(),
         config: context.config,
         options: context.options,
         ui: Some(context.ui),
@@ -82,6 +77,7 @@ pub(super) fn run_application_import(
 }
 
 struct CliIngestHost<'a> {
+    home: Option<PathBuf>,
     config: &'a crate::config::AppConfig,
     options: ImportRunOptions,
     ui: Option<&'a mut crate::ui::Ui>,
@@ -90,25 +86,22 @@ struct CliIngestHost<'a> {
 
 impl SourceDiscoveryPort for CliIngestHost<'_> {
     fn discover_all(&self) -> Result<DiscoveryReport> {
-        let home = crate::identity::home_dir()
+        let home = self
+            .home
+            .as_deref()
             .context("resolve user home for provider-root safety preflight")?;
-        Ok(DiscoveryReport {
-            sources: discover_provider_sources(&home),
-            issues: Vec::new(),
-        })
+        Ok(ctx_history_cli::discovered_sources_report(Some(home)))
     }
 
     fn discover_provider(&self, provider: CaptureProvider) -> Result<DiscoveryReport> {
-        Ok(discovered_sources_for_provider_report(provider))
+        Ok(ctx_history_cli::discovered_sources_for_provider_report(
+            self.home.as_deref(),
+            provider,
+        ))
     }
 
     fn provider_selection_guidance(&self, provider: CaptureProvider) -> ProviderSelectionGuidance {
-        ProviderSelectionGuidance {
-            display_name: provider_cli_name(provider).to_owned(),
-            manual_path_command: manual_path_guidance(provider),
-            unavailable_reason: (provider == CaptureProvider::Hermes)
-                .then(|| HERMES_STATE_DB_UNSUPPORTED_REASON.to_owned()),
-        }
+        ctx_history_cli::provider_selection_guidance(provider)
     }
 }
 

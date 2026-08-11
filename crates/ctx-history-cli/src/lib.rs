@@ -17,6 +17,7 @@ mod output;
 mod ports;
 mod presentation_limit;
 mod provider_args;
+mod provider_sources;
 mod request;
 mod search_filters;
 mod semantic;
@@ -42,7 +43,20 @@ pub use list_events::{
     EventQueryDirection, EventQueryError, EventQueryFormat, EventQueryScope, EventQueryWireRequest,
     ListEventsArgs, DEFAULT_EVENT_QUERY_LIMIT,
 };
-pub use provider_args::ProviderArg;
+pub use provider_args::{
+    cli_supported_provider, compact_provider_error, mcp_provider_names, native_provider_cli_specs,
+    parse_native_provider, parse_native_provider_name, parse_provider, parse_provider_name,
+    provider_cli_name, provider_cli_spec, provider_cli_specs, provider_is_importable, ProviderArg,
+    ProviderCliSpec,
+};
+pub use provider_sources::{
+    discovered_plugin_sources_json, discovered_sources_for_provider_report,
+    discovered_sources_report, discovery_report_issues_json, filter_cli_supported_report,
+    filter_cli_supported_sources, history_source_plugin_refresh_json, history_source_plugin_report,
+    import_support_json, manual_path_guidance, plugin_manifest_failures_json, plugin_sources_json,
+    provider_selection_guidance, sources_json, CliSourceDiscoveryPort, SourceInfo,
+    DEFAULT_VISIBLE_SOURCE_PROVIDERS, MAX_DISCOVERY_ISSUES, MAX_DISCOVERY_ISSUE_MESSAGE_BYTES,
+};
 pub use source_index::{
     copied_lineage_summary, generation_query_authority_error_json, mcp_search_with_compact,
     mcp_show_event_application, mcp_show_session_application, normalize_mcp_search_request,

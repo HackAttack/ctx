@@ -20,7 +20,7 @@ use crate::ui::{
     Diagnostic, DiagnosticLevel, Document, EmptyState, Field, Hint, Outcome, OutcomeState,
     RenderContext, Table, Ui,
 };
-use crate::{SourcesArgs, DEFAULT_VISIBLE_SOURCE_PROVIDERS};
+use crate::SourcesArgs;
 
 pub(crate) fn run_sources(
     args: SourcesArgs,
@@ -30,14 +30,17 @@ pub(crate) fn run_sources(
     ui: &mut Ui,
 ) -> Result<()> {
     let provider_filter = args.provider.map(ProviderArg::capture_provider);
+    let home = crate::identity::home_dir();
+    let discovery = CliSourceDiscoveryPort::new(home.clone());
     let show_all_sources = args.all || args.show_missing || provider_filter.is_some();
     let listing = ctx_history_ingest_application::assemble_source_listing(
-        &CliSourceDiscoveryPort,
+        &discovery,
         &data_root,
         ctx_history_ingest_application::SourceListingRequest {
             provider_filter,
             show_all: show_all_sources,
-            default_visible_missing_providers: DEFAULT_VISIBLE_SOURCE_PROVIDERS.to_vec(),
+            default_visible_missing_providers: ctx_history_cli::DEFAULT_VISIBLE_SOURCE_PROVIDERS
+                .to_vec(),
         },
     )?;
     let discovery_report = listing.discovery;
@@ -91,7 +94,6 @@ pub(crate) fn run_sources(
         print_json(value)?;
         output_bytes
     } else {
-        let home = crate::identity::home_dir();
         let document = render_sources_human(
             ui.stdout_context(),
             sources,

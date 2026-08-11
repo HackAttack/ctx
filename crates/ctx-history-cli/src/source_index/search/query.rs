@@ -20,12 +20,7 @@ impl From<SearchRequest> for SourceSearchRequest {
             query: args.query.unwrap_or_default(),
             terms: args.terms,
             limit: args.limit,
-            provider: args.provider.map(|provider| match provider {
-                crate::HistoryProvider::Native(value) => value
-                    .parse()
-                    .unwrap_or(ctx_history_core::CaptureProvider::Unknown),
-                crate::HistoryProvider::Custom => ctx_history_core::CaptureProvider::Custom,
-            }),
+            provider: args.provider.map(crate::HistoryProvider::capture_provider),
             history_source: args.history_source,
             provider_key: args.provider_key,
             source_id: args.source_id,

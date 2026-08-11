@@ -15,6 +15,7 @@ exports_files([
     "check-daemon-service-dependency-boundary.sh",
     "check-daemon-runtime-dependency-boundary.sh",
     "check-history-capture-build-cfg.sh",
+    "check-history-cli-boundary.sh",
     "check-history-ingest-application-boundary.sh",
     "check-history-read-application-dependency-boundary.sh",
     "check-history-source-discovery-boundary.sh",

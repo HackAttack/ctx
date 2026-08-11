@@ -1,11 +1,32 @@
 use std::path::PathBuf;
 
+use ctx_history_core::CaptureProvider;
+
 /// Provider identity after parsing. Parser spelling and aliases remain a final
 /// `ctx` concern; this value preserves the canonical provider identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryProvider {
-    Native(String),
+    Native(CaptureProvider),
     Custom,
+}
+
+impl HistoryProvider {
+    pub const fn capture_provider(self) -> CaptureProvider {
+        match self {
+            Self::Native(provider) => provider,
+            Self::Custom => CaptureProvider::Custom,
+        }
+    }
+}
+
+impl From<CaptureProvider> for HistoryProvider {
+    fn from(provider: CaptureProvider) -> Self {
+        if provider == CaptureProvider::Custom {
+            Self::Custom
+        } else {
+            Self::Native(provider)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,7 +254,7 @@ mod tests {
     fn source_index_request_keeps_transport_modes_neutral() {
         let request = SourceIndexRequest::Show(ShowRequest::Session {
             id: Some("session".to_owned()),
-            provider: Some(HistoryProvider::Native("codex".to_owned())),
+            provider: Some(HistoryProvider::Native(CaptureProvider::Codex)),
             provider_session: None,
             mode: TranscriptMode::Lite,
             max_events: None,

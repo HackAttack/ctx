@@ -58,12 +58,9 @@ pub(crate) fn run_search(
 
 pub(crate) fn adapt(args: SearchArgs) -> ctx_history_cli::SearchArgs {
     let provider = args.provider.map(|provider| {
-        let capture = provider.capture_provider();
-        ctx_history_cli::ProviderArg(if capture == ctx_history_core::CaptureProvider::Custom {
-            ctx_history_cli::HistoryProvider::Custom
-        } else {
-            ctx_history_cli::HistoryProvider::Native(capture.as_str().to_owned())
-        })
+        ctx_history_cli::ProviderArg(ctx_history_cli::HistoryProvider::from(
+            provider.capture_provider(),
+        ))
     });
     ctx_history_cli::SearchArgs {
         query: args.query,
