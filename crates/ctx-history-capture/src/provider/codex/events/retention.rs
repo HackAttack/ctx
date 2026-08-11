@@ -1,4 +1,3 @@
-use ctx_history_core::EventRole;
 use serde_json::Value;
 
 use crate::provider::file_touches::visit_all_file_touch_drafts;
@@ -358,15 +357,6 @@ pub(crate) fn codex_wall_time_ms(text: &str) -> Option<i64> {
     let mut parser = CodexWallTimeParser::default();
     parser.feed_bytes(text.as_bytes());
     parser.duration_ms()
-}
-pub(crate) fn codex_event_role(role: &str) -> EventRole {
-    match role {
-        "user" => EventRole::User,
-        "assistant" => EventRole::Assistant,
-        "tool" => EventRole::Tool,
-        "system" | "developer" => EventRole::System,
-        _ => EventRole::Unknown,
-    }
 }
 pub(crate) fn codex_content_text(value: &Value) -> Option<String> {
     match value {
