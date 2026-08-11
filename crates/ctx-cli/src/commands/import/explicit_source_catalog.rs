@@ -32,10 +32,3 @@ pub(crate) fn relocation_authority_for_import(
             .into()
         })
 }
-
-#[cfg(test)]
-pub(crate) fn load_explicit_source_catalog_authority(
-    _data_root: &Path,
-) -> Result<ExplicitSourceCatalogAuthority> {
-    Ok(ctx_history_refresh::explicit_source_catalog_authority_for_test(0))
-}

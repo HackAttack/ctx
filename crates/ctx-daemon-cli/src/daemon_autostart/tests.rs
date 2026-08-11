@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::CONFIG_FILE;
-use crate::semantic::paths_status::DaemonLock;
+use ctx_daemon_runtime::DaemonLock;
 use std::sync::{Arc, Barrier};
 
 fn write_installation_registration(

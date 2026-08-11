@@ -163,6 +163,7 @@ fn machine_snapshot_contains_only_authoritative_readiness_units() {
 
 #[test]
 fn index_readiness_preserves_exact_engine_logical_and_physical_status() {
+    crate::semantic::initialize().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let data_root = temp.path().join("data");
     let status_path = data_root.join("daemon/jobs/core-refresh.json");

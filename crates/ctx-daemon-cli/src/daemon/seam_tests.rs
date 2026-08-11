@@ -1,97 +1,10 @@
 use std::{fs, process};
 
 use ctx_daemon_runtime::DaemonLock;
-use ctx_daemon_service::{
-    DaemonIpcService, DaemonQueryEndpoint, DaemonRunArgs as ServiceDaemonRunArgs, DaemonStartMode,
-    DaemonSupervisor, DaemonTrigger, DaemonUpgradePorts,
-};
+use ctx_daemon_service::{DaemonIpcService, DaemonQueryEndpoint};
 
-use super::super::{
-    daemon_service_ports::{self, PORTS},
-    paths_status::daemon_report,
-};
+use super::super::paths_status::daemon_report;
 use super::*;
-use crate::DaemonTriggerCommandArg;
-
-#[test]
-fn post_lock_initialization_failure_retains_restart_intent() -> Result<()> {
-    struct RestoreUpgradeTarget(Option<std::ffi::OsString>);
-
-    impl Drop for RestoreUpgradeTarget {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => std::env::set_var("CTX_UPGRADE_TEST_TARGET", value),
-                None => std::env::remove_var("CTX_UPGRADE_TEST_TARGET"),
-            }
-        }
-    }
-
-    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _restore_upgrade_target = RestoreUpgradeTarget(std::env::var_os("CTX_UPGRADE_TEST_TARGET"));
-    let installation = tempfile::tempdir()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(installation.path(), fs::Permissions::from_mode(0o700))?;
-    }
-    let installation_executable =
-        installation
-            .path()
-            .join(if cfg!(windows) { "ctx.exe" } else { "ctx" });
-    fs::write(&installation_executable, b"test ctx executable")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&installation_executable, fs::Permissions::from_mode(0o700))?;
-    }
-    std::env::set_var("CTX_UPGRADE_TEST_TARGET", &installation_executable);
-
-    let root = tempfile::tempdir()?;
-    super::super::daemon_autostart::write_daemon_restart_request(
-        root.path(),
-        DaemonTriggerCommandArg::Search,
-        "ua_01890f3e-2c80-7000-8000-00000000000b",
-    )?;
-    fs::write(
-        root.path().join(".fail-daemon-before-ready-for-test"),
-        b"fail",
-    )?;
-
-    let engine = crate::upgrade::ports::engine();
-    let upgrade = DaemonUpgradePorts {
-        engine: &engine,
-        daemon: &crate::upgrade::ports::DAEMON_UPGRADE,
-        automatic_policy: &crate::upgrade::ports::AUTOMATIC_POLICY,
-        observer: &crate::upgrade::ports::UPGRADE_OBSERVER,
-    };
-    let error = ctx_daemon_service::run_daemon(
-        ServiceDaemonRunArgs {
-            idle_exit_seconds: None,
-            loop_interval_seconds: None,
-            max_chunks: None,
-            max_seconds: None,
-            force: false,
-            start_mode: Some(DaemonStartMode::Auto),
-            trigger_command: Some(DaemonTrigger::Search),
-            supervisor: DaemonSupervisor::CliAutostart,
-        },
-        root.path(),
-        daemon_service_ports::config_snapshot(&AppConfig::default()),
-        &PORTS,
-        &upgrade,
-    )
-    .expect_err("the injected post-lock initialization failure must surface");
-
-    let rendered_error = error.to_string();
-    assert!(
-        rendered_error.contains("injected daemon failure before readiness"),
-        "unexpected daemon initialization error: {rendered_error}"
-    );
-    assert!(super::super::daemon_autostart::read_daemon_restart_request(root.path()).is_some());
-    Ok(())
-}
 
 #[cfg(unix)]
 #[test]

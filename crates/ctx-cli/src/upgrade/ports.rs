@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use ctx_daemon_service::DaemonObservationPort;
 use ctx_upgrade_engine::{
     AutomaticUpgradeObservation, AutomaticUpgradePolicyProvider, DaemonRestart, DaemonUpgradeLease,
     DaemonUpgradePort, ProductBuildIdentity, ReleaseProcessPort, ReleaseTransport,
@@ -281,21 +280,20 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
 pub(crate) struct CliAutomaticUpgradePolicy;
 
 impl AutomaticUpgradePolicyProvider for CliAutomaticUpgradePolicy {
-    type Snapshot = ctx_daemon_service::DaemonConfigSnapshot;
+    type Snapshot = ctx_daemon_cli::DaemonConfigSnapshot;
 
     fn reload(&self, data_root: &Path) -> Result<Self::Snapshot> {
-        AppConfig::load(data_root)
-            .map(|config| crate::semantic::daemon_service_ports::config_snapshot(&config))
+        AppConfig::load(data_root).map(|config| crate::semantic::daemon_config_snapshot(&config))
     }
 }
 
 pub(crate) struct CliUpgradeObserver;
 
-impl UpgradeObserver<ctx_daemon_service::DaemonConfigSnapshot> for CliUpgradeObserver {
+impl UpgradeObserver<ctx_daemon_cli::DaemonConfigSnapshot> for CliUpgradeObserver {
     fn observe_automatic_terminal(
         &self,
         data_root: &Path,
-        _config: &ctx_daemon_service::DaemonConfigSnapshot,
+        _config: &ctx_daemon_cli::DaemonConfigSnapshot,
         observation: AutomaticUpgradeObservation<'_>,
     ) {
         let plan = observation.plan;
@@ -333,7 +331,7 @@ impl UpgradeObserver<ctx_daemon_service::DaemonConfigSnapshot> for CliUpgradeObs
             },
             observation.duration,
         ));
-        crate::semantic::daemon_service_ports::OBSERVATION.deliver(data_root, &[event]);
+        crate::semantic::deliver_daemon_events(data_root, &[event]);
     }
 }
 

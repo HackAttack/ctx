@@ -29,11 +29,11 @@ pub(super) const fn daemon_supervisor_launch_policy(
     }
 }
 
-pub(crate) fn daemon_autostart_suppression_reason() -> Option<&'static str> {
+pub fn daemon_autostart_suppression_reason() -> Option<&'static str> {
     ctx_daemon_application::daemon_autostart_suppression_reason()
 }
 
-pub(crate) fn maybe_autostart_daemon(
+pub fn maybe_autostart_daemon(
     data_root: &Path,
     config: &AppConfig,
     trigger: DaemonTriggerCommandArg,
@@ -60,7 +60,7 @@ pub(crate) fn maybe_autostart_daemon(
     });
 }
 
-pub(crate) fn autostart_daemon_and_wait(
+pub fn autostart_daemon_and_wait(
     data_root: &Path,
     config: &AppConfig,
     trigger: DaemonTriggerCommandArg,
@@ -68,7 +68,7 @@ pub(crate) fn autostart_daemon_and_wait(
     Ok(autostart_daemon_for_setup_and_wait(data_root, config, trigger)?.handoff)
 }
 
-pub(crate) fn autostart_daemon_for_setup_and_wait(
+pub fn autostart_daemon_for_setup_and_wait(
     data_root: &Path,
     config: &AppConfig,
     trigger: DaemonTriggerCommandArg,

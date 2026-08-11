@@ -2,27 +2,25 @@ use std::{path::Path, time::Duration as StdDuration};
 
 use anyhow::{anyhow, Result};
 use ctx_history_index::{EventSearchCandidate, EventSearchFilters, VerifiedIndex};
+use ctx_history_read_application::{
+    HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
+    SemanticReason,
+};
 use ctx_semantic_index::{SemanticNotReady, SemanticQueryPin};
 use ctx_semantic_model::{semantic_model_key, SEMANTIC_DIMENSIONS};
 use serde_json::{json, Value};
 
-use crate::{
-    commands::source_index::{
-        HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
-        SemanticReason,
-    },
-    compact_json,
-};
+use crate::compact_json;
 
 use super::query_service::daemon_query_request;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SemanticQueryAdapter<'data_root> {
+pub struct SemanticQueryAdapter<'data_root> {
     data_root: &'data_root Path,
 }
 
 impl<'data_root> SemanticQueryAdapter<'data_root> {
-    pub(crate) fn new(data_root: &'data_root Path) -> Self {
+    pub fn new(data_root: &'data_root Path) -> Self {
         Self { data_root }
     }
 }
@@ -41,7 +39,7 @@ impl HistorySemanticPort for SemanticQueryAdapter<'_> {
     }
 }
 
-pub(crate) struct SemanticQuerySession<'a> {
+pub struct SemanticQuerySession<'a> {
     pin: SemanticQueryPin,
     index: &'a VerifiedIndex,
     data_root: &'a Path,

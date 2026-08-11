@@ -58,7 +58,7 @@ pub(super) fn restart_acknowledged_installation_daemons_with(
     Ok(())
 }
 
-pub(in crate::semantic) fn resume_completed_installation_daemons(data_root: &Path) -> Result<()> {
+pub(crate) fn resume_completed_installation_daemons(data_root: &Path) -> Result<()> {
     if current_process_owns_daemon_upgrade_handoff(data_root) {
         return Ok(());
     }

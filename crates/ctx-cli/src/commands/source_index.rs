@@ -17,10 +17,6 @@ pub(crate) use search::{
     mcp_search_with_compact, normalize_mcp_search_request, run_search,
     validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
 };
-pub(crate) use search::{
-    HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
-    SemanticReason,
-};
 pub(crate) use shared::generation_query_authority_error_json;
 #[cfg(test)]
 pub(crate) use show::{mcp_show_event, mcp_show_event_with_compact};

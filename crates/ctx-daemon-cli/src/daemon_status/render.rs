@@ -2,10 +2,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::progress::format_bytes;
-use crate::ui::{
-    fields, hint, outcome, section, Action, Document, Field, Hint, Outcome, OutcomeState,
-    RenderContext, Token,
+use ctx_terminal::{
+    fields, format_bytes, hint, outcome, section, Action, Document, Field, Hint, Outcome,
+    OutcomeState, RenderContext, Token,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,20 +19,20 @@ enum DaemonPresentation {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::semantic) struct DaemonStatusView<'a> {
+pub(crate) struct DaemonStatusView<'a> {
     daemon: &'a Value,
     pro_status: Option<&'a str>,
 }
 
 impl<'a> DaemonStatusView<'a> {
-    pub(in crate::semantic) fn daemon_only(daemon: &'a Value) -> Self {
+    pub(crate) fn daemon_only(daemon: &'a Value) -> Self {
         Self {
             daemon,
             pro_status: None,
         }
     }
 
-    pub(in crate::semantic) fn from_reports(daemon: &'a Value, pro: &'a Value) -> Self {
+    pub(crate) fn from_reports(daemon: &'a Value, pro: &'a Value) -> Self {
         let pro_status = (pro.get("installed").and_then(Value::as_bool) == Some(true)).then(|| {
             pro.get("state")
                 .and_then(Value::as_str)
@@ -45,7 +44,7 @@ impl<'a> DaemonStatusView<'a> {
 
 /// Builds the human daemon status document without reading runtime state or
 /// writing to a terminal. JSON output deliberately bypasses this renderer.
-pub(in crate::semantic) fn render_daemon_status_human(
+pub(crate) fn render_daemon_status_human(
     context: &RenderContext,
     view: DaemonStatusView<'_>,
 ) -> Document {
@@ -384,7 +383,7 @@ pub(in crate::semantic) fn render_daemon_status_human(
 
 /// Builds the `ctx daemon enable` receipt from values the lifecycle operation
 /// has already established.
-pub(in crate::semantic) fn render_daemon_enable_receipt(
+pub(crate) fn render_daemon_enable_receipt(
     context: &RenderContext,
     running: bool,
     persistent: bool,
@@ -396,7 +395,7 @@ pub(in crate::semantic) fn render_daemon_enable_receipt(
 
 /// Builds the ordinary `ctx daemon disable` receipt from the post-operation
 /// supervisor report.
-pub(in crate::semantic) fn render_daemon_disable_receipt(
+pub(crate) fn render_daemon_disable_receipt(
     context: &RenderContext,
     supervisor: &Value,
     config_path: &Path,
@@ -543,7 +542,7 @@ fn render_daemon_enabled_receipt(
 
 /// Builds the hosted-uninstaller handoff receipt without removing files or
 /// changing daemon state.
-pub(in crate::semantic) fn render_daemon_prepare_uninstall_receipt(
+pub(crate) fn render_daemon_prepare_uninstall_receipt(
     context: &RenderContext,
     report: &Value,
 ) -> Document {

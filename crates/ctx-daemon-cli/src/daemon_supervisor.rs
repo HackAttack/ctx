@@ -95,53 +95,10 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         data_root: &Path,
         request: ctx_daemon_application::DaemonHostRunRequest,
     ) -> Result<()> {
-        use ctx_daemon_service::{
-            DaemonRunArgs, DaemonStartMode, DaemonSupervisor, DaemonTrigger, DaemonUpgradePorts,
-        };
-
         let config = self
             .run_config
             .ok_or_else(|| anyhow::anyhow!("daemon run host is missing its borrowed config"))?;
-        let service_args = DaemonRunArgs {
-            idle_exit_seconds: request.idle_exit_seconds,
-            loop_interval_seconds: request.loop_interval_seconds,
-            max_chunks: request.max_chunks,
-            max_seconds: None,
-            force: request.force,
-            start_mode: request.start_mode.map(|mode| match mode {
-                ctx_daemon_application::DaemonHostStartMode::Manual => DaemonStartMode::Manual,
-                ctx_daemon_application::DaemonHostStartMode::Auto => DaemonStartMode::Auto,
-            }),
-            trigger_command: request.trigger.map(|trigger| match trigger {
-                ctx_daemon_application::DaemonTrigger::Setup => DaemonTrigger::Setup,
-                ctx_daemon_application::DaemonTrigger::Import => DaemonTrigger::Import,
-                ctx_daemon_application::DaemonTrigger::Search => DaemonTrigger::Search,
-            }),
-            supervisor: if matches!(
-                request.start_mode,
-                Some(ctx_daemon_application::DaemonHostStartMode::Auto)
-            ) && super::health_search::semantic_env_flag(
-                super::runtime_limits::DAEMON_BACKGROUND_CHILD_ENV,
-            ) {
-                DaemonSupervisor::CliAutostart
-            } else {
-                DaemonSupervisor::User
-            },
-        };
-        let engine = crate::upgrade::ports::engine();
-        let upgrade = DaemonUpgradePorts {
-            engine: &engine,
-            daemon: &crate::upgrade::ports::DAEMON_UPGRADE,
-            automatic_policy: &crate::upgrade::ports::AUTOMATIC_POLICY,
-            observer: &crate::upgrade::ports::UPGRADE_OBSERVER,
-        };
-        ctx_daemon_service::run_daemon(
-            service_args,
-            data_root,
-            super::daemon_service_ports::config_snapshot(config),
-            &super::daemon_service_ports::PORTS,
-            &upgrade,
-        )
+        crate::composition::host().run_daemon_service(data_root, request, config)
     }
 
     fn set_daemon_enabled(&self, data_root: &Path, enabled: bool) -> Result<()> {

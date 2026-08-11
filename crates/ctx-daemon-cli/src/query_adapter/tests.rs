@@ -49,7 +49,7 @@ fn semantic_index_revision(
     let index_root = root.join("index");
     let mut writer = GenerationWriter::open(&index_root, WriterOptions::default())?
         .into_writer()
-        .map_err(crate::semantic::committed_generation_recovery_error)?;
+        .map_err(crate::committed_generation_recovery_error)?;
     writer.begin_source(source.clone())?;
     if include_record {
         let mut record = CoreRecord::new_selected(

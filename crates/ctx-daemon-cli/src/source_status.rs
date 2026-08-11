@@ -9,8 +9,6 @@ use ctx_semantic_index::{
 };
 use serde_json::{json, Value};
 
-#[cfg(test)]
-use crate::commands::import::load_explicit_source_catalog_authority;
 use crate::{compact_json, config::AppConfig};
 
 use super::paths_status::{
@@ -23,41 +21,17 @@ const SEARCH_DIRECTORY: &str = "search";
 const LEXICAL_DIRECTORY: &str = "lexical";
 const PRO_CATCH_UP_STATUS_FILE: &str = "pro-catch-up.json";
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StatusSnapshotReadCounts {
-    pub(crate) core_pins: usize,
-    pub(crate) pro_queries: usize,
+pub struct SourceEpochStatus {
+    pub initialized: bool,
+    pub indexed_items: Option<u64>,
+    pub indexed_sessions: Option<u64>,
+    pub indexed_events: Option<u64>,
+    pub indexed_sources: Option<u64>,
+    pub pro: Value,
+    pub report: Value,
 }
 
-#[cfg(test)]
-pub(crate) fn count_public_status_snapshot_reads<T>(
-    operation: impl FnOnce() -> T,
-) -> (T, StatusSnapshotReadCounts) {
-    let ((output, pro_queries), core_pins) =
-        super::source_backed_refresh_coordinator::count_verified_index_opens(|| {
-            crate::pro::count_lifecycle_status_queries(operation)
-        });
-    (
-        output,
-        StatusSnapshotReadCounts {
-            core_pins,
-            pro_queries,
-        },
-    )
-}
-
-pub(crate) struct SourceEpochStatus {
-    pub(crate) initialized: bool,
-    pub(crate) indexed_items: Option<u64>,
-    pub(crate) indexed_sessions: Option<u64>,
-    pub(crate) indexed_events: Option<u64>,
-    pub(crate) indexed_sources: Option<u64>,
-    pub(crate) pro: Value,
-    pub(crate) report: Value,
-}
-
-pub(crate) fn source_epoch_status_report(
+pub fn source_epoch_status_report(
     data_root: &Path,
     config: &AppConfig,
 ) -> Result<SourceEpochStatus> {
@@ -237,7 +211,7 @@ fn refresh_report(job: Option<&Value>, generation_id: Option<&str>, daemon: &Val
     }))
 }
 
-pub(crate) fn current_rejected_record_count(report: &Value) -> u64 {
+pub fn current_rejected_record_count(report: &Value) -> u64 {
     report
         .get("refresh")
         .and_then(|refresh| refresh.get("current"))

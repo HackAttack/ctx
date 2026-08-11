@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::semantic) struct InstallationDaemonLease {
+pub(crate) struct InstallationDaemonLease {
     pub(super) lock: fs::File,
     pub(super) registration_path: PathBuf,
     pub(super) registration_id: String,
@@ -23,7 +23,7 @@ pub(super) struct InstallationDaemonRestart {
 pub(super) type InstallationDaemonQuiescence = ctx_daemon_runtime::InstallationQuiescence;
 
 impl InstallationDaemonLease {
-    pub(in crate::semantic) fn acquire(
+    pub(crate) fn acquire(
         data_root: &Path,
         trigger: DaemonTriggerCommandArg,
         idle_exit_seconds: Option<u64>,
@@ -65,7 +65,7 @@ impl InstallationDaemonLease {
         Ok(Some(lease))
     }
 
-    pub(in crate::semantic) fn acknowledge(mut self, attempt_id: &str) -> Result<()> {
+    pub(crate) fn acknowledge(mut self, attempt_id: &str) -> Result<()> {
         self.status = "quiescing";
         self.write_status("quiescing", Some(attempt_id))?;
         write_daemon_restart_request(self.data_root.as_path(), self.trigger, attempt_id)?;

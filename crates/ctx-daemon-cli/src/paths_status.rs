@@ -56,7 +56,7 @@ pub(super) fn daemon_report_with_config(
     })
 }
 
-pub(in crate::semantic) fn daemon_report_with_application(
+pub(crate) fn daemon_report_with_application(
     application: &ctx_daemon_application::DaemonApplication<'_>,
     data_root: &Path,
     disabled_overrides_lifecycle: bool,
