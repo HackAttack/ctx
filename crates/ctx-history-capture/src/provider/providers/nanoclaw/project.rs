@@ -14,7 +14,10 @@ use thiserror::Error;
 use crate::common::io::{OpenedProviderSourceFile, ProviderSourceDirectory, ProviderSourceRoot};
 use crate::provider::provider_safe_path_segment;
 use crate::provider::sqlite::sqlite_component_change_token;
-use crate::provider::sqlite::{open_provider_sqlite_readonly, ReadOnlySqliteConnection};
+use crate::provider::sqlite::{
+    combine_sqlite_errors, combine_sqlite_finalization, open_provider_sqlite_readonly,
+    sqlite_retry_decision, ReadOnlySqliteConnection, SqliteRetryDecision,
+};
 use crate::provider_sources::{
     observe_ordinary_file, open_root_handle_sqlite_source_snapshot,
     retain_sqlite_source_directory_authority, SqliteSourceAccessError,
@@ -47,6 +50,11 @@ pub(super) enum NanoClawProjectOpenError {
         "NanoClaw session snapshot admission limit exceeded: observed {observed}, maximum {maximum}"
     )]
     SessionSnapshotLimitExceeded { maximum: usize, observed: usize },
+    #[error("{primary}; NanoClaw central SQLite finalization also failed: {finalization}")]
+    Finalization {
+        primary: Box<NanoClawProjectOpenError>,
+        finalization: CaptureError,
+    },
 }
 
 type NanoClawProjectOpenResult<T> = std::result::Result<T, NanoClawProjectOpenError>;
@@ -404,7 +412,7 @@ pub(super) enum NanoClawDatabaseRead {
         path: PathBuf,
         route: NanoClawRootBoundDatabase,
         opened: NanoClawOpenedSqliteFamily,
-        guard: Option<SqliteSourceReadSnapshot>,
+        guard: SqliteSourceReadSnapshot,
     },
 }
 
@@ -413,10 +421,6 @@ impl NanoClawDatabaseRead {
         match self {
             Self::Pathname(connection) => Ok(connection),
             Self::RootBound { path, guard, .. } => guard
-                .as_ref()
-                .ok_or(CaptureError::SystemInvariant(
-                    "NanoClaw root-bound SQLite guard is no longer active",
-                ))?
                 .connection()
                 .map_err(|error| nanoclaw_sqlite_access_error(path, error)),
         }
@@ -430,28 +434,43 @@ impl NanoClawDatabaseRead {
         expected.revalidate()
     }
 
-    pub(super) fn finish(mut self, expected: &NanoClawProjectDatabaseSnapshot) -> Result<()> {
-        if let Self::RootBound {
-            path,
-            route,
-            opened,
-            guard,
-        } = &mut self
-        {
-            guard
-                .take()
-                .ok_or(CaptureError::SystemInvariant(
-                    "NanoClaw root-bound SQLite guard is no longer active",
-                ))?
-                .finish()
-                .map_err(|error| nanoclaw_sqlite_access_error(path, error))?;
-            opened.revalidate()?;
-            route.revalidate_authority()?;
-        }
-        if expected.revalidate()? {
-            Ok(())
-        } else {
-            Err(CaptureError::SourceChangedDuringCapture)
+    pub(super) fn finish_with<T>(
+        self,
+        expected: &NanoClawProjectDatabaseSnapshot,
+        primary: Result<T>,
+    ) -> Result<T> {
+        let result = match self {
+            Self::Pathname(connection) => connection.finish_with(primary, combine_sqlite_errors),
+            Self::RootBound {
+                path,
+                route,
+                opened,
+                guard,
+            } => {
+                let finalization = guard
+                    .finish()
+                    .map(|_| ())
+                    .map_err(|error| nanoclaw_sqlite_access_error(&path, error));
+                let result = combine_sqlite_finalization(primary, finalization);
+                let result = combine_sqlite_finalization(result, opened.revalidate());
+                combine_sqlite_finalization(result, route.revalidate_authority())
+            }
+        };
+        let expected_revalidation = require_unchanged(expected.revalidate());
+        combine_sqlite_finalization(result, expected_revalidation)
+    }
+
+    pub(super) fn finish(self, expected: &NanoClawProjectDatabaseSnapshot) -> Result<()> {
+        self.finish_with(expected, Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn counter_observer(
+        &self,
+    ) -> ctx_history_source_io::SqliteSourceSnapshotCounterObserver {
+        match self {
+            Self::Pathname(connection) => connection.counter_observer(),
+            Self::RootBound { guard, .. } => guard.counter_observer(),
         }
     }
 }
@@ -536,13 +555,27 @@ impl NanoClawProjectDatabaseSnapshot {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
         let guard = route.open_snapshot()?;
-        opened.revalidate()?;
-        route.revalidate_authority()?;
+        let admitted = (|| {
+            opened.revalidate()?;
+            route.revalidate_authority()
+        })();
+        if let Err(primary) = admitted {
+            return guard
+                .finish_with::<(), _>(Err(primary))
+                .map_err(|error| {
+                    error.map_error(
+                        std::convert::identity,
+                        |error| nanoclaw_sqlite_access_error(&self.path, error),
+                        combine_sqlite_errors,
+                    )
+                })
+                .map(|()| unreachable!("an error result cannot retain a NanoClaw read guard"));
+        }
         Ok(Some(NanoClawDatabaseRead::RootBound {
             path: self.path.clone(),
             route: route.clone(),
             opened,
-            guard: Some(guard),
+            guard,
         }))
     }
 
@@ -617,27 +650,46 @@ impl NanoClawSourceBackedProject {
         let central_opened = NanoClawOpenedSqliteFamily::open(&root, &central_relative)?;
         let central_snapshot = central_opened.snapshot()?;
         let central_guard = central_route.open_snapshot()?;
-        let inventory = nanoclaw_stream_inventory(
-            data_root,
-            root.named_path(),
-            central_guard
-                .connection()
-                .map_err(|error| nanoclaw_sqlite_access_error(&central_path, error))?,
-            Some(&root),
-        )?;
-        let snapshot = NanoClawProjectSnapshot {
-            central_path,
-            central: central_snapshot,
-            central_root_bound: Some(central_route.clone()),
-            inventory,
+        let admitted = (|| {
+            let inventory = nanoclaw_stream_inventory(
+                data_root,
+                root.named_path(),
+                central_guard
+                    .connection()
+                    .map_err(|error| nanoclaw_sqlite_access_error(&central_path, error))?,
+                Some(&root),
+            )?;
+            let snapshot = NanoClawProjectSnapshot {
+                central_path: central_path.clone(),
+                central: central_snapshot,
+                central_root_bound: Some(central_route.clone()),
+                inventory,
+            };
+            if !snapshot.revalidate_frozen_inventory()? {
+                return Err(CaptureError::SourceChangedDuringCapture.into());
+            }
+            central_opened.revalidate()?;
+            central_route.revalidate_authority()?;
+            sessions.revalidate()?;
+            root.revalidate()?;
+            Ok(snapshot)
+        })();
+        let snapshot = match admitted {
+            Ok(snapshot) => snapshot,
+            Err(primary) => {
+                let finalization = central_guard
+                    .finish()
+                    .map(|_| ())
+                    .map_err(|error| nanoclaw_sqlite_access_error(&central_path, error));
+                return Err(match finalization {
+                    Ok(()) => primary,
+                    Err(finalization) => NanoClawProjectOpenError::Finalization {
+                        primary: Box::new(primary),
+                        finalization,
+                    },
+                });
+            }
         };
-        if !snapshot.revalidate_frozen_inventory()? {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
-        }
-        central_opened.revalidate()?;
-        central_route.revalidate_authority()?;
-        sessions.revalidate()?;
-        root.revalidate()?;
         Ok(Self {
             root,
             sessions,
@@ -664,24 +716,32 @@ impl NanoClawSourceBackedProject {
     /// Ends the central read transaction and revalidates the complete central
     /// DB family, frozen session-tree inventory, and selected root route.
     pub(super) fn finish(&mut self) -> Result<()> {
-        self.sessions.revalidate()?;
-        if !self.snapshot.revalidate_frozen_inventory()? {
-            return Err(CaptureError::SourceChangedDuringCapture);
-        }
-        self.central_guard
-            .take()
-            .ok_or(CaptureError::SystemInvariant(
+        let result = self.sessions.revalidate();
+        let frozen_before = require_unchanged(self.snapshot.revalidate_frozen_inventory());
+        let result = combine_sqlite_finalization(result, frozen_before);
+        let guard = match self.central_guard.take() {
+            Some(guard) => guard
+                .finish()
+                .map(|_| ())
+                .map_err(|error| nanoclaw_sqlite_access_error(&self.snapshot.central_path, error)),
+            None => Err(CaptureError::SystemInvariant(
                 "NanoClaw central SQLite guard is no longer active",
-            ))?
-            .finish()
-            .map_err(|error| nanoclaw_sqlite_access_error(&self.snapshot.central_path, error))?;
-        self.central_opened.revalidate()?;
-        self.sessions.revalidate()?;
-        if !self.snapshot.revalidate_frozen_inventory()? {
-            return Err(CaptureError::SourceChangedDuringCapture);
-        }
-        self.root.revalidate()?;
-        Ok(())
+            )),
+        };
+        let result = combine_sqlite_finalization(result, guard);
+        let result = combine_sqlite_finalization(result, self.central_opened.revalidate());
+        let result = combine_sqlite_finalization(result, self.sessions.revalidate());
+        let frozen_after = require_unchanged(self.snapshot.revalidate_frozen_inventory());
+        let result = combine_sqlite_finalization(result, frozen_after);
+        combine_sqlite_finalization(result, self.root.revalidate())
+    }
+}
+
+pub(super) fn require_unchanged(result: Result<bool>) -> Result<()> {
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(CaptureError::SourceChangedDuringCapture),
+        Err(error) => Err(error),
     }
 }
 
@@ -938,5 +998,32 @@ fn nanoclaw_requested_project_root(path: &Path) -> Result<PathBuf> {
         Ok(root)
     } else {
         Ok(std::env::current_dir()?.join(root))
+    }
+}
+
+#[cfg(test)]
+mod finalization_tests {
+    use super::*;
+    use crate::provider_sources::fail_next_opened_snapshot_cleanup_for_test;
+
+    #[test]
+    fn central_schema_error_runs_cleanup_and_preserves_both_failures() {
+        let project = tempfile::tempdir().unwrap();
+        let data_root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(project.path().join("data/v2-sessions")).unwrap();
+        Connection::open(project.path().join("data/v2.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE wrong(value TEXT);")
+            .unwrap();
+        fail_next_opened_snapshot_cleanup_for_test();
+
+        let error = match NanoClawSourceBackedProject::open(data_root.path(), project.path()) {
+            Ok(_) => panic!("invalid NanoClaw central schema unexpectedly opened"),
+            Err(error) => error,
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("missing required sessions table"));
+        assert!(rendered.contains("injected SQLite snapshot cleanup failure"));
+        assert_eq!(fs::read_dir(data_root.path()).unwrap().count(), 0);
     }
 }

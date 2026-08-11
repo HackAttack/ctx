@@ -22,6 +22,7 @@ use crate::{
             source::{NanoClawNativeScanner, NanoClawNativeUnit, NanoClawPreparedUnit},
         },
         source_backed::{
+            combine_primary_and_cleanup_route_errors,
             family::document::{
                 ChangedDocumentSink, CompleteDocumentTree, DocumentLeafFingerprint,
                 DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
@@ -222,132 +223,178 @@ fn prepare_nanoclaw_project(
     project: &mut NanoClawSourceBackedProject,
     source: &SourceKey,
 ) -> SourceBackedRouteResult<NanoClawPreparedProjection> {
-    let central = project.connection().map_err(nanoclaw_route_capture_error)?;
-    let user_version: i64 = central
-        .query_row("pragma user_version", [], |row| row.get(0))
-        .map_err(CaptureError::from)
-        .map_err(nanoclaw_route_capture_error)?;
-    let schema_fingerprint =
-        sqlite_schema_fingerprint(central).map_err(nanoclaw_route_capture_error)?;
-    let mut scanner = NanoClawNativeScanner::new(central, project.snapshot())
-        .map_err(nanoclaw_route_capture_error)?;
-    let mut spool = tempfile::tempfile_in(data_root)
-        .map_err(CaptureError::from)
-        .map_err(nanoclaw_route_capture_error)?;
-    let mut spool_writer = BufWriter::new(&mut spool);
-    let mut complete_records = 0_u64;
-    let mut retained_records = 0_u64;
-    let mut rejected_records = 0_u64;
-    let mut ignored_records = 0_u64;
-    let mut indexed_documents = 0_u64;
-    loop {
-        let page = scanner.next_page().map_err(nanoclaw_route_capture_error)?;
-        let terminal = page.terminal;
-        for unit in page.units {
-            complete_records = checked_add(complete_records, 1).map_err(nanoclaw_route_error)?;
-            match &unit {
-                NanoClawNativeUnit::Session { .. } => {
-                    ignored_records =
-                        checked_add(ignored_records, 1).map_err(nanoclaw_route_error)?;
+    let primary = (|| {
+        let central = project.connection().map_err(nanoclaw_route_capture_error)?;
+        let user_version: i64 = central
+            .query_row("pragma user_version", [], |row| row.get(0))
+            .map_err(CaptureError::from)
+            .map_err(nanoclaw_route_capture_error)?;
+        let schema_fingerprint =
+            sqlite_schema_fingerprint(central).map_err(nanoclaw_route_capture_error)?;
+        let mut scanner = NanoClawNativeScanner::new(central, project.snapshot())
+            .map_err(nanoclaw_route_capture_error)?;
+        let mut spool = tempfile::tempfile_in(data_root)
+            .map_err(CaptureError::from)
+            .map_err(nanoclaw_route_capture_error)?;
+        let mut spool_writer = BufWriter::new(&mut spool);
+        let scan = (|| {
+            let mut complete_records = 0_u64;
+            let mut retained_records = 0_u64;
+            let mut rejected_records = 0_u64;
+            let mut ignored_records = 0_u64;
+            let mut indexed_documents = 0_u64;
+            loop {
+                let page = scanner.next_page().map_err(nanoclaw_route_capture_error)?;
+                let terminal = page.terminal;
+                for unit in page.units {
+                    complete_records =
+                        checked_add(complete_records, 1).map_err(nanoclaw_route_error)?;
+                    match &unit {
+                        NanoClawNativeUnit::Session { .. } => {
+                            ignored_records =
+                                checked_add(ignored_records, 1).map_err(nanoclaw_route_error)?;
+                        }
+                        NanoClawNativeUnit::Message {
+                            ordinal,
+                            source: message_source,
+                            session,
+                            message,
+                            ..
+                        } => {
+                            let _ = (ordinal, message_source, session, message);
+                            retained_records =
+                                checked_add(retained_records, 1).map_err(nanoclaw_route_error)?;
+                            indexed_documents =
+                                checked_add(indexed_documents, 1).map_err(nanoclaw_route_error)?;
+                        }
+                        NanoClawNativeUnit::Rejection { .. } => {
+                            rejected_records =
+                                checked_add(rejected_records, 1).map_err(nanoclaw_route_error)?;
+                        }
+                    }
+                    serde_json::to_writer(
+                        &mut spool_writer,
+                        &NanoClawPreparedUnit::from_native(unit),
+                    )
+                    .map_err(CaptureError::from)
+                    .map_err(nanoclaw_route_capture_error)?;
+                    spool_writer
+                        .write_all(b"\n")
+                        .map_err(CaptureError::from)
+                        .map_err(nanoclaw_route_capture_error)?;
                 }
-                NanoClawNativeUnit::Message {
-                    ordinal,
-                    source: message_source,
-                    session,
-                    message,
-                    ..
-                } => {
-                    let _ = (ordinal, message_source, session, message);
-                    retained_records =
-                        checked_add(retained_records, 1).map_err(nanoclaw_route_error)?;
-                    indexed_documents =
-                        checked_add(indexed_documents, 1).map_err(nanoclaw_route_error)?;
-                }
-                NanoClawNativeUnit::Rejection { .. } => {
-                    rejected_records =
-                        checked_add(rejected_records, 1).map_err(nanoclaw_route_error)?;
+                if terminal {
+                    break;
                 }
             }
-            serde_json::to_writer(&mut spool_writer, &NanoClawPreparedUnit::from_native(unit))
-                .map_err(CaptureError::from)
-                .map_err(nanoclaw_route_capture_error)?;
+            let prefix_digest = scanner.prefix_digest_bytes();
+            let certified_bytes = scanner.prefix_bytes();
             spool_writer
-                .write_all(b"\n")
+                .flush()
                 .map_err(CaptureError::from)
                 .map_err(nanoclaw_route_capture_error)?;
+            Ok((
+                complete_records,
+                retained_records,
+                rejected_records,
+                ignored_records,
+                indexed_documents,
+                prefix_digest,
+                certified_bytes,
+            ))
+        })();
+        drop(spool_writer);
+        let scan = combine_nanoclaw_finalization(
+            scan,
+            scanner.finish().map_err(nanoclaw_route_capture_error),
+        )?;
+        let (
+            complete_records,
+            retained_records,
+            rejected_records,
+            ignored_records,
+            indexed_documents,
+            prefix_digest,
+            certified_bytes,
+        ) = scan;
+        let classified = retained_records
+            .checked_add(rejected_records)
+            .and_then(|value| value.checked_add(ignored_records))
+            .ok_or_else(|| nanoclaw_route_error(NanoClawSourceBackedError::CountOverflow))?;
+        if classified != complete_records || indexed_documents != retained_records {
+            return Err(nanoclaw_route_error(
+                NanoClawSourceBackedError::CountMismatch,
+            ));
         }
-        if terminal {
-            break;
+        let counts = ScannedSourceCounts {
+            complete_records,
+            retained_records,
+            rejected_records,
+            ignored_records,
+            indexed_documents,
+            certified_bytes,
+        };
+        let mut logical = Sha256::new();
+        logical.update(b"ctx-nanoclaw-compound-logical-snapshot-v1\0");
+        logical.update(project.snapshot().logical_authority_fingerprint());
+        logical.update(user_version.to_be_bytes());
+        logical.update((schema_fingerprint.len() as u64).to_be_bytes());
+        logical.update(schema_fingerprint.as_bytes());
+        logical.update(prefix_digest);
+        for count in [
+            counts.complete_records,
+            counts.retained_records,
+            counts.rejected_records,
+            counts.ignored_records,
+            counts.indexed_documents,
+            counts.certified_bytes,
+        ] {
+            logical.update(count.to_be_bytes());
         }
-    }
-
-    let prefix_digest = scanner.prefix_digest_bytes();
-    let certified_bytes = scanner.prefix_bytes();
-    scanner.finish().map_err(nanoclaw_route_capture_error)?;
-    spool_writer
-        .flush()
-        .map_err(CaptureError::from)
-        .map_err(nanoclaw_route_capture_error)?;
-    drop(spool_writer);
-    project.finish().map_err(nanoclaw_route_capture_error)?;
-    let classified = retained_records
-        .checked_add(rejected_records)
-        .and_then(|value| value.checked_add(ignored_records))
-        .ok_or_else(|| nanoclaw_route_error(NanoClawSourceBackedError::CountOverflow))?;
-    if classified != complete_records || indexed_documents != retained_records {
-        return Err(nanoclaw_route_error(
-            NanoClawSourceBackedError::CountMismatch,
-        ));
-    }
-    let counts = ScannedSourceCounts {
-        complete_records,
-        retained_records,
-        rejected_records,
-        ignored_records,
-        indexed_documents,
-        certified_bytes,
-    };
-    let mut logical = Sha256::new();
-    logical.update(b"ctx-nanoclaw-compound-logical-snapshot-v1\0");
-    logical.update(project.snapshot().logical_authority_fingerprint());
-    logical.update(user_version.to_be_bytes());
-    logical.update((schema_fingerprint.len() as u64).to_be_bytes());
-    logical.update(schema_fingerprint.as_bytes());
-    logical.update(prefix_digest);
-    for count in [
-        counts.complete_records,
-        counts.retained_records,
-        counts.rejected_records,
-        counts.ignored_records,
-        counts.indexed_documents,
-        counts.certified_bytes,
-    ] {
-        logical.update(count.to_be_bytes());
-    }
-    let logical_fingerprint: [u8; 32] = logical.finalize().into();
-    let revision = project
-        .snapshot()
-        .source_backed_revision_evidence(
-            user_version,
-            &schema_fingerprint,
+        let logical_fingerprint: [u8; 32] = logical.finalize().into();
+        let revision = project
+            .snapshot()
+            .source_backed_revision_evidence(
+                user_version,
+                &schema_fingerprint,
+                logical_fingerprint,
+                counts,
+            )
+            .map_err(nanoclaw_route_capture_error)?;
+        let observation =
+            SourceObservation::new(source.clone(), NANOCLAW_SOURCE_REVISION_KIND, revision)
+                .map_err(nanoclaw_route_contract_error)?;
+        spool
+            .rewind()
+            .map_err(CaptureError::from)
+            .map_err(nanoclaw_route_capture_error)?;
+        Ok(NanoClawPreparedProjection {
+            spool,
             logical_fingerprint,
+            observation,
+            content_digest: logical_fingerprint,
             counts,
-        )
-        .map_err(nanoclaw_route_capture_error)?;
-    let observation =
-        SourceObservation::new(source.clone(), NANOCLAW_SOURCE_REVISION_KIND, revision)
-            .map_err(nanoclaw_route_contract_error)?;
-    spool
-        .rewind()
-        .map_err(CaptureError::from)
-        .map_err(nanoclaw_route_capture_error)?;
-    Ok(NanoClawPreparedProjection {
-        spool,
-        logical_fingerprint,
-        observation,
-        content_digest: logical_fingerprint,
-        counts,
-    })
+        })
+    })();
+    combine_nanoclaw_finalization(
+        primary,
+        project.finish().map_err(nanoclaw_route_capture_error),
+    )
+}
+
+fn combine_nanoclaw_finalization<T>(
+    primary: SourceBackedRouteResult<T>,
+    finalization: SourceBackedRouteResult<()>,
+) -> SourceBackedRouteResult<T> {
+    match (primary, finalization) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(finalization)) => Err(finalization),
+        (Err(primary), Err(finalization)) => Err(combine_primary_and_cleanup_route_errors(
+            primary,
+            finalization,
+        )),
+    }
 }
 
 fn project_nanoclaw_prepared(
@@ -438,6 +485,13 @@ fn nanoclaw_route_capture_error(error: CaptureError) -> SourceBackedRouteError {
 fn nanoclaw_route_project_open_error(error: NanoClawProjectOpenError) -> SourceBackedRouteError {
     match error {
         NanoClawProjectOpenError::Capture(error) => nanoclaw_route_capture_error(error),
+        NanoClawProjectOpenError::Finalization {
+            primary,
+            finalization,
+        } => combine_primary_and_cleanup_route_errors(
+            nanoclaw_route_project_open_error(*primary),
+            nanoclaw_route_capture_error(finalization),
+        ),
         limit @ NanoClawProjectOpenError::SessionSnapshotLimitExceeded { .. } => {
             SourceBackedRouteError::new(
                 SourceBackedRouteErrorKind::InvalidSource,

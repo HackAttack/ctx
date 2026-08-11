@@ -61,7 +61,7 @@ impl CrushProjectInventorySourceV0 for TestInventory {
 }
 
 #[test]
-fn query_time_corrupt_and_notadb_keep_provider_database_provenance() {
+fn query_time_corrupt_and_notadb_keep_provider_content_provenance() {
     for code in [rusqlite::ffi::SQLITE_CORRUPT, rusqlite::ffi::SQLITE_NOTADB] {
         let temp = crate::test_support_paths::tempdir().unwrap();
         let path = temp.path().join("query-provenance.db");
@@ -84,9 +84,18 @@ fn query_time_corrupt_and_notadb_keep_provider_database_provenance() {
         };
         assert!(error.source().is_provider_corruption());
         assert!(!error.source().is_ctx_owned_corruption());
+        let expected_artifact = match source.read_snapshot.strategy() {
+            #[cfg(target_os = "linux")]
+            ctx_history_source_io::SqliteSourceSnapshotStrategy::ImmutableMain => {
+                crate::provider_sources::SqliteArtifactKind::ProviderDatabase
+            }
+            ctx_history_source_io::SqliteSourceSnapshotStrategy::CopiedFamily => {
+                crate::provider_sources::SqliteArtifactKind::PrivateSourceCopy
+            }
+        };
         assert_eq!(
             error.source().diagnostic().unwrap().artifact,
-            crate::provider_sources::SqliteArtifactKind::PrivateSourceCopy
+            expected_artifact
         );
     }
 }

@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( "$#" != 2 )); then
-  printf 'usage: %s UNIT_TEST_BINARY EXPECTED_TESTS\n' "$0" >&2
+if (( "$#" < 2 )); then
+  printf 'usage: %s UNIT_TEST_BINARY... EXPECTED_TESTS\n' "$0" >&2
   exit 2
 fi
 
-test_binary="$1"
-expected_tests="$2"
-[[ -x "${test_binary}" ]] || {
-  printf 'ctx-history-capture unit test binary is not executable: %s\n' "${test_binary}" >&2
-  exit 2
-}
+expected_tests="${!#}"
+test_binaries=("${@:1:$#-1}")
+for test_binary in "${test_binaries[@]}"; do
+  [[ -x "${test_binary}" ]] || {
+    printf 'active source-family unit test binary is not executable: %s\n' "${test_binary}" >&2
+    exit 2
+  }
+done
 [[ -f "${expected_tests}" ]] || {
   printf 'active source-family test inventory is missing: %s\n' "${expected_tests}" >&2
   exit 2
@@ -88,7 +90,9 @@ if [[ "${CTX_ACTIVE_SOURCE_FAMILY_RUNNER_REGRESSION:-0}" != 1 ]]; then
 fi
 actual="${TEST_TMPDIR}/active-source-family-contract-tests.actual"
 expected="${TEST_TMPDIR}/active-source-family-contract-tests.expected"
-LC_ALL=C "${test_binary}" --list |
+for test_binary in "${test_binaries[@]}"; do
+  LC_ALL=C "${test_binary}" --list
+done |
   awk '/active_source_family_contract_.*: test$/ { sub(/: test$/, ""); print }' |
   sort >"${actual}"
 LC_ALL=C sort "${expected_tests}" >"${expected}"
@@ -102,31 +106,44 @@ fi
 }
 
 manifest_count="$(wc -l <"${expected}")"
-run_output="${TEST_TMPDIR}/active-source-family-contract-tests.output"
-set +e
-LC_ALL=C "${test_binary}" \
-  active_source_family_contract_ \
-  --color never \
-  --test-threads=1 2>&1 |
-  tee "${run_output}"
-test_status="${PIPESTATUS[0]}"
-set -e
+passed=0
+failed=0
+ignored=0
+test_status=0
+for binary_index in "${!test_binaries[@]}"; do
+  test_binary="${test_binaries[${binary_index}]}"
+  run_output="${TEST_TMPDIR}/active-source-family-contract-tests.${binary_index}.output"
+  set +e
+  LC_ALL=C "${test_binary}" \
+    active_source_family_contract_ \
+    --color never \
+    --test-threads=1 2>&1 |
+    tee "${run_output}"
+  binary_status="${PIPESTATUS[0]}"
+  set -e
+  (( binary_status == 0 )) || test_status="${binary_status}"
 
-summary_counts="$(
-  sed -n -E \
-    's/^test result: (ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;.*/\2 \3 \4/p' \
-    "${run_output}" |
-    tail -n 1
-)"
-[[ -n "${summary_counts}" ]] || {
-  printf 'active source-family test result summary is missing or unrecognized\n' >&2
-  exit 1
-}
-read -r passed failed ignored extra <<<"${summary_counts}"
-[[ -z "${extra:-}" ]] || {
-  printf 'active source-family test result summary is ambiguous: %s\n' "${summary_counts}" >&2
-  exit 1
-}
+  summary_counts="$(
+    sed -n -E \
+      's/^test result: (ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;.*/\2 \3 \4/p' \
+      "${run_output}" |
+      tail -n 1
+  )"
+  [[ -n "${summary_counts}" ]] || {
+    printf 'active source-family test result summary is missing or unrecognized for %s\n' \
+      "${test_binary}" >&2
+    exit 1
+  }
+  read -r binary_passed binary_failed binary_ignored extra <<<"${summary_counts}"
+  [[ -z "${extra:-}" ]] || {
+    printf 'active source-family test result summary is ambiguous: %s\n' \
+      "${summary_counts}" >&2
+    exit 1
+  }
+  passed="$((passed + binary_passed))"
+  failed="$((failed + binary_failed))"
+  ignored="$((ignored + binary_ignored))"
+done
 
 result_failed=0
 if (( ignored != 0 )); then

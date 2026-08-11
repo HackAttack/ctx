@@ -433,7 +433,7 @@ fn diagnose_crush_provider_query_error(
         error => return error,
     };
     snapshot
-        .diagnose_provider_query_error("querying the private Crush provider copy", source, phase)
+        .diagnose_provider_query_error("querying the root-authorized Crush snapshot", source, phase)
         .into()
 }
 

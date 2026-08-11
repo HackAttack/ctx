@@ -15,7 +15,7 @@ use crate::{
     provider_sources::{
         open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,
         SqliteFailurePhase, SqliteSourceAccessError, SqliteSourceDirectoryAuthority,
-        SqliteSourceEvidence, SqliteSourceReadSnapshot,
+        SqliteSourceErrorComposition, SqliteSourceEvidence, SqliteSourceReadSnapshot,
     },
     CaptureError, Result, MAX_PROVIDER_SQLITE_VALUE_BYTES,
 };
@@ -110,7 +110,7 @@ impl KiroSqliteDatabase {
         use_scratch: impl FnOnce(&Connection, &Path) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E>
     where
-        E: From<SqliteSourceAccessError>,
+        E: SqliteSourceErrorComposition,
     {
         self.snapshot
             .with_private_scratch_database(prefix, maximum_bytes, use_scratch)

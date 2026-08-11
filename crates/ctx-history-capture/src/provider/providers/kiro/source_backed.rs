@@ -25,7 +25,10 @@ use crate::{
         event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
         MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
     },
-    provider_sources::{SqliteLogicalSnapshot, SqliteSourceAccessError, SqliteSourceEvidence},
+    provider_sources::{
+        SqliteLogicalSnapshot, SqliteSourceAccessError, SqliteSourceErrorComposition,
+        SqliteSourceEvidence,
+    },
     CaptureError, KIRO_SQLITE_SOURCE_FORMAT,
 };
 
@@ -66,6 +69,11 @@ pub(crate) enum KiroSourceBackedErrorV0 {
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     SqliteSource(#[from] SqliteSourceAccessError),
+    #[error("{primary}; SQLite source finalization also failed: {finalization}")]
+    SqliteFinalization {
+        primary: Box<KiroSourceBackedErrorV0>,
+        finalization: Box<SqliteSourceAccessError>,
+    },
     #[error(transparent)]
     Projection(#[from] ProjectionContractError),
     #[error(transparent)]
@@ -90,6 +98,15 @@ pub(crate) enum KiroSourceBackedErrorV0 {
 }
 
 pub(crate) type KiroSourceBackedResultV0<T> = Result<T, KiroSourceBackedErrorV0>;
+
+impl SqliteSourceErrorComposition for KiroSourceBackedErrorV0 {
+    fn compose_sqlite_source_finalization(self, finalization: SqliteSourceAccessError) -> Self {
+        Self::SqliteFinalization {
+            primary: Box::new(self),
+            finalization: Box::new(finalization),
+        }
+    }
+}
 
 #[path = "source_backed/registration.rs"]
 pub(crate) mod registration;

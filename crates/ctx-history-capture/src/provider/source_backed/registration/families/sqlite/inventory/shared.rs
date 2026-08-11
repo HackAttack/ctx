@@ -55,6 +55,16 @@ pub(super) struct SqliteInventorySnapshotCounters {
     pub(super) max_active_snapshots: u64,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SqliteInventorySemanticCounters {
+    logical_projection_passes: u64,
+    logical_rows_projected: u64,
+    documents_staged: u64,
+    logical_noops: u64,
+    logical_replacements: u64,
+}
+
 pub(super) struct SqliteInventoryCatalog<L> {
     pub(super) authority_fingerprint: [u8; 32],
     pub(super) leaves: Vec<SqliteInventoryCatalogLeaf<L>>,
@@ -198,6 +208,8 @@ where
                     snapshot_counters: Mutex::new(Some(Box::new(move || {
                         counter_authority.snapshot_counters()
                     }))),
+                    #[cfg(test)]
+                    semantic_counters: Mutex::new(SqliteInventorySemanticCounters::default()),
                 },
                 true,
             ));
@@ -229,6 +241,8 @@ pub(super) struct SqliteInventoryDocumentLeaf<L> {
     terminal_revalidate: Mutex<Option<TerminalRevalidator>>,
     #[cfg(test)]
     snapshot_counters: Mutex<Option<Box<dyn Fn() -> SqliteSourceSnapshotCounters + Send + Sync>>>,
+    #[cfg(test)]
+    semantic_counters: Mutex<SqliteInventorySemanticCounters>,
 }
 
 #[derive(Debug)]
@@ -392,16 +406,40 @@ where
             ));
         }
         #[cfg(test)]
-        retained
-            .authority
-            .record_logical_projection(
-                certificate.counts().complete_records,
-                certificate.counts().indexed_documents,
-                leaf.base_certificate
-                    .as_ref()
-                    .is_some_and(|base| sqlite_logical_certificate_eq(base, &certificate)),
-            )
-            .map_err(route_error)?;
+        {
+            let mut counters = leaf.semantic_counters.lock().map_err(|_| {
+                sqlite_inventory_internal("SQLite semantic counter lock was poisoned")
+            })?;
+            counters.logical_projection_passes = counters
+                .logical_projection_passes
+                .checked_add(1)
+                .ok_or_else(|| sqlite_inventory_internal("logical projection count overflowed"))?;
+            counters.logical_rows_projected = counters
+                .logical_rows_projected
+                .checked_add(certificate.counts().complete_records)
+                .ok_or_else(|| sqlite_inventory_internal("logical row count overflowed"))?;
+            counters.documents_staged = counters
+                .documents_staged
+                .checked_add(certificate.counts().indexed_documents)
+                .ok_or_else(|| sqlite_inventory_internal("staged document count overflowed"))?;
+            if leaf
+                .base_certificate
+                .as_ref()
+                .is_some_and(|base| sqlite_logical_certificate_eq(base, &certificate))
+            {
+                counters.logical_noops = counters
+                    .logical_noops
+                    .checked_add(1)
+                    .ok_or_else(|| sqlite_inventory_internal("logical no-op count overflowed"))?;
+            } else {
+                counters.logical_replacements = counters
+                    .logical_replacements
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        sqlite_inventory_internal("logical replacement count overflowed")
+                    })?;
+            }
+        }
         {
             let mut terminal = leaf.terminal_revalidate.lock().map_err(|_| {
                 sqlite_inventory_internal("SQLite terminal witness lock was poisoned")
@@ -485,16 +523,19 @@ where
                     .ok_or_else(|| {
                         sqlite_inventory_internal("SQLite snapshot counters were not installed")
                     })?();
+                let semantic = *leaf.semantic_counters.lock().map_err(|_| {
+                    sqlite_inventory_internal("SQLite semantic counter lock was poisoned")
+                })?;
                 self.provider_adapter
                     .observe_snapshot_counters(SqliteInventorySnapshotCounters {
                         immutable_snapshot_opens: counters.immutable_snapshot_opens(),
                         copied_snapshot_opens: counters.copied_snapshot_opens(),
                         source_bytes_copied: counters.source_bytes_copied(),
-                        logical_projection_passes: counters.logical_projection_passes(),
-                        logical_rows_projected: counters.logical_rows_projected(),
-                        documents_staged: counters.documents_staged(),
-                        logical_noops: counters.logical_noops(),
-                        logical_replacements: counters.logical_replacements(),
+                        logical_projection_passes: semantic.logical_projection_passes,
+                        logical_rows_projected: semantic.logical_rows_projected,
+                        documents_staged: semantic.documents_staged,
+                        logical_noops: semantic.logical_noops,
+                        logical_replacements: semantic.logical_replacements,
                         terminal_fences: counters.terminal_fences(),
                         terminal_revalidations: counters.terminal_revalidations(),
                         active_snapshots: counters.active_snapshots(),

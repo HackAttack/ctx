@@ -17,8 +17,8 @@ use crate::{
         },
     },
     provider_sources::{
-        fail_next_opened_snapshot_cleanup_for_test, provider_source_for_path, SqliteCleanupStatus,
-        SqliteRetryDecision, SqliteSourceAccessError,
+        fail_next_opened_snapshot_cleanup_for_test, provider_source_for_path,
+        sqlite_retry_decision, SqliteCleanupStatus, SqliteRetryDecision, SqliteSourceAccessError,
     },
     test_support_paths::tempdir,
     DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs,
@@ -154,7 +154,10 @@ fn transferred_snapshot_scan_failure_reports_cleanup_fatal_error() {
     ));
     let diagnostic = cleanup.diagnostic().unwrap();
     assert_eq!(diagnostic.cleanup, SqliteCleanupStatus::Failed);
-    assert_eq!(diagnostic.retry, SqliteRetryDecision::RouteFatalResource);
+    assert_eq!(
+        sqlite_retry_decision(&cleanup),
+        SqliteRetryDecision::RouteFatalResource
+    );
 }
 
 fn sqlite_persistent_bytes(path: &Path) -> Vec<Vec<u8>> {

@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File},
+    fs,
     io::{BufReader, ErrorKind, Read},
     path::{Path, PathBuf},
     sync::{
@@ -9,16 +9,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ctx_history_core::platform_security::create_private_directory_all;
 use ctx_history_core::CaptureProvider;
-use rusqlite::{limits::Limit as SqliteLimit, Connection, OpenFlags};
+use ctx_history_source_io::SqliteReadFinalizationError;
+use rusqlite::{limits::Limit as SqliteLimit, Connection};
 use serde_json::Value;
-use tempfile::TempDir;
-use url::Url;
 
 use crate::common::io::{
-    ensure_regular_provider_transcript_file, provider_metadata_is_link_like,
-    read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead,
+    provider_metadata_is_link_like, read_provider_jsonl_line_or_skip_oversized,
+    ProviderJsonlLineRead, ProviderSourceRoot,
 };
 use crate::provider::{
     provider_safe_path_segment,
@@ -29,13 +27,16 @@ use crate::provider::{
             TRAE_CHAT_KEYS, TRAE_CHAT_ROWS_QUERY, TRAE_SQLITE_VALUE_OVERHEAD_BYTES,
         },
     },
-    sqlite::sqlite_component_change_token,
 };
 use crate::MAX_PROVIDER_SQLITE_VALUE_BYTES;
 
+#[cfg(test)]
+use super::SqliteSourceDirectoryAuthority;
 use super::{
-    observe_ordinary_file, open_ordinary_file_without_following, selectors::sort_paths,
-    types::ProviderDefaultLocation, OrdinaryFileObservation,
+    observe_ordinary_file, open_ordinary_file_without_following,
+    open_root_handle_sqlite_source_snapshot_with_limits, retain_sqlite_source_directory_authority,
+    selectors::sort_paths, types::ProviderDefaultLocation, SqliteSourceAccessError,
+    SqliteSourceReadSnapshot, SqliteSourceSnapshotLimits,
 };
 
 const SQLITE_PROBE_MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
@@ -47,6 +48,7 @@ const SQLITE_PLAINTEXT_HEADER: &[u8; 16] = b"SQLite format 3\0";
 #[cfg(test)]
 std::thread_local! {
     static DEFAULT_LOCATION_PROBE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_NEXT_SQLITE_PROBE_CONNECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(super) fn default_location_import_probe(
@@ -583,6 +585,34 @@ struct SqliteProbeLimits {
     max_progress_calls: usize,
 }
 
+#[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "typed probe failures are inspected by direct tests"
+    )
+)]
+enum SqliteProbePrimaryError {
+    BudgetExhausted,
+    Connection(SqliteSourceAccessError),
+    Configuration(rusqlite::Error),
+    Query(rusqlite::Error),
+}
+
+type SqliteProbeExecutionError =
+    SqliteReadFinalizationError<SqliteProbePrimaryError, SqliteSourceAccessError>;
+
+#[cfg(test)]
+fn fail_next_sqlite_probe_connection_for_test() {
+    FAIL_NEXT_SQLITE_PROBE_CONNECTION.with(|fail| fail.set(true));
+}
+
+#[cfg(test)]
+fn take_sqlite_probe_connection_failure_for_test() -> bool {
+    FAIL_NEXT_SQLITE_PROBE_CONNECTION.with(|fail| fail.replace(false))
+}
+
 impl Default for SqliteProbeLimits {
     fn default() -> Self {
         Self {
@@ -593,76 +623,138 @@ impl Default for SqliteProbeLimits {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct SqliteProbeComponent {
-    path: PathBuf,
-    len: u64,
-    observation: OrdinaryFileObservation,
-    change_token: [u8; 32],
-}
-
-enum SqliteProbeDatabase {
-    Immutable(Connection),
-    Snapshot {
-        connection: Connection,
-        _directory: TempDir,
-    },
-}
-
-impl SqliteProbeDatabase {
-    fn connection(&self) -> &Connection {
-        match self {
-            Self::Immutable(connection) | Self::Snapshot { connection, .. } => connection,
-        }
-    }
-}
-
 fn sqlite_structural_probe(
     data_root: Option<&Path>,
     path: &Path,
     limits: SqliteProbeLimits,
     query: impl FnOnce(&Connection) -> rusqlite::Result<bool>,
 ) -> BoundedProbe {
-    let initial_components = match sqlite_probe_components(path, limits.max_total_bytes) {
-        Ok(components) => components,
-        Err(outcome) => return outcome,
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return BoundedProbe::IoError;
     };
-    let database = match open_sqlite_probe_database(data_root, path, &initial_components) {
-        Ok(database) => database,
+    let Some(database_name) = path.file_name() else {
+        return BoundedProbe::IoError;
+    };
+    let source_root = match ProviderSourceRoot::open(parent) {
+        Ok(root) => root,
         Err(_) => return BoundedProbe::IoError,
     };
-    let connection = database.connection();
+    let source_directory = match source_root.directory() {
+        Ok(directory) => directory,
+        Err(_) => return BoundedProbe::IoError,
+    };
+    let parent_handle = match source_directory.try_clone_authority_handle() {
+        Ok(handle) => handle,
+        Err(_) => return BoundedProbe::IoError,
+    };
+    let (scratch_root, snapshot_limits) = data_root.map_or_else(
+        || {
+            (
+                parent,
+                SqliteSourceSnapshotLimits::without_scratch(limits.max_total_bytes),
+            )
+        },
+        |data_root| {
+            (
+                data_root,
+                SqliteSourceSnapshotLimits::new(limits.max_total_bytes),
+            )
+        },
+    );
+    let authority =
+        match retain_sqlite_source_directory_authority(scratch_root, &parent_handle, parent) {
+            Ok(authority) => authority,
+            Err(_) => return BoundedProbe::IoError,
+        };
+    let snapshot = match open_root_handle_sqlite_source_snapshot_with_limits(
+        &authority,
+        database_name,
+        snapshot_limits,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) if error.is_systemic_resource_failure() => return BoundedProbe::BudgetExhausted,
+        Err(error) if error.is_provider_path_unavailable() => return BoundedProbe::NotFound,
+        Err(_) => return BoundedProbe::IoError,
+    };
+    classify_sqlite_probe_execution(execute_sqlite_structural_probe(
+        snapshot,
+        limits,
+        configure_sqlite_probe,
+        query,
+    ))
+}
+
+fn execute_sqlite_structural_probe(
+    snapshot: SqliteSourceReadSnapshot,
+    limits: SqliteProbeLimits,
+    configure: impl FnOnce(&Connection, Duration) -> rusqlite::Result<()>,
+    query: impl FnOnce(&Connection) -> rusqlite::Result<bool>,
+) -> Result<bool, SqliteProbeExecutionError> {
     let exhausted = Arc::new(AtomicBool::new(false));
     let deadline = Instant::now() + limits.deadline;
     let progress_exhausted = Arc::clone(&exhausted);
     let mut progress_calls = 0usize;
-    connection.progress_handler(
-        SQLITE_PROBE_PROGRESS_OPS,
-        Some(move || {
-            progress_calls = progress_calls.saturating_add(1);
-            let stop = progress_calls > limits.max_progress_calls || Instant::now() >= deadline;
-            if stop {
-                progress_exhausted.store(true, Ordering::Relaxed);
-            }
-            stop
-        }),
-    );
-    let query_result =
-        configure_sqlite_probe(connection, limits.deadline).and_then(|()| query(connection));
-    connection.progress_handler(0, None::<fn() -> bool>);
-    drop(database);
-    let stable = sqlite_probe_components(path, limits.max_total_bytes)
-        .is_ok_and(|closing| closing == initial_components);
-    if !stable {
-        return BoundedProbe::IoError;
-    }
-    if exhausted.load(Ordering::Relaxed) {
-        return BoundedProbe::BudgetExhausted;
-    }
-    match query_result {
+    #[cfg(test)]
+    let connection = if take_sqlite_probe_connection_failure_for_test() {
+        Err(SqliteSourceAccessError::SnapshotNotActive)
+    } else {
+        snapshot.connection()
+    };
+    #[cfg(not(test))]
+    let connection = snapshot.connection();
+    let query_result = match connection {
+        Ok(connection) => {
+            connection.progress_handler(
+                SQLITE_PROBE_PROGRESS_OPS,
+                Some(move || {
+                    progress_calls = progress_calls.saturating_add(1);
+                    let stop =
+                        progress_calls > limits.max_progress_calls || Instant::now() >= deadline;
+                    if stop {
+                        progress_exhausted.store(true, Ordering::Relaxed);
+                    }
+                    stop
+                }),
+            );
+            let result = match configure(connection, limits.deadline) {
+                Ok(()) => query(connection).map_err(SqliteProbePrimaryError::Query),
+                Err(error) => Err(SqliteProbePrimaryError::Configuration(error)),
+            };
+            connection.progress_handler(0, None::<fn() -> bool>);
+            result
+        }
+        Err(error) => Err(SqliteProbePrimaryError::Connection(error)),
+    };
+    let primary = if exhausted.load(Ordering::Relaxed) {
+        Err(SqliteProbePrimaryError::BudgetExhausted)
+    } else {
+        query_result
+    };
+    snapshot.finish_with(primary)
+}
+
+fn classify_sqlite_probe_execution(
+    result: Result<bool, SqliteProbeExecutionError>,
+) -> BoundedProbe {
+    match result {
         Ok(true) => BoundedProbe::Found,
         Ok(false) => BoundedProbe::NotFound,
-        Err(_) => BoundedProbe::IoError,
+        Err(SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::BudgetExhausted)) => {
+            BoundedProbe::BudgetExhausted
+        }
+        Err(SqliteReadFinalizationError::Primary(SqliteProbePrimaryError::Connection(error)))
+            if error.is_systemic_resource_failure() =>
+        {
+            BoundedProbe::BudgetExhausted
+        }
+        Err(
+            SqliteReadFinalizationError::Primary(_)
+            | SqliteReadFinalizationError::Finalization(_)
+            | SqliteReadFinalizationError::PrimaryAndFinalization { .. },
+        ) => BoundedProbe::IoError,
     }
 }
 
@@ -679,142 +771,6 @@ fn configure_sqlite_probe(connection: &Connection, deadline: Duration) -> rusqli
     connection.busy_timeout(deadline)?;
     connection.pragma_update(None, "query_only", true)?;
     connection.pragma_update(None, "trusted_schema", false)
-}
-
-fn sqlite_probe_components(
-    path: &Path,
-    max_total_bytes: u64,
-) -> std::result::Result<Vec<SqliteProbeComponent>, BoundedProbe> {
-    let mut paths = vec![path.to_path_buf()];
-    for suffix in ["-wal", "-shm", "-journal"] {
-        let mut sidecar = path.as_os_str().to_os_string();
-        sidecar.push(suffix);
-        paths.push(PathBuf::from(sidecar));
-    }
-    let mut components = Vec::new();
-    let mut total = 0u64;
-    for (index, component) in paths.into_iter().enumerate() {
-        let metadata = match fs::symlink_metadata(&component) {
-            Ok(metadata) => metadata,
-            Err(error) if index > 0 && error.kind() == ErrorKind::NotFound => continue,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Err(BoundedProbe::NotFound)
-            }
-            Err(_) => return Err(BoundedProbe::IoError),
-        };
-        if provider_metadata_is_link_like(&metadata)
-            || !metadata.file_type().is_file()
-            || ensure_regular_provider_transcript_file(&component).is_err()
-        {
-            return Err(BoundedProbe::IoError);
-        }
-        total = total
-            .checked_add(metadata.len())
-            .ok_or(BoundedProbe::BudgetExhausted)?;
-        if total > max_total_bytes {
-            return Err(BoundedProbe::BudgetExhausted);
-        }
-        let observation = observe_ordinary_file(&component).map_err(|_| BoundedProbe::IoError)?;
-        if observation.len() != metadata.len() {
-            return Err(BoundedProbe::IoError);
-        }
-        let change_token = sqlite_component_change_token(&component, &observation)
-            .map_err(|_| BoundedProbe::IoError)?;
-        components.push(SqliteProbeComponent {
-            path: component,
-            len: metadata.len(),
-            observation,
-            change_token,
-        });
-    }
-    Ok(components)
-}
-
-fn open_sqlite_probe_database(
-    data_root: Option<&Path>,
-    path: &Path,
-    components: &[SqliteProbeComponent],
-) -> crate::Result<SqliteProbeDatabase> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    if components.len() == 1 {
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(path)
-        };
-        let mut uri = Url::from_file_path(&absolute).map_err(|()| {
-            crate::CaptureError::InvalidProviderTranscriptPath {
-                path: path.to_path_buf(),
-                reason: "provider SQLite probe path cannot be represented as a file URI",
-            }
-        })?;
-        uri.query_pairs_mut()
-            .append_pair("mode", "ro")
-            .append_pair("immutable", "1");
-        let connection = Connection::open_with_flags(
-            uri.as_str(),
-            flags | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
-        return Ok(SqliteProbeDatabase::Immutable(connection));
-    }
-
-    let Some(data_root) = data_root else {
-        return Err(crate::CaptureError::SourceChangedDuringCapture);
-    };
-    let staging_root = data_root.join("tmp").join("provider-sqlite");
-    create_private_directory_all(&staging_root)?;
-    let directory = tempfile::Builder::new()
-        .prefix("ctx-provider-probe-sqlite-")
-        .tempdir_in(staging_root)?;
-    for component in components {
-        copy_sqlite_probe_component(component, directory.path())?;
-    }
-    let snapshot_path = directory.path().join(path.file_name().ok_or_else(|| {
-        crate::CaptureError::InvalidProviderTranscriptPath {
-            path: path.to_path_buf(),
-            reason: "provider SQLite probe path has no file name",
-        }
-    })?);
-    // The snapshot directory and every component are ctx-created with create_new.
-    // NOFOLLOW remains required for the live immutable path above, but omitting it
-    // here lets SQLite's macOS VFS open the copied WAL sidecars read-only.
-    let connection = Connection::open_with_flags(&snapshot_path, flags)?;
-    Ok(SqliteProbeDatabase::Snapshot {
-        connection,
-        _directory: directory,
-    })
-}
-
-fn copy_sqlite_probe_component(
-    component: &SqliteProbeComponent,
-    destination: &Path,
-) -> crate::Result<()> {
-    let mut source = open_ordinary_file_without_following(&component.path)?;
-    let metadata = source.metadata()?;
-    if provider_metadata_is_link_like(&metadata)
-        || !metadata.file_type().is_file()
-        || metadata.len() != component.len
-    {
-        return Err(crate::CaptureError::SourceChangedDuringCapture);
-    }
-    let file_name = component.path.file_name().ok_or_else(|| {
-        crate::CaptureError::InvalidProviderTranscriptPath {
-            path: component.path.clone(),
-            reason: "provider SQLite probe component has no file name",
-        }
-    })?;
-    let mut output = File::options()
-        .write(true)
-        .create_new(true)
-        .open(destination.join(file_name))?;
-    let copied = std::io::copy(
-        &mut source.by_ref().take(component.len.saturating_add(1)),
-        &mut output,
-    )?;
-    if copied != component.len {
-        return Err(crate::CaptureError::SourceChangedDuringCapture);
-    }
-    Ok(())
 }
 
 fn has_openclaw_session_jsonl(root: &Path, max_entries: usize) -> BoundedProbe {

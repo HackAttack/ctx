@@ -1,10 +1,27 @@
 pub mod provider_sources;
-pub use common::io::{
-    inventory_provider_jsonl_paths, inventory_provider_regular_paths, provider_regular_file_len,
+pub use ctx_history_source_io::{
     ProviderJsonlInventory, ProviderJsonlInventoryLimits, PROVIDER_JSONL_INVENTORY_MAX_DEPTH,
     PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES, PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS,
     PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES, PROVIDER_JSONL_INVENTORY_MAX_PATH_BYTES,
 };
+
+pub fn inventory_provider_jsonl_paths(
+    root: &std::path::Path,
+    limits: ProviderJsonlInventoryLimits,
+) -> Result<ProviderJsonlInventory> {
+    ctx_history_source_io::inventory_provider_jsonl_paths(root, limits).map_err(Into::into)
+}
+
+pub fn inventory_provider_regular_paths(
+    root: &std::path::Path,
+    limits: ProviderJsonlInventoryLimits,
+) -> Result<ProviderJsonlInventory> {
+    ctx_history_source_io::inventory_provider_regular_paths(root, limits).map_err(Into::into)
+}
+
+pub fn provider_regular_file_len(path: &std::path::Path) -> Result<u64> {
+    ctx_history_source_io::provider_regular_file_len(path).map_err(Into::into)
+}
 pub use provider_sources::{
     discover_lingma_inventory_with_authority, discover_provider_sources,
     discover_provider_sources_for_provider, discover_provider_sources_for_provider_report,
@@ -26,8 +43,10 @@ pub use provider_sources::{
     HERMES_STATE_DB_UNSUPPORTED_REASON,
 };
 
-pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize = MAX_PROVIDER_JSONL_LINE_BYTES;
+pub(crate) const MAX_PROVIDER_JSONL_LINE_BYTES: usize =
+    ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
+pub(crate) const MAX_PROVIDER_SQLITE_VALUE_BYTES: usize =
+    ctx_history_source_io::MAX_PROVIDER_SQLITE_VALUE_BYTES;
 pub(crate) const MAX_OPENCLAW_SESSION_INDEX_BYTES: usize = 1024 * 1024;
 pub(crate) const CODEX_SESSION_SOURCE_FORMAT: &str = "codex_session_jsonl";
 pub(crate) const CLAUDE_PROJECTS_SOURCE_FORMAT: &str = "claude_projects_jsonl_tree";
