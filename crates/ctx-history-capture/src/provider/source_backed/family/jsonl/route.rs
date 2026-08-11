@@ -76,9 +76,6 @@ pub(crate) use scanner::{
 };
 mod terminal;
 pub(crate) use terminal::JsonlFamilyTerminalProof;
-// Keep the pre-extraction route-local type paths available to descendants.
-#[allow(unused_imports)]
-pub(crate) use terminal::{JsonlFamilyTerminalLeafBinding, JsonlFamilyTerminalPrefixHash};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JsonlFamilyRootMissingMode {

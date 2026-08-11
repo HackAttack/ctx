@@ -28,43 +28,13 @@ fn run_after_codex_metadata_inventory_hook() {
 #[derive(Debug, Clone)]
 pub(crate) struct CodexSessionTreeInventoryV0 {
     pub(crate) sources: Vec<(CodexCatalogSource, SourceKey, String)>,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    pub(crate) work: CodexCatalogWorkV0,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CodexCatalogWorkV0 {
-    pub(crate) inventory_walks: u64,
-    pub(crate) source_observations: u64,
-    #[cfg(test)]
-    pub(crate) source_hash_reads: u64,
     pub(crate) source_metadata_opens: u64,
     pub(crate) source_metadata_read_upper_bound_bytes: u64,
     pub(crate) session_meta_parses: u64,
-}
-
-impl CodexCatalogWorkV0 {
-    fn add_assign(&mut self, other: Self) {
-        self.inventory_walks = self.inventory_walks.saturating_add(other.inventory_walks);
-        self.source_observations = self
-            .source_observations
-            .saturating_add(other.source_observations);
-        #[cfg(test)]
-        {
-            self.source_hash_reads = self
-                .source_hash_reads
-                .saturating_add(other.source_hash_reads);
-        }
-        self.source_metadata_opens = self
-            .source_metadata_opens
-            .saturating_add(other.source_metadata_opens);
-        self.source_metadata_read_upper_bound_bytes = self
-            .source_metadata_read_upper_bound_bytes
-            .saturating_add(other.source_metadata_read_upper_bound_bytes);
-        self.session_meta_parses = self
-            .session_meta_parses
-            .saturating_add(other.session_meta_parses);
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,11 +255,8 @@ fn discover_codex_session_tree_metadata_inventory_v0(
     let normalized_roots = normalized_session_roots(session_roots)?;
     let mut leaves = Vec::new();
     let mut authorities = Vec::with_capacity(normalized_roots.len());
-    let mut work = CodexCatalogWorkV0::default();
     for session_root in &normalized_roots {
-        let (root, mut root_leaves, root_work) =
-            discover_codex_metadata_inventory_root_v0(session_root)?;
-        work.add_assign(root_work);
+        let (root, mut root_leaves) = discover_codex_metadata_inventory_root_v0(session_root)?;
         crate::provider::codex::catalog::ensure_catalog_source_bound(
             leaves.len().saturating_add(root_leaves.len()),
         )?;
@@ -302,7 +269,7 @@ fn discover_codex_session_tree_metadata_inventory_v0(
 
     let mut catalog_sources = Vec::with_capacity(leaves.len());
     for leaf in leaves {
-        catalog_sources.push(catalog_source_from_path_hint(&leaf, &mut work)?);
+        catalog_sources.push(catalog_source_from_path_hint(&leaf)?);
     }
     for authority in &authorities {
         authority.revalidate()?;
@@ -310,20 +277,12 @@ fn discover_codex_session_tree_metadata_inventory_v0(
 
     let mut sources = bind_source_keys(catalog_sources)?;
     sort_bound_sources(&mut sources);
-    Ok(CodexSessionTreeInventoryV0 {
-        sources,
-        #[cfg(any(test, ctx_codex_causal_qualification))]
-        work,
-    })
+    Ok(CodexSessionTreeInventoryV0 { sources })
 }
 
 fn discover_codex_metadata_inventory_root_v0(
     session_root: &Path,
-) -> CodexSourceBackedResultV0<(
-    ProviderSourceRoot,
-    Vec<CodexMetadataInventoryLeafV0>,
-    CodexCatalogWorkV0,
-)> {
+) -> CodexSourceBackedResultV0<(ProviderSourceRoot, Vec<CodexMetadataInventoryLeafV0>)> {
     let authority = ProviderSourceRoot::open(session_root)?;
     let mut leaves = Vec::new();
     let mut pending = vec![(PathBuf::new(), 0_usize)];
@@ -426,22 +385,11 @@ fn discover_codex_metadata_inventory_root_v0(
         current.revalidate()?;
     }
     authority.revalidate()?;
-    let source_observations =
-        u64::try_from(leaves.len()).map_err(|_| CodexSourceBackedErrorV0::CountOverflow)?;
-    Ok((
-        authority,
-        leaves,
-        CodexCatalogWorkV0 {
-            inventory_walks: 1,
-            source_observations,
-            ..CodexCatalogWorkV0::default()
-        },
-    ))
+    Ok((authority, leaves))
 }
 
 fn catalog_source_from_path_hint(
     leaf: &CodexMetadataInventoryLeafV0,
-    work: &mut CodexCatalogWorkV0,
 ) -> CodexSourceBackedResultV0<CodexCatalogSource> {
     let native_session_id = match codex_canonical_native_session_id_path_hint(&leaf.source_path) {
         Some(native_session_id) => native_session_id,
@@ -457,12 +405,6 @@ fn catalog_source_from_path_hint(
                 crate::provider::codex::catalog::probe_codex_native_session_id(&opened)?
                     .or_else(|| codex_native_session_id_path_hint(&leaf.source_path));
             opened.revalidate_leaf()?;
-            work.add_assign(CodexCatalogWorkV0 {
-                source_metadata_opens: 1,
-                source_metadata_read_upper_bound_bytes: leaf.observation.len,
-                session_meta_parses: 1,
-                ..CodexCatalogWorkV0::default()
-            });
             native_session_id.ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
                 path: leaf.source_path.clone(),
             })?
@@ -633,9 +575,6 @@ pub(super) fn hydrate_codex_session_plan_v0(
             // not a claim that the transcript body was scanned.
             source_metadata_read_upper_bound_bytes: leaf.observation.len,
             session_meta_parses: 1,
-            #[cfg(test)]
-            source_hash_reads: 1,
-            ..CodexCatalogWorkV0::default()
         },
         false,
     ))

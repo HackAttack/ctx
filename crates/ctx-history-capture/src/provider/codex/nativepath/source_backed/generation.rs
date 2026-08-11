@@ -38,20 +38,6 @@ impl CodexGenerationRouteV0 {
 pub(super) struct CodexPreparedRouteV0 {
     pub(super) missing: bool,
     pub(super) sources: Vec<CodexSessionPlanV0>,
-    pub(super) prehydrated: bool,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    pub(super) catalog_observations: Vec<CodexPreparedCatalogObservationV0>,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    pub(super) work: CodexCatalogWorkV0,
-}
-
-#[cfg(any(test, ctx_codex_causal_qualification))]
-#[derive(Clone)]
-pub(super) struct CodexPreparedCatalogObservationV0 {
-    pub(super) native_session_id: String,
-    pub(super) parent_native_session_id: Option<String>,
-    pub(super) work: CodexCatalogWorkV0,
-    pub(super) exact_replay: bool,
 }
 
 struct CodexPreparedGenerationV0 {
@@ -67,10 +53,11 @@ struct CodexGenerationCoordinatorStateV0 {
 
 /// Coordinates route registration without coupling one Codex source to another.
 ///
-/// The shared publication layer still selects routes and supplies their carried
-/// certificates. This provider-owned coordinator performs only route-local
-/// inventory. It never opens, parses, scans, revalidates, or schedules an
-/// ancestor or descendant on behalf of a selected leaf.
+/// Shared JSONL selects routes and owns carried bases plus the physical
+/// lifecycle. This provider-owned coordinator performs only route-local
+/// inventory for Codex semantic execution. It never opens, parses, scans,
+/// revalidates, or schedules an ancestor or descendant on behalf of a selected
+/// leaf.
 #[derive(Default)]
 pub(crate) struct CodexGenerationNormalizationCoordinatorV0 {
     state: Mutex<CodexGenerationCoordinatorStateV0>,
@@ -147,32 +134,20 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         let mut established_owners = HashMap::<(PathBuf, String), usize>::new();
         let mut descriptor_bindings = HashMap::<[u8; 32], (SourceKey, String)>::new();
         for (participant, discovery) in participants {
-            let (missing, discovered, work) = match discovery {
+            let (missing, discovered) = match discovery {
                 CodexGenerationParticipantV0::SessionTree { roots } => {
                     let inventory =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(&roots)?;
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    let work = inventory.work;
-                    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-                    let work = ();
-                    (false, inventory.sources, work)
+                    (false, inventory.sources)
                 }
                 CodexGenerationParticipantV0::ExplicitSession { input } => {
                     let inventory = observe_codex_explicit_session_source_backed_v0(&input)?;
                     let plan = inventory.source_plan();
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    let work = CodexCatalogWorkV0::default();
-                    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-                    let work = ();
-                    (plan.is_none(), plan.into_iter().collect(), work)
+                    (plan.is_none(), plan.into_iter().collect())
                 }
             };
-            #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-            let _ = work;
 
             let mut sources = Vec::with_capacity(discovered.len());
-            #[cfg(any(test, ctx_codex_causal_qualification))]
-            let catalog_observations = Vec::new();
             for plan in discovered {
                 let descriptor = plan.1.exact_descriptor_digest();
                 if let Some((existing, native_session_id)) = descriptor_bindings.get(&descriptor) {
@@ -200,21 +175,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 // same child-local tuple from its own checkpoint.
                 sources.push(plan);
             }
-            routes.insert(
-                participant,
-                CodexPreparedRouteV0 {
-                    missing,
-                    sources,
-                    // Family checkpoint unwrapping requires the admitted leaf.
-                    // Defer both exact replay and cold metadata hydration to
-                    // `prepare_leaf_scans`, before ordering or publication.
-                    prehydrated: false,
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    catalog_observations,
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    work,
-                },
-            );
+            routes.insert(participant, CodexPreparedRouteV0 { missing, sources });
         }
 
         self.state
