@@ -835,7 +835,16 @@ pub(super) fn prepare_leaf(
         let mut input = JsonlFamilyExecutionIo::new(reader);
         let preflight_start = input.position()?;
         let preflight = executor.preflight(&mut input)?;
-        let physical_ready = input.settle_preflight(preflight_start)?;
+        let physical_ready = match preflight {
+            JsonlFamilySemanticPreflight::Ready => input.settle_preflight(preflight_start)?,
+            JsonlFamilySemanticPreflight::RetryReplacement if is_append => false,
+            JsonlFamilySemanticPreflight::RetryReplacement => {
+                return Err(CaptureError::InvalidPayload(
+                    "JSONL semantic executor requested replacement outside append preflight"
+                        .to_owned(),
+                ));
+            }
+        };
         match (preflight, physical_ready) {
             (JsonlFamilySemanticPreflight::Ready, true) => {}
             (JsonlFamilySemanticPreflight::RetryReplacement, _) | (_, false) if is_append => {
@@ -854,10 +863,14 @@ pub(super) fn prepare_leaf(
                     ))?;
                 let replacement_start = input.position()?;
                 let replacement_preflight = executor.preflight(&mut input)?;
+                if replacement_preflight != JsonlFamilySemanticPreflight::Ready {
+                    return Err(CaptureError::InvalidPayload(
+                        "JSONL semantic executor requested more than one replacement retry"
+                            .to_owned(),
+                    ));
+                }
                 let replacement_physical_ready = input.settle_preflight(replacement_start)?;
-                if replacement_preflight != JsonlFamilySemanticPreflight::Ready
-                    || !replacement_physical_ready
-                {
+                if !replacement_physical_ready {
                     return Err(CaptureError::InvalidPayload(
                         "JSONL semantic executor requested more than one replacement retry"
                             .to_owned(),
@@ -867,10 +880,15 @@ pub(super) fn prepare_leaf(
                     adapter, &leaf, base, None, worker, output, executor, input, false,
                 );
             }
-            (JsonlFamilySemanticPreflight::RetryReplacement, _) | (_, false) => {
+            (_, false) => {
                 return Err(CaptureError::InvalidPayload(
                     "JSONL semantic executor requested replacement outside append preflight"
                         .to_owned(),
+                ));
+            }
+            (JsonlFamilySemanticPreflight::RetryReplacement, true) => {
+                return Err(CaptureError::SystemInvariant(
+                    "JSONL replacement retry was marked physically ready",
                 ));
             }
         }

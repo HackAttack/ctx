@@ -864,7 +864,7 @@ struct SemanticLifecycleTestExecutor {
 impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {
     fn preflight(
         &mut self,
-        _input: &mut JsonlFamilyExecutionIo,
+        input: &mut JsonlFamilyExecutionIo,
     ) -> Result<JsonlFamilySemanticPreflight> {
         self.observations
             .lock()
@@ -874,10 +874,12 @@ impl JsonlFamilySemanticExecutor for SemanticLifecycleTestExecutor {
         if self.behavior == SemanticLifecycleBehavior::RetryAppend
             && self.mode == JsonlFamilyProjectionMode::CertifiedAppend
         {
-            Ok(JsonlFamilySemanticPreflight::RetryReplacement)
-        } else {
-            Ok(JsonlFamilySemanticPreflight::Ready)
+            return Ok(JsonlFamilySemanticPreflight::RetryReplacement);
         }
+        while let Some(record) = input.next_record()? {
+            let _ = input.record_bytes(record)?;
+        }
+        Ok(JsonlFamilySemanticPreflight::Ready)
     }
 
     fn next_page(
@@ -933,6 +935,10 @@ impl JsonlFamilyAdapter for SemanticLifecycleTestAdapter {
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn bind_admitted_eof(&self) -> bool {
+        true
     }
 
     fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
