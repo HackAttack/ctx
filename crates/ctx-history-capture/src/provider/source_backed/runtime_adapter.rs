@@ -1,14 +1,18 @@
 use ctx_history_capture_runtime::{
-    BaseEventLookup, CoreMaterialization, CorePreparationError, CorePreparationFailureKind,
-    CorePreparationPort, CorePreparedBatch, CorePreparedBatchBuilder, CorePreparedCapture,
-    CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind,
+    BaseEventLookup, CaptureCommitOutcome, CaptureCommitReceipt, CapturePublicationContext,
+    CapturePublicationDisposition, CaptureRouteRef, CaptureSourceAggregateRef, CoreMaterialization,
+    CorePreparationError, CorePreparationFailureKind, CorePreparationPort, CorePreparedBatch,
+    CorePreparedBatchBuilder, CorePreparedCapture, CoreRouteByteLease, CoreRouteResourceError,
+    CoreRouteResourceKind, ImmutableCaptureSnapshot, VerifiedCapture,
     CORE_RECORD_BATCH_MAX_RECORDS,
 };
 use ctx_history_core::{CoreRecord, SourceKey};
 use ctx_history_index::{
-    BaseEventIdentityLookup, CoreRecordPreparer, IndexError, PreparedCoreRecord,
-    PreparedCoreRecordDraft, PreparedCoreRecordMaterialization,
+    BaseEventIdentityLookup, CommitReceipt, CoreRecordPreparer, GenerationManifest, IndexError,
+    PreparedCoreRecord, PreparedCoreRecordDraft, PreparedCoreRecordMaterialization,
+    PublicationDisposition, PublicationMetadataContext, PublishedGeneration, VerifiedIndex,
 };
+use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{SourceBackedRouteError, SourceBackedRouteErrorKind};
@@ -145,6 +149,229 @@ impl From<CorePreparationError<IndexError>> for SourceBackedRouteError {
             }
         }
     }
+}
+
+/// Borrowed or move-owned projection of the index manifest for capture-only
+/// publication facts. This is the sole concrete manifest exchange in Stage 4.
+enum IndexManifestStorage<'a> {
+    Borrowed(&'a GenerationManifest),
+    Committed(Arc<GenerationManifest>),
+}
+
+/// Publicly neutral capture snapshot backed by an index manifest. Its concrete
+/// index storage remains private to this runtime adapter.
+pub struct IndexManifestView<'a>(IndexManifestStorage<'a>);
+
+pub type BorrowedIndexManifestView<'a> = IndexManifestView<'a>;
+pub type CommittedIndexManifestView = IndexManifestView<'static>;
+
+/// Opaque move-owned index pin crossing the capture boundary. The adapter is
+/// the only code that can expose its concrete verified index.
+pub struct IndexVerifiedCapture(VerifiedIndex);
+
+impl IndexVerifiedCapture {
+    fn new(verified_index: VerifiedIndex) -> Self {
+        Self(verified_index)
+    }
+
+    pub fn into_verified_index(self) -> VerifiedIndex {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for IndexVerifiedCapture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IndexVerifiedCapture(..)")
+    }
+}
+
+pub type IndexCaptureVerifiedPin = VerifiedCapture<IndexVerifiedCapture>;
+
+/// Capture's move-owned receipt. The concrete index manifest remains private
+/// behind the neutral snapshot projection.
+pub struct IndexCaptureCommitReceipt {
+    pub generation_id: String,
+    pub opstamp: u64,
+    pub indexed_documents: u64,
+    pub certified_sources: usize,
+    pub certified_source_bytes: u64,
+    snapshot: CommittedIndexManifestView,
+}
+pub(crate) type IndexCaptureCommitOutcome =
+    CaptureCommitOutcome<CommittedIndexManifestView, IndexVerifiedCapture>;
+
+impl IndexCaptureCommitReceipt {
+    pub(crate) fn new(receipt: CaptureCommitReceipt<CommittedIndexManifestView>) -> Self {
+        let (
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            snapshot,
+        ) = receipt.into_parts();
+        Self {
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            snapshot,
+        }
+    }
+
+    pub fn snapshot(&self) -> &CommittedIndexManifestView {
+        &self.snapshot
+    }
+
+    pub fn into_parts(self) -> (String, u64, u64, usize, u64, CommittedIndexManifestView) {
+        (
+            self.generation_id,
+            self.opstamp,
+            self.indexed_documents,
+            self.certified_sources,
+            self.certified_source_bytes,
+            self.snapshot,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn manifest(&self) -> &GenerationManifest {
+        self.snapshot.manifest()
+    }
+}
+
+impl std::fmt::Debug for IndexCaptureCommitReceipt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IndexCaptureCommitReceipt")
+            .field("generation_id", &self.generation_id)
+            .field("opstamp", &self.opstamp)
+            .field("indexed_documents", &self.indexed_documents)
+            .field("certified_sources", &self.certified_sources)
+            .field("certified_source_bytes", &self.certified_source_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> IndexManifestView<'a> {
+    pub(crate) fn borrowed(manifest: &'a GenerationManifest) -> Self {
+        Self(IndexManifestStorage::Borrowed(manifest))
+    }
+
+    fn manifest(&self) -> &GenerationManifest {
+        match &self.0 {
+            IndexManifestStorage::Borrowed(manifest) => manifest,
+            IndexManifestStorage::Committed(manifest) => manifest,
+        }
+    }
+}
+
+impl IndexManifestView<'static> {
+    fn committed(manifest: Arc<GenerationManifest>) -> Self {
+        Self(IndexManifestStorage::Committed(manifest))
+    }
+}
+
+impl std::fmt::Debug for IndexManifestView<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IndexManifestView(..)")
+    }
+}
+
+impl ImmutableCaptureSnapshot for IndexManifestView<'_> {
+    fn sources(&self) -> &[ctx_history_core::CertifiedSource] {
+        &self.manifest().sources
+    }
+
+    fn source_aggregates(&self) -> impl ExactSizeIterator<Item = CaptureSourceAggregateRef<'_>> {
+        self.manifest()
+            .core_record_aggregates
+            .iter()
+            .map(|aggregate| {
+                CaptureSourceAggregateRef::new(
+                    aggregate.source_identity_digest(),
+                    aggregate.indexed_documents(),
+                    aggregate.core_record_accumulator(),
+                )
+            })
+    }
+
+    fn source_routes(&self) -> impl ExactSizeIterator<Item = CaptureRouteRef<'_>> {
+        self.manifest().source_routes().iter().map(|route| {
+            CaptureRouteRef::new(
+                route.route_identity(),
+                route.sources(),
+                route.missing_state().is_some(),
+            )
+        })
+    }
+
+    fn source_route(
+        &self,
+        route_identity: &ctx_history_capture_model::SourceRouteIdentity,
+    ) -> Option<CaptureRouteRef<'_>> {
+        self.manifest().source_route(route_identity).map(|route| {
+            CaptureRouteRef::new(
+                route.route_identity(),
+                route.sources(),
+                route.missing_state().is_some(),
+            )
+        })
+    }
+}
+
+pub(crate) fn capture_publication_context<'a>(
+    context: PublicationMetadataContext<'a>,
+) -> CapturePublicationContext<'a, BorrowedIndexManifestView<'a>> {
+    let snapshot = IndexManifestView::borrowed(context.manifest());
+    CapturePublicationContext::new(context.generation_id(), snapshot)
+}
+
+pub(crate) fn capture_commit_receipt(receipt: CommitReceipt) -> IndexCaptureCommitReceipt {
+    let (
+        generation_id,
+        opstamp,
+        indexed_documents,
+        certified_sources,
+        certified_source_bytes,
+        manifest,
+    ) = receipt.into_parts();
+    IndexCaptureCommitReceipt::new(CaptureCommitReceipt::new(
+        generation_id,
+        opstamp,
+        indexed_documents,
+        certified_sources,
+        certified_source_bytes,
+        IndexManifestView::committed(manifest),
+    ))
+}
+
+pub(crate) fn capture_commit_outcome(published: PublishedGeneration) -> IndexCaptureCommitOutcome {
+    let (receipt, disposition, verified_index) = published.into_parts();
+    let (
+        generation_id,
+        opstamp,
+        indexed_documents,
+        certified_sources,
+        certified_source_bytes,
+        manifest,
+    ) = receipt.into_parts();
+    CaptureCommitOutcome::new(
+        CaptureCommitReceipt::new(
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            IndexManifestView::committed(manifest),
+        ),
+        match disposition {
+            PublicationDisposition::Published => CapturePublicationDisposition::Published,
+            PublicationDisposition::Reused => CapturePublicationDisposition::Reused,
+        },
+        VerifiedCapture::new(IndexVerifiedCapture::new(verified_index)),
+    )
 }
 
 #[cfg(test)]

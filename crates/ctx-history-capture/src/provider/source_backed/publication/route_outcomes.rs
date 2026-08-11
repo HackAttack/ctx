@@ -4,14 +4,14 @@ use super::route_content::{
     empty_source_route_content_fingerprint, source_route_content_fingerprints,
 };
 
-pub(super) fn successful_route_outcomes_for_manifest(
+pub(super) fn successful_route_outcomes_for_snapshot(
     selected_route_ids: &BTreeSet<SourceRouteIdentity>,
     failed_routes: &BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
     logical_source_failures: &SourceBackedLogicalSourceFailures,
     base_route_content: &HashMap<SourceRouteIdentity, [u8; 32]>,
-    manifest: &GenerationManifest,
+    snapshot: &impl ImmutableCaptureSnapshot,
 ) -> Vec<SourceBackedSuccessfulRouteOutcome> {
-    let current_route_content = source_route_content_fingerprints(Some(manifest));
+    let current_route_content = source_route_content_fingerprints(Some(snapshot));
     let empty_route_content = empty_source_route_content_fingerprint();
     selected_route_ids
         .iter()

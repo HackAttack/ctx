@@ -20,6 +20,7 @@ serde_json.workspace = true
 sha2.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-capture-runtime = { path = "../ctx-history-capture-runtime" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-index = { path = "../ctx-history-index" }
 

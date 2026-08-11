@@ -1,20 +1,19 @@
 use super::*;
 
 pub(super) fn source_route_content_fingerprints(
-    manifest: Option<&GenerationManifest>,
+    snapshot: Option<&impl ImmutableCaptureSnapshot>,
 ) -> HashMap<SourceRouteIdentity, [u8; 32]> {
-    let Some(manifest) = manifest else {
+    let Some(snapshot) = snapshot else {
         return HashMap::new();
     };
-    let aggregates = manifest
-        .sources
+    let aggregates = snapshot
+        .sources()
         .iter()
-        .zip(&manifest.core_record_aggregates)
+        .zip(snapshot.source_aggregates())
         .map(|(source, aggregate)| (source.observation().source().identity().digest(), aggregate))
         .collect::<HashMap<_, _>>();
-    manifest
+    snapshot
         .source_routes()
-        .iter()
         .map(|route| {
             (
                 route.route_identity().clone(),
@@ -30,7 +29,7 @@ pub(super) fn empty_source_route_content_fingerprint() -> [u8; 32] {
 
 fn source_route_content_fingerprint(
     sources: &[SourceKey],
-    aggregates: &HashMap<[u8; 32], &ctx_history_index::SourceCoreRecordAggregate>,
+    aggregates: &HashMap<[u8; 32], CaptureSourceAggregateRef<'_>>,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"ctx.source-route-content-v2\0");

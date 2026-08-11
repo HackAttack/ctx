@@ -39,10 +39,11 @@ use ctx_history_capture_model::DiscoveryIssue;
 use ctx_history_capture_model::{
     DiscoveryIssueKind, DiscoveryReport, ProviderSource, ProviderSourceStatus,
 };
+use ctx_history_capture_runtime::{CapturePublicationDisposition, ImmutableCaptureSnapshot};
 use ctx_history_core::{CaptureProvider, CertifiedSource, ScannedSourceCounts};
 use ctx_history_index::{
-    GenerationManifest, GenerationWriter, IndexError, PublicationDisposition, SourceRouteIdentity,
-    VerifiedIndex, WriterOptions,
+    GenerationManifest, GenerationWriter, IndexError, SourceRouteIdentity, VerifiedIndex,
+    WriterOptions,
 };
 use serde_json::{json, Value};
 

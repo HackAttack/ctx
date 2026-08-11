@@ -23,6 +23,7 @@ sha2 = "1"
 
 RUNTIME_CARGO = """\
 [dependencies]
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
 uuid.workspace = true
 
@@ -48,6 +49,7 @@ load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 RUNTIME_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
 ]
 

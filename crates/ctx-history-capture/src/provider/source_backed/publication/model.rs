@@ -48,9 +48,9 @@ impl SourceBackedRefreshPlan {
 
 #[derive(Debug)]
 pub struct SourceBackedRefreshReceipt {
-    pub commit: CommitReceipt,
+    pub commit: IndexCaptureCommitReceipt,
     /// The exact retained source set committed by `commit`, copied from its
-    /// immutable manifest rather than from a later [`VerifiedIndex`] reopen.
+    /// immutable snapshot rather than from a later pin reopen.
     pub sources: Vec<CertifiedSource>,
     /// Transition-local certified leaf removals applied by this refresh.
     /// Prior-generation removals are never copied forward.
@@ -83,8 +83,8 @@ pub struct SourceBackedRefreshReceipt {
 }
 
 pub(super) struct SourceBackedVerifiedPublication {
-    pub(super) disposition: PublicationDisposition,
-    pub(super) verified_index: VerifiedIndex,
+    pub(super) disposition: CapturePublicationDisposition,
+    pub(super) verified_index: IndexCaptureVerifiedPin,
 }
 
 impl fmt::Debug for SourceBackedVerifiedPublication {
@@ -92,7 +92,7 @@ impl fmt::Debug for SourceBackedVerifiedPublication {
         formatter
             .debug_struct("SourceBackedVerifiedPublication")
             .field("disposition", &self.disposition)
-            .field("generation_id", &self.verified_index.generation_id())
+            .field("verified_index", &self.verified_index)
             .finish()
     }
 }
@@ -100,7 +100,9 @@ impl fmt::Debug for SourceBackedVerifiedPublication {
 impl SourceBackedRefreshReceipt {
     /// Takes the already-open verified pin returned by an opaque-metadata
     /// publication. Legacy publication entry points intentionally return none.
-    pub fn take_verified_publication(&mut self) -> Option<(PublicationDisposition, VerifiedIndex)> {
+    pub fn take_verified_publication(
+        &mut self,
+    ) -> Option<(CapturePublicationDisposition, IndexCaptureVerifiedPin)> {
         self.verified_publication
             .take()
             .map(|publication| (publication.disposition, publication.verified_index))
@@ -111,24 +113,48 @@ impl SourceBackedRefreshReceipt {
 /// opaque metadata factory immediately before terminal revalidation. Core
 /// binds the resulting bytes only when that complete source fence succeeds.
 pub struct SourceBackedPublicationMetadataContext<'a> {
-    pub(super) selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,
-    pub(super) failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
-    pub(super) logical_source_failures: &'a SourceBackedLogicalSourceFailures,
-    pub(super) record_rejections: &'a SourceBackedRecordRejections,
-    pub(super) successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
-    pub(super) complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
-    pub(super) route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
-    pub(super) removed_source_count: usize,
-    pub(super) publication: PublicationMetadataContext<'a>,
+    publication: CapturePublicationContext<'a, BorrowedIndexManifestView<'a>>,
+    selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+    failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
+    logical_source_failures: &'a SourceBackedLogicalSourceFailures,
+    record_rejections: &'a SourceBackedRecordRejections,
+    successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
+    complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+    route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    removed_source_count: usize,
 }
 
-impl SourceBackedPublicationMetadataContext<'_> {
+impl<'a> SourceBackedPublicationMetadataContext<'a> {
+    pub(super) fn new(
+        publication: CapturePublicationContext<'a, BorrowedIndexManifestView<'a>>,
+        selected_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+        failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
+        logical_source_failures: &'a SourceBackedLogicalSourceFailures,
+        record_rejections: &'a SourceBackedRecordRejections,
+        successful_route_outcomes: &'a [SourceBackedSuccessfulRouteOutcome],
+        complete_inventory_route_ids: &'a BTreeSet<SourceRouteIdentity>,
+        route_controls: &'a BTreeMap<SourceRouteIdentity, Vec<u8>>,
+        removed_source_count: usize,
+    ) -> Self {
+        Self {
+            publication,
+            selected_route_ids,
+            failed_routes,
+            logical_source_failures,
+            record_rejections,
+            successful_route_outcomes,
+            complete_inventory_route_ids,
+            route_controls,
+            removed_source_count,
+        }
+    }
+
     pub fn generation_id(&self) -> &str {
         self.publication.generation_id()
     }
 
-    pub fn manifest(&self) -> &GenerationManifest {
-        self.publication.manifest()
+    pub fn snapshot(&self) -> &BorrowedIndexManifestView<'a> {
+        self.publication.snapshot()
     }
 
     pub fn selected_route_ids(&self) -> impl ExactSizeIterator<Item = &SourceRouteIdentity> {
@@ -193,7 +219,7 @@ impl SourceBackedRefreshReceipt {
         let successful_source_has_rejections = self
             .successful_route_ids
             .iter()
-            .filter_map(|route_id| self.commit.manifest().source_route(route_id))
+            .filter_map(|route_id| self.commit.snapshot().source_route(route_id))
             .flat_map(|route| route.sources())
             .any(|route_source| rejected_sources.contains(&route_source.identity().digest()));
         if successful_source_has_rejections || !self.record_rejections.is_empty() {

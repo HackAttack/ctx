@@ -20,7 +20,7 @@ pub use model::{
 };
 use model::{SourceBackedRefreshPlan, SourceBackedVerifiedPublication};
 use route_content::source_route_content_fingerprints;
-use route_outcomes::successful_route_outcomes_for_manifest;
+use route_outcomes::successful_route_outcomes_for_snapshot;
 
 const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -560,7 +560,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 );
             }
         };
-        let base_route_content = source_route_content_fingerprints(writer.base_manifest());
+        let base_snapshot = writer.base_manifest().map(IndexManifestView::borrowed);
+        let base_route_content = source_route_content_fingerprints(base_snapshot.as_ref());
         let base_route_ids = writer
             .base_manifest()
             .map(|manifest| {
@@ -1181,30 +1182,31 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         live_route_controls.retain(|route, _| {
                             publication.manifest().source_route(route).is_some()
                         });
-                        let outcomes = successful_route_outcomes_for_manifest(
+                        let capture_publication = capture_publication_context(publication);
+                        let outcomes = successful_route_outcomes_for_snapshot(
                             &selected_route_ids,
                             &failed_routes,
                             &logical_source_failures,
                             &base_route_content,
-                            publication.manifest(),
+                            capture_publication.snapshot(),
                         );
                         prepared_successful_route_outcomes = Some(outcomes.clone());
-                        factory(SourceBackedPublicationMetadataContext {
-                            publication,
-                            selected_route_ids: &selected_route_ids,
-                            failed_routes: &failed_routes,
-                            logical_source_failures: &logical_source_failures,
-                            record_rejections: &record_rejections,
-                            successful_route_outcomes: &outcomes,
-                            complete_inventory_route_ids: &complete_inventory_route_ids,
-                            route_controls: &live_route_controls,
-                            removed_source_count: applied_removals.len(),
-                        })
+                        factory(SourceBackedPublicationMetadataContext::new(
+                            capture_publication,
+                            &selected_route_ids,
+                            &failed_routes,
+                            &logical_source_failures,
+                            &record_rejections,
+                            &outcomes,
+                            &complete_inventory_route_ids,
+                            &live_route_controls,
+                            applied_removals.len(),
+                        ))
                     },
                 )?;
-            let (commit, disposition, verified) = published.into_parts();
+            let (commit, disposition, verified) = capture_commit_outcome(published).into_parts();
             (
-                commit,
+                IndexCaptureCommitReceipt::new(commit),
                 Some(SourceBackedVerifiedPublication {
                     disposition,
                     verified_index: verified,
@@ -1212,10 +1214,10 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             )
         } else {
             (
-                writer.commit_with_complete_inventory_revalidation(
+                capture_commit_receipt(writer.commit_with_complete_inventory_revalidation(
                     &mut revalidate_source,
                     &mut revalidate_inventory,
-                )?,
+                )?),
                 None,
             )
         };
@@ -1236,12 +1238,12 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         .cloned()
         .collect::<BTreeSet<_>>();
     let successful_route_outcomes = prepared_successful_route_outcomes.unwrap_or_else(|| {
-        successful_route_outcomes_for_manifest(
+        successful_route_outcomes_for_snapshot(
             &selected_route_ids,
             &failed_routes,
             &logical_source_failures,
             &base_route_content,
-            commit.manifest(),
+            commit.snapshot(),
         )
     });
     for route in &registry.routes {
@@ -1281,7 +1283,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
     }));
     let certified_source_count = commit.certified_sources;
     let certified_source_bytes = commit.certified_source_bytes;
-    let sources = commit.manifest().sources.clone();
+    let sources = commit.snapshot().sources().to_vec();
     let source_failures = bounded_source_failures(failed_routes.values());
     route_controls.retain(|route, _| commit.manifest().source_route(route).is_some());
     Ok(SourceBackedRefreshReceipt {

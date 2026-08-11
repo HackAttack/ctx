@@ -13,8 +13,309 @@ use std::{
     },
 };
 
-use ctx_history_core::{CoreRecord, SourceKey};
+use ctx_history_capture_model::SourceRouteIdentity;
+use ctx_history_core::{CertifiedSource, CoreRecord, SourceKey};
 use uuid::Uuid;
+
+/// A borrowed source-route member of an immutable capture snapshot.
+///
+/// The route and its members are held by the snapshot. This reference makes
+/// the capture boundary independent of the persisted manifest representation.
+#[derive(Clone, Copy)]
+pub struct CaptureRouteRef<'a> {
+    route_identity: &'a SourceRouteIdentity,
+    sources: &'a [SourceKey],
+    missing: bool,
+}
+
+impl<'a> CaptureRouteRef<'a> {
+    pub fn new(
+        route_identity: &'a SourceRouteIdentity,
+        sources: &'a [SourceKey],
+        missing: bool,
+    ) -> Self {
+        Self {
+            route_identity,
+            sources,
+            missing,
+        }
+    }
+
+    pub fn route_identity(self) -> &'a SourceRouteIdentity {
+        self.route_identity
+    }
+
+    pub fn sources(self) -> &'a [SourceKey] {
+        self.sources
+    }
+
+    pub fn is_missing(self) -> bool {
+        self.missing
+    }
+}
+
+impl std::fmt::Debug for CaptureRouteRef<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CaptureRouteRef")
+            .field("route_identity", self.route_identity)
+            .field("source_count", &self.sources.len())
+            .field("missing", &self.missing)
+            .finish()
+    }
+}
+
+/// A borrowed Core-record aggregate aligned with one certified source in an
+/// immutable capture snapshot.
+#[derive(Clone, Copy)]
+pub struct CaptureSourceAggregateRef<'a> {
+    source_identity_digest: &'a str,
+    indexed_documents: u64,
+    core_record_accumulator: &'a str,
+}
+
+impl<'a> CaptureSourceAggregateRef<'a> {
+    pub fn new(
+        source_identity_digest: &'a str,
+        indexed_documents: u64,
+        core_record_accumulator: &'a str,
+    ) -> Self {
+        Self {
+            source_identity_digest,
+            indexed_documents,
+            core_record_accumulator,
+        }
+    }
+
+    pub fn source_identity_digest(self) -> &'a str {
+        self.source_identity_digest
+    }
+
+    pub fn indexed_documents(self) -> u64 {
+        self.indexed_documents
+    }
+
+    pub fn core_record_accumulator(self) -> &'a str {
+        self.core_record_accumulator
+    }
+}
+
+impl std::fmt::Debug for CaptureSourceAggregateRef<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CaptureSourceAggregateRef")
+            .field("source_identity_digest", &self.source_identity_digest)
+            .field("indexed_documents", &self.indexed_documents)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Read-only capture facts for one already-verified generation.
+///
+/// Implementors must preserve source/aggregate positional alignment and use
+/// a binary-search route lookup over their canonical route order.
+pub trait ImmutableCaptureSnapshot {
+    fn sources(&self) -> &[CertifiedSource];
+
+    fn source_aggregates(&self) -> impl ExactSizeIterator<Item = CaptureSourceAggregateRef<'_>>;
+
+    fn source_routes(&self) -> impl ExactSizeIterator<Item = CaptureRouteRef<'_>>;
+
+    fn source_route(&self, route_identity: &SourceRouteIdentity) -> Option<CaptureRouteRef<'_>>;
+}
+
+/// Move-owned facts from one capture commit, parameterized by its immutable
+/// snapshot representation.
+pub struct CaptureCommitReceipt<S> {
+    pub generation_id: String,
+    pub opstamp: u64,
+    pub indexed_documents: u64,
+    pub certified_sources: usize,
+    pub certified_source_bytes: u64,
+    snapshot: S,
+}
+
+impl<S> CaptureCommitReceipt<S> {
+    pub fn new(
+        generation_id: String,
+        opstamp: u64,
+        indexed_documents: u64,
+        certified_sources: usize,
+        certified_source_bytes: u64,
+        snapshot: S,
+    ) -> Self {
+        Self {
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            snapshot,
+        }
+    }
+
+    pub fn snapshot(&self) -> &S {
+        &self.snapshot
+    }
+
+    pub fn into_parts(self) -> (String, u64, u64, usize, u64, S) {
+        let Self {
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            snapshot,
+        } = self;
+        (
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            snapshot,
+        )
+    }
+}
+
+impl<S> std::fmt::Debug for CaptureCommitReceipt<S> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CaptureCommitReceipt")
+            .field("generation_id", &self.generation_id)
+            .field("opstamp", &self.opstamp)
+            .field("indexed_documents", &self.indexed_documents)
+            .field("certified_sources", &self.certified_sources)
+            .field("certified_source_bytes", &self.certified_source_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Borrowed facts available to capture metadata construction inside the
+/// publication fence.
+pub struct CapturePublicationContext<'a, S> {
+    generation_id: &'a str,
+    snapshot: S,
+}
+
+impl<'a, S> CapturePublicationContext<'a, S> {
+    pub fn new(generation_id: &'a str, snapshot: S) -> Self {
+        Self {
+            generation_id,
+            snapshot,
+        }
+    }
+
+    pub fn generation_id(&self) -> &'a str {
+        self.generation_id
+    }
+
+    pub fn snapshot(&self) -> &S {
+        &self.snapshot
+    }
+
+    pub fn into_parts(self) -> (&'a str, S) {
+        (self.generation_id, self.snapshot)
+    }
+}
+
+impl<S> std::fmt::Debug for CapturePublicationContext<'_, S> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapturePublicationContext")
+            .field("generation_id", &self.generation_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whether capture publication advanced the durable generation or exactly
+/// reused the active generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapturePublicationDisposition {
+    Published,
+    Reused,
+}
+
+/// An already-open verified capture pin. Its concrete storage type remains
+/// opaque at the runtime boundary.
+pub struct VerifiedCapture<V> {
+    verified: V,
+}
+
+impl<V> VerifiedCapture<V> {
+    pub fn new(verified: V) -> Self {
+        Self { verified }
+    }
+
+    pub fn as_ref(&self) -> &V {
+        &self.verified
+    }
+
+    pub fn into_inner(self) -> V {
+        self.verified
+    }
+}
+
+impl<V> std::fmt::Debug for VerifiedCapture<V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("VerifiedCapture(..)")
+    }
+}
+
+/// One committed or exactly reused capture receipt together with its already
+/// open verified pin.
+pub struct CaptureCommitOutcome<S, V> {
+    receipt: CaptureCommitReceipt<S>,
+    disposition: CapturePublicationDisposition,
+    verified: VerifiedCapture<V>,
+}
+
+impl<S, V> CaptureCommitOutcome<S, V> {
+    pub fn new(
+        receipt: CaptureCommitReceipt<S>,
+        disposition: CapturePublicationDisposition,
+        verified: VerifiedCapture<V>,
+    ) -> Self {
+        Self {
+            receipt,
+            disposition,
+            verified,
+        }
+    }
+
+    pub fn receipt(&self) -> &CaptureCommitReceipt<S> {
+        &self.receipt
+    }
+
+    pub fn disposition(&self) -> CapturePublicationDisposition {
+        self.disposition
+    }
+
+    pub fn verified(&self) -> &VerifiedCapture<V> {
+        &self.verified
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        CaptureCommitReceipt<S>,
+        CapturePublicationDisposition,
+        VerifiedCapture<V>,
+    ) {
+        (self.receipt, self.disposition, self.verified)
+    }
+}
+
+impl<S, V> std::fmt::Debug for CaptureCommitOutcome<S, V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CaptureCommitOutcome")
+            .field("receipt", &self.receipt)
+            .field("disposition", &self.disposition)
+            .field("verified", &self.verified)
+            .finish()
+    }
+}
 
 /// Looks up exact event identities from an immutable capture base.
 pub trait BaseEventLookup: Clone + Send + Sync + 'static {
@@ -598,6 +899,30 @@ mod tests {
 
         assert!(lookup_contains(&lookup, present).unwrap());
         assert!(!lookup_contains(&lookup, absent).unwrap());
+    }
+
+    #[test]
+    fn neutral_commit_debug_does_not_require_a_debug_verified_pin() {
+        struct OpaqueVerifiedPin;
+
+        let receipt = CaptureCommitReceipt::new("generation".to_owned(), 7, 3, 2, 11, ());
+        let outcome = CaptureCommitOutcome::new(
+            receipt,
+            CapturePublicationDisposition::Reused,
+            VerifiedCapture::new(OpaqueVerifiedPin),
+        );
+
+        let debug = format!("{outcome:?}");
+        assert!(debug.contains("CaptureCommitOutcome"));
+        assert!(debug.contains("VerifiedCapture(..)"));
+
+        let (receipt, disposition, verified) = outcome.into_parts();
+        assert_eq!(disposition, CapturePublicationDisposition::Reused);
+        assert_eq!(receipt.into_parts().0, "generation");
+        let _opaque = verified.into_inner();
+
+        let context = CapturePublicationContext::new("generation", ());
+        assert_eq!(context.into_parts().0, "generation");
     }
 
     #[test]

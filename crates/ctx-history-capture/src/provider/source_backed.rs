@@ -14,9 +14,10 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::{
-    CoreRecordBatchProgress, CoreRecordProgress, SourceBackedRecordProgressDelta,
-    SourceRouteIdentity,
+use ctx_history_capture_model::SourceRouteIdentity;
+use ctx_history_capture_runtime::{
+    CapturePublicationContext, CapturePublicationDisposition, CaptureSourceAggregateRef,
+    ImmutableCaptureSnapshot,
 };
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
@@ -24,9 +25,8 @@ use ctx_history_core::{
     CertifiedSourceInventory, CoreRecord, ScannedSourceCounts, SourceKey, TypedKey,
 };
 use ctx_history_index::{
-    CommitReceipt, GenerationBaseCertifiedSource, GenerationManifest, GenerationWriter,
-    GenerationWriterOpenOutcome, IndexError, PublicationDisposition, PublicationMetadataContext,
-    RevalidationTarget, SourceRouteSnapshot, VerifiedIndex, WriterOptions,
+    GenerationBaseCertifiedSource, GenerationWriter, GenerationWriterOpenOutcome, IndexError,
+    RevalidationTarget, SourceRouteSnapshot, WriterOptions,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -112,6 +112,10 @@ pub use inventory::*;
 pub use publication::*;
 pub use registration::*;
 pub(crate) use runtime_adapter::*;
+pub use runtime_adapter::{
+    BorrowedIndexManifestView, CommittedIndexManifestView, IndexCaptureCommitReceipt,
+    IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
+};
 pub use watch::*;
 
 pub(crate) fn source_backed_base_sources(

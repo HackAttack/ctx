@@ -1,11 +1,11 @@
 use super::*;
 
 pub(super) fn reconcile_published_catalog_witness(
+    snapshot: &impl ImmutableCaptureSnapshot,
     previous_catalog: Option<&ExplicitSourceCatalogAuthority>,
     previous_bindings: &[ExplicitSourceCatalogRouteBinding],
     requested_catalog: Option<&ExplicitSourceCatalogAuthority>,
     requested_bindings: &[ExplicitSourceCatalogRouteBinding],
-    manifest: &GenerationManifest,
     route_results: &[SourceBackedRefreshRouteResult],
 ) -> Result<(
     Option<ExplicitSourceCatalogAuthority>,
@@ -21,9 +21,8 @@ pub(super) fn reconcile_published_catalog_witness(
     {
         bail!("requested explicit catalog lineage has no selected terminal route result");
     }
-    let retained_routes = manifest
+    let retained_routes = snapshot
         .source_routes()
-        .iter()
         .map(|route| route.route_identity().clone())
         .collect::<BTreeSet<_>>();
     let mut published_requested_routes = BTreeSet::new();

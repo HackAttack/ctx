@@ -34,6 +34,27 @@ impl CommitReceipt {
         &self.manifest
     }
 
+    /// Moves the exact commit facts and shared immutable manifest out without
+    /// cloning the generation ID or incrementing the manifest reference count.
+    pub fn into_parts(self) -> (String, u64, u64, usize, u64, Arc<GenerationManifest>) {
+        let Self {
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            manifest,
+        } = self;
+        (
+            generation_id,
+            opstamp,
+            indexed_documents,
+            certified_sources,
+            certified_source_bytes,
+            manifest,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn shared_manifest(&self) -> Arc<GenerationManifest> {
         Arc::clone(&self.manifest)

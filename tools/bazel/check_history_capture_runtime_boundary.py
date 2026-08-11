@@ -12,6 +12,7 @@ from typing import Any, Iterator, Sequence
 
 
 EXPECTED_RUNTIME_DEPENDENCIES = {
+    "ctx-history-capture-model": {"path": "../ctx-history-capture-model"},
     "ctx-history-core": {"path": "../ctx-history-core"},
     "uuid": {"workspace": True},
 }
@@ -22,7 +23,10 @@ RUNTIME_FORBIDDEN_CARGO = {
     "ctx-history-index-format",
     "ctx-history-jsonl",
 }
-RUNTIME_DIRECT_BAZEL_DEPENDENCIES = ("//crates/ctx-history-core:lib",)
+RUNTIME_DIRECT_BAZEL_DEPENDENCIES = (
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-core:lib",
+)
 JSONL_FORBIDDEN_CARGO = {"ctx-history-index", "ctx-history-index-format"}
 JSONL_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-capture-model:lib",

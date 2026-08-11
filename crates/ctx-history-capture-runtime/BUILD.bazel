@@ -17,6 +17,7 @@ RUST_SRCS = glob(["src/**/*.rs"])
 PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
 
 RUNTIME_DEPS = [
+    "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
 ]
 
