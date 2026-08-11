@@ -94,11 +94,11 @@ def loc_check_manifest(name, srcs):
     """Writes the exact declared LOC source inventory for sandboxed checks."""
     _loc_check_manifest(name = name, srcs = srcs)
 
-def non_rust_gate(name, mode, args = [], data = [], tags = []):
+def non_rust_gate(name, mode = None, args = [], data = [], tags = []):
     sh_test(
         name = name,
         srcs = ["//:scripts/bazel-test.sh"],
-        args = [mode] + args,
+        args = [mode or name] + args,
         data = data,
         tags = tags + ["non-rust-action"],
     )
