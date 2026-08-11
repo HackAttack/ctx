@@ -7,11 +7,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::compact_json;
-
-use super::super::{
-    health_search::create_private_dir_all,
-    paths_status::{daemon_root_path, write_private_json_file},
-};
+use ctx_daemon_runtime::{create_private_dir_all, daemon_root_path, write_private_json_file};
 
 const SUPERVISOR_RECEIPT_FILE: &str = "supervisor.json";
 

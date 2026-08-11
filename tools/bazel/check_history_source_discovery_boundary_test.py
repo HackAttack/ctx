@@ -10,6 +10,7 @@ from check_history_source_discovery_boundary import (
     BoundaryError,
     EXPECTED_INTERNAL_BAZEL,
     validate_bazel_inventory,
+    validate_discovery_environment_sources,
     validate_manifest,
 )
 
@@ -41,6 +42,22 @@ ctx-history-source-io = { path = "../ctx-history-source-io" }
 [dev-dependencies]
 tempfile.workspace = true
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+"""
+
+SUPERVISOR_ENVIRONMENT = """\
+const DISCOVERY_ENV_ALLOWLIST: &[&str] = &[
+    "APPDATA",
+    "CODEX_HOME",
+    "XDG_DATA_HOME",
+];
+"""
+
+CANONICAL_ENVIRONMENT = """\
+pub const DISCOVERY_ENV_ALLOWLIST: &[&str] = &[
+    "APPDATA",
+    "CODEX_HOME",
+    "XDG_DATA_HOME",
+];
 """
 
 
@@ -91,6 +108,59 @@ class BoundaryMutationTests(unittest.TestCase):
         )
         with self.assertRaises(BoundaryError):
             validate_manifest(self.manifest)
+
+    def test_matching_ordered_discovery_environment_authorities_pass(self) -> None:
+        validate_discovery_environment_sources(
+            SUPERVISOR_ENVIRONMENT,
+            CANONICAL_ENVIRONMENT,
+        )
+
+    def test_supervisor_discovery_environment_addition_is_rejected(self) -> None:
+        mutated = SUPERVISOR_ENVIRONMENT.replace(
+            '    "CODEX_HOME",\n',
+            '    "CLAUDE_CONFIG_DIR",\n    "CODEX_HOME",\n',
+        )
+        with self.assertRaisesRegex(BoundaryError, "set drifted.*CLAUDE_CONFIG_DIR"):
+            validate_discovery_environment_sources(mutated, CANONICAL_ENVIRONMENT)
+
+    def test_supervisor_discovery_environment_removal_is_rejected(self) -> None:
+        mutated = SUPERVISOR_ENVIRONMENT.replace('    "CODEX_HOME",\n', "")
+        with self.assertRaisesRegex(BoundaryError, "set drifted.*CODEX_HOME"):
+            validate_discovery_environment_sources(mutated, CANONICAL_ENVIRONMENT)
+
+    def test_supervisor_discovery_environment_reordering_is_rejected(self) -> None:
+        mutated = SUPERVISOR_ENVIRONMENT.replace(
+            '    "APPDATA",\n    "CODEX_HOME",\n',
+            '    "CODEX_HOME",\n    "APPDATA",\n',
+        )
+        with self.assertRaisesRegex(BoundaryError, "order drifted.*index=0"):
+            validate_discovery_environment_sources(mutated, CANONICAL_ENVIRONMENT)
+
+    def test_duplicate_in_either_discovery_environment_authority_is_rejected(self) -> None:
+        for authority, supervisor, canonical in [
+            (
+                "supervisor",
+                SUPERVISOR_ENVIRONMENT.replace(
+                    '    "CODEX_HOME",\n',
+                    '    "CODEX_HOME",\n    "CODEX_HOME",\n',
+                ),
+                CANONICAL_ENVIRONMENT,
+            ),
+            (
+                "canonical policy",
+                SUPERVISOR_ENVIRONMENT,
+                CANONICAL_ENVIRONMENT.replace(
+                    '    "CODEX_HOME",\n',
+                    '    "CODEX_HOME",\n    "CODEX_HOME",\n',
+                ),
+            ),
+        ]:
+            with self.subTest(authority=authority):
+                with self.assertRaisesRegex(
+                    BoundaryError,
+                    f"{authority}.*duplicate.*CODEX_HOME",
+                ):
+                    validate_discovery_environment_sources(supervisor, canonical)
 
 
 if __name__ == "__main__":

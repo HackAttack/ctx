@@ -236,7 +236,11 @@ py_test(
     data = [
         "tests/mcp-attribution-conformance.manifest.json",
         "//:provider_support_matrix",
+        "//crates/ctx-cli:ctx",
     ] + MCP_ATTRIBUTION_ROUTE_CONTRACTS + mcp_attribution_suite_data(),
+    env = {
+        "CARGO_BIN_EXE_ctx": "$(rootpath //crates/ctx-cli:ctx)",
+    },
     tags = [
         "privacy",
         "provider-conformance",

@@ -13,6 +13,12 @@ filegroup(
     srcs = glob(["**"], exclude = ["BUILD.bazel"]),
 )
 
+filegroup(
+    name = "canonical_discovery_environment_policy_source",
+    testonly = True,
+    srcs = ["src/provider_sources/context.rs"],
+)
+
 COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-history-source-discovery",
 }

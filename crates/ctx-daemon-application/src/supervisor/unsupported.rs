@@ -2,6 +2,7 @@ use super::*;
 
 #[cfg(target_os = "freebsd")]
 pub(super) fn install_native_supervisor(
+    _host: &dyn DaemonApplicationHost,
     _data_root: &Path,
     _executable: &Path,
     _environment: &SupervisorEnvironmentSnapshot,
@@ -58,6 +59,7 @@ pub(super) fn start_native_supervisor(
     windows
 )))]
 pub(super) fn install_native_supervisor(
+    _host: &dyn DaemonApplicationHost,
     _data_root: &Path,
     _executable: &Path,
     _environment: &SupervisorEnvironmentSnapshot,

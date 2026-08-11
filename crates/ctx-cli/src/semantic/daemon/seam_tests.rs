@@ -1,8 +1,17 @@
 use std::process;
 
 use ctx_daemon_runtime::DaemonLock;
+use ctx_daemon_service::{
+    DaemonRunArgs as ServiceDaemonRunArgs, DaemonStartMode, DaemonSupervisor, DaemonTrigger,
+    DaemonUpgradePorts,
+};
 
+use super::super::{
+    daemon_service_ports::{self, PORTS},
+    paths_status::daemon_report,
+};
 use super::*;
+use crate::DaemonTriggerCommandArg;
 
 #[test]
 fn post_lock_initialization_failure_retains_restart_intent() -> Result<()> {

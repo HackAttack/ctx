@@ -1,9 +1,7 @@
 use super::*;
 
 use ctx_daemon_runtime::terminate_identity_verified_legacy_daemon;
-pub(super) use ctx_daemon_runtime::{
-    terminate_identity_verified_residual_daemon, terminate_identity_verified_residual_daemon_owner,
-};
+pub(super) use ctx_daemon_runtime::terminate_identity_verified_residual_daemon;
 
 struct CurrentHandoffSupervisorFence<'a> {
     handoff: &'a mut DaemonUpgradeHandoff,
@@ -85,7 +83,7 @@ pub(in crate::semantic) fn daemon_upgrade_handoff_blocks_current_process(data_ro
     }
 }
 
-pub(super) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
+pub(in crate::semantic) fn daemon_upgrade_handoff_fences_start(data_root: &Path) -> bool {
     !matches!(
         daemon_upgrade_handoff_state_at(&daemon_upgrade_handoff_path(data_root)),
         DaemonUpgradeHandoffState::Absent | DaemonUpgradeHandoffState::Terminal

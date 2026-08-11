@@ -24,7 +24,7 @@ fn linux_systemd_unit(executable: &Path, data_root: &Path) -> Result<String> {
     environment::linux_systemd_unit_with_environment(
         executable,
         data_root,
-        &supervisor_environment_snapshot()?,
+        &supervisor_environment_snapshot(&TestHost)?,
     )
 }
 
@@ -32,7 +32,7 @@ fn launch_agent_plist(executable: &Path, data_root: &Path) -> Result<String> {
     environment::launch_agent_plist_with_environment(
         executable,
         data_root,
-        &supervisor_environment_snapshot()?,
+        &supervisor_environment_snapshot(&TestHost)?,
     )
 }
 
@@ -40,7 +40,7 @@ fn windows_sanitized_daemon_script(executable: &Path, data_root: &Path) -> Resul
     windows_sanitized_daemon_script_with_environment(
         executable,
         data_root,
-        &supervisor_environment_snapshot()?,
+        &supervisor_environment_snapshot(&TestHost)?,
     )
 }
 
@@ -57,7 +57,7 @@ fn windows_task_xml(
         system_root,
         user_sid,
         task_name,
-        &supervisor_environment_snapshot()?,
+        &supervisor_environment_snapshot(&TestHost)?,
     )
 }
 
@@ -76,8 +76,8 @@ fn windows_task_registration_matches(
         system_root,
         user_sid,
         task_name,
-        &supervisor_environment_snapshot()?,
-        &supervisor_manager_environment()?,
+        &supervisor_environment_snapshot(&TestHost)?,
+        &supervisor_manager_environment(&TestHost)?,
     )
 }
 
@@ -286,7 +286,7 @@ fn managed_supervisor_input_freezes_daemon_and_manager_environments() -> Result<
         }
     }
 
-    let _env_lock = crate::config::TEST_LOCAL_USAGE_ENV_LOCK
+    let _env_lock = crate::test_environment_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let _restore = RestoreEnvironment {
@@ -295,7 +295,7 @@ fn managed_supervisor_input_freezes_daemon_and_manager_environments() -> Result<
     };
     env::set_var("CTX_PRO_CHANNEL", "stable");
     env::set_var("HOME", "/manager-before-normalization");
-    let input = ManagedSupervisorInput::new(Path::new("/data"), Path::new("/bin/ctx"))?;
+    let input = ManagedSupervisorInput::new(&TestHost, Path::new("/data"), Path::new("/bin/ctx"))?;
     env::set_var("CTX_PRO_CHANNEL", "staging");
     env::set_var("HOME", "/manager-after-normalization");
 
@@ -533,7 +533,7 @@ fn windows_task_xml_registers_with_task_scheduler() -> Result<()> {
         }
     }
 
-    let manager_environment = supervisor_manager_environment()?;
+    let manager_environment = supervisor_manager_environment(&TestHost)?;
     let sid = current_windows_user_sid(&manager_environment)?;
     let task_name = format!(r"\ctx-test-daemon-xml-{}", std::process::id());
     let temp = tempfile::tempdir()?;
@@ -645,7 +645,7 @@ fn windows_task_xml_registers_with_task_scheduler() -> Result<()> {
     let action_script = windows_sanitized_process_supervisor_script(
         &powershell,
         &probe_arguments,
-        &supervisor_environment_snapshot()?,
+        &supervisor_environment_snapshot(&TestHost)?,
     )?;
     let probe_xml =
         windows_task_xml_with_script(Path::new(&system_root), &sid, &task_name, &action_script)?;
@@ -849,7 +849,8 @@ fn concurrent_recovery_revalidates_registration_under_the_installation_lock() ->
             std::thread::spawn(move || {
                 barrier.wait();
                 ensure_native_supervisor_with(
-                    &ManagedSupervisorInput::new(&data_root, &executable)?,
+                    &TestHost,
+                    &ManagedSupervisorInput::new(&TestHost, &data_root, &executable)?,
                     backend.as_ref(),
                 )
             })
@@ -897,7 +898,8 @@ fn unavailable_manager_falls_back_before_native_mutation_under_the_installation_
     backend.state.lock().unwrap().manager_unavailable = true;
 
     let result = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &backend,
     )?;
     assert_eq!(result, DaemonSupervisorStart::ManagerUnavailable);
@@ -939,7 +941,8 @@ fn unavailable_manager_receipt_waits_for_the_installation_lock() -> Result<()> {
     let worker_executable = executable.clone();
     let worker = std::thread::spawn(move || {
         ensure_native_supervisor_with(
-            &ManagedSupervisorInput::new(&worker_root, &worker_executable)?,
+            &TestHost,
+            &ManagedSupervisorInput::new(&TestHost, &worker_root, &worker_executable)?,
             worker_backend.as_ref(),
         )
     });
@@ -982,7 +985,8 @@ fn unavailable_manager_artifact_inspection_errors_remain_fatal() -> Result<()> {
     backend.state.lock().unwrap().manager_unavailable = true;
 
     let error = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &temp.path().join("ctx"))?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &temp.path().join("ctx"))?,
         &backend,
     )
     .expect_err("artifact metadata errors must not be treated as absence");
@@ -1009,7 +1013,8 @@ fn manager_loss_after_partial_registration_preserves_state_and_falls_back() -> R
     };
 
     let result = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &backend,
     )?;
     assert_eq!(result, DaemonSupervisorStart::ManagerUnavailable);
@@ -1039,7 +1044,8 @@ fn manager_loss_during_partial_cleanup_is_a_degraded_fallback() -> Result<()> {
     };
 
     let result = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &backend,
     )?;
     assert_eq!(result, DaemonSupervisorStart::ManagerUnavailable);
@@ -1075,6 +1081,7 @@ fn manager_unavailable_upgrade_receipt_waits_for_lock_and_preserves_fence() -> R
             Ok(())
         }));
         resume_daemon_supervisor_after_upgrade_with(
+            &TestHost,
             &worker_root,
             &worker_executable,
             worker_backend.as_ref(),
@@ -1117,7 +1124,8 @@ fn operational_manager_cleanup_and_probe_integrity_failures_remain_fatal() -> Re
         ..FakeSupervisorBackend::default()
     };
     let error = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &cleanup_failure,
     )
     .expect_err("an operational manager cleanup failure must remain fatal");
@@ -1129,7 +1137,8 @@ fn operational_manager_cleanup_and_probe_integrity_failures_remain_fatal() -> Re
         ..FakeSupervisorBackend::default()
     };
     let error = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &probe_failure,
     )
     .expect_err("manager identity/probe errors must remain fatal");
@@ -1144,7 +1153,8 @@ fn operational_manager_cleanup_and_probe_integrity_failures_remain_fatal() -> Re
         ..FakeSupervisorBackend::default()
     };
     let error = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &ownership_failure,
     )
     .expect_err("daemon ownership preparation failures must remain fatal");
@@ -1166,7 +1176,8 @@ fn operational_manager_without_an_identity_verified_owner_remains_fatal() -> Res
     };
 
     let error = ensure_native_supervisor_with(
-        &ManagedSupervisorInput::new(temp.path(), &executable)?,
+        &TestHost,
+        &ManagedSupervisorInput::new(&TestHost, temp.path(), &executable)?,
         &backend,
     )
     .expect_err("operational manager ownership failures must not degrade to fallback");
@@ -1220,6 +1231,7 @@ fn upgrade_handoff_releases_fence_before_native_manager_start() -> Result<()> {
         Ok(())
     }));
     let result = resume_daemon_supervisor_after_upgrade_with(
+        &TestHost,
         temp.path(),
         &executable,
         &backend,
@@ -1248,6 +1260,7 @@ fn upgrade_handoff_keeps_fence_for_detached_fallback_without_native_registration
         Ok(())
     }));
     let result = resume_daemon_supervisor_after_upgrade_with(
+        &TestHost,
         temp.path(),
         &executable,
         &backend,
@@ -1269,25 +1282,25 @@ fn status_revalidates_registration_and_live_owner_instead_of_replaying_receipt()
         &executable,
         backend.artifact_path(temp.path())?,
         4_242,
-        Some(supervisor_environment_snapshot()?.contract_report()),
+        Some(supervisor_environment_snapshot(&TestHost)?.contract_report()),
     )?;
 
     backend.state.lock().unwrap().live_owner = Some(7_331);
-    let restarted = revalidated_supervisor_report_with(temp.path(), &backend);
+    let restarted = revalidated_supervisor_report_with(&TestHost, temp.path(), &backend);
     assert_eq!(restarted["status"], "installed");
     assert_eq!(restarted["registration_verified"], true);
     assert_eq!(restarted["live_owner_verified"], true);
     assert_eq!(restarted["owner_pid"], 7_331);
 
     backend.state.lock().unwrap().live_owner = None;
-    let stopped = revalidated_supervisor_report_with(temp.path(), &backend);
+    let stopped = revalidated_supervisor_report_with(&TestHost, temp.path(), &backend);
     assert_eq!(stopped["status"], "registered_not_running");
     assert_eq!(stopped["registration_verified"], true);
     assert_eq!(stopped["live_owner_verified"], false);
     assert_eq!(stopped["owner_pid"], Value::Null);
 
     backend.state.lock().unwrap().registered = false;
-    let stale = revalidated_supervisor_report_with(temp.path(), &backend);
+    let stale = revalidated_supervisor_report_with(&TestHost, temp.path(), &backend);
     assert_eq!(stale["status"], "stale_registration");
     assert_eq!(stale["registration_verified"], false);
     assert_eq!(stale["live_owner_verified"], false);
@@ -1304,16 +1317,15 @@ fn status_reports_manager_unavailability_without_registration_or_lock_mutation()
         &executable,
         backend.artifact_path(temp.path())?,
         4_242,
-        Some(supervisor_environment_snapshot()?.contract_report()),
+        Some(supervisor_environment_snapshot(&TestHost)?.contract_report()),
     )?;
-    let receipt_path =
-        super::super::paths_status::daemon_root_path(temp.path()).join("supervisor.json");
+    let receipt_path = ctx_daemon_runtime::daemon_root_path(temp.path()).join("supervisor.json");
     let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
     receipt["environment_snapshot"]["sha256"] = json!("0".repeat(64));
-    super::super::paths_status::write_private_json_file(&receipt_path, &receipt)?;
+    ctx_daemon_runtime::write_private_json_file(&receipt_path, &receipt)?;
     backend.state.lock().unwrap().manager_unavailable = true;
 
-    let report = revalidated_supervisor_report_with(temp.path(), &backend);
+    let report = revalidated_supervisor_report_with(&TestHost, temp.path(), &backend);
     assert_eq!(report["status"], "manager_unavailable");
     assert_eq!(report["registration_verified"], false);
     assert_eq!(report["live_owner_verified"], false);
@@ -1355,6 +1367,7 @@ fn status_invalidates_healthy_receipt_when_current_launch_environment_is_unreada
         },
     )?;
     let report = daemon_supervisor_report_with_normalized_environment(
+        &TestHost,
         temp.path(),
         Err(anyhow!("CTX_PRO_CHANNEL is not Unicode")),
     );
@@ -1379,6 +1392,7 @@ fn native_control_context_accepts_nonunicode_manager_values_without_launch_snaps
         OsString::from_vec(vec![b'/', 0xff]),
     )]))?;
     let backend = PlatformNativeSupervisor::new(
+        &TestHost,
         Path::new("/tmp/ctx-control-test"),
         None,
         &manager_environment,
@@ -1402,16 +1416,15 @@ fn status_preserves_installed_environment_hash_and_flags_current_mismatch() -> R
         &executable,
         backend.artifact_path(temp.path())?,
         4_242,
-        Some(supervisor_environment_snapshot()?.contract_report()),
+        Some(supervisor_environment_snapshot(&TestHost)?.contract_report()),
     )?;
-    let receipt_path =
-        super::super::paths_status::daemon_root_path(temp.path()).join("supervisor.json");
+    let receipt_path = ctx_daemon_runtime::daemon_root_path(temp.path()).join("supervisor.json");
     let mut installed: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
     installed["environment_snapshot"]["sha256"] = json!("0".repeat(64));
     installed["environment_snapshot"]["captured_at_ms"] = json!(1234);
-    super::super::paths_status::write_private_json_file(&receipt_path, &installed)?;
+    ctx_daemon_runtime::write_private_json_file(&receipt_path, &installed)?;
 
-    let report = revalidated_supervisor_report_with(temp.path(), &backend);
+    let report = revalidated_supervisor_report_with(&TestHost, temp.path(), &backend);
     assert_eq!(
         report["environment_snapshot"]["sha256"],
         "0".repeat(64),
@@ -1430,7 +1443,7 @@ fn status_preserves_installed_environment_hash_and_flags_current_mismatch() -> R
 #[test]
 fn supervisor_report_states_forced_termination_identity_limitations() {
     let temp = tempfile::tempdir().unwrap();
-    let report = daemon_supervisor_report(temp.path());
+    let report = daemon_supervisor_report(&TestHost, temp.path());
     if cfg!(target_os = "linux") {
         assert_eq!(
             report["forced_termination_identity"]["strategy"],
@@ -1454,7 +1467,7 @@ fn supervisor_report_states_forced_termination_identity_limitations() {
 #[test]
 fn supervisor_live_ownership_requires_exact_manager_pid_and_executable() {
     let temp = tempfile::tempdir().unwrap();
-    let _lock = super::super::paths_status::DaemonLock::acquire(temp.path())
+    let _lock = ctx_daemon_runtime::DaemonLock::acquire(temp.path())
         .unwrap()
         .expect("daemon lock");
     let executable = env::current_exe().unwrap();
@@ -1496,9 +1509,9 @@ fn fallback_disable_status_is_retry_safe_without_claiming_registration() {
         },
     )
     .unwrap();
-    disable_daemon_supervisor(temp.path()).unwrap();
-    disable_daemon_supervisor(temp.path()).unwrap();
-    let status = daemon_supervisor_report(temp.path());
+    disable_daemon_supervisor(&TestHost, temp.path()).unwrap();
+    disable_daemon_supervisor(&TestHost, temp.path()).unwrap();
+    let status = daemon_supervisor_report(&TestHost, temp.path());
     assert_eq!(status["status"], "disabled");
     assert_eq!(status["registration_verified"], false);
     assert_eq!(status["live_owner_verified"], false);

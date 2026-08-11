@@ -6,41 +6,49 @@ pub(crate) fn run_daemon_command(
     config: &AppConfig,
     ui: &mut Ui,
 ) -> Result<()> {
-    let started = Instant::now();
-    let operation = daemon_operation_for_command(&args.command);
-    let telemetry_root = data_root.clone();
-    let result = match args.command {
-        DaemonCommand::Run(args) => run_daemon(args, data_root, config, ui),
-        DaemonCommand::Status(args) => run_daemon_status(args, data_root, ui),
-        DaemonCommand::Enable(args) => run_daemon_enabled_update(args, data_root, true, ui),
-        DaemonCommand::Disable(args) => run_daemon_disable(args, data_root, ui),
-    };
-    if let Some(operation) = operation {
-        let event = PublicEventV1::OperationCompleted(OperationCompletedV1::for_daemon(
-            operation,
-            if result.is_ok() {
-                Outcome::Success
-            } else {
-                Outcome::Failure
-            },
-            started.elapsed(),
-        ));
-        send_daemon_events(&telemetry_root, &[event]);
-    }
-    result
+    super::super::daemon_supervisor::with_daemon_run_application(config, |application| {
+        let started = Instant::now();
+        let operation = daemon_operation_for_command(&args.command);
+        let telemetry_root = data_root.clone();
+        let result = match args.command {
+            DaemonCommand::Run(args) => run_daemon(application, args, data_root, ui),
+            DaemonCommand::Status(args) => run_daemon_status(application, args, data_root, ui),
+            DaemonCommand::Enable(args) => {
+                run_daemon_enabled_update(application, args, data_root, true, ui)
+            }
+            DaemonCommand::Disable(args) => run_daemon_disable(application, args, data_root, ui),
+        };
+        if let Some(operation) = operation {
+            application.observe_daemon_operation(
+                &telemetry_root,
+                operation,
+                result.is_ok(),
+                started.elapsed(),
+            );
+        }
+        result
+    })
 }
 
-fn daemon_operation_for_command(command: &DaemonCommand) -> Option<DaemonOperationV1> {
+fn daemon_operation_for_command(
+    command: &DaemonCommand,
+) -> Option<ctx_daemon_application::DaemonObservedOperation> {
     match command {
         DaemonCommand::Run(_) => None,
-        DaemonCommand::Status(_) => Some(DaemonOperationV1::Status),
-        DaemonCommand::Enable(_) => Some(DaemonOperationV1::Enable),
-        DaemonCommand::Disable(_) => Some(DaemonOperationV1::Disable),
+        DaemonCommand::Status(_) => Some(ctx_daemon_application::DaemonObservedOperation::Status),
+        DaemonCommand::Enable(_) => Some(ctx_daemon_application::DaemonObservedOperation::Enable),
+        DaemonCommand::Disable(_) => Some(ctx_daemon_application::DaemonObservedOperation::Disable),
     }
 }
 
-pub(super) fn run_daemon_status(args: FormatArgs, data_root: PathBuf, ui: &mut Ui) -> Result<()> {
-    let daemon = daemon_report(&data_root);
+pub(super) fn run_daemon_status(
+    application: &ctx_daemon_application::DaemonApplication<'_>,
+    args: FormatArgs,
+    data_root: PathBuf,
+    ui: &mut Ui,
+) -> Result<()> {
+    let daemon =
+        super::super::paths_status::daemon_report_with_application(application, &data_root, true);
     let pro = crate::pro::lifecycle_status_json(&data_root);
     if args.format.is_json() {
         print_json(json!({
@@ -60,44 +68,27 @@ pub(super) fn run_daemon_status(args: FormatArgs, data_root: PathBuf, ui: &mut U
 }
 
 pub(super) fn run_daemon_enabled_update(
+    application: &ctx_daemon_application::DaemonApplication<'_>,
     args: FormatArgs,
     data_root: PathBuf,
     enabled: bool,
     ui: &mut Ui,
 ) -> Result<()> {
-    config::set_daemon_enabled(&data_root, enabled)?;
-    let handoff = if enabled {
-        let config = AppConfig::load(&data_root)?;
-        Some(super::super::daemon_autostart::autostart_daemon_and_wait(
-            &data_root,
-            &config,
-            DaemonTriggerCommandArg::Setup,
-        )?)
-    } else {
-        request_daemon_shutdown_and_wait(&data_root)?;
-        super::super::daemon_supervisor::disable_daemon_supervisor(&data_root)?;
-        super::super::cancel_core_finalization_generation_lease(&data_root, "daemon was disabled")?;
-        None
-    };
-    let supervisor = super::super::daemon_supervisor::daemon_supervisor_report(&data_root);
-    let persistent = supervisor.get("status").and_then(Value::as_str) == Some("installed")
-        && supervisor
-            .get("registration_verified")
-            .and_then(Value::as_bool)
-            == Some(true)
-        && supervisor
-            .get("live_owner_verified")
-            .and_then(Value::as_bool)
-            == Some(true);
-    let running = handoff.is_some();
+    let update = application
+        .update_daemon_enabled(&data_root, enabled)
+        .map_err(daemon_enabled_update_error)?;
+    let supervisor = update.supervisor.into_json();
+    let persistent = update.persistent;
+    let running = update.running;
+    let pid = update.pid;
     let config_path = data_root.join(CONFIG_FILE);
     if args.format.is_json() {
         print_json(json!({
             "schema_version": 1,
             "daemon_enabled": enabled,
             "running": running,
-            "pid": handoff.map(|handoff| handoff.pid),
-            "persistent": enabled && persistent,
+            "pid": pid,
+            "persistent": persistent,
             "supervisor": supervisor,
             "config_path": config_path,
             "local_only": true,
@@ -119,9 +110,41 @@ pub(super) fn run_daemon_enabled_update(
     Ok(())
 }
 
-fn run_daemon_disable(args: DaemonDisableArgs, data_root: PathBuf, ui: &mut Ui) -> Result<()> {
+fn daemon_enabled_update_error(
+    error: ctx_daemon_application::DaemonEnabledUpdateError,
+) -> anyhow::Error {
+    match error {
+        ctx_daemon_application::DaemonEnabledUpdateError::Operation(error) => error,
+        ctx_daemon_application::DaemonEnabledUpdateError::StartSuppressed => anyhow!(
+            "ctx daemon start was suppressed (hosted_uninstall_active); retry after it clears or run `ctx setup --no-daemon`"
+        ),
+        ctx_daemon_application::DaemonEnabledUpdateError::Supervisor(error) => {
+            error.context("establish ctx daemon supervision")
+        }
+        ctx_daemon_application::DaemonEnabledUpdateError::Start(error) => match error {
+            ctx_daemon_application::DaemonStartError::Suppressed(reason) => anyhow!(
+                "ctx daemon start was suppressed ({reason}); retry after it clears or run `ctx setup --no-daemon`"
+            ),
+            ctx_daemon_application::DaemonStartError::BinaryIdentity(error) => error,
+            ctx_daemon_application::DaemonStartError::Start(error) => anyhow!(
+                "ctx daemon did not start: {error:#}. Run `ctx daemon status --format json`, then `ctx daemon run` for details"
+            ),
+            ctx_daemon_application::DaemonStartError::Ready(error) => anyhow!(
+                "ctx daemon did not become ready: {error}. Run `ctx daemon status --format json`, then `ctx daemon run` for details"
+            ),
+        },
+    }
+}
+
+fn run_daemon_disable(
+    application: &ctx_daemon_application::DaemonApplication<'_>,
+    args: DaemonDisableArgs,
+    data_root: PathBuf,
+    ui: &mut Ui,
+) -> Result<()> {
     if !args.prepare_uninstall {
         return run_daemon_enabled_update(
+            application,
             FormatArgs {
                 format: args.format,
             },
@@ -140,40 +163,9 @@ fn run_daemon_disable(args: DaemonDisableArgs, data_root: PathBuf, ui: &mut Ui) 
     Ok(())
 }
 
-fn request_daemon_shutdown_and_wait(data_root: &Path) -> Result<()> {
-    const SHUTDOWN_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-    const FORCED_SHUTDOWN_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-    const SHUTDOWN_RETRY: StdDuration = StdDuration::from_millis(50);
-    let mut deadline = Instant::now() + SHUTDOWN_TIMEOUT;
-    let mut forced = false;
-    while daemon_lock_is_active(data_root) {
-        let _ = daemon_source_refresh_request(
-            data_root,
-            compact_json(json!({
-                "schema_version": 1,
-                "op": "shutdown",
-            })),
-            StdDuration::from_millis(500),
-            16 * 1024,
-        );
-        if Instant::now() >= deadline {
-            if forced {
-                return Err(anyhow!(
-                    "daemon was disabled but retained lifecycle ownership after identity-verified termination"
-                ));
-            }
-            terminate_current_executable_daemon(data_root).context(
-                "terminate identity-verified daemon after cooperative shutdown timed out",
-            )?;
-            forced = true;
-            deadline = Instant::now() + FORCED_SHUTDOWN_TIMEOUT;
-        }
-        std::thread::sleep(SHUTDOWN_RETRY);
-    }
-    remove_released_daemon_service_artifacts(data_root)
-}
-
-pub(super) fn remove_released_daemon_service_artifacts(data_root: &Path) -> Result<()> {
+pub(in crate::semantic) fn remove_released_daemon_service_artifacts(
+    data_root: &Path,
+) -> Result<()> {
     if daemon_lock_is_active(data_root) {
         return Err(anyhow!(
             "refusing to remove daemon service artifacts while lifecycle ownership remains active"
