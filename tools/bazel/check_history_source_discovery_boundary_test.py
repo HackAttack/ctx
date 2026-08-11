@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from check_history_source_discovery_boundary import (
+    BoundaryError,
+    EXPECTED_INTERNAL_BAZEL,
+    validate_bazel_inventory,
+    validate_manifest,
+)
+
+
+CARGO = """\
+[package]
+name = "ctx-history-source-discovery"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+chrono.workspace = true
+directories.workspace = true
+json5.workspace = true
+jsonc-parser.workspace = true
+libc.workspace = true
+quick-xml.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml_edit.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+
+[dev-dependencies]
+tempfile.workspace = true
+ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+"""
+
+
+class BoundaryMutationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.manifest = Path(self.temporary.name) / "Cargo.toml"
+        self.manifest.write_text(CARGO, encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_current_cargo_and_queried_bazel_inventories_pass(self) -> None:
+        validate_manifest(self.manifest)
+        validate_bazel_inventory(EXPECTED_INTERNAL_BAZEL, "direct")
+
+    def test_cargo_only_forbidden_edge_is_rejected(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8").replace(
+                "ctx-history-core =",
+                'ctx-history-jsonl = { path = "../ctx-history-jsonl" }\nctx-history-core =',
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BoundaryError, "Cargo production dependency"):
+            validate_manifest(self.manifest)
+        validate_bazel_inventory(EXPECTED_INTERNAL_BAZEL, "direct")
+
+    def test_bazel_only_forbidden_edge_is_rejected(self) -> None:
+        validate_manifest(self.manifest)
+        queried = EXPECTED_INTERNAL_BAZEL | {"//crates/ctx-history-capture:lib"}
+        with self.assertRaisesRegex(BoundaryError, "Bazel direct internal allowlist"):
+            validate_bazel_inventory(queried, "direct")
+
+    def test_unapproved_internal_crate_is_rejected_without_name_denylist(self) -> None:
+        queried = EXPECTED_INTERNAL_BAZEL | {"//crates/ctx-protocol:lib"}
+        with self.assertRaises(BoundaryError):
+            validate_bazel_inventory(queried, "transitive")
+
+    def test_production_source_io_test_support_is_rejected(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8").replace(
+                'ctx-history-source-io = { path = "../ctx-history-source-io" }',
+                'ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(BoundaryError):
+            validate_manifest(self.manifest)
+
+
+if __name__ == "__main__":
+    unittest.main()
