@@ -18,10 +18,10 @@ pub enum LocateRequest {
 
 #[derive(Debug)]
 pub enum LocateResult {
-    Event(CoreEventRecord),
+    Event(Box<CoreEventRecord>),
     Session {
-        session: SessionRecord,
-        first_event: EventRecord,
+        session: Box<SessionRecord>,
+        first_event: Box<EventRecord>,
     },
 }
 
@@ -29,7 +29,8 @@ impl PinnedHistoryQuery<'_> {
     pub fn locate(&self, request: &LocateRequest) -> Result<LocateResult> {
         match request {
             LocateRequest::Event { selector } => {
-                resolve_core_event_with_refs(&self.references, selector).map(LocateResult::Event)
+                resolve_core_event_with_refs(&self.references, selector)
+                    .map(|event| LocateResult::Event(Box::new(event)))
             }
             LocateRequest::Session {
                 selector,
@@ -54,8 +55,8 @@ impl PinnedHistoryQuery<'_> {
                         )
                     })?;
                 Ok(LocateResult::Session {
-                    session,
-                    first_event,
+                    session: Box::new(session),
+                    first_event: Box::new(first_event),
                 })
             }
         }
