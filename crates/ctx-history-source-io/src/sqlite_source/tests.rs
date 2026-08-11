@@ -454,6 +454,34 @@ fn pinned_read_only_wal_admission_rejects_root_before_sqlite_open() {
     .is_err());
 }
 
+#[test]
+fn sidecar_free_unavailable_incremental_never_copies_the_database_family() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    create_database(&database, "sidecar-free");
+    assert!(!temp.path().join("provider.sqlite-wal").exists());
+    assert!(!temp.path().join("provider.sqlite-shm").exists());
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+
+    super::snapshot::acquisition::force_next_pinned_wal_unavailable_for_test();
+    let opened =
+        authority.open_incremental_snapshot_with_progress(OsStr::new("provider.sqlite"), |_| {
+            Ok::<_, ()>(())
+        });
+    assert!(matches!(
+        opened,
+        Err(SqliteSourceProgressError::Source(
+            SqliteSourceAccessError::SnapshotUnavailable { .. }
+        ))
+    ));
+    let counters = authority.snapshot_counters();
+    assert_eq!(counters.pinned_read_only_wal_snapshot_opens(), 0);
+    assert_eq!(counters.copied_snapshot_opens(), 0);
+    assert_eq!(counters.source_bytes_copied(), 0);
+    assert_eq!(staging_entries(data_root.path()), 0);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn active_source_family_contract_sqlite_keeps_a_pinned_view_and_fails_changed_writer_generation() {

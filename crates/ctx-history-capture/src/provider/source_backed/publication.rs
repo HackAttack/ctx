@@ -28,6 +28,21 @@ type SourceBackedPublicationMetadataFactory<'factory> =
         ) -> ctx_history_index::Result<Vec<u8>>
         + 'factory;
 
+#[cfg(test)]
+thread_local! {
+    static PARTIAL_BASE_ROUTE_MEMBER_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_partial_base_route_member_visits() {
+    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn partial_base_route_member_visits() -> u64 {
+    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(std::cell::Cell::get)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SourceBackedRefreshExecutionBudget {
     discovery_duration: Duration,
@@ -875,28 +890,59 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             if route.driver.is_none() || !successful_this_attempt.contains(route_identity) {
                 continue;
             }
-            let mut members = if partial_routes.contains(route_identity) {
-                writer
-                    .base_manifest()
-                    .and_then(|base| base.source_route(route_identity))
-                    .map(|snapshot| snapshot.sources().to_vec())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            for owner in owners
+            let route_owners = owners
                 .values()
                 .filter(|owner| owner.route_index == route_index && owner.present)
-            {
-                members.retain(|member| member.identity() != owner.source.identity());
-                members.push(owner.source.clone());
+                .chain(
+                    owners
+                        .values()
+                        .filter(|owner| owner.route_index == route_index && !owner.present),
+                )
+                .map(|owner| (owner.source.identity().digest(), owner))
+                .collect::<HashMap<_, _>>();
+            let mut remaining = route_owners;
+            let base_route = writer
+                .base_manifest()
+                .and_then(|base| base.source_route(route_identity))
+                .filter(|_| partial_routes.contains(route_identity));
+            let membership_unchanged = base_route.is_some_and(|snapshot| {
+                remaining.values().all(|owner| {
+                    owner.present
+                        && snapshot
+                            .sources()
+                            .binary_search_by_key(&owner.source.identity().digest(), |member| {
+                                member.identity().digest()
+                            })
+                            .ok()
+                            .and_then(|index| snapshot.sources().get(index))
+                            .is_some_and(|member| member.exact_descriptor_eq(&owner.source))
+                })
+            });
+            if membership_unchanged {
+                present_routes.push(base_route.expect("checked partial base route").clone());
+                continue;
             }
-            for owner in owners
-                .values()
-                .filter(|owner| owner.route_index == route_index && !owner.present)
-            {
-                members.retain(|member| member.identity() != owner.source.identity());
-            }
+            let mut members = base_route
+                .into_iter()
+                .flat_map(ctx_history_index::SourceRouteSnapshot::sources)
+                .filter_map(|member| {
+                    #[cfg(test)]
+                    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
+                        visits.set(visits.get().saturating_add(1));
+                    });
+                    match remaining.remove(&member.identity().digest()) {
+                        Some(owner) if owner.present => Some(owner.source.clone()),
+                        Some(_) => None,
+                        None => Some(member.clone()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            members.extend(
+                remaining
+                    .into_values()
+                    .filter(|owner| owner.present)
+                    .map(|owner| owner.source.clone()),
+            );
             present_routes.push(SourceRouteSnapshot::present(
                 route_identity.clone(),
                 members,

@@ -3,7 +3,8 @@ use std::sync::Mutex;
 use super::*;
 use crate::provider::source_backed::{
     family::document::{
-        ChangedDocumentSink, CompleteDocumentTree, DocumentSourceTerminal, ReplacementDocumentTree,
+        ChangedDocumentSink, CompleteDocumentTree, DocumentBaseRoute, DocumentSourceTerminal,
+        ReplacementDocumentTree,
     },
     route_error as default_route_error, SourceBackedRouteError, SourceBackedRouteErrorKind,
     SourceBackedRouteResult,
@@ -21,12 +22,71 @@ pub(crate) struct HermesTreeAuthority {
     deferred_incremental: bool,
 }
 
+struct HermesCompleteReconciliationContext<'a> {
+    base_sources: &'a [CertifiedSource],
+    route_control: Option<&'a [u8]>,
+    demand: SourceBackedReconciliationDemand,
+    report_progress:
+        &'a mut dyn FnMut(SourceBackedCurrentSourceProgress) -> SourceBackedRouteResult<()>,
+}
+
+impl HermesReconciliationContext for HermesCompleteReconciliationContext<'_> {
+    fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        self.demand
+    }
+
+    fn route_control(&self) -> Option<&[u8]> {
+        self.route_control
+    }
+
+    fn exact_base_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+        self.base_sources
+            .iter()
+            .find(|base| base.observation().source().exact_descriptor_eq(source))
+            .cloned()
+    }
+
+    fn report_progress(
+        &mut self,
+        progress: SourceBackedCurrentSourceProgress,
+    ) -> SourceBackedRouteResult<()> {
+        (self.report_progress)(progress)
+    }
+}
+
+impl HermesReconciliationContext for DocumentBaseRoute<'_, '_> {
+    fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        DocumentBaseRoute::reconciliation_demand(self)
+    }
+
+    fn route_control(&self) -> Option<&[u8]> {
+        DocumentBaseRoute::route_control(self)
+    }
+
+    fn exact_base_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+        DocumentBaseRoute::exact_source(self, source)
+    }
+
+    fn report_progress(
+        &mut self,
+        progress: SourceBackedCurrentSourceProgress,
+    ) -> SourceBackedRouteResult<()> {
+        DocumentBaseRoute::report_progress(self, progress)
+    }
+}
+
 impl ReplacementDocumentTree for HermesSourceCandidate {
     type Leaf = HermesSessionLeaf;
     type TreeAuthority = HermesTreeAuthority;
 
     fn parser_revision(&self) -> &'static str {
         HERMES_SOURCE_PARSER_REVISION
+    }
+
+    fn route_control_expectation(&self) -> Option<SourceBackedRouteControlExpectation> {
+        Some(SourceBackedRouteControlExpectation::Hermes {
+            profile_source_descriptor: self.source.exact_descriptor_digest(),
+        })
     }
 
     fn owns_source(&self, source: &SourceKey) -> bool {
@@ -79,135 +139,24 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
             SourceBackedCurrentSourceProgress,
         ) -> SourceBackedRouteResult<()>,
     ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
-        if std::fs::symlink_metadata(self.path()).is_err() {
-            return Err(SourceBackedRouteError::new(
-                SourceBackedRouteErrorKind::Unavailable,
-                "selected Hermes database is unavailable",
-            ));
-        }
-        let may_increment = reconciliation_demand == SourceBackedReconciliationDemand::Incremental
-            && hermes_refresh_receipt(base_route_control).is_some();
-        let (mut sqlite_authority, mut snapshot, mut admitted_demand) = if may_increment {
-            match open_root_authorized_snapshot_with_progress(
-                &self.data_root,
-                self.path(),
-                true,
-                report_progress,
-            ) {
-                Ok((authority, snapshot)) => (
-                    authority,
-                    snapshot,
-                    SourceBackedReconciliationDemand::Incremental,
-                ),
-                Err(error) if hermes_incremental_snapshot_unavailable(&error) => {
-                    let publication_receipt = hermes_refresh_receipt(base_route_control)
-                        .ok_or_else(|| hermes_changed("Hermes route control disappeared"))?;
-                    let tree_fingerprint = hermes_deferred_tree_fingerprint(
-                        &self.source,
-                        base_route_control.expect("validated Hermes route control"),
-                    );
-                    return Ok(CompleteDocumentTree::new_partial(
-                        tree_fingerprint,
-                        Vec::new(),
-                        HermesTreeAuthority {
-                            opening_evidence: None,
-                            schema: None,
-                            _schema_evidence: Vec::new(),
-                            _sqlite_authority: None,
-                            snapshot: Mutex::new(None),
-                            publication_receipt,
-                            terminal_revalidate: None,
-                            deferred_incremental: true,
-                        },
-                    ));
-                }
-                Err(error) => return Err(hermes_route_error(error)),
-            }
-        } else {
-            let (authority, snapshot) = open_root_authorized_snapshot_with_progress(
-                &self.data_root,
-                self.path(),
-                false,
-                report_progress,
-            )
-            .map_err(hermes_route_error)?;
-            (
-                authority,
-                snapshot,
-                SourceBackedReconciliationDemand::Exhaustive,
-            )
-        };
-        if let Err(error) = snapshot.revalidate().map_err(hermes_sqlite_route_error) {
-            return Err(abort_hermes_route_snapshot(snapshot, error));
-        }
-        if admitted_demand == SourceBackedReconciliationDemand::Incremental {
-            let prior = hermes_refresh_receipt(base_route_control)
-                .ok_or_else(|| hermes_changed("Hermes route control disappeared"))?;
-            let requires_exhaustive = hermes_incremental_requires_exhaustive(
-                snapshot.connection().map_err(hermes_sqlite_route_error)?,
-                &prior,
-                *snapshot.evidence().identity(),
-            )
-            .map_err(hermes_route_error)?;
-            if requires_exhaustive {
-                snapshot.abort().map_err(hermes_sqlite_route_error)?;
-                let reopened = open_root_authorized_snapshot_with_progress(
-                    &self.data_root,
-                    self.path(),
-                    false,
-                    report_progress,
-                )
-                .map_err(hermes_route_error)?;
-                sqlite_authority = reopened.0;
-                snapshot = reopened.1;
-                admitted_demand = SourceBackedReconciliationDemand::Exhaustive;
-            }
-        }
-        let opening_evidence = snapshot.evidence().clone();
-        let inventory = match observe_hermes_reconciliation_inventory(
-            self,
-            snapshot.connection().map_err(hermes_sqlite_route_error)?,
+        let mut context = HermesCompleteReconciliationContext {
             base_sources,
-            base_route_control,
-            admitted_demand,
-            *opening_evidence.identity(),
-            hermes_now_ms(),
+            route_control: base_route_control,
+            demand: reconciliation_demand,
             report_progress,
-        ) {
-            Ok(inventory) => inventory,
-            Err(error) => {
-                return Err(abort_hermes_route_snapshot(
-                    snapshot,
-                    hermes_route_error(error),
-                ))
-            }
         };
-        let publication_receipt = inventory.publication_receipt.clone().ok_or_else(|| {
-            hermes_internal("Hermes reconciliation produced no route control receipt")
-        })?;
-        let authority = HermesTreeAuthority {
-            opening_evidence: Some(opening_evidence),
-            schema: Some(inventory.schema),
-            _schema_evidence: inventory.schema_evidence,
-            _sqlite_authority: Some(sqlite_authority),
-            terminal_revalidate: Some(snapshot.terminal_revalidator()),
-            snapshot: Mutex::new(Some(snapshot)),
-            publication_receipt,
-            deferred_incremental: false,
-        };
-        if inventory.reconciliation_demand == SourceBackedReconciliationDemand::Incremental {
-            Ok(CompleteDocumentTree::new_partial(
-                inventory.tree_fingerprint,
-                inventory.leaves,
-                authority,
-            ))
-        } else {
-            Ok(CompleteDocumentTree::new(
-                inventory.tree_fingerprint,
-                inventory.leaves,
-                authority,
-            ))
-        }
+        discover_hermes_tree(self, &mut context)
+    }
+
+    fn uses_lazy_base_route(&self, demand: SourceBackedReconciliationDemand) -> bool {
+        demand == SourceBackedReconciliationDemand::Incremental
+    }
+
+    fn discover_complete_with_lazy_base(
+        &self,
+        base_route: &mut DocumentBaseRoute<'_, '_>,
+    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
+        discover_hermes_tree(self, base_route)
     }
 
     fn scan_changed(
@@ -358,6 +307,145 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
             .ok_or_else(|| hermes_internal("Hermes terminal revalidator is unavailable"))?;
         route_hermes_terminal_revalidation(terminal_revalidate())?;
         Ok(tree.tree_fingerprint)
+    }
+}
+
+fn discover_hermes_tree(
+    candidate: &HermesSourceCandidate,
+    context: &mut dyn HermesReconciliationContext,
+) -> SourceBackedRouteResult<CompleteDocumentTree<HermesSessionLeaf, HermesTreeAuthority>> {
+    if std::fs::symlink_metadata(candidate.path()).is_err() {
+        return Err(SourceBackedRouteError::new(
+            SourceBackedRouteErrorKind::Unavailable,
+            "selected Hermes database is unavailable",
+        ));
+    }
+    let reconciliation_demand = context.reconciliation_demand();
+    let base_route_control = context.route_control().map(<[u8]>::to_vec);
+    let may_increment = reconciliation_demand == SourceBackedReconciliationDemand::Incremental
+        && hermes_refresh_receipt(base_route_control.as_deref()).is_some();
+    let (mut sqlite_authority, mut snapshot, mut admitted_demand) = if may_increment {
+        match open_root_authorized_snapshot_with_progress(
+            &candidate.data_root,
+            candidate.path(),
+            true,
+            &mut |progress| context.report_progress(progress),
+        ) {
+            Ok((authority, snapshot)) => (
+                authority,
+                snapshot,
+                SourceBackedReconciliationDemand::Incremental,
+            ),
+            Err(error) if hermes_incremental_snapshot_unavailable(&error) => {
+                let publication_receipt = hermes_refresh_receipt(base_route_control.as_deref())
+                    .ok_or_else(|| hermes_changed("Hermes route control disappeared"))?;
+                let tree_fingerprint = hermes_deferred_tree_fingerprint(
+                    &candidate.source,
+                    base_route_control
+                        .as_deref()
+                        .expect("validated Hermes route control"),
+                );
+                return Ok(CompleteDocumentTree::new_partial(
+                    tree_fingerprint,
+                    Vec::new(),
+                    HermesTreeAuthority {
+                        opening_evidence: None,
+                        schema: None,
+                        _schema_evidence: Vec::new(),
+                        _sqlite_authority: None,
+                        snapshot: Mutex::new(None),
+                        publication_receipt,
+                        terminal_revalidate: None,
+                        deferred_incremental: true,
+                    },
+                ));
+            }
+            Err(error) => return Err(hermes_route_error(error)),
+        }
+    } else {
+        let (authority, snapshot) = open_root_authorized_snapshot_with_progress(
+            &candidate.data_root,
+            candidate.path(),
+            false,
+            &mut |progress| context.report_progress(progress),
+        )
+        .map_err(hermes_route_error)?;
+        (
+            authority,
+            snapshot,
+            SourceBackedReconciliationDemand::Exhaustive,
+        )
+    };
+    if let Err(error) = snapshot.revalidate().map_err(hermes_sqlite_route_error) {
+        return Err(abort_hermes_route_snapshot(snapshot, error));
+    }
+    if admitted_demand == SourceBackedReconciliationDemand::Incremental {
+        let prior = hermes_refresh_receipt(base_route_control.as_deref())
+            .ok_or_else(|| hermes_changed("Hermes route control disappeared"))?;
+        let requires_exhaustive = hermes_incremental_requires_exhaustive(
+            snapshot.connection().map_err(hermes_sqlite_route_error)?,
+            &prior,
+            candidate.source.exact_descriptor_digest(),
+            *snapshot.evidence().identity(),
+        )
+        .map_err(hermes_route_error)?;
+        if requires_exhaustive {
+            snapshot.abort().map_err(hermes_sqlite_route_error)?;
+            let reopened = open_root_authorized_snapshot_with_progress(
+                &candidate.data_root,
+                candidate.path(),
+                false,
+                &mut |progress| context.report_progress(progress),
+            )
+            .map_err(hermes_route_error)?;
+            sqlite_authority = reopened.0;
+            snapshot = reopened.1;
+            admitted_demand = SourceBackedReconciliationDemand::Exhaustive;
+        }
+    }
+    let opening_evidence = snapshot.evidence().clone();
+    let inventory = match observe_hermes_reconciliation_inventory(
+        candidate,
+        snapshot.connection().map_err(hermes_sqlite_route_error)?,
+        base_route_control.as_deref(),
+        admitted_demand,
+        *opening_evidence.identity(),
+        hermes_now_ms(),
+        context,
+    ) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            return Err(abort_hermes_route_snapshot(
+                snapshot,
+                hermes_route_error(error),
+            ))
+        }
+    };
+    let publication_receipt = inventory.publication_receipt.clone().ok_or_else(|| {
+        hermes_internal("Hermes reconciliation produced no route control receipt")
+    })?;
+    let authority = HermesTreeAuthority {
+        opening_evidence: Some(opening_evidence),
+        schema: Some(inventory.schema),
+        _schema_evidence: inventory.schema_evidence,
+        _sqlite_authority: Some(sqlite_authority),
+        terminal_revalidate: Some(snapshot.terminal_revalidator()),
+        snapshot: Mutex::new(Some(snapshot)),
+        publication_receipt,
+        deferred_incremental: false,
+    };
+    if inventory.reconciliation_demand == SourceBackedReconciliationDemand::Incremental {
+        Ok(CompleteDocumentTree::new_partial(
+            inventory.tree_fingerprint,
+            inventory.leaves,
+            authority,
+        ))
+    } else {
+        Ok(CompleteDocumentTree::new(
+            inventory.tree_fingerprint,
+            inventory.leaves,
+            authority,
+        ))
     }
 }
 

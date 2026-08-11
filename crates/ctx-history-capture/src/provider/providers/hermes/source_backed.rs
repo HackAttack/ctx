@@ -28,7 +28,8 @@ use crate::{
         source_backed::{
             family::document::{DocumentLeafFingerprint, ObservedDocumentLeaf},
             SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-            SourceBackedReconciliationDemand, SourceBackedRouteError, SourceBackedRouteResult,
+            SourceBackedReconciliationDemand, SourceBackedRouteControlExpectation,
+            SourceBackedRouteError, SourceBackedRouteResult,
         },
         sqlite::sqlite_schema_fingerprint,
     },
@@ -73,13 +74,18 @@ const HERMES_INCREMENTAL_FINGERPRINT_DOMAIN: &[u8] = b"ctx-hermes-incremental-se
 const HERMES_INCREMENTAL_CONTENT_DOMAIN: &[u8] = b"ctx-hermes-incremental-content-v1\0";
 const HERMES_EXACT_INTERVAL_MS: i64 = 60 * 60 * 1_000;
 const HERMES_ROUTE_CONTROL_KIND: &str = "hermes-route-control-v1";
+const HERMES_ROUTE_CONTROL_VERSION: u32 = 2;
 const HERMES_SESSION_DIGEST_DOMAIN: &[u8] = b"ctx-hermes-source-backed-session-v1\0";
 const HERMES_REJECTION_DIGEST_DOMAIN: &[u8] = b"ctx-hermes-source-backed-rejection-v1\0";
 
 mod contracts;
+mod incremental;
+mod inventory;
 mod replacement;
 
 pub(crate) use contracts::*;
+use incremental::*;
+use inventory::*;
 
 const HERMES_SESSION_KEY_MAX_BYTES: usize = 64 * 1024;
 
@@ -197,11 +203,22 @@ struct HermesSessionInventory {
     publication_receipt: Option<HermesRefreshReceipt>,
 }
 
+trait HermesReconciliationContext {
+    fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand;
+    fn route_control(&self) -> Option<&[u8]>;
+    fn exact_base_source(&self, source: &SourceKey) -> Option<CertifiedSource>;
+    fn report_progress(
+        &mut self,
+        progress: SourceBackedCurrentSourceProgress,
+    ) -> SourceBackedRouteResult<()>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HermesRefreshReceipt {
     kind: String,
     version: u32,
+    profile_source_descriptor: [u8; 32],
     database_identity: [u8; 32],
     schema_evidence: [u8; 32],
     session_rowid: i64,
@@ -213,292 +230,14 @@ pub(crate) struct HermesRefreshReceipt {
     outcome: String,
 }
 
-struct HermesSessionObservationBuilder {
-    session_row: Option<(i64, [u8; 32])>,
-    message_count: u64,
-    message_keys: Sha256,
-}
-
-impl HermesSessionObservationBuilder {
-    fn new() -> Self {
-        let mut message_keys = Sha256::new();
-        message_keys.update(HERMES_MESSAGE_OBSERVATION_DOMAIN);
-        Self {
-            session_row: None,
-            message_count: 0,
-            message_keys,
-        }
-    }
-
-    fn record_session(
-        &mut self,
-        rowid: i64,
-        row: &HermesSessionRow,
-    ) -> HermesSourceBackedResult<()> {
-        if self
-            .session_row
-            .replace((rowid, session_record_digest(row)))
-            .is_some()
-        {
-            return Err(HermesSourceBackedError::Capture(
-                CaptureError::InvalidPayload(format!("Hermes session {} is duplicated", row.id)),
-            ));
-        }
-        Ok(())
-    }
-
-    fn record_message(
-        &mut self,
-        rowid: i64,
-        record_digest: [u8; 32],
-    ) -> HermesSourceBackedResult<()> {
-        self.message_count = checked_add(self.message_count, 1)?;
-        self.message_keys.update(rowid.to_be_bytes());
-        self.message_keys.update(record_digest);
-        Ok(())
-    }
-
-    fn finish(
-        self,
-        source: &SourceKey,
-        schema_evidence: &[u8],
-    ) -> ([u8; 32], DocumentLeafFingerprint) {
-        let mut revision = Sha256::new();
-        revision.update(HERMES_SESSION_OBSERVATION_DOMAIN);
-        hash_bytes(&mut revision, schema_evidence);
-        revision.update(source.exact_descriptor_digest());
-        match self.session_row {
-            Some((rowid, digest)) => {
-                revision.update([1]);
-                revision.update(rowid.to_be_bytes());
-                revision.update(digest);
-            }
-            None => revision.update([0]),
-        }
-        revision.update(self.message_count.to_be_bytes());
-        revision.update(self.message_keys.finalize());
-        let revision: [u8; 32] = revision.finalize().into();
-
-        let mut fingerprint = Sha256::new();
-        fingerprint.update(HERMES_LEAF_FINGERPRINT_DOMAIN);
-        fingerprint.update(source.exact_descriptor_digest());
-        fingerprint.update(revision);
-        (
-            revision,
-            DocumentLeafFingerprint::new(fingerprint.finalize().into()),
-        )
-    }
-}
-
-#[cfg(test)]
-fn observe_hermes_session_inventory(
-    candidate: &HermesSourceCandidate,
-    conn: &rusqlite::Connection,
-    report_progress: &mut dyn FnMut(
-        SourceBackedCurrentSourceProgress,
-    ) -> SourceBackedRouteResult<()>,
-) -> HermesSourceBackedResult<HermesSessionInventory> {
-    report_progress(hermes_logical_progress(
-        SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-        0,
-        0,
-    ))?;
-    let (schema, schema_evidence) = detect_hermes_schema(conn)?;
-
-    observe_hermes_session_inventory_with_schema(
-        candidate,
-        conn,
-        schema,
-        schema_evidence,
-        report_progress,
-    )
-}
-
-fn detect_hermes_schema(
-    conn: &rusqlite::Connection,
-) -> HermesSourceBackedResult<(HermesSchema, Vec<u8>)> {
-    let sqlite_user_version = conn
-        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .map_err(CaptureError::from)
-        .map_err(HermesSourceBackedError::from)
-        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Schema))?;
-    let schema_fingerprint = sqlite_schema_fingerprint(conn)
-        .map_err(HermesSourceBackedError::from)
-        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Schema))?;
-    let schema = HermesSchema::detect(conn)
-        .map_err(HermesSourceBackedError::from)
-        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Schema))?;
-    let schema_evidence = hermes_schema_evidence(sqlite_user_version, &schema_fingerprint);
-    Ok((schema, schema_evidence))
-}
-
-fn hermes_incremental_requires_exhaustive(
-    conn: &rusqlite::Connection,
-    prior: &HermesRefreshReceipt,
-    database_identity: [u8; 32],
-) -> HermesSourceBackedResult<bool> {
-    let (_, schema_evidence) = detect_hermes_schema(conn)?;
-    let schema_digest: [u8; 32] = Sha256::digest(&schema_evidence).into();
-    let session_rowid = hermes_max_rowid(conn, "sessions")?;
-    let message_rowid = hermes_max_rowid(conn, "messages")?;
-    Ok(prior.kind != HERMES_ROUTE_CONTROL_KIND
-        || prior.version != 1
-        || prior.outcome != "successful"
-        || prior.database_identity != database_identity
-        || prior.schema_evidence != schema_digest
-        || session_rowid < prior.session_rowid
-        || message_rowid < prior.message_rowid)
-}
-
-fn observe_hermes_session_inventory_with_schema(
-    candidate: &HermesSourceCandidate,
-    conn: &rusqlite::Connection,
-    schema: HermesSchema,
-    schema_evidence: Vec<u8>,
-    report_progress: &mut dyn FnMut(
-        SourceBackedCurrentSourceProgress,
-    ) -> SourceBackedRouteResult<()>,
-) -> HermesSourceBackedResult<HermesSessionInventory> {
-    let mut builders = BTreeMap::<String, HermesSessionObservationBuilder>::new();
-    let mut observed_rows = 0_u64;
-    let mut session_reader = HermesRowReader::new(conn, &schema)
-        .map_err(HermesSourceBackedError::from)
-        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-    let mut after_session_rowid = None;
-    loop {
-        let page = session_reader
-            .next_session_inventory_page(after_session_rowid)
-            .map_err(HermesSourceBackedError::from)
-            .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-        if page.is_empty() {
-            break;
-        }
-        for native in page {
-            after_session_rowid = Some(native.locator.rowid);
-            observed_rows = checked_add(observed_rows, 1)?;
-            match native.record {
-                HermesNativeRecord::Session(row) => {
-                    hermes_session_source_key(&candidate.source, &row.id)?;
-                    builders
-                        .entry(row.id.clone())
-                        .or_insert_with(HermesSessionObservationBuilder::new)
-                        .record_session(native.locator.rowid, &row)?;
-                }
-                HermesNativeRecord::Rejected(reason) => {
-                    return Err(HermesSourceBackedError::Capture(CaptureError::InvalidPayload(
-                        format!("Hermes cannot derive a logical source for rejected session row: {reason}"),
-                    )));
-                }
-                HermesNativeRecord::Message { .. } => {
-                    return Err(HermesSourceBackedError::Capture(
-                        CaptureError::SystemInvariant(
-                            "Hermes session inventory crossed into message rows",
-                        ),
-                    ));
-                }
-            }
-        }
-        report_progress(hermes_logical_progress(
-            SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-            observed_rows,
-            0,
-        ))?;
-    }
-    drop(session_reader);
-
-    let mut after_message_rowid = None;
-    let mut message_reader = HermesRowReader::new(conn, &schema)
-        .map_err(HermesSourceBackedError::from)
-        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-    let mut frontier = super::sqlite::HermesFrontier::initial();
-    loop {
-        let page = message_reader
-            .next_page(frontier)
-            .map_err(HermesSourceBackedError::from)
-            .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-        if page.is_empty() {
-            break;
-        }
-        frontier = page
-            .last()
-            .map(|native| native.next_frontier)
-            .unwrap_or(frontier);
-        for native in page {
-            if native.locator.phase == HermesPhase::Sessions {
-                continue;
-            }
-            after_message_rowid = Some(native.locator.rowid);
-            observed_rows = checked_add(observed_rows, 1)?;
-            let record_digest = native_record_digest(&native)?;
-            let provider_session_id = match &native.record {
-                HermesNativeRecord::Message { row, .. } => row.session_id.clone(),
-                HermesNativeRecord::Rejected(_) => {
-                    hermes_message_session_id(conn, native.locator.rowid)?
-                }
-                HermesNativeRecord::Session(_) => {
-                    return Err(CaptureError::SystemInvariant(
-                        "Hermes message inventory returned a session row",
-                    )
-                    .into())
-                }
-            };
-            hermes_session_source_key(&candidate.source, &provider_session_id)?;
-            builders
-                .entry(provider_session_id)
-                .or_insert_with(HermesSessionObservationBuilder::new)
-                .record_message(native.locator.rowid, record_digest)?;
-        }
-        report_progress(hermes_logical_progress(
-            SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-            observed_rows,
-            0,
-        ))?;
-    }
-
-    let mut leaves = Vec::with_capacity(builders.len());
-    for (provider_session_id, builder) in builders {
-        let source = hermes_session_source_key(&candidate.source, &provider_session_id)?;
-        let (observation_revision, fingerprint) = builder.finish(&source, &schema_evidence);
-        leaves.push(ObservedDocumentLeaf::new(
-            fingerprint,
-            HermesSessionLeaf {
-                provider_session_id,
-                source,
-                observation_revision: observation_revision.to_vec(),
-                incremental: None,
-            },
-        ));
-    }
-    let tree_fingerprint = hermes_tree_fingerprint(&candidate.source, &schema_evidence, &leaves);
-    record_inventory_rows(observed_rows);
-    report_progress(hermes_logical_progress(
-        SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-        observed_rows,
-        0,
-    ))?;
-    Ok(HermesSessionInventory {
-        schema,
-        schema_evidence,
-        leaves,
-        tree_fingerprint,
-        max_session_rowid: after_session_rowid.unwrap_or(0),
-        max_message_rowid: after_message_rowid.unwrap_or(0),
-        reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
-        publication_receipt: None,
-    })
-}
-
 fn observe_hermes_reconciliation_inventory(
     candidate: &HermesSourceCandidate,
     conn: &rusqlite::Connection,
-    base_sources: &[CertifiedSource],
     base_route_control: Option<&[u8]>,
     requested: SourceBackedReconciliationDemand,
     database_identity: [u8; 32],
     now_ms: i64,
-    report_progress: &mut dyn FnMut(
-        SourceBackedCurrentSourceProgress,
-    ) -> SourceBackedRouteResult<()>,
+    context: &mut dyn HermesReconciliationContext,
 ) -> HermesSourceBackedResult<HermesSessionInventory> {
     let (schema, schema_evidence) = detect_hermes_schema(conn)?;
     let schema_digest: [u8; 32] = Sha256::digest(&schema_evidence).into();
@@ -507,7 +246,8 @@ fn observe_hermes_reconciliation_inventory(
     let current_message_rowid = hermes_max_rowid(conn, "messages")?;
     let forced_exhaustive = prior.as_ref().is_none_or(|receipt| {
         receipt.kind != HERMES_ROUTE_CONTROL_KIND
-            || receipt.version != 1
+            || receipt.version != HERMES_ROUTE_CONTROL_VERSION
+            || receipt.profile_source_descriptor != candidate.source.exact_descriptor_digest()
             || receipt.database_identity != database_identity
             || receipt.schema_evidence != schema_digest
             || current_session_rowid < receipt.session_rowid
@@ -525,19 +265,18 @@ fn observe_hermes_reconciliation_inventory(
             conn,
             schema,
             schema_evidence.clone(),
-            report_progress,
+            &mut |progress| context.report_progress(progress),
         )?
     } else {
         observe_hermes_incremental_inventory(
             candidate,
             conn,
-            base_sources,
             prior.as_ref().expect("incremental Hermes receipt"),
             current_session_rowid,
             current_message_rowid,
             schema,
             schema_evidence.clone(),
-            report_progress,
+            context,
         )?
     };
 
@@ -573,7 +312,8 @@ fn observe_hermes_reconciliation_inventory(
     };
     let receipt = HermesRefreshReceipt {
         kind: HERMES_ROUTE_CONTROL_KIND.to_owned(),
-        version: 1,
+        version: HERMES_ROUTE_CONTROL_VERSION,
+        profile_source_descriptor: candidate.source.exact_descriptor_digest(),
         database_identity,
         schema_evidence: schema_digest,
         session_rowid: inventory.max_session_rowid,
@@ -586,261 +326,6 @@ fn observe_hermes_reconciliation_inventory(
     };
     inventory.publication_receipt = Some(receipt);
     Ok(inventory)
-}
-
-fn observe_hermes_incremental_inventory(
-    candidate: &HermesSourceCandidate,
-    conn: &rusqlite::Connection,
-    base_sources: &[CertifiedSource],
-    prior: &HermesRefreshReceipt,
-    pinned_session_rowid: i64,
-    pinned_message_rowid: i64,
-    schema: HermesSchema,
-    schema_evidence: Vec<u8>,
-    report_progress: &mut dyn FnMut(
-        SourceBackedCurrentSourceProgress,
-    ) -> SourceBackedRouteResult<()>,
-) -> HermesSourceBackedResult<HermesSessionInventory> {
-    report_progress(hermes_logical_progress(
-        SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-        0,
-        0,
-    ))?;
-    let mut new_sessions = BTreeMap::<String, i64>::new();
-    let mut observed_rows = 0_u64;
-    let mut after_session_rowid = prior.session_rowid;
-    loop {
-        let page =
-            hermes_session_identity_page(conn, Some(after_session_rowid), pinned_session_rowid)?;
-        if page.is_empty() {
-            break;
-        }
-        for row in page {
-            validate_session_key(&row.provider_session_id)?;
-            after_session_rowid = row.rowid;
-            observed_rows = checked_add(observed_rows, 1)?;
-            if new_sessions
-                .insert(row.provider_session_id.clone(), row.rowid)
-                .is_some()
-            {
-                return Err(CaptureError::InvalidPayload(format!(
-                    "Hermes session {} is duplicated",
-                    row.provider_session_id
-                ))
-                .into());
-            }
-        }
-        report_progress(hermes_logical_progress(
-            SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-            observed_rows,
-            0,
-        ))?;
-    }
-
-    let mut touched = new_sessions.keys().cloned().collect::<BTreeSet<_>>();
-    let mut message_sessions = BTreeMap::<i64, String>::new();
-    let mut after_message_rowid = prior.message_rowid;
-    loop {
-        let page = hermes_message_cursor_page(conn, after_message_rowid, pinned_message_rowid)?;
-        if page.is_empty() {
-            break;
-        }
-        for row in page {
-            validate_session_key(&row.provider_session_id)?;
-            after_message_rowid = row.rowid;
-            observed_rows = checked_add(observed_rows, 1)?;
-            touched.insert(row.provider_session_id.clone());
-            message_sessions.insert(row.rowid, row.provider_session_id);
-        }
-        report_progress(hermes_logical_progress(
-            SourceBackedCurrentSourceProgressStage::LogicalFingerprint,
-            observed_rows,
-            0,
-        ))?;
-    }
-
-    let mut messages = BTreeMap::<String, Vec<HermesNativeRow>>::new();
-    let mut reader = HermesRowReader::new(conn, &schema)
-        .map_err(HermesSourceBackedError::from)
-        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-    let mut frontier = super::sqlite::HermesFrontier {
-        phase: HermesPhase::Messages,
-        next_ordinal: 0,
-        rowid: prior.message_rowid,
-    };
-    loop {
-        let page = reader
-            .next_page(frontier)
-            .map_err(HermesSourceBackedError::from)
-            .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-        if page.is_empty() {
-            break;
-        }
-        frontier = page.last().map(|row| row.next_frontier).unwrap_or(frontier);
-        for native in page {
-            if native.locator.rowid > pinned_message_rowid {
-                return Err(CaptureError::SourceChangedDuringCapture.into());
-            }
-            let provider_session_id = match &native.record {
-                HermesNativeRecord::Message { row, .. } => row.session_id.clone(),
-                HermesNativeRecord::Rejected(_) => message_sessions
-                    .get(&native.locator.rowid)
-                    .cloned()
-                    .ok_or(CaptureError::SourceChangedDuringCapture)?,
-                HermesNativeRecord::Session(_) => {
-                    return Err(CaptureError::SystemInvariant(
-                        "Hermes incremental message traversal returned a session row",
-                    )
-                    .into())
-                }
-            };
-            messages
-                .entry(provider_session_id)
-                .or_default()
-                .push(native);
-        }
-    }
-
-    let base_by_identity = base_sources
-        .iter()
-        .filter(|base| {
-            hermes_provider_session_id(&candidate.source, base.observation().source()).is_some()
-        })
-        .map(|base| {
-            (
-                base.observation().source().identity().digest(),
-                base.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let mut leaves = Vec::with_capacity(touched.len());
-    for provider_session_id in touched {
-        let source = hermes_session_source_key(&candidate.source, &provider_session_id)?;
-        let base = base_by_identity
-            .get(&source.identity().digest())
-            .filter(|base| base.observation().source().exact_descriptor_eq(&source))
-            .cloned();
-        if base.is_none() && !new_sessions.contains_key(&provider_session_id) {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
-        }
-        let mut session_reader = HermesRowReader::for_session(conn, &schema, &provider_session_id)
-            .map_err(HermesSourceBackedError::from)
-            .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-        let mut session_rows = session_reader
-            .next_session_inventory_page(None)
-            .map_err(HermesSourceBackedError::from)
-            .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-        if session_rows.len() != 1 {
-            return Err(CaptureError::SourceChangedDuringCapture.into());
-        }
-        let mut session = session_rows.remove(0);
-        let mut delta_messages = messages.remove(&provider_session_id).unwrap_or_default();
-        if base.is_some() && delta_messages.is_empty() {
-            continue;
-        }
-        let mut next_ordinal = base
-            .as_ref()
-            .map_or(0, |base| base.counts().complete_records);
-        if base.is_none() {
-            session.ordinal = 0;
-            session.next_frontier.next_ordinal = 1;
-            next_ordinal = 1;
-        }
-        for message in &mut delta_messages {
-            message.ordinal = next_ordinal;
-            next_ordinal = next_ordinal
-                .checked_add(1)
-                .ok_or(HermesSourceBackedError::CountOverflow)?;
-            message.next_frontier.next_ordinal = next_ordinal;
-        }
-        let leaf_message_rowid = delta_messages
-            .last()
-            .map_or(prior.message_rowid, |message| message.locator.rowid);
-        let (observation_revision, fingerprint) = incremental_session_fingerprint(
-            &source,
-            &provider_session_id,
-            &schema_evidence,
-            new_sessions
-                .get(&provider_session_id)
-                .copied()
-                .unwrap_or_default(),
-            leaf_message_rowid,
-        );
-        leaves.push(ObservedDocumentLeaf::new(
-            fingerprint,
-            HermesSessionLeaf {
-                provider_session_id,
-                source,
-                observation_revision,
-                incremental: Some(HermesIncrementalLeaf {
-                    base,
-                    session,
-                    messages: delta_messages,
-                }),
-            },
-        ));
-    }
-    record_inventory_rows(observed_rows);
-    let tree_fingerprint = hermes_tree_fingerprint(&candidate.source, &schema_evidence, &leaves);
-    Ok(HermesSessionInventory {
-        schema,
-        schema_evidence,
-        leaves,
-        tree_fingerprint,
-        max_session_rowid: after_session_rowid,
-        max_message_rowid: after_message_rowid,
-        reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
-        publication_receipt: None,
-    })
-}
-
-fn hermes_provider_session_id(profile_source: &SourceKey, source: &SourceKey) -> Option<String> {
-    if source.provider() != CaptureProvider::Hermes.as_str()
-        || source.source_format() != HERMES_SQLITE_SOURCE_FORMAT
-        || source.schema_variant() != HERMES_SESSION_SOURCE_SCHEMA_VARIANT
-        || source.provider_identity_version() != 1
-    {
-        return None;
-    }
-    let SourceAnchor::ProviderNative { namespace, key } = source.anchor() else {
-        return None;
-    };
-    if namespace != HERMES_SESSION_SOURCE_ANCHOR_NAMESPACE {
-        return None;
-    }
-    let TypedKey::Composite(parts) = key else {
-        return None;
-    };
-    let [TypedKey::Bytes(profile), TypedKey::Utf8(session)] = parts.as_slice() else {
-        return None;
-    };
-    let expected = profile_source.identity().encode_canonical().ok()?;
-    (profile.as_slice() == expected.as_slice()).then(|| session.clone())
-}
-
-fn incremental_session_fingerprint(
-    source: &SourceKey,
-    provider_session_id: &str,
-    schema_evidence: &[u8],
-    session_rowid: i64,
-    message_rowid: i64,
-) -> (Vec<u8>, DocumentLeafFingerprint) {
-    let mut digest = Sha256::new();
-    digest.update(HERMES_INCREMENTAL_FINGERPRINT_DOMAIN);
-    digest.update(source.exact_descriptor_digest());
-    hash_text(&mut digest, provider_session_id);
-    hash_bytes(&mut digest, schema_evidence);
-    digest.update(session_rowid.to_be_bytes());
-    digest.update(message_rowid.to_be_bytes());
-    let revision: [u8; 32] = digest.finalize().into();
-    let mut fingerprint = Sha256::new();
-    fingerprint.update(HERMES_LEAF_FINGERPRINT_DOMAIN);
-    fingerprint.update(source.exact_descriptor_digest());
-    fingerprint.update(revision);
-    (
-        revision.to_vec(),
-        DocumentLeafFingerprint::new(fingerprint.finalize().into()),
-    )
 }
 
 fn hermes_refresh_receipt(control: Option<&[u8]>) -> Option<HermesRefreshReceipt> {
@@ -863,11 +348,24 @@ pub(crate) fn hermes_route_control_exact_due(control: &[u8], now_ms: i64) -> Opt
     }
     Some(
         serde_json::from_value::<HermesRefreshReceipt>(value).map_or(true, |receipt| {
-            receipt.version != 1
+            receipt.version != HERMES_ROUTE_CONTROL_VERSION
                 || receipt.outcome != "successful"
                 || receipt.exact_due_at_ms <= now_ms
         }),
     )
+}
+
+pub(crate) fn hermes_route_control_exact_due_for_profile(
+    control: &[u8],
+    profile_source_descriptor: [u8; 32],
+    now_ms: i64,
+) -> Option<bool> {
+    let receipt = hermes_refresh_receipt(Some(control))?;
+    (receipt.kind == HERMES_ROUTE_CONTROL_KIND
+        && receipt.version == HERMES_ROUTE_CONTROL_VERSION
+        && receipt.outcome == "successful"
+        && receipt.profile_source_descriptor == profile_source_descriptor)
+        .then_some(receipt.exact_due_at_ms <= now_ms)
 }
 
 struct HermesSessionProjection {

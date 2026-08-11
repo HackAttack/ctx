@@ -56,7 +56,7 @@ impl HermesSourceCandidate {
         data_root: impl Into<PathBuf>,
         source: ProviderSource,
     ) -> HermesSourceBackedResult<Self> {
-        let profile = automatic_profile(&source.path)?;
+        let profile = hermes_automatic_profile_name(&source.path)?;
         let anchor = SourceAnchor::provider_native(
             HERMES_SOURCE_ANCHOR_NAMESPACE,
             TypedKey::utf8(&profile)?,
@@ -84,7 +84,7 @@ pub(crate) fn hermes_source_backed_explicit(
     })
 }
 
-fn automatic_profile(path: &Path) -> HermesSourceBackedResult<String> {
+pub(crate) fn hermes_automatic_profile_name(path: &Path) -> HermesSourceBackedResult<String> {
     let Some(parent) = path.parent() else {
         return Err(HermesSourceBackedError::InvalidProfilePath(
             path.to_path_buf(),

@@ -132,48 +132,28 @@ pub(super) fn require_complete_base_source_ownership(
     let Some(base) = writer.base_manifest() else {
         return Ok(());
     };
-    for source in base
-        .sources
-        .iter()
-        .map(|source| source.observation().source())
-    {
-        let claimed = owners
-            .get(&source.identity().digest())
-            .is_some_and(|owner| {
-                source_owner_covers_base_source(source, owner, complete_inventory_owners)
-            });
-        let covered_by_missing_route = base.source_routes().iter().any(|snapshot| {
-            snapshot
-                .sources()
-                .iter()
-                .any(|member| member.exact_descriptor_eq(source))
-                && registry.routes.iter().any(|route| {
-                    !route.certified_missing_paths.is_empty()
-                        && route.metadata.route_identity.as_ref() == Some(snapshot.route_identity())
-                })
+    for snapshot in base.source_routes() {
+        let covered_by_missing_route = registry.routes.iter().any(|route| {
+            !route.certified_missing_paths.is_empty()
+                && route.metadata.route_identity.as_ref() == Some(snapshot.route_identity())
         });
-        let covered_by_carried_route = base.source_routes().iter().any(|snapshot| {
-            carried_routes.contains(snapshot.route_identity())
-                && snapshot
-                    .sources()
-                    .iter()
-                    .any(|member| member.exact_descriptor_eq(source))
-        });
-        let covered_by_partial_route = base.source_routes().iter().any(|snapshot| {
-            partial_routes.contains(snapshot.route_identity())
-                && snapshot
-                    .sources()
-                    .iter()
-                    .any(|member| member.exact_descriptor_eq(source))
-        });
-        if !claimed
-            && !covered_by_missing_route
-            && !covered_by_carried_route
-            && !covered_by_partial_route
+        if covered_by_missing_route
+            || carried_routes.contains(snapshot.route_identity())
+            || partial_routes.contains(snapshot.route_identity())
         {
-            return Err(SourceBackedCoordinatorError::UnclaimedBaseSource {
-                source_id: source.identity().to_string(),
-            });
+            continue;
+        }
+        for source in snapshot.sources() {
+            let claimed = owners
+                .get(&source.identity().digest())
+                .is_some_and(|owner| {
+                    source_owner_covers_base_source(source, owner, complete_inventory_owners)
+                });
+            if !claimed {
+                return Err(SourceBackedCoordinatorError::UnclaimedBaseSource {
+                    source_id: source.identity().to_string(),
+                });
+            }
         }
     }
     Ok(())

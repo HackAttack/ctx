@@ -83,6 +83,7 @@ impl SqliteSourceReadSnapshot {
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FORCE_NEXT_PINNED_WAL_UNAVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_SNAPSHOT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_SCRATCH_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -90,6 +91,11 @@ thread_local! {
 #[cfg(any(test, feature = "test-support"))]
 pub fn fail_next_opened_snapshot_cleanup_for_test() {
     FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_next_pinned_wal_unavailable_for_test() {
+    FORCE_NEXT_PINNED_WAL_UNAVAILABLE.with(|force| force.set(true));
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -117,6 +123,11 @@ fn take_snapshot_open_failure_for_test() -> bool {
     FAIL_NEXT_SNAPSHOT_OPEN.with(|fail| fail.replace(false))
 }
 
+#[cfg(any(test, feature = "test-support"))]
+fn take_forced_pinned_wal_unavailable_for_test() -> bool {
+    FORCE_NEXT_PINNED_WAL_UNAVAILABLE.with(|force| force.replace(false))
+}
+
 pub(super) fn acquire_sqlite_connection_with_progress<E>(
     snapshot_context: &Arc<SqliteSourceSnapshotContext>,
     family: &SqliteSourceFamily,
@@ -129,6 +140,14 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
     let scratch_limit = options.limits.maximum_scratch_bytes;
     let scratch = SqliteRouteScratch::new(snapshot_context, scratch_limit);
     if options.policy == SqliteSourceSnapshotPolicy::PinnedReadOnlyWal {
+        #[cfg(any(test, feature = "test-support"))]
+        if take_forced_pinned_wal_unavailable_for_test() {
+            return Err(SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "pinned read-only WAL snapshots are unavailable on the simulated platform"
+                    .to_owned(),
+            }
+            .into());
+        }
         #[cfg(not(target_os = "linux"))]
         return Err(SqliteSourceAccessError::SnapshotUnavailable {
             reason: "pinned read-only WAL snapshots require the Linux unix VFS".to_owned(),

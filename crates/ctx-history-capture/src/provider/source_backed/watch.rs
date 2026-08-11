@@ -11,10 +11,18 @@ pub enum RouteObservation {
     Indeterminate,
 }
 
+/// Provider-owned interpretation needed to validate opaque route control
+/// without reading provider content during startup or safety reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceBackedRouteControlExpectation {
+    Hermes { profile_source_descriptor: [u8; 32] },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RouteWatchTargets {
     primary: PathBuf,
     kind: Option<SourceBackedWatchTargetKind>,
+    control: Option<SourceBackedRouteControlExpectation>,
     targets: BTreeSet<PathBuf>,
 }
 
@@ -43,6 +51,13 @@ impl SourceBackedWatchCatalog {
         self.routes
             .iter()
             .map(|(identity, route)| (identity, &route.targets))
+    }
+
+    pub fn route_control_expectation(
+        &self,
+        route: &SourceRouteIdentity,
+    ) -> Option<&SourceBackedRouteControlExpectation> {
+        self.routes.get(route)?.control.as_ref()
     }
 
     pub fn target_paths(&self) -> impl Iterator<Item = &Path> {
@@ -159,12 +174,23 @@ impl SourceBackedProviderRegistry {
                 .or_insert_with(|| RouteWatchTargets {
                     primary: route.metadata.source.path.clone(),
                     kind: Some(route.metadata.watch_target_kind),
+                    control: route
+                        .driver
+                        .as_ref()
+                        .and_then(|driver| driver.route_control_expectation.clone()),
                     targets: BTreeSet::new(),
                 });
             if targets.primary != route.metadata.source.path
                 || targets.kind != Some(route.metadata.watch_target_kind)
             {
                 targets.kind = None;
+            }
+            let route_control = route
+                .driver
+                .as_ref()
+                .and_then(|driver| driver.route_control_expectation.as_ref());
+            if targets.control.as_ref() != route_control {
+                targets.control = None;
             }
             insert_route_watch_targets(
                 &mut targets.targets,

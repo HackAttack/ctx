@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn overdue_hermes_exact_routes(
     index: &VerifiedIndex,
     now_ms: i64,
+    expected_profile: impl Fn(&SourceRouteIdentity) -> Option<[u8; 32]>,
 ) -> BTreeSet<SourceRouteIdentity> {
     let manifest = index.manifest();
     let route_controls = SourceBackedPublicationMetadata::decode(index)
@@ -12,28 +13,42 @@ pub(super) fn overdue_hermes_exact_routes(
         .source_routes()
         .iter()
         .filter_map(|route| {
-            let route_sources = route
-                .sources()
-                .iter()
-                .map(|source| source.identity().digest())
-                .collect::<BTreeSet<_>>();
-            let is_hermes_route = manifest
-                .sources
-                .iter()
-                .filter(|source| {
-                    route_sources.contains(&source.observation().source().identity().digest())
-                })
-                .any(|source| {
-                    source.observation().source().provider()
-                        == ctx_history_core::CaptureProvider::Hermes.as_str()
-                });
+            let profile_source_descriptor = expected_profile(route.route_identity())?;
             let control_due = route_controls
                 .get(route.route_identity())
                 .and_then(|control| {
-                    ctx_history_capture::hermes_route_control_exact_due(control, now_ms)
+                    ctx_history_capture::hermes_route_control_exact_due_for_profile(
+                        control,
+                        profile_source_descriptor,
+                        now_ms,
+                    )
                 });
-            (control_due.unwrap_or(is_hermes_route) && (is_hermes_route || control_due.is_some()))
+            control_due
+                .unwrap_or(true)
                 .then(|| route.route_identity().clone())
+        })
+        .collect()
+}
+
+pub(super) fn hermes_routes_requiring_control_recovery(
+    catalog: &SourceBackedWatchCatalog,
+    controls: &BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    now_ms: i64,
+) -> BTreeSet<SourceRouteIdentity> {
+    catalog
+        .route_ids()
+        .filter_map(|route| {
+            let SourceBackedRouteControlExpectation::Hermes {
+                profile_source_descriptor,
+            } = catalog.route_control_expectation(route)?;
+            let valid_and_future = controls.get(route).is_some_and(|control| {
+                ctx_history_capture::hermes_route_control_exact_due_for_profile(
+                    control,
+                    *profile_source_descriptor,
+                    now_ms,
+                ) == Some(false)
+            });
+            (!valid_and_future).then(|| route.clone())
         })
         .collect()
 }
@@ -67,6 +82,7 @@ pub(super) fn startup_routes_requiring_refresh(
 mod tests {
     use super::*;
     use ctx_history_capture::{
+        build_automatic_source_backed_registry_from_report, DiscoveryContext,
         SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedRouteDriver,
     };
     use ctx_history_capture_model::{
@@ -81,6 +97,7 @@ mod tests {
     fn hermes_route_control_index(
         root: &Path,
         route: &SourceRouteIdentity,
+        profile_source_descriptor: [u8; 32],
         exact_due_at_ms: i64,
     ) -> VerifiedIndex {
         let source = SourceKey::derive_provider_native(
@@ -96,7 +113,8 @@ mod tests {
         let schema_evidence = [2_u8; 32];
         let revision = serde_json::to_vec(&serde_json::json!({
             "kind": "hermes-route-control-v1",
-            "version": 1,
+            "version": 2,
+            "profile_source_descriptor": profile_source_descriptor,
             "database_identity": database_identity,
             "schema_evidence": schema_evidence,
             "session_rowid": 4,
@@ -185,12 +203,78 @@ mod tests {
     fn persisted_hermes_deadline_selects_only_overdue_exact_routes() {
         let temp = tempfile::tempdir().unwrap();
         let route = SourceRouteIdentity::from_sha256("a7".repeat(32)).unwrap();
-        let future = hermes_route_control_index(&temp.path().join("future"), &route, 1_001);
-        assert!(overdue_hermes_exact_routes(&future, 1_000).is_empty());
-        let overdue = hermes_route_control_index(&temp.path().join("overdue"), &route, 1_000);
+        let profile_source_descriptor = [4_u8; 32];
+        let future = hermes_route_control_index(
+            &temp.path().join("future"),
+            &route,
+            profile_source_descriptor,
+            1_001,
+        );
+        assert!(overdue_hermes_exact_routes(&future, 1_000, |_| {
+            Some(profile_source_descriptor)
+        })
+        .is_empty());
+        let overdue = hermes_route_control_index(
+            &temp.path().join("overdue"),
+            &route,
+            profile_source_descriptor,
+            1_000,
+        );
         assert_eq!(
-            overdue_hermes_exact_routes(&overdue, 1_000),
+            overdue_hermes_exact_routes(&overdue, 1_000, |_| Some(profile_source_descriptor)),
             BTreeSet::from([route])
+        );
+    }
+
+    #[test]
+    fn empty_hermes_route_missing_or_malformed_control_is_admitted_for_exact_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data-root");
+        let path = temp.path().join("state.db");
+        fs::write(&path, b"not opened by startup control recovery").unwrap();
+        let source = ProviderSource {
+            provider: CaptureProvider::Hermes,
+            exists: true,
+            path,
+            source_format: "hermes_state_sqlite",
+            source_kind: ProviderSourceKind::NativeHistory,
+            import_support: ProviderImportSupport::Native,
+            catalog_support: ProviderCatalogSupport::None,
+            status: ProviderSourceStatus::Available,
+            unsupported_reason: None,
+        };
+        let build = build_automatic_source_backed_registry_from_report(
+            &DiscoveryContext::from_process(&data_root),
+            &data_root,
+            DiscoveryReport {
+                sources: vec![source],
+                issues: Vec::new(),
+            },
+        );
+        assert!(build.issues.is_empty());
+        let catalog = build.registry.watch_catalog();
+        let route = catalog.route_ids().next().cloned().expect("Hermes route");
+
+        for controls in [
+            BTreeMap::new(),
+            BTreeMap::from([(route.clone(), b"malformed".to_vec())]),
+        ] {
+            let recovery = hermes_routes_requiring_control_recovery(&catalog, &controls, 1_000);
+            assert_eq!(recovery, BTreeSet::from([route.clone()]));
+        }
+        let engine = test_refresh_engine();
+        engine.initialize_watch_route_authority([route.clone()]);
+        engine.schedule_startup_route_observation(&catalog, EventWatermark::new(1, 1), 1_000);
+        assert_eq!(
+            engine.scheduled_route_ids_for_test(),
+            BTreeSet::from([route.clone()])
+        );
+        assert!(engine
+            .enqueue_next_dirty_route(temp.path(), 1_000_000)
+            .unwrap());
+        assert_eq!(
+            engine.active_reconciliation_demand_for_test(),
+            Some(SourceBackedReconciliationDemand::Exhaustive)
         );
     }
 

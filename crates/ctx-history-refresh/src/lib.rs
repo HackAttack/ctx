@@ -28,8 +28,9 @@ use ctx_history_capture::{
 use ctx_history_capture::{
     discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
     source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
-    DiscoveryContext, RouteObservation, SourceBackedCoordinatorError, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedSourceFailureClass, SourceBackedWatchCatalog,
+    DiscoveryContext, RouteObservation, SourceBackedCoordinatorError,
+    SourceBackedRouteControlExpectation, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedSourceFailureClass, SourceBackedWatchCatalog,
 };
 #[cfg(test)]
 use ctx_history_capture_model::{DiscoveryReport, ProviderSourceStatus};

@@ -708,7 +708,7 @@ impl SourceRouteIdentity {
 #[serde(deny_unknown_fields)]
 pub struct SourceRouteSnapshot {
     route_identity: SourceRouteIdentity,
-    sources: Vec<SourceKey>,
+    sources: std::sync::Arc<[SourceKey]>,
     missing: Option<SourceRouteMissingState>,
 }
 
@@ -733,7 +733,7 @@ impl SourceRouteSnapshot {
         sources.sort_by_key(source_sort_key);
         let snapshot = Self {
             route_identity,
-            sources,
+            sources: sources.into(),
             missing,
         };
         snapshot.validate_contract()?;
@@ -746,6 +746,13 @@ impl SourceRouteSnapshot {
 
     pub fn sources(&self) -> &[SourceKey] {
         &self.sources
+    }
+
+    pub fn exact_snapshot_eq(&self, other: &Self) -> bool {
+        self.route_identity == other.route_identity
+            && self.missing == other.missing
+            && (std::sync::Arc::ptr_eq(&self.sources, &other.sources)
+                || self.sources == other.sources)
     }
 
     pub fn missing_state(&self) -> Option<&SourceRouteMissingState> {
@@ -763,7 +770,7 @@ impl SourceRouteSnapshot {
                 self.route_identity.0.clone(),
             ));
         }
-        for source in &self.sources {
+        for source in self.sources.iter() {
             source.validate_contract()?;
         }
         if let Some(missing) = &self.missing {

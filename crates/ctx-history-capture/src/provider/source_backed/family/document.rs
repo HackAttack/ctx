@@ -18,9 +18,10 @@ use crate::provider::source_backed::{
     ParallelLeafScanError, ParallelLeafScanJob, ParallelLeafScanWorkerError,
     SourceBackedCoordinatorResult, SourceBackedCurrentSourceProgress, SourceBackedGenerationSink,
     SourceBackedProviderRegistry, SourceBackedReconciliationDemand,
-    SourceBackedRecordRejectionDrafts, SourceBackedRouteDriver, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteSelection,
-    SourceBackedSelectorAuthority, SourceBackedSourceOutcome,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteControlExpectation,
+    SourceBackedRouteDriver, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult, SourceBackedRouteSelection, SourceBackedSelectorAuthority,
+    SourceBackedSourceOutcome,
 };
 #[cfg(test)]
 use crate::provider::source_backed::{SourceBackedRoute, SourceBackedWatchTargetKind};
@@ -31,6 +32,78 @@ use ctx_history_core::{
 };
 const DOCUMENT_FRONTIER_KIND: &str = "ctx-document-full-snapshot-v1";
 const MAX_PARALLEL_DOCUMENT_LEAF_WORKERS: usize = 4;
+
+#[cfg(test)]
+thread_local! {
+    static DOCUMENT_BASE_ROUTE_SOURCE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_document_base_route_source_visits() {
+    DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn document_base_route_source_visits() -> u64 {
+    DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(std::cell::Cell::get)
+}
+
+pub(crate) struct DocumentBaseRoute<'scan, 'writer> {
+    sink: &'scan mut SourceBackedGenerationSink<'writer>,
+    owns_source: &'scan dyn Fn(&SourceKey) -> bool,
+}
+
+impl<'scan, 'writer> DocumentBaseRoute<'scan, 'writer> {
+    fn new(
+        sink: &'scan mut SourceBackedGenerationSink<'writer>,
+        owns_source: &'scan dyn Fn(&SourceKey) -> bool,
+    ) -> Self {
+        Self { sink, owns_source }
+    }
+
+    pub(crate) fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        self.sink.reconciliation_demand()
+    }
+
+    pub(crate) fn route_control(&self) -> Option<&[u8]> {
+        self.sink.base_route_control()
+    }
+
+    pub(crate) fn report_progress(
+        &mut self,
+        progress: SourceBackedCurrentSourceProgress,
+    ) -> SourceBackedRouteResult<()> {
+        self.sink.report_current_source_progress(progress)
+    }
+
+    pub(crate) fn exact_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+        #[cfg(test)]
+        DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| {
+            visits.set(visits.get().saturating_add(1));
+        });
+        if !(self.owns_source)(source) {
+            return None;
+        }
+        let manifest = self.sink.writer.base_manifest()?;
+        let route = manifest.source_route(&self.sink.route_identity)?;
+        let source_key = source.identity().digest();
+        let member = route
+            .sources()
+            .binary_search_by_key(&source_key, |candidate| candidate.identity().digest())
+            .ok()
+            .and_then(|index| route.sources().get(index))
+            .filter(|candidate| candidate.exact_descriptor_eq(source))?;
+        manifest
+            .sources
+            .binary_search_by_key(&source_key, |candidate| {
+                candidate.observation().source().identity().digest()
+            })
+            .ok()
+            .and_then(|index| manifest.sources.get(index))
+            .filter(|candidate| candidate.observation().source().exact_descriptor_eq(member))
+            .cloned()
+    }
+}
 
 #[derive(Debug, Clone)]
 struct DocumentLeafCompletion {
@@ -269,6 +342,17 @@ pub(crate) trait ReplacementDocumentTree: Send + Sync + 'static {
     ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
         self.discover_complete_with_progress(base_sources, report_progress)
     }
+    fn uses_lazy_base_route(&self, _demand: SourceBackedReconciliationDemand) -> bool {
+        false
+    }
+    fn discover_complete_with_lazy_base(
+        &self,
+        _base_route: &mut DocumentBaseRoute<'_, '_>,
+    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
+        Err(document_internal(
+            "document adapter selected lazy base-route discovery without implementing it",
+        ))
+    }
     fn scan_changed(
         &self,
         authority: &Self::TreeAuthority,
@@ -300,6 +384,9 @@ pub(crate) trait ReplacementDocumentTree: Send + Sync + 'static {
         _tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
     ) -> SourceBackedRouteResult<Option<Vec<u8>>> {
         Ok(None)
+    }
+    fn route_control_expectation(&self) -> Option<SourceBackedRouteControlExpectation> {
+        None
     }
 }
 
@@ -395,6 +482,7 @@ where
     let control_adapter = Arc::clone(&adapter);
     let control_state = Arc::clone(&state);
     let has_successful_publication_work = publication_adapter.has_successful_publication_work();
+    let route_control_expectation = adapter.route_control_expectation();
 
     let mut driver = SourceBackedRouteDriver::new(
         move |sink| {
@@ -442,6 +530,9 @@ where
             .ok_or_else(|| document_internal("document route has no expected publication"))?;
         control_adapter.publication_control(&expected.tree)
     });
+    if let Some(expectation) = route_control_expectation {
+        driver = driver.with_route_control_expectation(expectation);
+    }
     if uses_parallel_leaf_workers {
         driver = driver.with_parallel_leaf_workers();
     }
@@ -467,15 +558,29 @@ fn scan_document_tree<A>(
 where
     A: ReplacementDocumentTree,
 {
-    let base_sources = source_backed_base_sources(sink, |source| adapter.owns_source(source));
     let base_route_control = sink.base_route_control().map(<[u8]>::to_vec);
     let reconciliation_demand = sink.reconciliation_demand();
-    let mut tree = adapter.discover_complete_with_reconciliation(
-        &base_sources,
-        base_route_control.as_deref(),
-        reconciliation_demand,
-        &mut |progress| sink.report_current_source_progress(progress),
-    )?;
+    let lazy_base_route = adapter.uses_lazy_base_route(reconciliation_demand);
+    let mut base_sources = if lazy_base_route {
+        Vec::new()
+    } else {
+        source_backed_base_sources(sink, |source| adapter.owns_source(source))
+    };
+    let mut tree = if lazy_base_route {
+        let owns_source = |source: &SourceKey| adapter.owns_source(source);
+        let mut base_route = DocumentBaseRoute::new(sink, &owns_source);
+        adapter.discover_complete_with_lazy_base(&mut base_route)?
+    } else {
+        adapter.discover_complete_with_reconciliation(
+            &base_sources,
+            base_route_control.as_deref(),
+            reconciliation_demand,
+            &mut |progress| sink.report_current_source_progress(progress),
+        )?
+    };
+    if lazy_base_route && tree.inventory_scope == DocumentInventoryScope::Complete {
+        base_sources = source_backed_base_sources(sink, |source| adapter.owns_source(source));
+    }
     validate_unique_leaf_fingerprints(&tree.leaves)?;
     bind_durable_replay_sources(adapter, &mut tree)?;
     let mut replayable = HashMap::new();

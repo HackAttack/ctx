@@ -9,18 +9,25 @@ use rusqlite::Connection;
 
 use super::*;
 use crate::{
+    automatic_source_backed_route_identity,
     provider::source_backed::{
-        refresh_source_backed_generation, refresh_source_backed_generation_with_detailed_progress,
-        SourceBackedCoordinatorError, SourceBackedCurrentSourceProgressStage,
-        SourceBackedProviderRegistry, SourceBackedReconciliationDemand,
-        SourceBackedRefreshExecutor, SourceBackedRefreshReceipt, SourceBackedRefreshScope,
-        SourceBackedRouteErrorKind,
+        build_automatic_source_backed_registry_from_report,
+        family::document::{
+            document_base_route_source_visits, reset_document_base_route_source_visits,
+        },
+        partial_base_route_member_visits, refresh_source_backed_generation,
+        refresh_source_backed_generation_with_detailed_progress,
+        reset_partial_base_route_member_visits, SourceBackedCoordinatorError,
+        SourceBackedCurrentSourceProgressStage, SourceBackedProviderRegistry,
+        SourceBackedReconciliationDemand, SourceBackedRefreshExecutor, SourceBackedRefreshReceipt,
+        SourceBackedRefreshScope, SourceBackedRouteErrorKind,
     },
     provider_sources::{
-        fail_next_opened_snapshot_cleanup_for_test, provider_source_for_path, SqliteCleanupStatus,
-        SqliteSourceAccessError,
+        fail_next_opened_snapshot_cleanup_for_test, force_next_pinned_wal_unavailable_for_test,
+        provider_source_for_path, SqliteCleanupStatus, SqliteSourceAccessError,
     },
-    register_hermes_explicit_source_backed_route,
+    register_hermes_explicit_source_backed_route, DiscoveryContext, DiscoveryPlatform,
+    DiscoveryPlatformDirs, DiscoveryReport,
 };
 
 const PARENT: &str = "parent-session";
@@ -171,23 +178,50 @@ fn fixture_registry(data_root: &Path, database: &Path) -> SourceBackedProviderRe
 }
 
 #[test]
-fn automatic_multiplex_profiles_have_distinct_validated_route_sources() {
+fn automatic_multiplex_profiles_register_and_refresh_every_discovered_route() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
     let profiles = temp.path().join("profiles");
     let alpha = profiles.join("alpha/state.db");
     let beta = profiles.join("beta-2/state.db");
-    let alpha = HermesSourceCandidate::automatic(
+    let default = temp.path().join("default/state.db");
+    create_fixture(&default);
+    create_fixture(&alpha);
+    create_fixture(&beta);
+    let sources = [&default, &alpha, &beta]
+        .into_iter()
+        .map(|path| provider_source_for_path(CaptureProvider::Hermes, path.to_path_buf()))
+        .collect::<Vec<_>>();
+    let route_ids = sources
+        .iter()
+        .map(automatic_source_backed_route_identity)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .unwrap();
+    assert_eq!(route_ids.len(), 3);
+
+    let discovery = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        DiscoveryPlatformDirs::default(),
+    );
+    let build = build_automatic_source_backed_registry_from_report(
+        &discovery,
         &data_root,
-        provider_source_for_path(CaptureProvider::Hermes, alpha),
-    )
-    .unwrap();
-    let beta = HermesSourceCandidate::automatic(
-        &data_root,
-        provider_source_for_path(CaptureProvider::Hermes, beta),
-    )
-    .unwrap();
-    assert_ne!(alpha.source.identity(), beta.source.identity());
+        DiscoveryReport {
+            sources,
+            issues: Vec::new(),
+        },
+    );
+    assert!(build.issues.is_empty());
+    assert_eq!(build.executable_route_count(), 3);
+    let refreshed =
+        refresh_source_backed_generation(&index_root, &build.registry, fixture_writer_options())
+            .unwrap();
+    assert_eq!(refreshed.sources.len(), 6);
+    assert_eq!(refreshed.route_controls.len(), 3);
+    assert_eq!(refreshed.successful_route_ids.len(), 3);
 
     let invalid = profiles.join("Bad.Name/state.db");
     assert!(matches!(
@@ -197,6 +231,70 @@ fn automatic_multiplex_profiles_have_distinct_validated_route_sources() {
         ),
         Err(HermesSourceBackedError::InvalidProfilePath(_))
     ));
+}
+
+#[test]
+fn renamed_automatic_profile_rejects_the_old_profile_control_before_incremental_reuse() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let alpha = temp.path().join("profiles/alpha/state.db");
+    let beta = temp.path().join("profiles/beta/state.db");
+    create_fixture(&alpha);
+    let alpha_candidate = HermesSourceCandidate::automatic(
+        &data_root,
+        provider_source_for_path(CaptureProvider::Hermes, alpha.clone()),
+    )
+    .unwrap();
+    let registry = build_automatic_source_backed_registry_from_report(
+        &DiscoveryContext::new(
+            temp.path(),
+            temp.path(),
+            DiscoveryPlatform::Linux,
+            DiscoveryPlatformDirs::default(),
+        ),
+        &data_root,
+        DiscoveryReport {
+            sources: vec![provider_source_for_path(CaptureProvider::Hermes, alpha)],
+            issues: Vec::new(),
+        },
+    )
+    .registry;
+    let index_root = temp.path().join("index");
+    let cold =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+    let prior: HermesRefreshReceipt =
+        serde_json::from_slice(cold.route_controls.values().next().expect("Hermes control"))
+            .unwrap();
+
+    fs::rename(
+        temp.path().join("profiles/alpha"),
+        temp.path().join("profiles/beta"),
+    )
+    .unwrap();
+    let beta_candidate = HermesSourceCandidate::automatic(
+        &data_root,
+        provider_source_for_path(CaptureProvider::Hermes, beta.clone()),
+    )
+    .unwrap();
+    assert_ne!(
+        alpha_candidate.source.identity(),
+        beta_candidate.source.identity()
+    );
+    assert_eq!(
+        hermes_route_control_exact_due_for_profile(
+            cold.route_controls.values().next().expect("Hermes control"),
+            beta_candidate.source.exact_descriptor_digest(),
+            i64::MIN,
+        ),
+        None
+    );
+    assert!(hermes_incremental_requires_exhaustive(
+        &Connection::open(beta).unwrap(),
+        &prior,
+        beta_candidate.source.exact_descriptor_digest(),
+        [0; 32],
+    )
+    .unwrap());
 }
 
 fn fixture_writer_options() -> WriterOptions {
@@ -357,11 +455,15 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
     let child_certificate = source_certificate(&cold, &child_source).clone();
 
     reset_logical_row_traversals();
+    reset_document_base_route_source_visits();
+    reset_partial_base_route_member_visits();
     let noop = incremental_refresh(&index_root, &registry, &cold);
     assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
     assert_eq!(noop.sources, cold.sources);
     assert_eq!(inventory_observation_rows(), 0);
     assert_eq!(logical_row_traversals(), 0);
+    assert_eq!(document_base_route_source_visits(), 0);
+    assert_eq!(partial_base_route_member_visits(), 0);
     assert!(session_scan_receipts().is_empty());
 
     Connection::open(&database)
@@ -373,6 +475,8 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
         )
         .unwrap();
     reset_logical_row_traversals();
+    reset_document_base_route_source_visits();
+    reset_partial_base_route_member_visits();
     let appended = incremental_refresh(&index_root, &registry, &noop);
     assert_eq!(appended.sources.len(), 2);
     assert_eq!(
@@ -381,12 +485,56 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
     );
     assert_eq!(inventory_observation_rows(), 1);
     assert_eq!(logical_row_traversals(), 1);
+    assert_eq!(document_base_route_source_visits(), 1);
+    assert_eq!(partial_base_route_member_visits(), 0);
     assert_eq!(
         session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
         vec![PARENT.to_owned()]
     );
     let appended_record = indexed_record(&index_root, &parent_source, PARENT, 30);
     assert_search_contains(&index_root, "incremental append needle", &appended_record);
+}
+
+#[test]
+fn production_incremental_base_route_work_stays_touch_bounded_with_large_history() {
+    const SESSIONS: usize = 129;
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    create_many_session_fixture(&database, SESSIONS);
+    let registry = fixture_registry(&data_root, &database);
+    let cold =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+    assert_eq!(cold.sources.len(), SESSIONS);
+
+    reset_logical_row_traversals();
+    reset_document_base_route_source_visits();
+    reset_partial_base_route_member_visits();
+    let noop = incremental_refresh(&index_root, &registry, &cold);
+    assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(inventory_observation_rows(), 0);
+    assert_eq!(logical_row_traversals(), 0);
+    assert_eq!(document_base_route_source_visits(), 0);
+    assert_eq!(partial_base_route_member_visits(), 0);
+
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "insert into messages (id, session_id, role, content, timestamp)
+             values (?1, 'session-0128', 'assistant', 'large delta needle', 1782269999.0)",
+            [i64::try_from(SESSIONS + 1).unwrap()],
+        )
+        .unwrap();
+    reset_logical_row_traversals();
+    reset_document_base_route_source_visits();
+    reset_partial_base_route_member_visits();
+    let appended = incremental_refresh(&index_root, &registry, &noop);
+    assert_eq!(appended.sources.len(), SESSIONS);
+    assert_eq!(inventory_observation_rows(), 1);
+    assert_eq!(logical_row_traversals(), 1);
+    assert_eq!(document_base_route_source_visits(), 1);
+    assert_eq!(partial_base_route_member_visits(), 0);
 }
 
 #[test]
@@ -436,6 +584,69 @@ fn production_incremental_new_and_empty_sessions_read_only_the_delta() {
             .indexed_documents,
         0
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn production_incremental_reads_an_active_wal_or_defers_safely_as_root() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, candidate, cold) = cold_fixture(&data_root, &index_root, &database);
+    let writer = Connection::open(&database).unwrap();
+    assert_eq!(
+        writer
+            .pragma_update_and_check(None, "journal_mode", "wal", |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+            .to_ascii_lowercase(),
+        "wal"
+    );
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    writer
+        .execute(
+            "insert into messages (id, session_id, role, content, timestamp)
+             values (30, 'parent-session', 'assistant', 'active wal delta needle', 1782259216.0)",
+            [],
+        )
+        .unwrap();
+    assert!(database.with_extension("db-wal").exists());
+
+    reset_logical_row_traversals();
+    let refreshed = incremental_refresh(&index_root, &registry, &cold);
+    if unsafe { libc::geteuid() } == 0 {
+        assert_eq!(refreshed.commit.generation_id, cold.commit.generation_id);
+        assert_eq!(refreshed.route_controls, cold.route_controls);
+        assert_eq!(inventory_observation_rows(), 0);
+        return;
+    }
+    assert_eq!(inventory_observation_rows(), 1);
+    assert_eq!(logical_row_traversals(), 1);
+    let record = indexed_record(&index_root, &session_source(&candidate, PARENT), PARENT, 30);
+    assert_search_contains(&index_root, "active wal delta needle", &record);
+    drop(writer);
+}
+
+#[test]
+fn unavailable_incremental_fast_path_defers_without_copy_or_partial_failure() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    let (registry, _, cold) = cold_fixture(&data_root, &index_root, &database);
+    assert!(!database.with_extension("db-wal").exists());
+
+    force_next_pinned_wal_unavailable_for_test();
+    let deferred = incremental_refresh(&index_root, &registry, &cold);
+    assert_eq!(deferred.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(deferred.sources, cold.sources);
+    assert_eq!(deferred.route_controls, cold.route_controls);
+    assert!(deferred.failed_routes.is_empty());
+    assert!(fs::read_dir(data_root.join("tmp/provider-sqlite"))
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(true));
 }
 
 #[test]

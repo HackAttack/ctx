@@ -131,6 +131,20 @@ pub fn hermes_route_control_exact_due(control: &[u8], now_ms: i64) -> Option<boo
     provider::providers::hermes::source_backed::hermes_route_control_exact_due(control, now_ms)
 }
 
+/// Validates a Hermes control against its exact profile owner before reading
+/// the persisted exact-reconciliation deadline.
+pub fn hermes_route_control_exact_due_for_profile(
+    control: &[u8],
+    profile_source_descriptor: [u8; 32],
+    now_ms: i64,
+) -> Option<bool> {
+    provider::providers::hermes::source_backed::hermes_route_control_exact_due_for_profile(
+        control,
+        profile_source_descriptor,
+        now_ms,
+    )
+}
+
 pub use provider::adapter::{CaptureWorkLimit, ProviderAdapterContext, ProviderImportOptions};
 pub use provider::source_backed::register_nanoclaw_source_backed_route_with_base_sources;
 pub use provider::source_backed::{
@@ -161,11 +175,11 @@ pub use provider::source_backed::{
     SourceBackedRecordRejectionClass, SourceBackedRecordRejections, SourceBackedRefreshExecutor,
     SourceBackedRefreshProgress, SourceBackedRefreshReceipt, SourceBackedRefreshScope,
     SourceBackedRevalidationTarget, SourceBackedRoute, SourceBackedRouteConstructor,
-    SourceBackedRouteDriver, SourceBackedRouteError, SourceBackedRouteErrorKind,
-    SourceBackedRouteMetadata, SourceBackedRouteResult, SourceBackedRouteSelection,
-    SourceBackedSelectorAuthority, SourceBackedSourceFailureClass, SourceBackedSourceFailures,
-    SourceBackedSuccessfulRouteOutcome, SourceBackedWatchCatalog, SourceBackedWatchTargetKind,
-    LANDED_SOURCE_BACKED_ROUTES, MAX_RECORDED_SOURCE_BACKED_FAILURES,
+    SourceBackedRouteControlExpectation, SourceBackedRouteDriver, SourceBackedRouteError,
+    SourceBackedRouteErrorKind, SourceBackedRouteMetadata, SourceBackedRouteResult,
+    SourceBackedRouteSelection, SourceBackedSelectorAuthority, SourceBackedSourceFailureClass,
+    SourceBackedSourceFailures, SourceBackedSuccessfulRouteOutcome, SourceBackedWatchCatalog,
+    SourceBackedWatchTargetKind, LANDED_SOURCE_BACKED_ROUTES, MAX_RECORDED_SOURCE_BACKED_FAILURES,
     MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES, MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES,
     MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };

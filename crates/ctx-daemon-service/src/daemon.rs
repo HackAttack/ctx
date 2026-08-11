@@ -430,12 +430,15 @@ where
             WatchCatalogReconcileTrigger::Startup,
             false,
         );
-        if let Some(source_refresh) = refresh_service
-            .as_ref()
-            .and(runtime.source_refresh_coordinator.as_deref())
-        {
+        if let (Some(source_refresh), Some(catalog)) = (
+            refresh_service
+                .as_ref()
+                .and(runtime.source_refresh_coordinator.as_deref()),
+            watch_runtime.catalog.snapshot(),
+        ) {
             source_refresh.enqueue_overdue_hermes_exact_reconciliation(
                 data_root,
+                &catalog,
                 source_route_ledger_now_ms(),
             )?;
         }
@@ -743,18 +746,21 @@ where
                 && runtime.history_retry.ready();
             if safety_due {
                 next_safety_reconcile = Instant::now() + safety_interval;
-                if let Some(source_refresh) = source_refresh {
-                    source_refresh.enqueue_overdue_hermes_exact_reconciliation(
-                        data_root,
-                        source_route_ledger_now_ms(),
-                    )?;
-                }
                 watch_runtime.reconcile_catalog_and_route_authority(
                     data_root,
                     source_refresh,
                     WatchCatalogReconcileTrigger::SafetyTimeout,
                     false,
                 );
+                if let (Some(source_refresh), Some(catalog)) =
+                    (source_refresh, watch_runtime.catalog.snapshot())
+                {
+                    source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+                        data_root,
+                        &catalog,
+                        source_route_ledger_now_ms(),
+                    )?;
+                }
             }
             let watch_reconcile_trigger = wake
                 .source_watch

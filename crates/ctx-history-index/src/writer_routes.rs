@@ -486,12 +486,9 @@ impl GenerationWriter {
             .as_ref()
             .map(PinnedPublication::manifest)
             .and_then(|base| {
-                base.source_routes().iter().find(|route| {
-                    route.sources().iter().any(|candidate| {
-                        candidate.exact_descriptor_eq(source)
-                            || candidate.is_same_lineage_descriptor_replacement(source)
-                    })
-                })
+                base.source_routes()
+                    .iter()
+                    .find(|route| route_source_with_lineage(route, source).is_some())
             });
         let owner_authorized_for_active = base_owner.is_some_and(|route| {
             self.active_source_route_stage
@@ -547,29 +544,24 @@ impl GenerationWriter {
             .is_some_and(|base| {
                 base.source_routes().iter().any(|route| {
                     plan.carried_from_base.contains(route.route_identity())
-                        && route
-                            .sources()
-                            .iter()
-                            .any(|candidate| candidate.exact_descriptor_eq(source))
+                        && route_source_with_lineage(route, source)
+                            .is_some_and(|candidate| candidate.exact_descriptor_eq(source))
                 })
             })
     }
+}
 
-    pub(crate) fn source_is_partially_reconciled_from_base(&self, source: &SourceKey) -> bool {
-        self.base_publication
-            .as_ref()
-            .map(PinnedPublication::manifest)
-            .is_some_and(|base| {
-                base.source_routes().iter().any(|route| {
-                    self.partially_reconciled_routes
-                        .contains(route.route_identity())
-                        && route
-                            .sources()
-                            .iter()
-                            .any(|candidate| candidate.exact_descriptor_eq(source))
-                })
-            })
-    }
+fn route_source_with_lineage<'a>(
+    route: &'a SourceRouteSnapshot,
+    source: &SourceKey,
+) -> Option<&'a SourceKey> {
+    route
+        .sources()
+        .binary_search_by_key(&source.identity().digest(), |candidate| {
+            candidate.identity().digest()
+        })
+        .ok()
+        .and_then(|index| route.sources().get(index))
 }
 
 fn remove_retired_route_from_plan(

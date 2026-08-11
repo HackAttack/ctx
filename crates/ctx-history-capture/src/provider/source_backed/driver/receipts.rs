@@ -623,6 +623,7 @@ pub struct SourceBackedRouteDriver {
         Option<Arc<RoutePublicationRevalidationCallback>>,
     pub(in super::super) publication_control: Option<Arc<RoutePublicationControlCallback>>,
     pub(in super::super) watch_targets: Option<Arc<WatchTargetsCallback>>,
+    pub(in super::super) route_control_expectation: Option<SourceBackedRouteControlExpectation>,
     pub(in super::super) uses_parallel_leaf_workers: bool,
 }
 
@@ -668,6 +669,7 @@ impl SourceBackedRouteDriver {
             revalidate_at_publication: None,
             publication_control: None,
             watch_targets: None,
+            route_control_expectation: None,
             uses_parallel_leaf_workers: false,
         }
     }
@@ -710,6 +712,14 @@ impl SourceBackedRouteDriver {
         control: impl Fn() -> SourceBackedRouteResult<Option<Vec<u8>>> + Send + Sync + 'static,
     ) -> Self {
         self.publication_control = Some(Arc::new(control));
+        self
+    }
+
+    pub(crate) fn with_route_control_expectation(
+        mut self,
+        expectation: SourceBackedRouteControlExpectation,
+    ) -> Self {
+        self.route_control_expectation = Some(expectation);
         self
     }
 
@@ -1076,6 +1086,21 @@ fn source_backed_route_identity(
         let path = source.path.as_os_str().as_encoded_bytes();
         digest.update((path.len() as u64).to_be_bytes());
         digest.update(path);
+    } else if source.provider == CaptureProvider::Hermes {
+        let profile =
+            crate::provider::providers::hermes::source_backed::hermes_automatic_profile_name(
+                &source.path,
+            )
+            .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+        if profile != "default" {
+            // Hermes discovery intentionally multiplexes independently owned
+            // named profiles. Keep the historical default route identity, but
+            // give every validated named profile a stable path-independent
+            // logical slot so registry de-duplication cannot collapse them.
+            digest.update(b"\0hermes-profile\0");
+            digest.update((profile.len() as u64).to_be_bytes());
+            digest.update(profile.as_bytes());
+        }
     }
     SourceRouteIdentity::from_sha256(format!("{:x}", digest.finalize())).map_err(Into::into)
 }

@@ -1204,6 +1204,7 @@ use family::{
 #[cfg(any(test, feature = "test-support"))]
 pub use snapshot::{
     fail_next_opened_snapshot_cleanup_for_test, fail_next_private_directory_cleanup_for_test,
+    force_next_pinned_wal_unavailable_for_test,
 };
 pub use snapshot::{
     open_root_handle_sqlite_source_snapshot, open_root_handle_sqlite_source_snapshot_with_limits,

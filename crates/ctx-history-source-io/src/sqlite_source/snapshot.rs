@@ -11,7 +11,7 @@ pub(super) use acquisition::{close_private_snapshot_directory, close_private_sql
 #[cfg(any(test, feature = "test-support"))]
 pub use acquisition::{
     fail_next_opened_snapshot_cleanup_for_test, fail_next_snapshot_open_for_test,
-    fail_next_snapshot_write_enospc_for_test,
+    fail_next_snapshot_write_enospc_for_test, force_next_pinned_wal_unavailable_for_test,
 };
 use copy_progress::{copy_sqlite_member_with_progress, report_source_family_copy_progress};
 #[cfg(any(test, feature = "test-support"))]
@@ -160,7 +160,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_progress<E>(
 fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
-    mut options: SqliteSourceSnapshotOptions,
+    options: SqliteSourceSnapshotOptions,
     after_parent_retention: impl FnOnce(),
     after_database_copy: impl FnOnce(),
     before_source_revalidation: impl FnOnce(),
@@ -177,12 +177,6 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
                 SqliteCleanupStatus::NotRequired,
             ))
         })?;
-    if options.policy == SqliteSourceSnapshotPolicy::PinnedReadOnlyWal
-        && family.wal.is_none()
-        && family.shared_memory.is_none()
-    {
-        options.policy = SqliteSourceSnapshotPolicy::ExactRevision;
-    }
     let native_evidence = match options.policy {
         SqliteSourceSnapshotPolicy::PinnedReadOnlyWal => family.capture_revision_evidence()?,
         SqliteSourceSnapshotPolicy::ExactRevision
