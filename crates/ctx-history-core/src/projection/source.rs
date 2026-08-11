@@ -48,6 +48,23 @@ pub struct SourceKey {
 }
 
 impl SourceKey {
+    pub fn derive_provider_native(
+        provider: impl Into<String>,
+        source_format: impl Into<String>,
+        schema_variant: impl Into<String>,
+        provider_identity_version: u32,
+        namespace: impl Into<String>,
+        key: TypedKey,
+    ) -> ProjectionContractResult<Self> {
+        Self::derive(
+            provider,
+            source_format,
+            schema_variant,
+            provider_identity_version,
+            SourceAnchor::provider_native(namespace, key)?,
+        )
+    }
+
     pub fn derive(
         provider: impl Into<String>,
         source_format: impl Into<String>,

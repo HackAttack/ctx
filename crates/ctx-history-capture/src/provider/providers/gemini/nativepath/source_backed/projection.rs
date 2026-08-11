@@ -1,7 +1,6 @@
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, EventIdentityInput,
-    EventOrigin, NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceAnchor, SourceKey,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    EventIdentityInput, EventOrigin, NativeItemKey, SourceKey, StableEntityId, TypedKey,
 };
 
 use super::{
@@ -174,16 +173,13 @@ fn bounded_chars(value: &str, maximum: usize) -> String {
 }
 
 pub(super) fn gemini_source_key(native_session_id: &str) -> GeminiSourceBackedResult<SourceKey> {
-    let anchor = SourceAnchor::provider_native(
-        GEMINI_SOURCE_ANCHOR_NAMESPACE,
-        TypedKey::utf8(native_session_id)?,
-    )?;
-    Ok(SourceKey::derive(
+    Ok(SourceKey::derive_provider_native(
         CaptureProvider::Gemini.as_str(),
         GEMINI_CLI_SOURCE_FORMAT,
         GEMINI_SOURCE_SCHEMA_VARIANT,
         1,
-        anchor,
+        GEMINI_SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(native_session_id)?,
     )?)
 }
 
@@ -191,13 +187,10 @@ pub(super) fn gemini_session_id(
     source: &SourceKey,
     native_session_id: &str,
 ) -> GeminiSourceBackedResult<StableEntityId> {
-    let native_session_key = NativeSessionKey::native_id(
+    Ok(derive_native_session_id(
+        source,
+        GEMINI_LOGICAL_SESSION_KIND,
         GEMINI_NATIVE_SESSION_NAMESPACE,
         TypedKey::utf8(native_session_id)?,
-    )?;
-    Ok(derive_session_id(SessionIdentityInput {
-        source,
-        logical_session_kind: GEMINI_LOGICAL_SESSION_KIND,
-        native_session_key: &native_session_key,
-    })?)
+    )?)
 }

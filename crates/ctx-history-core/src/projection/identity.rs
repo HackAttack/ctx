@@ -10,7 +10,7 @@ use super::errors::{
 };
 use super::native::{
     encode_native_item_key, encode_native_session_key, encode_subrecord_selector, encode_typed_key,
-    NativeItemKey, NativeSessionKey, SubrecordSelector,
+    NativeItemKey, NativeSessionKey, SubrecordSelector, TypedKey,
 };
 use super::source::{SourceAnchor, SourceKey};
 
@@ -212,6 +212,20 @@ pub fn derive_session_id(
     fields.utf8(2, input.logical_session_kind);
     fields.native_session_key(3, input.native_session_key)?;
     derive_identity(StableEntityKind::Session, fields, Some(input.source))
+}
+
+pub fn derive_native_session_id(
+    source: &SourceKey,
+    logical_session_kind: &str,
+    namespace: impl Into<String>,
+    key: TypedKey,
+) -> ProjectionContractResult<StableEntityId> {
+    let native_session_key = NativeSessionKey::native_id(namespace, key)?;
+    derive_session_id(SessionIdentityInput {
+        source,
+        logical_session_kind,
+        native_session_key: &native_session_key,
+    })
 }
 
 pub fn derive_event_id(input: EventIdentityInput<'_>) -> ProjectionContractResult<StableEntityId> {

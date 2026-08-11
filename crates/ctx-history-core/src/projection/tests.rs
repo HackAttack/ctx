@@ -24,6 +24,261 @@ fn native_session_id(value: &str) -> NativeSessionKey {
 }
 
 #[test]
+fn provider_native_helpers_preserve_every_migrated_jsonl_identity_byte() {
+    struct Case {
+        provider: &'static str,
+        source_format: &'static str,
+        schema_variant: &'static str,
+        source_namespace: &'static str,
+        session_namespace: &'static str,
+        logical_session_kind: &'static str,
+        key: TypedKey,
+        source_uuid: &'static str,
+        session_uuid: &'static str,
+    }
+
+    let utf8 = || TypedKey::utf8("provider-native-identity-golden").unwrap();
+    let cases = [
+        Case {
+            provider: "antigravity",
+            source_format: "antigravity_cli_transcript_jsonl_tree",
+            schema_variant: "antigravity-direct-native-jsonl-v1",
+            source_namespace: "antigravity.direct-jsonl-session",
+            session_namespace: "antigravity.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "0af37c78-feba-8242-b9e2-59d48cdaa12d",
+            session_uuid: "af04b9fd-2d99-81f5-8916-e4371445745a",
+        },
+        Case {
+            provider: "copilot_cli",
+            source_format: "copilot_cli_session_events_jsonl",
+            schema_variant: "copilot-cli-direct-native-jsonl-v1",
+            source_namespace: "copilot_cli.direct-jsonl-session",
+            session_namespace: "copilot_cli.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "1e095341-3d50-8dac-b37b-eb65f36e1a44",
+            session_uuid: "fd66c7e7-04fc-805e-93d0-ed44f38ba789",
+        },
+        Case {
+            provider: "factory_ai_droid",
+            source_format: "factory_ai_droid_sessions_jsonl",
+            schema_variant: "factory-droid-direct-native-jsonl-v1",
+            source_namespace: "factory_ai_droid.direct-jsonl-session",
+            session_namespace: "factory_ai_droid.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "fdcf4f3b-af09-85f4-8ee0-3296c4772028",
+            session_uuid: "f45affaa-3bb5-8da4-9ba5-6f63744cbcc1",
+        },
+        Case {
+            provider: "qoder",
+            source_format: "qoder_transcript_jsonl",
+            schema_variant: "qoder-direct-native-jsonl-v1",
+            source_namespace: "qoder.direct-jsonl-session",
+            session_namespace: "qoder.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "fc73bf64-abb2-894d-b4a7-69647f3ccd5e",
+            session_uuid: "bd167add-b16d-8ef9-85eb-cf8da8b9761e",
+        },
+        Case {
+            provider: "qwen_code",
+            source_format: "qwen_code_chat_jsonl",
+            schema_variant: "qwen-code-direct-native-jsonl-v1",
+            source_namespace: "qwen_code.direct-jsonl-session",
+            session_namespace: "qwen_code.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "c9c42649-36fc-87b2-8682-70686f75f83e",
+            session_uuid: "f84bdb3a-d453-8ff3-9bb2-f3d2dcce51cb",
+        },
+        Case {
+            provider: "tabnine",
+            source_format: "tabnine_cli_chat_recording_jsonl",
+            schema_variant: "tabnine-direct-native-jsonl-v1",
+            source_namespace: "tabnine.direct-jsonl-session",
+            session_namespace: "tabnine.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "d1b0fd7d-ed97-866d-9ab2-1474ec88be8e",
+            session_uuid: "4b704899-c421-855e-9865-9fb4dd30b59d",
+        },
+        Case {
+            provider: "windsurf",
+            source_format: "windsurf_cascade_hook_transcript_jsonl",
+            schema_variant: "windsurf-direct-native-jsonl-v1",
+            source_namespace: "windsurf.direct-jsonl-session",
+            session_namespace: "windsurf.direct-jsonl-session",
+            logical_session_kind: "direct-jsonl-session",
+            key: utf8(),
+            source_uuid: "6b7c480d-54db-8aad-921c-04b11eef80e6",
+            session_uuid: "bc68f87e-96e2-8b64-a59a-5c7f8b08aacb",
+        },
+        Case {
+            provider: "claude",
+            source_format: "claude_projects_jsonl_tree",
+            schema_variant: "claude-nativepath-jsonl-v6",
+            source_namespace: "claude.session-leaf",
+            session_namespace: "claude.session",
+            logical_session_kind: "claude-session",
+            key: TypedKey::composite(vec![
+                TypedKey::utf8("claude-root").unwrap(),
+                TypedKey::utf8("claude-workflow").unwrap(),
+                TypedKey::utf8("claude-agent").unwrap(),
+            ])
+            .unwrap(),
+            source_uuid: "4c29621c-26f8-8848-87b6-61c7d67bdbf5",
+            session_uuid: "a66bd1e0-2491-8189-a158-e7d05c8149c6",
+        },
+        Case {
+            provider: "cursor",
+            source_format: "cursor_agent_transcript_jsonl_tree",
+            schema_variant: "cursor-agent-transcript-jsonl-v1",
+            source_namespace: "cursor.session",
+            session_namespace: "cursor.session",
+            logical_session_kind: "cursor-session",
+            key: utf8(),
+            source_uuid: "992b3fb9-7785-8c1f-bad4-ec397f03f13e",
+            session_uuid: "c041f64d-87e9-86ef-9057-6f3dd4cb0504",
+        },
+        Case {
+            provider: "gemini",
+            source_format: "gemini_cli_chat_recording_jsonl",
+            schema_variant: "gemini-nativepath-jsonl-v0",
+            source_namespace: "gemini.session",
+            session_namespace: "gemini.session",
+            logical_session_kind: "gemini-session",
+            key: utf8(),
+            source_uuid: "13079e95-4157-85b6-9d32-c5ee8734d97a",
+            session_uuid: "d91143ce-fd7d-800c-8b9c-b47ecd802a0c",
+        },
+        Case {
+            provider: "junie",
+            source_format: "junie_session_events_jsonl_tree",
+            schema_variant: "junie-session-events-v2",
+            source_namespace: "junie.session-events",
+            session_namespace: "junie.session",
+            logical_session_kind: "junie-session",
+            key: utf8(),
+            source_uuid: "9cd88b5f-dfba-8f01-ae24-7b1b246338b7",
+            session_uuid: "09f1a6ce-205a-86b7-a5f4-6d56ebaef07c",
+        },
+        Case {
+            provider: "kimi_code_cli",
+            source_format: "kimi_code_cli_wire_jsonl",
+            schema_variant: "compound-wire-tree-v1",
+            source_namespace: "kimi-code-cli-wire-lineage-v1",
+            session_namespace: "kimi-code-cli-session-v1",
+            logical_session_kind: "agent-session",
+            key: utf8(),
+            source_uuid: "eb137ef7-8238-81a7-922f-885e3efb39c1",
+            session_uuid: "47517de8-2011-8beb-9828-32e3eb386945",
+        },
+        Case {
+            provider: "mistral_vibe",
+            source_format: "mistral_vibe_session_jsonl",
+            schema_variant: "meta-json-messages-jsonl-v1",
+            source_namespace: "mistral-vibe-session-id",
+            session_namespace: "mistral-vibe-session",
+            logical_session_kind: "mistral-vibe-session",
+            key: utf8(),
+            source_uuid: "11a0edb4-79fe-8206-9e61-f2921294c69a",
+            session_uuid: "e101c3c7-5c5d-8498-b323-e516a79cb81b",
+        },
+        Case {
+            provider: "mux",
+            source_format: "mux_session_jsonl",
+            schema_variant: "mux-session-tree-source-backed-v2",
+            source_namespace: "mux.session",
+            session_namespace: "mux.session",
+            logical_session_kind: "mux-session",
+            key: utf8(),
+            source_uuid: "b77ce7d1-3c3d-8f00-b622-427ec381441d",
+            session_uuid: "4bde0f16-be79-8b38-8dfe-698ac9feaa60",
+        },
+        Case {
+            provider: "openclaw",
+            source_format: "openclaw_session_jsonl_tree",
+            schema_variant: "openclaw-legacy-jsonl-v2",
+            source_namespace: "openclaw.legacy-session",
+            session_namespace: "openclaw.legacy-session",
+            logical_session_kind: "openclaw-legacy-session",
+            key: utf8(),
+            source_uuid: "71887153-7f89-80a0-977c-cc1387f26ead",
+            session_uuid: "5045da45-d6f1-89f8-8b19-3aa7e35e18c6",
+        },
+        Case {
+            provider: "pi",
+            source_format: "pi_session_jsonl",
+            schema_variant: "pi-nativepath-jsonl-v1",
+            source_namespace: "pi.session",
+            session_namespace: "pi.session",
+            logical_session_kind: "pi-session",
+            key: utf8(),
+            source_uuid: "98d3ecd2-3c9d-84a1-ae4d-793ab742f978",
+            session_uuid: "6cdc05e9-8131-8f72-b46f-44f7226898bd",
+        },
+    ];
+
+    for case in cases {
+        let old_source = SourceKey::derive(
+            case.provider,
+            case.source_format,
+            case.schema_variant,
+            1,
+            SourceAnchor::provider_native(case.source_namespace, case.key.clone()).unwrap(),
+        )
+        .unwrap();
+        let new_source = SourceKey::derive_provider_native(
+            case.provider,
+            case.source_format,
+            case.schema_variant,
+            1,
+            case.source_namespace,
+            case.key.clone(),
+        )
+        .unwrap();
+        assert!(
+            new_source.exact_descriptor_eq(&old_source),
+            "{}",
+            case.provider
+        );
+        assert_eq!(
+            new_source.identity().encode_canonical().unwrap(),
+            old_source.identity().encode_canonical().unwrap(),
+            "{} source",
+            case.provider
+        );
+
+        let old_key =
+            NativeSessionKey::native_id(case.session_namespace, case.key.clone()).unwrap();
+        let old_session = derive_session_id(SessionIdentityInput {
+            source: &old_source,
+            logical_session_kind: case.logical_session_kind,
+            native_session_key: &old_key,
+        })
+        .unwrap();
+        let new_session = derive_native_session_id(
+            &new_source,
+            case.logical_session_kind,
+            case.session_namespace,
+            case.key,
+        )
+        .unwrap();
+        assert_eq!(
+            new_session.encode_canonical().unwrap(),
+            old_session.encode_canonical().unwrap(),
+            "{} session",
+            case.provider
+        );
+        assert_eq!(new_source.identity().to_string(), case.source_uuid);
+        assert_eq!(new_session.to_string(), case.session_uuid);
+    }
+}
+
+#[test]
 fn source_lineage_disambiguates_equal_provider_session_ids() {
     let first = source(1);
     let second = source(2);
