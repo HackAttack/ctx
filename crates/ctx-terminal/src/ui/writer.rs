@@ -166,13 +166,13 @@ impl<W: Write> LiveOutput<W> {
         &self.context
     }
 
-    #[cfg(test)]
-    pub(crate) fn into_inner(self) -> W {
+    #[doc(hidden)]
+    pub fn into_inner(self) -> W {
         self.writer
     }
 
-    #[cfg(test)]
-    pub(crate) const fn inner(&self) -> &W {
+    #[doc(hidden)]
+    pub const fn inner(&self) -> &W {
         &self.writer
     }
 

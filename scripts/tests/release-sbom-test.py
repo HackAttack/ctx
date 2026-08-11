@@ -43,6 +43,7 @@ WORKSPACE_PACKAGES = (
     ("ctx-history-query", "crates/ctx-history-query"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
+    ("ctx-terminal", "crates/ctx-terminal"),
     ("ctx-upgrade-engine", "crates/ctx-upgrade-engine"),
 )
 EXTERNAL_PACKAGES = (
@@ -156,6 +157,7 @@ members = [
   "crates/ctx-history-query",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
+  "crates/ctx-terminal",
   "crates/ctx-upgrade-engine",
 ]
 
@@ -185,6 +187,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-history-refresh-execution = { path = \"../ctx-history-refresh-execution\" }\n"
                     "ctx-history-query = { path = \"../ctx-history-query\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
+                    "ctx-terminal = { path = \"../ctx-terminal\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
                 "ctx-agent-integrations": (
@@ -237,7 +240,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
             )
             version = (
                 'version = "1.0.0"'
-                if name in {"ctx-daemon-runtime", "ctx-daemon-service"}
+                if name in {"ctx-daemon-runtime", "ctx-daemon-service", "ctx-terminal"}
                 else "version.workspace = true"
             )
             manifest.write_text(
@@ -293,6 +296,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-query:ctx_history_query",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
+            "@@//crates/ctx-terminal:ctx_terminal",
             "@@//crates/ctx-upgrade-engine:ctx_upgrade_engine",
         ]
         inventory_labels.extend(
@@ -385,6 +389,7 @@ repository = "https://example.invalid/{name}"
                     "ctx-history-query",
                     "ctx-semantic-index",
                     "ctx-semantic-model",
+                    "ctx-terminal 1.0.0",
                     "ctx-upgrade-engine",
                 ),
             ),
@@ -471,6 +476,7 @@ repository = "https://example.invalid/{name}"
                 "0.26.0",
                 ("ctx-history-core",),
             ),
+            self.package("ctx-terminal", "1.0.0"),
             self.package(
                 "ctx-upgrade-engine",
                 "0.26.0",

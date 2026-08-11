@@ -56,8 +56,8 @@ pub(crate) use source_backed_refresh_coordinator::{
     coordinate_import_source_backed_refresh_with_progress, coordinate_source_backed_refresh,
     coordinate_source_backed_refresh_with_progress, pin_active_verified_generation,
     published_explicit_source_relocation_authority, PinnedSourceBackedGeneration, RefreshStatus,
-    SourceBackedCurrentSourceProgress, SourceBackedRefreshDaemonUnavailable,
-    SourceBackedRefreshMode, SourceBackedRefreshObservation, SourceBackedRefreshPendingPublication,
+    SourceBackedRefreshDaemonUnavailable, SourceBackedRefreshMode, SourceBackedRefreshObservation,
+    SourceBackedRefreshPendingPublication,
 };
 mod daemon_autostart;
 #[allow(unused_imports)]

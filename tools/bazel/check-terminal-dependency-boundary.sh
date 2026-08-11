@@ -22,3 +22,7 @@ if rg -n '(^|[^[:alnum:]_])(clap|ureq|ring|ed25519_dalek|sha2|zeroize|url)::|ctx
   echo 'ctx-terminal production source contains a forbidden dependency backedge' >&2
   exit 1
 fi
+if rg -n 'from_schema_v1|schema_v1_fields|SourceBacked(CurrentSource|Refresh)' "${root}/crates/ctx-terminal/src"; then
+  echo 'ctx-terminal production source contains a domain wire-schema adapter' >&2
+  exit 1
+fi

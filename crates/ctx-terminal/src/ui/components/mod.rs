@@ -18,6 +18,10 @@ pub use hint::{hint, Action, Hint};
 pub use layout::is_copyable_atom;
 pub use outcome::{outcome, Outcome, OutcomeState};
 pub use progress::{progress, Progress};
-pub use refresh_progress::{refresh_progress, RefreshProgressSnapshot};
+pub use refresh_progress::{
+    refresh_progress, RefreshCurrentSourceProgress, RefreshCurrentSourceProgressStage,
+    RefreshLogicalPhase, RefreshLogicalStatus, RefreshProgress, RefreshProgressSnapshot,
+    RefreshRequestState, RefreshStatusKind, RefreshStructuredOutcome,
+};
 pub use section::section;
 pub use table::{table, Table};

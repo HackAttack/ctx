@@ -6,7 +6,9 @@ use std::{
 
 use serde_json::json;
 
-use crate::ui::{refresh_progress, Document, Line, LiveOutput, RefreshProgressSnapshot, Span, Token, Ui};
+use crate::ui::{
+    refresh_progress, Document, Line, LiveOutput, RefreshProgressSnapshot, Span, Token, Ui,
+};
 
 const MAX_PROGRESS_MESSAGE_BYTES: usize = 512;
 const MAX_PROGRESS_SOURCE_BYTES: usize = 256;
@@ -188,25 +190,9 @@ fn progress_json(operation: &'static str, line: &ProgressLine, elapsed: StdDurat
         value["current_source_progress"] = progress
             .current_source_progress
             .as_ref()
-            .map(|current| current.fields.clone())
+            .map(crate::ui::RefreshCurrentSourceProgress::to_json)
             .unwrap_or(serde_json::Value::Null);
-        let status = snapshot.schema_v1_fields();
-        for field in [
-            "request_id",
-            "request_state",
-            "logical_request_id",
-            "logical_phase",
-            "physical_attempt_id",
-            "physical_attempt_state",
-            "progress_owner_request_id",
-            "progress_owner_attempt_state",
-            "structured_outcome",
-            "maintenance_wake",
-        ] {
-            if let Some(field_value) = status.get(field) {
-                value[field] = field_value.clone();
-            }
-        }
+        snapshot.append_json_fields(&mut value);
     }
     value.to_string()
 }
@@ -353,8 +339,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use serde_json::json;
-
     #[derive(Clone, Default)]
     struct SharedWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -375,90 +359,108 @@ mod tests {
         }
     }
 
-    fn active_status() -> serde_json::Value {
-        json!({
-            "request_id": "logical-request",
-            "request_state": "running",
-            "logical_request_id": "logical-request",
-            "logical_phase": "direct",
-            "physical_attempt_id": "physical-attempt",
-            "physical_attempt_state": "running",
-            "progress_owner_request_id": "physical-attempt",
-            "progress_owner_attempt_state": "running",
-            "progress": {
-                "phase": "refreshing",
-                "completed_sources": 1,
-                "total_sources": 2,
-                "total_sources_known": true,
-                "current_source": "/tmp/history\ncontrol.sqlite",
-                "completed_records": 4096,
-                "completed_bytes": 2048,
-                "current_source_progress": {
-                    "stage": "logical_scan",
-                    "logical_rows_scanned": 4096,
-                    "logical_certified_bytes": 2048
-                }
-            }
-        })
-    }
-
-    fn active_transfer_status() -> serde_json::Value {
-        json!({
-            "request_id": "explicit-import-request",
-            "request_state": "running",
-            "logical_request_id": "explicit-import-request",
-            "logical_phase": "attached",
-            "physical_attempt_id": "shared-physical-attempt",
-            "physical_attempt_state": "running",
-            "progress_owner_request_id": "shared-physical-attempt",
-            "progress_owner_attempt_state": "running",
-            "progress": {
-                "phase": "copying",
-                "completed_sources": 1,
-                "total_sources": 3,
-                "total_sources_known": true,
-                "current_source": "/explicit.sqlite",
-                "completed_records": 100,
-                "completed_bytes": 777,
-                "current_source_progress": {
-                    "stage": "online_backup",
-                    "snapshot_bytes_completed": 256,
-                    "snapshot_bytes_total": 512
-                }
-            }
-        })
-    }
-
-    fn terminal_status() -> serde_json::Value {
-        json!({
-            "request_id": "logical-request",
-            "request_state": "published",
-            "logical_request_id": "logical-request",
-            "logical_phase": "terminal",
-            "physical_attempt_id": "physical-attempt",
-            "physical_attempt_state": "published",
-            "progress_owner_request_id": "physical-attempt",
-            "progress_owner_attempt_state": "published",
-            "structured_outcome": {
-                "code": "completed",
-                "class": "completed",
-                "retryable": false,
-                "affected_routes": [],
-                "retryable_routes": [],
-                "blocked_routes": [],
-                "physical_attempt_id": "physical-attempt"
+    fn active_status() -> RefreshProgressSnapshot {
+        RefreshProgressSnapshot::new(
+            Some("logical-request".to_owned()),
+            crate::ui::RefreshStatusKind::Logical(crate::ui::RefreshLogicalStatus {
+                request_state: crate::ui::RefreshRequestState::Running,
+                logical_phase: crate::ui::RefreshLogicalPhase::Direct,
+                physical_attempt_id: "physical-attempt".to_owned(),
+                physical_attempt_state: crate::ui::RefreshRequestState::Running,
+                progress_owner_request_id: "physical-attempt".to_owned(),
+                progress_owner_attempt_state: crate::ui::RefreshRequestState::Running,
+                structured_outcome: None,
+            }),
+            crate::ui::RefreshProgress {
+                phase: "refreshing".to_owned(),
+                completed_sources: 1,
+                total_sources: 2,
+                current_source: Some("/tmp/history\ncontrol.sqlite".to_owned()),
+                completed_records: Some(4_096),
+                completed_bytes: Some(2_048),
+                current_source_progress: Some(crate::ui::RefreshCurrentSourceProgress {
+                    stage: crate::ui::RefreshCurrentSourceProgressStage::LogicalScan,
+                    snapshot_pages_completed: None,
+                    snapshot_pages_total: None,
+                    snapshot_bytes_completed: None,
+                    snapshot_bytes_total: None,
+                    logical_rows_scanned: Some(4_096),
+                    logical_certified_bytes: Some(2_048),
+                }),
             },
-            "progress": {
-                "phase": "committed",
-                "completed_sources": 2,
-                "total_sources": 2,
-                "total_sources_known": true
-            }
-        })
+            true,
+        )
     }
 
-    fn snapshot(status: &serde_json::Value) -> RefreshProgressSnapshot {
-        RefreshProgressSnapshot::from_schema_v1(status).unwrap()
+    fn active_transfer_status() -> RefreshProgressSnapshot {
+        RefreshProgressSnapshot::new(
+            Some("explicit-import-request".to_owned()),
+            crate::ui::RefreshStatusKind::Logical(crate::ui::RefreshLogicalStatus {
+                request_state: crate::ui::RefreshRequestState::Running,
+                logical_phase: crate::ui::RefreshLogicalPhase::Attached,
+                physical_attempt_id: "shared-physical-attempt".to_owned(),
+                physical_attempt_state: crate::ui::RefreshRequestState::Running,
+                progress_owner_request_id: "shared-physical-attempt".to_owned(),
+                progress_owner_attempt_state: crate::ui::RefreshRequestState::Running,
+                structured_outcome: None,
+            }),
+            crate::ui::RefreshProgress {
+                phase: "copying".to_owned(),
+                completed_sources: 1,
+                total_sources: 3,
+                current_source: Some("/explicit.sqlite".to_owned()),
+                completed_records: Some(100),
+                completed_bytes: Some(777),
+                current_source_progress: Some(crate::ui::RefreshCurrentSourceProgress {
+                    stage: crate::ui::RefreshCurrentSourceProgressStage::OnlineBackup,
+                    snapshot_pages_completed: None,
+                    snapshot_pages_total: None,
+                    snapshot_bytes_completed: Some(256),
+                    snapshot_bytes_total: Some(512),
+                    logical_rows_scanned: None,
+                    logical_certified_bytes: None,
+                }),
+            },
+            true,
+        )
+    }
+
+    fn terminal_status() -> RefreshProgressSnapshot {
+        RefreshProgressSnapshot::new(
+            Some("logical-request".to_owned()),
+            crate::ui::RefreshStatusKind::Logical(crate::ui::RefreshLogicalStatus {
+                request_state: crate::ui::RefreshRequestState::Published,
+                logical_phase: crate::ui::RefreshLogicalPhase::Terminal,
+                physical_attempt_id: "physical-attempt".to_owned(),
+                physical_attempt_state: crate::ui::RefreshRequestState::Published,
+                progress_owner_request_id: "physical-attempt".to_owned(),
+                progress_owner_attempt_state: crate::ui::RefreshRequestState::Published,
+                structured_outcome: Some(crate::ui::RefreshStructuredOutcome {
+                    code: "completed".to_owned(),
+                    class: "completed".to_owned(),
+                    retryable: false,
+                    affected_routes: Vec::new(),
+                    retryable_routes: Vec::new(),
+                    blocked_routes: Vec::new(),
+                    physical_attempt_id: "physical-attempt".to_owned(),
+                    retained_generation: None,
+                    published_generation: None,
+                    retry_advice: None,
+                    detail: None,
+                    failure: false,
+                }),
+            }),
+            crate::ui::RefreshProgress {
+                phase: "committed".to_owned(),
+                completed_sources: 2,
+                total_sources: 2,
+                current_source: None,
+                completed_records: None,
+                completed_bytes: None,
+                current_source_progress: None,
+            },
+            true,
+        )
     }
 
     fn ui_with_stderr(
@@ -501,7 +503,7 @@ mod tests {
                 ui_with_stderr(stderr, crate::ui::RenderContext::for_test(test_context));
             {
                 let mut reporter = ProgressReporter::new(&mut ui, arg, final_json, "import", 0);
-                reporter.source_refresh(snapshot(&active_status())).unwrap();
+                reporter.source_refresh(active_status()).unwrap();
             }
             assert_eq!(
                 !stderr_capture.text().is_empty(),
@@ -525,18 +527,12 @@ mod tests {
     fn active_and_terminal_refresh_jsonl_contract_is_exact() {
         let active = progress_json(
             "import",
-            &source_refresh_line(
-                snapshot(&active_transfer_status()),
-                4_096,
-            ),
+            &source_refresh_line(active_transfer_status(), 4_096),
             StdDuration::from_secs(2),
         );
         let terminal = progress_json(
             "import",
-            &source_refresh_line(
-                snapshot(&terminal_status()),
-                4_096,
-            ),
+            &source_refresh_line(terminal_status(), 4_096),
             StdDuration::from_secs(2),
         );
 
@@ -720,7 +716,7 @@ mod tests {
 
     #[test]
     fn sqlite_logical_progress_is_typed_and_never_invents_a_total() {
-        let snapshot = snapshot(&active_status());
+        let snapshot = active_status();
         let line = source_refresh_line(snapshot, 8_192);
         assert_eq!(line.phase, "logical_scan");
         assert!(line.message.contains("history control.sqlite"));

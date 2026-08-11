@@ -11,11 +11,7 @@ pub struct Action<'a> {
     pub command: &'a str,
 }
 
-pub fn hint(
-    context: &RenderContext,
-    hint: Hint<'_>,
-    action: Option<Action<'_>>,
-) -> Document {
+pub fn hint(context: &RenderContext, hint: Hint<'_>, action: Option<Action<'_>>) -> Document {
     let mut document = labelled_text(context, "Hint", hint.text);
     if let Some(action) = action {
         if !document.is_empty() {
