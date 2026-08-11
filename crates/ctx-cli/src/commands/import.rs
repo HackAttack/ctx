@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde_json::Value;
 
 use crate::analytics::{ImportTelemetry, ProviderRefreshTrigger};
@@ -22,6 +22,7 @@ mod totals;
 use automatic_source_refresh::{
     run_automatic_source_refresh_import, AutomaticSourceRefreshImportContext,
 };
+pub(crate) use ctx_history_ingest_application::SourceStats;
 pub(crate) use entry::{import_report_analytics_outcome, import_report_failure_type, run_import};
 use explicit::{run_explicit_source_catalog_import, ExplicitSourceCatalogImportContext};
 #[cfg(test)]
@@ -67,13 +68,6 @@ pub(crate) fn resume_mode_name(resume: bool) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SourceStats {
-    pub(crate) files: usize,
-    pub(crate) bytes: u64,
-    pub(crate) change_token: Option<[u8; 32]>,
-}
-
 pub(crate) fn run_import_internal(
     args: &ImportArgs,
     data_root: PathBuf,
@@ -84,51 +78,53 @@ pub(crate) fn run_import_internal(
     presentation: ImportRunPresentation<'_>,
 ) -> Result<ImportReport> {
     let ImportRunPresentation { options, ui } = presentation;
-    validate_import_args(args)?;
-    if args.history_source.is_some() || !args.history_source_manifest.is_empty() {
-        return run_history_source_plugin_import(HistorySourcePluginImportContext {
-            args,
-            data_root,
-            telemetry,
-            provider_refreshes,
-            refresh_trigger,
-            config,
-            options,
-            ui,
-        });
+    match validated_route(args)? {
+        ctx_history_ingest_application::IngestRoute::HistorySourcePlugin => {
+            run_history_source_plugin_import(HistorySourcePluginImportContext {
+                args,
+                data_root,
+                telemetry,
+                provider_refreshes,
+                refresh_trigger,
+                config,
+                options,
+                ui,
+            })
+        }
+        ctx_history_ingest_application::IngestRoute::ExplicitPath => {
+            run_explicit_source_catalog_import(ExplicitSourceCatalogImportContext {
+                args,
+                data_root,
+                telemetry,
+                provider_refreshes,
+                refresh_trigger,
+                config,
+                options,
+                ui,
+            })
+        }
+        ctx_history_ingest_application::IngestRoute::Automatic => {
+            run_automatic_source_refresh_import(AutomaticSourceRefreshImportContext {
+                args,
+                data_root,
+                provider_refreshes,
+                config,
+                options,
+                ui,
+            })
+        }
     }
-    if args.path.is_some() {
-        return run_explicit_source_catalog_import(ExplicitSourceCatalogImportContext {
-            args,
-            data_root,
-            telemetry,
-            provider_refreshes,
-            refresh_trigger,
-            config,
-            options,
-            ui,
-        });
-    }
-    run_automatic_source_refresh_import(AutomaticSourceRefreshImportContext {
-        args,
-        data_root,
-        provider_refreshes,
-        config,
-        options,
-        ui,
-    })
 }
 
-fn validate_import_args(args: &ImportArgs) -> Result<()> {
-    if args.input_format.is_some() && args.path.is_none() {
-        return Err(anyhow!(
-            "ctx import --input-format requires --path for a source-backed catalog entry"
-        ));
-    }
-    if args.path.is_some() && args.input_format.is_none() && args.provider.is_none() {
-        return Err(anyhow!(
-            "ctx import --path requires --provider for native provider history; use `ctx import --provider codex --path <path>` or `ctx import --input-format ctx-history-jsonl-v1 --path <file>`"
-        ));
-    }
-    Ok(())
+fn validated_route(args: &ImportArgs) -> Result<ctx_history_ingest_application::IngestRoute> {
+    ctx_history_ingest_application::validate_ingest_request(
+        &ctx_history_ingest_application::IngestRequest {
+            path: args.path.clone(),
+            provider: args.provider.map(|provider| provider.capture_provider()),
+            custom_jsonl: args.input_format.is_some(),
+            history_source: args.history_source.clone(),
+            history_source_manifests: args.history_source_manifest.clone(),
+            all: args.all,
+        },
+    )
 }

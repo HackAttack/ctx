@@ -1,7 +1,6 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+#[cfg(test)]
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -12,50 +11,33 @@ use ctx_history_capture::{
     ProviderImportSupport, ProviderSource, ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
+pub(crate) use ctx_history_ingest_application::history_source_plugin_report;
+use ctx_history_ingest_application::SourceDiscoveryPort;
 
 use crate::history_source_plugins::{
     discover_history_source_plugins_with_diagnostics, HistorySourcePluginManifestFailure,
-    HistorySourcePluginRefresh, HistorySourcePluginSource, COMMAND_ONLY_UNSUPPORTED_REASON,
+    HistorySourcePluginRefresh, HistorySourcePluginSource,
 };
 use crate::identity;
 use crate::provider_args::{cli_supported_provider, ProviderArg};
 
 pub(crate) const MAX_DISCOVERY_ISSUES: usize = 64;
 pub(crate) const MAX_DISCOVERY_ISSUE_MESSAGE_BYTES: usize = 512;
-const MISSING_DURABLE_PLUGIN_SOURCE_REASON: &str =
-    "the declared provider-owned durable source path is not a regular non-symlink file";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HistorySourcePluginReportingStatus {
-    Available,
-    Missing,
-    Unsupported,
-}
-
-impl HistorySourcePluginReportingStatus {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::Missing => "missing",
-            Self::Unsupported => "unsupported",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HistorySourcePluginReport<'a> {
-    pub(crate) durable_path: Option<&'a Path>,
-    pub(crate) status: HistorySourcePluginReportingStatus,
-    pub(crate) unsupported_reason: Option<&'static str>,
-}
-
-impl HistorySourcePluginReport<'_> {
-    pub(crate) const fn is_importable(self) -> bool {
-        matches!(self.status, HistorySourcePluginReportingStatus::Available)
-    }
-}
-
 pub(crate) type SourceInfo = ProviderSource;
+
+/// CLI adapter for the application layer's borrowed discovery port. Filtering
+/// remains a CLI surface policy; source probing remains in source-discovery.
+pub(crate) struct CliSourceDiscoveryPort;
+
+impl SourceDiscoveryPort for CliSourceDiscoveryPort {
+    fn discover_all(&self) -> Result<DiscoveryReport> {
+        Ok(discovered_sources_report())
+    }
+
+    fn discover_provider(&self, provider: CaptureProvider) -> Result<DiscoveryReport> {
+        Ok(discovered_sources_for_provider_report(provider))
+    }
+}
 pub(crate) fn discovered_plugin_sources_json(data_root: &Path) -> Result<Vec<Value>> {
     let plugin_discovery = discover_history_source_plugins_with_diagnostics(data_root, &[])?;
     let mut values = plugin_sources_json(&plugin_discovery.sources);
@@ -203,29 +185,6 @@ pub(crate) fn plugin_sources_json(sources: &[HistorySourcePluginSource]) -> Vec<
             })
         })
         .collect()
-}
-
-pub(crate) fn history_source_plugin_report(
-    source: &HistorySourcePluginSource,
-) -> HistorySourcePluginReport<'_> {
-    let Some(durable_path) = source.source_path.as_deref() else {
-        return HistorySourcePluginReport {
-            durable_path: None,
-            status: HistorySourcePluginReportingStatus::Unsupported,
-            unsupported_reason: Some(COMMAND_ONLY_UNSUPPORTED_REASON),
-        };
-    };
-    let is_regular_file =
-        fs::symlink_metadata(durable_path).is_ok_and(|metadata| metadata.file_type().is_file());
-    HistorySourcePluginReport {
-        durable_path: Some(durable_path),
-        status: if is_regular_file {
-            HistorySourcePluginReportingStatus::Available
-        } else {
-            HistorySourcePluginReportingStatus::Missing
-        },
-        unsupported_reason: (!is_regular_file).then_some(MISSING_DURABLE_PLUGIN_SOURCE_REASON),
-    }
 }
 
 pub(crate) fn plugin_manifest_failures_json(

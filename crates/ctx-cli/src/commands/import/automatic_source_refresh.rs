@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use ctx_history_capture::{
-    discover_provider_sources, source_backed_source_failure_identity,
-    validate_provider_source_roots_outside_data_root, DiscoveryIssueKind, ProviderImportWorkResult,
-    ProviderSource, ProviderSourceStatus, HERMES_STATE_DB_UNSUPPORTED_REASON,
+    discover_provider_sources, source_backed_source_failure_identity, DiscoveryIssueKind,
+    DiscoveryReport, ProviderImportWorkResult, ProviderSource, ProviderSourceStatus,
+    HERMES_STATE_DB_UNSUPPORTED_REASON,
 };
 use ctx_history_core::platform_security::establish_private_data_root;
 use serde_json::json;
@@ -23,6 +23,28 @@ use super::{
 };
 
 const MAX_REPORTED_SOURCE_FAILURES: usize = 3;
+
+struct AutomaticSourceDiscovery<'a> {
+    home: &'a std::path::Path,
+}
+
+impl ctx_history_ingest_application::SourceDiscoveryPort for AutomaticSourceDiscovery<'_> {
+    fn discover_all(&self) -> Result<DiscoveryReport> {
+        Ok(DiscoveryReport {
+            sources: discover_provider_sources(self.home),
+            issues: Vec::new(),
+        })
+    }
+
+    fn discover_provider(
+        &self,
+        provider: ctx_history_core::CaptureProvider,
+    ) -> Result<DiscoveryReport> {
+        let mut report = self.discover_all()?;
+        report.sources.retain(|source| source.provider == provider);
+        Ok(report)
+    }
+}
 
 fn published_request_scanned_routes(scanned_routes: Option<usize>) -> Result<usize> {
     scanned_routes.context("published daemon source refresh omitted its scanned route count")
@@ -56,19 +78,13 @@ pub(super) fn run_automatic_source_refresh_import(
     );
     let home = crate::identity::home_dir()
         .context("resolve user home for provider-root safety preflight")?;
-    let sources = discover_provider_sources(&home);
-    validate_provider_source_roots_outside_data_root(&context.data_root, sources.iter())
-        .context("validate provider roots before initializing ctx state")?;
-    let hermes = sources.iter().find(|source| {
-        source.provider == ctx_history_core::CaptureProvider::Hermes
-            && source.exists
-            && source.status == ProviderSourceStatus::Unsupported
-    });
-    let has_importable_source = sources.iter().any(|source| {
-        source.exists
-            && source.status == ProviderSourceStatus::Available
-            && source.import_support.is_importable()
-    });
+    let preflight = ctx_history_ingest_application::automatic_source_preflight(
+        &AutomaticSourceDiscovery { home: &home },
+        &context.data_root,
+    )
+    .context("validate provider roots before initializing ctx state")?;
+    let hermes = preflight.hermes_only_candidate.as_ref();
+    let has_importable_source = preflight.has_importable_source;
     let data_root_exists = context
         .data_root
         .try_exists()

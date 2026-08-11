@@ -1,26 +1,19 @@
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde_json::json;
 
-use ctx_history_capture::{
-    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderSourceStatus,
-};
+use ctx_history_capture::{DiscoveryIssue, DiscoveryIssueKind, ProviderSourceStatus};
 use ctx_history_core::CaptureProvider;
 
 use crate::analytics::{count_bucket, SourcesTelemetry};
-use crate::history_source_plugins::discover_history_source_plugins_with_diagnostics;
 use crate::local_usage::{CliUsage, ResultObservationAction};
 use crate::output::print_json;
 use crate::provider_args::ProviderArg;
 use crate::provider_sources::{
-    discovered_sources_for_provider_report, discovered_sources_report,
     discovery_report_issues_json, history_source_plugin_report, manual_path_guidance,
     plugin_manifest_failures_json, plugin_sources_json, provider_cli_name, sources_json,
-    SourceInfo,
+    CliSourceDiscoveryPort, SourceInfo,
 };
 use crate::ui::{
     canonical_human_output_bytes, diagnostic, empty_state, hint, outcome, section, table, Action,
@@ -37,21 +30,20 @@ pub(crate) fn run_sources(
     ui: &mut Ui,
 ) -> Result<()> {
     let provider_filter = args.provider.map(ProviderArg::capture_provider);
-    let discovery_report = match provider_filter {
-        Some(CaptureProvider::Custom) => DiscoveryReport::default(),
-        Some(provider) => discovered_sources_for_provider_report(provider),
-        None => discovered_sources_report(),
-    };
-    // Exact imports are request overlays and never become configured discovery roots.
-    let configured_identities = BTreeSet::new();
-    let sources = &discovery_report.sources;
-    let plugin_discovery = discover_history_source_plugins_with_diagnostics(&data_root, &[])?;
-    let (plugin_sources, plugin_failures) = if matches!(provider_filter, Some(provider) if provider != CaptureProvider::Custom)
-    {
-        (Vec::new(), Vec::new())
-    } else {
-        (plugin_discovery.sources, plugin_discovery.failures)
-    };
+    let show_all_sources = args.all || args.show_missing || provider_filter.is_some();
+    let listing = ctx_history_ingest_application::assemble_source_listing(
+        &CliSourceDiscoveryPort,
+        &data_root,
+        ctx_history_ingest_application::SourceListingRequest {
+            provider_filter,
+            show_all: show_all_sources,
+            default_visible_missing_providers: DEFAULT_VISIBLE_SOURCE_PROVIDERS.to_vec(),
+        },
+    )?;
+    let discovery_report = listing.discovery;
+    let sources = &listing.visible_sources;
+    let plugin_sources = listing.plugins.sources;
+    let plugin_failures = listing.plugins.failures;
     let existing = sources.iter().filter(|source| source.exists).count();
     let existing_plugin_sources = plugin_sources
         .iter()
@@ -77,14 +69,8 @@ pub(crate) fn run_sources(
     telemetry.providers_importable = Some(count_bucket(
         importable.saturating_add(existing_plugin_sources) as u64,
     ));
-    let show_all_sources = args.all || args.show_missing || provider_filter.is_some();
-    let visible_sources = sources
-        .iter()
-        .filter(|source| source_is_visible(source, show_all_sources, &configured_identities))
-        .cloned()
-        .collect::<Vec<_>>();
-    let hidden_missing_sources = sources.len().saturating_sub(visible_sources.len());
-    let mut canonical_entries = sources_json(&visible_sources);
+    let hidden_missing_sources = listing.hidden_missing_sources;
+    let mut canonical_entries = sources_json(sources);
     canonical_entries.extend(plugin_sources_json(&plugin_sources));
     canonical_entries.extend(plugin_manifest_failures_json(&plugin_failures));
     let result_count = canonical_entries.len();
@@ -108,7 +94,7 @@ pub(crate) fn run_sources(
         let home = crate::identity::home_dir();
         let document = render_sources_human(
             ui.stdout_context(),
-            &visible_sources,
+            sources,
             &discovery_report.issues,
             &plugin_sources,
             &plugin_failures,
@@ -118,7 +104,7 @@ pub(crate) fn run_sources(
         let output_bytes = canonical_human_output_bytes(|context| {
             render_sources_human(
                 context,
-                &visible_sources,
+                sources,
                 &discovery_report.issues,
                 &plugin_sources,
                 &plugin_failures,
@@ -139,36 +125,8 @@ pub(crate) fn run_sources(
     Ok(())
 }
 
-type SourceIdentity = (String, PathBuf, String);
-
-fn source_identity(source: &SourceInfo) -> SourceIdentity {
-    (
-        source.provider.as_str().to_owned(),
-        source.path.clone(),
-        source.source_format.to_owned(),
-    )
-}
-
 #[cfg(test)]
-fn merge_sources(discovered: &mut Vec<SourceInfo>, configured: Vec<SourceInfo>) {
-    let mut seen = BTreeSet::new();
-    discovered.retain(|source| seen.insert(source_identity(source)));
-    discovered.extend(
-        configured
-            .into_iter()
-            .filter(|source| seen.insert(source_identity(source))),
-    );
-}
-
-fn source_is_visible(
-    source: &SourceInfo,
-    show_all_sources: bool,
-    configured_identities: &BTreeSet<SourceIdentity>,
-) -> bool {
-    show_all_sources
-        || configured_identities.contains(&source_identity(source))
-        || source_visible_by_default(source)
-}
+use ctx_history_ingest_application::{merge_sources, source_identity, source_is_visible};
 
 fn render_sources_human(
     context: &RenderContext,
@@ -429,12 +387,6 @@ fn render_discovery_issue(context: &RenderContext, issue: &DiscoveryIssue) -> Do
     )
 }
 
-pub(crate) fn source_visible_by_default(source: &SourceInfo) -> bool {
-    source.exists
-        || source.status != ProviderSourceStatus::Missing
-        || DEFAULT_VISIBLE_SOURCE_PROVIDERS.contains(&source.provider)
-}
-
 pub(crate) fn source_provider_cli_name(provider: CaptureProvider) -> &'static str {
     provider_cli_name(provider)
 }
@@ -511,10 +463,20 @@ mod ui_tests {
         );
 
         let configured = [source_identity(&configured_missing)].into_iter().collect();
-        assert!(source_is_visible(&configured_missing, false, &configured));
+        assert!(source_is_visible(
+            &configured_missing,
+            false,
+            &configured,
+            &[]
+        ));
         let mut unknown_missing = source(ProviderSourceStatus::Missing, "/tmp/unknown-missing");
         unknown_missing.provider = CaptureProvider::Goose;
-        assert!(!source_is_visible(&unknown_missing, false, &configured));
+        assert!(!source_is_visible(
+            &unknown_missing,
+            false,
+            &configured,
+            &[]
+        ));
     }
 
     #[test]
