@@ -51,8 +51,11 @@ pub(crate) fn run_search(
         },
         local_usage,
         ui,
+        |observation| apply_search_observation(telemetry, observation),
     )?;
-    apply_search_observation(telemetry, observation);
+    if let Some(render_duration) = observation.render_duration {
+        telemetry.render_duration = Some(duration_bucket(render_duration));
+    }
     Ok(())
 }
 
@@ -131,7 +134,9 @@ fn apply_search_observation(
     telemetry.refresh_source_count = Some(count_bucket(observation.refresh_source_count));
     telemetry.refresh_duration = Some(duration_bucket(observation.refresh_duration));
     telemetry.query_duration = Some(duration_bucket(observation.query_duration));
-    telemetry.render_duration = Some(duration_bucket(observation.render_duration));
+    if let Some(render_duration) = observation.render_duration {
+        telemetry.render_duration = Some(duration_bucket(render_duration));
+    }
     telemetry.backend_requested = Some(search_backend(observation.backend_requested));
     telemetry.backend_effective = Some(search_backend(observation.backend_effective));
     telemetry.result_count = Some(count_bucket(observation.result_count));
@@ -202,7 +207,7 @@ mod tests {
                 refresh_source_count: 3,
                 refresh_duration: Duration::from_millis(1),
                 query_duration: Duration::from_millis(2),
-                render_duration: Duration::from_millis(3),
+                render_duration: Some(Duration::from_millis(3)),
                 backend_requested: ctx_history_read_application::SearchBackend::Hybrid,
                 backend_effective: ctx_history_read_application::SearchBackend::Lexical,
                 result_count: 4,
@@ -228,6 +233,35 @@ mod tests {
         assert!(telemetry.query_term_count.is_some());
         assert!(telemetry.result_count.is_some());
         assert!(telemetry.citation_count.is_some());
+    }
+
+    #[test]
+    fn query_observation_populates_analytics_before_render_completes() {
+        let mut telemetry = telemetry();
+        apply_search_observation(
+            &mut telemetry,
+            ctx_history_cli::SearchExecutionObservation {
+                refresh_mode: ctx_history_cli::RefreshMode::Off,
+                refresh_status: ctx_history_cli::SearchRefreshStatus::ExistingGeneration,
+                refresh_source_count: 1,
+                refresh_duration: Duration::from_millis(1),
+                query_duration: Duration::from_millis(2),
+                render_duration: None,
+                backend_requested: ctx_history_read_application::SearchBackend::Lexical,
+                backend_effective: ctx_history_read_application::SearchBackend::Lexical,
+                result_count: 1,
+                citation_count: 1,
+                zero_result: false,
+                has_indexed_content_after: true,
+                query_length: 6,
+                query_term_count: 1,
+            },
+        );
+
+        assert!(telemetry.query_duration.is_some());
+        assert!(telemetry.result_count.is_some());
+        assert_eq!(telemetry.backend_effective, Some(SearchBackend::Lexical));
+        assert_eq!(telemetry.render_duration, None);
     }
 
     #[test]

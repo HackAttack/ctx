@@ -93,9 +93,9 @@ fn execute(
     data_root: &Path,
     writer: &mut dyn Write,
 ) -> std::result::Result<usize, EventQueryError> {
-    let args = crate::ListEventsRequest::from(args);
-    let cursor = args.cursor.as_deref().map(decode_cursor).transpose()?;
-    let limit = validated_limit(args.limit)?;
+    let mut args = crate::ListEventsRequest::from(args);
+    let cursor = args.cursor.take();
+    let limit = args.limit;
     let content = match args.content {
         crate::ListEventsContentProjection::Full => EventContentProjection::Full,
         crate::ListEventsContentProjection::Text => EventContentProjection::Text,
@@ -103,6 +103,8 @@ fn execute(
     };
     let format = args.format;
     let selection = selection_from_request(args)?;
+    let cursor = cursor.as_deref().map(decode_cursor).transpose()?;
+    let limit = validated_limit(limit)?;
     let request = EventQueryWireRequest::from_selection(&selection, content, limit);
     match format {
         crate::OutputFormat::Json => {

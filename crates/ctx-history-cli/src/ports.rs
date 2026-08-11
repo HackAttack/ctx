@@ -48,8 +48,8 @@ impl TerminalPort for Ui {
     }
 }
 
-/// Complete facts from one successful search. This crate measures the command
-/// execution; the final binary alone maps and delivers its analytics schema.
+/// Facts observed after a search query completes. Rendering is still fallible,
+/// so its duration is present only after output succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchExecutionObservation {
     pub refresh_mode: crate::RefreshMode,
@@ -57,7 +57,7 @@ pub struct SearchExecutionObservation {
     pub refresh_source_count: u64,
     pub refresh_duration: Duration,
     pub query_duration: Duration,
-    pub render_duration: Duration,
+    pub render_duration: Option<Duration>,
     pub backend_requested: ctx_history_read_application::SearchBackend,
     pub backend_effective: ctx_history_read_application::SearchBackend,
     pub result_count: u64,

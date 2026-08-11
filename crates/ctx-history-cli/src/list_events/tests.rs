@@ -57,6 +57,42 @@ fn machine_errors_are_typed_for_ranges_cursors_and_resource_limits() {
 }
 
 #[test]
+fn compound_invalid_list_requests_preserve_selection_cursor_limit_precedence() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut output = Vec::new();
+    let selection_error = execute(
+        ListEventsArgs {
+            since: Some("2026-08-01T00:00:00Z".to_owned()),
+            cursor: Some("not+base64".to_owned()),
+            limit: 0,
+            ..ListEventsArgs::default()
+        },
+        temp.path(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert_eq!(
+        event_query_error_value(&selection_error)["error_code"],
+        "invalid_range"
+    );
+
+    let cursor_error = execute(
+        ListEventsArgs {
+            cursor: Some("not+base64".to_owned()),
+            limit: 0,
+            ..ListEventsArgs::default()
+        },
+        temp.path(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert_eq!(
+        event_query_error_value(&cursor_error)["error_code"],
+        "invalid_cursor"
+    );
+}
+
+#[test]
 fn query_authority_list_gateway_accepts_authoritative_empty_and_rejects_invalid_empty() {
     let authoritative = tempfile::tempdir().unwrap();
     let generation_id = publish_empty_generation(

@@ -288,6 +288,7 @@ pub fn run_search(
     config: HistoryCliConfig,
     local_usage: &mut CliUsage,
     ui: &mut Ui,
+    observe_query: impl FnOnce(SearchExecutionObservation),
 ) -> Result<SearchExecutionObservation> {
     let human_output = args.format != JsonOutputFormat::Json;
     let semantic_port = crate::semantic::SemanticQueryAdapter::new(&data_root);
@@ -298,6 +299,7 @@ pub fn run_search(
         local_usage,
         ui,
         &semantic_port,
+        observe_query,
     )
     .map_err(SourceSearchFailure::into_anyhow);
     render_search_error(result, human_output, &data_root, ui)
@@ -310,6 +312,7 @@ fn run_search_inner<P: HistorySemanticPort>(
     local_usage: &mut CliUsage,
     ui: &mut Ui,
     semantic_port: &P,
+    observe_query: impl FnOnce(SearchExecutionObservation),
 ) -> SourceSearchResult<SearchExecutionObservation> {
     let config = config::AppConfig::from_snapshot(config);
     let request = crate::SearchRequest::from(args);
@@ -369,6 +372,29 @@ fn run_search_inner<P: HistorySemanticPort>(
     } else {
         SearchContextObservation::unavailable()
     };
+    let mut observation = SearchExecutionObservation {
+        refresh_mode,
+        refresh_status: match refresh_status {
+            "existing_generation" => SearchRefreshStatus::ExistingGeneration,
+            "daemon_background" => SearchRefreshStatus::DaemonBackground,
+            "daemon_unavailable" => SearchRefreshStatus::DaemonUnavailable,
+            _ => SearchRefreshStatus::Completed,
+        },
+        refresh_source_count: refresh_source_count as u64,
+        refresh_duration: initial_refresh_duration,
+        query_duration,
+        render_duration: None,
+        backend_requested: collection.requested_backend,
+        backend_effective: collection.effective_backend,
+        result_count: result_count as u64,
+        citation_count: collection.result_window.hits.len() as u64,
+        zero_result: collection.result_window.hits.is_empty(),
+        has_indexed_content_after: index.document_count() > 0,
+        query_length: query_length as u64,
+        query_term_count: query_terms as u64,
+    };
+    observe_query(observation);
+
     let render_started = Instant::now();
     let compact_value = (!json_output)
         .then(|| application.project_read_model(&value))
@@ -386,31 +412,11 @@ fn run_search_inner<P: HistorySemanticPort>(
         ui.write_stdout(&document)?;
         output_bytes
     };
-    let render_duration = render_started.elapsed();
+    observation.render_duration = Some(render_started.elapsed());
     local_usage.set_result_observation(ResultObservationAction::Search, result_count, 0, 0);
     local_usage.set_search_context_observation(search_context);
     local_usage.set_measured_output_bytes(output_bytes);
-    Ok(SearchExecutionObservation {
-        refresh_mode,
-        refresh_status: match refresh_status {
-            "existing_generation" => SearchRefreshStatus::ExistingGeneration,
-            "daemon_background" => SearchRefreshStatus::DaemonBackground,
-            "daemon_unavailable" => SearchRefreshStatus::DaemonUnavailable,
-            _ => SearchRefreshStatus::Completed,
-        },
-        refresh_source_count: refresh_source_count as u64,
-        refresh_duration: initial_refresh_duration,
-        query_duration,
-        render_duration,
-        backend_requested: collection.requested_backend,
-        backend_effective: collection.effective_backend,
-        result_count: result_count as u64,
-        citation_count: collection.result_window.hits.len() as u64,
-        zero_result: collection.result_window.hits.is_empty(),
-        has_indexed_content_after: index.document_count() > 0,
-        query_length: query_length as u64,
-        query_term_count: query_terms as u64,
-    })
+    Ok(observation)
 }
 
 pub(super) fn render_search_error<T>(
