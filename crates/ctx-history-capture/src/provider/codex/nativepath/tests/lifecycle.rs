@@ -312,7 +312,7 @@ fn exact_authority_seed(owner: &str) -> String {
                 "name": "exec_command",
                 "call_id": "exact-result-authority",
                 "arguments": serde_json::json!({
-                    "cmd": "git rev-parse HEAD",
+                    "cmd": "git commit -m exact && git rev-parse HEAD",
                     "workdir": "/workspace"
                 }).to_string()
             }
@@ -472,7 +472,7 @@ fn checkpoint_round_trip_contains_control_state_but_no_event_body() {
     assert!(!wire.contains("command"));
     assert!(!wire.contains("arguments_preview"));
     let decoded_wire = serde_json::from_str::<Value>(&wire).unwrap();
-    assert_eq!(decoded_wire["version"], 16);
+    assert_eq!(decoded_wire["version"], 18);
     assert!(decoded_wire.get("lineage_dependency_sha256").is_none());
     assert!(decoded_wire.get("certified_lineage_facts").is_none());
     assert_eq!(
@@ -495,7 +495,7 @@ fn checkpoint_round_trip_contains_control_state_but_no_event_body() {
     .is_err());
 
     let mut old_version = decoded_wire.clone();
-    old_version["version"] = json!(15);
+    old_version["version"] = json!(17);
     assert!(CodexNativeCheckpoint::decode(&serde_json::to_vec(&old_version).unwrap()).is_err());
 
     let mut invalid_terminal_authority = decoded_wire.clone();

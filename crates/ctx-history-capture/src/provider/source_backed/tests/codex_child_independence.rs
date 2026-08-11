@@ -21,8 +21,8 @@ use crate::provider::source_backed::family::jsonl::{
 };
 
 const CURRENT_PARSER_REVISION: &str =
-    "codex-nativepath-core-record-v29-repository-candidate-exact-origin";
-const CURRENT_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v16";
+    "codex-nativepath-core-record-v31-repository-positive-exact-authority";
+const CURRENT_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -132,6 +132,19 @@ fn exec_call(call_id: &str) -> serde_json::Value {
                 "workdir": "/tmp/codex-child-independence",
                 "yield_time_ms": 10000
             }).to_string()
+        }
+    })
+}
+
+fn unrelated_tool_call(call_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:03Z",
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "unrelated_display_tool",
+            "call_id": call_id,
+            "arguments": "{}"
         }
     })
 }
@@ -1471,6 +1484,21 @@ fn cold_direct_repository_results_require_exact_candidate_multiplicity() {
         })
         .collect::<Vec<_>>();
     events.extend([
+        successful_result(
+            "direct-pre-result",
+            format!("direct-pre-result-before\n[main abc1234] exact\n{oid}\n"),
+        ),
+        exec_call_in("direct-pre-result", command, &repository),
+        successful_result(
+            "direct-pre-result",
+            format!("direct-pre-result-after\n[main abc1234] exact\n{oid}\n"),
+        ),
+        unrelated_tool_call("direct-pre-call"),
+        exec_call_in("direct-pre-call", command, &repository),
+        successful_result(
+            "direct-pre-call",
+            format!("direct-pre-call-after\n[main abc1234] exact\n{oid}\n"),
+        ),
         exec_call_in("direct-duplicate", command, &repository),
         successful_result(
             "direct-duplicate",
@@ -1515,6 +1543,9 @@ fn cold_direct_repository_results_require_exact_candidate_multiplicity() {
     assert_no_repository_causality(
         &records_for(&verified, native_session_id),
         &[
+            "direct-pre-result-before",
+            "direct-pre-result-after",
+            "direct-pre-call-after",
             "direct-duplicate-same",
             "direct-conflict-first",
             "direct-conflict-second",
@@ -1550,6 +1581,25 @@ fn cold_continued_repository_results_require_exact_candidate_multiplicity() {
         SessionRelationshipKind::Root,
         None,
         [
+            completed_wait_result(
+                "continued-pre-result-wait",
+                format!("continued-pre-result-before\n[main abc1234] exact\n{oid}\n"),
+            ),
+            exec_call_in("continued-pre-result-origin", command, &repository),
+            running_result("continued-pre-result-origin", "continued-pre-result-cell"),
+            wait_call("continued-pre-result-wait", "continued-pre-result-cell"),
+            completed_wait_result(
+                "continued-pre-result-wait",
+                format!("continued-pre-result-after\n[main abc1234] exact\n{oid}\n"),
+            ),
+            unrelated_tool_call("continued-pre-call-wait"),
+            exec_call_in("continued-pre-call-origin", command, &repository),
+            running_result("continued-pre-call-origin", "continued-pre-call-cell"),
+            wait_call("continued-pre-call-wait", "continued-pre-call-cell"),
+            completed_wait_result(
+                "continued-pre-call-wait",
+                format!("continued-pre-call-after\n[main abc1234] exact\n{oid}\n"),
+            ),
             exec_call_in("continued-duplicate-origin", command, &repository),
             running_result("continued-duplicate-origin", "continued-duplicate-cell"),
             wait_call("continued-duplicate-wait", "continued-duplicate-cell"),
@@ -1593,12 +1643,133 @@ fn cold_continued_repository_results_require_exact_candidate_multiplicity() {
     assert_no_repository_causality(
         &records_for(&verified, native_session_id),
         &[
+            "continued-pre-result-before",
+            "continued-pre-result-after",
+            "continued-pre-call-after",
             "continued-duplicate-same",
             "continued-conflict-first",
             "continued-conflict-second",
             "continued-serial-first",
             "continued-serial-second",
         ],
+    );
+}
+
+#[test]
+fn append_restart_counts_candidate_id_occurrences_before_first_admission() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let cold_index_root = temp.path().join("cold-index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let command = "git commit -m exact && git rev-parse HEAD";
+    let native_session_id = "019fb000-0000-7000-8000-000000000036";
+    let path = session_path(&sessions, native_session_id);
+    let mut prefix = (0..300)
+        .map(|index| {
+            serde_json::json!({
+                "timestamp": "2026-08-09T12:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": format!("late-unrelated-prefix-{index}")
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    prefix.extend([
+        successful_result(
+            "late-direct-result",
+            format!("late-direct-before\n[main abc1234] exact\n{oid}\n"),
+        ),
+        unrelated_tool_call("late-direct-call"),
+        completed_wait_result(
+            "late-continued-wait",
+            format!("late-continued-before\n[main abc1234] exact\n{oid}\n"),
+        ),
+    ]);
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        prefix,
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    for event in [
+        exec_call_in("late-direct-result", command, &repository),
+        successful_result(
+            "late-direct-result",
+            format!("late-direct-after\n[main abc1234] exact\n{oid}\n"),
+        ),
+        exec_call_in("late-direct-call", command, &repository),
+        successful_result(
+            "late-direct-call",
+            format!("late-call-after\n[main abc1234] exact\n{oid}\n"),
+        ),
+        exec_call_in("late-continued-origin", command, &repository),
+        running_result("late-continued-origin", "late-continued-cell"),
+        wait_call("late-continued-wait", "late-continued-cell"),
+        completed_wait_result(
+            "late-continued-wait",
+            format!("late-continued-after\n[main abc1234] exact\n{oid}\n"),
+        ),
+    ] {
+        append_event(&path, event);
+    }
+
+    let observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert_eq!(
+        causal_by_id(&observed)
+            .get(native_session_id)
+            .unwrap()
+            .counters
+            .appended_sources,
+        1
+    );
+    let appended = VerifiedIndex::open(&index_root).unwrap();
+    assert_no_repository_causality(
+        &records_for(&appended, native_session_id),
+        &[
+            "late-direct-before",
+            "late-direct-after",
+            "late-call-after",
+            "late-continued-before",
+            "late-continued-after",
+        ],
+    );
+    let appended_certificate =
+        serde_json::to_vec(&certificate_for(&appended, native_session_id)).unwrap();
+    drop(appended);
+
+    refresh_source_backed_generation(&cold_index_root, &registry, writer_options()).unwrap();
+    let restarted = VerifiedIndex::open(&cold_index_root).unwrap();
+    assert_no_repository_causality(
+        &records_for(&restarted, native_session_id),
+        &[
+            "late-direct-after",
+            "late-call-after",
+            "late-continued-after",
+        ],
+    );
+    assert_eq!(
+        serde_json::to_vec(&certificate_for(&restarted, native_session_id)).unwrap(),
+        appended_certificate
     );
 }
 
@@ -1959,6 +2130,135 @@ fn direct_source_rewrite_delete_and_reappearance_replace_only_that_source() {
 }
 
 #[test]
+fn continuation_restart_preserves_exact_result_linkage_and_origin_proof() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let native_session_id = "019fb000-0000-7000-8000-000000000029";
+    let path = session_path(&sessions, native_session_id);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [
+            exec_call_in(
+                "continuation-origin",
+                "git commit -m exact && git rev-parse HEAD",
+                &repository,
+            ),
+            running_result("continuation-origin", "cell-exact-7"),
+        ],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    append_event(&path, wait_call("continuation-wait", "cell-exact-7"));
+    append_event(
+        &path,
+        serde_json::json!({
+            "timestamp": "2026-08-09T12:00:06Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "continuation-wait",
+                "status": "success",
+                "output": format!(
+                    "Script completed\nProcess exited with code 0\nFinal output:\n[main abc1234] exact\n{oid}\n"
+                )
+            }
+        }),
+    );
+    let observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert_eq!(
+        causal_by_id(&observed)
+            .get(native_session_id)
+            .unwrap()
+            .counters
+            .appended_sources,
+        1
+    );
+
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    let result = records_for(&verified, native_session_id)
+        .into_iter()
+        .find(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains(oid))
+        })
+        .unwrap();
+    assert_eq!(result.event_origin, EventOrigin::UniqueToSession);
+    assert!(result
+        .repository_vcs_observations
+        .iter()
+        .any(|observation| {
+            matches!(
+                &observation.kind,
+                ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                    if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
+                        && outcome
+                            .produced_object_ids
+                            .iter()
+                            .any(|object_id| object_id.hex == oid)
+            )
+        }));
+    assert!(!result.repository_abstentions.iter().any(|abstention| {
+        abstention.detail.as_deref() == Some("provider_execution_origin_lineage_unproven")
+    }));
+    let activity = result
+        .content
+        .structured_content
+        .as_ref()
+        .and_then(|content| content.get("provider_native_tool_activities"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|activities| activities.first())
+        .and_then(|activity| activity.get("provider_native_tool_result"))
+        .unwrap();
+    assert_eq!(
+        activity
+            .get("origin_call_id")
+            .and_then(serde_json::Value::as_str),
+        Some("continuation-origin")
+    );
+    assert_eq!(
+        activity
+            .get("result_call_id")
+            .and_then(serde_json::Value::as_str),
+        Some("continuation-wait")
+    );
+    assert_eq!(
+        activity
+            .get("continuation_call_id_sha256")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        activity
+            .get("captured_outcomes")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+}
+
+#[test]
 fn missing_parent_local_continuation_restart_retains_exact_commit_origin() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
@@ -2214,7 +2514,7 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
             panic!("Codex checkpoint must be byte keyed");
         };
         let wire = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
-        assert_eq!(wire["version"], 16);
+        assert_eq!(wire["version"], 18);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());
     }

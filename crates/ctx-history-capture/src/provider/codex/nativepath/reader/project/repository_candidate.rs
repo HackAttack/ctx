@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, mem::size_of};
 use super::*;
 
 const REPOSITORY_CANDIDATE_AUTHORITY_ENTRY_OVERHEAD_BYTES: usize = 3 * size_of::<usize>();
+const MAX_CODEX_REPOSITORY_OCCURRENCE_CACHE_ENTRIES: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RepositoryCandidateAuthorityState {
@@ -14,6 +15,83 @@ struct RepositoryCandidateAuthorityState {
 pub(in super::super) struct CodexRepositoryCandidateAuthority {
     entries: BTreeMap<[u8; 32], RepositoryCandidateAuthorityState>,
     exhausted: bool,
+}
+
+#[derive(Debug, Default)]
+pub(in super::super) struct CodexRepositoryOccurrenceCache {
+    entries: BTreeMap<[u8; 32], RepositoryCandidateAuthorityState>,
+    exhausted: bool,
+    peak_entries: usize,
+}
+
+impl CodexRepositoryOccurrenceCache {
+    pub(in super::super) fn observe_call(&mut self, call_id: &str) {
+        self.observe(call_id, true);
+    }
+
+    pub(in super::super) fn observe_result(&mut self, call_id: &str) {
+        self.observe(call_id, false);
+    }
+
+    pub(in super::super) fn observe_ambiguous_record(&mut self) {
+        self.exhaust();
+    }
+
+    pub(in super::super) fn apply_suffix_to(
+        &self,
+        authority: &mut CodexRepositoryCandidateAuthority,
+    ) {
+        if self.exhausted {
+            authority.exhaust();
+            return;
+        }
+        for (digest, candidate) in &mut authority.entries {
+            let Some(observed) = self.entries.get(digest) else {
+                continue;
+            };
+            candidate.calls = candidate.calls.saturating_add(observed.calls).min(2);
+            candidate.results = candidate.results.saturating_add(observed.results).min(2);
+        }
+    }
+
+    pub(in super::super) fn peak_entry_count(&self) -> usize {
+        self.peak_entries
+    }
+
+    pub(in super::super) fn estimated_peak_owned_bytes(&self) -> usize {
+        size_of::<Self>().saturating_add(
+            self.peak_entries.saturating_mul(
+                size_of::<([u8; 32], RepositoryCandidateAuthorityState)>()
+                    .saturating_add(REPOSITORY_CANDIDATE_AUTHORITY_ENTRY_OVERHEAD_BYTES),
+            ),
+        )
+    }
+
+    fn observe(&mut self, call_id: &str, call: bool) {
+        if self.exhausted {
+            return;
+        }
+        let digest = repository_candidate_call_id_digest(call_id);
+        let new_entry = !self.entries.contains_key(&digest);
+        if new_entry && self.entries.len() >= MAX_CODEX_REPOSITORY_OCCURRENCE_CACHE_ENTRIES {
+            self.exhaust();
+            return;
+        }
+        self.peak_entries = self
+            .peak_entries
+            .max(self.entries.len().saturating_add(usize::from(new_entry)));
+        let state = self.entries.entry(digest).or_default();
+        if call {
+            state.calls = state.calls.saturating_add(1).min(2);
+        } else {
+            state.results = state.results.saturating_add(1).min(2);
+        }
+    }
+
+    fn exhaust(&mut self) {
+        self.entries.clear();
+        self.exhausted = true;
+    }
 }
 
 impl CodexRepositoryCandidateAuthority {
@@ -73,7 +151,13 @@ impl CodexRepositoryCandidateAuthority {
         })
     }
 
+    #[cfg(test)]
     pub(in super::super) fn observe_candidate_call(&mut self, call_id: &str) {
+        self.admit_candidate(call_id);
+        self.observe_call_if_candidate(call_id);
+    }
+
+    pub(in super::super) fn admit_candidate(&mut self, call_id: &str) {
         if self.exhausted {
             return;
         }
@@ -84,8 +168,7 @@ impl CodexRepositoryCandidateAuthority {
             self.exhaust();
             return;
         }
-        let state = self.entries.entry(digest).or_default();
-        state.calls = state.calls.saturating_add(1).min(2);
+        self.entries.entry(digest).or_default();
     }
 
     pub(in super::super) fn observe_call_if_candidate(&mut self, call_id: &str) {
@@ -112,6 +195,46 @@ impl CodexRepositoryCandidateAuthority {
         };
         state.results = state.results.saturating_add(1).min(2);
         true
+    }
+
+    pub(in super::super) fn observe_call_if_new_candidate(
+        &mut self,
+        call_id: &str,
+        prefix: &CodexRepositoryCandidateAuthority,
+    ) {
+        let digest = repository_candidate_call_id_digest(call_id);
+        if !prefix.entries.contains_key(&digest) {
+            self.observe_call_if_candidate(call_id);
+        }
+    }
+
+    pub(in super::super) fn observe_result_if_new_candidate(
+        &mut self,
+        call_id: &str,
+        prefix: &CodexRepositoryCandidateAuthority,
+    ) {
+        let digest = repository_candidate_call_id_digest(call_id);
+        if !prefix.entries.contains_key(&digest) {
+            self.observe_result_if_candidate(call_id);
+        }
+    }
+
+    pub(in super::super) fn contains_candidate(&self, call_id: &str) -> bool {
+        self.entries
+            .contains_key(&repository_candidate_call_id_digest(call_id))
+    }
+
+    pub(in super::super) fn has_candidates_not_in(
+        &self,
+        prefix: &CodexRepositoryCandidateAuthority,
+    ) -> bool {
+        self.entries
+            .keys()
+            .any(|digest| !prefix.entries.contains_key(digest))
+    }
+
+    pub(in super::super) fn exhausted(&self) -> bool {
+        self.exhausted
     }
 
     pub(in super::super) fn observe_ambiguous_record(&mut self) {
@@ -214,5 +337,27 @@ mod tests {
         assert!(overflow.exhausted);
         let restarted = CodexRepositoryCandidateAuthority::from_checkpoint(&overflow.checkpoint());
         assert!(!restarted.is_unique_call_and_result("candidate-0"));
+    }
+
+    #[test]
+    fn occurrence_cache_counts_before_admission_and_overflow_abstains() {
+        let mut cache = CodexRepositoryOccurrenceCache::default();
+        for index in 0..10_000 {
+            cache.observe_result(&format!("unrelated-{index}"));
+        }
+        cache.observe_result("late-candidate");
+        cache.observe_call("late-candidate");
+        let mut authority = CodexRepositoryCandidateAuthority::default();
+        authority.admit_candidate("late-candidate");
+        cache.apply_suffix_to(&mut authority);
+        assert!(authority.is_unique_call_and_result("late-candidate"));
+        assert_eq!(cache.peak_entry_count(), 10_001);
+
+        let mut overflow = CodexRepositoryOccurrenceCache::default();
+        for index in 0..=MAX_CODEX_REPOSITORY_OCCURRENCE_CACHE_ENTRIES {
+            overflow.observe_result(&format!("unrelated-{index}"));
+        }
+        overflow.apply_suffix_to(&mut authority);
+        assert!(authority.exhausted());
     }
 }

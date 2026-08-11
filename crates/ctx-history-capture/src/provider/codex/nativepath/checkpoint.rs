@@ -8,7 +8,7 @@ use super::rows::CodexSessionRow;
 use super::source::CodexFileObservation;
 use crate::provider::codex::events::CodexInvocationOriginV0;
 
-const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 16;
+const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 18;
 const CODEX_PENDING_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/pending-call-id/v1\0";
 const MAX_CODEX_PENDING_TOOL_RECORD_BYTES: u64 = 16 * 1024 * 1024 + 1;
 // SourceFrontier encodes a TypedKey::Bytes as one tag byte, one four-byte
