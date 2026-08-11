@@ -1,9 +1,7 @@
-use clap::ValueEnum;
+pub const DEFAULT_TERMINAL_WIDTH: usize = 80;
 
-pub(crate) const DEFAULT_TERMINAL_WIDTH: usize = 80;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ColorMode {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ColorMode {
     #[default]
     Auto,
     Always,
@@ -11,7 +9,7 @@ pub(crate) enum ColorMode {
 }
 
 impl ColorMode {
-    pub(super) const fn from_cli_value(value: &str) -> Option<Self> {
+    pub const fn from_cli_value(value: &str) -> Option<Self> {
         match value.as_bytes() {
             b"auto" => Some(Self::Auto),
             b"always" => Some(Self::Always),
@@ -20,7 +18,7 @@ impl ColorMode {
         }
     }
 
-    pub(super) const fn as_anstream(self) -> anstream::ColorChoice {
+    pub const fn as_anstream(self) -> anstream::ColorChoice {
         match self {
             Self::Auto => anstream::ColorChoice::Auto,
             Self::Always => anstream::ColorChoice::Always,
@@ -30,13 +28,13 @@ impl ColorMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamKind {
+pub enum StreamKind {
     Stdout,
     Stderr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RenderContext {
+pub struct RenderContext {
     stream: StreamKind,
     color_mode: ColorMode,
     is_terminal: bool,
@@ -50,7 +48,7 @@ impl RenderContext {
     /// Stable, unbounded plain-text context for deterministic command-local
     /// estimates and output-limit decisions. Dispatch separately accounts for
     /// the actual terminal-adapted bytes delivered at runtime.
-    pub(crate) const fn canonical_human_measurement() -> Self {
+    pub const fn canonical_human_measurement() -> Self {
         Self {
             stream: StreamKind::Stdout,
             color_mode: ColorMode::Never,
@@ -62,7 +60,7 @@ impl RenderContext {
         }
     }
 
-    pub(crate) fn for_test(test: TestContext) -> Self {
+    pub fn for_test(test: TestContext) -> Self {
         let auto_color_enabled = test
             .auto_color_enabled
             .unwrap_or(test.is_terminal && !test.no_color && !test.term_dumb);
@@ -77,7 +75,7 @@ impl RenderContext {
         )
     }
 
-    pub(super) fn detected(
+    pub fn detected(
         stream: StreamKind,
         color_mode: ColorMode,
         is_terminal: bool,
@@ -126,23 +124,23 @@ impl RenderContext {
         }
     }
 
-    pub(crate) const fn stream(self) -> StreamKind {
+    pub const fn stream(self) -> StreamKind {
         self.stream
     }
 
-    pub(crate) const fn color_mode(self) -> ColorMode {
+    pub const fn color_mode(self) -> ColorMode {
         self.color_mode
     }
 
-    pub(crate) const fn is_terminal(self) -> bool {
+    pub const fn is_terminal(self) -> bool {
         self.is_terminal
     }
 
-    pub(crate) const fn color_enabled(self) -> bool {
+    pub const fn color_enabled(self) -> bool {
         self.color_enabled
     }
 
-    pub(crate) const fn live_output_capable(self) -> bool {
+    pub const fn live_output_capable(self) -> bool {
         self.live_output_capable
     }
 
@@ -151,24 +149,24 @@ impl RenderContext {
         self
     }
 
-    pub(crate) const fn terminal_width(self) -> Option<usize> {
+    pub const fn terminal_width(self) -> Option<usize> {
         self.terminal_width
     }
 
     /// Width available to components after reserving the terminal's final
     /// column. Redirected human output is intentionally unbounded.
-    pub(crate) fn content_width(self) -> Option<usize> {
+    pub fn content_width(self) -> Option<usize> {
         self.terminal_width
             .map(|width| width.saturating_sub(1).max(1))
     }
 
-    pub(crate) const fn unicode(self) -> bool {
+    pub const fn unicode(self) -> bool {
         self.unicode
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TestContext {
+pub struct TestContext {
     stream: StreamKind,
     color_mode: ColorMode,
     is_terminal: bool,
@@ -180,7 +178,7 @@ pub(crate) struct TestContext {
 }
 
 impl TestContext {
-    pub(crate) const fn tty(stream: StreamKind, width: usize) -> Self {
+    pub const fn tty(stream: StreamKind, width: usize) -> Self {
         Self {
             stream,
             color_mode: ColorMode::Never,
@@ -193,7 +191,7 @@ impl TestContext {
         }
     }
 
-    pub(crate) const fn pipe(stream: StreamKind) -> Self {
+    pub const fn pipe(stream: StreamKind) -> Self {
         Self {
             stream,
             color_mode: ColorMode::Auto,
@@ -206,32 +204,32 @@ impl TestContext {
         }
     }
 
-    pub(crate) const fn color(mut self, color_mode: ColorMode) -> Self {
+    pub const fn color(mut self, color_mode: ColorMode) -> Self {
         self.color_mode = color_mode;
         self
     }
 
-    pub(crate) const fn unicode(mut self, unicode: bool) -> Self {
+    pub const fn unicode(mut self, unicode: bool) -> Self {
         self.unicode = unicode;
         self
     }
 
-    pub(crate) const fn no_color(mut self, no_color: bool) -> Self {
+    pub const fn no_color(mut self, no_color: bool) -> Self {
         self.no_color = no_color;
         self
     }
 
-    pub(crate) const fn term_dumb(mut self, term_dumb: bool) -> Self {
+    pub const fn term_dumb(mut self, term_dumb: bool) -> Self {
         self.term_dumb = term_dumb;
         self
     }
 
-    pub(crate) const fn auto_color(mut self, enabled: bool) -> Self {
+    pub const fn auto_color(mut self, enabled: bool) -> Self {
         self.auto_color_enabled = Some(enabled);
         self
     }
 
-    pub(crate) const fn unknown_width(mut self) -> Self {
+    pub const fn unknown_width(mut self) -> Self {
         self.terminal_width = None;
         self
     }

@@ -6,7 +6,7 @@ use super::{ColorMode, Document, RenderContext, StreamKind};
 
 type BoxedWriter = Box<dyn Write + Send>;
 
-pub(crate) struct Ui {
+pub struct Ui {
     stdout: Destination,
     stderr: Destination,
 }
@@ -14,7 +14,7 @@ pub(crate) struct Ui {
 impl Ui {
     /// Probes stdout and stderr independently and owns adaptive writers for
     /// both destinations.
-    pub(crate) fn stdio(color_mode: ColorMode) -> Self {
+    pub fn stdio(color_mode: ColorMode) -> Self {
         let stdout = io::stdout();
         let stdout_terminal = stdout.is_terminal();
         let stdout_auto_color = auto_color_enabled(&stdout);
@@ -48,7 +48,7 @@ impl Ui {
     }
 
     /// Constructs a UI with explicit capabilities and owned writers.
-    pub(crate) fn with_writers<Out, Err>(
+    pub fn with_writers<Out, Err>(
         stdout: Out,
         stdout_context: RenderContext,
         stderr: Err,
@@ -91,55 +91,55 @@ impl Ui {
         }
     }
 
-    pub(crate) fn context(&self, stream: StreamKind) -> &RenderContext {
+    pub fn context(&self, stream: StreamKind) -> &RenderContext {
         match stream {
             StreamKind::Stdout => self.stdout.context(),
             StreamKind::Stderr => self.stderr.context(),
         }
     }
 
-    pub(crate) fn stdout_context(&self) -> &RenderContext {
+    pub fn stdout_context(&self) -> &RenderContext {
         self.stdout.context()
     }
 
-    pub(crate) fn stderr_context(&self) -> &RenderContext {
+    pub fn stderr_context(&self) -> &RenderContext {
         self.stderr.context()
     }
 
-    pub(crate) fn write(&mut self, stream: StreamKind, document: &Document) -> io::Result<()> {
+    pub fn write(&mut self, stream: StreamKind, document: &Document) -> io::Result<()> {
         match stream {
             StreamKind::Stdout => self.stdout.write(document),
             StreamKind::Stderr => self.stderr.write(document),
         }
     }
 
-    pub(crate) fn write_stdout(&mut self, document: &Document) -> io::Result<()> {
+    pub fn write_stdout(&mut self, document: &Document) -> io::Result<()> {
         self.stdout.write(document)
     }
 
-    pub(crate) fn write_stderr(&mut self, document: &Document) -> io::Result<()> {
+    pub fn write_stderr(&mut self, document: &Document) -> io::Result<()> {
         self.stderr.write(document)
     }
 
-    pub(crate) fn stdout_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
+    pub fn stdout_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
         let context = *self.stdout.context();
         LiveOutput::new(self.stdout.writer(), context)
     }
 
-    pub(crate) fn stderr_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
+    pub fn stderr_live_output(&mut self) -> LiveOutput<&mut (dyn Write + Send)> {
         let context = *self.stderr.context();
         LiveOutput::new(self.stderr.writer(), context)
     }
 
-    pub(crate) fn stdout_writer(&mut self) -> &mut (dyn Write + Send) {
+    pub fn stdout_writer(&mut self) -> &mut (dyn Write + Send) {
         self.stdout.writer()
     }
 
-    pub(crate) fn stderr_writer(&mut self) -> &mut (dyn Write + Send) {
+    pub fn stderr_writer(&mut self) -> &mut (dyn Write + Send) {
         self.stderr.writer()
     }
 
-    pub(crate) fn flush(&mut self) -> io::Result<()> {
+    pub fn flush(&mut self) -> io::Result<()> {
         self.stdout.flush()?;
         self.stderr.flush()
     }
@@ -147,14 +147,14 @@ impl Ui {
 
 /// Owns all cursor motion used to replace a rendered terminal frame. Dynamic
 /// content is rendered separately and is never part of a control sequence.
-pub(crate) struct LiveOutput<W> {
+pub struct LiveOutput<W> {
     writer: W,
     context: RenderContext,
     rendered_lines: usize,
 }
 
 impl<W: Write> LiveOutput<W> {
-    pub(crate) fn new(writer: W, context: RenderContext) -> Self {
+    pub fn new(writer: W, context: RenderContext) -> Self {
         Self {
             writer,
             context,
@@ -162,33 +162,33 @@ impl<W: Write> LiveOutput<W> {
         }
     }
 
-    pub(crate) const fn context(&self) -> &RenderContext {
+    pub const fn context(&self) -> &RenderContext {
         &self.context
     }
 
-    #[cfg(test)]
-    pub(crate) fn into_inner(self) -> W {
+    #[doc(hidden)]
+    pub fn into_inner(self) -> W {
         self.writer
     }
 
-    #[cfg(test)]
-    pub(crate) const fn inner(&self) -> &W {
+    #[doc(hidden)]
+    pub const fn inner(&self) -> &W {
         &self.writer
     }
 
-    pub(crate) fn write_document(&mut self, document: &Document) -> io::Result<()> {
+    pub fn write_document(&mut self, document: &Document) -> io::Result<()> {
         self.writer
             .write_all(document.render(&self.context).as_bytes())?;
         self.writer.flush()
     }
 
-    pub(crate) fn write_line(&mut self, line: &str) -> io::Result<()> {
+    pub fn write_line(&mut self, line: &str) -> io::Result<()> {
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()
     }
 
-    pub(crate) fn write_frame(&mut self, document: &Document, final_frame: bool) -> io::Result<()> {
+    pub fn write_frame(&mut self, document: &Document, final_frame: bool) -> io::Result<()> {
         let frame = document.render(&self.context);
         if !self.context.live_output_capable() {
             self.writer.write_all(frame.as_bytes())?;

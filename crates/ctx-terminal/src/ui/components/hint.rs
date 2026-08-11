@@ -2,20 +2,16 @@ use super::layout::{display_width, wrap_text};
 use crate::ui::{Document, Line, RenderContext, Span, Token};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Hint<'a> {
-    pub(crate) text: &'a str,
+pub struct Hint<'a> {
+    pub text: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Action<'a> {
-    pub(crate) command: &'a str,
+pub struct Action<'a> {
+    pub command: &'a str,
 }
 
-pub(crate) fn hint(
-    context: &RenderContext,
-    hint: Hint<'_>,
-    action: Option<Action<'_>>,
-) -> Document {
+pub fn hint(context: &RenderContext, hint: Hint<'_>, action: Option<Action<'_>>) -> Document {
     let mut document = labelled_text(context, "Hint", hint.text);
     if let Some(action) = action {
         if !document.is_empty() {

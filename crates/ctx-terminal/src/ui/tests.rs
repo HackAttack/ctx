@@ -4,7 +4,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use clap::Parser as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use super::{
@@ -170,18 +169,6 @@ fn bootstrap_conservatively_recognizes_explicit_machine_output() {
         "--",
         "--format=json"
     ])));
-}
-
-#[test]
-fn clap_global_color_option_parses_before_or_after_subcommands() {
-    let before = crate::Cli::try_parse_from(["ctx", "--color", "always", "status"]).unwrap();
-    assert_eq!(before.color, ColorMode::Always);
-
-    let after = crate::Cli::try_parse_from(["ctx", "status", "--color=never"]).unwrap();
-    assert_eq!(after.color, ColorMode::Never);
-
-    let default = crate::Cli::try_parse_from(["ctx", "status"]).unwrap();
-    assert_eq!(default.color, ColorMode::Auto);
 }
 
 #[test]

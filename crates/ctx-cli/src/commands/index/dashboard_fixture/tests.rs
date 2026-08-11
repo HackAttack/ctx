@@ -4,6 +4,7 @@ use sha2::{Digest as _, Sha256};
 use super::super::IndexWatchOutput;
 use super::*;
 use crate::{
+    cli::CliColorMode,
     commands::index_dashboard::IndexDashboard,
     ui::{ColorMode, StreamKind, TestContext},
 };
@@ -15,7 +16,7 @@ fn args(case: FixtureCase, columns: usize) -> IndexDashboardFixtureArgs {
         rows: FIXTURE_ROWS,
         clock: FIXTURE_CLOCK.to_owned(),
         random_seed: FIXTURE_RANDOM_SEED.to_owned(),
-        color: ColorMode::Never,
+        color: CliColorMode::Never,
     }
 }
 

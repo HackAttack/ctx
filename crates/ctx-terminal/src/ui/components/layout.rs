@@ -69,7 +69,7 @@ fn push_word(word: &str, width: usize, current: &mut String, output: &mut Vec<St
     }
 }
 
-pub(crate) fn is_copyable_atom(word: &str) -> bool {
+pub fn is_copyable_atom(word: &str) -> bool {
     word.contains("://") || word.starts_with('-') || word.matches('-').count() >= 4
 }
 

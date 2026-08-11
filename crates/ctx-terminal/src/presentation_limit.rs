@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-pub(crate) const CLI_PRESENTATION_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+pub const CLI_PRESENTATION_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct SerializedByteCounter {
@@ -23,10 +23,10 @@ impl io::Write for SerializedByteCounter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PresentationOutputLimitError {
-    pub(crate) event_id: Uuid,
-    pub(crate) actual_bytes: usize,
-    pub(crate) maximum_bytes: usize,
+pub struct PresentationOutputLimitError {
+    pub event_id: Uuid,
+    pub actual_bytes: usize,
+    pub maximum_bytes: usize,
 }
 
 impl fmt::Display for PresentationOutputLimitError {
@@ -41,7 +41,7 @@ impl fmt::Display for PresentationOutputLimitError {
 
 impl std::error::Error for PresentationOutputLimitError {}
 
-pub(crate) fn enforce_presentation_output_limit(
+pub fn enforce_presentation_output_limit(
     serialized_output_bytes: usize,
     output_limit_bytes: usize,
     event_id: Uuid,
@@ -56,7 +56,7 @@ pub(crate) fn enforce_presentation_output_limit(
     Ok(())
 }
 
-pub(crate) fn enforce_presentation_cli_output_limit(
+pub fn enforce_presentation_cli_output_limit(
     rendered_output: &str,
     writes_stdout: bool,
     output_limit_bytes: usize,
@@ -68,7 +68,7 @@ pub(crate) fn enforce_presentation_cli_output_limit(
     enforce_presentation_output_limit(serialized_output_bytes, output_limit_bytes, event_id)
 }
 
-pub(crate) fn serialized_json_bytes<T>(value: &T) -> serde_json::Result<usize>
+pub fn serialized_json_bytes<T>(value: &T) -> serde_json::Result<usize>
 where
     T: Serialize + ?Sized,
 {
@@ -77,7 +77,7 @@ where
     Ok(counter.bytes)
 }
 
-pub(crate) fn presentation_output_limit_error_json(error: &PresentationOutputLimitError) -> Value {
+pub fn presentation_output_limit_error_json(error: &PresentationOutputLimitError) -> Value {
     json!({
         "error": "output_limit_exceeded",
         "error_code": "output_limit_exceeded",

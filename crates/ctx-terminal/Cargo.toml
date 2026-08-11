@@ -1,0 +1,22 @@
+[package]
+name = "ctx-terminal"
+version = "1.0.0"
+description = "Safe terminal documents and output presentation for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anstream.workspace = true
+anstyle.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+supports-unicode.workspace = true
+terminal_size.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+uuid.workspace = true

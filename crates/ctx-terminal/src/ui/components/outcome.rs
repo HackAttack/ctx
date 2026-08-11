@@ -2,7 +2,7 @@ use super::layout::wrap_text;
 use crate::ui::{glyph::Glyph, Document, Line, RenderContext, Span, Token};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutcomeState {
+pub enum OutcomeState {
     Success,
     Warning,
     Error,
@@ -30,13 +30,13 @@ impl OutcomeState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Outcome<'a> {
-    pub(crate) state: OutcomeState,
-    pub(crate) title: &'a str,
-    pub(crate) detail: Option<&'a str>,
+pub struct Outcome<'a> {
+    pub state: OutcomeState,
+    pub title: &'a str,
+    pub detail: Option<&'a str>,
 }
 
-pub(crate) fn outcome(context: &RenderContext, outcome: Outcome<'_>) -> Document {
+pub fn outcome(context: &RenderContext, outcome: Outcome<'_>) -> Document {
     let marker = outcome
         .state
         .marker()

@@ -1,10 +1,11 @@
 use serde_json::Value;
 
-use crate::progress::{format_bytes, format_count};
+use crate::progress::{format_bytes, format_count, presentation_snapshot};
 use crate::ui::{
     fields, outcome, progress, refresh_progress, section, Document, Field, Line, Outcome,
-    OutcomeState, Progress, RefreshProgressSnapshot, RenderContext, Span, Token,
+    OutcomeState, Progress, RenderContext, Span, Token,
 };
+use ctx_history_refresh::RefreshStatus;
 
 #[derive(Debug, Default)]
 pub(super) struct IndexDashboard;
@@ -177,7 +178,8 @@ fn render_refresh(readiness: &Value, context: &RenderContext) -> Document {
 }
 
 fn render_refresh_progress(readiness: &Value, context: &RenderContext) -> Document {
-    RefreshProgressSnapshot::from_schema_v1(&readiness["refresh"])
+    RefreshStatus::parse_schema_v1(readiness["refresh"].clone())
+        .and_then(|status| presentation_snapshot(&status))
         .map(|snapshot| refresh_progress(context, &snapshot))
         .unwrap_or_else(|_| fields(context, &[Field::new("Refresh", "status unavailable")]))
 }

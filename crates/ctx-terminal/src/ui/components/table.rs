@@ -8,14 +8,14 @@ const MIN_WIDE_WIDTH: usize = 60;
 const MIN_COLUMN_WIDTH: usize = 8;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Table {
+pub struct Table {
     columns: Vec<String>,
     rows: Vec<Vec<String>>,
     intact_columns: BTreeSet<usize>,
 }
 
 impl Table {
-    pub(crate) fn new<I, S>(columns: I) -> Self
+    pub fn new<I, S>(columns: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -30,7 +30,7 @@ impl Table {
     /// Keep semantic atoms in these columns on one line. Their natural widths
     /// become part of the table's fit calculation; when the fixed cells and a
     /// useful wrapping column cannot fit together, the table stacks instead.
-    pub(crate) fn keep_columns_intact<I>(mut self, columns: I) -> Self
+    pub fn keep_columns_intact<I>(mut self, columns: I) -> Self
     where
         I: IntoIterator<Item = usize>,
     {
@@ -38,7 +38,7 @@ impl Table {
         self
     }
 
-    pub(crate) fn push_row<I, S>(&mut self, row: I)
+    pub fn push_row<I, S>(&mut self, row: I)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -46,7 +46,7 @@ impl Table {
         self.rows.push(row.into_iter().map(Into::into).collect());
     }
 
-    pub(crate) fn row<I, S>(mut self, row: I) -> Self
+    pub fn row<I, S>(mut self, row: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -55,11 +55,11 @@ impl Table {
         self
     }
 
-    pub(crate) fn columns(&self) -> &[String] {
+    pub fn columns(&self) -> &[String] {
         &self.columns
     }
 
-    pub(crate) fn rows(&self) -> &[Vec<String>] {
+    pub fn rows(&self) -> &[Vec<String>] {
         &self.rows
     }
 
@@ -68,7 +68,7 @@ impl Table {
     }
 }
 
-pub(crate) fn table(context: &RenderContext, table: &Table) -> Document {
+pub fn table(context: &RenderContext, table: &Table) -> Document {
     if table.columns.is_empty() {
         return Document::new();
     }
