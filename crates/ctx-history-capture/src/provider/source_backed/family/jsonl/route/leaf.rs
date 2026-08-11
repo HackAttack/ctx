@@ -11,7 +11,8 @@ use ctx_history_core::{
 use ctx_history_index::BaseEventIdentityLookup;
 
 use super::super::{
-    JsonlFileObservation, JsonlProbe, JsonlReader, JsonlSourceChange, JsonlSourceIdentity,
+    JsonlFileObservation, JsonlProbe, JsonlReader, JsonlSemanticPreflightMode, JsonlSourceChange,
+    JsonlSourceIdentity,
 };
 use super::{
     binding_digest, contract_error, route_internal, route_invalid, route_scan, FamilyCheckpoint,
@@ -752,6 +753,13 @@ pub(super) fn prepare_leaf(
     }
 
     let (leaf, opened) = leaf.open_for_scan()?;
+    let append_mode = adapter.append_mode();
+    let projector_preflight = matches!(append_mode, JsonlFamilyAppendMode::ProjectorPreflight(_));
+    if projector_preflight && leaf.identity_probe.is_some() {
+        return Err(CaptureError::SystemInvariant(
+            "JSONL projector preflight cannot follow an identity probe",
+        ));
+    }
     let previous = base.and_then(|base| decode_checkpoint(adapter, &leaf, base).ok());
     // A nonterminal checkpoint still certifies every complete record before
     // its unfinished tail. Reuse it for an exact no-op, or let append-capable
@@ -759,9 +767,11 @@ pub(super) fn prepare_leaf(
     // reconsidered without replaying already certified records.
     let previous_physical = previous.as_ref().filter(|checkpoint| {
         checkpoint.physical.source_observation() == leaf.observation()
-            || adapter.append_mode() == JsonlFamilyAppendMode::CertifiedSuffix
+            || append_mode.certified_suffix()
     });
-    let mut reader = open_leaf_reader(adapter, &leaf, &opened, previous_physical)?;
+    let open_reader =
+        |previous| open_leaf_reader(adapter, &leaf, &opened, previous, projector_preflight);
+    let mut reader = open_reader(previous_physical)?;
 
     if reader.source_change() == JsonlSourceChange::Unchanged {
         let base = base.ok_or_else(|| {
@@ -804,15 +814,15 @@ pub(super) fn prepare_leaf(
             .as_ref()
             .is_some_and(|checkpoint| checkpoint.complete_prefix_ends_with_terminal_nul_padding)
     {
-        reader = open_leaf_reader(adapter, &leaf, &opened, None)?;
+        reader = open_reader(None)?;
     }
-    let is_append = reader.source_change() == JsonlSourceChange::Append;
-    if is_append && adapter.append_mode() != JsonlFamilyAppendMode::CertifiedSuffix {
+    let mut is_append = reader.source_change() == JsonlSourceChange::Append;
+    if is_append && !append_mode.certified_suffix() {
         return Err(CaptureError::SystemInvariant(
             "replacement-only JSONL adapter resumed an append",
         ));
     }
-    let resumed = if is_append {
+    let mut resumed = if is_append {
         Some(previous.as_ref().ok_or_else(|| {
             CaptureError::InvalidPayload("JSONL append checkpoint is absent".to_owned())
         })?)
@@ -849,8 +859,7 @@ pub(super) fn prepare_leaf(
             (JsonlFamilySemanticPreflight::Ready, true) => {}
             (JsonlFamilySemanticPreflight::RetryReplacement, _) | (_, false) if is_append => {
                 drop(input);
-                input =
-                    JsonlFamilyExecutionIo::new(open_leaf_reader(adapter, &leaf, &opened, None)?);
+                input = JsonlFamilyExecutionIo::new(open_reader(None)?);
                 executor = adapter
                     .semantic_executor(
                         &leaf,
@@ -904,6 +913,24 @@ pub(super) fn prepare_leaf(
         base.is_some().then(|| base_event_lookup.clone()),
         projection_mode,
     )?;
+    if projector_preflight {
+        let initial = reader.execution_position()?;
+        let retry = projector.preflight(
+            &mut reader,
+            resumed.map(|checkpoint| checkpoint.physical.complete_prefix_end()),
+        )?;
+        let physical_ready = reader.settle_semantic_preflight(initial, !retry, true)?;
+        if (retry || !physical_ready) && !is_append {
+            return Err(CaptureError::SystemInvariant(
+                "JSONL projector replaced a non-append",
+            ));
+        }
+        if retry || !physical_ready {
+            projector.retry_replacement();
+            resumed = None;
+            is_append = false;
+        }
+    }
     let mut physical_records = resumed.map_or_else(
         || {
             leaf.identity_probe
@@ -1022,6 +1049,7 @@ fn open_leaf_reader(
     leaf: &JsonlFamilyLeaf,
     opened: &Arc<crate::common::io::OpenedProviderSourceFile>,
     previous: Option<&FamilyCheckpoint>,
+    projector_preflight: bool,
 ) -> Result<JsonlReader> {
     let mut reader = if leaf.whole_record {
         JsonlReader::open_whole_record(
@@ -1035,8 +1063,20 @@ fn open_leaf_reader(
                 physical_identity(adapter, leaf),
                 Arc::clone(opened),
                 previous.map(|checkpoint| &checkpoint.physical),
-                previous.and_then(|checkpoint| checkpoint.admitted_eof_sha256),
+                JsonlSemanticPreflightMode::AdmittedEof(
+                    previous.and_then(|checkpoint| checkpoint.admitted_eof_sha256),
+                ),
                 leaf.identity_probe.clone(),
+                adapter.record_framing(),
+                leaf.frozen_scan_observation(),
+            )
+        } else if projector_preflight {
+            JsonlReader::open_semantic_with_record_framing(
+                physical_identity(adapter, leaf),
+                Arc::clone(opened),
+                previous.map(|checkpoint| &checkpoint.physical),
+                JsonlSemanticPreflightMode::CompletePrefix,
+                None,
                 adapter.record_framing(),
                 leaf.frozen_scan_observation(),
             )
@@ -1257,7 +1297,7 @@ fn terminal_proof_for_checkpoint(
     certificate: &CertifiedSource,
     checkpoint: &FamilyCheckpoint,
 ) -> Result<JsonlFamilyTerminalProof> {
-    if leaf.whole_record || adapter.append_mode() == JsonlFamilyAppendMode::Replacement {
+    if leaf.whole_record || !adapter.append_mode().certified_suffix() {
         JsonlFamilyTerminalProof::exact_file(adapter, leaf, certificate)
     } else if let Some(admitted_eof_sha256) = checkpoint.admitted_eof_sha256 {
         JsonlFamilyTerminalProof::frozen_prefix(

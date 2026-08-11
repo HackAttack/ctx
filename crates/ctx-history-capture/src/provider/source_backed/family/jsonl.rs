@@ -119,8 +119,13 @@ pub(crate) struct JsonlReader {
 
 struct JsonlSemanticAppendResume {
     previous: JsonlCheckpoint,
-    admitted_eof_sha256: [u8; 32],
+    admitted_eof_sha256: Option<[u8; 32]>,
     position: Option<JsonlPhysicalStreamPosition>,
+}
+
+pub(crate) enum JsonlSemanticPreflightMode {
+    AdmittedEof(Option<[u8; 32]>),
+    CompletePrefix,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,11 +174,15 @@ impl JsonlReader {
         identity: JsonlSourceIdentity,
         source_file: Arc<OpenedProviderSourceFile>,
         previous: Option<&JsonlCheckpoint>,
-        previous_admitted_eof_sha256: Option<[u8; 32]>,
+        mode: JsonlSemanticPreflightMode,
         probe: Option<JsonlProbe>,
         record_framing: JsonlRecordFraming,
         frozen_observation: Option<&JsonlFileObservation>,
     ) -> Result<Self> {
+        let (bind_admitted_eof, deferred_append_eof_sha256) = match mode {
+            JsonlSemanticPreflightMode::AdmittedEof(previous) => (true, previous.map(Some)),
+            JsonlSemanticPreflightMode::CompletePrefix => (false, Some(None)),
+        };
         Self::open_with_framing(
             identity,
             source_file,
@@ -181,8 +190,8 @@ impl JsonlReader {
             probe,
             record_framing,
             false,
-            true,
-            previous_admitted_eof_sha256,
+            bind_admitted_eof,
+            deferred_append_eof_sha256,
             frozen_observation,
         )
     }
@@ -213,7 +222,7 @@ impl JsonlReader {
         record_framing: JsonlRecordFraming,
         whole_record: bool,
         bind_admitted_eof: bool,
-        deferred_append_eof_sha256: Option<[u8; 32]>,
+        deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
         frozen_observation: Option<&JsonlFileObservation>,
     ) -> Result<Self> {
         source_file.revalidate_same_object()?;
@@ -317,7 +326,10 @@ impl JsonlReader {
                 next_physical_ordinal = probe.next_physical_ordinal;
             }
         }
-        let full_hasher = if semantic_append_resume.is_some() {
+        let full_hasher = if semantic_append_resume
+            .as_ref()
+            .is_some_and(|resume| resume.admitted_eof_sha256.is_some())
+        {
             Some(Sha256::new())
         } else {
             bind_admitted_eof
@@ -337,7 +349,7 @@ impl JsonlReader {
                     next_physical_ordinal,
                     record_framing,
                     match (full_hasher, semantic_append_resume.as_ref()) {
-                        (Some(full), Some(resume)) => {
+                        (Some(full), Some(resume)) if resume.admitted_eof_sha256.is_some() => {
                             JsonlPhysicalDigest::full_complete_and_bounded_prefix(
                                 full,
                                 prefix_hasher.clone(),
@@ -345,7 +357,7 @@ impl JsonlReader {
                                 resume.previous.source_observation().length(),
                             )
                         }
-                        (Some(full), None) => {
+                        (Some(full), _) => {
                             JsonlPhysicalDigest::full_and_complete(full, prefix_hasher.clone())
                         }
                         (None, _) => JsonlPhysicalDigest::complete(prefix_hasher.clone()),
@@ -404,20 +416,7 @@ impl JsonlReader {
                 "whole-record JSON input cannot use the semantic executor",
             ));
         }
-        if let Some(resume) = self.semantic_append_resume.as_mut() {
-            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL append lost its physical stream",
-            ))?;
-            let expected_end = resume.previous.complete_prefix_end();
-            if resume.position.is_none() && physical.offset() == expected_end {
-                if physical.next_physical_ordinal() == resume.previous.next_physical_ordinal()
-                    && prefix_digest(physical.digest().complete_hasher())
-                        == *resume.previous.complete_prefix_sha256()
-                {
-                    resume.position = Some(physical.position());
-                }
-            }
-        }
+        self.capture_semantic_append_position()?;
         let record = self
             .physical
             .as_mut()
@@ -433,6 +432,24 @@ impl JsonlReader {
             }
         }
         Ok(record)
+    }
+
+    fn capture_semantic_append_position(&mut self) -> Result<()> {
+        if let Some(resume) = self.semantic_append_resume.as_mut() {
+            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL append lost its physical stream",
+            ))?;
+            let expected_end = resume.previous.complete_prefix_end();
+            if resume.position.is_none() && physical.offset() == expected_end {
+                if physical.next_physical_ordinal() == resume.previous.next_physical_ordinal()
+                    && prefix_digest(physical.digest().complete_hasher())
+                        == *resume.previous.complete_prefix_sha256()
+                {
+                    resume.position = Some(physical.position());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn execution_record_bytes(&self, record: JsonlPhysicalRecord) -> Result<&[u8]> {
@@ -528,29 +545,28 @@ impl JsonlReader {
     pub(super) fn settle_semantic_preflight(
         &mut self,
         initial: JsonlPhysicalStreamPosition,
+        resume_append: bool,
+        retain_failed_preflight: bool,
     ) -> Result<bool> {
         let binding = self.semantic_pass_binding()?;
-        let restore = if let Some(resume) = self.semantic_append_resume.as_ref() {
-            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
-                "semantic JSONL append lost its physical stream",
-            ))?;
-            let Some((bounded_prefix, remaining)) = physical.digest().bounded_prefix() else {
-                return Err(CaptureError::SystemInvariant(
-                    "semantic JSONL append omitted its admitted-prefix digest",
-                ));
-            };
-            let prefix_matches = remaining == 0
-                && <[u8; 32]>::from(bounded_prefix.clone().finalize())
-                    == resume.admitted_eof_sha256;
-            let Some(position) = resume.position.clone() else {
-                return Ok(false);
-            };
-            if !prefix_matches {
-                return Ok(false);
+        let (restore, ready) = match self.semantic_append_resume.as_ref() {
+            Some(resume) => {
+                let prefix_matches = resume.admitted_eof_sha256.is_none_or(|expected| {
+                    self.physical
+                        .as_ref()
+                        .and_then(|physical| physical.digest().bounded_prefix())
+                        .is_some_and(|(digest, remaining)| {
+                            remaining == 0
+                                && <[u8; 32]>::from(digest.clone().finalize()) == expected
+                        })
+                });
+                match (resume_append && prefix_matches, resume.position.clone()) {
+                    (true, Some(position)) => (position, true),
+                    _ if !retain_failed_preflight => return Ok(false),
+                    _ => (initial, false),
+                }
             }
-            position
-        } else {
-            initial
+            None => (initial, true),
         };
         self.semantic_preflight_binding = Some(binding);
         #[cfg(test)]
@@ -563,7 +579,7 @@ impl JsonlReader {
             .restore(restore)?;
         self.finished = false;
         self.outcome = None;
-        Ok(true)
+        Ok(ready)
     }
 
     fn semantic_pass_binding(&self) -> Result<JsonlSemanticPreflightBinding> {
@@ -579,7 +595,7 @@ impl JsonlReader {
             ));
         }
         Ok(JsonlSemanticPreflightBinding {
-            physical: physical.admitted_pass_binding()?,
+            physical: physical.admitted_pass_binding(),
             complete_prefix_ends_with_terminal_nul_padding: self
                 .complete_prefix_ends_with_terminal_nul_padding,
         })
@@ -606,6 +622,7 @@ impl JsonlReader {
         let mut records = 0_usize;
         let mut page_bytes = 0_usize;
         while records < PAGE_MAX_RECORDS {
+            self.capture_semantic_append_position().map_err(E::from)?;
             let (position, record) = {
                 let physical = self.physical.as_mut().ok_or_else(|| {
                     E::from(CaptureError::SystemInvariant(
@@ -779,7 +796,7 @@ impl JsonlReader {
                 ));
             }
             let actual = JsonlSemanticPreflightBinding {
-                physical: physical.admitted_pass_binding()?,
+                physical: physical.admitted_pass_binding(),
                 complete_prefix_ends_with_terminal_nul_padding: self
                     .complete_prefix_ends_with_terminal_nul_padding,
             };
@@ -1088,7 +1105,7 @@ mod tests {
             semantic_identity(&source_path, "semantic-rewrite-v1"),
             source_file,
             None,
-            None,
+            JsonlSemanticPreflightMode::AdmittedEof(None),
             None,
             JsonlRecordFraming::ordinary(),
             None,
@@ -1107,7 +1124,9 @@ mod tests {
             file.write_all(rewritten).unwrap();
             file.sync_all().unwrap();
         });
-        assert!(reader.settle_semantic_preflight(initial).unwrap());
+        assert!(reader
+            .settle_semantic_preflight(initial, true, false)
+            .unwrap());
 
         let mut projected = Vec::new();
         let error = loop {
@@ -1143,7 +1162,7 @@ mod tests {
             identity.clone(),
             source_file,
             None,
-            None,
+            JsonlSemanticPreflightMode::AdmittedEof(None),
             None,
             JsonlRecordFraming::ordinary(),
             None,
@@ -1158,7 +1177,9 @@ mod tests {
             file.write_all(b"-done\n").unwrap();
             file.sync_all().unwrap();
         });
-        assert!(first.settle_semantic_preflight(initial).unwrap());
+        assert!(first
+            .settle_semantic_preflight(initial, true, false)
+            .unwrap());
         let first_records = finish_semantic_pass(&mut first).unwrap();
         assert_eq!(first_records.len(), 2);
         assert_eq!(first_records[1].physical_ordinal, 1);
@@ -1180,7 +1201,7 @@ mod tests {
             identity,
             source_file,
             Some(&checkpoint),
-            Some(admitted_eof_sha256),
+            JsonlSemanticPreflightMode::AdmittedEof(Some(admitted_eof_sha256)),
             None,
             JsonlRecordFraming::ordinary(),
             None,
@@ -1192,7 +1213,9 @@ mod tests {
         );
         let preflight_start = resumed.execution_position().unwrap();
         finish_semantic_pass(&mut resumed).unwrap();
-        assert!(resumed.settle_semantic_preflight(preflight_start).unwrap());
+        assert!(resumed
+            .settle_semantic_preflight(preflight_start, true, false)
+            .unwrap());
         let completed = resumed.next_execution_record().unwrap().unwrap();
         assert_eq!(completed.physical_ordinal, 1);
         assert!(completed.complete);

@@ -8,7 +8,7 @@ use std::{
 use super::JsonlSourceIdentity;
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
-    JsonlOversizedRecordPolicy, JsonlProbe, JsonlRecordFraming, JsonlRecordRef,
+    JsonlOversizedRecordPolicy, JsonlProbe, JsonlReader, JsonlRecordFraming, JsonlRecordRef,
 };
 use crate::{
     common::io::{
@@ -113,6 +113,16 @@ pub(crate) enum JsonlFamilyBaseScope {
 }
 
 pub(crate) trait JsonlFamilyProjector: Send {
+    fn preflight(
+        &mut self,
+        _reader: &mut JsonlReader,
+        _certified_prefix_end: Option<u64>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn retry_replacement(&mut self) {}
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
@@ -296,10 +306,12 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
 
     fn projector(
         &self,
-        leaf: &JsonlFamilyLeaf,
-        source_file: Arc<OpenedProviderSourceFile>,
-        imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>>;
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        Err(CaptureError::SystemInvariant("missing JSONL projector"))
+    }
 
     /// Constructs a projector for a cold/replacement scan or from the opaque
     /// provider state persisted at the validated prefix frontier. Any scan with

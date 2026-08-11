@@ -19,7 +19,8 @@ use super::*;
 use crate::{
     common::io::open_provider_source_file,
     provider::source_backed::family::jsonl::{
-        JsonlFamilyExecutionIo, JsonlReader, JsonlRecordFraming, JsonlSourceIdentity,
+        JsonlFamilyExecutionIo, JsonlReader, JsonlRecordFraming, JsonlSemanticPreflightMode,
+        JsonlSourceIdentity,
     },
     CODEX_SESSION_SOURCE_FORMAT,
 };
@@ -178,7 +179,7 @@ fn scan_collect(source: CodexCatalogSource) -> (TestSemanticScan, CollectingSink
         identity,
         opened,
         None,
-        None,
+        JsonlSemanticPreflightMode::AdmittedEof(None),
         None,
         JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
         None,
