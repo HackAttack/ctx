@@ -6,6 +6,7 @@ pub(super) struct SourceAliases {
     output_modules: BTreeSet<String>,
     print_macro_imports: BTreeSet<usize>,
     print_macros: BTreeSet<String>,
+    standard_module_alias_declarations: BTreeSet<usize>,
     standard_modules: BTreeSet<String>,
     stdout_constructors: BTreeSet<String>,
     stderr_constructors: BTreeSet<String>,
@@ -19,6 +20,10 @@ impl SourceAliases {
         let mut imports = Vec::new();
         let mut import_owners = Vec::new();
         for index in 0..tokens.len() {
+            if let Some(alias) = extern_standard_module_alias(tokens, index) {
+                aliases.standard_module_alias_declarations.insert(index);
+                aliases.standard_modules.insert(alias);
+            }
             if tokens[index].text != "use" {
                 continue;
             }
@@ -74,7 +79,10 @@ impl SourceAliases {
                 break;
             }
         }
-        for ((path, _), owner) in imports.iter().zip(import_owners) {
+        for ((path, alias), owner) in imports.iter().zip(import_owners) {
+            if is_direct_standard_module_alias(path, alias) {
+                aliases.standard_module_alias_declarations.insert(owner);
+            }
             if import_resolves_to_standard_print_macro(
                 path,
                 &aliases.standard_modules,
@@ -84,6 +92,10 @@ impl SourceAliases {
             }
         }
         aliases
+    }
+
+    pub(super) fn is_standard_module_alias_declaration(&self, index: usize) -> bool {
+        self.standard_module_alias_declarations.contains(&index)
     }
 
     pub(super) fn is_standard_print_macro_import(&self, index: usize) -> bool {
@@ -153,6 +165,21 @@ impl SourceAliases {
     pub(super) fn is_imported_output_helper(&self, name: &str) -> bool {
         self.output_helpers.contains(name)
     }
+}
+
+fn extern_standard_module_alias(tokens: &[Token], index: usize) -> Option<String> {
+    (tokens.get(index).map(|token| token.text.as_str()) == Some("extern")
+        && tokens.get(index + 1).map(|token| token.text.as_str()) == Some("crate")
+        && tokens.get(index + 2).map(|token| token.text.as_str()) == Some("std")
+        && tokens.get(index + 3).map(|token| token.text.as_str()) == Some("as"))
+    .then(|| tokens.get(index + 4))
+    .flatten()
+    .filter(|token| is_path_ident(&token.text))
+    .map(|token| token.text.clone())
+}
+
+fn is_direct_standard_module_alias(path: &[String], alias: &str) -> bool {
+    path.len() == 1 && path[0] == "std" && alias != "std"
 }
 
 fn import_resolves_to_standard_module(

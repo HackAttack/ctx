@@ -155,7 +155,77 @@ fn terminal_standard_module_and_macro_alias_chains_cannot_be_allowlisted() {
             }
         "#,
     );
-    assert_eq!(sites.len(), 4, "{sites:#?}");
+    assert_eq!(sites.len(), 5, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_extern_standard_module_alias_cannot_be_allowlisted() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            extern crate std as standard;
+            fn emit() { standard::println!("unmeasured"); }
+        "#,
+    );
+    assert_eq!(sites.len(), 2, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_public_standard_module_reexport_fails_without_a_local_call() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        "pub use std as standard;",
+    );
+    assert_eq!(sites.len(), 1, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_public_standard_reexport_closes_the_cross_file_path_at_its_origin() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/export.rs",
+        "pub use std as downstream_standard;",
+    );
+    assert_eq!(sites.len(), 1, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_raw_identifier_standard_aliases_and_reexports_are_normalized() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            use r#std as r#standard;
+            pub use r#std as r#public_standard;
+            fn emit() { r#standard::println!("unmeasured"); }
+        "#,
+    );
+    assert_eq!(sites.len(), 3, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+fn terminal_nonstandard_module_aliases_and_reexports_remain_allowed() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            use crate::support as standard;
+            pub use crate::support as public_standard;
+            extern crate core as core_standard;
+            fn emit() {
+                standard::println!("not std");
+                public_standard::eprintln!("not std");
+                core_standard::dbg!("not std");
+            }
+        "#,
+    );
+    assert!(sites.is_empty(), "{sites:#?}");
     assert_terminal_print_macros_are_absent(&sites);
 }
 
