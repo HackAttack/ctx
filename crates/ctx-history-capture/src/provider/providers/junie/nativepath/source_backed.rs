@@ -5,12 +5,12 @@ use std::{
     sync::Arc,
 };
 
+use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
     EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId, TypedKey,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -170,7 +170,7 @@ impl JsonlFamilyAdapter for JunieJsonlAdapter {
         _source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         if checkpoint.is_some() {

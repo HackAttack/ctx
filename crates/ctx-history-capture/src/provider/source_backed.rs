@@ -99,8 +99,10 @@ pub(crate) mod family;
 mod inventory;
 mod publication;
 mod registration;
+mod runtime_adapter;
 mod watch;
 
+pub(crate) use ctx_history_capture_runtime::BaseEventLookup;
 pub use discovery::*;
 pub use driver::*;
 #[cfg(test)]
@@ -109,6 +111,7 @@ pub(crate) use fallback_identity::FallbackEventIdentityState;
 pub use inventory::*;
 pub use publication::*;
 pub use registration::*;
+pub(crate) use runtime_adapter::IndexBaseEventLookup;
 pub use watch::*;
 
 pub(crate) fn source_backed_base_sources(

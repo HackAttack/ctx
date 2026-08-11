@@ -85,7 +85,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
         .unwrap()
         .into_writer()
         .unwrap();
-    let lookup = writer.base_event_identity_lookup();
+    let lookup = writer.base_event_identity_lookup().into();
     let adapter = CheckpointTestAdapter::default();
     let mut worker = JsonlFamilyWorkerContext::default();
 

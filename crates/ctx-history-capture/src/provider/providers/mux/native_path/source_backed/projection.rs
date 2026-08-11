@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, CoreContentPolicyStatus, CoreRecord, EventIdentityInput, EventOrigin,
     NativeItemKey, SessionRelationshipKind, SourceKey, TypedKey,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -54,7 +54,7 @@ impl MuxProjector {
         authority: Arc<ProviderSourceRoot>,
         binding: MuxBinding,
         mode: JsonlFamilyProjectionMode,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
     ) -> Result<Self> {
         let fallback_identities = FallbackEventIdentityState::new(
             source.clone(),

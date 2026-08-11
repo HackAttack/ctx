@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
+use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{CoreRecord, SourceKey, StableEntityId};
-use ctx_history_index::BaseEventIdentityLookup;
 use serde_json::Value;
 
 use super::{

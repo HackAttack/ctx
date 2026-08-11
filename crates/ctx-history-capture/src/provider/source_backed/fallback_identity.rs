@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
+use super::{BaseEventLookup as _, IndexBaseEventLookup};
 use ctx_history_core::{
     derive_event_id, EventIdentityInput, NativeItemKey, SourceKey, StableEntityId,
     SubrecordSelector, TypedKey,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 
 use crate::{CaptureError, Result};
 
@@ -78,7 +78,7 @@ pub(crate) struct FallbackEventIdentityState {
     native_item_namespace: String,
     identity_version: String,
     mode: FallbackEventIdentityMode,
-    base_lookup: Option<BaseEventIdentityLookup>,
+    base_lookup: Option<IndexBaseEventLookup>,
     groups: HashMap<FallbackGroupKey, FallbackGroupState>,
 }
 
@@ -91,7 +91,7 @@ impl FallbackEventIdentityState {
         native_item_namespace: impl Into<String>,
         identity_version: impl Into<String>,
         mode: FallbackEventIdentityMode,
-        base_lookup: Option<BaseEventIdentityLookup>,
+        base_lookup: Option<IndexBaseEventLookup>,
     ) -> Result<Self> {
         match (mode, base_lookup.is_some()) {
             (FallbackEventIdentityMode::Cold, false)
@@ -212,7 +212,7 @@ impl FallbackEventIdentityState {
 
     fn base_occurrence_exists(
         &self,
-        base_lookup: &BaseEventIdentityLookup,
+        base_lookup: &IndexBaseEventLookup,
         key: &FallbackGroupKey,
         occurrence: u64,
     ) -> Result<bool> {
@@ -308,7 +308,7 @@ mod tests {
         source: &SourceKey,
         session_id: StableEntityId,
         mode: FallbackEventIdentityMode,
-        lookup: Option<BaseEventIdentityLookup>,
+        lookup: Option<IndexBaseEventLookup>,
         values: &[&str],
     ) -> (Vec<(StableEntityId, TypedKey)>, Result<()>) {
         let mut state = FallbackEventIdentityState::new(
@@ -344,7 +344,7 @@ mod tests {
         source: &SourceKey,
         session_id: StableEntityId,
         events: &[(StableEntityId, TypedKey)],
-    ) -> (tempfile::TempDir, BaseEventIdentityLookup) {
+    ) -> (tempfile::TempDir, IndexBaseEventLookup) {
         let temp = tempfile::tempdir().unwrap();
         let options = WriterOptions {
             indexer_threads: 1,
@@ -400,7 +400,7 @@ mod tests {
             .unwrap()
             .into_writer()
             .unwrap();
-        let lookup = writer.base_event_identity_lookup();
+        let lookup = writer.base_event_identity_lookup().into();
         drop(writer);
         (temp, lookup)
     }

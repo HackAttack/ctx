@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, CoreRecordError,
@@ -13,7 +14,6 @@ use ctx_history_core::{
 };
 #[cfg(test)]
 use ctx_history_core::{McpJsonCapture, McpPayloadOmissionReason};
-use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -291,7 +291,7 @@ impl JsonlFamilyAdapter for DirectJsonlFamilyAdapter {
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         if checkpoint.is_some() {
@@ -557,7 +557,7 @@ impl DirectJsonlFamilyProjector {
         leaf: &JsonlFamilyLeaf,
         source_file: &OpenedProviderSourceFile,
         imported_at: DateTime<Utc>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> DirectJsonlAdapterResult<Self> {
         let binding = decode_binding(leaf)?;

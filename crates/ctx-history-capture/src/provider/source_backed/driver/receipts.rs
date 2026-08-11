@@ -217,6 +217,11 @@ pub(in super::super) struct CompleteInventoryOwner {
 }
 
 impl SourceBackedGenerationSink<'_> {
+    /// Returns the capture-facing lookup pinned to this writer's base generation.
+    pub(crate) fn base_event_lookup(&self) -> super::super::IndexBaseEventLookup {
+        self.writer.base_event_identity_lookup().into()
+    }
+
     pub(crate) fn route_resources(&self) -> SourceBackedRouteResources {
         self.resources.clone()
     }

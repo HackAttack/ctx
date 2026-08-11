@@ -1,0 +1,16 @@
+[package]
+name = "ctx-history-capture-runtime"
+version = "0.26.0"
+description = "Runtime-neutral capture lookup contracts for ctx agent history"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+uuid.workspace = true
+
+[dev-dependencies]
+thiserror.workspace = true

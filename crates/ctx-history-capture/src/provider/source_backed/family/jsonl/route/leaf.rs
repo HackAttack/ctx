@@ -8,7 +8,6 @@ use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, ScannedSourceCounts, SourceFrontier,
     SourceKey, SourceObservation,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 
 use super::super::{
     JsonlFileObservation, JsonlProbe, JsonlReader, JsonlSemanticPreflightMode, JsonlSourceChange,
@@ -28,9 +27,10 @@ use super::{
 };
 use crate::{
     provider::source_backed::{
-        CoreRecordEmissionBatchBuilder, ParallelLeafScanBegin, ParallelLeafScanComplete,
-        ParallelLeafScanError, ParallelLeafScanJob, ParallelLeafScanWorkerError,
-        SourceBackedGenerationSink, SourceBackedRouteError, SourceBackedRouteResult,
+        CoreRecordEmissionBatchBuilder, IndexBaseEventLookup, ParallelLeafScanBegin,
+        ParallelLeafScanComplete, ParallelLeafScanError, ParallelLeafScanJob,
+        ParallelLeafScanWorkerError, SourceBackedGenerationSink, SourceBackedRouteError,
+        SourceBackedRouteResult,
     },
     CaptureError, Result,
 };
@@ -120,7 +120,7 @@ fn scan_leaf_serial(
     adapter: &dyn JsonlFamilyAdapter,
     leaf: &JsonlFamilyLeaf,
     base: Option<&CertifiedSource>,
-    base_event_lookup: &BaseEventIdentityLookup,
+    base_event_lookup: &IndexBaseEventLookup,
     worker: &mut JsonlFamilyWorkerContext,
     sink: &mut SourceBackedGenerationSink<'_>,
 ) -> SourceBackedRouteResult<TerminalSourceEvidence> {
@@ -241,7 +241,7 @@ fn run_parallel_leaf_job_batch(
     adapter: &dyn JsonlFamilyAdapter,
     jobs: Vec<ParallelLeafScanJob<JsonlLeafJob>>,
     worker_states: &mut [JsonlFamilyWorkerContexts],
-    base_event_lookup: &BaseEventIdentityLookup,
+    base_event_lookup: &IndexBaseEventLookup,
     sink: &mut SourceBackedGenerationSink<'_>,
     #[cfg(test)] scanner_probe: Option<&JsonlFamilyScannerProbe>,
 ) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence>> {
@@ -437,7 +437,7 @@ pub(super) fn scan_leaves(
     adapter: &dyn JsonlFamilyAdapter,
     leaves: &[JsonlFamilyLeaf],
     bases: &HashMap<[u8; 32], &CertifiedSource>,
-    base_event_lookup: BaseEventIdentityLookup,
+    base_event_lookup: IndexBaseEventLookup,
     sink: &mut SourceBackedGenerationSink<'_>,
 ) -> SourceBackedRouteResult<HashMap<[u8; 32], TerminalSourceEvidence>> {
     let worker_limit = adapter
@@ -723,7 +723,7 @@ pub(super) fn prepare_leaf(
     adapter: &dyn JsonlFamilyAdapter,
     leaf: &JsonlFamilyLeaf,
     base: Option<&CertifiedSource>,
-    base_event_lookup: &BaseEventIdentityLookup,
+    base_event_lookup: &IndexBaseEventLookup,
     worker: &mut JsonlFamilyWorkerContext,
     output: &mut JsonlLeafOutput<'_>,
 ) -> Result<PreparedLeaf> {

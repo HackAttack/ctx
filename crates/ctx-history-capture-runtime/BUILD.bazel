@@ -13,39 +13,27 @@ filegroup(
     srcs = glob(["**"], exclude = ["BUILD.bazel"]),
 )
 
-COMMON_RUSTC_ENV = {
-    "CARGO_MANIFEST_DIR": "crates/ctx-history-jsonl",
-}
-
 RUST_SRCS = glob(["src/**/*.rs"])
 PROD_SRCS = glob(["src/**/*.rs"], exclude = RUST_PROD_SRC_EXCLUDES)
-
-JSONL_DEPS = [
-    "//crates/ctx-history-capture-model:lib",
-    "//crates/ctx-history-capture-runtime:lib",
-    "//crates/ctx-history-core:lib",
-]
 
 rust_library(
     name = "lib",
     srcs = PROD_SRCS,
-    crate_name = "ctx_history_jsonl",
+    crate_name = "ctx_history_capture_runtime",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + JSONL_DEPS,
+    deps = all_crate_deps(normal = True),
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    rustc_env = COMMON_RUSTC_ENV,
 )
 
 ctx_rust_test(
     name = "unit_tests",
     srcs = RUST_SRCS,
-    crate_name = "ctx_history_jsonl",
+    crate_name = "ctx_history_capture_runtime",
     crate_root = "src/lib.rs",
     edition = crate_edition(),
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal = True, normal_dev = True) + JSONL_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
-    rustc_env = COMMON_RUSTC_ENV,
 )

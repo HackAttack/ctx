@@ -3,18 +3,19 @@ use std::{
     marker::PhantomData,
 };
 
-use ctx_history_index::BaseEventIdentityLookup;
+use ctx_history_capture_runtime::BaseEventLookup;
 
 /// Assigns contiguous duplicate occurrences for content-shaped JSONL event
 /// identities. Certified appends resume after the immutable Core prefix;
 /// cold and replacement projections restart from zero.
-pub struct JsonlAppendOccurrenceState<K, S = HashMap<K, u64>> {
-    base_lookup: Option<BaseEventIdentityLookup>,
+pub struct JsonlAppendOccurrenceState<K, L: BaseEventLookup, S = HashMap<K, u64>> {
+    base_lookup: Option<L>,
     next_occurrences: S,
     _key: PhantomData<K>,
 }
 
-pub type JsonlOrderedAppendOccurrenceState<K> = JsonlAppendOccurrenceState<K, BTreeMap<K, u64>>;
+pub type JsonlOrderedAppendOccurrenceState<K, L> =
+    JsonlAppendOccurrenceState<K, L, BTreeMap<K, u64>>;
 
 pub trait JsonlOccurrenceStorage<K> {
     fn get(&self, key: &K) -> Option<u64>;
@@ -41,7 +42,7 @@ impl<K: Ord> JsonlOccurrenceStorage<K> for BTreeMap<K, u64> {
     }
 }
 
-impl<K, S: Default> Default for JsonlAppendOccurrenceState<K, S> {
+impl<K, L: BaseEventLookup, S: Default> Default for JsonlAppendOccurrenceState<K, L, S> {
     fn default() -> Self {
         Self {
             base_lookup: None,
@@ -51,8 +52,10 @@ impl<K, S: Default> Default for JsonlAppendOccurrenceState<K, S> {
     }
 }
 
-impl<K, S: Default + JsonlOccurrenceStorage<K>> JsonlAppendOccurrenceState<K, S> {
-    pub fn for_append(base_lookup: BaseEventIdentityLookup) -> Self {
+impl<K, L: BaseEventLookup, S: Default + JsonlOccurrenceStorage<K>>
+    JsonlAppendOccurrenceState<K, L, S>
+{
+    pub fn for_append(base_lookup: L) -> Self {
         Self {
             base_lookup: Some(base_lookup),
             next_occurrences: S::default(),
@@ -65,7 +68,7 @@ impl<K, S: Default + JsonlOccurrenceStorage<K>> JsonlAppendOccurrenceState<K, S>
         &mut self,
         key: K,
         mut overflow: impl FnMut() -> E,
-        mut base_occurrence_exists: impl FnMut(&BaseEventIdentityLookup, u64) -> Result<bool, E>,
+        mut base_occurrence_exists: impl FnMut(&L, u64) -> Result<bool, E>,
     ) -> Result<u64, E> {
         let occurrence = match self.next_occurrences.get(&key) {
             Some(occurrence) => occurrence,
@@ -86,10 +89,10 @@ impl<K, S: Default + JsonlOccurrenceStorage<K>> JsonlAppendOccurrenceState<K, S>
     }
 }
 
-fn first_unused_base_occurrence<E>(
-    base_lookup: Option<&BaseEventIdentityLookup>,
+fn first_unused_base_occurrence<L: BaseEventLookup, E>(
+    base_lookup: Option<&L>,
     overflow: &mut impl FnMut() -> E,
-    base_occurrence_exists: &mut impl FnMut(&BaseEventIdentityLookup, u64) -> Result<bool, E>,
+    base_occurrence_exists: &mut impl FnMut(&L, u64) -> Result<bool, E>,
 ) -> Result<u64, E> {
     let Some(base_lookup) = base_lookup else {
         return Ok(0);

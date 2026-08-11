@@ -7,11 +7,11 @@ use std::{
     sync::Arc,
 };
 
+use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_native_session_id, CaptureProvider, SourceKey, StableEntityId, TypedKey,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -201,7 +201,7 @@ impl JsonlFamilyAdapter for MuxJsonlAdapter {
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         if checkpoint.is_some() {

@@ -9,7 +9,7 @@ use ctx_history_core::{
     CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceKey,
     StableEntityId, TypedKey,
 };
-use ctx_history_index::{BaseEventIdentityLookup, IndexError};
+use ctx_history_index::IndexError;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -28,6 +28,7 @@ use super::{
     source::{CodexCatalogSource, CodexFileObservation},
     CodexNativeScanner, CodexSessionRow,
 };
+use crate::provider::source_backed::IndexBaseEventLookup;
 use crate::repository_attribution::{apply_annotation, merge_repository_annotation};
 use crate::{
     common::io::{

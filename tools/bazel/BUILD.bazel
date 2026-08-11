@@ -22,6 +22,8 @@ exports_files([
     "check-history-read-application-dependency-boundary.sh",
     "check_history_application_contract_boundaries_test.py",
     "check-history-source-discovery-boundary.sh",
+    "check_history_capture_runtime_boundary.py",
+    "check_history_capture_runtime_boundary_test.py",
     "check_history_source_discovery_boundary.py",
     "check_history_source_discovery_boundary_test.py",
     "check-pro-access-build-cfg.sh",

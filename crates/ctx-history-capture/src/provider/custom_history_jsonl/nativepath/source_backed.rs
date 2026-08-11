@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_session_id, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
@@ -25,7 +26,6 @@ use ctx_history_core::{
     SessionRelationshipKind, SourceAnchor, SourceFrontier, SourceKey, StableEntityId, TypedKey,
     CTX_HISTORY_JSONL_V1_SCHEMA_VERSION,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -286,7 +286,7 @@ impl JsonlFamilyAdapter for CustomHistoryJsonlFamilyAdapter {
         &self,
         leaf: &JsonlFamilyLeaf,
         base: Option<&CertifiedSource>,
-        _base_event_lookup: &BaseEventIdentityLookup,
+        _base_event_lookup: &IndexBaseEventLookup,
         _worker: &mut JsonlFamilyWorkerContext,
         emit_page: &mut dyn FnMut(
             JsonlFamilyPublication,

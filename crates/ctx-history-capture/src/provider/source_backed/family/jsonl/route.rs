@@ -15,9 +15,9 @@ use crate::{
         ProviderSourceRoot,
     },
     provider::source_backed::{
-        source_backed_base_sources, SourceBackedGenerationSink, SourceBackedRevalidationTarget,
-        SourceBackedRouteDriver, SourceBackedRouteError, SourceBackedRouteErrorKind,
-        SourceBackedRouteResult,
+        source_backed_base_sources, IndexBaseEventLookup, SourceBackedGenerationSink,
+        SourceBackedRevalidationTarget, SourceBackedRouteDriver, SourceBackedRouteError,
+        SourceBackedRouteErrorKind, SourceBackedRouteResult,
     },
     CaptureError, Result, PROVIDER_JSONL_INVENTORY_MAX_DEPTH,
     PROVIDER_JSONL_INVENTORY_MAX_DIRECTORIES, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
@@ -31,7 +31,6 @@ use ctx_history_core::{
     CoreRecord, ProjectionContractError, SourceFrontier, SourceInventoryObservation, SourceKey,
     TypedKey,
 };
-use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -324,7 +323,7 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        _base_event_lookup: Option<BaseEventIdentityLookup>,
+        _base_event_lookup: Option<IndexBaseEventLookup>,
         _mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         if checkpoint.is_some() {
@@ -341,7 +340,7 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         &self,
         _leaf: &JsonlFamilyLeaf,
         _checkpoint: Option<&TypedKey>,
-        _base_event_lookup: Option<BaseEventIdentityLookup>,
+        _base_event_lookup: Option<IndexBaseEventLookup>,
         _mode: JsonlFamilyProjectionMode,
     ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
         Ok(None)
@@ -364,7 +363,7 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         &self,
         _leaf: &JsonlFamilyLeaf,
         _base: Option<&CertifiedSource>,
-        _base_event_lookup: &BaseEventIdentityLookup,
+        _base_event_lookup: &IndexBaseEventLookup,
         _worker: &mut JsonlFamilyWorkerContext,
         _emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
@@ -1405,7 +1404,7 @@ fn capture(
         }
     }
     let bases_by_descriptor = bases_by_descriptor(&bases)?;
-    let base_event_lookup = sink.writer.base_event_identity_lookup();
+    let base_event_lookup = sink.base_event_lookup();
     let mut scan_selected_leaves = Vec::with_capacity(selected_leaves.len());
     let mut retained_terminal_sources = HashMap::new();
     for leaf in &selected_leaves {

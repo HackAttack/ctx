@@ -65,7 +65,7 @@ impl CodexSessionSemanticExecutorV0 {
         state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
         leaf: &JsonlFamilyLeaf,
         _checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         projection_mode: JsonlFamilyProjectionMode,
     ) -> Result<Self> {
         let plan = {
@@ -533,7 +533,7 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
         &self,
         leaf: &JsonlFamilyLeaf,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
         Ok(Some(Box::new(CodexSessionSemanticExecutorV0::new(

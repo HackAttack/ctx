@@ -153,7 +153,7 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
         &adapter,
         leaf,
         None,
-        &writer.base_event_identity_lookup(),
+        &writer.base_event_identity_lookup().into(),
         &mut worker,
         &mut output,
     )
@@ -291,7 +291,7 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
         &adapter,
         leaf,
         None,
-        &writer.base_event_identity_lookup(),
+        &writer.base_event_identity_lookup().into(),
         &mut worker,
         &mut output,
     )
@@ -320,7 +320,7 @@ fn project_framing_policy_fixture(
         adapter,
         leaf,
         None,
-        &writer.base_event_identity_lookup(),
+        &writer.base_event_identity_lookup().into(),
         &mut worker,
         &mut output,
     )
@@ -413,7 +413,7 @@ fn generic_projection_streams_record_and_finish_fanout_before_record_65() {
             &adapter,
             leaf,
             None,
-            &writer.base_event_identity_lookup(),
+            &writer.base_event_identity_lookup().into(),
             &mut worker,
             &mut output,
         )

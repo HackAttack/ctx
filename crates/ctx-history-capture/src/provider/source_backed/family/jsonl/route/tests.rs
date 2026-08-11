@@ -900,7 +900,7 @@ impl JsonlFamilyAdapter for IdentityRevisionTestAdapter {
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         if checkpoint.is_some()
@@ -1041,7 +1041,7 @@ impl JsonlFamilyAdapter for SemanticLifecycleTestAdapter {
         &self,
         _leaf: &JsonlFamilyLeaf,
         _checkpoint: Option<&TypedKey>,
-        _base_event_lookup: Option<BaseEventIdentityLookup>,
+        _base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
         self.observations
@@ -1276,7 +1276,7 @@ impl JsonlFamilyAdapter for OptimizedLeafTestAdapter {
         &self,
         leaf: &JsonlFamilyLeaf,
         _base: Option<&CertifiedSource>,
-        _base_event_lookup: &BaseEventIdentityLookup,
+        _base_event_lookup: &IndexBaseEventLookup,
         _worker: &mut JsonlFamilyWorkerContext,
         emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
     ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
@@ -1398,7 +1398,7 @@ impl JsonlFamilyAdapter for CheckpointTestAdapter {
         source_file: Arc<OpenedProviderSourceFile>,
         imported_at: DateTime<Utc>,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<BaseEventIdentityLookup>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         self.projection_modes.lock().unwrap().push(mode);
@@ -1592,7 +1592,7 @@ fn prepare_semantic_lifecycle_test(
         adapter,
         leaf,
         base,
-        &writer.base_event_identity_lookup(),
+        &writer.base_event_identity_lookup().into(),
         &mut worker,
         &mut JsonlLeafOutput::new(&mut emit),
     )
