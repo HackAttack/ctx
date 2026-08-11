@@ -71,9 +71,8 @@ REQUIRED_CONDITION = (
 SDK_SPECS = {
     "sdk-swift-required": {
         "command": (
-            "javac -version\n"
             "swift --version\n"
-            "bash scripts/check-sdks.sh --groups=jvm,swift --required-groups=jvm,swift"
+            "bash scripts/check-sdks.sh --groups=swift --required-groups=swift"
         ),
         "queue": "ctx-release-macos-arm64",
         "os": "darwin",
@@ -291,7 +290,7 @@ def main() -> None:
     mutations = (
         ("optional Swift", "sdk-swift-required", "    timeout_in_minutes: 30\n", "    soft_fail: true\n    timeout_in_minutes: 30\n"),
         ("offline Swift runner", "sdk-swift-required", '      queue: "ctx-release-macos-arm64"\n', '      queue: "mac-shared"\n'),
-        ("optional macOS command", "sdk-swift-required", " --required-groups=jvm,swift", ""),
+        ("optional macOS command", "sdk-swift-required", " --required-groups=swift", ""),
     )
     for name, key, old, new in mutations:
         expect_rejection(
@@ -306,6 +305,16 @@ def main() -> None:
         public_ci.replace(
             "--required-groups=contracts,typescript,python,go,jvm,dotnet",
             "--required-groups=contracts,python,go,jvm,dotnet",
+            1,
+        ),
+        sdk_runner,
+    )
+    expect_rejection(
+        "JVM removed from Linux requirements",
+        pipeline,
+        public_ci.replace(
+            "--required-groups=contracts,typescript,python,go,jvm,dotnet",
+            "--required-groups=contracts,typescript,python,go,dotnet",
             1,
         ),
         sdk_runner,
