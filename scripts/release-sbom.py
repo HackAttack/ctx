@@ -74,15 +74,11 @@ LEGACY_RELEASE_ASSETS = (
     WINDOWS_RELEASE_ARTIFACT,
     f"{WINDOWS_RELEASE_ARTIFACT}.cdx.json",
     f"{WINDOWS_RELEASE_ARTIFACT}.third-party-notices.txt",
-    "ctx-freebsd-x64",
-    "ctx-freebsd-x64.cdx.json",
-    "ctx-freebsd-x64.third-party-notices.txt",
     "ctx-onnxruntime-linux-x64.tar.gz",
     "ctx-onnxruntime-linux-aarch64.tar.gz",
     "ctx-onnxruntime-macos-arm64.tar.gz",
     "ctx-onnxruntime-macos-x64.tar.gz",
     WINDOWS_RUNTIME_ARCHIVE,
-    "ctx-onnxruntime-freebsd-x64.tar.gz",
 )
 SEMANTIC_RELEASE_ASSETS = (
     "ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz",
@@ -93,7 +89,6 @@ SEMANTIC_RELEASE_ASSETS = (
     "ctx-onnxruntime-macos-arm64.tar.zst",
     "ctx-onnxruntime-macos-x64.tar.zst",
     "ctx-windowsml-windows-x64.zip",
-    "ctx-onnxruntime-freebsd-x64.tar.zst",
     "ctx-onnxruntime-linux-x64-cuda12.tar.zst",
 )
 WINDOWS_RUNTIME_FILES = {
@@ -115,7 +110,6 @@ RELEASE_AUTHORITY_CANDIDATES = (
     "ctx-macos-arm64.candidate.json",
     "ctx-macos-x64.candidate.json",
     "ctx.exe.candidate.json",
-    "ctx-freebsd-x64.candidate.json",
 )
 WINDOWS_RELEASE_HANDOFF_INPUTS = (
     WINDOWS_CONSTRUCTION_ARTIFACT,
@@ -160,8 +154,8 @@ def release_sums_record(path: Path) -> tuple[dict[str, str], dict[str, object]]:
         LEGACY_RELEASE_ASSETS + SEMANTIC_RELEASE_ASSETS,
     ):
         raise ValueError(
-            "release SHA256SUMS does not have the exact canonical 24- or "
-            "34-entry release inventory and order"
+            "release SHA256SUMS does not have the exact canonical 20- or "
+            "29-entry release inventory and order"
         )
     return entries, {
         "file": RELEASE_SUMS,

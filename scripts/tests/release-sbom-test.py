@@ -69,15 +69,11 @@ LEGACY_RELEASE_ASSETS = (
     "ctx-windows-x64.exe",
     "ctx-windows-x64.exe.cdx.json",
     "ctx-windows-x64.exe.third-party-notices.txt",
-    "ctx-freebsd-x64",
-    "ctx-freebsd-x64.cdx.json",
-    "ctx-freebsd-x64.third-party-notices.txt",
     "ctx-onnxruntime-linux-x64.tar.gz",
     "ctx-onnxruntime-linux-aarch64.tar.gz",
     "ctx-onnxruntime-macos-arm64.tar.gz",
     "ctx-onnxruntime-macos-x64.tar.gz",
     "ctx-onnxruntime-windows-x64.zip",
-    "ctx-onnxruntime-freebsd-x64.tar.gz",
 )
 WINDOWS_RUNTIME_FILES = (
     "LICENSE",
@@ -97,7 +93,6 @@ RELEASE_AUTHORITY_CANDIDATES = (
     "ctx-macos-arm64.candidate.json",
     "ctx-macos-x64.candidate.json",
     "ctx.exe.candidate.json",
-    "ctx-freebsd-x64.candidate.json",
 )
 
 
@@ -1079,7 +1074,7 @@ repository = "https://example.invalid/{name}"
         )
         rejected = self.run_command("bind-release", check=False)
         self.assertNotEqual(rejected.returncode, 0)
-        self.assertIn("exact canonical 24- or 34-entry", rejected.stderr)
+        self.assertIn("exact canonical 20- or 29-entry", rejected.stderr)
 
 
 if __name__ == "__main__":

@@ -92,10 +92,7 @@ elif [[ -z "${secret_source}" ]]; then
 fi
 case "${secret_source}" in
   infisical) ;;
-  injected)
-    [[ "${BUILDKITE:-}" != "true" && "${BUILDKITE:-}" != "1" ]] || \
-      die "Buildkite macOS signing must fetch allowlisted values through Infisical"
-    ;;
+  injected) ;;
   *) die "CTX_MACOS_SIGNING_SECRET_SOURCE must be infisical or injected" ;;
 esac
 

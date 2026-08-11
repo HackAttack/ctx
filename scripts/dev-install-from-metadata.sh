@@ -25,8 +25,7 @@ Options:
   --artifact-dir DIR      Read checksum-pinned artifacts from this local
                          directory instead of downloading them. Development
                          and native release smoke use only.
-  --platform PLATFORM    linux-x64, linux-aarch64, macos-arm64, macos-x64,
-                         or freebsd-x64.
+  --platform PLATFORM    linux-x64, linux-aarch64, macos-arm64, or macos-x64.
                          Defaults to the current host when it can be detected.
   --bin-dir DIR          Install directory. Defaults to
                          ${CTX_BIN_DIR:-$HOME/.local/bin}.
@@ -76,9 +75,6 @@ detect_platform() {
       ;;
     Darwin:x86_64|Darwin:amd64)
       printf 'macos-x64'
-      ;;
-    FreeBSD:x86_64|FreeBSD:amd64)
-      printf 'freebsd-x64'
       ;;
     *)
       return 1
@@ -653,7 +649,7 @@ if [[ -z "${platform}" ]]; then
 fi
 
 case "${platform}" in
-  linux-x64|linux-aarch64|macos-arm64|macos-x64|freebsd-x64)
+  linux-x64|linux-aarch64|macos-arm64|macos-x64)
     ;;
   *)
     fail "unsupported platform: ${platform}"

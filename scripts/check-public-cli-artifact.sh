@@ -41,9 +41,6 @@ case "${platform}" in
   windows-x64)
     binary_name="ctx.exe"
     ;;
-  freebsd-x64)
-    binary_name="ctx-freebsd-x64"
-    ;;
   *)
     usage
     exit 2
@@ -127,13 +124,6 @@ case "${platform}" in
   macos-x64)
     if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] && /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
       can_run_on_host=1
-    fi
-    ;;
-  freebsd-x64)
-    if [[ "$(uname -s 2>/dev/null || true)" == "FreeBSD" ]]; then
-      case "$(uname -m 2>/dev/null || true)" in
-        x86_64|amd64) can_run_on_host=1 ;;
-      esac
     fi
     ;;
 esac

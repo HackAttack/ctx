@@ -21,9 +21,6 @@ authoritative_llvm_root() {
     Darwin:x86_64|Darwin:amd64)
       printf '%s\n' /usr/local/opt/llvm/bin
       ;;
-    FreeBSD:*)
-      printf '%s\n' /usr/local/bin
-      ;;
     *)
       echo "error: no authoritative LLVM release tool root for this host" >&2
       exit 127
@@ -76,8 +73,7 @@ Usage: scripts/check-release-binary-compat.sh PLATFORM BINARY [DECLARED_LLVM_REA
 Checks the executable format, architecture, loader, shared-library, ABI,
 minimum-OS, exploit-mitigation, and stripped-symbol contract for one public
 ctx release binary.
-Platforms: linux-x64, linux-aarch64, macos-arm64, macos-x64, windows-x64,
-freebsd-x64.
+Platforms: linux-x64, linux-aarch64, macos-arm64, macos-x64, windows-x64.
 USAGE
 }
 
@@ -93,7 +89,7 @@ if [[ ! -f "${binary}" ]]; then
 fi
 
 case "${platform}" in
-  linux-x64|linux-aarch64|macos-arm64|macos-x64|windows-x64|freebsd-x64) ;;
+  linux-x64|linux-aarch64|macos-arm64|macos-x64|windows-x64) ;;
   *) usage; exit 2 ;;
 esac
 
@@ -527,26 +523,6 @@ userenv.dll
 ws2_32.dll"
 }
 
-check_freebsd() {
-  grep -Eq 'Format:[[:space:]]+ELF64-|Class:[[:space:]]+(ELFCLASS64|64-bit)' <<<"${readobj_output}" \
-    || fail "expected ELF64"
-  grep -Eq 'DataEncoding:[[:space:]]+(LittleEndian|LittleEndianHex|2.s complement, little endian)' <<<"${readobj_output}" \
-    || fail "expected little-endian ELF"
-  grep -Eq 'Type:[[:space:]]+SharedObject([^[:alnum:]_]|$)' <<<"${readobj_output}" \
-    || fail "expected a position-independent FreeBSD executable"
-  grep -Eq 'Machine:[[:space:]]+EM_X86_64([^[:alnum:]_]|$)' <<<"${readobj_output}" \
-    || fail "expected EM_X86_64"
-  check_elf_hardening
-  grep -Eq 'OS/ABI:[[:space:]]+(FreeBSD|UNIX - FreeBSD)' <<<"${readobj_output}" \
-    || fail "expected FreeBSD ELF ABI"
-  assert_exact_lines "DT_NEEDED libraries" "$(elf_needed_libraries)" "libc.so.7
-libgcc_s.so.1
-liblzma.so.5
-libm.so.5
-libthr.so.3"
-  check_no_elf_search_path
-}
-
 if [[ "${declared_macos_llvm}" != "1" ]]; then
   require_tool "${LLVM_READOBJ}"
 fi
@@ -557,7 +533,7 @@ if [[ "${declared_macos_llvm}" == "1" ]]; then
     || fail "approved macOS LLVM reader did not report version 22.1.8"
 fi
 case "${platform}" in
-  linux-x64|linux-aarch64|freebsd-x64)
+  linux-x64|linux-aarch64)
     readobj_output="$(run_llvm_tool readobj "${LLVM_READOBJ}" \
       --file-headers \
       --program-headers \
@@ -604,7 +580,6 @@ case "${platform}" in
   linux-x64|linux-aarch64) check_linux ;;
   macos-arm64|macos-x64) check_macos ;;
   windows-x64) check_windows ;;
-  freebsd-x64) check_freebsd ;;
 esac
 
 scanner_authority="authoritative-package-root:${LLVM_TOOL_ROOT:-declared-release-runfile}"

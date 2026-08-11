@@ -25,10 +25,6 @@ os_baseline_matches() {
     linux-x64|linux-aarch64)
       [[ "${os_identity}" == "ubuntu" && "${os_version}" == "22.04" ]]
       ;;
-    freebsd-x64)
-      [[ "${os_identity}" == "freebsd" \
-        && "${os_version}" =~ ^14\.4-RELEASE(-p[0-9]+)?$ ]]
-      ;;
     windows-x64)
       if [[ ! "${os_version}" =~ ^10\.0\.([0-9]+)(\.[0-9]+)?$ ]]; then
         return 1
@@ -47,8 +43,7 @@ os_baseline_matches() {
 case "${runtime_status}" in
   not_run) printf 'not_run\n' ;;
   passed)
-    if [[ "${platform}" == linux-* || "${platform}" == "freebsd-x64" \
-      || "${platform}" == "windows-x64" ]]; then
+    if [[ "${platform}" == linux-* || "${platform}" == "windows-x64" ]]; then
       if ((argument_count < 14)); then
         script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
         if [[ -x "${script_dir}/public-cli-host-runtime-evidence.sh" ]]; then
@@ -115,8 +110,7 @@ case "${runtime_status}" in
       linux-aarch64:Linux:aarch64:aarch64|\
       macos-arm64:Darwin:arm64:arm64|\
       macos-x64:Darwin:x86_64:x86_64|\
-      windows-x64:Windows_NT:AMD64:X64|\
-      freebsd-x64:FreeBSD:amd64:amd64)
+      windows-x64:Windows_NT:AMD64:X64)
         printf 'authoritative\n'
         ;;
       *)

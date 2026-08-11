@@ -23,7 +23,6 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 KIND = "ctx-detached-debug-symbols"
 PLATFORMS = {
-    "freebsd-x64": "elf",
     "linux-arm64": "elf",
     "linux-x64": "elf",
     "macos-arm64": "macho",
@@ -33,7 +32,6 @@ PLATFORMS = {
 PINNED_RUSTC_VERSION = "1.97.1"
 PINNED_RUSTC_COMMIT = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
 RUST_HOST_TRIPLES = {
-    "freebsd-x64": "x86_64-unknown-freebsd",
     "linux-arm64": "aarch64-unknown-linux-gnu",
     "linux-x64": "x86_64-unknown-linux-gnu",
     "macos-arm64": "aarch64-apple-darwin",

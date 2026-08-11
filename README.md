@@ -13,7 +13,7 @@ ctx indexes those logs into a local search index on your machine, then gives cur
 
 ## Install and set up ctx
 
-macOS, Linux, and FreeBSD:
+macOS and Linux:
 ```bash
 curl -fsSL https://ctx.rs/install | sh
 ```
@@ -22,6 +22,10 @@ Windows PowerShell:
 ```powershell
 irm https://ctx.rs/install.ps1 | iex
 ```
+
+FreeBSD does not receive a prebuilt release binary. Build it from source with
+the repository's Bazel target; FreeBSD support is best effort and does not
+block releases. See [source builds](docs/unmanaged-installs.md#source-builds).
 
 or prompt your agent:
 ```

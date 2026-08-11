@@ -366,7 +366,6 @@ for required in \
   'ctx-onnxruntime-macos-arm64.tar.zst' \
   'ctx-onnxruntime-macos-x64.tar.zst' \
   'ctx-windowsml-windows-x64.zip' \
-  'ctx-onnxruntime-freebsd-x64.tar.zst' \
   'ctx-onnxruntime-linux-x64-cuda12.tar.zst'; do
   grep -Fq -- "${required}" "${semantic_staging}" || {
     printf 'Semantic staging missing exact asset contract: %s\n' \
@@ -396,7 +395,6 @@ for required in \
   '--native-smoke-dir target/public-cli-native-smoke/linux-x64' \
   '--native-smoke-dir target/public-cli-native-smoke/linux-aarch64' \
   '//:ctx_release_windows_x64' \
-  '//:ctx_release_freebsd_x64' \
   '//:ctx_release_macos_arm64' \
   '//:ctx_release_macos_x64' \
   '.cdx.json.sha256' \
@@ -422,9 +420,9 @@ expected = {
     "macos-arm64",
     "macos-x64",
     "windows-x64",
-    "freebsd-x64",
 }
 assert {target["id"] for target in targets} == expected
+assert "freebsd-x64" not in expected
 for target in targets:
     target_id = target["id"]
     assert target["public_construction_authority"] == "bazel-release-route-v1"

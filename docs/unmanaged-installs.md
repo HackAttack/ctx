@@ -74,7 +74,6 @@ Stable releases publish prebuilt binaries on GitHub Releases:
 | macOS Apple Silicon | `ctx-macos-arm64` |
 | macOS Intel | `ctx-macos-x64` |
 | Windows x64 | `ctx-windows-x64.exe` |
-| FreeBSD x64 | `ctx-freebsd-x64` |
 
 Each release also publishes `SHA256SUMS` for the binary assets. Releases that
 ship ctx-managed dynamic ONNX Runtime assets for the local semantic preview may
@@ -117,10 +116,10 @@ official release binary, run these commands against a downloaded
 
 Official Linux release binaries are checked to require no newer than glibc
 2.35 and are built from pinned Ubuntu 22.04 container inputs rather than the
-runner's host libraries. Local semantic search is opt-in and supported on every
-public release platform through a separately installed ONNX Runtime sidecar, so
-the CLI binary keeps its baseline CPU and ABI contract. The macOS binaries
-currently target macOS 13 or newer.
+runner's host libraries. Local semantic search is opt-in on the prebuilt
+platforms and uses a separately installed runtime sidecar, so the CLI binary
+keeps its baseline CPU and ABI contract. The macOS binaries currently target
+macOS 13 or newer.
 
 For pinned installs, GitHub release asset URLs use this pattern:
 
@@ -195,14 +194,22 @@ post-upgrade commands above.
 
 ## Source Builds
 
-For source builds from a checkout:
+FreeBSD is source-only: ctx does not publish a FreeBSD GitHub Release binary,
+serve one through the hosted installer, or provide managed self-upgrades there.
+FreeBSD source compatibility is maintained on a best-effort basis and does not
+block a release.
+
+From a checkout, use the repository's authoritative Bazel build target:
 
 ```bash
-cargo build -p ctx --release
-cargo install --path crates/ctx-cli
+scripts/bazelw build //crates/ctx-cli:ctx --config=release
+install -d "$HOME/.local/bin"
+install -m 0755 bazel-bin/crates/ctx-cli/ctx "$HOME/.local/bin/ctx"
 ```
 
 Source builds are unmanaged. They do not use the official release metadata or
 installer-managed upgrade path. Run the binary lifecycle handoff before
-`cargo install` overwrites an existing ctx executable or before deleting a
-source-installed executable.
+the `install` command overwrites an existing ctx executable or before deleting
+a source-installed executable. The repository pins its Rust toolchain and
+includes the FreeBSD host/toolchain support used by this build; the wrapper
+requires the repository's pinned Bazel version and Python 3.11 to be available.

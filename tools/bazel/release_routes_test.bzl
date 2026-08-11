@@ -205,12 +205,6 @@ def release_route_analysis_test_suite(name):
             triple = "x86_64-pc-windows-gnu",
             windows_gnu = True,
         ),
-        "freebsd_x64": struct(
-            constraints = ["@platforms//cpu:x86_64", "@platforms//os:freebsd"],
-            id = "freebsd-x64",
-            triple = "x86_64-unknown-freebsd",
-            windows_gnu = False,
-        ),
     }
     tests = []
     for suffix, spec in route_specs.items():

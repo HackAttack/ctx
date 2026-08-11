@@ -570,7 +570,6 @@ case "${target_id}:${host_os}:${host_arch}" in
   linux-arm64:Linux:arm64|\
   macos-arm64:Darwin:arm64|\
   macos-x64:Darwin:x86_64|\
-  freebsd-x64:FreeBSD:amd64|\
   windows-x64:MINGW*:x86_64|\
   windows-x64:MSYS*:x86_64|\
   windows-x64:CYGWIN*:x86_64)

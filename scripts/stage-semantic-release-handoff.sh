@@ -64,7 +64,6 @@ stage_semantic_assets() {
     ctx-onnxruntime-macos-arm64.tar.zst
     ctx-onnxruntime-macos-x64.tar.zst
     ctx-windowsml-windows-x64.zip
-    ctx-onnxruntime-freebsd-x64.tar.zst
     ctx-onnxruntime-linux-x64-cuda12.tar.zst
   )
 

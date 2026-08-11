@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 MATRIX = ROOT / "contracts" / "release-targets-v1.json"
 CHECKER = ROOT / "scripts" / "check-release-target-matrix.py"
 RAW_BINARIES = {
-    "freebsd-x64": "ctx-freebsd-x64",
     "linux-arm64": "ctx-linux-aarch64",
     "linux-x64": "ctx",
     "macos-arm64": "ctx-macos-arm64",

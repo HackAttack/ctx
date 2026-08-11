@@ -378,54 +378,12 @@ Import {
 }
 EOF
 
-freebsd="${tmp}/freebsd.txt"
-cat > "${freebsd}" <<'EOF'
-Format: elf64-x86-64
-Arch: x86_64
-Class: 64-bit
-DataEncoding: LittleEndian
-OS/ABI: FreeBSD (0x9)
-Type: SharedObject (0x3)
-Machine: EM_X86_64 (0x3E)
-ProgramHeaders [
-  ProgramHeader {
-    Type: PT_GNU_STACK (0x6474E551)
-    Flags [ (0x6)
-      PF_R (0x4)
-      PF_W (0x2)
-    ]
-  }
-  ProgramHeader {
-    Type: PT_GNU_RELRO (0x6474E552)
-    Flags [ (0x4)
-      PF_R (0x4)
-    ]
-  }
-]
-DynamicSection [
-  0x000000000000001E FLAGS        BIND_NOW
-  0x000000006FFFFFFB FLAGS_1      NOW PIE
-]
-NeededLibraries [
-  libc.so.7
-  libgcc_s.so.1
-  liblzma.so.5
-  libm.so.5
-  libthr.so.3
-]
-Sections [
-]
-Symbols [
-]
-EOF
-
 expect_pass linux_x64 run_check linux-x64 "${linux_x64}"
 expect_pass linux_arm64 run_check linux-aarch64 "${linux_arm64}"
 expect_pass mac_arm64_security_framework run_check macos-arm64 "${mac_arm_readobj}" "${mac_objdump}"
 expect_pass mac_x64_security_framework run_check macos-x64 "${mac_x64_readobj}" "${mac_objdump}"
 expect_pass windows run_check windows-x64 "${windows}"
 expect_pass windows_declared_tool run_declared_windows_check "${windows}"
-expect_pass freebsd run_check freebsd-x64 "${freebsd}"
 expect_fail malformed run_check linux-x64 "${tmp}/empty"
 grep -Fq "scanner-inputs=llvm-readobj=${tmp}/llvm-readobj" \
   "${tmp}/linux_x64.out"
@@ -655,25 +613,6 @@ mutate_and_fail windows_version windows-x64 "${windows}" 's/MajorOperatingSystem
 mutate_and_fail windows_subsystem_version windows-x64 "${windows}" 's/MajorSubsystemVersion: 6/MajorSubsystemVersion: 11/'
 mutate_and_fail windows_dll windows-x64 "${windows}" 's/ws2_32.dll/winhttp.dll/'
 mutate_and_fail windows_static_symbols windows-x64 "${windows}" 's/Import {/Symbols [\n  Symbol {\n    Name: main (1)\n  }\n]\nImport {/'
-mutate_and_fail freebsd_abi freebsd-x64 "${freebsd}" 's/OS\/ABI: FreeBSD/OS\/ABI: UNIX - System V/'
-mutate_and_fail freebsd_arch freebsd-x64 "${freebsd}" 's/EM_X86_64/EM_AARCH64/'
-mutate_and_fail freebsd_type freebsd-x64 "${freebsd}" 's/Type: SharedObject/Type: Relocatable/'
-mutate_and_fail freebsd_missing_relro freebsd-x64 "${freebsd}" \
-  '/Type: PT_GNU_RELRO/d' 'expected exactly one GNU_RELRO program header'
-mutate_and_fail freebsd_exec_stack freebsd-x64 "${freebsd}" \
-  '1,/PF_W (0x2)/s/PF_W (0x2)/PF_W (0x2)\
-      PF_X (0x1)/' 'GNU_STACK is executable'
-mutate_and_fail freebsd_missing_bind_now freebsd-x64 "${freebsd}" \
-  '/FLAGS[[:space:]]*BIND_NOW/d' 'missing BIND_NOW dynamic flag'
-mutate_and_fail freebsd_missing_pie freebsd-x64 "${freebsd}" \
-  's/FLAGS_1      NOW PIE/FLAGS_1      NOW/' 'missing PIE dynamic flag'
-mutate_and_fail freebsd_missing_liblzma freebsd-x64 "${freebsd}" \
-  '/liblzma.so.5/d' 'unexpected DT_NEEDED libraries'
-mutate_and_fail freebsd_liblzma_major freebsd-x64 "${freebsd}" \
-  's/liblzma.so.5/liblzma.so.6/' 'unexpected DT_NEEDED libraries'
-mutate_and_fail freebsd_needed freebsd-x64 "${freebsd}" 's/libthr.so.3/libutil.so.9/'
-mutate_and_fail freebsd_rpath freebsd-x64 "${freebsd}" 's/NeededLibraries \[/RUNPATH: \/tmp\nNeededLibraries [/'
-
 # The no-Buildkite local runner validates published bytes through this public
 # command. Its contract must provision the pinned task root, materialize an
 # owner-private snapshot, and pass both approved tools to the macOS x64 check.
@@ -731,9 +670,6 @@ touch "${GH_CALL_MARKER}"
 case "${1:-}:${2:-}" in
   release:view)
     cat <<'ASSETS'
-ctx-freebsd-x64
-ctx-freebsd-x64.cdx.json
-ctx-freebsd-x64.third-party-notices.txt
 ctx-linux-aarch64
 ctx-linux-aarch64.cdx.json
 ctx-linux-aarch64.third-party-notices.txt
@@ -746,7 +682,6 @@ ctx-macos-arm64.third-party-notices.txt
 ctx-macos-x64
 ctx-macos-x64.cdx.json
 ctx-macos-x64.third-party-notices.txt
-ctx-onnxruntime-freebsd-x64.tar.gz
 ctx-onnxruntime-linux-aarch64.tar.gz
 ctx-onnxruntime-linux-x64.tar.gz
 ctx-onnxruntime-macos-arm64.tar.gz
@@ -829,7 +764,6 @@ assert [call[0] for call in calls] == [
     "macos-arm64",
     "macos-x64",
     "windows-x64",
-    "freebsd-x64",
 ]
 macos = calls[3]
 assert len(macos) == 4, macos
