@@ -585,7 +585,7 @@ mod tests {
         )
     }
 
-    fn failed_source_report() -> IngestReport {
+    fn failed_exact_report() -> IngestReport {
         let selector = "/history/codex/sessions.jsonl";
         report(
             false,
@@ -595,18 +595,59 @@ mod tests {
                 work_result: ProviderImportWorkResult::NoOp,
                 ..ImportTotals::default()
             },
-            vec![IngestSourceOutcome::SourceFailure(
-                ctx_history_ingest_application::SourceFailureOutcome {
+            vec![IngestSourceOutcome::Exact(
+                ctx_history_ingest_application::ExactPublicationOutcome {
                     status: ctx_history_ingest_application::IngestStatus::Failure,
                     failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
                     failure_type:
                         ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
-                    source_identity: "source-1".to_owned(),
-                    provider: "codex".to_owned(),
-                    source_failure_class: "incompatible".to_owned(),
-                    carried_forward: true,
-                    source_selector: selector.to_owned(),
-                    detail: "unsupported source schema".to_owned(),
+                    provider: ctx_history_core::CaptureProvider::Codex,
+                    path: Path::new(selector).to_path_buf(),
+                    source_format: "codex_sessions_jsonl_v1",
+                    stats: ctx_history_ingest_application::SourceStats {
+                        files: 1,
+                        bytes: 8,
+                        change_token: Some([7; 32]),
+                    },
+                    route_identity: "route-1".to_owned(),
+                    catalog_lineage: "lineage-1".to_owned(),
+                    request_overlay: ctx_history_refresh::ExplicitSourceCatalogAuthority::from_json(
+                        &serde_json::json!({
+                            "schema_version": 1,
+                            "revision": 1,
+                            "integrity": {
+                                "algorithm": "sha256",
+                                "digest": "078d5bef2714da7d54739411aa15cfe03b234795578dd74c941f05054d8dff6f",
+                            },
+                            "entries": [],
+                        }),
+                    )
+                    .unwrap(),
+                    previous_generation: Some("generation-0".to_owned()),
+                    published_generation: "generation-1".to_owned(),
+                    generation_changed: false,
+                    scanned_routes: 1,
+                    successful_routes: 0,
+                    source_failure_total: 3,
+                    route_source_failure_total: 3,
+                    rejected_record_total: 0,
+                    rejection_diagnostics: Vec::new(),
+                    request_id: Some("request-1".to_owned()),
+                    change: ctx_history_ingest_application::IngestChange::NoOp,
+                    current: ctx_history_refresh::SourceBackedRefreshCurrent::default(),
+                    requested_failure: Some(ctx_history_ingest_application::SourceFailureOutcome {
+                        status: ctx_history_ingest_application::IngestStatus::Failure,
+                        failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
+                        failure_type:
+                            ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+                        source_identity: "source-1".to_owned(),
+                        provider: "codex".to_owned(),
+                        source_failure_class: "incompatible".to_owned(),
+                        carried_forward: true,
+                        source_selector: selector.to_owned(),
+                        detail: "unsupported source schema".to_owned(),
+                    }),
+                    requested_failure_class: Some("incompatible".to_owned()),
                 },
             )],
         )
@@ -787,8 +828,8 @@ mod tests {
     }
 
     #[test]
-    fn failed_source_projects_bounded_human_detail_before_omissions() {
-        let report = failed_source_report();
+    fn failed_exact_route_projects_bounded_human_detail_before_omissions() {
+        let report = failed_exact_report();
 
         assert_eq!(
             source_failure_fields(&report),
