@@ -3,21 +3,19 @@ use std::path::Path;
 use anyhow::Result;
 use ctx_history_capture::{ProviderSource, SourceBackedRouteError, SourceBackedRouteErrorKind};
 
-use crate::{provider_args::ImportFormatArg, ImportArgs};
+use ctx_history_core::CaptureProvider;
 
 pub(crate) use ctx_history_refresh::{
     relocate_explicit_source, upsert_explicit_source, ExplicitSourceCatalogAuthority,
     ExplicitSourceRelocationAuthority,
 };
 
-pub(crate) fn explicit_source_for_import(args: &ImportArgs) -> Result<Option<ProviderSource>> {
-    let Some(path) = args.path.as_deref() else {
-        return Ok(None);
-    };
-    let provider = args.provider.map(|provider| provider.capture_provider());
-    let custom_history_jsonl =
-        matches!(args.input_format, Some(ImportFormatArg::CtxHistoryJsonlV1));
-    ctx_history_refresh::explicit_source_for_path(path, provider, custom_history_jsonl).map(Some)
+pub(crate) fn explicit_source_for_admission(
+    path: &Path,
+    provider: Option<CaptureProvider>,
+    custom_history_jsonl: bool,
+) -> Result<ProviderSource> {
+    ctx_history_refresh::explicit_source_for_path(path, provider, custom_history_jsonl)
 }
 
 pub(crate) fn relocation_authority_for_import(

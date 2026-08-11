@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use serde_json::Value;
+use ctx_history_ingest_application::{ImportTotals, IngestFailureType, IngestReport};
 
 use crate::analytics::{
     ImportFailureScope as AnalyticsImportFailureScope,
@@ -13,9 +13,7 @@ use crate::ImportArgs;
 
 use super::provider_refresh::ProviderRefreshCollector;
 use super::report::{import_error_scope, import_failure_type, print_import_report};
-use super::{
-    run_import_internal, ImportReport, ImportRunOptions, ImportRunPresentation, ImportTotals,
-};
+use super::{run_import_internal, ImportRunOptions, ImportRunPresentation};
 
 pub(crate) fn run_import(
     args: ImportArgs,
@@ -72,19 +70,12 @@ pub(crate) fn run_import(
     print_import_report(&report, json, ui)?;
     if outcome == "failure" {
         let detail = report
-            .sources
-            .iter()
-            .find_map(|source| {
-                let error = source.get("error").and_then(Value::as_str)?;
-                if source.get("failure_type").and_then(Value::as_str) == Some("unsupported_schema")
-                {
-                    let selector = source
-                        .get("source_selector")
-                        .and_then(Value::as_str)
-                        .unwrap_or("selected source");
-                    Some(format!("{selector} is not importable: {error}"))
+            .first_failure_detail()
+            .map(|(selector, failure_type, error)| {
+                if failure_type == IngestFailureType::UnsupportedSchema {
+                    format!("{selector} is not importable: {error}")
                 } else {
-                    Some(error.to_owned())
+                    error.to_owned()
                 }
             })
             .map(|error| format!("; first failure: {error}"))
@@ -96,7 +87,7 @@ pub(crate) fn run_import(
 
 pub(crate) fn insert_import_report_analytics(
     telemetry: &mut ImportTelemetry,
-    report: &ImportReport,
+    report: &IngestReport,
 ) {
     let (outcome, failure_scope) = import_report_analytics_outcome(&report.totals);
     telemetry.outcome = Some(match outcome {
@@ -141,25 +132,10 @@ pub(crate) fn insert_import_error_analytics(
 pub(crate) fn import_report_analytics_outcome(
     totals: &ImportTotals,
 ) -> (&'static str, &'static str) {
-    if !totals.has_usable_source_result() && totals.failed_sources > 0 {
-        return ("failure", "source");
-    }
-    match (totals.failed_sources > 0, totals.failed > 0) {
-        (false, false) => ("success", "none"),
-        (false, true) => ("completed_with_rejections", "record"),
-        (true, false) => ("completed_with_source_failures", "source"),
-        (true, true) => (
-            "completed_with_rejections_and_source_failures",
-            "record_and_source",
-        ),
-    }
+    let (outcome, scope) = totals.outcome();
+    (outcome.as_str(), scope.as_str())
 }
 
 pub(crate) fn import_report_failure_type(totals: &ImportTotals) -> &'static str {
-    match (totals.failed_sources > 0, totals.failed > 0) {
-        (false, false) => "none",
-        (false, true) => "record_rejection",
-        (true, false) => "source_failure",
-        (true, true) => "record_rejection_and_source_failure",
-    }
+    totals.failure_type().as_str()
 }

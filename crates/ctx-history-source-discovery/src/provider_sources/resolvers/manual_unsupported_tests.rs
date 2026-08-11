@@ -8,7 +8,11 @@ use std::fs;
 use super::*;
 
 fn resolve(context: &DiscoveryContext, spec: &ProviderSourceSpec) -> DiscoveryReport {
-    super::resolve(&crate::provider_sources::TEST_PROVIDER_PROBES, context, spec)
+    super::resolve(
+        &crate::provider_sources::TEST_PROVIDER_PROBES,
+        context,
+        spec,
+    )
 }
 
 fn provider_source_for_path(

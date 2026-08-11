@@ -1,13 +1,14 @@
 use anyhow::Result;
+use ctx_history_ingest_application::{ImportTotals, IngestReport, IngestSourceOutcome};
 use serde_json::{json, Value};
 
 use ctx_history_capture::{
     CaptureError, ProviderSourceFailureKind, SourceBackedRouteError, SourceBackedRouteErrorKind,
 };
 
-use crate::commands::import::totals::ImportTotals;
 use crate::commands::import::{
-    import_report_analytics_outcome, import_report_failure_type, ImportReport,
+    import_report_analytics_outcome, import_report_failure_type, presentation::source_json,
+    resume_mode_name,
 };
 use crate::compact_json;
 use crate::output::print_json;
@@ -17,7 +18,7 @@ use crate::ui::{
 };
 
 pub(crate) fn print_import_report(
-    report: &ImportReport,
+    report: &IngestReport,
     json_output: bool,
     ui: &mut Ui,
 ) -> Result<()> {
@@ -30,17 +31,22 @@ pub(crate) fn print_import_report(
     }
 }
 
-fn import_report_json(report: &ImportReport) -> Value {
+fn import_report_json(report: &IngestReport) -> Value {
     let (outcome, failure_scope) = import_report_analytics_outcome(&report.totals);
+    let sources = report
+        .sources
+        .iter()
+        .map(|source| source_json(source, "import"))
+        .collect::<Vec<_>>();
     json!({
         "schema_version": 2,
         "outcome": outcome,
         "failure_scope": failure_scope,
         "failure_type": import_report_failure_type(&report.totals),
         "resume": report.resume,
-        "resume_mode": report.resume_mode(),
+        "resume_mode": resume_mode_name(report.resume),
         "totals": import_totals_json(&report.totals),
-        "sources": report.sources,
+        "sources": sources,
     })
 }
 
@@ -107,7 +113,7 @@ fn import_totals_json(totals: &ImportTotals) -> Value {
     value
 }
 
-fn render_import_report_human(context: &RenderContext, report: &ImportReport) -> Document {
+fn render_import_report_human(context: &RenderContext, report: &IngestReport) -> Document {
     let totals = &report.totals;
     let rejected_records = u64::try_from(totals.failed).unwrap_or(u64::MAX);
     let (state, title, detail) = import_outcome_copy(totals);
@@ -192,58 +198,41 @@ fn render_import_report_human(context: &RenderContext, report: &ImportReport) ->
 
 const MAX_HUMAN_SOURCE_FAILURES: usize = 3;
 
-fn source_failure_fields(report: &ImportReport) -> Vec<(String, String)> {
+struct HumanSourceFailure<'a> {
+    selector: &'a str,
+    provider: &'a str,
+    class: &'a str,
+    carried_forward: bool,
+    detail: &'a str,
+    unsupported_schema: bool,
+}
+
+fn source_failure_fields(report: &IngestReport) -> Vec<(String, String)> {
     let failures = report
         .sources
         .iter()
-        .filter(|source| {
-            source.get("status").and_then(Value::as_str) == Some("failure")
-                && source.get("failure_scope").and_then(Value::as_str) == Some("source")
-                && source
-                    .get("source_identity")
-                    .and_then(Value::as_str)
-                    .is_some()
-        })
+        .filter_map(human_source_failure)
         .collect::<Vec<_>>();
     let mut fields = failures
         .iter()
         .take(MAX_HUMAN_SOURCE_FAILURES)
         .enumerate()
         .map(|(index, source)| {
-            let selector = source
-                .get("source_selector")
-                .and_then(Value::as_str)
-                .or_else(|| source.get("source_identity").and_then(Value::as_str))
-                .unwrap_or("unknown source");
-            let provider = source
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown provider");
-            let class = source
-                .get("source_failure_class")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let retained = if source
-                .get("carried_forward")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
+            let retained = if source.carried_forward {
                 ", retained prior data"
             } else {
                 ""
             };
-            let detail = source
-                .get("detail")
-                .and_then(Value::as_str)
-                .or_else(|| source.get("error").and_then(Value::as_str))
-                .unwrap_or("no detail reported");
-            let disposition = (source.get("failure_type").and_then(Value::as_str)
-                == Some("unsupported_schema"))
-            .then_some(" is not importable")
-            .unwrap_or_default();
+            let disposition = source
+                .unsupported_schema
+                .then_some(" is not importable")
+                .unwrap_or_default();
             (
                 format!("Source {}", index.saturating_add(1)),
-                format!("{selector}{disposition} ({provider}, {class}{retained}): {detail}"),
+                format!(
+                    "{}{disposition} ({}, {}{retained}): {}",
+                    source.selector, source.provider, source.class, source.detail
+                ),
             )
         })
         .collect::<Vec<_>>();
@@ -252,11 +241,11 @@ fn source_failure_fields(report: &ImportReport) -> Vec<(String, String)> {
         .sources
         .iter()
         .find_map(|source| {
-            source
-                .get("source_failures_omitted")
-                .and_then(Value::as_u64)
+            let IngestSourceOutcome::Automatic(automatic) = source else {
+                return None;
+            };
+            Some(automatic.source_failures_omitted)
         })
-        .and_then(|count| usize::try_from(count).ok())
         .unwrap_or_default();
     let omitted = report
         .totals
@@ -275,6 +264,51 @@ fn source_failure_fields(report: &ImportReport) -> Vec<(String, String)> {
         ));
     }
     fields
+}
+
+fn human_source_failure(source: &IngestSourceOutcome) -> Option<HumanSourceFailure<'_>> {
+    match source {
+        IngestSourceOutcome::SourceFailure(failure) => Some(HumanSourceFailure {
+            selector: &failure.source_selector,
+            provider: &failure.provider,
+            class: &failure.source_failure_class,
+            carried_forward: failure.carried_forward,
+            detail: &failure.detail,
+            unsupported_schema: failure.failure_type
+                == ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+        }),
+        IngestSourceOutcome::Exact(exact)
+            if exact.status == ctx_history_ingest_application::IngestStatus::Failure
+                && exact.failure_scope
+                    == ctx_history_ingest_application::IngestFailureScope::Source
+                && exact.route_source_failure_total != 0 =>
+        {
+            Some(HumanSourceFailure {
+                selector: exact
+                    .requested_failure
+                    .as_ref()
+                    .map(|failure| failure.source_selector.as_str())
+                    .unwrap_or(""),
+                provider: exact.provider.as_str(),
+                class: exact
+                    .requested_failure_class
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                carried_forward: exact
+                    .requested_failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.carried_forward),
+                detail: exact
+                    .requested_failure
+                    .as_ref()
+                    .map(|failure| failure.detail.as_str())
+                    .unwrap_or("source failure detail omitted from bounded diagnostics"),
+                unsupported_schema: exact.failure_type
+                    == ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn import_outcome_copy(totals: &ImportTotals) -> (OutcomeState, &'static str, String) {
@@ -492,10 +526,25 @@ mod tests {
         RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
     }
 
-    fn changed_report() -> ImportReport {
-        ImportReport {
-            resume: true,
-            totals: ImportTotals {
+    fn report(
+        resume: bool,
+        totals: ImportTotals,
+        sources: Vec<IngestSourceOutcome>,
+    ) -> IngestReport {
+        IngestReport {
+            resume,
+            totals,
+            sources,
+            telemetry: None,
+            provider_refresh: None,
+            core_publication: None,
+        }
+    }
+
+    fn changed_report() -> IngestReport {
+        report(
+            true,
+            ImportTotals {
                 per_run_counts_available: true,
                 source_files: 1,
                 source_bytes: 4096,
@@ -516,8 +565,66 @@ mod tests {
                 work_result: ProviderImportWorkResult::Changed,
                 ..ImportTotals::default()
             },
-            sources: vec![json!({"status": "published"})],
-        }
+            Vec::new(),
+        )
+    }
+
+    fn failed_exact_report() -> IngestReport {
+        let selector = "/history/codex/sessions.jsonl";
+        report(
+            false,
+            ImportTotals {
+                terminal_route_counts_available: true,
+                failed_sources: 3,
+                work_result: ProviderImportWorkResult::NoOp,
+                ..ImportTotals::default()
+            },
+            vec![IngestSourceOutcome::Exact(
+                ctx_history_ingest_application::ExactPublicationOutcome {
+                    status: ctx_history_ingest_application::IngestStatus::Failure,
+                    failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
+                    failure_type:
+                        ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+                    provider: ctx_history_core::CaptureProvider::Codex,
+                    path: Path::new(selector).to_path_buf(),
+                    source_format: "codex_sessions_jsonl_v1",
+                    stats: ctx_history_ingest_application::SourceStats {
+                        files: 1,
+                        bytes: 8,
+                        change_token: Some([7; 32]),
+                    },
+                    route_identity: "route-1".to_owned(),
+                    catalog_lineage: "lineage-1".to_owned(),
+                    request_overlay:
+                        ctx_history_refresh::explicit_source_catalog_authority_for_test(1),
+                    previous_generation: Some("generation-0".to_owned()),
+                    published_generation: "generation-1".to_owned(),
+                    generation_changed: false,
+                    scanned_routes: 1,
+                    successful_routes: 0,
+                    source_failure_total: 3,
+                    route_source_failure_total: 3,
+                    rejected_record_total: 0,
+                    rejection_diagnostics: Vec::new(),
+                    request_id: Some("request-1".to_owned()),
+                    change: ctx_history_ingest_application::IngestChange::NoOp,
+                    current: ctx_history_refresh::SourceBackedRefreshCurrent::default(),
+                    requested_failure: Some(ctx_history_ingest_application::SourceFailureOutcome {
+                        status: ctx_history_ingest_application::IngestStatus::Failure,
+                        failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
+                        failure_type:
+                            ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
+                        source_identity: "source-1".to_owned(),
+                        provider: "codex".to_owned(),
+                        source_failure_class: "incompatible".to_owned(),
+                        carried_forward: true,
+                        source_selector: selector.to_owned(),
+                        detail: "unsupported source schema".to_owned(),
+                    }),
+                    requested_failure_class: Some("incompatible".to_owned()),
+                },
+            )],
+        )
     }
 
     #[test]
@@ -580,9 +687,9 @@ mod tests {
              Removed sources          0\n"
         );
 
-        let report = ImportReport {
-            resume: false,
-            totals: ImportTotals {
+        let report = report(
+            false,
+            ImportTotals {
                 per_run_counts_available: true,
                 imported_sources: 1,
                 failed_sources: 1,
@@ -590,8 +697,8 @@ mod tests {
                 work_result: ProviderImportWorkResult::Changed,
                 ..ImportTotals::default()
             },
-            sources: Vec::new(),
-        };
+            Vec::new(),
+        );
         let warning =
             render_import_report_human(&context(80, ColorMode::Never), &report).render_plain();
         assert!(warning.starts_with(
@@ -611,9 +718,9 @@ mod tests {
 
     #[test]
     fn persisted_rejections_remain_current_index_diagnostics_on_a_noop() {
-        let report = ImportReport {
-            resume: true,
-            totals: ImportTotals {
+        let report = report(
+            true,
+            ImportTotals {
                 current_source_count: Some(1),
                 current_indexed_documents: Some(7),
                 current_rejected_records: Some(2),
@@ -621,8 +728,8 @@ mod tests {
                 work_result: ProviderImportWorkResult::NoOp,
                 ..ImportTotals::default()
             },
-            sources: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         let rendered =
             render_import_report_human(&context(80, ColorMode::Never), &report).render_plain();
@@ -640,32 +747,34 @@ mod tests {
 
     #[test]
     fn retained_usable_generation_reports_bounded_schema_v2_source_failures() {
-        let report = ImportReport {
-            resume: false,
-            totals: ImportTotals {
+        let report = report(
+            false,
+            ImportTotals {
                 failed_sources: 5,
                 current_source_count: Some(2),
                 current_indexed_documents: Some(7),
                 work_result: ProviderImportWorkResult::NoOp,
                 ..ImportTotals::default()
             },
-            sources: (0..4)
+            (0..4)
                 .map(|index| {
-                    json!({
-                        "status": "failure",
-                        "failure_scope": "source",
-                        "failure_type": "other",
-                        "source_identity": format!("source-{index}"),
-                        "provider": "codex",
-                        "source_failure_class": "source_changed",
-                        "carried_forward": true,
-                        "source_selector": format!("/history/{index}.jsonl"),
-                        "detail": "source changed during refresh",
-                        "error": "source changed during refresh",
-                    })
+                    IngestSourceOutcome::SourceFailure(
+                        ctx_history_ingest_application::SourceFailureOutcome {
+                            status: ctx_history_ingest_application::IngestStatus::Failure,
+                            failure_scope:
+                                ctx_history_ingest_application::IngestFailureScope::Source,
+                            failure_type: ctx_history_ingest_application::IngestFailureType::Other,
+                            source_identity: format!("source-{index}"),
+                            provider: "codex".to_owned(),
+                            source_failure_class: "source_changed".to_owned(),
+                            carried_forward: true,
+                            source_selector: format!("/history/{index}.jsonl"),
+                            detail: "source changed during refresh".to_owned(),
+                        },
+                    )
                 })
                 .collect(),
-        };
+        );
 
         let json = import_report_json(&report);
         assert_eq!(json["outcome"], "completed_with_source_failures");
@@ -690,6 +799,44 @@ mod tests {
         assert!(rendered.contains("/history/2.jsonl"));
         assert!(!rendered.contains("/history/3.jsonl"));
         assert!(rendered.contains("2 source failures were omitted"));
+    }
+
+    #[test]
+    fn failed_exact_route_projects_bounded_human_detail_before_omissions() {
+        let report = failed_exact_report();
+
+        assert_eq!(
+            source_failure_fields(&report),
+            vec![
+                (
+                    "Source 1".to_owned(),
+                    "/history/codex/sessions.jsonl is not importable (codex, incompatible, retained prior data): unsupported source schema".to_owned(),
+                ),
+                (
+                    "Additional".to_owned(),
+                    "2 source failures were omitted".to_owned(),
+                ),
+            ]
+        );
+        let rendered =
+            render_import_report_human(&context(120, ColorMode::Never), &report).render_plain();
+        assert_eq!(
+            rendered,
+            concat!(
+                "✗ History import failed\n",
+                "3 sources failed\n",
+                "\n",
+                "Source failures\n",
+                "Source 1    /history/codex/sessions.jsonl is not importable (codex, incompatible, retained prior data): unsupported\n",
+                "            source schema\n",
+                "Additional  2 source failures were omitted\n",
+                "\n",
+                "Hint: Inspect source availability and import support.\n",
+                "\n",
+                "Next\n",
+                "  ctx sources\n",
+            )
+        );
     }
 
     #[test]
@@ -728,7 +875,7 @@ mod tests {
                     "removed_source_count": 0,
                     "change": "changed"
                 },
-                "sources": [{"status": "published"}],
+                "sources": [],
             })
         );
     }

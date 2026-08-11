@@ -5,32 +5,39 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use ctx_history_capture::{
+use ctx_history_source_io::{
     inventory_provider_regular_paths, observe_ordinary_file, provider_regular_file_len,
     OrdinaryFileObservation, ProviderJsonlInventoryLimits,
 };
 use sha2::{Digest, Sha256};
 
-use crate::commands::import::SourceStats;
+/// Bounded, provider-neutral source observation facts. The token is an
+/// observation aid only; refresh remains the sole authority for publication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceStats {
+    pub files: usize,
+    pub bytes: u64,
+    pub change_token: Option<[u8; 32]>,
+}
 
-pub(crate) fn source_stats(path: &Path) -> Result<SourceStats> {
+pub fn source_stats(path: &Path) -> Result<SourceStats> {
     source_stats_with_inventory_limits(path, ProviderJsonlInventoryLimits::default())
 }
 
 fn source_stats_with_inventory_limits(
     path: &Path,
-    inventory_limits: ProviderJsonlInventoryLimits,
+    limits: ProviderJsonlInventoryLimits,
 ) -> Result<SourceStats> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("stat import source {}", path.display()))?;
     let mut stats = SourceStats::default();
-    let mut change_entries = Vec::new();
+    let mut entries = Vec::new();
     if metadata.file_type().is_file() {
         let observation = observe_ordinary_file(path)
             .with_context(|| format!("observe import source {}", path.display()))?;
-        add_source_observation(
+        add_observation(
             &mut stats,
-            &mut change_entries,
+            &mut entries,
             path.parent().unwrap_or(path),
             path,
             &observation,
@@ -41,78 +48,73 @@ fn source_stats_with_inventory_limits(
             let sidecar = PathBuf::from(sidecar);
             match fs::symlink_metadata(&sidecar) {
                 Ok(metadata) if metadata.file_type().is_file() => {
-                    if source_file_contributes_to_revision(&sidecar) {
+                    if contributes_to_revision(&sidecar) {
                         let observation = observe_ordinary_file(&sidecar).with_context(|| {
                             format!("observe import source sidecar {}", sidecar.display())
                         })?;
-                        add_source_observation(
+                        add_observation(
                             &mut stats,
-                            &mut change_entries,
+                            &mut entries,
                             path.parent().unwrap_or(path),
                             &sidecar,
                             &observation,
                         );
                     } else {
-                        let len = provider_regular_file_len(&sidecar).with_context(|| {
-                            format!("stat import source sidecar {}", sidecar.display())
-                        })?;
                         stats.files += 1;
-                        stats.bytes = stats.bytes.saturating_add(len);
+                        stats.bytes = stats.bytes.saturating_add(
+                            provider_regular_file_len(&sidecar).with_context(|| {
+                                format!("stat import source sidecar {}", sidecar.display())
+                            })?,
+                        );
                     }
                 }
                 Ok(_) => {
                     return Err(anyhow!(
                         "import source sidecar is not a regular file: {}",
                         sidecar.display()
-                    ));
+                    ))
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("stat import source sidecar {}", sidecar.display())
-                    });
+                    })
                 }
             }
         }
-        stats.change_token = Some(source_change_token(change_entries));
+        stats.change_token = Some(source_change_token(entries));
         return Ok(stats);
     }
     if !metadata.file_type().is_dir() {
-        return Ok(SourceStats::default());
+        return Ok(stats);
     }
-
-    let inventory = inventory_provider_regular_paths(path, inventory_limits)
+    let inventory = inventory_provider_regular_paths(path, limits)
         .with_context(|| format!("inventory import source directory {}", path.display()))?;
-    for entry_path in inventory.into_paths() {
-        if source_file_contributes_to_revision(&entry_path) {
-            let observation = observe_ordinary_file(&entry_path)
-                .with_context(|| format!("observe import source file {}", entry_path.display()))?;
-            add_source_observation(
-                &mut stats,
-                &mut change_entries,
-                path,
-                &entry_path,
-                &observation,
-            );
+    for entry in inventory.into_paths() {
+        if contributes_to_revision(&entry) {
+            let observation = observe_ordinary_file(&entry)
+                .with_context(|| format!("observe import source file {}", entry.display()))?;
+            add_observation(&mut stats, &mut entries, path, &entry, &observation);
         } else {
-            let len = provider_regular_file_len(&entry_path)
-                .with_context(|| format!("stat import source file {}", entry_path.display()))?;
             stats.files += 1;
-            stats.bytes = stats.bytes.saturating_add(len);
+            stats.bytes = stats.bytes.saturating_add(
+                provider_regular_file_len(&entry)
+                    .with_context(|| format!("stat import source file {}", entry.display()))?,
+            );
         }
     }
-    stats.change_token = Some(source_change_token(change_entries));
+    stats.change_token = Some(source_change_token(entries));
     Ok(stats)
 }
 
-fn source_file_contributes_to_revision(path: &Path) -> bool {
+fn contributes_to_revision(path: &Path) -> bool {
     !path
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with("-shm"))
 }
 
-struct SourceChangeEntry {
+struct ChangeEntry {
     path: PathBuf,
     len: u64,
     modified_secs: u64,
@@ -120,9 +122,9 @@ struct SourceChangeEntry {
     observation_token: [u8; 32],
 }
 
-fn add_source_observation(
+fn add_observation(
     stats: &mut SourceStats,
-    change_entries: &mut Vec<SourceChangeEntry>,
+    entries: &mut Vec<ChangeEntry>,
     base: &Path,
     path: &Path,
     observation: &OrdinaryFileObservation,
@@ -133,7 +135,7 @@ fn add_source_observation(
         .modified_at()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    change_entries.push(SourceChangeEntry {
+    entries.push(ChangeEntry {
         path: path.strip_prefix(base).unwrap_or(path).to_path_buf(),
         len: observation.len(),
         modified_secs: modified.as_secs(),
@@ -142,7 +144,7 @@ fn add_source_observation(
     });
 }
 
-fn source_change_token(mut entries: Vec<SourceChangeEntry>) -> [u8; 32] {
+fn source_change_token(mut entries: Vec<ChangeEntry>) -> [u8; 32] {
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     let mut hasher = Sha256::new();
     for entry in entries {
