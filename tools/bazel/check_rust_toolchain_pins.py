@@ -33,7 +33,6 @@ CHANNEL_MANIFEST = (
     "https://static.rust-lang.org/dist/2026-07-16/channel-rust-1.97.1.toml"
 )
 PLATFORM_HOST_TRIPLES = {
-    ("freebsd", "x86_64"): "x86_64-unknown-freebsd",
     ("linux", "aarch64"): "aarch64-unknown-linux-gnu",
     ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
     ("macos", "aarch64"): "aarch64-apple-darwin",
@@ -41,6 +40,9 @@ PLATFORM_HOST_TRIPLES = {
     # rules_rust's native Windows host toolchain is MSVC. The public GNU
     # artifact is constructed by Cargo and is not a second native Bazel host.
     ("windows", "x86_64"): "x86_64-pc-windows-msvc",
+}
+SOURCE_ONLY_HOST_TRIPLES = {
+    ("freebsd", "x86_64"): "x86_64-unknown-freebsd",
 }
 HOST_SHA256S = {
     "aarch64-apple-darwin": {
@@ -219,7 +221,7 @@ def validate_module_text(module_text: str) -> None:
     missing_triples = sorted(set(HOST_SHA256S) - set(triples))
     if missing_triples:
         raise PinContractError(
-            "crate_universe is missing release host triple "
+            "crate_universe is missing supported host triple "
             f"{missing_triples[0]}"
         )
 
@@ -251,17 +253,23 @@ def validate_release_matrix_text(matrix_text: str) -> None:
     for target in targets:
         try:
             platform = (target["os"], target["arch"])
+            if platform in SOURCE_ONLY_HOST_TRIPLES:
+                raise PinContractError(
+                    "source-only host must not enter the release target matrix: "
+                    f"{SOURCE_ONLY_HOST_TRIPLES[platform]}"
+                )
             actual.add(PLATFORM_HOST_TRIPLES[platform])
         except (KeyError, TypeError) as error:
             raise PinContractError(
                 f"release target has no native Bazel host mapping: {target!r}"
             ) from error
-    expected = set(HOST_SHA256S)
+    expected = set(PLATFORM_HOST_TRIPLES.values())
     if actual != expected:
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
         raise PinContractError(
-            f"release host matrix mismatch: missing={missing}, unexpected={unexpected}"
+            "published release host matrix mismatch: "
+            f"missing={missing}, unexpected={unexpected}"
         )
 
 
@@ -287,7 +295,8 @@ def main() -> int:
         print(f"Rust toolchain pin contract failed: {error}", file=sys.stderr)
         return 1
     print(
-        f"Rust toolchain pins: OK ({len(HOST_SHA256S)} hosts, "
+        f"Rust toolchain pins: OK ({len(PLATFORM_HOST_TRIPLES)} release hosts, "
+        f"{len(SOURCE_ONLY_HOST_TRIPLES)} source-only host, "
         f"{len(expected_sha256s())} archives; {CHANNEL_MANIFEST})"
     )
     return 0

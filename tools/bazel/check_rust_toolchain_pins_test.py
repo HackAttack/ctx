@@ -96,12 +96,18 @@ class RustToolchainPinContractTest(unittest.TestCase):
         with self.assertRaisesRegex(PinContractError, "no native Bazel host mapping"):
             validate_release_matrix_text(json.dumps(matrix))
 
+    def test_source_only_freebsd_release_target_is_rejected(self) -> None:
+        matrix = json.loads(MATRIX_TEXT)
+        matrix["targets"].append({"os": "freebsd", "arch": "x86_64"})
+        with self.assertRaisesRegex(PinContractError, "source-only host"):
+            validate_release_matrix_text(json.dumps(matrix))
+
     def test_missing_freebsd_crate_universe_target_is_rejected(self) -> None:
         mutated = MODULE_TEXT.replace(FREEBSD_CRATE_UNIVERSE_LINE, "", 1)
         self.assertNotEqual(mutated, MODULE_TEXT)
         with self.assertRaisesRegex(
             PinContractError,
-            "crate_universe is missing release host triple x86_64-unknown-freebsd",
+            "crate_universe is missing supported host triple x86_64-unknown-freebsd",
         ):
             validate_module_text(mutated)
 
