@@ -63,11 +63,11 @@ steps:
       swift --version
       bash scripts/check-sdks.sh --groups=jvm,swift --required-groups=jvm,swift
     agents:
-      queue: "mac-shared"
+      queue: "ctx-release-macos-arm64"
       os: "darwin"
       arch: "arm64"
     concurrency: 1
-    concurrency_group: "ctx/sdk-swift-required/mac-shared"
+    concurrency_group: "ctx/sdk-swift-required/ctx-release-macos-arm64"
     timeout_in_minutes: 30
 
   - label: ":windows: required Windows SDK implementations"
@@ -313,17 +313,19 @@ steps:
     key: "public-cli-macos-x64"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
+      export CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID=ctx-mac-gui-shared-x64
       export CTX_MACOS_RELEASE_SIGNING=required
       export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
-      # Rosetta construction receives no signing values; its signer fetches at use.
+      # Native x86_64 construction receives no signing values; its signer fetches at use.
       scripts/bazelw run //:ctx_release_macos_x64 --config=release -- \
-        --output-dir target/public-cli-artifacts
+        --output-dir target/public-cli-artifacts \
+        --macos-llvm-task-root "$${CTX_RELEASE_MACOS_X64_LLVM_TASK_ROOT:?}"
     agents:
-      queue: "mac-shared"
+      queue: "ctx-mac-gui-shared-x64"
       os: "darwin"
-      arch: "arm64"
+      arch: "x86_64"
     concurrency: 1
-    concurrency_group: "ctx-public-cli-macos-native"
+    concurrency_group: "ctx-public-cli-macos-intel-native"
     timeout_in_minutes: 60
     artifact_paths:
       - "target/public-cli-artifacts/ctx-macos-x64"
