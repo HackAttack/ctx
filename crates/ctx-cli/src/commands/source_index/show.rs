@@ -6,10 +6,15 @@ use std::{fmt, io::Write, path::PathBuf};
 use anyhow::{anyhow, Result};
 use ctx_history_core::{MAX_CORE_CONTENT_BYTES, MAX_ENCODED_CORE_RECORD_BYTES};
 use ctx_history_index::{
-    CoreEventPageBudget, CoreEventRecord, IndexError, SessionEventCursor, SessionRecord,
-    VerifiedIndex, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS,
+    CoreEventPageBudget, CoreEventRecord, IndexError, SessionRecord,
+    MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS,
 };
-use ctx_history_read_application::{EventWindowBudget, PinnedHistoryQuery, ShowEventRequest};
+use ctx_history_read_application::{
+    execute_show_event, execute_show_session_stream, EventWindowBudget, GenerationReadError,
+    ShowEventApplicationRequest, ShowEventRequest, ShowReadApplicationError,
+    ShowReadModelProjection, ShowSessionStreamCallback, ShowSessionStreamControl,
+    ShowSessionStreamPage, ShowSessionStreamRequest, ShowSessionStreamStart,
+};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -31,24 +36,22 @@ use crate::{
 };
 
 use super::{
-    compact_presentation::{reference_needs_retained_peer, CompactPresentation},
+    open_generation_read,
     render::{follow_up_command_prefix, render_show_document, write_show_value},
     shared::{
-        externalize_query_error, index_root, open_index, render_active_generation_race,
-        resolve_lookup_for_output, validate_ctx_id, validate_session_selector,
-        ActiveGenerationRaceCommand,
+        externalize_query_error, render_active_generation_race, resolve_lookup_for_output,
+        validate_ctx_id, validate_session_selector, ActiveGenerationRaceCommand,
     },
 };
 
 #[cfg(test)]
 pub(crate) use mcp::{mcp_show_event, mcp_show_event_with_compact, mcp_show_session};
 pub(crate) use mcp::{mcp_show_event_application, mcp_show_session_application};
-use render::{event_window_json_with_lineage, paginated_session_transcript_value};
 #[cfg(test)]
 pub(super) use render::{event_window_value, render_event_values};
 pub(super) use render::{render_event_value, session_transcript_value};
 
-const CLI_SESSION_EVENT_PAGE_ITEMS: usize = 200;
+const CLI_SESSION_EVENT_PAGE_ITEMS: usize = ctx_history_read_application::SHOW_SESSION_PAGE_ITEMS;
 const PRESENTATION_MAX_EVENT_WINDOW_EVENTS: usize = MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS;
 
 /// Typed failures exposed by the transport-neutral show application boundary.
@@ -201,58 +204,53 @@ fn run_show_inner(
     ui: &mut Ui,
 ) -> Result<()> {
     validate_show_target(&args.target)?;
-    let index = open_index(&data_root)?;
     match args.target {
         ShowTarget::Event(args) => {
-            let compact = CompactPresentation::open_if_needed(
-                &index,
-                &index_root(&data_root),
-                matches!(args.format, OutputFormat::Text | OutputFormat::Markdown)
-                    || reference_needs_retained_peer(&args.id),
-            )?;
-            let query = PinnedHistoryQuery::new(
-                &index,
-                compact
-                    .as_ref()
-                    .and_then(CompactPresentation::retained_peer),
-            );
+            let compact_projection =
+                matches!(args.format, OutputFormat::Text | OutputFormat::Markdown);
+            let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
+                open_generation_read(&data_root, read)
+            };
             let result = resolve_lookup_for_output(
-                query
-                    .show_event(&ShowEventRequest {
-                        selector: args.id,
-                        before: args.before,
-                        after: args.after,
-                        window: args.window,
-                        budget: EventWindowBudget {
-                            maximum_events: PRESENTATION_MAX_EVENT_WINDOW_EVENTS,
-                            maximum_encoded_core_bytes: MAX_ENCODED_CORE_RECORD_BYTES,
-                            maximum_content_bytes: CLI_PRESENTATION_MAX_OUTPUT_BYTES,
+                execute_show_event(
+                    ShowEventApplicationRequest {
+                        request: ShowEventRequest {
+                            selector: args.id,
+                            before: args.before,
+                            after: args.after,
+                            window: args.window,
+                            budget: EventWindowBudget {
+                                maximum_events: PRESENTATION_MAX_EVENT_WINDOW_EVENTS,
+                                maximum_encoded_core_bytes: MAX_ENCODED_CORE_RECORD_BYTES,
+                                maximum_content_bytes: CLI_PRESENTATION_MAX_OUTPUT_BYTES,
+                            },
                         },
-                    })
-                    .map_err(externalize_query_error),
+                        generation_target:
+                            ctx_history_read_application::GenerationReadTarget::Active,
+                        compact_projection,
+                    },
+                    &mut generation,
+                )
+                .map_err(show_event_application_error)
+                .map_err(externalize_query_error),
                 args.format == OutputFormat::Text,
                 r#"ctx search "<query>" --verbose"#,
                 ui,
             )?;
-            let selected = result.selected;
-            let events = result.events;
-            telemetry.events_returned = Some(count_bucket(events.len() as u64));
-            let value = event_window_json_with_lineage(
-                &selected,
-                &events,
-                &result.copied_lineage,
-                args.format,
-                CLI_PRESENTATION_MAX_OUTPUT_BYTES,
-            )?;
+            let selected = &result.result().selected;
+            telemetry.events_returned = Some(count_bucket(result.result().events.len() as u64));
+            let value = result
+                .read_model(
+                    render::structured_format(args.format),
+                    CLI_PRESENTATION_MAX_OUTPUT_BYTES,
+                )
+                .map_err(render::map_read_model_error)?;
             let events = value["events"].as_array().map(Vec::as_slice).unwrap_or(&[]);
             let result_count = events.len();
             let content_bytes = serde_json::to_vec(&value["events"])?.len();
-            let compact_value = matches!(args.format, OutputFormat::Text | OutputFormat::Markdown)
+            let compact_value = compact_projection
                 .then(|| {
-                    let mut projected = compact
-                        .as_ref()
-                        .expect("human and Markdown show open compact presentation")
-                        .project(&value)?;
+                    let mut projected = result.project_read_model(&value)?;
                     projected["_command_prefix"] =
                         Value::String(follow_up_command_prefix(&data_root));
                     Ok::<_, anyhow::Error>(projected)
@@ -280,45 +278,21 @@ fn run_show_inner(
         }
         ShowTarget::Session(args) => {
             let human_output = args.format == OutputFormat::Text && args.out.is_none();
-            let compact = CompactPresentation::open_if_needed(
-                &index,
-                &index_root(&data_root),
-                matches!(args.format, OutputFormat::Text | OutputFormat::Markdown)
-                    || args
-                        .id
-                        .as_deref()
-                        .is_some_and(reference_needs_retained_peer),
-            )?;
-            let query = PinnedHistoryQuery::new(
-                &index,
-                compact
-                    .as_ref()
-                    .and_then(CompactPresentation::retained_peer),
-            );
-            let session = resolve_lookup_for_output(
-                query
-                    .show_session(
-                        args.id.as_deref(),
-                        args.provider_session.as_deref(),
-                        args.provider.map(ProviderArg::capture_provider),
-                    )
-                    .map_err(externalize_query_error),
+            let result = resolve_lookup_for_output(
+                stream_cli_session(
+                    &data_root,
+                    args.id,
+                    args.provider_session,
+                    args.provider.map(ProviderArg::capture_provider),
+                    args.mode,
+                    args.format,
+                    args.max_events,
+                    args.out,
+                    ui,
+                )
+                .map_err(externalize_query_error),
                 human_output,
                 r#"ctx search "<query>" --verbose"#,
-                ui,
-            )?;
-            let result = stream_cli_session(
-                &index,
-                &session,
-                args.mode,
-                args.format,
-                args.max_events,
-                args.out,
-                matches!(args.format, OutputFormat::Text | OutputFormat::Markdown).then(|| {
-                    compact
-                        .as_ref()
-                        .expect("human and Markdown show open compact presentation")
-                }),
                 ui,
             )?;
             telemetry.events_returned = Some(count_bucket(result.events_returned as u64));
@@ -334,6 +308,33 @@ fn run_show_inner(
     }
 }
 
+fn show_read_application_error<StreamError>(
+    error: ShowReadApplicationError<anyhow::Error, StreamError>,
+) -> anyhow::Error
+where
+    StreamError: Into<anyhow::Error>,
+{
+    match error {
+        ShowReadApplicationError::Generation(GenerationReadError::Port(error))
+        | ShowReadApplicationError::Query(error) => error,
+        ShowReadApplicationError::Generation(GenerationReadError::Authority(error)) => {
+            anyhow::Error::new(error)
+        }
+        ShowReadApplicationError::Stream(error) => error.into(),
+    }
+}
+
+fn show_event_application_error(error: ShowReadApplicationError<anyhow::Error>) -> anyhow::Error {
+    match error {
+        ShowReadApplicationError::Generation(GenerationReadError::Port(error))
+        | ShowReadApplicationError::Query(error) => error,
+        ShowReadApplicationError::Generation(GenerationReadError::Authority(error)) => {
+            anyhow::Error::new(error)
+        }
+        ShowReadApplicationError::Stream(error) => match error {},
+    }
+}
+
 pub(super) fn render_show_error<T>(result: Result<T>, json_output: bool, ui: &mut Ui) -> Result<T> {
     render_active_generation_race(result, json_output, ActiveGenerationRaceCommand::Show, ui)
 }
@@ -346,73 +347,107 @@ pub(super) struct SessionStreamResult {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn stream_cli_session(
-    index: &VerifiedIndex,
-    session: &SessionRecord,
+    data_root: &std::path::Path,
+    selector: Option<String>,
+    provider_session_id: Option<String>,
+    provider: Option<ctx_history_core::CaptureProvider>,
     mode: TranscriptMode,
     format: OutputFormat,
     max_events: Option<usize>,
     out: Option<PathBuf>,
-    compact: Option<&CompactPresentation<'_>>,
     ui: &mut Ui,
 ) -> Result<SessionStreamResult> {
     let writes_stdout = out.is_none();
     let human_context =
         (format == OutputFormat::Text && writes_stdout).then(|| *ui.stdout_context());
-    let output = TranscriptOutput::create(out, ui.stdout_writer())?;
-    let mut renderer = SessionStreamRenderer::new(
-        output,
-        session,
+    let mut stream = CliSessionStream {
+        out,
+        stdout: Some(ui.stdout_writer()),
         mode,
         format,
         max_events,
         human_context,
         writes_stdout,
-        compact,
-    )?;
-    let query =
-        PinnedHistoryQuery::new(index, compact.and_then(CompactPresentation::retained_peer));
-    let mut cursor: Option<SessionEventCursor> = None;
-    let mut truncated = false;
+        renderer: None,
+    };
+    let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
+        open_generation_read(data_root, read)
+    };
+    let summary = execute_show_session_stream(
+        ShowSessionStreamRequest {
+            selector,
+            provider_session_id,
+            provider,
+            mode: session_event_mode(mode),
+            cursor: None,
+            max_events,
+            page_items: CLI_SESSION_EVENT_PAGE_ITEMS,
+            page_budget: CoreEventPageBudget::new(
+                MAX_ENCODED_CORE_RECORD_BYTES,
+                MAX_CORE_CONTENT_BYTES,
+            ),
+            compact_projection: matches!(format, OutputFormat::Text | OutputFormat::Markdown),
+        },
+        &mut generation,
+        &mut stream,
+    )
+    .map_err(show_read_application_error)?;
+    stream.finish(summary.truncated)
+}
 
-    loop {
-        let remaining = max_events
-            .map(|maximum| maximum.saturating_sub(renderer.events_returned()))
-            .unwrap_or(CLI_SESSION_EVENT_PAGE_ITEMS);
-        if remaining == 0 {
-            truncated = true;
-            break;
-        }
-        renderer.begin_page();
-        let page =
-            query.show_session_page(&ctx_history_read_application::ShowSessionPageRequest {
-                selector: Some(session.session_id.to_string()),
-                provider_session_id: None,
-                provider: None,
-                mode: session_event_mode(mode),
-                cursor: cursor.clone(),
-                limit: remaining.min(CLI_SESSION_EVENT_PAGE_ITEMS),
-                page_items: CLI_SESSION_EVENT_PAGE_ITEMS,
-                page_budget: CoreEventPageBudget::new(
-                    MAX_ENCODED_CORE_RECORD_BYTES,
-                    MAX_CORE_CONTENT_BYTES,
-                ),
-            })?;
-        for selected in page.events {
-            renderer.emit(selected.event, compact)?;
-        }
-        if !page.has_more {
-            break;
-        }
-        if max_events.is_some_and(|maximum| renderer.events_returned() >= maximum) {
-            truncated = true;
-            break;
-        }
-        cursor = Some(page.next_cursor.ok_or_else(|| {
-            anyhow!("nonterminal Core session event page omitted its continuation cursor")
-        })?);
+struct CliSessionStream<'a> {
+    out: Option<PathBuf>,
+    stdout: Option<&'a mut (dyn Write + Send)>,
+    mode: TranscriptMode,
+    format: OutputFormat,
+    max_events: Option<usize>,
+    human_context: Option<RenderContext>,
+    writes_stdout: bool,
+    renderer: Option<SessionStreamRenderer<'a>>,
+}
+
+impl CliSessionStream<'_> {
+    fn finish(&mut self, truncated: bool) -> Result<SessionStreamResult> {
+        self.renderer
+            .take()
+            .ok_or_else(|| anyhow!("session stream did not receive its start model"))?
+            .finish(truncated, self.max_events)
+    }
+}
+
+impl<'a> ShowSessionStreamCallback for CliSessionStream<'a> {
+    type Error = anyhow::Error;
+
+    fn start(&mut self, start: ShowSessionStreamStart<'_>) -> Result<()> {
+        let stdout = self
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("session stream output was already opened"))?;
+        let output = TranscriptOutput::create(self.out.take(), stdout)?;
+        self.renderer = Some(SessionStreamRenderer::new(
+            output,
+            start.session,
+            self.mode,
+            self.format,
+            self.max_events,
+            self.human_context,
+            self.writes_stdout,
+            start.projection,
+        )?);
+        Ok(())
     }
 
-    renderer.finish(truncated, max_events)
+    fn page(&mut self, page: ShowSessionStreamPage<'_>) -> Result<ShowSessionStreamControl> {
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| anyhow!("session stream page preceded its start model"))?;
+        renderer.begin_page();
+        for selected in page.events {
+            renderer.emit(selected.event, page.projection)?;
+        }
+        Ok(ShowSessionStreamControl::Continue)
+    }
 }
 
 pub(super) const fn session_event_mode(
@@ -447,7 +482,7 @@ impl<'a> SessionStreamRenderer<'a> {
         max_events: Option<usize>,
         human_context: Option<RenderContext>,
         writes_stdout: bool,
-        compact: Option<&CompactPresentation<'_>>,
+        projection: ShowReadModelProjection<'_>,
     ) -> Result<Self> {
         let metadata =
             session_transcript_value(session, mode, format, Vec::new(), false, max_events);
@@ -462,12 +497,8 @@ impl<'a> SessionStreamRenderer<'a> {
             page_output_bytes: 0,
             last_event_id: session.session_id.as_uuid(),
         };
-        renderer.write_header(compact)?;
+        renderer.write_header(projection)?;
         Ok(renderer)
-    }
-
-    const fn events_returned(&self) -> usize {
-        self.events_returned
     }
 
     fn begin_page(&mut self) {
@@ -477,7 +508,7 @@ impl<'a> SessionStreamRenderer<'a> {
     fn emit(
         &mut self,
         event: CoreEventRecord,
-        compact: Option<&CompactPresentation<'_>>,
+        projection: ShowReadModelProjection<'_>,
     ) -> Result<()> {
         let event_id = event.event_id.as_uuid();
         let value = render_event_value(&event);
@@ -486,13 +517,12 @@ impl<'a> SessionStreamRenderer<'a> {
             .content_bytes
             .saturating_add(usize::from(self.events_returned > 0))
             .saturating_add(event_json.len());
-        let compact_value = matches!(self.format, OutputFormat::Text | OutputFormat::Markdown)
-            .then(|| {
-                compact
-                    .ok_or_else(|| anyhow!("human transcript rendering requires compact refs"))?
-                    .project(&value)
-            })
-            .transpose()?;
+        let compact_value = projection.project(&value)?;
+        if matches!(self.format, OutputFormat::Text | OutputFormat::Markdown)
+            && compact_value.is_none()
+        {
+            return Err(anyhow!("human transcript rendering requires compact refs"));
+        }
         let display_value = compact_value.as_ref().unwrap_or(&value);
         let fragment = match self.format {
             OutputFormat::Text if self.human_context.is_some() => {
@@ -640,14 +670,13 @@ impl<'a> SessionStreamRenderer<'a> {
         })
     }
 
-    fn write_header(&mut self, compact: Option<&CompactPresentation<'_>>) -> Result<()> {
-        let compact_metadata = matches!(self.format, OutputFormat::Text | OutputFormat::Markdown)
-            .then(|| {
-                compact
-                    .ok_or_else(|| anyhow!("human transcript rendering requires compact refs"))?
-                    .project(&self.metadata)
-            })
-            .transpose()?;
+    fn write_header(&mut self, projection: ShowReadModelProjection<'_>) -> Result<()> {
+        let compact_metadata = projection.project(&self.metadata)?;
+        if matches!(self.format, OutputFormat::Text | OutputFormat::Markdown)
+            && compact_metadata.is_none()
+        {
+            return Err(anyhow!("human transcript rendering requires compact refs"));
+        }
         let display_metadata = compact_metadata.as_ref().unwrap_or(&self.metadata);
         match self.format {
             OutputFormat::Text if self.human_context.is_some() => {
@@ -822,7 +851,7 @@ pub(super) fn validate_show_target(target: &ShowTarget) -> Result<()> {
 
 #[cfg(test)]
 pub(super) fn resolve_show_session(
-    index: &VerifiedIndex,
+    index: &ctx_history_index::VerifiedIndex,
     id: Option<&str>,
     provider_session_id: Option<&str>,
     provider: Option<ctx_history_core::CaptureProvider>,

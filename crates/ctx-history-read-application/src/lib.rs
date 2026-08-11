@@ -37,10 +37,11 @@ pub use compact_presentation::{
 };
 pub use event_read_model::{
     event_query_completion_read_model, event_query_event_read_model, event_query_page_read_model,
-    event_query_receipt, event_query_wire_request, render_event_read_model, EventContentProjection,
-    EventQueryCompletionReadModel, EventQueryCompletionUsage, EventQueryFreshness,
-    EventQueryFrontier, EventQueryPageReadModel, EventQueryPageUsage, EventQueryReceipt,
-    EventQueryWireRequest, EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION,
+    event_query_receipt, event_query_wire_request, mcp_event_query_core_record_bytes,
+    render_event_read_model, EventContentProjection, EventQueryCompletionReadModel,
+    EventQueryCompletionUsage, EventQueryFreshness, EventQueryFrontier, EventQueryPageReadModel,
+    EventQueryPageUsage, EventQueryReceipt, EventQueryWireRequest, EVENT_QUERY_PAGE_BYTES,
+    EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION, MAX_EVENT_QUERY_WIRE_RECORD_BYTES,
 };
 pub use filters::{
     normalize_source_identity_filter, normalize_source_identity_filters, parse_since_filter,
@@ -56,9 +57,12 @@ pub use lineage::{
 };
 pub use list::{
     decode_event_range_cursor, encode_event_range_cursor, event_range_selection,
-    parse_event_query_uuid, validated_event_limit, ListEventsError, ListEventsPageRequest,
-    ListEventsRequest, ListEventsResult, DEFAULT_EVENT_QUERY_LIMIT, MAX_EVENT_QUERY_CURSOR_CHARS,
-    MAX_EVENT_QUERY_LIMIT,
+    execute_list_events_page, execute_list_events_stream, parse_event_query_uuid,
+    validated_event_limit, ListEventsApplicationError, ListEventsApplicationResult,
+    ListEventsError, ListEventsPageRequest, ListEventsRequest, ListEventsResult,
+    ListEventsStreamCallback, ListEventsStreamCompletion, ListEventsStreamControl,
+    ListEventsStreamPage, ListEventsStreamResult, DEFAULT_EVENT_QUERY_LIMIT,
+    MAX_EVENT_QUERY_CURSOR_CHARS, MAX_EVENT_QUERY_LIMIT,
 };
 pub use locate::{
     execute_locate, locate_read_model, LocateApplicationError, LocateApplicationRequest,
@@ -95,9 +99,14 @@ pub use semantic::{
     SemanticAvailability, SemanticReason,
 };
 pub use show::{
+    execute_show_event, execute_show_session_page, execute_show_session_stream,
     ContentQueryLimitError, EncodedCoreQueryLimitError, EventWindowBudget, EventWindowLimitError,
-    SessionEventMode, ShowEventRequest, ShowEventResult, ShowSessionEvent, ShowSessionPage,
-    ShowSessionPageRequest,
+    SessionEventMode, ShowEventApplicationRequest, ShowEventApplicationResult, ShowEventRequest,
+    ShowEventResult, ShowReadApplicationError, ShowReadModelProjection,
+    ShowSessionApplicationRequest, ShowSessionApplicationResult, ShowSessionEvent, ShowSessionPage,
+    ShowSessionPageRequest, ShowSessionReadModels, ShowSessionStreamCallback,
+    ShowSessionStreamControl, ShowSessionStreamPage, ShowSessionStreamRequest,
+    ShowSessionStreamResult, ShowSessionStreamStart, SHOW_SESSION_PAGE_ITEMS,
 };
 pub use show_read_model::{
     decode_session_event_cursor, encode_session_event_cursor, event_window_read_model,

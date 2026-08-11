@@ -10,6 +10,18 @@ use crate::json::{event_origin_json, insert_mcp_tool_call, timestamp_json};
 
 pub const EVENT_QUERY_SCHEMA_VERSION: u8 = 1;
 pub const EVENT_QUERY_PAGE_ITEMS: usize = 100;
+pub const EVENT_QUERY_PAGE_BYTES: usize = 1024 * 1024;
+/// JSON string escaping can expand each admitted Core byte to six wire bytes.
+/// Keep a fixed envelope allowance while retaining a deterministic upper bound.
+pub const MAX_EVENT_QUERY_WIRE_RECORD_BYTES: usize =
+    ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES * 6 + 1024 * 1024;
+
+/// Stored Core is already JSON escaped. Reserving seven eighths of the MCP
+/// envelope covers event projection, receipt fields, and JSON-RPC framing
+/// before a record is materialized.
+pub const fn mcp_event_query_core_record_bytes(response_cap: usize) -> usize {
+    response_cap / 8
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventContentProjection {

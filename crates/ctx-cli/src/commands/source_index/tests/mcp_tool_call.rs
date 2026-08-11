@@ -20,7 +20,6 @@ fn cli_and_mcp_show_adapters_share_event_selection_and_projection() {
     tool_output.core_record.mcp_tool_call = Some(exact.clone());
     tool_output.core_record.validate_contract().unwrap();
     append_fixture_session(temp.path(), &[message.clone(), tool_output.clone()], 93);
-    let index = open_index(temp.path()).unwrap();
     let session = SessionRecord::from(&message.event);
 
     let rendered_message = render_event_value(&message);
@@ -38,11 +37,12 @@ fn cli_and_mcp_show_adapters_share_event_selection_and_projection() {
     ] {
         let (mut ui, stdout) = test_ui();
         stream_cli_session(
-            &index,
-            &session,
+            temp.path(),
+            Some(session.session_id.to_string()),
+            None,
+            None,
             mode,
             OutputFormat::Json,
-            None,
             None,
             None,
             &mut ui,

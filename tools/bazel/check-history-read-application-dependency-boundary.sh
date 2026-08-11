@@ -104,11 +104,19 @@ if grep -REn --include='*.rs' \
   echo 'history read application ports must use static dispatch' >&2
   exit 1
 fi
-if [[ "$(grep -REh --include='*.rs' '^pub fn execute_search<' "${query_root}/src" | wc -l)" -ne 1 ]] \
-  || [[ "$(grep -REh --include='*.rs' '^pub fn execute_locate<' "${query_root}/src" | wc -l)" -ne 1 ]]; then
-  echo 'search and locate must each have one production application authority' >&2
-  exit 1
-fi
+for authority in \
+  execute_search \
+  execute_locate \
+  execute_show_event \
+  execute_show_session_page \
+  execute_show_session_stream \
+  execute_list_events_page \
+  execute_list_events_stream; do
+  if [[ "$(grep -REh --include='*.rs' "^pub fn ${authority}<" "${query_root}/src" | wc -l)" -ne 1 ]]; then
+    echo "${authority} must have one production application authority" >&2
+    exit 1
+  fi
+done
 if grep -Eq 'PinnedHistoryQuery|\.search\(' \
   "${repo_root}/crates/ctx-cli/src/commands/source_index/search.rs" \
   || grep -Eq 'PinnedHistoryQuery|\.locate\(' \
@@ -116,6 +124,25 @@ if grep -Eq 'PinnedHistoryQuery|\.search\(' \
   echo 'ctx-cli bypasses the application-owned search or locate authority' >&2
   exit 1
 fi
+if grep -Eq 'PinnedHistoryQuery|\.show_(event|session|session_page)\(' \
+  "${repo_root}/crates/ctx-cli/src/commands/source_index/show.rs" \
+  "${repo_root}/crates/ctx-cli/src/commands/source_index/show/mcp.rs" \
+  || grep -Eq 'PinnedHistoryQuery|\.list_events(_page)?\(' \
+    "${repo_root}/crates/ctx-cli/src/commands/list/events.rs"; then
+  echo 'ctx-cli bypasses the application-owned show or list authority' >&2
+  exit 1
+fi
+for contract in \
+  'EVENT_QUERY_PAGE_ITEMS: usize = 100' \
+  'EVENT_QUERY_PAGE_BYTES: usize = 1024 \* 1024' \
+  'MAX_EVENT_QUERY_LIMIT: u64 = 10_000_000' \
+  'MAX_EVENT_QUERY_CURSOR_CHARS: usize = 512' \
+  'SHOW_SESSION_PAGE_ITEMS: usize = 200'; do
+  if ! grep -REq --include='*.rs' "${contract}" "${query_root}/src"; then
+    echo "history read application budget contract drifted: ${contract}" >&2
+    exit 1
+  fi
+done
 if [[ -e "${repo_root}/crates/ctx-history-query" ]]; then
   echo 'legacy ctx-history-query production authority still exists' >&2
   exit 1
@@ -135,7 +162,7 @@ fi
 
 physical_lines="$(find "${query_root}/src" -type f -name '*.rs' -print0 \
   | xargs -0 awk 'END { print NR }')"
-expected_physical_lines=6425
+expected_physical_lines=7303
 if (( physical_lines >= 20000 )); then
   echo "ctx-history-read-application reached its 20,000-line hard stop: ${physical_lines}" >&2
   exit 1

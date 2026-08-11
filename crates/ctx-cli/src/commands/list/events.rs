@@ -1,7 +1,6 @@
 use std::{io::Write, path::Path, path::PathBuf};
 
 use anyhow::Result;
-use ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES;
 use ctx_history_index::{
     CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeError, CoreEventRangeFilters,
     CoreEventRangePage, CoreEventRangeSelection, IndexError, VerifiedIndex,
@@ -23,57 +22,28 @@ mod request;
 #[cfg(test)]
 use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
 pub(crate) use ctx_history_read_application::{
-    DEFAULT_EVENT_QUERY_LIMIT, EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION,
+    mcp_event_query_core_record_bytes, DEFAULT_EVENT_QUERY_LIMIT, EVENT_QUERY_PAGE_BYTES,
+    EVENT_QUERY_PAGE_ITEMS, EVENT_QUERY_SCHEMA_VERSION, MAX_EVENT_QUERY_WIRE_RECORD_BYTES,
 };
 pub(crate) use render::render_event;
 pub(crate) use request::{
     EventContentProjection, EventQueryFormat, EventQueryWireRequest, ListEventsArgs,
 };
 
-const EVENT_QUERY_PAGE_BYTES: usize = 1024 * 1024;
-/// JSON string escaping can expand each admitted Core byte to six wire bytes.
-/// Keep a fixed envelope allowance while retaining a deterministic upper bound.
-pub(crate) const MAX_EVENT_QUERY_WIRE_RECORD_BYTES: usize =
-    MAX_ENCODED_CORE_RECORD_BYTES * 6 + 1024 * 1024;
-
-/// Stored Core is already JSON escaped. Reserving seven eighths of the MCP
-/// envelope covers event projection, receipt fields, and JSON-RPC framing
-/// before a record is materialized.
-pub(crate) const fn mcp_event_query_core_record_bytes(response_cap: usize) -> usize {
-    response_cap / 8
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EventQueryError {
     #[error(transparent)]
     GenerationAuthority(#[from] GenerationQueryAuthorityError),
     #[error(transparent)]
+    GenerationReadAuthority(#[from] ctx_history_read_application::GenerationReadAuthorityError),
+    #[error(transparent)]
     Range(#[from] CoreEventRangeError),
-    #[error("{field} must be an absolute RFC3339 timestamp: {value:?}")]
-    InvalidTimestamp { field: &'static str, value: String },
-    #[error("{field} must resolve exactly to a whole millisecond: {value:?}")]
-    InvalidTimestampPrecision { field: &'static str, value: String },
-    #[error("since and until must be supplied together")]
-    IncompleteTimestampRange,
-    #[error("{field} must be a full UUID: {value:?}")]
-    InvalidUuid { field: &'static str, value: String },
-    #[error("{field} value {requested} is outside {minimum}..={maximum}")]
-    InvalidResourceLimit {
-        field: &'static str,
-        requested: u64,
-        minimum: u64,
-        maximum: u64,
-    },
-    #[error("event query cursor is {actual} characters, maximum {maximum}")]
-    CursorTooLarge { actual: usize, maximum: usize },
-    #[error("event query cursor is not canonical base64url")]
-    InvalidCursorEncoding,
+    #[error(transparent)]
+    Application(#[from] ctx_history_read_application::ListEventsError),
     #[error("nonterminal Core event page omitted its continuation cursor")]
     MissingContinuationCursor,
     #[error("Core event page omitted admitted usage for a retained prefix")]
     MissingPrefixUsage,
-    #[error("nonterminal Core event page made no progress")]
-    NonAdvancingPage,
     #[error(
         "serialized event requires {actual} bytes, exceeding the conservative wire cap of {maximum}; retry with --content text or --content none"
     )]
@@ -125,21 +95,26 @@ fn execute(
 ) -> std::result::Result<usize, EventQueryError> {
     let selection = selection_from_args(&args)?;
     let cursor = args.cursor.as_deref().map(decode_cursor).transpose()?;
-    if let Some(cursor) = &cursor {
-        cursor.validate_selection(&selection)?;
-    }
     let limit = validated_limit(args.limit)?;
-    let index = open_event_range_index(data_root, cursor.as_ref())?;
     let request = EventQueryWireRequest::from_selection(&selection, args.content.into(), limit);
     match args.format {
         EventQueryFormat::Json => {
-            let page = bounded_page(&index, &selection, cursor.as_ref(), &request, None)?;
+            let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
+                open_event_range_generation(data_root, read)
+            };
+            let application = ctx_history_read_application::execute_list_events_page(
+                list_page_request(&selection, cursor, &request, None),
+                &mut generation,
+            )
+            .map_err(list_page_application_error)?;
+            let page =
+                encode_bounded_page(application.index(), &application.result().page, &request)?;
             writer.write_all(&page.encoded)?;
             writer.flush()?;
             Ok(page.items)
         }
         EventQueryFormat::Jsonl => {
-            write_jsonl_pages(&index, &selection, cursor, &request, writer, || {})
+            write_jsonl_pages(data_root, &selection, cursor, &request, writer, || {})
         }
     }
 }
@@ -185,6 +160,7 @@ fn selection_from_args(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn open_event_range_index(
     data_root: &Path,
     cursor: Option<&CoreEventRangeCursor>,
@@ -200,49 +176,64 @@ pub(crate) fn open_event_range_index(
     Ok(index)
 }
 
-fn read_page(
-    index: &VerifiedIndex,
+fn open_event_range_generation(
+    data_root: &Path,
+    request: &ctx_history_read_application::GenerationReadRequest,
+) -> std::result::Result<ctx_history_read_application::GenerationRead, EventQueryError> {
+    let root = data_root.join("search/lexical");
+    let index = match &request.target {
+        ctx_history_read_application::GenerationReadTarget::Active => {
+            VerifiedIndex::open_pinned(&root)
+        }
+        ctx_history_read_application::GenerationReadTarget::Exact(generation_id) => {
+            VerifiedIndex::open_pinned_generation(&root, generation_id)
+        }
+    }
+    .map_err(CoreEventRangeError::from)
+    .map_err(EventQueryError::from)?;
+    verify_generation_query_authority(&index)?;
+    Ok(ctx_history_read_application::GenerationRead::new(
+        index, None,
+    ))
+}
+
+fn list_page_request(
     selection: &CoreEventRangeSelection,
-    cursor: Option<&CoreEventRangeCursor>,
-    page_items: usize,
-    byte_budget: usize,
+    cursor: Option<CoreEventRangeCursor>,
+    request: &EventQueryWireRequest,
     strict_budget: Option<CoreEventPageBudget>,
-) -> std::result::Result<CoreEventRangePage, EventQueryError> {
-    let request = ctx_history_read_application::ListEventsPageRequest {
+) -> ctx_history_read_application::ListEventsPageRequest {
+    ctx_history_read_application::ListEventsPageRequest {
         selection: selection.clone(),
-        cursor: cursor.cloned(),
-        limit: u64::try_from(page_items).unwrap_or(u64::MAX),
-        page_items,
-        byte_budget,
+        cursor,
+        limit: u64::try_from(request.limit).unwrap_or(u64::MAX),
+        page_items: request.page_items(),
+        byte_budget: EVENT_QUERY_PAGE_BYTES,
         strict_budget,
-    };
-    ctx_history_read_application::PinnedHistoryQuery::new(index, None)
-        .list_events_page(&request)
-        .map(|result| result.page)
-        .map_err(Into::into)
+    }
+}
+
+fn list_page_application_error(
+    error: ctx_history_read_application::ListEventsApplicationError<EventQueryError>,
+) -> EventQueryError {
+    match error {
+        ctx_history_read_application::ListEventsApplicationError::Generation(
+            ctx_history_read_application::GenerationReadError::Port(error),
+        ) => error,
+        ctx_history_read_application::ListEventsApplicationError::Query(
+            ctx_history_read_application::ListEventsError::Range(error),
+        ) => error.into(),
+        ctx_history_read_application::ListEventsApplicationError::Query(error) => error.into(),
+        ctx_history_read_application::ListEventsApplicationError::Generation(
+            ctx_history_read_application::GenerationReadError::Authority(error),
+        ) => error.into(),
+        ctx_history_read_application::ListEventsApplicationError::Stream(error) => match error {},
+    }
 }
 
 struct EncodedPage {
     encoded: Vec<u8>,
     items: usize,
-}
-
-fn bounded_page(
-    index: &VerifiedIndex,
-    selection: &CoreEventRangeSelection,
-    cursor: Option<&CoreEventRangeCursor>,
-    request: &EventQueryWireRequest,
-    strict_budget: Option<CoreEventPageBudget>,
-) -> std::result::Result<EncodedPage, EventQueryError> {
-    let page = read_page(
-        index,
-        selection,
-        cursor,
-        request.page_items(),
-        EVENT_QUERY_PAGE_BYTES,
-        strict_budget,
-    )?;
-    encode_bounded_page(index, &page, request)
 }
 
 pub(crate) fn event_range_page_value(
@@ -252,11 +243,15 @@ pub(crate) fn event_range_page_value(
     request: &EventQueryWireRequest,
     strict_budget: Option<CoreEventPageBudget>,
 ) -> std::result::Result<Value, EventQueryError> {
-    if let Some(cursor) = cursor {
-        cursor.validate_selection(selection)?;
-    }
-    let index = open_event_range_index(data_root, cursor)?;
-    let page = bounded_page(&index, selection, cursor, request, strict_budget)?;
+    let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
+        open_event_range_generation(data_root, read)
+    };
+    let application = ctx_history_read_application::execute_list_events_page(
+        list_page_request(selection, cursor.cloned(), request, strict_budget),
+        &mut generation,
+    )
+    .map_err(list_page_application_error)?;
+    let page = encode_bounded_page(application.index(), &application.result().page, request)?;
     Ok(serde_json::from_slice(&page.encoded)?)
 }
 
@@ -420,86 +415,117 @@ fn global_limit_truncated(request: &EventQueryWireRequest, items: usize, termina
 }
 
 fn write_jsonl_pages<F>(
-    index: &VerifiedIndex,
+    data_root: &Path,
     selection: &CoreEventRangeSelection,
-    mut cursor: Option<CoreEventRangeCursor>,
+    cursor: Option<CoreEventRangeCursor>,
     request: &EventQueryWireRequest,
     writer: &mut dyn Write,
-    mut after_page: F,
+    after_page: F,
 ) -> std::result::Result<usize, EventQueryError>
 where
     F: FnMut(),
 {
-    let mut writer = CountingWriter::new(writer);
-    let mut events = 0_usize;
-    let mut pages = 0_usize;
-    let mut oversized_singleton_pages = 0_usize;
-    let mut encoded_core_bytes = 0_usize;
-    let mut content_bytes = 0_usize;
-    loop {
-        let remaining = request.limit.saturating_sub(events);
-        let page = read_page(
-            index,
-            selection,
-            cursor.as_ref(),
-            EVENT_QUERY_PAGE_ITEMS.min(remaining),
-            EVENT_QUERY_PAGE_BYTES,
-            None,
-        )?;
-        pages = pages.checked_add(1).ok_or(IndexError::CountOverflow)?;
-        oversized_singleton_pages = oversized_singleton_pages
-            .checked_add(usize::from(page.oversized_singleton))
-            .ok_or(IndexError::CountOverflow)?;
-        if page.items.is_empty() && !page.terminal {
-            return Err(EventQueryError::NonAdvancingPage);
-        }
-        for event in &page.items {
-            let rendered = render_event(event, request.content)?;
+    let mut stream = JsonlEventStream {
+        writer: CountingWriter::new(writer),
+        request,
+        after_page,
+    };
+    let mut generation = |read: &ctx_history_read_application::GenerationReadRequest| {
+        open_event_range_generation(data_root, read)
+    };
+    let result = ctx_history_read_application::execute_list_events_stream(
+        ctx_history_read_application::ListEventsPageRequest {
+            selection: selection.clone(),
+            cursor,
+            limit: u64::try_from(request.limit).unwrap_or(u64::MAX),
+            page_items: EVENT_QUERY_PAGE_ITEMS,
+            byte_budget: EVENT_QUERY_PAGE_BYTES,
+            strict_budget: None,
+        },
+        &mut generation,
+        &mut stream,
+    )
+    .map_err(list_stream_application_error)?;
+    Ok(result.items)
+}
+
+struct JsonlEventStream<'writer, 'request, F> {
+    writer: CountingWriter<'writer>,
+    request: &'request EventQueryWireRequest,
+    after_page: F,
+}
+
+impl<F> ctx_history_read_application::ListEventsStreamCallback for JsonlEventStream<'_, '_, F>
+where
+    F: FnMut(),
+{
+    type Error = EventQueryError;
+
+    fn page(
+        &mut self,
+        page: ctx_history_read_application::ListEventsStreamPage<'_>,
+    ) -> std::result::Result<ctx_history_read_application::ListEventsStreamControl, Self::Error>
+    {
+        for (offset, event) in page.page.items.iter().enumerate() {
+            let rendered = render_event(event, self.request.content)?;
             let record = ctx_history_read_application::event_query_event_read_model(
-                &page.generation_id,
-                events,
+                &page.page.generation_id,
+                page.ordinal.saturating_add(offset),
                 rendered,
             );
             let wire_bytes =
                 crate::presentation_limit::serialized_json_bytes(&record)?.saturating_add(1);
             enforce_wire_record_cap(wire_bytes)?;
-            serde_json::to_writer(&mut writer, &record)?;
-            writer.write_all(b"\n")?;
-            writer.flush()?;
-            events = events.checked_add(1).ok_or(IndexError::CountOverflow)?;
+            serde_json::to_writer(&mut self.writer, &record)?;
+            self.writer.write_all(b"\n")?;
+            self.writer.flush()?;
         }
-        encoded_core_bytes = encoded_core_bytes
-            .checked_add(page.encoded_core_bytes)
-            .ok_or(IndexError::CountOverflow)?;
-        content_bytes = content_bytes
-            .checked_add(page.content_bytes)
-            .ok_or(IndexError::CountOverflow)?;
-        after_page();
+        (self.after_page)();
+        Ok(ctx_history_read_application::ListEventsStreamControl::Continue)
+    }
 
-        let terminal = page.terminal;
-        let next_cursor = page.next_cursor;
-        let limit_reached = events >= request.limit;
-        if terminal || limit_reached {
-            let next_cursor = next_cursor.as_ref().map(encode_cursor);
-            let completion = encode_completion(
-                index,
-                &page.generation_id,
-                terminal,
-                limit_reached && !terminal,
-                next_cursor.as_deref(),
-                events,
-                pages,
-                writer.bytes(),
-                encoded_core_bytes,
-                content_bytes,
-                oversized_singleton_pages,
-                request,
-            )?;
-            writer.write_all(&completion)?;
-            writer.flush()?;
-            return Ok(events);
-        }
-        cursor = Some(next_cursor.ok_or(EventQueryError::MissingContinuationCursor)?);
+    fn complete(
+        &mut self,
+        completion: ctx_history_read_application::ListEventsStreamCompletion<'_>,
+    ) -> std::result::Result<(), Self::Error> {
+        let encoded = encode_completion(
+            completion.index,
+            completion.generation_id,
+            completion.terminal,
+            completion.truncated,
+            completion.next_cursor,
+            completion.items,
+            completion.pages,
+            self.writer.bytes(),
+            completion.encoded_core_bytes,
+            completion.content_bytes,
+            completion.oversized_singleton_pages,
+            self.request,
+        )?;
+        self.writer.write_all(&encoded)?;
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
+fn list_stream_application_error(
+    error: ctx_history_read_application::ListEventsApplicationError<
+        EventQueryError,
+        EventQueryError,
+    >,
+) -> EventQueryError {
+    match error {
+        ctx_history_read_application::ListEventsApplicationError::Generation(
+            ctx_history_read_application::GenerationReadError::Port(error),
+        )
+        | ctx_history_read_application::ListEventsApplicationError::Stream(error) => error,
+        ctx_history_read_application::ListEventsApplicationError::Generation(
+            ctx_history_read_application::GenerationReadError::Authority(error),
+        ) => error.into(),
+        ctx_history_read_application::ListEventsApplicationError::Query(
+            ctx_history_read_application::ListEventsError::Range(error),
+        ) => error.into(),
+        ctx_history_read_application::ListEventsApplicationError::Query(error) => error.into(),
     }
 }
 
@@ -606,42 +632,21 @@ pub(crate) fn event_query_error_value(error: &EventQueryError) -> Value {
     let output_limit_exceeded = matches!(
         error,
         EventQueryError::Range(CoreEventRangeError::RecordExceedsStrictBudget { .. })
+    ) || matches!(
+        error,
+        EventQueryError::Application(ctx_history_read_application::ListEventsError::Range(
+            CoreEventRangeError::RecordExceedsStrictBudget { .. }
+        ))
     );
     let error_code = match error {
         EventQueryError::GenerationAuthority(error) => error.error_code(),
-        EventQueryError::Range(CoreEventRangeError::Index(
-            IndexError::PinnedGenerationNotRetained { .. },
-        )) => "generation_not_retained",
-        EventQueryError::Range(CoreEventRangeError::CursorSelectionMismatch) => {
-            "cursor_request_mismatch"
+        EventQueryError::GenerationReadAuthority(_) => "event_query_failed",
+        EventQueryError::Range(error) => event_range_error_code(error),
+        EventQueryError::Application(error) => list_events_error_code(error),
+        EventQueryError::WireRecordTooLarge { .. } => "resource_limit",
+        EventQueryError::MissingContinuationCursor | EventQueryError::MissingPrefixUsage => {
+            "invalid_page"
         }
-        EventQueryError::Range(CoreEventRangeError::CursorGenerationMismatch { .. }) => {
-            "cursor_generation_mismatch"
-        }
-        EventQueryError::Range(CoreEventRangeError::InvalidCursor)
-        | EventQueryError::InvalidCursorEncoding
-        | EventQueryError::CursorTooLarge { .. } => "invalid_cursor",
-        EventQueryError::Range(CoreEventRangeError::InvalidCursorCoordinate) => {
-            "invalid_cursor_coordinate"
-        }
-        EventQueryError::Range(CoreEventRangeError::InvalidRange { .. })
-        | EventQueryError::Range(CoreEventRangeError::InvalidFilter { .. })
-        | EventQueryError::InvalidTimestamp { .. }
-        | EventQueryError::InvalidTimestampPrecision { .. }
-        | EventQueryError::IncompleteTimestampRange
-        | EventQueryError::InvalidUuid { .. } => "invalid_range",
-        EventQueryError::Range(CoreEventRangeError::RecordExceedsStrictBudget { .. }) => {
-            "output_limit_exceeded"
-        }
-        EventQueryError::InvalidResourceLimit { .. }
-        | EventQueryError::WireRecordTooLarge { .. }
-        | EventQueryError::Range(CoreEventRangeError::InvalidPageSize { .. })
-        | EventQueryError::Range(CoreEventRangeError::Index(
-            IndexError::InvalidCoreEventPageByteLimit { .. },
-        )) => "resource_limit",
-        EventQueryError::MissingContinuationCursor
-        | EventQueryError::MissingPrefixUsage
-        | EventQueryError::NonAdvancingPage => "invalid_page",
         EventQueryError::Io(_) => "output_failed",
         _ => "event_query_failed",
     };
@@ -663,47 +668,48 @@ pub(crate) fn event_query_error_value(error: &EventQueryError) -> Value {
     })
 }
 
-impl From<IndexError> for EventQueryError {
-    fn from(value: IndexError) -> Self {
-        Self::Range(CoreEventRangeError::Index(value))
+fn event_range_error_code(error: &CoreEventRangeError) -> &'static str {
+    match error {
+        CoreEventRangeError::Index(IndexError::PinnedGenerationNotRetained { .. }) => {
+            "generation_not_retained"
+        }
+        CoreEventRangeError::CursorSelectionMismatch => "cursor_request_mismatch",
+        CoreEventRangeError::CursorGenerationMismatch { .. } => "cursor_generation_mismatch",
+        CoreEventRangeError::InvalidCursor => "invalid_cursor",
+        CoreEventRangeError::InvalidCursorCoordinate => "invalid_cursor_coordinate",
+        CoreEventRangeError::InvalidRange { .. } | CoreEventRangeError::InvalidFilter { .. } => {
+            "invalid_range"
+        }
+        CoreEventRangeError::RecordExceedsStrictBudget { .. } => "output_limit_exceeded",
+        CoreEventRangeError::InvalidPageSize { .. }
+        | CoreEventRangeError::Index(IndexError::InvalidCoreEventPageByteLimit { .. }) => {
+            "resource_limit"
+        }
+        _ => "event_query_failed",
     }
 }
 
-impl From<ctx_history_read_application::ListEventsError> for EventQueryError {
-    fn from(error: ctx_history_read_application::ListEventsError) -> Self {
-        match error {
-            ctx_history_read_application::ListEventsError::Range(error) => Self::Range(error),
-            ctx_history_read_application::ListEventsError::InvalidTimestamp { field, value } => {
-                Self::InvalidTimestamp { field, value }
-            }
-            ctx_history_read_application::ListEventsError::InvalidTimestampPrecision {
-                field,
-                value,
-            } => Self::InvalidTimestampPrecision { field, value },
-            ctx_history_read_application::ListEventsError::IncompleteTimestampRange => {
-                Self::IncompleteTimestampRange
-            }
-            ctx_history_read_application::ListEventsError::InvalidUuid { field, value } => {
-                Self::InvalidUuid { field, value }
-            }
-            ctx_history_read_application::ListEventsError::InvalidResourceLimit {
-                field,
-                requested,
-                minimum,
-                maximum,
-            } => Self::InvalidResourceLimit {
-                field,
-                requested,
-                minimum,
-                maximum,
-            },
-            ctx_history_read_application::ListEventsError::CursorTooLarge { actual, maximum } => {
-                Self::CursorTooLarge { actual, maximum }
-            }
-            ctx_history_read_application::ListEventsError::InvalidCursorEncoding => {
-                Self::InvalidCursorEncoding
-            }
+fn list_events_error_code(error: &ctx_history_read_application::ListEventsError) -> &'static str {
+    use ctx_history_read_application::ListEventsError;
+    match error {
+        ListEventsError::Range(error) => event_range_error_code(error),
+        ListEventsError::InvalidTimestamp { .. }
+        | ListEventsError::InvalidTimestampPrecision { .. }
+        | ListEventsError::IncompleteTimestampRange
+        | ListEventsError::InvalidUuid { .. } => "invalid_range",
+        ListEventsError::InvalidResourceLimit { .. } => "resource_limit",
+        ListEventsError::CursorTooLarge { .. } | ListEventsError::InvalidCursorEncoding => {
+            "invalid_cursor"
         }
+        ListEventsError::MissingContinuationCursor | ListEventsError::NonAdvancingPage => {
+            "invalid_page"
+        }
+    }
+}
+
+impl From<IndexError> for EventQueryError {
+    fn from(value: IndexError) -> Self {
+        Self::Range(CoreEventRangeError::Index(value))
     }
 }
 

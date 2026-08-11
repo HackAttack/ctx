@@ -3,11 +3,15 @@ use chrono::DateTime;
 use ctx_history_core::MAX_CORE_CONTENT_BYTES;
 use ctx_history_index_query::{
     CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeError, CoreEventRangeFilters,
-    CoreEventRangePage, CoreEventRangeSelection,
+    CoreEventRangePage, CoreEventRangeSelection, IndexError, VerifiedIndex,
 };
 use uuid::Uuid;
 
-use crate::PinnedHistoryQuery;
+use crate::generation::PinnedGenerationRead;
+use crate::{
+    GenerationReadError, GenerationReadPort, GenerationReadReceipt, GenerationReadRequest,
+    GenerationReadTarget, PinnedHistoryQuery, RetainedPeerRead,
+};
 
 pub const DEFAULT_EVENT_QUERY_LIMIT: u64 = 10_000;
 pub const MAX_EVENT_QUERY_LIMIT: u64 = 10_000_000;
@@ -65,6 +69,224 @@ pub enum ListEventsError {
     CursorTooLarge { actual: usize, maximum: usize },
     #[error("event query cursor is not canonical base64url")]
     InvalidCursorEncoding,
+    #[error("nonterminal Core event page omitted its continuation cursor")]
+    MissingContinuationCursor,
+    #[error("nonterminal Core event page made no progress")]
+    NonAdvancingPage,
+}
+
+#[derive(Debug)]
+pub enum ListEventsApplicationError<GenerationError, StreamError = std::convert::Infallible> {
+    Generation(GenerationReadError<GenerationError>),
+    Query(ListEventsError),
+    Stream(StreamError),
+}
+
+pub struct ListEventsApplicationResult {
+    generation: PinnedGenerationRead,
+    result: ListEventsResult,
+}
+
+impl ListEventsApplicationResult {
+    pub fn receipt(&self) -> GenerationReadReceipt<'_> {
+        self.generation.receipt()
+    }
+
+    pub const fn index(&self) -> &VerifiedIndex {
+        self.generation.index()
+    }
+
+    pub const fn result(&self) -> &ListEventsResult {
+        &self.result
+    }
+}
+
+fn generation_target(cursor: Option<&CoreEventRangeCursor>) -> GenerationReadTarget {
+    cursor
+        .map(|cursor| GenerationReadTarget::Exact(cursor.generation_id().to_owned()))
+        .unwrap_or(GenerationReadTarget::Active)
+}
+
+fn validate_page_request(request: &ListEventsPageRequest) -> Result<(), ListEventsError> {
+    if let Some(cursor) = request.cursor.as_ref() {
+        cursor.validate_selection(&request.selection)?;
+    }
+    validated_event_limit(request.limit)?;
+    Ok(())
+}
+
+pub fn execute_list_events_page<Generation: GenerationReadPort>(
+    request: ListEventsPageRequest,
+    generation_port: &mut Generation,
+) -> std::result::Result<ListEventsApplicationResult, ListEventsApplicationError<Generation::Error>>
+{
+    validate_page_request(&request).map_err(ListEventsApplicationError::Query)?;
+    let target = generation_target(request.cursor.as_ref());
+    let generation = PinnedGenerationRead::open(
+        generation_port,
+        GenerationReadRequest {
+            target,
+            retained_peer: RetainedPeerRead::Omit,
+        },
+    )
+    .map_err(ListEventsApplicationError::Generation)?;
+    let result = PinnedHistoryQuery::new(generation.index(), None)
+        .list_events_page(&request)
+        .map_err(ListEventsApplicationError::Query)?;
+    Ok(ListEventsApplicationResult { generation, result })
+}
+
+pub struct ListEventsStreamPage<'read> {
+    pub index: &'read VerifiedIndex,
+    pub ordinal: usize,
+    pub page: &'read CoreEventRangePage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListEventsStreamControl {
+    Continue,
+    Stop,
+}
+
+pub struct ListEventsStreamCompletion<'read> {
+    pub index: &'read VerifiedIndex,
+    pub generation_id: &'read str,
+    pub next_cursor: Option<&'read str>,
+    pub terminal: bool,
+    pub truncated: bool,
+    pub items: usize,
+    pub pages: usize,
+    pub encoded_core_bytes: usize,
+    pub content_bytes: usize,
+    pub oversized_singleton_pages: usize,
+}
+
+pub trait ListEventsStreamCallback {
+    type Error;
+
+    fn page(
+        &mut self,
+        page: ListEventsStreamPage<'_>,
+    ) -> Result<ListEventsStreamControl, Self::Error>;
+
+    fn complete(&mut self, completion: ListEventsStreamCompletion<'_>) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListEventsStreamResult {
+    pub items: usize,
+    pub pages: usize,
+    pub encoded_core_bytes: usize,
+    pub content_bytes: usize,
+    pub oversized_singleton_pages: usize,
+    pub terminal: bool,
+    pub truncated: bool,
+}
+
+pub fn execute_list_events_stream<Generation, Stream>(
+    mut request: ListEventsPageRequest,
+    generation_port: &mut Generation,
+    stream: &mut Stream,
+) -> std::result::Result<
+    ListEventsStreamResult,
+    ListEventsApplicationError<Generation::Error, Stream::Error>,
+>
+where
+    Generation: GenerationReadPort,
+    Stream: ListEventsStreamCallback,
+{
+    validate_page_request(&request).map_err(ListEventsApplicationError::Query)?;
+    let target = generation_target(request.cursor.as_ref());
+    let generation = PinnedGenerationRead::open(
+        generation_port,
+        GenerationReadRequest {
+            target,
+            retained_peer: RetainedPeerRead::Omit,
+        },
+    )
+    .map_err(ListEventsApplicationError::Generation)?;
+    let query = PinnedHistoryQuery::new(generation.index(), None);
+    let limit = validated_event_limit(request.limit).map_err(ListEventsApplicationError::Query)?;
+    let mut items = 0_usize;
+    let mut pages = 0_usize;
+    let mut encoded_core_bytes = 0_usize;
+    let mut content_bytes = 0_usize;
+    let mut oversized_singleton_pages = 0_usize;
+
+    let (terminal, truncated, next_cursor) = loop {
+        let remaining = limit.saturating_sub(items);
+        request.page_items = request.page_items.min(remaining);
+        let result = query
+            .list_events_page(&request)
+            .map_err(ListEventsApplicationError::Query)?;
+        let page = result.page;
+        pages = checked_add(pages, 1).map_err(ListEventsApplicationError::Query)?;
+        oversized_singleton_pages = checked_add(
+            oversized_singleton_pages,
+            usize::from(page.oversized_singleton),
+        )
+        .map_err(ListEventsApplicationError::Query)?;
+        if page.items.is_empty() && !page.terminal {
+            return Err(ListEventsApplicationError::Query(
+                ListEventsError::NonAdvancingPage,
+            ));
+        }
+        let page_items = page.items.len();
+        let control = stream
+            .page(ListEventsStreamPage {
+                index: generation.index(),
+                ordinal: items,
+                page: &page,
+            })
+            .map_err(ListEventsApplicationError::Stream)?;
+        items = checked_add(items, page_items).map_err(ListEventsApplicationError::Query)?;
+        encoded_core_bytes = checked_add(encoded_core_bytes, page.encoded_core_bytes)
+            .map_err(ListEventsApplicationError::Query)?;
+        content_bytes = checked_add(content_bytes, page.content_bytes)
+            .map_err(ListEventsApplicationError::Query)?;
+        let terminal = page.terminal;
+        let next_cursor = page.next_cursor;
+        let limit_reached = items >= limit;
+        if terminal || limit_reached || control == ListEventsStreamControl::Stop {
+            let truncated =
+                !terminal && (limit_reached || control == ListEventsStreamControl::Stop);
+            break (terminal, truncated, next_cursor);
+        }
+        request.cursor = Some(next_cursor.ok_or(ListEventsApplicationError::Query(
+            ListEventsError::MissingContinuationCursor,
+        ))?);
+    };
+
+    let encoded_next_cursor = next_cursor.as_ref().map(encode_event_range_cursor);
+    stream
+        .complete(ListEventsStreamCompletion {
+            index: generation.index(),
+            generation_id: generation.index().generation_id(),
+            next_cursor: encoded_next_cursor.as_deref(),
+            terminal,
+            truncated,
+            items,
+            pages,
+            encoded_core_bytes,
+            content_bytes,
+            oversized_singleton_pages,
+        })
+        .map_err(ListEventsApplicationError::Stream)?;
+    Ok(ListEventsStreamResult {
+        items,
+        pages,
+        encoded_core_bytes,
+        content_bytes,
+        oversized_singleton_pages,
+        terminal,
+        truncated,
+    })
+}
+
+fn checked_add(left: usize, right: usize) -> Result<usize, ListEventsError> {
+    left.checked_add(right).ok_or_else(|| {
+        ListEventsError::Range(CoreEventRangeError::Index(IndexError::CountOverflow))
+    })
 }
 
 impl PinnedHistoryQuery<'_> {

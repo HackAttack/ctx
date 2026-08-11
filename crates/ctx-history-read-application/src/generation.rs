@@ -35,6 +35,14 @@ impl GenerationRead {
             retained_peer,
         }
     }
+
+    pub const fn index(&self) -> &VerifiedIndex {
+        &self.index
+    }
+
+    pub const fn retained_peer(&self) -> Option<&VerifiedIndex> {
+        self.retained_peer.as_ref()
+    }
 }
 
 /// Static-dispatch port for opening one generation read.

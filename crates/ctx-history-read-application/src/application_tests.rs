@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     convert::Infallible,
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -22,17 +22,23 @@ use tempfile::tempdir;
 use crate::{
     copied_lineage_read_model, decode_session_event_cursor, encode_session_event_cursor,
     event_query_event_read_model, event_query_receipt, event_query_wire_request,
-    event_window_with_lineage_read_model, execute_locate, execute_search, normalize_uuid_prefix,
-    paginated_session_transcript_read_model, plan_search, render_event_read_model,
-    render_search_json, retain_structured_session_page, ActiveSessionExclusion,
-    CompactPresentationProjection, EventContentProjection, EventWindowBudget, GenerationRead,
-    GenerationReadPort, GenerationReadRequest, GenerationReadTarget, HistorySemanticBatch,
-    HistorySemanticError, HistorySemanticPort, HistorySemanticQuery, ListEventsRequest,
+    event_window_with_lineage_read_model, execute_list_events_stream, execute_locate,
+    execute_search, execute_show_event, execute_show_session_page, execute_show_session_stream,
+    normalize_uuid_prefix, paginated_session_transcript_read_model, plan_search,
+    render_event_read_model, render_search_json, retain_structured_session_page,
+    ActiveSessionExclusion, CompactPresentationProjection, EventContentProjection,
+    EventWindowBudget, GenerationRead, GenerationReadPort, GenerationReadRequest,
+    GenerationReadTarget, HistorySemanticBatch, HistorySemanticError, HistorySemanticPort,
+    HistorySemanticQuery, ListEventsPageRequest, ListEventsRequest, ListEventsStreamCallback,
+    ListEventsStreamCompletion, ListEventsStreamControl, ListEventsStreamPage,
     LocateApplicationRequest, LocateRequest, LocateResult, PinnedHistoryQuery, RetainedPeerRead,
     SearchApplicationError, SearchApplicationReadModelInput, SearchApplicationRequest,
     SearchBackend, SearchJsonInput, SearchPolicy, SearchRenderMetrics, SearchRequest,
-    SearchResultCommands, SemanticAvailability, SemanticReason, SessionEventMode, ShowEventRequest,
-    ShowSessionPageRequest, StructuredOutputFormat, StructuredTranscriptMode, UuidPrefixError,
+    SearchResultCommands, SemanticAvailability, SemanticReason, SessionEventMode,
+    ShowEventApplicationRequest, ShowEventRequest, ShowSessionApplicationRequest,
+    ShowSessionPageRequest, ShowSessionStreamCallback, ShowSessionStreamControl,
+    ShowSessionStreamPage, ShowSessionStreamRequest, ShowSessionStreamStart,
+    StructuredOutputFormat, StructuredTranscriptMode, UuidPrefixError,
 };
 
 struct UnusedSemanticPort;
@@ -182,6 +188,7 @@ struct RecordingGenerationPort {
     index: Option<VerifiedIndex>,
     calls: Cell<usize>,
     retained_peer: Cell<Option<RetainedPeerRead>>,
+    target: RefCell<Option<GenerationReadTarget>>,
 }
 
 impl RecordingGenerationPort {
@@ -190,6 +197,7 @@ impl RecordingGenerationPort {
             index: Some(index),
             calls: Cell::new(0),
             retained_peer: Cell::new(None),
+            target: RefCell::new(None),
         }
     }
 }
@@ -203,6 +211,7 @@ impl GenerationReadPort for RecordingGenerationPort {
     ) -> Result<GenerationRead, Self::Error> {
         self.calls.set(self.calls.get() + 1);
         self.retained_peer.set(Some(request.retained_peer));
+        *self.target.borrow_mut() = Some(request.target.clone());
         Ok(GenerationRead::new(
             self.index.take().expect("generation read only once"),
             None,
@@ -391,6 +400,226 @@ fn exact_generation_authority_is_checked_before_semantic_or_record_reads() {
     assert!(matches!(error, SearchApplicationError::Generation(_)));
     assert_eq!(generation.calls.get(), 1);
     assert_eq!(semantic.0.load(Ordering::Relaxed), 0);
+}
+
+#[derive(Default)]
+struct RecordingShowStream {
+    starts: usize,
+    page_sizes: Vec<usize>,
+    stop_after_first: bool,
+}
+
+impl ShowSessionStreamCallback for RecordingShowStream {
+    type Error = Infallible;
+
+    fn start(&mut self, start: ShowSessionStreamStart<'_>) -> Result<(), Self::Error> {
+        assert_eq!(
+            start.session.provider_session_id.as_deref(),
+            Some("pinned-session")
+        );
+        self.starts += 1;
+        Ok(())
+    }
+
+    fn page(
+        &mut self,
+        page: ShowSessionStreamPage<'_>,
+    ) -> Result<ShowSessionStreamControl, Self::Error> {
+        self.page_sizes.push(page.events.len());
+        Ok(if self.stop_after_first && self.page_sizes.len() == 1 {
+            ShowSessionStreamControl::Stop
+        } else {
+            ShowSessionStreamControl::Continue
+        })
+    }
+}
+
+#[test]
+fn show_operations_pin_once_and_cursor_target_precedes_session_reads() {
+    let temp = tempdir().unwrap();
+    let (index, records) = publish(temp.path());
+    let mut event_generation = RecordingGenerationPort::new(index);
+    let shown = execute_show_event(
+        ShowEventApplicationRequest {
+            request: ShowEventRequest {
+                selector: records[1].event_id.to_string(),
+                before: 1,
+                after: 1,
+                window: None,
+                budget: EventWindowBudget::default(),
+            },
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: false,
+        },
+        &mut event_generation,
+    )
+    .unwrap();
+    assert_eq!(shown.result().events.len(), 3);
+    assert_eq!(event_generation.calls.get(), 1);
+    assert_eq!(
+        event_generation.retained_peer.get(),
+        Some(RetainedPeerRead::Omit)
+    );
+
+    let cursor_index = VerifiedIndex::open_pinned(temp.path()).unwrap();
+    let cursor_page = PinnedHistoryQuery::new(&cursor_index, None)
+        .show_session_page(&ShowSessionPageRequest {
+            selector: Some(records[0].session_id.to_string()),
+            provider_session_id: None,
+            provider: None,
+            mode: SessionEventMode::Full,
+            cursor: None,
+            limit: 1,
+            page_items: 1,
+            page_budget: CoreEventPageBudget::new(
+                ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES,
+                ctx_history_core::MAX_CORE_CONTENT_BYTES,
+            ),
+        })
+        .unwrap();
+    let cursor = cursor_page.next_cursor.unwrap();
+    let encoded_cursor = encode_session_event_cursor(&cursor).unwrap();
+    let mut page_generation =
+        RecordingGenerationPort::new(VerifiedIndex::open_pinned(temp.path()).unwrap());
+    let page = execute_show_session_page(
+        ShowSessionApplicationRequest {
+            selector: Some(records[0].session_id.to_string()),
+            provider_session_id: None,
+            provider: None,
+            mode: SessionEventMode::Full,
+            cursor: Some(encoded_cursor),
+            limit: 1,
+            page_items: 1,
+            page_budget: CoreEventPageBudget::new(
+                ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES,
+                ctx_history_core::MAX_CORE_CONTENT_BYTES,
+            ),
+            compact_projection: false,
+        },
+        &mut page_generation,
+    )
+    .unwrap();
+    assert_eq!(page.page().events[0].event.event_id, records[1].event_id);
+    assert_eq!(page_generation.calls.get(), 1);
+    assert_eq!(
+        page_generation.target.borrow().as_ref(),
+        Some(&GenerationReadTarget::Exact(
+            cursor.generation_id().to_owned()
+        ))
+    );
+}
+
+#[test]
+fn show_stream_is_page_bounded_and_honors_callback_control() {
+    let temp = tempdir().unwrap();
+    let (index, records) = publish(temp.path());
+    let mut generation = RecordingGenerationPort::new(index);
+    let mut stream = RecordingShowStream {
+        stop_after_first: true,
+        ..RecordingShowStream::default()
+    };
+    let result = execute_show_session_stream(
+        ShowSessionStreamRequest {
+            selector: Some(records[0].session_id.to_string()),
+            provider_session_id: None,
+            provider: None,
+            mode: SessionEventMode::Full,
+            cursor: None,
+            max_events: None,
+            page_items: 1,
+            page_budget: CoreEventPageBudget::new(
+                ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES,
+                ctx_history_core::MAX_CORE_CONTENT_BYTES,
+            ),
+            compact_projection: false,
+        },
+        &mut generation,
+        &mut stream,
+    )
+    .unwrap();
+    assert_eq!(generation.calls.get(), 1);
+    assert_eq!(stream.starts, 1);
+    assert_eq!(stream.page_sizes, [1]);
+    assert_eq!(result.events_returned, 1);
+    assert!(result.truncated);
+}
+
+#[derive(Default)]
+struct RecordingListStream {
+    ordinals: Vec<usize>,
+    page_sizes: Vec<usize>,
+    completion: Option<(usize, usize, bool, bool)>,
+}
+
+impl ListEventsStreamCallback for RecordingListStream {
+    type Error = Infallible;
+
+    fn page(
+        &mut self,
+        page: ListEventsStreamPage<'_>,
+    ) -> Result<ListEventsStreamControl, Self::Error> {
+        self.ordinals.push(page.ordinal);
+        self.page_sizes.push(page.page.items.len());
+        Ok(ListEventsStreamControl::Continue)
+    }
+
+    fn complete(&mut self, completion: ListEventsStreamCompletion<'_>) -> Result<(), Self::Error> {
+        self.completion = Some((
+            completion.items,
+            completion.pages,
+            completion.terminal,
+            completion.truncated,
+        ));
+        Ok(())
+    }
+}
+
+#[test]
+fn list_stream_pins_cursor_generation_once_and_summarizes_pages() {
+    let temp = tempdir().unwrap();
+    let (index, _) = publish(temp.path());
+    let selection = CoreEventRangeSelection::all(CoreEventRangeFilters::default()).unwrap();
+    let first = PinnedHistoryQuery::new(&index, None)
+        .list_events_page(&ListEventsPageRequest {
+            selection: selection.clone(),
+            cursor: None,
+            limit: 1,
+            page_items: 1,
+            byte_budget: ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES,
+            strict_budget: None,
+        })
+        .unwrap();
+    let cursor = first.page.next_cursor.unwrap();
+    let mut generation =
+        RecordingGenerationPort::new(VerifiedIndex::open_pinned(temp.path()).unwrap());
+    let mut stream = RecordingListStream::default();
+    let result = execute_list_events_stream(
+        ListEventsPageRequest {
+            selection,
+            cursor: Some(cursor.clone()),
+            limit: 2,
+            page_items: 1,
+            byte_budget: ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES,
+            strict_budget: None,
+        },
+        &mut generation,
+        &mut stream,
+    )
+    .unwrap();
+    assert_eq!(generation.calls.get(), 1);
+    assert_eq!(
+        generation.target.borrow().as_ref(),
+        Some(&GenerationReadTarget::Exact(
+            cursor.generation_id().to_owned()
+        ))
+    );
+    assert_eq!(stream.ordinals, [0, 1]);
+    assert_eq!(stream.page_sizes, [1, 1]);
+    assert_eq!(stream.completion, Some((2, 2, true, false)));
+    assert_eq!(result.items, 2);
+    assert_eq!(result.pages, 2);
+    assert!(result.terminal);
+    assert!(!result.truncated);
 }
 
 #[test]

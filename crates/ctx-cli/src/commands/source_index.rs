@@ -6,6 +6,7 @@ mod search;
 mod shared;
 mod show;
 
+pub(crate) use compact_presentation::open_generation_read;
 pub(crate) use copied_lineage::copied_lineage_summary;
 pub(crate) use locate::run_locate;
 #[cfg(test)]

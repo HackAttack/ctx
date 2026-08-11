@@ -11,9 +11,17 @@ use ctx_history_index_query::{
 };
 use uuid::Uuid;
 
-use crate::{resolve_core_event_with_refs, resolve_show_session_with_refs, PinnedHistoryQuery};
+use crate::generation::PinnedGenerationRead;
+use crate::{
+    event_window_with_lineage_read_model, paginated_session_transcript_read_model,
+    reference_needs_retained_peer, resolve_core_event_with_refs, resolve_show_session_with_refs,
+    retain_structured_session_page, CompactPresentationProjection, GenerationReadError,
+    GenerationReadPort, GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget,
+    PinnedHistoryQuery, RetainedPeerRead, StructuredOutputFormat, StructuredTranscriptMode,
+};
 
 const QUERY_FETCH_MAX_EVENTS: usize = 200;
+pub const SHOW_SESSION_PAGE_ITEMS: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEventMode {
@@ -79,6 +87,396 @@ pub struct ShowSessionPage {
     pub events: Vec<ShowSessionEvent>,
     pub has_more: bool,
     pub next_cursor: Option<SessionEventCursor>,
+}
+
+pub struct ShowEventApplicationRequest {
+    pub request: ShowEventRequest,
+    pub generation_target: GenerationReadTarget,
+    pub compact_projection: bool,
+}
+
+impl ShowEventApplicationRequest {
+    fn retained_peer_read(&self) -> RetainedPeerRead {
+        if self.compact_projection || reference_needs_retained_peer(&self.request.selector) {
+            RetainedPeerRead::IfAvailable
+        } else {
+            RetainedPeerRead::Omit
+        }
+    }
+}
+
+pub struct ShowEventApplicationResult {
+    generation: PinnedGenerationRead,
+    result: ShowEventResult,
+}
+
+impl ShowEventApplicationResult {
+    pub fn receipt(&self) -> GenerationReadReceipt<'_> {
+        self.generation.receipt()
+    }
+
+    pub const fn result(&self) -> &ShowEventResult {
+        &self.result
+    }
+
+    pub fn read_model(
+        &self,
+        format: StructuredOutputFormat,
+        output_limit_bytes: usize,
+    ) -> Result<serde_json::Value> {
+        event_window_with_lineage_read_model(
+            &self.result.selected,
+            &self.result.events,
+            &self.result.copied_lineage,
+            format,
+            output_limit_bytes,
+        )
+    }
+
+    pub fn project_read_model(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
+        CompactPresentationProjection::new(self.generation.index(), self.generation.retained_peer())
+            .project(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum ShowReadApplicationError<GenerationError, StreamError = std::convert::Infallible> {
+    Generation(GenerationReadError<GenerationError>),
+    Query(anyhow::Error),
+    Stream(StreamError),
+}
+
+pub fn execute_show_event<Generation: GenerationReadPort>(
+    request: ShowEventApplicationRequest,
+    generation_port: &mut Generation,
+) -> std::result::Result<ShowEventApplicationResult, ShowReadApplicationError<Generation::Error>> {
+    let retained_peer = request.retained_peer_read();
+    let generation = PinnedGenerationRead::open(
+        generation_port,
+        GenerationReadRequest {
+            target: request.generation_target,
+            retained_peer,
+        },
+    )
+    .map_err(ShowReadApplicationError::Generation)?;
+    let result = PinnedHistoryQuery::new(generation.index(), generation.retained_peer())
+        .show_event(&request.request)
+        .map_err(ShowReadApplicationError::Query)?;
+    Ok(ShowEventApplicationResult { generation, result })
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowSessionApplicationRequest {
+    pub selector: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub provider: Option<CaptureProvider>,
+    pub mode: SessionEventMode,
+    pub cursor: Option<String>,
+    pub limit: usize,
+    pub page_items: usize,
+    pub page_budget: CoreEventPageBudget,
+    pub compact_projection: bool,
+}
+
+impl ShowSessionApplicationRequest {
+    fn retained_peer_read(&self) -> RetainedPeerRead {
+        if self.compact_projection
+            || self
+                .selector
+                .as_deref()
+                .is_some_and(reference_needs_retained_peer)
+        {
+            RetainedPeerRead::IfAvailable
+        } else {
+            RetainedPeerRead::Omit
+        }
+    }
+
+    fn decode_cursor(&self) -> Result<Option<SessionEventCursor>> {
+        self.cursor
+            .as_deref()
+            .map(crate::decode_session_event_cursor)
+            .transpose()
+    }
+}
+
+pub struct ShowSessionApplicationResult {
+    generation: PinnedGenerationRead,
+    page: ShowSessionPage,
+    compact_projection: bool,
+}
+
+pub struct ShowSessionReadModels {
+    pub value: serde_json::Value,
+    pub compact_value: Option<serde_json::Value>,
+}
+
+impl ShowSessionApplicationResult {
+    pub fn receipt(&self) -> GenerationReadReceipt<'_> {
+        self.generation.receipt()
+    }
+
+    pub const fn page(&self) -> &ShowSessionPage {
+        &self.page
+    }
+
+    pub fn into_read_models(
+        self,
+        mode: StructuredTranscriptMode,
+        format: StructuredOutputFormat,
+        limit: usize,
+        output_limit_bytes: usize,
+    ) -> Result<ShowSessionReadModels> {
+        let retained = retain_structured_session_page(
+            self.page.events,
+            self.page.has_more,
+            output_limit_bytes,
+        )?;
+        let value = paginated_session_transcript_read_model(
+            &self.page.session,
+            mode,
+            format,
+            retained.events,
+            limit,
+            retained.has_more,
+            retained.next_cursor.as_ref(),
+        )?;
+        let compact_value = self
+            .compact_projection
+            .then(|| {
+                CompactPresentationProjection::new(
+                    self.generation.index(),
+                    self.generation.retained_peer(),
+                )
+                .project(&value)
+            })
+            .transpose()?;
+        Ok(ShowSessionReadModels {
+            value,
+            compact_value,
+        })
+    }
+}
+
+pub fn execute_show_session_page<Generation: GenerationReadPort>(
+    request: ShowSessionApplicationRequest,
+    generation_port: &mut Generation,
+) -> std::result::Result<ShowSessionApplicationResult, ShowReadApplicationError<Generation::Error>>
+{
+    let cursor = request
+        .decode_cursor()
+        .map_err(ShowReadApplicationError::Query)?;
+    let target = cursor
+        .as_ref()
+        .map(|cursor| GenerationReadTarget::Exact(cursor.generation_id().to_owned()))
+        .unwrap_or(GenerationReadTarget::Active);
+    let retained_peer = request.retained_peer_read();
+    let generation = PinnedGenerationRead::open(
+        generation_port,
+        GenerationReadRequest {
+            target,
+            retained_peer,
+        },
+    )
+    .map_err(ShowReadApplicationError::Generation)?;
+    let page = PinnedHistoryQuery::new(generation.index(), generation.retained_peer())
+        .show_session_page(&ShowSessionPageRequest {
+            selector: request.selector,
+            provider_session_id: request.provider_session_id,
+            provider: request.provider,
+            mode: request.mode,
+            cursor,
+            limit: request.limit,
+            page_items: request.page_items,
+            page_budget: request.page_budget,
+        })
+        .map_err(ShowReadApplicationError::Query)?;
+    Ok(ShowSessionApplicationResult {
+        generation,
+        page,
+        compact_projection: request.compact_projection,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowSessionStreamRequest {
+    pub selector: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub provider: Option<CaptureProvider>,
+    pub mode: SessionEventMode,
+    pub cursor: Option<String>,
+    pub max_events: Option<usize>,
+    pub page_items: usize,
+    pub page_budget: CoreEventPageBudget,
+    pub compact_projection: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct ShowReadModelProjection<'index> {
+    current: &'index ctx_history_index_query::VerifiedIndex,
+    retained_peer: Option<&'index ctx_history_index_query::VerifiedIndex>,
+    enabled: bool,
+}
+
+impl ShowReadModelProjection<'_> {
+    pub fn project(&self, value: &serde_json::Value) -> Result<Option<serde_json::Value>> {
+        self.enabled
+            .then(|| {
+                CompactPresentationProjection::new(self.current, self.retained_peer).project(value)
+            })
+            .transpose()
+    }
+}
+
+pub struct ShowSessionStreamStart<'read> {
+    pub session: &'read SessionRecord,
+    pub projection: ShowReadModelProjection<'read>,
+}
+
+pub struct ShowSessionStreamPage<'read> {
+    pub events: Vec<ShowSessionEvent>,
+    pub projection: ShowReadModelProjection<'read>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowSessionStreamControl {
+    Continue,
+    Stop,
+}
+
+pub trait ShowSessionStreamCallback {
+    type Error;
+
+    fn start(&mut self, start: ShowSessionStreamStart<'_>) -> Result<(), Self::Error>;
+
+    fn page(
+        &mut self,
+        page: ShowSessionStreamPage<'_>,
+    ) -> Result<ShowSessionStreamControl, Self::Error>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowSessionStreamResult {
+    pub events_returned: usize,
+    pub truncated: bool,
+}
+
+pub fn execute_show_session_stream<Generation, Stream>(
+    request: ShowSessionStreamRequest,
+    generation_port: &mut Generation,
+    stream: &mut Stream,
+) -> std::result::Result<
+    ShowSessionStreamResult,
+    ShowReadApplicationError<Generation::Error, Stream::Error>,
+>
+where
+    Generation: GenerationReadPort,
+    Stream: ShowSessionStreamCallback,
+{
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(crate::decode_session_event_cursor)
+        .transpose()
+        .map_err(ShowReadApplicationError::Query)?;
+    let target = cursor
+        .as_ref()
+        .map(|cursor| GenerationReadTarget::Exact(cursor.generation_id().to_owned()))
+        .unwrap_or(GenerationReadTarget::Active);
+    let retained_peer = if request.compact_projection
+        || request
+            .selector
+            .as_deref()
+            .is_some_and(reference_needs_retained_peer)
+    {
+        RetainedPeerRead::IfAvailable
+    } else {
+        RetainedPeerRead::Omit
+    };
+    let generation = PinnedGenerationRead::open(
+        generation_port,
+        GenerationReadRequest {
+            target,
+            retained_peer,
+        },
+    )
+    .map_err(ShowReadApplicationError::Generation)?;
+    let query = PinnedHistoryQuery::new(generation.index(), generation.retained_peer());
+    let session = query
+        .show_session(
+            request.selector.as_deref(),
+            request.provider_session_id.as_deref(),
+            request.provider,
+        )
+        .map_err(ShowReadApplicationError::Query)?;
+    let projection = ShowReadModelProjection {
+        current: generation.index(),
+        retained_peer: generation.retained_peer(),
+        enabled: request.compact_projection,
+    };
+    stream
+        .start(ShowSessionStreamStart {
+            session: &session,
+            projection,
+        })
+        .map_err(ShowReadApplicationError::Stream)?;
+
+    let mut cursor = cursor;
+    let mut events_returned = 0_usize;
+    let mut truncated = false;
+    loop {
+        let remaining = request
+            .max_events
+            .map(|maximum| maximum.saturating_sub(events_returned))
+            .unwrap_or(request.page_items);
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let page = query
+            .show_session_page(&ShowSessionPageRequest {
+                selector: Some(session.session_id.to_string()),
+                provider_session_id: None,
+                provider: None,
+                mode: request.mode,
+                cursor: cursor.clone(),
+                limit: remaining.min(request.page_items),
+                page_items: request.page_items,
+                page_budget: request.page_budget,
+            })
+            .map_err(ShowReadApplicationError::Query)?;
+        let page_events = page.events.len();
+        let control = stream
+            .page(ShowSessionStreamPage {
+                events: page.events,
+                projection,
+            })
+            .map_err(ShowReadApplicationError::Stream)?;
+        events_returned = events_returned.saturating_add(page_events);
+        if control == ShowSessionStreamControl::Stop {
+            truncated = page.has_more;
+            break;
+        }
+        if !page.has_more {
+            break;
+        }
+        if request
+            .max_events
+            .is_some_and(|maximum| events_returned >= maximum)
+        {
+            truncated = true;
+            break;
+        }
+        cursor = Some(page.next_cursor.ok_or_else(|| {
+            ShowReadApplicationError::Query(anyhow!(
+                "nonterminal Core session event page omitted its continuation cursor"
+            ))
+        })?);
+    }
+    Ok(ShowSessionStreamResult {
+        events_returned,
+        truncated,
+    })
 }
 
 impl PinnedHistoryQuery<'_> {
