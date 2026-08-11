@@ -158,7 +158,7 @@ impl IngestProgressPort for CliIngestHost<'_> {
             .context("ingest progress was initialized more than once")?;
         self.progress = Some(ProgressReporter::new(
             ui,
-            self.options.progress,
+            self.options.progress.into(),
             self.options.json,
             self.options.operation,
             total_bytes,

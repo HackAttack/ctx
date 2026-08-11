@@ -16,6 +16,7 @@ mod mcp_tool_call;
 mod output;
 mod ports;
 mod presentation_limit;
+mod progress;
 mod provider_args;
 mod provider_sources;
 mod request;
@@ -66,7 +67,7 @@ pub use source_index::{
 };
 pub use sources::{run_sources, SourcesDiscoveryObservation, SourcesExecutionObservation};
 
-pub use config::HistoryCliConfig;
+pub use config::{HistoryCliConfig, HistoryConfigPort};
 pub use history_source_plugins::{
     discover_history_source_plugins_with_diagnostics, prepare_source_backed_history_source,
     HistorySourcePluginManifestFailure, HistorySourcePluginRefresh, HistorySourcePluginSource,
@@ -79,6 +80,9 @@ pub use mcp_tool_call::{
 };
 pub use output::JsonOutputFormat;
 pub use ports::{OutputStream, SearchExecutionObservation, SearchRefreshStatus, TerminalPort};
+pub use progress::{
+    format_bytes, format_count, presentation_snapshot, ProgressReporter, ProgressWriterError,
+};
 pub use request::{
     HistoryProvider, ImportFormat, ImportRequest, ListEventsContentProjection, ListEventsDirection,
     ListEventsRequest, ListEventsScope, ListRequest, LocateRequest, OutputFormat, ProgressMode,

@@ -8,6 +8,21 @@ pub struct HistoryCliConfig {
     pub local_usage_enabled: bool,
 }
 
+/// The narrow configuration authority needed by history setup adapters.
+///
+/// Hosts retain concrete configuration representation, persistence, mutation,
+/// environment resolution, and error types. Command adapters use this port
+/// statically so those final-host concerns do not cross into this crate.
+pub trait HistoryConfigPort {
+    type Error;
+
+    fn snapshot(&self) -> HistoryCliConfig;
+
+    fn write_default_config(&mut self) -> Result<(), Self::Error>;
+
+    fn set_semantic_search_enabled(&mut self, enabled: bool) -> Result<(), Self::Error>;
+}
+
 /// A command-local projection of the daemon-owned configuration snapshot.
 /// It deliberately carries no mutable host configuration authority.
 #[derive(Debug, Clone)]
@@ -50,7 +65,58 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, HistoryCliConfig};
+    use super::{AppConfig, HistoryCliConfig, HistoryConfigPort};
+
+    #[derive(Debug)]
+    struct TestConfigPort {
+        snapshot: HistoryCliConfig,
+        wrote_default: bool,
+        semantic_enabled: Option<bool>,
+    }
+
+    impl HistoryConfigPort for TestConfigPort {
+        type Error = ();
+
+        fn snapshot(&self) -> HistoryCliConfig {
+            self.snapshot
+        }
+
+        fn write_default_config(&mut self) -> Result<(), Self::Error> {
+            self.wrote_default = true;
+            Ok(())
+        }
+
+        fn set_semantic_search_enabled(&mut self, enabled: bool) -> Result<(), Self::Error> {
+            self.semantic_enabled = Some(enabled);
+            self.snapshot.semantic_search_enabled = enabled;
+            Ok(())
+        }
+    }
+
+    fn configure_setup<P: HistoryConfigPort>(config: &mut P) -> Result<HistoryCliConfig, P::Error> {
+        config.set_semantic_search_enabled(true)?;
+        config.write_default_config()?;
+        Ok(config.snapshot())
+    }
+
+    #[test]
+    fn typed_port_keeps_setup_mutation_and_snapshot_host_defined() {
+        let mut port = TestConfigPort {
+            snapshot: HistoryCliConfig {
+                daemon_enabled: true,
+                semantic_search_enabled: false,
+                local_usage_enabled: true,
+            },
+            wrote_default: false,
+            semantic_enabled: None,
+        };
+
+        let snapshot = configure_setup(&mut port).unwrap();
+
+        assert!(port.wrote_default);
+        assert_eq!(port.semantic_enabled, Some(true));
+        assert!(snapshot.semantic_search_enabled);
+    }
 
     #[test]
     fn snapshot_preserves_disabled_local_usage() {

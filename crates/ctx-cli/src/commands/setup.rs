@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
 use crate::analytics::{self, SetupMode, SetupTelemetry};
+use crate::history_config::CliHistoryConfigAdapter;
 use crate::output::print_json;
 use crate::progress::{ProgressReporter, ProgressWriterError};
 use crate::semantic::{
@@ -17,6 +18,7 @@ use crate::ui::{
     Token, Ui,
 };
 use crate::{config, SetupArgs};
+use ctx_history_cli::HistoryConfigPort;
 
 pub(crate) fn run_setup(
     args: SetupArgs,
@@ -34,8 +36,7 @@ pub(crate) fn run_setup(
         );
     }
     if args.semantic {
-        config::set_semantic_search_enabled(&data_root, true)?;
-        config.search.semantic = Some(true);
+        CliHistoryConfigAdapter::new(&data_root, config).set_semantic_search_enabled(true)?;
     }
     let semantic_enabled = config.semantic_search_enabled();
     if semantic_enabled && semantic_supported && (!config.daemon.enabled || args.no_daemon) {
@@ -44,7 +45,7 @@ pub(crate) fn run_setup(
         );
     }
 
-    config::write_default_config(&data_root)?;
+    CliHistoryConfigAdapter::new(&data_root, config).write_default_config()?;
 
     let json_output = args.format.is_json();
     let suppression_reason = daemon_autostart_suppression_reason();
@@ -68,7 +69,7 @@ pub(crate) fn run_setup(
     };
     let refresh_wait = setup_refresh_wait(args.wait, daemon_handoff.as_ref());
     let refresh_request = {
-        let mut progress = ProgressReporter::new(ui, args.progress, json_output, "setup", 0);
+        let mut progress = ProgressReporter::new(ui, args.progress.into(), json_output, "setup", 0);
         request_source_refresh(
             &data_root,
             config.daemon.enabled,
