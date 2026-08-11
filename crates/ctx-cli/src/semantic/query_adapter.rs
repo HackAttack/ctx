@@ -9,12 +9,12 @@ use serde_json::{json, Value};
 use crate::{
     commands::source_index::{
         HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
-        SemanticCapability,
+        SemanticReason,
     },
     compact_json,
 };
 
-use super::{query_service::daemon_query_request, semantic_query_service_supported};
+use super::query_service::daemon_query_request;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SemanticQueryAdapter<'data_root> {
@@ -32,14 +32,6 @@ impl HistorySemanticPort for SemanticQueryAdapter<'_> {
         = SemanticQuerySession<'a>
     where
         Self: 'a;
-
-    fn capability(&self) -> SemanticCapability {
-        if semantic_query_service_supported() {
-            SemanticCapability::Available
-        } else {
-            SemanticCapability::Unavailable
-        }
-    }
 
     fn begin_query<'a>(
         &'a self,
@@ -194,7 +186,7 @@ impl From<SemanticQueryError> for HistorySemanticError {
                 code,
                 detail,
                 retryable,
-            } => Self::not_ready(code, detail, retryable),
+            } => Self::not_ready(SemanticReason::from_adapter_code(code), detail, retryable),
             SemanticQueryError::Failed { detail } => Self::failed(detail),
         }
     }

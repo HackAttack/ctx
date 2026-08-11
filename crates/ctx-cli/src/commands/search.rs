@@ -10,14 +10,14 @@ use crate::ui::Ui;
 use crate::{config, SearchArgs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum RefreshArg {
+pub(crate) enum CliRefreshArg {
     Background,
     Off,
     Wait,
 }
 
-impl RefreshArg {
-    pub(crate) fn as_str(self) -> &'static str {
+impl CliRefreshArg {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Background => "background",
             Self::Off => "off",

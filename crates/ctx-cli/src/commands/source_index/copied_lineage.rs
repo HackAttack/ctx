@@ -1,22 +1,23 @@
 use anyhow::{anyhow, Result};
-use ctx_history_index::{
-    CopiedEventLineage, CopiedEventLineagePolicy, CopiedEventLineageResolution, VerifiedIndex,
-};
+use ctx_history_index::{CopiedEventLineage, CopiedEventLineageResolution};
+#[cfg(test)]
+use ctx_history_index::{CopiedEventLineagePolicy, VerifiedIndex};
 use serde_json::{json, Map, Value};
+#[cfg(test)]
 use uuid::Uuid;
 
-pub(super) const COPIED_LINEAGE_MAX_BYTES: usize = 64 * 1024;
+const COPIED_LINEAGE_MAX_BYTES: usize = 64 * 1024;
 
-pub(super) fn copied_lineage_value(
+#[cfg(test)]
+pub(crate) fn copied_lineage_value(
     index: &VerifiedIndex,
     selected_event_id: Uuid,
     policy: CopiedEventLineagePolicy,
 ) -> Result<Value> {
-    let lineage = index.copied_event_lineage(selected_event_id, policy)?;
-    copied_lineage_read_model(&lineage)
+    copied_lineage_read_model(&index.copied_event_lineage(selected_event_id, policy)?)
 }
 
-fn copied_lineage_read_model(lineage: &CopiedEventLineage) -> Result<Value> {
+pub(crate) fn copied_lineage_read_model(lineage: &CopiedEventLineage) -> Result<Value> {
     let relationship_counts = lineage
         .relationship_counts
         .iter()
@@ -57,14 +58,13 @@ fn copied_lineage_read_model(lineage: &CopiedEventLineage) -> Result<Value> {
             session_id,
         } => (json!(event_id), json!(session_id.map(|id| id.as_uuid()))),
     };
-    let resolution = json!({
-        "state": lineage.resolution.state_str(),
-        "ctx_event_id": resolution_event,
-        "ctx_session_id": resolution_session,
-    });
     let value = json!({
         "schema_version": 2,
-        "resolution": resolution,
+        "resolution": {
+            "state": lineage.resolution.state_str(),
+            "ctx_event_id": resolution_event,
+            "ctx_session_id": resolution_session,
+        },
         "selected_depth": lineage.selected_depth,
         "observed_count": lineage.observed_count,
         "returned": lineage.returned,

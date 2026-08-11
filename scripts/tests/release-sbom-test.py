@@ -40,6 +40,7 @@ WORKSPACE_PACKAGES = (
     ("ctx-history-index-query", "crates/ctx-history-index-query"),
     ("ctx-history-jsonl", "crates/ctx-history-jsonl"),
     ("ctx-history-refresh-execution", "crates/ctx-history-refresh-execution"),
+    ("ctx-history-query", "crates/ctx-history-query"),
     ("ctx-semantic-index", "crates/ctx-semantic-index"),
     ("ctx-semantic-model", "crates/ctx-semantic-model"),
     ("ctx-upgrade-engine", "crates/ctx-upgrade-engine"),
@@ -157,6 +158,7 @@ members = [
   "crates/ctx-history-index-query",
   "crates/ctx-history-jsonl",
   "crates/ctx-history-refresh-execution",
+  "crates/ctx-history-query",
   "crates/ctx-semantic-index",
   "crates/ctx-semantic-model",
   "crates/ctx-upgrade-engine",
@@ -186,6 +188,7 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-daemon-service = { path = \"../ctx-daemon-service\" }\n"
                     "ctx-history-jsonl = { path = \"../ctx-history-jsonl\" }\n"
                     "ctx-history-refresh-execution = { path = \"../ctx-history-refresh-execution\" }\n"
+                    "ctx-history-query = { path = \"../ctx-history-query\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
                 ),
@@ -221,6 +224,11 @@ tantivy = { version = "0.26.1", default-features = false, features = ["mmap", "l
                     "ctx-semantic-index = { path = \"../ctx-semantic-index\" }\n"
                     "ctx-semantic-model = { path = \"../ctx-semantic-model\" }\n"
                     "ctx-upgrade-engine = { path = \"../ctx-upgrade-engine\" }"
+                ),
+                "ctx-history-query": (
+                    "ctx-history-core = { path = \"../ctx-history-core\" }\n"
+                    "ctx-history-index-format = { path = \"../ctx-history-index-format\" }\n"
+                    "ctx-history-index-query = { path = \"../ctx-history-index-query\" }"
                 ),
                 "ctx-semantic-model": (
                     "ctx-history-core = { path = \"../ctx-history-core\" }"
@@ -287,6 +295,7 @@ repository = "https://example.invalid/{name}"
             "@@//crates/ctx-history-index-query:ctx_history_index_query",
             "@@//crates/ctx-history-jsonl:ctx_history_jsonl",
             "@@//crates/ctx-history-refresh-execution:ctx_history_refresh_execution",
+            "@@//crates/ctx-history-query:ctx_history_query",
             "@@//crates/ctx-semantic-index:ctx_semantic_index",
             "@@//crates/ctx-semantic-model:ctx_semantic_model",
             "@@//crates/ctx-upgrade-engine:ctx_upgrade_engine",
@@ -378,6 +387,7 @@ repository = "https://example.invalid/{name}"
                     "ctx-history-index",
                     "ctx-history-jsonl",
                     "ctx-history-refresh-execution",
+                    "ctx-history-query",
                     "ctx-semantic-index",
                     "ctx-semantic-model",
                     "ctx-upgrade-engine",
@@ -442,6 +452,15 @@ repository = "https://example.invalid/{name}"
                 ("ctx-history-core", "ctx-history-index"),
             ),
             self.package("ctx-history-refresh-execution", "0.26.0"),
+            self.package(
+                "ctx-history-query",
+                "0.26.0",
+                (
+                    "ctx-history-core",
+                    "ctx-history-index-format",
+                    "ctx-history-index-query",
+                ),
+            ),
             self.package(
                 "ctx-semantic-index",
                 "0.26.0",

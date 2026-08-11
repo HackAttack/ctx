@@ -1,5 +1,4 @@
 use std::{
-    ops::Range,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -9,7 +8,6 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use ctx_history_core::{managed_data_root, utc_now};
 use ctx_history_index::{EventSearchFilters, VerifiedIndex};
 use serde_json::{json, Value};
-use unicode_segmentation::UnicodeSegmentation as _;
 use uuid::Uuid;
 
 use crate::{
@@ -25,8 +23,10 @@ use crate::{
 };
 
 use super::search::{
-    NormalizedSearchQuery, SearchCollection, SearchHit, SearchPresentation, SourceSearchRequest,
+    semantic_reason_code, NormalizedSearchQuery, SearchCollection, SearchHit, SearchPresentation,
+    SourceSearchRequest,
 };
+use crate::RefreshArg;
 
 mod human;
 mod locate;
@@ -37,8 +37,11 @@ pub(super) use locate::render_locate_document;
 pub(super) use search::{render_search_document, render_search_not_ready_document};
 pub(super) use show::render_show_document;
 
-pub(in crate::commands::source_index) const SEARCH_SNIPPET_MAX_CHARS: usize = 320;
-pub(in crate::commands::source_index) const SEARCH_SNIPPET_MAX_BYTES: usize = 16 * 1024;
+pub(in crate::commands::source_index) use ctx_history_query::SEARCH_SNIPPET_MAX_CHARS;
+#[cfg(test)]
+pub(in crate::commands::source_index) use ctx_history_query::{
+    search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES,
+};
 
 pub(super) fn pretty_json_stdout_bytes(value: &Value) -> Result<usize> {
     Ok(serde_json::to_string_pretty(value)?.len().saturating_add(1))
@@ -49,14 +52,15 @@ pub(super) fn stdout_body_bytes(body: &str) -> usize {
         .saturating_add(usize::from(!body.ends_with('\n')))
 }
 
-struct SearchJsonInput<'input, 'event> {
+struct SearchJsonInput<'input> {
     request: &'input SourceSearchRequest,
     data_root: &'input Path,
     index: &'input VerifiedIndex,
     collection: &'input SearchCollection,
     filters: &'input EventSearchFilters,
-    presentations: &'input [SearchPresentation<'event>],
+    presentations: &'input [SearchPresentation],
     copied_lineages: &'input [Value],
+    refresh_mode: RefreshArg,
     metrics: SearchRenderMetrics<'input>,
 }
 
@@ -68,13 +72,13 @@ struct SearchRenderMetrics<'a> {
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn search_json<'event>(
+pub(super) fn search_json(
     request: &SourceSearchRequest,
     data_root: &Path,
     index: &VerifiedIndex,
     collection: &SearchCollection,
     filters: &EventSearchFilters,
-    presentations: &[SearchPresentation<'event>],
+    presentations: &[SearchPresentation],
     refresh_status: &str,
     refresh_source_count: usize,
     query_duration: Duration,
@@ -99,6 +103,7 @@ pub(super) fn search_json<'event>(
         filters,
         presentations,
         &copied_lineages,
+        RefreshArg::Off,
         refresh_status,
         refresh_source_count,
         query_duration,
@@ -106,14 +111,15 @@ pub(super) fn search_json<'event>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn search_json_with_lineages<'event>(
+pub(super) fn search_json_with_lineages(
     request: &SourceSearchRequest,
     data_root: &Path,
     index: &VerifiedIndex,
     collection: &SearchCollection,
     filters: &EventSearchFilters,
-    presentations: &[SearchPresentation<'event>],
+    presentations: &[SearchPresentation],
     copied_lineages: &[Value],
+    refresh_mode: RefreshArg,
     refresh_status: &str,
     refresh_source_count: usize,
     query_duration: Duration,
@@ -126,6 +132,7 @@ pub(super) fn search_json_with_lineages<'event>(
         filters,
         presentations,
         copied_lineages,
+        refresh_mode,
         metrics: SearchRenderMetrics {
             refresh_status,
             refresh_source_count,
@@ -134,7 +141,7 @@ pub(super) fn search_json_with_lineages<'event>(
     })
 }
 
-fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
+fn render_search_json(input: SearchJsonInput<'_>) -> Result<Value> {
     let SearchJsonInput {
         request,
         data_root,
@@ -143,6 +150,7 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
         filters,
         presentations,
         copied_lineages,
+        refresh_mode,
         metrics,
     } = input;
     let normalized_query = NormalizedSearchQuery::from_request(request);
@@ -170,10 +178,10 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
         .zip(copied_lineages)
         .enumerate()
         .map(|(offset, ((hit, presentation), copied_lineage))| {
-            if presentation.event.event_id != hit.event.event_id {
+            if presentation.event_id != hit.event.event_id {
                 return Err(anyhow!(
-                    "pinned Core lookup returned an out-of-order search presentation for event {}",
-                    hit.event.event_id
+                    "out-of-order search presentation for event {}",
+                    presentation.event_id
                 ));
             }
             search_result_json(
@@ -188,6 +196,7 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
         })
         .collect::<Result<Vec<_>>>()?;
     let phase_attribution = phase_attribution(metrics.query_duration);
+    let semantic_diagnostics = external_semantic_diagnostics(collection);
     Ok(compact_json(json!({
         "schema_version": 1,
         "payload_type": "search_results",
@@ -209,7 +218,7 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
             "include_current_session": request.include_current_session.then_some(true),
         },
         "freshness": {
-            "mode": request.refresh.as_str(),
+            "mode": refresh_mode.as_str(),
             "status": metrics.refresh_status,
             "source_count": metrics.refresh_source_count,
         },
@@ -218,9 +227,9 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
             "effective_mode": collection.effective_backend.as_str(),
             "semantic_weight": collection.semantic_weight,
             "semantic_status": collection.semantic_status,
-            "semantic_fallback_code": collection.semantic_fallback.as_ref().map(|fallback| fallback.code),
-            "semantic_fallback": collection.semantic_fallback.as_ref().map(|fallback| fallback.detail.as_str()),
-            "semantic_diagnostics": collection.semantic_diagnostics,
+            "semantic_fallback_code": collection.semantic_fallback.as_ref().map(semantic_fallback_code),
+            "semantic_fallback": collection.semantic_fallback.as_ref().map(|fallback| semantic_fallback_detail(fallback.reason, &fallback.detail)),
+            "semantic_diagnostics": semantic_diagnostics,
             "index": "core",
             "generation_id": index.generation_id(),
             "indexed_documents": index.document_count(),
@@ -241,9 +250,36 @@ fn render_search_json(input: SearchJsonInput<'_, '_>) -> Result<Value> {
     })))
 }
 
+fn semantic_fallback_code(
+    fallback: &ctx_history_query::SemanticFallbackDiagnostics,
+) -> &'static str {
+    fallback
+        .reason
+        .map(semantic_reason_code)
+        .unwrap_or("semantic_query_failed")
+}
+
+fn external_semantic_diagnostics(collection: &SearchCollection) -> Option<Value> {
+    let mut diagnostics = collection.semantic_diagnostics.clone()?;
+    let Some(fallback) = collection.semantic_fallback.as_ref() else {
+        return Some(diagnostics);
+    };
+    let Some(object) = diagnostics.as_object_mut() else {
+        return Some(diagnostics);
+    };
+    object.insert(
+        "fallback".to_owned(),
+        json!({
+            "code": semantic_fallback_code(fallback),
+            "detail": semantic_fallback_detail(fallback.reason, &fallback.detail),
+        }),
+    );
+    Some(diagnostics)
+}
+
 fn search_result_json(
     hit: &SearchHit,
-    presentation: &SearchPresentation<'_>,
+    presentation: &SearchPresentation,
     result_scope: &str,
     query: &NormalizedSearchQuery,
     rank: usize,
@@ -251,7 +287,7 @@ fn search_result_json(
     copied_lineage: &Value,
 ) -> Result<Value> {
     let (snippet, snippet_truncated) = search_snippet(presentation);
-    let event = &presentation.event;
+    let event = &hit.event;
     let event_id = event.event_id;
     let session_id = event.session_id;
     let item_id = if result_scope == "session" {
@@ -269,7 +305,7 @@ fn search_result_json(
     if result_scope == "session" {
         next.insert(0, format!("{command_prefix} show session {session_id}"));
     }
-    let query_arguments = query.shell_arguments();
+    let query_arguments = search_query_command_arguments(query);
     if !query_arguments.is_empty() {
         next.push(format!(
             "{command_prefix} search {query_arguments} --session {session_id}"
@@ -321,342 +357,43 @@ fn search_result_json(
     })))
 }
 
-fn search_snippet<'presentation>(
-    presentation: &'presentation SearchPresentation<'_>,
-) -> (&'presentation str, bool) {
+fn search_snippet(presentation: &SearchPresentation) -> (&str, bool) {
     (
         presentation.snippet.as_str(),
         presentation.snippet_truncated,
     )
 }
 
-pub(in crate::commands::source_index) fn search_snippet_fragment(
-    body: &str,
-    query_texts: &[&str],
-) -> (String, bool) {
-    let direct_ascii_offsets = ascii_grapheme_offsets_are_bytes(body);
-    let grapheme_count = if direct_ascii_offsets {
-        body.len()
-    } else {
-        body.graphemes(true).count()
-    };
-    if grapheme_count <= SEARCH_SNIPPET_MAX_CHARS {
-        return byte_bounded_search_snippet(body, query_texts, false);
-    }
-
-    let start = query_match_range(body, query_texts).map_or(0, |matched| {
-        if direct_ascii_offsets {
-            centered_snippet_start_from_match(grapheme_count, matched.start, matched.end)
-        } else {
-            centered_snippet_start(body, grapheme_count, matched)
+fn semantic_fallback_detail(
+    reason: Option<ctx_history_query::SemanticReason>,
+    detail: &str,
+) -> String {
+    match reason {
+        Some(ctx_history_query::SemanticReason::PolicyDisabled) => {
+            "local semantic retrieval is disabled".to_owned()
         }
-    });
-    let end = start.saturating_add(SEARCH_SNIPPET_MAX_CHARS);
-    let byte_range = if direct_ascii_offsets {
-        start..end
-    } else {
-        grapheme_byte_range(body, start, end)
-    };
-    let snippet = &body[byte_range];
-    let truncated = start > 0 || end < grapheme_count;
-    byte_bounded_search_snippet(snippet, query_texts, truncated)
-}
-
-fn byte_bounded_search_snippet(
-    snippet: &str,
-    query_texts: &[&str],
-    truncated: bool,
-) -> (String, bool) {
-    if snippet.len() <= SEARCH_SNIPPET_MAX_BYTES {
-        return (snippet.to_owned(), truncated);
-    }
-
-    let graphemes = snippet
-        .grapheme_indices(true)
-        .map(|(start, grapheme)| start..start.saturating_add(grapheme.len()))
-        .collect::<Vec<_>>();
-    let matched = query_match_range(snippet, query_texts);
-    let match_containing = matched
-        .as_ref()
-        .and_then(|matched| grapheme_span_covering_match(&graphemes, matched))
-        .filter(|required| grapheme_window_bytes(&graphemes, required) <= SEARCH_SNIPPET_MAX_BYTES)
-        .and_then(|required| {
-            match_containing_grapheme_window(&graphemes, &required, matched.as_ref())
-        });
-    let window =
-        match_containing.or_else(|| fallback_grapheme_window(&graphemes, matched.as_ref()));
-    let Some(window) = window else {
-        // A valid Core body can contain one extended grapheme cluster larger
-        // than the presentation byte cap. Keep the hit and its truncation
-        // signal without retaining or splitting that cluster.
-        return (String::new(), true);
-    };
-    (snippet[window].to_owned(), true)
-}
-
-fn match_containing_grapheme_window(
-    graphemes: &[Range<usize>],
-    required: &Range<usize>,
-    matched: Option<&Range<usize>>,
-) -> Option<Range<usize>> {
-    let required_center = matched.map_or_else(
-        || {
-            graphemes[required.start]
-                .start
-                .saturating_add(graphemes[required.end - 1].end)
-        },
-        |matched| matched.start.saturating_add(matched.end),
-    );
-    // Retain the largest complete-grapheme window containing the required
-    // match span, then prefer the window whose byte midpoint is closest to the
-    // match midpoint. The final start offset makes ties deterministic.
-    let mut best: Option<(Range<usize>, usize, usize)> = None;
-    for start in 0..=required.start {
-        for end in required.end..=graphemes.len() {
-            let bytes = graphemes[end - 1]
-                .end
-                .saturating_sub(graphemes[start].start);
-            if bytes > SEARCH_SNIPPET_MAX_BYTES {
-                break;
-            }
-            let center = graphemes[start]
-                .start
-                .saturating_add(graphemes[end - 1].end);
-            let center_distance = center.abs_diff(required_center);
-            let replace = best
-                .as_ref()
-                .is_none_or(|(best_range, best_bytes, best_distance)| {
-                    bytes > *best_bytes
-                        || (bytes == *best_bytes && center_distance < *best_distance)
-                        || (bytes == *best_bytes
-                            && center_distance == *best_distance
-                            && graphemes[start].start < best_range.start)
-                });
-            if replace {
-                best = Some((
-                    graphemes[start].start..graphemes[end - 1].end,
-                    bytes,
-                    center_distance,
-                ));
-            }
+        Some(ctx_history_query::SemanticReason::ExecutionUnavailable) => {
+            "local semantic retrieval is unavailable because the ctx daemon is disabled".to_owned()
         }
-    }
-    best.map(|(window, _, _)| window)
-}
-
-fn fallback_grapheme_window(
-    graphemes: &[Range<usize>],
-    matched: Option<&Range<usize>>,
-) -> Option<Range<usize>> {
-    let match_center = matched.map(|matched| matched.start.saturating_add(matched.end));
-    let mut best: Option<(Range<usize>, usize, usize)> = None;
-    for start in 0..graphemes.len() {
-        for end in start.saturating_add(1)..=graphemes.len() {
-            let bytes = graphemes[end - 1]
-                .end
-                .saturating_sub(graphemes[start].start);
-            if bytes > SEARCH_SNIPPET_MAX_BYTES {
-                break;
-            }
-            let window = graphemes[start].start..graphemes[end - 1].end;
-            let match_distance = match_center.map_or(0, |center| {
-                if center < window.start.saturating_mul(2) {
-                    window.start.saturating_mul(2).saturating_sub(center)
-                } else if center > window.end.saturating_mul(2) {
-                    center.saturating_sub(window.end.saturating_mul(2))
-                } else {
-                    0
-                }
-            });
-            let replace = best
-                .as_ref()
-                .is_none_or(|(best_window, best_bytes, best_distance)| {
-                    (matched.is_some() && match_distance < *best_distance)
-                        || (matched.is_some()
-                            && match_distance == *best_distance
-                            && bytes > *best_bytes)
-                        || (matched.is_none() && bytes > *best_bytes)
-                        || (match_distance == *best_distance
-                            && bytes == *best_bytes
-                            && window.start < best_window.start)
-                });
-            if replace {
-                best = Some((window, bytes, match_distance));
-            }
+        Some(ctx_history_query::SemanticReason::ContentScopeUnsupported) => {
+            format!("{detail}; use --backend lexical or choose --content-scope all|transcript")
         }
-    }
-    best.map(|(window, _, _)| window)
-}
-
-fn grapheme_window_bytes(graphemes: &[Range<usize>], window: &Range<usize>) -> usize {
-    graphemes[window.end - 1]
-        .end
-        .saturating_sub(graphemes[window.start].start)
-}
-
-fn grapheme_span_covering_match(
-    graphemes: &[Range<usize>],
-    matched: &Range<usize>,
-) -> Option<Range<usize>> {
-    let start = graphemes
-        .iter()
-        .position(|grapheme| grapheme.end > matched.start)?;
-    let end = graphemes
-        .iter()
-        .rposition(|grapheme| grapheme.start < matched.end)?
-        .saturating_add(1);
-    (start < end).then_some(start..end)
-}
-
-fn centered_snippet_start(body: &str, grapheme_count: usize, matched: Range<usize>) -> usize {
-    let mut match_start = 0;
-    let mut match_end = 0;
-    for (index, (offset, _)) in body.grapheme_indices(true).enumerate() {
-        if offset <= matched.start {
-            match_start = index;
+        Some(ctx_history_query::SemanticReason::EventTypeUnsupported) => {
+            format!("{detail}; use --backend lexical or remove --event-type")
         }
-        if offset < matched.end {
-            match_end = index.saturating_add(1);
-        } else {
-            break;
-        }
-    }
-    let match_start = match_start.min(grapheme_count.saturating_sub(1));
-    let match_end = match_end.min(grapheme_count);
-    centered_snippet_start_from_match(grapheme_count, match_start, match_end)
-}
-
-fn centered_snippet_start_from_match(
-    grapheme_count: usize,
-    match_start: usize,
-    match_end: usize,
-) -> usize {
-    let latest_start = grapheme_count.saturating_sub(SEARCH_SNIPPET_MAX_CHARS);
-    let match_graphemes = match_end.saturating_sub(match_start).max(1);
-    let leading_context = SEARCH_SNIPPET_MAX_CHARS
-        .saturating_sub(match_graphemes)
-        .saturating_div(2);
-    match_start
-        .saturating_sub(leading_context)
-        .min(latest_start)
-}
-
-fn ascii_grapheme_offsets_are_bytes(body: &str) -> bool {
-    let mut previous_was_carriage_return = false;
-    for byte in body.bytes() {
-        if !byte.is_ascii() || (previous_was_carriage_return && byte == b'\n') {
-            return false;
-        }
-        previous_was_carriage_return = byte == b'\r';
-    }
-    true
-}
-
-fn grapheme_byte_range(body: &str, start: usize, end: usize) -> Range<usize> {
-    let mut start_offset = None;
-    let mut end_offset = None;
-    for (index, (offset, _)) in body.grapheme_indices(true).enumerate() {
-        if index == start {
-            start_offset = Some(offset);
-        }
-        if index == end {
-            end_offset = Some(offset);
-            break;
-        }
-    }
-    start_offset.unwrap_or(body.len())..end_offset.unwrap_or(body.len())
-}
-
-fn query_match_range(body: &str, query_texts: &[&str]) -> Option<Range<usize>> {
-    let folded_body = if body.is_ascii() {
-        body.to_ascii_lowercase()
-    } else {
-        body.to_lowercase()
-    };
-    let mut best_full_match = None;
-    for query_text in query_texts {
-        let query_text = query_text.trim();
-        if query_text.is_empty() {
-            continue;
-        }
-        update_preferred_match(
-            &mut best_full_match,
-            folded_match_range(body, &folded_body, query_text),
-            query_text.chars().count(),
-        );
-    }
-    if let Some((_, matched)) = best_full_match {
-        return Some(matched);
-    }
-
-    let mut best_term_match = None;
-    for query_text in query_texts {
-        let query_text = query_text.trim();
-        for term in query_text.split(|character: char| !character.is_alphanumeric()) {
-            if term.is_empty() {
-                continue;
-            }
-            update_preferred_match(
-                &mut best_term_match,
-                folded_match_range(body, &folded_body, term),
-                term.chars().count(),
-            );
-        }
-    }
-    best_term_match.map(|(_, matched)| matched)
-}
-
-fn update_preferred_match(
-    preferred: &mut Option<(usize, Range<usize>)>,
-    candidate: Option<Range<usize>>,
-    specificity: usize,
-) {
-    let Some(candidate) = candidate else {
-        return;
-    };
-    if preferred
-        .as_ref()
-        .is_none_or(|(current_specificity, current)| {
-            specificity > *current_specificity
-                || (specificity == *current_specificity && candidate.start < current.start)
-        })
-    {
-        *preferred = Some((specificity, candidate));
+        _ => detail.to_owned(),
     }
 }
 
-fn folded_match_range(body: &str, folded_body: &str, query_text: &str) -> Option<Range<usize>> {
-    let folded_query = query_text.to_lowercase();
-    if folded_query.is_empty() {
-        return None;
+fn search_query_command_arguments(query: &NormalizedSearchQuery) -> String {
+    let mut arguments = Vec::new();
+    if let Some(positional) = query.positional() {
+        arguments.push(shell_quote_arg(positional));
     }
-    let folded_start = folded_body.find(&folded_query)?;
-    let folded_end = folded_start.saturating_add(folded_query.len());
-    if body.is_ascii() {
-        return Some(folded_start..folded_end);
+    for term in query.terms() {
+        arguments.push(format!("--term={}", shell_quote_arg(term)));
     }
-    original_range_for_folded_match(body, folded_start, folded_end)
-}
-
-fn original_range_for_folded_match(
-    body: &str,
-    folded_start: usize,
-    folded_end: usize,
-) -> Option<Range<usize>> {
-    let mut folded_offset = 0_usize;
-    let mut original_start = None;
-    for (original_offset, character) in body.char_indices() {
-        let folded_character_bytes = character.to_lowercase().map(char::len_utf8).sum::<usize>();
-        let next_folded_offset = folded_offset.saturating_add(folded_character_bytes);
-        if original_start.is_none() && folded_start < next_folded_offset {
-            original_start = Some(original_offset);
-        }
-        if folded_end <= next_folded_offset {
-            return original_start.map(|start| start..original_offset + character.len_utf8());
-        }
-        folded_offset = next_folded_offset;
-    }
-    None
+    arguments.join(" ")
 }
 
 pub(super) fn follow_up_command_prefix(data_root: &Path) -> String {

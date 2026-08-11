@@ -11,13 +11,15 @@ pub(crate) use copied_lineage::copied_lineage_summary;
 pub(crate) use locate::run_locate;
 #[cfg(test)]
 use search::mcp_search;
+#[cfg(test)]
+pub(crate) use search::source_search_request;
 pub(crate) use search::{
     mcp_search_with_compact, normalize_mcp_search_request, run_search,
     validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
 };
 pub(crate) use search::{
     HistorySemanticBatch, HistorySemanticError, HistorySemanticPort, HistorySemanticQuery,
-    SemanticCapability,
+    SemanticReason,
 };
 pub(crate) use shared::generation_query_authority_error_json;
 #[cfg(test)]
@@ -72,7 +74,7 @@ use search::{
     search_existing_generation, shape_search_result_window, source_backed_refresh_mode,
 };
 #[cfg(test)]
-use shared::{index_root, open_index};
+use shared::{externalize_query_error, index_root, open_index};
 #[cfg(test)]
 use show::resolve_show_session;
 

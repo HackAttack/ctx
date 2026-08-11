@@ -63,6 +63,7 @@ mkdir -p \
   "${repo}/crates/ctx-history-index-format" \
   "${repo}/crates/ctx-history-index" \
   "${repo}/crates/ctx-history-index-query" \
+  "${repo}/crates/ctx-history-query" \
   "${repo}/tests/fixtures/custom-history-jsonl" \
   "${repo}/bazel-out/k8-opt/bin/crates/ctx-cli" \
   "${repo}/inputs" \
@@ -106,6 +107,8 @@ cp "${source_root}/crates/ctx-history-index-format/Cargo.toml" \
   "${repo}/crates/ctx-history-index-format/Cargo.toml"
 cp "${source_root}/crates/ctx-history-index-query/Cargo.toml" \
   "${repo}/crates/ctx-history-index-query/Cargo.toml"
+cp "${source_root}/crates/ctx-history-query/Cargo.toml" \
+  "${repo}/crates/ctx-history-query/Cargo.toml"
 cp "${source_root}/tests/fixtures/custom-history-jsonl/basic.jsonl" \
   "${repo}/tests/fixtures/custom-history-jsonl/basic.jsonl"
 
@@ -461,6 +464,7 @@ main	_main/crates/ctx-cli/Cargo.toml
 main	_main/crates/ctx-history-index-format/Cargo.toml
 main	_main/crates/ctx-history-index/Cargo.toml
 main	_main/crates/ctx-history-index-query/Cargo.toml
+main	_main/crates/ctx-history-query/Cargo.toml
 EOF
 ln -s "${repo}/inputs/sbom-inventory.txt" \
   "${route_runfiles}/sbom-inventory.txt"

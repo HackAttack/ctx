@@ -163,11 +163,11 @@ fn mcp_fixture_show_event(root: &Path, event: &CoreEventRecord) -> Value {
     .unwrap()
 }
 
-fn fixture_search_presentation<'event>(
-    event: &'event SearchEventMetadata,
+fn fixture_search_presentation(
+    event: &SearchEventMetadata,
     record: CoreEventRecord,
     snippet_truncated: bool,
-) -> SearchPresentation<'event> {
+) -> SearchPresentation {
     let snippet = record
         .core_record
         .content
@@ -176,13 +176,13 @@ fn fixture_search_presentation<'event>(
         .expect("search fixture needs normalized body")
         .clone();
     SearchPresentation {
-        event,
+        event_id: event.event_id,
         snippet,
         snippet_truncated,
     }
 }
 
-fn request(refresh: RefreshArg) -> SourceSearchRequest {
+fn request(_refresh: RefreshArg) -> SourceSearchRequest {
     SourceSearchRequest {
         query: TEST_QUERY.to_owned(),
         terms: Vec::new(),
@@ -204,9 +204,6 @@ fn request(refresh: RefreshArg) -> SourceSearchRequest {
         include_current_session: true,
         backend: Some(SearchBackendArg::Lexical),
         semantic_weight: 0.35,
-        semantic_enabled: true,
-        semantic_daemon_enabled: true,
-        refresh,
     }
 }
 

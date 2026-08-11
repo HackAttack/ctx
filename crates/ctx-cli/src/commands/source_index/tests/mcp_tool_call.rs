@@ -3,7 +3,7 @@ use ctx_history_core::McpToolCallAttribution;
 use super::*;
 
 #[test]
-fn exact_show_surfaces_omit_absence_and_keep_tool_outputs_log_only() {
+fn cli_and_mcp_show_adapters_share_event_selection_and_projection() {
     let temp = tempdir().unwrap();
     write_test_generation(temp.path());
     let exact = McpToolCallAttribution {
@@ -68,21 +68,18 @@ fn exact_show_surfaces_omit_absence_and_keep_tool_outputs_log_only() {
                 serde_json::to_value(&exact).unwrap()
             );
         }
+        let mcp_session = mcp_show_session(
+            temp.path(),
+            &session.session_id.as_uuid().to_string(),
+            mode,
+            10,
+            None,
+            ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        )
+        .unwrap();
+        assert_eq!(mcp_session["events"], transcript["events"]);
     }
 
-    let mcp_session = mcp_show_session(
-        temp.path(),
-        &session.session_id.as_uuid().to_string(),
-        TranscriptMode::Log,
-        10,
-        None,
-        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    )
-    .unwrap();
-    assert_eq!(
-        mcp_session["events"][1]["mcp_tool_call"],
-        serde_json::to_value(&exact).unwrap()
-    );
     let mcp_event = mcp_fixture_show_event(temp.path(), &tool_output);
     assert_eq!(
         mcp_event["event"]["mcp_tool_call"],
