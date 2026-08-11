@@ -127,10 +127,13 @@ def main() -> None:
         "AppConfig",
         "clap::",
         "ctx_cli::",
+        "ctx_daemon_application",
         "ctx_daemon",
         "ctx_history_capture::",
         "ctx_history_index::",
         "ctx_history_query::",
+        "ctx_history_read_application",
+        "ctx_pro_",
         "ctx_semantic",
         "LocalToolBackend",
     ]
@@ -148,6 +151,35 @@ def main() -> None:
     remaining = [path for path in stale if (root / path).exists()]
     if remaining:
         fail(f"stale CLI MCP application authorities remain: {remaining}")
+
+    required_authorities = {
+        "crates/ctx-agent-application/src/mcp_tool_call.rs": ["invoke_mcp_tool_call"],
+        "crates/ctx-agent-application/src/tool_backend/mod.rs": [
+            "HistoryReadPort",
+            "SearchReadinessPort",
+            "SourceCatalogPort",
+            "ExtensionToolPort",
+        ],
+    }
+    for relative, symbols in required_authorities.items():
+        path = root / relative
+        if not path.is_file():
+            fail(f"missing application authority {relative}")
+        body = path.read_text(encoding="utf-8")
+        missing = [symbol for symbol in symbols if symbol not in body]
+        if missing:
+            fail(f"application authority {relative} is missing {missing}")
+
+    cli_backend = (root / "crates/ctx-cli/src/tool_backend/application.rs").read_text(
+        encoding="utf-8"
+    )
+    stale_cli_orchestration = [
+        symbol
+        for symbol in ("fn execute_inner(", "ToolIntegrationReceipt {", "ToolTransportFacts::")
+        if symbol in cli_backend
+    ]
+    if stale_cli_orchestration:
+        fail(f"stale CLI tool orchestration remains: {stale_cli_orchestration}")
 
     cloc = approximate_physical_cloc(sources)
     if cloc >= HARD_CLOC_LIMIT:
