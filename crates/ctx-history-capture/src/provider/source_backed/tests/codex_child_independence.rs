@@ -457,6 +457,228 @@ fn semantic_checkpoint_envelope(
     )
 }
 
+fn certificate_with_provider_checkpoint(
+    index: &VerifiedIndex,
+    native_session_id: &str,
+    provider_checkpoint: TypedKey,
+) -> CertifiedSource {
+    let current = certificate_for(index, native_session_id);
+    let frontier = current.frontier().unwrap();
+    let TypedKey::Utf8(family_json) = frontier.checkpoint() else {
+        panic!("Codex family checkpoint was not compact UTF-8");
+    };
+    let mut family = serde_json::from_str::<serde_json::Value>(family_json).unwrap();
+    family["provider_checkpoint"] = serde_json::to_value(provider_checkpoint).unwrap();
+    let checkpoint = TypedKey::Utf8(serde_json::to_string(&family).unwrap());
+    let modified_frontier = SourceFrontier::new(
+        frontier.checkpoint_kind(),
+        checkpoint,
+        frontier.certified_prefix_bytes(),
+        *frontier.certified_prefix_digest(),
+    )
+    .unwrap();
+    CertifiedSource::certify_with_frontier(
+        current.observation().clone(),
+        current.observation().clone(),
+        current.parser_revision(),
+        *current.content_digest(),
+        current.counts(),
+        Some(modified_frontier),
+    )
+    .unwrap()
+}
+
+fn install_single_source_certificate(
+    index_root: &Path,
+    native_session_id: &str,
+    provider_checkpoint: TypedKey,
+) -> String {
+    let current = VerifiedIndex::open(index_root).unwrap();
+    let routes = current.manifest().source_routes().to_vec();
+    let replacement =
+        certificate_with_provider_checkpoint(&current, native_session_id, provider_checkpoint);
+    let records = records_for(&current, native_session_id);
+    assert_eq!(
+        routes
+            .iter()
+            .flat_map(|route| route.sources())
+            .filter(|source| source.exact_descriptor_eq(replacement.observation().source()))
+            .count(),
+        1
+    );
+    drop(current);
+
+    let mut writer = GenerationWriter::open(index_root, writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer
+        .set_source_route_plan(
+            routes
+                .iter()
+                .map(|route| route.route_identity().clone())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::new(),
+        )
+        .unwrap();
+    for route in &routes {
+        writer
+            .begin_source_route_stage(route.route_identity().clone())
+            .unwrap();
+        for source in route.sources() {
+            assert!(source.exact_descriptor_eq(replacement.observation().source()));
+            writer.begin_source(source.clone()).unwrap();
+            for record in &records {
+                writer.add_core_record(record.clone()).unwrap();
+            }
+            writer.certify_source(replacement.clone()).unwrap();
+        }
+        writer
+            .finish_source_route_stage(route.route_identity())
+            .unwrap();
+    }
+    writer.set_present_source_routes(routes).unwrap();
+    writer
+        .commit(|target| match target {
+            RevalidationTarget::Source(actual) => actual == &replacement,
+            RevalidationTarget::Deletion(_) => false,
+        })
+        .unwrap()
+        .generation_id
+}
+
+fn retired_semantic_v2_checkpoint(native_session_id: &str) -> TypedKey {
+    TypedKey::Utf8(
+        serde_json::to_string(&serde_json::json!({
+            "version": 2,
+            "pending_tool_authorities": [{
+                "call_id_sha256": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                "record_start": 1,
+                "record_end": 2,
+                "raw_ordinal": 1,
+                "continuation_cell_id": null,
+                "continuation_conflicted": false,
+                "continuation_call_id_sha256": "",
+                "continuation_capacity_exceeded": false,
+                "correlation_ambiguous": false,
+                "invocation_origin": {"kind": "unique_to_session"}
+            }],
+            "owner": {
+                "native_session_id": native_session_id,
+                "parent_native_session_id": null,
+                "advisory_session_id": native_session_id,
+                "root_native_session_id": native_session_id,
+                "session_relationship": "root",
+                "started_at": "2026-08-09T12:00:00Z",
+                "cwd": "/tmp/codex-child-independence",
+                "originator": "codex_cli_rs",
+                "cli_version": "0.1.0",
+                "source_kind": "cli",
+                "external_agent_id": null,
+                "role_hint": null,
+                "model_provider": "openai",
+                "git": null
+            },
+            "local_turn_started": false
+        }))
+        .unwrap(),
+    )
+}
+
+fn assert_unusable_semantic_checkpoint_rebuilds(
+    case: &str,
+    provider_checkpoint: impl FnOnce(&str) -> TypedKey,
+) {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join(format!("sessions-{case}"));
+    let index_root = temp.path().join(format!("index-{case}"));
+    let cold_root = temp.path().join(format!("cold-{case}"));
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000005a";
+    let call_id = format!("{case}-pending-call");
+    let marker = format!("{case}semanticcheckpointreplacementtoken");
+    let path = session_path(&sessions, native_session_id);
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [turn_context(), exec_call(&call_id)],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    let injected_generation = install_single_source_certificate(
+        &index_root,
+        native_session_id,
+        provider_checkpoint(native_session_id),
+    );
+    let injected = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(injected.generation_id(), injected_generation);
+    assert_eq!(
+        certificate_for(&injected, native_session_id).parser_revision(),
+        CURRENT_PARSER_REVISION
+    );
+    drop(injected);
+
+    let unchanged_observed = capture_causal_stage();
+    let unchanged =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert_eq!(unchanged.commit.generation_id, injected_generation);
+    let unchanged_counters = causal_by_id(&unchanged_observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(unchanged_counters.scanner_source_opens, 0);
+    assert_eq!(unchanged_counters.scanner_sources_started, 0);
+    assert_eq!(unchanged_counters.scanner_sources_completed, 0);
+    assert_eq!(unchanged_counters.scanner_bytes_read, 0);
+    assert_eq!(unchanged_counters.appended_sources, 0);
+    assert_eq!(unchanged_counters.replaced_sources, 0);
+    assert_eq!(unchanged_counters.writer_mutated_sources, 0);
+
+    append_event(&path, exec_result(&call_id, &marker));
+    let replacement_observed = capture_causal_stage();
+    let replacement =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(replacement.failed_routes.is_empty());
+    assert!(replacement.logical_source_failures.is_empty());
+    let counters = causal_by_id(&replacement_observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.appended_sources, 0);
+    assert_eq!(counters.replaced_sources, 1);
+    assert_eq!(counters.scanner_sources_started, 1);
+    assert_eq!(counters.scanner_sources_completed, 1);
+    assert_eq!(counters.writer_mutated_sources, 1);
+
+    let rebuilt = VerifiedIndex::open(&index_root).unwrap();
+    let rebuilt_snapshot = source_snapshot(&rebuilt, native_session_id, &marker);
+    let (_, _, _, rebuilt_checkpoint) = semantic_checkpoint_envelope(&rebuilt, native_session_id);
+    assert_checkpoint_has_no_authority_snapshots(&rebuilt_checkpoint);
+    assert_eq!(
+        certificate_for(&rebuilt, native_session_id)
+            .frontier()
+            .unwrap()
+            .certified_prefix_bytes(),
+        fs::metadata(&path).unwrap().len()
+    );
+    drop(rebuilt);
+
+    let cold = refresh_source_backed_generation(&cold_root, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    assert_eq!(
+        cold.commit.certified_source_bytes,
+        replacement.commit.certified_source_bytes
+    );
+    let cold = VerifiedIndex::open(&cold_root).unwrap();
+    assert_eq!(
+        source_snapshot(&cold, native_session_id, &marker),
+        rebuilt_snapshot
+    );
+}
+
 fn assert_checkpoint_has_no_authority_snapshots(checkpoint: &serde_json::Value) {
     assert_eq!(checkpoint["version"], 1);
     assert_eq!(checkpoint.as_object().unwrap().len(), 2);
@@ -1321,6 +1543,16 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
         ),
         appended_snapshot
     );
+}
+
+#[test]
+fn retired_semantic_v2_checkpoint_replaces_on_safe_append_and_matches_cold() {
+    assert_unusable_semantic_checkpoint_rebuilds("retiredv2", retired_semantic_v2_checkpoint);
+}
+
+#[test]
+fn malformed_semantic_checkpoint_key_replaces_on_safe_append_and_matches_cold() {
+    assert_unusable_semantic_checkpoint_rebuilds("malformedkey", |_| TypedKey::U64(2));
 }
 
 #[test]

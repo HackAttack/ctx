@@ -81,7 +81,10 @@ impl CodexSessionSemanticExecutorV0 {
         }
         let checkpoint = match (projection_mode, checkpoint) {
             (JsonlFamilyProjectionMode::CertifiedAppend, Some(checkpoint)) => {
-                Some(super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint)?)
+                // Shared family validation has already certified the source and
+                // physical frontier. Unknown provider-only state removes Codex
+                // append proof; preflight below requests the one safe replacement.
+                super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint).ok()
             }
             (JsonlFamilyProjectionMode::CertifiedAppend, None) => None,
             (JsonlFamilyProjectionMode::Cold | JsonlFamilyProjectionMode::Replacement, _) => None,
@@ -96,7 +99,7 @@ impl CodexSessionSemanticExecutorV0 {
                 CodexEventIdentityStateV0::default()
             }
         };
-        let scanner = CodexNativeScanner::new_semantic(plan.0, checkpoint.clone())?;
+        let scanner = CodexNativeScanner::new_semantic(plan.0)?;
         Ok(Self {
             #[cfg(any(test, ctx_codex_causal_qualification))]
             state,
@@ -127,7 +130,7 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
             .ok_or(CaptureError::SystemInvariant(
                 "Codex semantic executor lost its scanner",
             ))?
-            .preflight_semantic(input, self.checkpoint.as_ref())?;
+            .preflight_semantic(input)?;
         Ok(if retry {
             JsonlFamilySemanticPreflight::RetryReplacement
         } else {
@@ -668,16 +671,6 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
             mode,
         )
         .map(Some)
-    }
-
-    fn shed_optional_provider_checkpoint_evidence(
-        &self,
-        checkpoint: &TypedKey,
-    ) -> Result<Option<TypedKey>> {
-        super::super::checkpoint::CodexSemanticCheckpoint::shed_optional_pending_evidence_key(
-            checkpoint,
-        )
-        .map_err(CaptureError::from)
     }
 
     fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {

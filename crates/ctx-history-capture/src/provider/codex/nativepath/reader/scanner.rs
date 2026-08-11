@@ -339,7 +339,6 @@ fn preflight_semantic_authority(
 impl CodexNativeScanner {
     pub(in crate::provider::codex::nativepath) fn new_semantic(
         source: CodexCatalogSource,
-        _checkpoint: Option<CodexSemanticCheckpoint>,
     ) -> Result<Self> {
         Ok(Self {
             source,
@@ -360,7 +359,6 @@ impl CodexNativeScanner {
     pub(in crate::provider::codex::nativepath) fn preflight_semantic(
         &mut self,
         input: &mut JsonlFamilyExecutionIo,
-        _checkpoint: Option<&CodexSemanticCheckpoint>,
     ) -> Result<bool> {
         let preflight = preflight_semantic_authority(input, self)?;
         let retry = preflight

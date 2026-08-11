@@ -171,13 +171,6 @@ impl CodexSemanticCheckpoint {
         }
     }
 
-    pub(super) fn shed_optional_pending_evidence_key(
-        key: &TypedKey,
-    ) -> serde_json::Result<Option<TypedKey>> {
-        Self::decode_key(key)?;
-        Ok(None)
-    }
-
     pub(super) fn owner(&self) -> &CodexCheckpointLineage {
         &self.lineage
     }
@@ -388,11 +381,6 @@ mod tests {
         assert!(semantic_bytes < 4 * 1024);
         assert!(fits);
         assert!(family_bytes <= 64 * 1024);
-        assert!(CodexSemanticCheckpoint::shed_optional_pending_evidence_key(
-            &checkpoint.encode_key().unwrap()
-        )
-        .unwrap()
-        .is_none());
         eprintln!("maximal Codex checkpoint: semantic={semantic_bytes} family={family_bytes}");
     }
 }

@@ -186,8 +186,8 @@ fn scan_collect(source: CodexCatalogSource) -> (TestSemanticScan, CollectingSink
     .unwrap();
     let mut input = JsonlFamilyExecutionIo::new(reader);
     let initial = input.position().unwrap();
-    let mut scanner = CodexNativeScanner::new_semantic(source, None).unwrap();
-    assert!(!scanner.preflight_semantic(&mut input, None).unwrap());
+    let mut scanner = CodexNativeScanner::new_semantic(source).unwrap();
+    assert!(!scanner.preflight_semantic(&mut input).unwrap());
     assert!(input.settle_preflight(initial).unwrap());
     let mut collected = CollectingSink::default();
     while let Some(page) = scanner.next_semantic_page(&mut input).unwrap() {
