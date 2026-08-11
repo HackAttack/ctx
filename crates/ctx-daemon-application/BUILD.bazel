@@ -18,6 +18,12 @@ filegroup(
     srcs = glob(["**"], exclude = ["BUILD.bazel"]),
 )
 
+filegroup(
+    name = "supervisor_discovery_environment_policy_source",
+    testonly = True,
+    srcs = ["src/supervisor/environment.rs"],
+)
+
 COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-daemon-application",
 }

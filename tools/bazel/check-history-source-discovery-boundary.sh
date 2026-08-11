@@ -30,7 +30,9 @@ query "kind(\"rust_library rule\", deps(${target})) intersect //crates/..." \
 python3 "${repo_root}/tools/bazel/check_history_source_discovery_boundary.py" \
   "${repo_root}/crates/ctx-history-source-discovery/Cargo.toml" \
   "${scratch}/direct-labels.txt" \
-  "${scratch}/closure-labels.txt"
+  "${scratch}/closure-labels.txt" \
+  "${repo_root}/crates/ctx-daemon-application/src/supervisor/environment.rs" \
+  "${repo_root}/crates/ctx-history-source-discovery/src/provider_sources/context.rs"
 
 source_root="${repo_root}/crates/ctx-history-source-discovery/src"
 if grep -REn --include='*.rs' \
