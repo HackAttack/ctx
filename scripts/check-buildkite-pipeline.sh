@@ -505,6 +505,15 @@ if command -v ruby >/dev/null 2>&1; then
       abort "#{key} must serialize native construction" unless step["concurrency"] == 1 && step["concurrency_group"] == concurrency_group
     end
     macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
+    expected_macos_arm64_secrets = %w[
+      APPLE_CODESIGN_CERT_P12_B64
+      APPLE_CODESIGN_CERT_PASSWORD
+      NOTARY_ISSUER
+      NOTARY_KEY_ID
+      NOTARY_KEY_P8_B64
+    ]
+    abort "missing macos-arm64 hosted release step" unless macos_arm64
+    abort "macos-arm64 must declare the exact hosted signing secret set" unless macos_arm64["secrets"] == expected_macos_arm64_secrets
     abort "macos-x64 construction lane must not claim native smoke" if macos_x64["command"].to_s.include?("smoke-daemon-semantic-release")
     macos_arm64_paths = Array(macos_arm64["artifact_paths"])
     abort "macos-arm64 must upload runtime signing evidence" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json")

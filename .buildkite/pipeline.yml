@@ -261,6 +261,12 @@ steps:
         fi
         cat "$${onnx_smoke_root}/smoke.log"
       fi
+    secrets:
+      - "APPLE_CODESIGN_CERT_P12_B64"
+      - "APPLE_CODESIGN_CERT_PASSWORD"
+      - "NOTARY_ISSUER"
+      - "NOTARY_KEY_ID"
+      - "NOTARY_KEY_P8_B64"
     agents:
       queue: "ctx-release-macos-arm64"
       os: "darwin"
