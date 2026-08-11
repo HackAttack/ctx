@@ -6,7 +6,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, ScannedSourceCounts, SourceFrontier,
-    SourceKey, SourceObservation, TypedKey,
+    SourceKey, SourceObservation,
 };
 use ctx_history_index::BaseEventIdentityLookup;
 
@@ -1420,14 +1420,6 @@ pub(super) fn decode_checkpoint(
         ));
     }
     Ok(checkpoint)
-}
-
-pub(crate) fn provider_checkpoint_for_base(
-    adapter: &dyn JsonlFamilyAdapter,
-    leaf: &JsonlFamilyLeaf,
-    certificate: &CertifiedSource,
-) -> Result<Option<TypedKey>> {
-    Ok(decode_checkpoint(adapter, leaf, certificate)?.provider_checkpoint)
 }
 
 #[cfg(test)]

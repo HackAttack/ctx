@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
+fn provider_checkpoint_stays_absent_across_terminal_authority_lifecycles() {
     const MAX_AUTHORITY_ENTRIES: usize = 256;
     const MAX_FRONTIER_ENVELOPE_BYTES: usize = 64 * 1024;
 
@@ -29,10 +29,11 @@ fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
     assert!(exact_receipt.logical_source_failures.is_empty());
     let exact = VerifiedIndex::open(&exact_index).unwrap();
     let (exact_semantic_bytes, exact_family_bytes, exact_frontier_bytes, exact_checkpoint) =
-        semantic_checkpoint_envelope(&exact, exact_owner);
+        provider_checkpoint_envelope(&exact, exact_owner);
     assert!(exact_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(exact_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_checkpoint_has_no_authority_snapshots(&exact_checkpoint);
+    assert_eq!(exact_semantic_bytes, 0);
+    assert_provider_checkpoint_absent(&exact_checkpoint);
     let exact_checkpoint_json = serde_json::to_string(&exact_checkpoint).unwrap();
     assert!(!exact_checkpoint_json.contains("event-body-secret-must-not-reach-checkpoint"));
     drop(exact);
@@ -51,8 +52,8 @@ fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
     assert_eq!(suffix_exhausted_counters.replaced_sources, 1);
     let suffix_exhausted = VerifiedIndex::open(&exact_index).unwrap();
     let (_, _, _, suffix_exhausted_checkpoint) =
-        semantic_checkpoint_envelope(&suffix_exhausted, exact_owner);
-    assert_checkpoint_has_no_authority_snapshots(&suffix_exhausted_checkpoint);
+        provider_checkpoint_envelope(&suffix_exhausted, exact_owner);
+    assert_provider_checkpoint_absent(&suffix_exhausted_checkpoint);
     drop(suffix_exhausted);
 
     let exhausted_sessions = temp.path().join("exhausted-sessions");
@@ -82,10 +83,11 @@ fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
         exhausted_family_bytes,
         exhausted_frontier_bytes,
         exhausted_checkpoint,
-    ) = semantic_checkpoint_envelope(&exhausted, exhausted_owner);
+    ) = provider_checkpoint_envelope(&exhausted, exhausted_owner);
     assert!(exhausted_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(exhausted_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_checkpoint_has_no_authority_snapshots(&exhausted_checkpoint);
+    assert_eq!(exhausted_semantic_bytes, 0);
+    assert_provider_checkpoint_absent(&exhausted_checkpoint);
     drop(exhausted);
 
     append_event(
@@ -110,10 +112,11 @@ fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
         appended_family_bytes,
         appended_frontier_bytes,
         appended_checkpoint,
-    ) = semantic_checkpoint_envelope(&appended, exhausted_owner);
+    ) = provider_checkpoint_envelope(&appended, exhausted_owner);
     assert!(appended_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
     assert!(appended_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
-    assert_checkpoint_has_no_authority_snapshots(&appended_checkpoint);
+    assert_eq!(appended_semantic_bytes, 0);
+    assert_provider_checkpoint_absent(&appended_checkpoint);
     eprintln!(
         "Codex checkpoint envelopes: exact256 semantic={exact_semantic_bytes} family={exact_family_bytes} frontier={exact_frontier_bytes}; exhausted257 semantic={exhausted_semantic_bytes} family={exhausted_family_bytes} frontier={exhausted_frontier_bytes}; exhausted_append semantic={appended_semantic_bytes} family={appended_family_bytes} frontier={appended_frontier_bytes}"
     );
@@ -128,7 +131,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
     let great_grandchild = "019fb000-0000-7000-8000-000000000004";
     let parent_path = session_path(&sessions, parent);
 
-    write_session_with_advisory(
+    write_session_with_payload_session_id(
         &sessions,
         child,
         SessionRelationshipKind::Delegated,
@@ -136,7 +139,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
         parent,
         [message("child-stable-marker")],
     );
-    write_session_with_advisory(
+    write_session_with_payload_session_id(
         &sessions,
         grandchild,
         SessionRelationshipKind::Delegated,
@@ -144,7 +147,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
         parent,
         [message("grandchild-stable-marker")],
     );
-    write_session_with_advisory(
+    write_session_with_payload_session_id(
         &sessions,
         great_grandchild,
         SessionRelationshipKind::Delegated,
@@ -261,7 +264,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
 }
 
 #[test]
-fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
+fn nested_payload_session_id_is_ignored_and_changed_child_processes_only_itself() {
     let (_temp, sessions, index_root) = codex_test_workspace();
     let root = "019fb000-0000-7000-8000-000000000005";
     let parent = "019fb000-0000-7000-8000-000000000006";
@@ -273,7 +276,7 @@ fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
         None,
         [message("nestedrootuniquetokenaaa")],
     );
-    write_session_with_advisory(
+    write_session_with_payload_session_id(
         &sessions,
         parent,
         SessionRelationshipKind::Delegated,
@@ -281,7 +284,7 @@ fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
         root,
         [message("nestedparentuniquetokenbbb")],
     );
-    write_session_with_advisory(
+    write_session_with_payload_session_id(
         &sessions,
         child,
         SessionRelationshipKind::Delegated,
@@ -311,7 +314,7 @@ fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
     }));
     drop(initial);
 
-    write_session_with_advisory(
+    write_session_with_payload_session_id(
         &sessions,
         child,
         SessionRelationshipKind::Delegated,
@@ -389,8 +392,8 @@ fn append_after_large_terminal_authority_prefix_replays_combined_authority_once(
     let registry = register_tree(&[&sessions]);
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let initial = VerifiedIndex::open(&index_root).unwrap();
-    let (_, _, _, initial_checkpoint) = semantic_checkpoint_envelope(&initial, native_session_id);
-    assert_checkpoint_has_no_authority_snapshots(&initial_checkpoint);
+    let (_, _, _, initial_checkpoint) = provider_checkpoint_envelope(&initial, native_session_id);
+    assert_provider_checkpoint_absent(&initial_checkpoint);
     drop(initial);
 
     append_event(&path, message("largeprefixappenduniquetoken"));
@@ -477,7 +480,7 @@ fn pending_prefix_call_is_restored_and_completed_by_append_suffix() {
 }
 
 #[test]
-fn replayed_checkpoint_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
+fn replayed_source_state_is_exact_across_cold_unchanged_and_child_mcp_append() {
     let (temp, sessions, index_root) = codex_test_workspace();
     let (repository, oid) = initialized_test_repository(temp.path());
     let command = "git commit -m exact && git rev-parse HEAD";
@@ -503,8 +506,8 @@ fn replayed_checkpoint_state_is_exact_across_cold_unchanged_and_child_mcp_append
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let cold = VerifiedIndex::open(&index_root).unwrap();
     let cold_snapshot = source_snapshot(&cold, child, "replayed-child-mcp-call");
-    let (_, _, _, cold_checkpoint) = semantic_checkpoint_envelope(&cold, child);
-    assert_checkpoint_has_no_authority_snapshots(&cold_checkpoint);
+    let (_, _, _, cold_checkpoint) = provider_checkpoint_envelope(&cold, child);
+    assert_provider_checkpoint_absent(&cold_checkpoint);
     drop(cold);
 
     let unchanged_observed = capture_causal_stage();
@@ -572,8 +575,8 @@ fn replayed_checkpoint_state_is_exact_across_cold_unchanged_and_child_mcp_append
         "unexpected copied result: {copied:#?}"
     );
     let appended_snapshot = source_snapshot(&appended, child, "replayedchildmcpattributiontoken");
-    let (_, _, _, appended_checkpoint) = semantic_checkpoint_envelope(&appended, child);
-    assert_checkpoint_has_no_authority_snapshots(&appended_checkpoint);
+    let (_, _, _, appended_checkpoint) = provider_checkpoint_envelope(&appended, child);
+    assert_provider_checkpoint_absent(&appended_checkpoint);
     drop(appended);
 
     let cold_final_root = temp.path().join("cold-final-index");
@@ -603,8 +606,8 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
     let registry = register_tree(&[&sessions]);
     refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     let initial = VerifiedIndex::open(&index_root).unwrap();
-    let (_, _, _, initial_checkpoint) = semantic_checkpoint_envelope(&initial, native_session_id);
-    assert_checkpoint_has_no_authority_snapshots(&initial_checkpoint);
+    let (_, _, _, initial_checkpoint) = provider_checkpoint_envelope(&initial, native_session_id);
+    assert_provider_checkpoint_absent(&initial_checkpoint);
     drop(initial);
 
     append_event(
@@ -636,8 +639,8 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
         })
         .unwrap();
     assert_eq!(result.event_type, "command_output");
-    let (_, _, _, checkpoint) = semantic_checkpoint_envelope(&appended, native_session_id);
-    assert_checkpoint_has_no_authority_snapshots(&checkpoint);
+    let (_, _, _, checkpoint) = provider_checkpoint_envelope(&appended, native_session_id);
+    assert_provider_checkpoint_absent(&checkpoint);
     drop(appended);
 
     let cold_root = temp.path().join("cold-final-index");
@@ -653,13 +656,13 @@ fn suffix_completes_last_of_twenty_four_replayed_pending_calls() {
 }
 
 #[test]
-fn retired_semantic_v2_checkpoint_replaces_on_safe_append_and_matches_cold() {
-    assert_unusable_semantic_checkpoint_rebuilds("retiredv2", retired_semantic_v2_checkpoint);
+fn retired_semantic_v2_checkpoint_is_inert_and_append_matches_cold() {
+    assert_legacy_provider_checkpoint_is_inert("retiredv2", retired_semantic_v2_checkpoint);
 }
 
 #[test]
-fn malformed_semantic_checkpoint_key_replaces_on_safe_append_and_matches_cold() {
-    assert_unusable_semantic_checkpoint_rebuilds("malformedkey", |_| TypedKey::U64(2));
+fn malformed_semantic_checkpoint_key_is_inert_and_append_matches_cold() {
+    assert_legacy_provider_checkpoint_is_inert("malformedkey", |_| TypedKey::U64(2));
 }
 
 #[test]

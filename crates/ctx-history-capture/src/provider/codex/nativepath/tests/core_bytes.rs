@@ -17,13 +17,10 @@ fn snapshot(source: CodexCatalogSource) -> (usize, String, CollectingSink) {
     (sink.rows.len(), digest, sink)
 }
 
-fn copied_child_source(path: &Path, child: &str, parent: &str) -> CodexCatalogSource {
+fn copied_child_source(path: &Path, child: &str, _parent: &str) -> CodexCatalogSource {
     let mut catalog = catalog_session(path, child);
-    catalog.parent_external_session_id = Some(parent.to_owned());
-    catalog.session_relationship = SessionRelationshipKind::Forked;
     catalog.agent_type = AgentType::Subagent;
     let mut source = discover_codex_catalog_sources(&[catalog]).sources.remove(0);
-    source.catalog_root_native_session_id = Some(parent.to_owned());
     let opened = open_provider_source_file(path).unwrap();
     source.catalog_prefix_sha256 = Some(
         super::super::reader::opened_file_prefix_sha256(
@@ -46,6 +43,47 @@ fn repository_call(call_id: &str, command: &str) -> String {
             "arguments": {"cmd": command}
         }
     }))
+}
+
+fn lineage_snapshot(
+    native_session_id: &str,
+    relationship: SessionRelationshipKind,
+    parent_native_session_id: Option<&str>,
+    payload_session_id: &str,
+) -> (usize, String, CollectingSink) {
+    let mut payload = json!({
+        "id": native_session_id,
+        "session_id": payload_session_id,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "cwd": "/workspace",
+        "source": "cli"
+    });
+    if let Some(parent) = parent_native_session_id {
+        match relationship {
+            SessionRelationshipKind::Delegated => {
+                payload["source"] = json!({
+                    "subagent": {"thread_spawn": {"parent_thread_id": parent}}
+                });
+                payload["parent_thread_id"] = json!(parent);
+            }
+            SessionRelationshipKind::Forked => payload["forked_from_id"] = json!(parent),
+            SessionRelationshipKind::ResumedFrom => {
+                payload["history_base"] = json!({"thread_id": parent});
+            }
+            relationship => panic!("unsupported lineage oracle relationship {relationship:?}"),
+        }
+    }
+    let contents = [
+        jsonl(json!({
+            "timestamp": "2026-01-01T00:00:00Z",
+            "type": "session_meta",
+            "payload": payload
+        })),
+        message("assistant", "lineage byte oracle"),
+    ]
+    .concat();
+    let (_temp, path) = write_source(&contents);
+    snapshot(discover_one(&path, native_session_id))
 }
 
 #[test]
@@ -189,6 +227,78 @@ fn legacy_bridge_and_direct_core_record_bytes_match_edge_fixture_oracles() {
         (
             65,
             "5247a5095e412551ca778daad1b3309ee2baeb70b016b8786609a42fb1c7b449",
+        ),
+    ];
+    for (case, expected) in cases.iter().zip(expected) {
+        assert_eq!((case.0, case.1.as_str()), expected);
+    }
+}
+
+#[test]
+fn source_authoritative_lineage_preserves_exact_core_record_bytes() {
+    let parent = "019fb100-0000-7000-8000-000000000200";
+    let cases = [
+        lineage_snapshot(
+            "019fb100-0000-7000-8000-000000000201",
+            SessionRelationshipKind::Root,
+            None,
+            parent,
+        ),
+        lineage_snapshot(
+            "019fb100-0000-7000-8000-000000000202",
+            SessionRelationshipKind::Delegated,
+            Some(parent),
+            "unrelated-advisory-delegated",
+        ),
+        lineage_snapshot(
+            "019fb100-0000-7000-8000-000000000203",
+            SessionRelationshipKind::Forked,
+            Some(parent),
+            "unrelated-advisory-forked",
+        ),
+        lineage_snapshot(
+            "019fb100-0000-7000-8000-000000000204",
+            SessionRelationshipKind::ResumedFrom,
+            Some(parent),
+            "unrelated-advisory-resumed",
+        ),
+    ];
+    for (index, case) in cases.iter().enumerate() {
+        let record = &case.2.rows[0];
+        assert_eq!(
+            record.provider_session_id.as_deref(),
+            Some(match index {
+                0 => "019fb100-0000-7000-8000-000000000201",
+                1 => "019fb100-0000-7000-8000-000000000202",
+                2 => "019fb100-0000-7000-8000-000000000203",
+                3 => "019fb100-0000-7000-8000-000000000204",
+                _ => unreachable!(),
+            })
+        );
+        if index == 0 {
+            assert_eq!(record.parent_session_id, None);
+            assert_eq!(record.root_session_id, record.session_id);
+        } else {
+            assert!(record.parent_session_id.is_some());
+            assert_eq!(record.parent_session_id, Some(record.root_session_id));
+        }
+    }
+    let expected = [
+        (
+            1,
+            "477ab0d044267e464cea7569e672f22395a2d9288acdf9e8388fe0277f18d649",
+        ),
+        (
+            1,
+            "207d283c827f87b525548fd27ba0391992b12707694d5efd9b1d1de1fea6c5fe",
+        ),
+        (
+            1,
+            "99c7efa4a3a244e0272d4f5cab5e05f93ffc1d619667d9530dd020a4e1cfb3d4",
+        ),
+        (
+            1,
+            "1ee313d3747a3356c0196b517572d65a483082dc73e9ab94027ea2d0bd80d3e7",
         ),
     ];
     for (case, expected) in cases.iter().zip(expected) {

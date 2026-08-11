@@ -57,18 +57,16 @@ pub(crate) use revalidation::{
 };
 #[cfg(test)]
 pub(crate) use route::{
-    checkpoint_admitted_revision_for_test, full_family_checkpoint_frontier_contract_for_test,
-    set_before_jsonl_terminal_physical_revalidation_hook,
+    checkpoint_admitted_revision_for_test, set_before_jsonl_terminal_physical_revalidation_hook,
 };
 pub(crate) use route::{
-    jsonl_family_driver, provider_checkpoint_for_base, JsonlFamilyAdapter, JsonlFamilyAppendMode,
-    JsonlFamilyBaseScope, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
-    JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
-    JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
-    JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
-    JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
-    JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyTerminalProof,
-    JsonlFamilyWorkerContext,
+    jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
+    JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition, JsonlFamilyInventory,
+    JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
+    JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyProjector,
+    JsonlFamilyPublication, JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode,
+    JsonlFamilySemanticExecutor, JsonlFamilySemanticPage, JsonlFamilySemanticPreflight,
+    JsonlFamilySemanticSummary, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
 pub(crate) use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;

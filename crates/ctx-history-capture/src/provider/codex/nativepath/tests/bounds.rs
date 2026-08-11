@@ -186,19 +186,7 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     let discovery = discover_codex_catalog_sources(&catalog);
     assert!(discovery.rejections.is_empty(), "{discovery:?}");
     assert_eq!(discovery.sources.len(), EXPECTED_FILES);
-    let mut sources = discovery.sources;
-    for (index, source) in sources.iter_mut().enumerate() {
-        let owner = format!("quickbench-{index:06}");
-        if index.is_multiple_of(10) {
-            let parent = format!("quickbench-parent-{index:06}");
-            source.catalog_parent_native_session_id = Some(parent.clone());
-            source.catalog_session_relationship = SessionRelationshipKind::Delegated;
-            source.catalog_root_native_session_id = Some(parent);
-        } else {
-            source.catalog_root_native_session_id = Some(owner);
-        }
-    }
-
+    let sources = discovery.sources;
     let scan_once = || {
         let mut rows = 0_u64;
         let mut results = 0_u64;

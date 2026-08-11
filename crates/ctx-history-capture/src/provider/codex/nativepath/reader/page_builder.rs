@@ -44,23 +44,14 @@ impl CodexNativeScanner {
     }
 
     pub(in crate::provider::codex::nativepath) fn finish_semantic(
-        mut self,
+        self,
     ) -> Result<CodexSemanticScan> {
         if !self.exhausted || self.active_core_page.is_some() {
             return Err(CaptureError::InvalidPayload(
-                "Codex semantic scan must drain every owned page before checkpointing".to_owned(),
+                "Codex semantic scan must drain every owned page before finishing".to_owned(),
             ));
         }
-        let checkpoint = self
-            .owner
-            .take()
-            .map(|owner| {
-                let owner = validate_catalog_owner(&self.source, owner)?;
-                Ok::<_, CaptureError>(CodexSemanticCheckpoint::new(&owner))
-            })
-            .transpose()?;
         Ok(CodexSemanticScan {
-            checkpoint,
             counters: self.counters,
         })
     }

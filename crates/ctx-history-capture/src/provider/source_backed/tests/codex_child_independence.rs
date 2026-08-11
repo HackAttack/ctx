@@ -350,16 +350,16 @@ fn write_session(
     fs::write(session_path(root, native_session_id), jsonl_bytes(records)).unwrap();
 }
 
-fn write_session_with_advisory(
+fn write_session_with_payload_session_id(
     root: &Path,
     native_session_id: &str,
     relationship: SessionRelationshipKind,
     parent_native_session_id: Option<&str>,
-    advisory_session_id: &str,
+    payload_session_id: &str,
     events: impl IntoIterator<Item = serde_json::Value>,
 ) {
     let mut meta = session_meta(native_session_id, relationship, parent_native_session_id);
-    meta["payload"]["session_id"] = serde_json::json!(advisory_session_id);
+    meta["payload"]["session_id"] = serde_json::json!(payload_session_id);
     let records = std::iter::once(meta).chain(events);
     fs::write(session_path(root, native_session_id), jsonl_bytes(records)).unwrap();
 }
@@ -454,7 +454,7 @@ fn certificate_for(index: &VerifiedIndex, native_session_id: &str) -> CertifiedS
         .unwrap_or_else(|| panic!("missing certificate for {native_session_id}"))
 }
 
-fn semantic_checkpoint_envelope(
+fn provider_checkpoint_envelope(
     index: &VerifiedIndex,
     native_session_id: &str,
 ) -> (usize, usize, usize, serde_json::Value) {
@@ -467,16 +467,17 @@ fn semantic_checkpoint_envelope(
     let family = serde_json::from_str::<serde_json::Value>(family_json).unwrap();
     let provider = family
         .get("provider_checkpoint")
-        .expect("Codex family checkpoint omitted provider state");
-    let semantic_json = provider
+        .expect("Codex family checkpoint omitted provider state")
+        .clone();
+    let provider_bytes = provider
         .get("Utf8")
         .and_then(|value| value.as_str())
-        .expect("new Codex semantic checkpoint was not compact UTF-8");
+        .map_or(0, str::len);
     (
-        semantic_json.len(),
+        provider_bytes,
         family_json.len(),
         serde_json::to_vec(frontier).unwrap().len(),
-        serde_json::from_str(semantic_json).unwrap(),
+        provider,
     )
 }
 
@@ -608,7 +609,7 @@ fn retired_semantic_v2_checkpoint(native_session_id: &str) -> TypedKey {
     )
 }
 
-fn assert_unusable_semantic_checkpoint_rebuilds(
+fn assert_legacy_provider_checkpoint_is_inert(
     case: &str,
     provider_checkpoint: impl FnOnce(&str) -> TypedKey,
 ) {
@@ -642,6 +643,8 @@ fn assert_unusable_semantic_checkpoint_rebuilds(
         certificate_for(&injected, native_session_id).parser_revision(),
         CURRENT_PARSER_REVISION
     );
+    let injected_certificate_bytes =
+        serde_json::to_vec(&certificate_for(&injected, native_session_id)).unwrap();
     drop(injected);
 
     let unchanged_observed = capture_causal_stage();
@@ -656,30 +659,42 @@ fn assert_unusable_semantic_checkpoint_rebuilds(
     assert_eq!(unchanged_counters.scanner_sources_started, 0);
     assert_eq!(unchanged_counters.scanner_sources_completed, 0);
     assert_eq!(unchanged_counters.scanner_bytes_read, 0);
+    assert_eq!(unchanged_counters.catalog_source_metadata_opens, 0);
+    assert_eq!(
+        unchanged_counters.catalog_source_metadata_read_upper_bound_bytes,
+        0
+    );
+    assert_eq!(unchanged_counters.catalog_session_meta_parses, 0);
     assert_eq!(unchanged_counters.appended_sources, 0);
     assert_eq!(unchanged_counters.replaced_sources, 0);
     assert_eq!(unchanged_counters.writer_mutated_sources, 0);
+    let unchanged_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&certificate_for(&unchanged_index, native_session_id)).unwrap(),
+        injected_certificate_bytes
+    );
+    drop(unchanged_index);
 
     append_event(&path, exec_result(&call_id, &marker));
-    let replacement_observed = capture_causal_stage();
-    let replacement =
+    let append_observed = capture_causal_stage();
+    let appended =
         refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    assert!(replacement.failed_routes.is_empty());
-    assert!(replacement.logical_source_failures.is_empty());
-    let counters = causal_by_id(&replacement_observed)
+    assert!(appended.failed_routes.is_empty());
+    assert!(appended.logical_source_failures.is_empty());
+    let counters = causal_by_id(&append_observed)
         .get(native_session_id)
         .unwrap()
         .counters;
-    assert_eq!(counters.appended_sources, 0);
-    assert_eq!(counters.replaced_sources, 1);
+    assert_eq!(counters.appended_sources, 1);
+    assert_eq!(counters.replaced_sources, 0);
     assert_eq!(counters.scanner_sources_started, 1);
     assert_eq!(counters.scanner_sources_completed, 1);
     assert_eq!(counters.writer_mutated_sources, 1);
 
     let rebuilt = VerifiedIndex::open(&index_root).unwrap();
     let rebuilt_snapshot = source_snapshot(&rebuilt, native_session_id, &marker);
-    let (_, _, _, rebuilt_checkpoint) = semantic_checkpoint_envelope(&rebuilt, native_session_id);
-    assert_checkpoint_has_no_authority_snapshots(&rebuilt_checkpoint);
+    let (_, _, _, rebuilt_checkpoint) = provider_checkpoint_envelope(&rebuilt, native_session_id);
+    assert_provider_checkpoint_absent(&rebuilt_checkpoint);
     assert_eq!(
         certificate_for(&rebuilt, native_session_id)
             .frontier()
@@ -693,7 +708,7 @@ fn assert_unusable_semantic_checkpoint_rebuilds(
     assert!(cold.failed_routes.is_empty());
     assert_eq!(
         cold.commit.certified_source_bytes,
-        replacement.commit.certified_source_bytes
+        appended.commit.certified_source_bytes
     );
     let cold = VerifiedIndex::open(&cold_root).unwrap();
     assert_eq!(
@@ -702,15 +717,8 @@ fn assert_unusable_semantic_checkpoint_rebuilds(
     );
 }
 
-fn assert_checkpoint_has_no_authority_snapshots(checkpoint: &serde_json::Value) {
-    assert_eq!(checkpoint["version"], 1);
-    assert_eq!(checkpoint.as_object().unwrap().len(), 2);
-    assert!(checkpoint.get("pending_tool_authorities").is_none());
-    assert!(checkpoint.get("terminal_authority").is_none());
-    assert!(checkpoint.get("repository_candidate_authority").is_none());
-    assert!(checkpoint.get("local_turn_started").is_none());
-    assert!(checkpoint.get("owner").is_none());
-    assert_eq!(checkpoint["lineage"].as_object().unwrap().len(), 4);
+fn assert_provider_checkpoint_absent(checkpoint: &serde_json::Value) {
+    assert_eq!(checkpoint, &serde_json::Value::Null);
 }
 
 fn terminal_authority_events(entries: usize) -> Vec<serde_json::Value> {
@@ -842,15 +850,11 @@ fn causal_by_id(
 fn assert_exact_zero_work(
     sources: &BTreeMap<String, CodexCausalSourceObservationV1>,
     native_session_id: &str,
-    parent_native_session_id: Option<&str>,
+    _parent_native_session_id: Option<&str>,
 ) {
     let source = sources
         .get(native_session_id)
         .unwrap_or_else(|| panic!("missing causal source {native_session_id}"));
-    assert_eq!(
-        source.parent_provider_session_id.as_deref(),
-        parent_native_session_id
-    );
     let counters = source.counters;
     assert_eq!(counters.catalog_source_metadata_opens, 0);
     assert_eq!(counters.catalog_source_metadata_read_upper_bound_bytes, 0);

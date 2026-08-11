@@ -909,7 +909,7 @@ fn missing_parent_local_continuation_restart_retains_exact_commit_origin() {
 }
 
 #[test]
-fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
+fn parser_revision_migration_rescans_once_without_catalog_body_hydration() {
     let (_temp, sessions, index_root) = codex_test_workspace();
     let parent = "019fb000-0000-7000-8000-000000000031";
     let child = "019fb000-0000-7000-8000-000000000032";
@@ -1011,9 +1011,9 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
     let sources = causal_by_id(&observed);
     for native_session_id in [parent, child] {
         let counters = sources.get(native_session_id).unwrap().counters;
-        assert_eq!(counters.catalog_source_metadata_opens, 1);
-        assert!(counters.catalog_source_metadata_read_upper_bound_bytes > 0);
-        assert_eq!(counters.catalog_session_meta_parses, 1);
+        assert_eq!(counters.catalog_source_metadata_opens, 0);
+        assert_eq!(counters.catalog_source_metadata_read_upper_bound_bytes, 0);
+        assert_eq!(counters.catalog_session_meta_parses, 0);
         assert_eq!(counters.scanner_source_opens, 1);
         assert_eq!(counters.scanner_sources_started, 1);
         assert_eq!(counters.scanner_sources_completed, 1);
@@ -1030,6 +1030,7 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
         };
         let wire = serde_json::from_str::<serde_json::Value>(json).unwrap();
         assert_eq!(wire["version"], 4);
+        assert_eq!(wire["provider_checkpoint"], serde_json::Value::Null);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());
     }
