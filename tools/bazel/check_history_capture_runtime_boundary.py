@@ -25,10 +25,29 @@ JSONL_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-core:lib",
 )
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
-CANONICAL_LOAD_SOURCES = {
-    "all_crate_deps": "@crates//:defs.bzl",
-    "rust_library": "@rules_rust//rust:defs.bzl",
-    "ctx_rust_test": "//tools/bazel:ctx_rust.bzl",
+CANONICAL_LOAD_BINDINGS = {
+    "@crates//:defs.bzl": {"aliases", "all_crate_deps", "crate_edition"},
+    "@rules_rust//rust:defs.bzl": {"rust_library"},
+    "//:rust_sources.bzl": {"RUST_PROD_SRC_EXCLUDES"},
+    "//tools/bazel:ctx_rust.bzl": {"ctx_rust_test"},
+    "//tools/bazel:gates.bzl": {"loc_check_inputs"},
+}
+CANONICAL_SYMBOL_SOURCES = {
+    symbol: source
+    for source, symbols in CANONICAL_LOAD_BINDINGS.items()
+    for symbol in symbols
+}
+ALLOWED_BAZEL_CALLS = {
+    "aliases",
+    "all_crate_deps",
+    "crate_edition",
+    "ctx_rust_test",
+    "filegroup",
+    "glob",
+    "load",
+    "loc_check_inputs",
+    "package",
+    "rust_library",
 }
 
 
@@ -357,12 +376,17 @@ def _assignments(
 def _validate_canonical_loads(
     tokens: Sequence[Token], package: str, reserved_symbols: set[str]
 ) -> None:
-    trusted_origins = {symbol: [] for symbol in CANONICAL_LOAD_SOURCES}
+    actual_bindings: dict[str, set[str]] = {}
     for call in _find_calls(tokens, "load", package):
         arguments = _split_top_level(call)
         if not arguments or len(arguments[0]) != 1 or arguments[0][0].kind != "string":
             raise BoundaryError(f"{package} Bazel has an unsupported load source")
         source = arguments[0][0].value
+        if source in actual_bindings:
+            raise BoundaryError(
+                f"{package} Bazel must load {source} exactly once"
+            )
+        imported_names: list[str] = []
         for imported in arguments[1:]:
             if len(imported) == 1 and imported[0].kind == "string":
                 local_name = imported[0].value
@@ -375,6 +399,10 @@ def _validate_canonical_loads(
             ):
                 local_name = imported[0].value
                 remote_name = imported[2].value
+                raise BoundaryError(
+                    f"{package} Bazel load aliases are unsupported; {remote_name!r} "
+                    "must be loaded without aliasing"
+                )
             else:
                 raise BoundaryError(f"{package} Bazel has an unsupported load binding")
 
@@ -383,36 +411,63 @@ def _validate_canonical_loads(
                     f"{package} Bazel {remote_name} must be a local literal and "
                     "may not be loaded"
                 )
-            if (
-                local_name not in CANONICAL_LOAD_SOURCES
-                and remote_name not in CANONICAL_LOAD_SOURCES
-            ):
-                continue
-            expected_source = CANONICAL_LOAD_SOURCES.get(local_name)
-            if local_name != remote_name or source != expected_source:
+            expected_source = CANONICAL_SYMBOL_SOURCES.get(remote_name)
+            if expected_source is not None and source != expected_source:
                 raise BoundaryError(
                     f"{package} Bazel trusted symbol {remote_name!r} must be loaded "
-                    "without aliasing from its canonical source"
+                    "from its canonical source"
                 )
-            trusted_origins[local_name].append(source)
+            imported_names.append(remote_name)
 
-    for symbol, expected_source in CANONICAL_LOAD_SOURCES.items():
-        if trusted_origins[symbol] != [expected_source]:
+        expected_bindings = CANONICAL_LOAD_BINDINGS.get(source)
+        if expected_bindings is None:
             raise BoundaryError(
-                f"{package} Bazel must load {symbol} exactly once from "
-                f"{expected_source}"
+                f"{package} Bazel has an unsupported load source: {source}"
+            )
+        if len(imported_names) != len(set(imported_names)):
+            raise BoundaryError(f"{package} Bazel {source} repeats a load binding")
+        actual = set(imported_names)
+        if actual != expected_bindings:
+            raise BoundaryError(
+                f"{package} Bazel {source} load bindings drifted: "
+                f"expected={sorted(expected_bindings)} actual={sorted(actual)}"
+            )
+        actual_bindings[source] = actual
+
+    missing_sources = sorted(set(CANONICAL_LOAD_BINDINGS) - set(actual_bindings))
+    if missing_sources:
+        raise BoundaryError(
+            f"{package} Bazel is missing canonical loads: "
+            + ", ".join(missing_sources)
+        )
+
+
+def _validate_call_surface(tokens: Sequence[Token], package: str) -> None:
+    for index, token in enumerate(tokens):
+        if token.value != "(":
+            continue
+        caller = tokens[index - 1] if index else None
+        if (
+            caller is None
+            or caller.kind != "identifier"
+            or caller.value not in ALLOWED_BAZEL_CALLS
+        ):
+            name = caller.value if caller is not None else "<expression>"
+            raise BoundaryError(
+                f"{package} Bazel has an unsupported rule or macro call: "
+                f"{name}"
             )
 
-
-def _validate_trusted_symbol_uses(tokens: Sequence[Token], package: str) -> None:
     for index, token in enumerate(tokens):
-        if token.kind != "identifier" or token.value not in CANONICAL_LOAD_SOURCES:
+        if token.kind != "identifier" or token.value not in ALLOWED_BAZEL_CALLS:
             continue
         previous = tokens[index - 1].value if index else None
         following = tokens[index + 1].value if index + 1 < len(tokens) else None
+        if token.value == "aliases" and following == "=" and previous in {"(", ","}:
+            continue
         if following != "(" or previous in {".", "def"}:
             raise BoundaryError(
-                f"{package} Bazel trusted symbol {token.value} may not be rebound "
+                f"{package} Bazel rule or macro symbol {token.value} may not be rebound "
                 "or referenced through an alias"
             )
 
@@ -478,7 +533,7 @@ def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> N
     _validate_canonical_loads(
         tokens, package, {"JSONL_DEPS"} if jsonl else set()
     )
-    _validate_trusted_symbol_uses(tokens, package)
+    _validate_call_surface(tokens, package)
 
     rust_libraries = _find_calls(tokens, "rust_library", package)
     if len(rust_libraries) != 1:

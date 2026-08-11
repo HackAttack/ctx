@@ -40,9 +40,11 @@ sha2.workspace = true
 """
 
 RUNTIME_BUILD = """\
-load("@crates//:defs.bzl", "all_crate_deps")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 rust_library(
     name = "lib",
@@ -58,9 +60,11 @@ ctx_rust_test(
 """
 
 JSONL_BUILD = """\
-load("@crates//:defs.bzl", "all_crate_deps")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
 load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
 JSONL_DEPS = [
     "//crates/ctx-history-capture-model:lib",
@@ -319,8 +323,9 @@ class BoundaryMutationTests(unittest.TestCase):
             with self.subTest(symbol=symbol):
                 self.runtime_build.write_text(
                     RUNTIME_BUILD.replace(
-                        f'load("{source}", "{symbol}")',
-                        f'load("//untrusted:defs.bzl", "{symbol}")',
+                        f'load("{source}"',
+                        'load("//untrusted:defs.bzl"',
+                        1,
                     ),
                     encoding="utf-8",
                 )
@@ -348,14 +353,112 @@ class BoundaryMutationTests(unittest.TestCase):
             with self.subTest(symbol=symbol):
                 self.runtime_build.write_text(
                     RUNTIME_BUILD.replace(
-                        f'load("{source}", "{symbol}")',
-                        f'load("{source}", concealed = "{symbol}")',
+                        f'"{symbol}"',
+                        f'concealed = "{symbol}"',
+                        1,
                     ),
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(ValueError, "without aliasing"):
                     self.validate()
                 self.runtime_build.write_text(RUNTIME_BUILD, encoding="utf-8")
+
+    def test_raw_rust_test_and_binary_calls_are_rejected_in_both_packages(self) -> None:
+        for build_path, source, forbidden_label in (
+            (
+                self.runtime_build,
+                RUNTIME_BUILD,
+                "//crates/ctx-history-index:lib",
+            ),
+            (
+                self.jsonl_build,
+                JSONL_BUILD,
+                "//crates/ctx-history-index-format:lib",
+            ),
+        ):
+            for rule in ("rust_test", "rust_binary"):
+                with self.subTest(build=build_path.name, rule=rule):
+                    build_path.write_text(
+                        source
+                        + f"""\
+{rule}(
+    name = "concealed_target",
+    deps = ["{forbidden_label}"],
+    proc_macro_deps = ["{forbidden_label}"],
+)
+""",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        ValueError, f"unsupported rule or macro call: {rule}"
+                    ):
+                        self.validate()
+                    build_path.write_text(source, encoding="utf-8")
+
+    def test_unsupported_rules_rust_load_bindings_are_rejected_in_both_packages(
+        self,
+    ) -> None:
+        for build_path, source in (
+            (self.runtime_build, RUNTIME_BUILD),
+            (self.jsonl_build, JSONL_BUILD),
+        ):
+            with self.subTest(build=build_path.name):
+                build_path.write_text(
+                    source.replace(
+                        'load("@rules_rust//rust:defs.bzl", "rust_library")',
+                        'load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")',
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "load bindings drifted"):
+                    self.validate()
+                build_path.write_text(source, encoding="utf-8")
+
+    def test_custom_rust_macro_calls_are_rejected_in_both_packages(self) -> None:
+        for build_path, source, forbidden_label in (
+            (
+                self.runtime_build,
+                RUNTIME_BUILD,
+                "//crates/ctx-history-index:lib",
+            ),
+            (
+                self.jsonl_build,
+                JSONL_BUILD,
+                "//crates/ctx-history-index-format:lib",
+            ),
+        ):
+            with self.subTest(build=build_path.name):
+                build_path.write_text(
+                    source
+                    + f"""\
+custom_rust_target(
+    name = "concealed_target",
+    deps = ["{forbidden_label}"],
+    proc_macro_deps = ["{forbidden_label}"],
+)
+""",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported rule or macro call: custom_rust_target"
+                ):
+                    self.validate()
+                build_path.write_text(source, encoding="utf-8")
+
+    def test_custom_macro_loads_are_rejected_in_both_packages(self) -> None:
+        for build_path, source in (
+            (self.runtime_build, RUNTIME_BUILD),
+            (self.jsonl_build, JSONL_BUILD),
+        ):
+            with self.subTest(build=build_path.name):
+                build_path.write_text(
+                    'load("//untrusted:rust.bzl", "custom_rust_target")\n'
+                    + source,
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "unsupported load source"):
+                    self.validate()
+                build_path.write_text(source, encoding="utf-8")
 
     def test_ctx_rust_test_dependencies_are_enforced_for_both_packages(self) -> None:
         cases = (
