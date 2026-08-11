@@ -762,6 +762,16 @@ impl<Kind: Send + Sync> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<
         .map(Some)
     }
 
+    fn shed_optional_provider_checkpoint_evidence(
+        &self,
+        checkpoint: &TypedKey,
+    ) -> Result<Option<TypedKey>> {
+        super::super::checkpoint::CodexSemanticCheckpoint::shed_optional_pending_evidence_key(
+            checkpoint,
+        )
+        .map_err(CaptureError::from)
+    }
+
     fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
         match &self.authority {
             CodexSessionDiscoveryAuthorityV0::SessionTree { roots } => {

@@ -57,7 +57,8 @@ pub(crate) use revalidation::{
 };
 #[cfg(test)]
 pub(crate) use route::{
-    checkpoint_admitted_revision_for_test, set_before_jsonl_terminal_physical_revalidation_hook,
+    checkpoint_admitted_revision_for_test, full_family_checkpoint_frontier_contract_for_test,
+    set_before_jsonl_terminal_physical_revalidation_hook,
 };
 pub(crate) use route::{
     jsonl_family_driver, provider_checkpoint_for_base, JsonlFamilyAdapter, JsonlFamilyAppendMode,

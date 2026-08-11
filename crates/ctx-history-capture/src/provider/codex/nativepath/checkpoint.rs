@@ -458,6 +458,16 @@ impl CodexSemanticCheckpoint {
         }
     }
 
+    pub(super) fn shed_optional_pending_evidence_key(
+        key: &TypedKey,
+    ) -> serde_json::Result<Option<TypedKey>> {
+        let mut checkpoint = Self::decode_key(key)?;
+        if checkpoint.pending_tool_authorities.pop().is_none() {
+            return Ok(None);
+        }
+        checkpoint.encode_key().map(Some)
+    }
+
     pub(super) fn pending_tool_authorities(&self) -> &[CodexPendingToolAuthority] {
         &self.pending_tool_authorities
     }
@@ -566,6 +576,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::provider::codex::nativepath::rows::{
+        CodexSessionGitMetadata, MAX_CODEX_DURABLE_CWD_BYTES, MAX_CODEX_DURABLE_METADATA_BYTES,
+        MAX_CODEX_DURABLE_SESSION_ID_BYTES,
+    };
 
     fn owner() -> CodexSessionRow {
         CodexSessionRow {
@@ -585,6 +599,33 @@ mod tests {
             role_hint: Some("primary".to_owned()),
             model_provider: Some("openai".to_owned()),
             git: None,
+        }
+    }
+
+    fn maximal_owner() -> CodexSessionRow {
+        let session_id = "s".repeat(MAX_CODEX_DURABLE_SESSION_ID_BYTES);
+        let metadata = "m".repeat(MAX_CODEX_DURABLE_METADATA_BYTES);
+        CodexSessionRow {
+            native_session_id: session_id.clone(),
+            parent_native_session_id: Some(session_id.clone()),
+            advisory_session_id: Some(session_id.clone()),
+            root_native_session_id: Some(session_id),
+            session_relationship: SessionRelationshipKind::Delegated,
+            started_at: DateTime::parse_from_rfc3339("9999-12-31T23:59:59.999999999Z")
+                .unwrap()
+                .to_utc(),
+            cwd: Some("c".repeat(MAX_CODEX_DURABLE_CWD_BYTES)),
+            originator: Some(metadata.clone()),
+            cli_version: Some(metadata.clone()),
+            source_kind: Some(metadata.clone()),
+            external_agent_id: Some(metadata.clone()),
+            role_hint: Some(metadata.clone()),
+            model_provider: Some(metadata.clone()),
+            git: Some(CodexSessionGitMetadata {
+                commit_hash: Some(metadata.clone()),
+                branch: Some(metadata.clone()),
+                repository_url: Some(metadata),
+            }),
         }
     }
 
@@ -758,5 +799,96 @@ mod tests {
         assert_eq!(checkpoint.terminal_authority, terminal);
         assert_eq!(checkpoint.repository_candidate_authority, repository);
         assert!(checkpoint.encode().unwrap().len() <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES);
+    }
+
+    #[test]
+    fn maximal_semantics_shed_pending_until_the_full_family_frontier_fits() {
+        const AUDITED_OVERFLOW_PATH_BYTES: usize = 244;
+
+        let pending = (0..MAX_CODEX_TOOL_CONTEXTS)
+            .map(|index| {
+                let mut authority = CodexPendingToolAuthority::new(
+                    &format!("pending-{index}"),
+                    u64::try_from(index * 2 + 1).unwrap(),
+                    u64::try_from(index * 2 + 2).unwrap(),
+                    u64::try_from(index).unwrap(),
+                    CodexInvocationOriginV0::Unproven,
+                );
+                authority.continuation_cell_id = Some(format!(
+                    "cell-{index:02}-{}",
+                    "x".repeat(MAX_CODEX_CONTINUATION_CELL_ID_BYTES - 8)
+                ));
+                authority.continuation_call_id_sha256 = (0..MAX_CODEX_TOOL_CONTEXTS)
+                    .map(|digest| {
+                        let mut value = [u8::try_from(digest + 1).unwrap(); 32];
+                        value[0] = u8::try_from(index + 1).unwrap();
+                        value
+                    })
+                    .collect();
+                authority
+            })
+            .collect::<Vec<_>>();
+        let terminal = CodexTerminalAuthorityCheckpoint {
+            mcp_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
+            result_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
+            mcp_exhausted: false,
+            result_exhausted: false,
+        };
+        let repository = CodexRepositoryCandidateAuthorityCheckpoint {
+            entries: repository_entries(MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES),
+            exhausted: false,
+        };
+        let owner = maximal_owner();
+        let checkpoint = CodexSemanticCheckpoint::new(
+            &pending,
+            terminal.clone(),
+            repository.clone(),
+            owner.clone(),
+            true,
+        )
+        .unwrap();
+        let mut key = checkpoint.encode_key().unwrap();
+        let initial_pending = checkpoint.pending_tool_authorities.len();
+        let audited = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
+            key.clone(),
+            AUDITED_OVERFLOW_PATH_BYTES,
+        )
+        .unwrap();
+        assert_eq!(audited, (66_008, false));
+        let (before_bytes, before_fits) = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
+            key.clone(),
+            crate::provider::MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES,
+        )
+        .unwrap();
+        assert!(!before_fits);
+
+        let (after_bytes, after_fits) = loop {
+            let Some(smaller) =
+                CodexSemanticCheckpoint::shed_optional_pending_evidence_key(&key).unwrap()
+            else {
+                panic!("mandatory Codex authority did not fit the full family frontier");
+            };
+            key = smaller;
+            let envelope = crate::provider::source_backed::family::jsonl::full_family_checkpoint_frontier_contract_for_test(
+                key.clone(),
+                crate::provider::MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES,
+            )
+            .unwrap();
+            if envelope.1 {
+                break envelope;
+            }
+        };
+        let fitted = CodexSemanticCheckpoint::decode_key(&key).unwrap();
+        assert!(after_fits);
+        assert!(after_bytes <= 64 * 1024);
+        assert!(fitted.pending_tool_authorities.len() < initial_pending);
+        assert_eq!(fitted.terminal_authority, terminal);
+        assert_eq!(fitted.repository_candidate_authority, repository);
+        assert_eq!(fitted.owner, owner);
+        eprintln!(
+            "maximal full Codex checkpoint: before={before_bytes} after={after_bytes} pending={}=>{}",
+            initial_pending,
+            fitted.pending_tool_authorities.len()
+        );
     }
 }

@@ -1158,6 +1158,7 @@ fn prepare_semantic_leaf(
         indexed_documents: documents,
         provider_checkpoint: summary.into_provider_checkpoint(),
     };
+    let checkpoint = fit_semantic_provider_checkpoint(adapter, checkpoint)?;
     let certificate = certify(adapter, leaf, checkpoint.clone())
         .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
     let append = if is_append {
@@ -1185,6 +1186,31 @@ fn prepare_semantic_leaf(
         append,
         terminal_proof,
     })
+}
+
+fn fit_semantic_provider_checkpoint(
+    adapter: &dyn JsonlFamilyAdapter,
+    mut checkpoint: FamilyCheckpoint,
+) -> Result<FamilyCheckpoint> {
+    while !checkpoint.fits_frontier_key()? {
+        let provider_checkpoint = checkpoint.provider_checkpoint.as_ref().ok_or_else(|| {
+            CaptureError::InvalidPayload(
+                "JSONL family checkpoint exceeds the SourceFrontier bound without provider state"
+                    .to_owned(),
+            )
+        })?;
+        checkpoint.provider_checkpoint = Some(
+            adapter
+                .shed_optional_provider_checkpoint_evidence(provider_checkpoint)?
+                .ok_or_else(|| {
+                CaptureError::InvalidPayload(
+                    "JSONL provider checkpoint has no optional evidence left to fit the SourceFrontier"
+                        .to_owned(),
+                )
+            })?,
+        );
+    }
+    Ok(checkpoint)
 }
 
 pub(super) fn validate_optimized_outcome(
