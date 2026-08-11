@@ -946,14 +946,17 @@ fn assert_continuation_restart_exact_commit(
         assert_eq!(result.parent_session_id, Some(result.root_session_id));
     }
     assert_eq!(result.event_origin, EventOrigin::UniqueToSession);
-    assert!(result.repository_vcs_observations.iter().any(|observation| {
-        matches!(
-            &observation.kind,
-            ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
-                if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
-                    && outcome.produced_object_ids.iter().any(|object_id| object_id.hex == oid)
-        )
-    }));
+    assert!(result
+        .repository_vcs_observations
+        .iter()
+        .any(|observation| {
+            matches!(
+                &observation.kind,
+                ctx_history_core::RepositoryVcsObservationKind::Outcome(outcome)
+                    if outcome.kind == ctx_history_core::RepositoryOutcomeKind::Commit
+                        && outcome.produced_object_ids.iter().any(|object_id| object_id.hex == oid)
+            )
+        }));
     assert!(!result.repository_abstentions.iter().any(|abstention| {
         abstention.detail.as_deref() == Some("provider_execution_origin_lineage_unproven")
     }));

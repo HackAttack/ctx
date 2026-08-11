@@ -121,7 +121,7 @@ fn terminal_authority_exhaustion_regions_fit_without_persisted_snapshots() {
 
 #[test]
 fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let parent = "019fb000-0000-7000-8000-000000000001";
     let child = "019fb000-0000-7000-8000-000000000002";
     let grandchild = "019fb000-0000-7000-8000-000000000003";
@@ -262,7 +262,7 @@ fn parent_lifecycle_never_opens_scans_or_replaces_unchanged_descendants() {
 
 #[test]
 fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let root = "019fb000-0000-7000-8000-000000000005";
     let parent = "019fb000-0000-7000-8000-000000000006";
     let child = "019fb000-0000-7000-8000-000000000007";
@@ -439,7 +439,7 @@ fn append_after_large_terminal_authority_prefix_replays_combined_authority_once(
 
 #[test]
 fn pending_prefix_call_is_restored_and_completed_by_append_suffix() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let native_session_id = "019fb000-0000-7000-8000-00000000000a";
     let path = session_path(&sessions, native_session_id);
     write_session(
@@ -664,7 +664,7 @@ fn malformed_semantic_checkpoint_key_replaces_on_safe_append_and_matches_cold() 
 
 #[test]
 fn terminal_nul_checkpoint_forces_replacement_and_binds_full_admitted_revision() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let native_session_id = "019fb000-0000-7000-8000-00000000000b";
     let path = session_path(&sessions, native_session_id);
     let mut initial = jsonl_bytes([

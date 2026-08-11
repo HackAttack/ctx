@@ -133,13 +133,10 @@ fn optimized_leaf_execution_keeps_publication_inside_the_shared_family() {
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
-    let writer = GenerationWriter::open(
-        temp.path().join("index"),
-        test_writer_options(),
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
+    let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let mut publications = Vec::new();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |event| {
@@ -283,13 +280,10 @@ fn optimized_leaf_execution_rejects_records_owned_by_another_source() {
     };
     let inventory = adapter.discover(&root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
-    let writer = GenerationWriter::open(
-        temp.path().join("index"),
-        test_writer_options(),
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
+    let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |_event| Ok(());
     let mut output = JsonlLeafOutput::new(&mut emit);
@@ -315,13 +309,10 @@ fn project_framing_policy_fixture(
 ) -> CertifiedSource {
     let inventory = adapter.discover(root).unwrap();
     let leaf = inventory.leaves().first().unwrap();
-    let writer = GenerationWriter::open(
-        index,
-        test_writer_options(),
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
+    let writer = GenerationWriter::open(index, test_writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |_event| Ok(());
     let mut output = JsonlLeafOutput::new(&mut emit);
@@ -406,13 +397,10 @@ fn generic_projection_streams_record_and_finish_fanout_before_record_65() {
         };
         let inventory = adapter.discover(&root).unwrap();
         let leaf = inventory.leaves().first().unwrap();
-        let writer = GenerationWriter::open(
-            temp.path().join("index"),
-            test_writer_options(),
-        )
-        .unwrap()
-        .into_writer()
-        .unwrap();
+        let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
+            .unwrap()
+            .into_writer()
+            .unwrap();
         let mut emit = |event| {
             if matches!(event, JsonlLeafOutputEvent::Record { .. }) {
                 admitted.fetch_add(1, Ordering::SeqCst);
@@ -597,13 +585,10 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
     }
     let adapter = ParallelTestAdapter;
     let resident = Mutex::new(FamilyResident::default());
-    let mut writer = GenerationWriter::open(
-        temp.path().join("index"),
-        test_writer_options(),
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
+    let mut writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let mut owners = HashMap::new();
     let mut complete_inventories = Vec::new();
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();

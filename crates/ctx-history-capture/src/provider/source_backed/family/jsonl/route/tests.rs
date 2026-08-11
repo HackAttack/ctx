@@ -24,10 +24,10 @@ use ctx_history_core::{
 };
 use ctx_history_index::{CommitReceipt, GenerationWriter, SourceRouteIdentity, WriterOptions};
 
-#[path = "tests/checkpoint_lifecycle.rs"]
-mod checkpoint_lifecycle;
 #[path = "tests/behavior.rs"]
 mod behavior;
+#[path = "tests/checkpoint_lifecycle.rs"]
+mod checkpoint_lifecycle;
 
 const TEST_SOURCE_FORMAT: &str = "terminal_witness_jsonl";
 const TEST_SCHEMA: &str = "terminal-witness-v1";
@@ -1426,13 +1426,10 @@ fn capture_parallel_test_generation(
     index_root: &Path,
     workers: usize,
 ) -> (CommitReceipt, JsonlFamilyScannerActivity) {
-    let (writer, ()) = capture_test_generation!(
-        adapter,
-        root,
-        index_root,
-        workers,
-        |resident, sink| capture(adapter, root, resident, sink).unwrap()
-    );
+    let (writer, ()) =
+        capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
+            capture(adapter, root, resident, sink).unwrap()
+        });
     let activity = jsonl_family_scanner_activity();
     let commit = writer
         .commit_with_complete_inventory_revalidation(|_| true, |_| true)
@@ -1535,13 +1532,10 @@ fn prepare_semantic_lifecycle_test(
         .ok_or(CaptureError::SystemInvariant(
             "semantic lifecycle test has no leaf",
         ))?;
-    let writer = GenerationWriter::open(
-        index_root,
-        test_writer_options(),
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
+    let writer = GenerationWriter::open(index_root, test_writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let mut worker = JsonlFamilyWorkerContext::default();
     let mut emit = |event| {
         if let JsonlLeafOutputEvent::Page {

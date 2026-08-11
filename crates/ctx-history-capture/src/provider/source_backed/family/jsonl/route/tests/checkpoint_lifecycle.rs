@@ -81,13 +81,10 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
         b"{\"message\":\"prefix\"}\n{\"message\":\"tail\"",
     )
     .unwrap();
-    let writer = GenerationWriter::open(
-        temp.path().join("index"),
-        test_writer_options(),
-    )
-    .unwrap()
-    .into_writer()
-    .unwrap();
+    let writer = GenerationWriter::open(temp.path().join("index"), test_writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
     let lookup = writer.base_event_identity_lookup();
     let adapter = CheckpointTestAdapter::default();
     let mut worker = JsonlFamilyWorkerContext::default();

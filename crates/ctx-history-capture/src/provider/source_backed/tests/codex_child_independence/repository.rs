@@ -593,7 +593,7 @@ fn append_restart_retracts_direct_and_continued_candidate_reuse_after_large_pref
 
 #[test]
 fn fallback_identity_is_rewrite_stable_and_duplicate_occurrences_remain_distinct() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let native_session_id = "019fb000-0000-7000-8000-000000000027";
     write_session(
         &sessions,
@@ -681,7 +681,7 @@ fn fallback_identity_is_rewrite_stable_and_duplicate_occurrences_remain_distinct
 
 #[test]
 fn direct_source_rewrite_delete_and_reappearance_replace_only_that_source() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let native_session_id = "019fb000-0000-7000-8000-000000000028";
     let path = session_path(&sessions, native_session_id);
     write_session(
@@ -910,7 +910,7 @@ fn missing_parent_local_continuation_restart_retains_exact_commit_origin() {
 
 #[test]
 fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let parent = "019fb000-0000-7000-8000-000000000031";
     let child = "019fb000-0000-7000-8000-000000000032";
     write_session(
@@ -1037,7 +1037,7 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
 
 #[test]
 fn current_parser_legacy_codex_frontier_migrates_by_full_replacement() {
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let native_session_id = "019fb000-0000-7000-8000-000000000039";
     write_session(
         &sessions,
@@ -1164,7 +1164,7 @@ fn cold_continuous_appends_during_frozen_prefix_admission_catch_up_once() {
     const TERMINAL_APPEND_MARKER: &str = "coldterminalappendtoken306b";
     const PRECOMMIT_APPEND_MARKER: &str = "coldprecommitappendtoken306c";
 
-    let (temp, sessions, index_root) = codex_test_workspace();
+    let (_temp, sessions, index_root) = codex_test_workspace();
     let parent = "019fb000-0000-7000-8000-000000000041";
     let child = "019fb000-0000-7000-8000-000000000042";
     let parent_path = session_path(&sessions, parent);
