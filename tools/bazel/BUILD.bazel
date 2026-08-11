@@ -16,6 +16,8 @@ exports_files([
     "check-daemon-runtime-dependency-boundary.sh",
     "check-history-capture-build-cfg.sh",
     "check-history-cli-boundary.sh",
+    "check_history_cli_boundary.py",
+    "check_history_cli_boundary_test.py",
     "check-history-ingest-application-boundary.sh",
     "check-history-read-application-dependency-boundary.sh",
     "check-history-source-discovery-boundary.sh",
@@ -65,6 +67,21 @@ config_setting(
 )
 
 release_route_analysis_test_suite(name = "release_route_analysis_tests")
+
+py_test(
+    name = "history_cli_boundary_mutation_tests",
+    srcs = [
+        "check_history_cli_boundary.py",
+        "check_history_cli_boundary_test.py",
+    ],
+    args = ["$(rootpath //:BUILD.bazel)"],
+    data = [
+        "//:BUILD.bazel",
+        "//:history_cli_boundary_inputs",
+    ],
+    imports = ["."],
+    main = "check_history_cli_boundary_test.py",
+)
 
 py_test(
     name = "test_tier_inventory_tests",
