@@ -23,6 +23,7 @@ sha2 = "1"
 
 RUNTIME_CARGO = """\
 [dependencies]
+ctx-history-core = { path = "../ctx-history-core" }
 uuid.workspace = true
 
 [dev-dependencies]
@@ -46,15 +47,19 @@ load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
 
+RUNTIME_DEPS = [
+    "//crates/ctx-history-core:lib",
+]
+
 rust_library(
     name = "lib",
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + RUNTIME_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 ctx_rust_test(
     name = "unit_tests",
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + RUNTIME_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 """
@@ -260,6 +265,40 @@ class BoundaryMutationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden Cargo dependencies"):
             self.validate()
 
+    def test_runtime_forbidden_authorities_are_rejected(self) -> None:
+        for package in (
+            "ctx-history-index-format",
+            "ctx-history-index",
+            "ctx-history-capture",
+            "ctx-history-jsonl",
+        ):
+            with self.subTest(package=package):
+                self.runtime_manifest.write_text(
+                    RUNTIME_CARGO
+                    + f'\n[build-dependencies]\nforbidden = {{ package = "{package}", path = "../forbidden" }}\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "forbidden Cargo dependencies"):
+                    self.validate()
+                self.runtime_manifest.write_text(RUNTIME_CARGO, encoding="utf-8")
+
+    def test_runtime_direct_bazel_dependencies_cannot_be_augmented_or_reassigned(self) -> None:
+        for mutation in (
+            'RUNTIME_DEPS += ["//crates/ctx-history-index:lib"]\n',
+            'RUNTIME_DEPS = RUNTIME_DEPS + ["//crates/ctx-history-index:lib"]\n',
+            'COPIED_DEPS = RUNTIME_DEPS\n',
+        ):
+            with self.subTest(mutation=mutation):
+                self.runtime_build.write_text(
+                    RUNTIME_BUILD.replace(
+                        "\nrust_library(", f"\n{mutation}\nrust_library("
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "RUNTIME_DEPS"):
+                    self.validate()
+                self.runtime_build.write_text(RUNTIME_BUILD, encoding="utf-8")
+
     def test_composed_bazel_label_is_rejected(self) -> None:
         self.jsonl_build.write_text(
             JSONL_BUILD.replace(
@@ -274,7 +313,7 @@ class BoundaryMutationTests(unittest.TestCase):
     def test_runtime_production_dependencies_are_enforced(self) -> None:
         self.runtime_build.write_text(
             RUNTIME_BUILD.replace(
-                "all_crate_deps(normal = True),",
+                "all_crate_deps(normal = True) + RUNTIME_DEPS,",
                 'all_crate_deps(normal = True) + ["//crates/ctx-history-capture:lib"],',
                 1,
             ),

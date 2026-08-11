@@ -583,7 +583,7 @@ pub(super) fn scan_leaves(
                 }
             }
 
-            let batch = (|| {
+            let batch: SourceBackedRouteResult<Vec<TerminalSourceEvidence>> = (|| {
                 let mut batch = Vec::new();
                 for (_, mut frontier) in frontiers {
                     frontier.sort_by(|left, right| {

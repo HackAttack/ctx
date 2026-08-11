@@ -11,13 +11,18 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-EXPECTED_RUNTIME_DEPENDENCIES = {"uuid": {"workspace": True}}
+EXPECTED_RUNTIME_DEPENDENCIES = {
+    "ctx-history-core": {"path": "../ctx-history-core"},
+    "uuid": {"workspace": True},
+}
 EXPECTED_RUNTIME_DEV_DEPENDENCIES = {"thiserror": {"workspace": True}}
 RUNTIME_FORBIDDEN_CARGO = {
     "ctx-history-capture",
     "ctx-history-index",
+    "ctx-history-index-format",
     "ctx-history-jsonl",
 }
+RUNTIME_DIRECT_BAZEL_DEPENDENCIES = ("//crates/ctx-history-core:lib",)
 JSONL_FORBIDDEN_CARGO = {"ctx-history-index", "ctx-history-index-format"}
 JSONL_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-capture-model:lib",
@@ -531,14 +536,14 @@ def _validate_rule_dependencies(
 def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> None:
     tokens = _tokenize_starlark(build_path.read_text(encoding="utf-8"), package)
     _validate_canonical_loads(
-        tokens, package, {"JSONL_DEPS"} if jsonl else set()
+        tokens, package, {"JSONL_DEPS"} if jsonl else {"RUNTIME_DEPS"}
     )
     _validate_call_surface(tokens, package)
 
     rust_libraries = _find_calls(tokens, "rust_library", package)
     if len(rust_libraries) != 1:
         raise BoundaryError(f"{package} Bazel must define exactly one rust_library target")
-    direct_dependencies = "JSONL_DEPS" if jsonl else None
+    direct_dependencies = "JSONL_DEPS" if jsonl else "RUNTIME_DEPS"
     library_arguments = _validate_rule_dependencies(
         rust_libraries[0],
         package,
@@ -563,26 +568,30 @@ def _validate_package_bazel(build_path: Path, package: str, *, jsonl: bool) -> N
             direct_dependencies,
         )
 
-    if not jsonl:
-        return
-    assignments = _assignments(tokens, "JSONL_DEPS")
+    dependency_variable = "JSONL_DEPS" if jsonl else "RUNTIME_DEPS"
+    expected_dependencies = (
+        JSONL_DIRECT_BAZEL_DEPENDENCIES
+        if jsonl
+        else RUNTIME_DIRECT_BAZEL_DEPENDENCIES
+    )
+    assignments = _assignments(tokens, dependency_variable)
     if len(assignments) != 1 or assignments[0][0] != "=":
         raise BoundaryError(
-            f"{package} Bazel must define exactly one unaugmented JSONL_DEPS"
+            f"{package} Bazel must define exactly one unaugmented {dependency_variable}"
         )
     if (
-        _literal_string_list(assignments[0][1], package, "JSONL_DEPS")
-        != JSONL_DIRECT_BAZEL_DEPENDENCIES
+        _literal_string_list(assignments[0][1], package, dependency_variable)
+        != expected_dependencies
     ):
         raise BoundaryError(f"{package} Bazel direct dependency inventory drifted")
     expected_uses = 1 + len(rust_libraries) + len(rust_tests)
     actual_uses = sum(
-        token.kind == "identifier" and token.value == "JSONL_DEPS"
+        token.kind == "identifier" and token.value == dependency_variable
         for token in tokens
     )
     if actual_uses != expected_uses:
         raise BoundaryError(
-            f"{package} Bazel JSONL_DEPS may only be assigned once and used "
+            f"{package} Bazel {dependency_variable} may only be assigned once and used "
             "directly by dependency attributes"
         )
 

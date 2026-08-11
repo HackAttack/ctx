@@ -735,7 +735,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         }
                     }
                 };
-                let core_record_preparer = writer.core_record_preparer();
+                let core_record_preparer = writer.core_record_preparer().into();
                 let mut sink = SourceBackedGenerationSink {
                     writer: &mut writer,
                     core_record_preparer,

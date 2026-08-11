@@ -1,5 +1,6 @@
 use std::error::Error as StdError;
 
+use ctx_history_capture_runtime::CorePreparationPort;
 use ctx_history_core::{CertifiedSource, SourceKey};
 
 use super::{
@@ -214,7 +215,7 @@ where
                 job_index,
                 ParallelLeafScanMessageKind::CoreRecordBatch,
                 source,
-                emission.source(),
+                sink.core_record_preparer.prepared_source(emission),
             )?;
         }
     }

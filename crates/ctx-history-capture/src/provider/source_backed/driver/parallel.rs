@@ -15,7 +15,7 @@ use std::{
 
 use super::{SourceBackedGenerationSink, SourceBackedSourceOutcome};
 use ctx_history_core::SourceKey;
-use ctx_history_index::{CoreRecordPreparer, WriterOptions};
+use ctx_history_index::WriterOptions;
 
 mod protocol;
 
@@ -41,7 +41,7 @@ const SOURCE_WORKER_THREAD_PREFIX: &str = "ctx-src-scan";
 #[derive(Clone)]
 struct ParallelLeafWorkerContext {
     resources: super::SourceBackedRouteResources,
-    core_record_preparer: CoreRecordPreparer,
+    core_record_preparer: super::IndexCorePreparation,
 }
 
 #[cfg(test)]

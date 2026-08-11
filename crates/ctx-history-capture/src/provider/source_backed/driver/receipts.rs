@@ -155,7 +155,7 @@ pub enum SourceBackedCoordinatorError {
 /// certification, but never generation commit.
 pub struct SourceBackedGenerationSink<'writer> {
     pub(in super::super) writer: &'writer mut GenerationWriter,
-    pub(in super::super) core_record_preparer: CoreRecordPreparer,
+    pub(in super::super) core_record_preparer: IndexCorePreparation,
     pub(in super::super) owners: &'writer mut HashMap<[u8; 32], SourceOwner>,
     pub(in super::super) complete_inventories: &'writer mut Vec<CompleteInventoryOwner>,
     pub(in super::super) applied_removals: &'writer mut Vec<SourceBackedCertifiedRemoval>,
@@ -319,6 +319,7 @@ impl SourceBackedGenerationSink<'_> {
     pub fn add_core_record(&mut self, record: CoreRecord) -> SourceBackedCoordinatorResult<()> {
         let progress = CoreRecordProgress::from_record(&record);
         let emission = CoreRecordEmission::new(record, &self.resources, &self.core_record_preparer)
+            .map_err(SourceBackedRouteError::from)
             .map_err(SourceBackedCoordinatorError::CoreEmission)?;
         self.accept_core_record_emission(emission)?;
         self.report_record_progress(
@@ -356,6 +357,7 @@ impl SourceBackedGenerationSink<'_> {
             progress.push(CoreRecordProgress::from_record(&record));
             let emission =
                 CoreRecordEmission::new(record, &self.resources, &self.core_record_preparer)
+                    .map_err(SourceBackedRouteError::from)
                     .map_err(SourceBackedCoordinatorError::CoreEmission)?;
             self.accept_core_record_emission(emission)?;
         }

@@ -719,7 +719,7 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
     let mut record_rejections = SourceBackedRecordRejections::default();
     let mut sink = SourceBackedGenerationSink {
-        core_record_preparer: writer.core_record_preparer(),
+        core_record_preparer: writer.core_record_preparer().into(),
         writer: &mut writer,
         owners: &mut owners,
         complete_inventories: &mut complete_inventories,
@@ -1236,7 +1236,7 @@ fn serial_and_parallel_jsonl_emission_preserve_resource_unavailable() {
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
         let mut record_rejections = SourceBackedRecordRejections::default();
         let mut sink = SourceBackedGenerationSink {
-            core_record_preparer: writer.core_record_preparer(),
+            core_record_preparer: writer.core_record_preparer().into(),
             writer: &mut writer,
             owners: &mut owners,
             complete_inventories: &mut complete_inventories,

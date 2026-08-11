@@ -9,17 +9,20 @@ use std::{
 };
 
 use ctx_history_capture_model::CoreRecordProgress;
+use ctx_history_capture_runtime::{
+    CoreMaterialization, CorePreparationError, CoreRouteResourceError,
+};
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, SourceKey, MAX_ENCODED_CORE_RECORD_BYTES,
 };
-use ctx_history_index::{CoreRecordPreparer, PreparedCoreRecordMaterialization};
 use thiserror::Error;
 
 use super::super::{
     CoreRecordEmission, CoreRecordEmissionBatch, CoreRecordEmissionBatchBuilder,
-    SourceBackedCoordinatorError, SourceBackedGenerationSink, SourceBackedLogicalSourceFailureFact,
-    SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
-    SourceBackedRouteResourceKind, SourceBackedRouteResources, SourceBackedSourceOutcome,
+    IndexCorePreparation, SourceBackedCoordinatorError, SourceBackedGenerationSink,
+    SourceBackedLogicalSourceFailureFact, SourceBackedRecordRejectionDrafts,
+    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResourceKind,
+    SourceBackedRouteResources, SourceBackedSourceOutcome,
     SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS,
 };
 
@@ -449,7 +452,7 @@ pub struct ParallelLeafScanEmitter<'sender, R, E> {
     pub(super) sender: &'sender SyncSender<ParallelLeafWorkerEvent<R, E>>,
     pub(super) cancellation: &'sender AtomicBool,
     pub(super) resources: SourceBackedRouteResources,
-    pub(super) core_record_preparer: CoreRecordPreparer,
+    pub(super) core_record_preparer: IndexCorePreparation,
 }
 
 #[derive(Debug, Error)]
@@ -539,8 +542,8 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         flush_full_batch: bool,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.require_not_cancelled()?;
-        let progress = CoreRecordProgress::from_record(&record);
-        let mut draft = CoreRecordEmission::prepare_draft(record, &self.core_record_preparer)?;
+        let mut draft = CoreRecordEmission::prepare_draft(record, &self.core_record_preparer)
+            .map_err(SourceBackedRouteError::from)?;
         self.require_not_cancelled()?;
         let route_maximum_bytes = self
             .resources
@@ -550,7 +553,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
 
         loop {
             self.require_not_cancelled()?;
-            if !emissions.has_reservation() {
+            if !emissions.has_lease() {
                 self.reserve_core_output_cancelably(
                     emissions,
                     self.resources.core_output_batch_reservation_bytes().max(1),
@@ -568,9 +571,17 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
                     "Core-record materialization permit does not fit this platform",
                 )
             })?;
-            match CoreRecordEmission::materialize_draft(draft, materialization_limit)? {
-                PreparedCoreRecordMaterialization::Prepared(prepared) => {
-                    emissions.push(prepared, progress)?;
+            match CoreRecordEmission::materialize_draft(
+                draft,
+                materialization_limit,
+                &self.core_record_preparer,
+            )
+            .map_err(SourceBackedRouteError::from)?
+            {
+                CoreMaterialization::Prepared(prepared) => {
+                    emissions
+                        .push(prepared, &self.core_record_preparer)
+                        .map_err(SourceBackedRouteError::from)?;
                     if flush_full_batch
                         && emissions.len() == SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS
                     {
@@ -578,7 +589,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
                     }
                     return Ok(());
                 }
-                PreparedCoreRecordMaterialization::CapacityExceeded(returned_draft) => {
+                CoreMaterialization::CapacityExceeded(returned_draft) => {
                     draft = *returned_draft;
                 }
             }
@@ -588,8 +599,8 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
                 continue;
             }
 
-            if emissions.reservation_bytes() >= maximum_materialization_bytes {
-                emissions.release_empty_reservation();
+            if emissions.lease_bytes() >= maximum_materialization_bytes {
+                emissions.release_empty_lease();
                 let maximum_core_bytes =
                     u64::try_from(MAX_ENCODED_CORE_RECORD_BYTES).unwrap_or(u64::MAX);
                 let (kind, detail) = if route_maximum_bytes < maximum_core_bytes {
@@ -612,7 +623,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
                 return Err(SourceBackedRouteError::new(kind, detail).into());
             }
 
-            emissions.release_empty_reservation();
+            emissions.release_empty_lease();
             self.reserve_core_output_cancelably(emissions, maximum_materialization_bytes)?;
         }
     }
@@ -629,7 +640,10 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         emissions: &mut CoreRecordEmissionBatchBuilder,
         completed_bytes: u64,
     ) -> Result<(), ParallelLeafScanEmitError> {
-        let batch = emissions.take_batch()?.map(Box::new);
+        let batch = emissions
+            .take_batch()
+            .map_err(SourceBackedRouteError::from)?
+            .map(Box::new);
         if batch.is_some() || completed_bytes != 0 {
             self.send(ParallelLeafProtocolMessage::CoreRecordBatch {
                 batch,
@@ -651,13 +665,12 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
             self.require_not_cancelled()?;
             match emissions.reserve_bytes(reservation_bytes, &self.resources) {
                 Ok(()) => return Ok(()),
-                Err(error)
-                    if error.kind == SourceBackedRouteErrorKind::ResourceUnavailable
-                        && reservation_bytes <= route_maximum_bytes =>
-                {
+                Err(CorePreparationError::Resource(CoreRouteResourceError::Unavailable {
+                    ..
+                })) if reservation_bytes <= route_maximum_bytes => {
                     thread::sleep(CORE_OUTPUT_RESERVATION_RETRY_DELAY);
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(SourceBackedRouteError::from(error).into()),
             }
         }
     }

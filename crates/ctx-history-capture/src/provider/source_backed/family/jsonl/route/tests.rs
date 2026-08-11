@@ -57,7 +57,7 @@ macro_rules! capture_test_generation {
         let mut record_rejections = SourceBackedRecordRejections::default();
         let result = {
             let mut sink = SourceBackedGenerationSink {
-                core_record_preparer: writer.core_record_preparer(),
+                core_record_preparer: writer.core_record_preparer().into(),
                 writer: &mut writer,
                 owners: &mut owners,
                 complete_inventories: &mut complete_inventories,

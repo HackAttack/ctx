@@ -24,10 +24,9 @@ use ctx_history_core::{
     CertifiedSourceInventory, CoreRecord, ScannedSourceCounts, SourceKey, TypedKey,
 };
 use ctx_history_index::{
-    CommitReceipt, CoreRecordPreparer, GenerationBaseCertifiedSource, GenerationManifest,
-    GenerationWriter, GenerationWriterOpenOutcome, IndexError, PublicationDisposition,
-    PublicationMetadataContext, RevalidationTarget, SourceRouteSnapshot, VerifiedIndex,
-    WriterOptions,
+    CommitReceipt, GenerationBaseCertifiedSource, GenerationManifest, GenerationWriter,
+    GenerationWriterOpenOutcome, IndexError, PublicationDisposition, PublicationMetadataContext,
+    RevalidationTarget, SourceRouteSnapshot, VerifiedIndex, WriterOptions,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -112,7 +111,7 @@ pub(crate) use fallback_identity::FallbackEventIdentityState;
 pub use inventory::*;
 pub use publication::*;
 pub use registration::*;
-pub(crate) use runtime_adapter::IndexBaseEventLookup;
+pub(crate) use runtime_adapter::*;
 pub use watch::*;
 
 pub(crate) fn source_backed_base_sources(
