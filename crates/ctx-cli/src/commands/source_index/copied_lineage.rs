@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
-use ctx_history_index::{
-    CopiedEventLineage, CopiedEventLineagePolicy, CopiedEventLineageResolution, VerifiedIndex,
-};
+use ctx_history_index::{CopiedEventLineage, CopiedEventLineageResolution};
+#[cfg(test)]
+use ctx_history_index::{CopiedEventLineagePolicy, VerifiedIndex};
 use serde_json::{json, Map, Value};
+#[cfg(test)]
 use uuid::Uuid;
 
 const COPIED_LINEAGE_MAX_BYTES: usize = 64 * 1024;
