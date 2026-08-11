@@ -62,6 +62,11 @@ pub enum CaptureError {
     SystemInvariant(&'static str),
     #[error("provider source changed during bounded capture")]
     SourceChangedDuringCapture,
+    #[error("{primary}; additional SQLite finalization failure: {finalization}")]
+    SqliteFinalization {
+        primary: Box<CaptureError>,
+        finalization: Box<CaptureError>,
+    },
     #[error("{provider} source {path:?} failed ({kind}): {detail}")]
     ProviderSource {
         provider: &'static str,
@@ -111,6 +116,13 @@ impl From<ctx_history_source_io::SourceIoError> for CaptureError {
             SourceIoError::SystemIo { operation, source } => Self::SystemIo { operation, source },
             SourceIoError::SystemInvariant(detail) => Self::SystemInvariant(detail),
             SourceIoError::SourceChangedDuringCapture => Self::SourceChangedDuringCapture,
+            SourceIoError::SqliteFinalization {
+                primary,
+                finalization,
+            } => Self::SqliteFinalization {
+                primary: Box::new(Self::from(*primary)),
+                finalization: Box::new(Self::from(*finalization)),
+            },
         }
     }
 }

@@ -51,6 +51,11 @@ pub enum SourceIoError {
     SystemInvariant(&'static str),
     #[error("provider source changed during bounded capture")]
     SourceChangedDuringCapture,
+    #[error("{primary}; terminal SQLite revalidation/cleanup also failed: {finalization}")]
+    SqliteFinalization {
+        primary: Box<SourceIoError>,
+        finalization: Box<SourceIoError>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, SourceIoError>;

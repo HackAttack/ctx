@@ -15,6 +15,73 @@ use crate::{
     OrdinaryFileObservation, ProviderSourceRoot, SqliteSourceAccessError, SqliteSourceEvidence,
     SqliteSourceReadSnapshot,
 };
+
+/// Preserves both a provider operation failure and a failure encountered while
+/// terminally revalidating and closing its SQLite read guard.
+#[derive(Debug)]
+pub enum SqliteReadFinalizationError<Primary, Finalization> {
+    Primary(Primary),
+    Finalization(Finalization),
+    PrimaryAndFinalization {
+        primary: Primary,
+        finalization: Finalization,
+    },
+}
+
+impl<Primary, Finalization> SqliteReadFinalizationError<Primary, Finalization> {
+    pub fn map_error<E>(
+        self,
+        map_primary: impl FnOnce(Primary) -> E,
+        map_finalization: impl FnOnce(Finalization) -> E,
+        combine: impl FnOnce(E, E) -> E,
+    ) -> E {
+        match self {
+            Self::Primary(primary) => map_primary(primary),
+            Self::Finalization(finalization) => map_finalization(finalization),
+            Self::PrimaryAndFinalization {
+                primary,
+                finalization,
+            } => combine(map_primary(primary), map_finalization(finalization)),
+        }
+    }
+}
+
+impl<Primary, Finalization> std::fmt::Display for SqliteReadFinalizationError<Primary, Finalization>
+where
+    Primary: std::fmt::Display,
+    Finalization: std::fmt::Display,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Primary(primary) => primary.fmt(formatter),
+            Self::Finalization(finalization) => finalization.fmt(formatter),
+            Self::PrimaryAndFinalization {
+                primary,
+                finalization,
+            } => write!(
+                formatter,
+                "{primary}; terminal SQLite revalidation/cleanup also failed: {finalization}"
+            ),
+        }
+    }
+}
+
+pub(crate) fn combine_sqlite_read_finalization<T, Primary, Finalization>(
+    primary: std::result::Result<T, Primary>,
+    finalization: std::result::Result<(), Finalization>,
+) -> std::result::Result<T, SqliteReadFinalizationError<Primary, Finalization>> {
+    match (primary, finalization) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(SqliteReadFinalizationError::Primary(primary)),
+        (Ok(_), Err(finalization)) => Err(SqliteReadFinalizationError::Finalization(finalization)),
+        (Err(primary), Err(finalization)) => {
+            Err(SqliteReadFinalizationError::PrimaryAndFinalization {
+                primary,
+                finalization,
+            })
+        }
+    }
+}
 use crate::{Result, SourceIoError, MAX_PROVIDER_SQLITE_VALUE_BYTES};
 
 const SQLITE_COMPONENT_TOKEN_DOMAIN: &[u8] = b"ctx-provider-sqlite-component-v1\0";
@@ -166,9 +233,21 @@ impl RootAuthorizedProviderSqliteSnapshot {
                 .map_err(map_sqlite_source_access_error_to_io)?;
         let snapshot = open_root_handle_sqlite_source_snapshot(&sqlite_authority, database_name)
             .map_err(map_sqlite_source_access_error_to_io)?;
-        snapshot
+        if let Err(primary) = snapshot
             .revalidate()
-            .map_err(map_sqlite_source_access_error_to_io)?;
+            .map_err(map_sqlite_source_access_error_to_io)
+        {
+            return match snapshot
+                .finish()
+                .map_err(map_sqlite_source_access_error_to_io)
+            {
+                Ok(_) => Err(primary),
+                Err(finalization) => Err(SourceIoError::SqliteFinalization {
+                    primary: Box::new(primary),
+                    finalization: Box::new(finalization),
+                }),
+            };
+        }
         Ok(Self {
             snapshot: Some(snapshot),
         })
@@ -191,6 +270,14 @@ impl RootAuthorizedProviderSqliteSnapshot {
         snapshot
             .finish()
             .map_err(map_sqlite_source_access_error_to_io)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn counter_observer(&self) -> crate::SqliteSourceSnapshotCounterObserver {
+        self.snapshot
+            .as_ref()
+            .expect("active root-authorized SQLite snapshot")
+            .counter_observer()
     }
 }
 
@@ -221,6 +308,49 @@ pub struct ReadOnlySqliteConnection {
     snapshot: Option<RootAuthorizedProviderSqliteSnapshot>,
 }
 
+pub struct MappedReadOnlySqliteConnection<E>(
+    ReadOnlySqliteConnection,
+    std::marker::PhantomData<fn() -> E>,
+);
+
+impl<E> std::ops::Deref for MappedReadOnlySqliteConnection<E> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<E> MappedReadOnlySqliteConnection<E>
+where
+    E: From<SourceIoError>,
+{
+    pub fn open(data_root: &Path, path: &Path) -> std::result::Result<Self, E> {
+        open_provider_sqlite_readonly(data_root, path)
+            .map(|connection| Self(connection, std::marker::PhantomData))
+            .map_err(Into::into)
+    }
+
+    pub fn finish(self) -> std::result::Result<SqliteSourceEvidence, E> {
+        self.0.finish().map_err(Into::into)
+    }
+
+    pub fn finish_with<T>(
+        self,
+        primary: std::result::Result<T, E>,
+        combine: impl FnOnce(E, E) -> E,
+    ) -> std::result::Result<T, E> {
+        self.0
+            .finish_with(primary)
+            .map_err(|error| error.map_error(std::convert::identity, Into::into, combine))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn counter_observer(&self) -> crate::SqliteSourceSnapshotCounterObserver {
+        self.0.counter_observer()
+    }
+}
+
 impl ReadOnlySqliteConnection {
     fn connection(&self) -> Result<&Connection> {
         self.snapshot
@@ -238,6 +368,49 @@ impl ReadOnlySqliteConnection {
                 "provider SQLite source snapshot is inactive",
             ))?
             .finish()
+    }
+
+    /// Runs a provider read and then always performs terminal source-family
+    /// revalidation and cleanup before returning its result.
+    pub fn with_connection<T, E>(
+        self,
+        operation: impl FnOnce(&Connection) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, SqliteReadFinalizationError<E, SourceIoError>> {
+        let primary = operation(&self);
+        self.finish_with(primary)
+    }
+
+    /// Completes a previously-run provider operation while preserving both
+    /// its primary error and any terminal revalidation/cleanup error.
+    pub fn finish_with<T, E>(
+        self,
+        primary: std::result::Result<T, E>,
+    ) -> std::result::Result<T, SqliteReadFinalizationError<E, SourceIoError>> {
+        combine_sqlite_read_finalization(primary, self.finish().map(|_| ()))
+    }
+
+    fn retain_after_configuration<E>(
+        self,
+        configured: std::result::Result<(), E>,
+    ) -> std::result::Result<Self, SqliteReadFinalizationError<E, SourceIoError>> {
+        match configured {
+            Ok(()) => Ok(self),
+            Err(primary) => match self.finish() {
+                Ok(_) => Err(SqliteReadFinalizationError::Primary(primary)),
+                Err(finalization) => Err(SqliteReadFinalizationError::PrimaryAndFinalization {
+                    primary,
+                    finalization,
+                }),
+            },
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn counter_observer(&self) -> crate::SqliteSourceSnapshotCounterObserver {
+        self.snapshot
+            .as_ref()
+            .expect("active read-only SQLite guard")
+            .counter_observer()
     }
 }
 
@@ -257,16 +430,20 @@ pub fn open_provider_sqlite_readonly(
     path: &Path,
 ) -> Result<ReadOnlySqliteConnection> {
     let conn = open_sqlite_readonly_source(data_root, path)?;
-    let value_limit = i32::try_from(MAX_PROVIDER_SQLITE_VALUE_BYTES).map_err(|_| {
-        SourceIoError::InvalidPayload(format!(
-            "provider SQLite value byte limit is unrepresentable: {MAX_PROVIDER_SQLITE_VALUE_BYTES}"
-        ))
-    })?;
-    let connection = conn.connection()?;
-    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, value_limit);
-    connection.busy_timeout(std::time::Duration::from_secs(5))?;
-    connection.pragma_update(None, "query_only", true)?;
-    Ok(conn)
+    let configured = (|| {
+        let value_limit = i32::try_from(MAX_PROVIDER_SQLITE_VALUE_BYTES).map_err(|_| {
+            SourceIoError::InvalidPayload(format!(
+                "provider SQLite value byte limit is unrepresentable: {MAX_PROVIDER_SQLITE_VALUE_BYTES}"
+            ))
+        })?;
+        let connection = conn.connection()?;
+        connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, value_limit);
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.pragma_update(None, "query_only", true)?;
+        Ok(())
+    })();
+    conn.retain_after_configuration(configured)
+        .map_err(source_io_finalization_error)
 }
 
 pub fn open_sqlite_readonly_source(
@@ -282,6 +459,22 @@ pub fn open_sqlite_readonly_source(
 #[cold]
 fn inactive_readonly_sqlite_connection() -> ! {
     std::process::abort()
+}
+
+fn source_io_finalization_error(
+    error: SqliteReadFinalizationError<SourceIoError, SourceIoError>,
+) -> SourceIoError {
+    match error {
+        SqliteReadFinalizationError::Primary(primary) => primary,
+        SqliteReadFinalizationError::Finalization(finalization) => finalization,
+        SqliteReadFinalizationError::PrimaryAndFinalization {
+            primary,
+            finalization,
+        } => SourceIoError::SqliteFinalization {
+            primary: Box::new(primary),
+            finalization: Box::new(finalization),
+        },
+    }
 }
 
 fn map_sqlite_source_access_error_to_io(error: SqliteSourceAccessError) -> SourceIoError {
@@ -312,7 +505,8 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        open_provider_sqlite_readonly, ProviderSqliteSourceSnapshot, SqliteSourceEvidence,
+        open_provider_sqlite_readonly, ProviderSqliteSourceSnapshot, SqliteReadFinalizationError,
+        SqliteSourceEvidence,
     };
     #[cfg(target_os = "linux")]
     use crate::Result;
@@ -420,6 +614,87 @@ mod tests {
             .unwrap();
         assert_eq!(body, "guarded");
         connection.finish().unwrap();
+    }
+
+    #[test]
+    fn readonly_scope_finalizes_success_and_query_error_without_unfinished_drop() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let database = temp.path().join("provider.sqlite");
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .execute("CREATE TABLE messages (body TEXT NOT NULL)", [])
+            .unwrap();
+        writer
+            .execute("INSERT INTO messages VALUES ('scoped')", [])
+            .unwrap();
+        drop(writer);
+
+        let connection =
+            open_provider_sqlite_readonly(crate::test_provider_sqlite_data_root(), &database)
+                .unwrap();
+        let observer = connection.counter_observer();
+        let body: String = connection
+            .with_connection(|connection| {
+                connection.query_row("SELECT body FROM messages", [], |row| row.get(0))
+            })
+            .unwrap();
+        assert_eq!(body, "scoped");
+        let counters = observer.snapshot();
+        assert_eq!(counters.unfinished_drops(), 0);
+        assert_eq!(counters.active_snapshots(), 0);
+
+        let connection =
+            open_provider_sqlite_readonly(crate::test_provider_sqlite_data_root(), &database)
+                .unwrap();
+        let observer = connection.counter_observer();
+        let error = connection
+            .with_connection(|connection| {
+                connection.query_row::<i64, _, _>("SELECT value FROM missing", [], |row| row.get(0))
+            })
+            .unwrap_err();
+        assert!(matches!(error, SqliteReadFinalizationError::Primary(_)));
+        let counters = observer.snapshot();
+        assert_eq!(counters.unfinished_drops(), 0);
+        assert_eq!(counters.active_snapshots(), 0);
+    }
+
+    #[test]
+    fn readonly_scope_preserves_query_revalidation_and_cleanup_failures() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let database = temp.path().join("provider.sqlite");
+        let admitted = temp.path().join("admitted.sqlite");
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .execute("CREATE TABLE messages (body TEXT NOT NULL)", [])
+            .unwrap();
+        drop(writer);
+        crate::fail_next_opened_snapshot_cleanup_for_test();
+
+        let connection =
+            open_provider_sqlite_readonly(crate::test_provider_sqlite_data_root(), &database)
+                .unwrap();
+        let observer = connection.counter_observer();
+        let error = connection
+            .with_connection(|connection| {
+                let primary =
+                    connection
+                        .query_row::<i64, _, _>("SELECT value FROM missing", [], |row| row.get(0));
+                fs::rename(&database, &admitted).unwrap();
+                let replacement = Connection::open(&database).unwrap();
+                replacement
+                    .execute("CREATE TABLE replacement(value TEXT)", [])
+                    .unwrap();
+                drop(replacement);
+                primary
+            })
+            .unwrap_err();
+        let rendered = error.to_string();
+        assert!(rendered.contains("no such table: missing"));
+        assert!(rendered.contains("changed while its read snapshot was active"));
+        assert!(rendered.contains("injected SQLite snapshot cleanup failure"));
+        let counters = observer.snapshot();
+        assert_eq!(counters.unfinished_drops(), 0);
+        assert_eq!(counters.active_snapshots(), 0);
     }
 
     #[cfg(target_os = "linux")]

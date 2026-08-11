@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 
 use crate::provider::provider_safe_path_segment;
 use crate::provider::sqlite::{
-    ensure_sqlite_table_columns, sqlite_table_columns, sqlite_table_exists,
+    combine_sqlite_finalization, ensure_sqlite_table_columns, sqlite_table_columns,
+    sqlite_table_exists,
 };
 use crate::{CaptureError, Result};
 
@@ -48,26 +49,37 @@ impl<'snapshot> NanoClawDatabaseSource<'snapshot> {
         let read = snapshot.open_read()?.ok_or(CaptureError::SystemInvariant(
             "NanoClaw present component did not open a database",
         ))?;
-        if !read.revalidate(snapshot)? {
-            return Err(CaptureError::SourceChangedDuringCapture);
-        }
-        let conn = read.connection()?;
-        let table = source.table();
-        if !sqlite_table_exists(conn, table)? {
-            return Err(CaptureError::InvalidPayload(format!(
-                "NanoClaw {} is missing required {table} table",
-                snapshot.path().display()
-            )));
-        }
-        let columns = sqlite_table_columns(conn, table)?;
-        ensure_sqlite_table_columns(
-            &columns,
-            match source {
-                NanoClawMessageSource::Inbound => "NanoClaw inbound messages table",
-                NanoClawMessageSource::Outbound => "NanoClaw outbound messages table",
-            },
-            &["id"],
-        )?;
+        let admission = (|| {
+            if !read.revalidate(snapshot)? {
+                return Err(CaptureError::SourceChangedDuringCapture);
+            }
+            let conn = read.connection()?;
+            let table = source.table();
+            if !sqlite_table_exists(conn, table)? {
+                return Err(CaptureError::InvalidPayload(format!(
+                    "NanoClaw {} is missing required {table} table",
+                    snapshot.path().display()
+                )));
+            }
+            let columns = sqlite_table_columns(conn, table)?;
+            ensure_sqlite_table_columns(
+                &columns,
+                match source {
+                    NanoClawMessageSource::Inbound => "NanoClaw inbound messages table",
+                    NanoClawMessageSource::Outbound => "NanoClaw outbound messages table",
+                },
+                &["id"],
+            )?;
+            Ok(columns)
+        })();
+        let columns = match admission {
+            Ok(columns) => columns,
+            Err(primary) => {
+                return read
+                    .finish_with::<()>(snapshot, Err(primary))
+                    .map(|_| unreachable!("an error result cannot retain a NanoClaw source"));
+            }
+        };
         Ok(Some(Self {
             source,
             snapshot,
@@ -86,6 +98,10 @@ impl<'snapshot> NanoClawDatabaseSource<'snapshot> {
 
     fn finish(self) -> Result<()> {
         self.read.finish(self.snapshot)
+    }
+
+    fn finish_with<T>(self, primary: Result<T>) -> Result<T> {
+        self.read.finish_with(self.snapshot, primary)
     }
 
     fn message_after(&self, frontier: NanoClawFrontier) -> Result<NanoClawMessageAfter> {
@@ -153,14 +169,19 @@ impl NanoClawActiveSession<'_> {
     }
 
     fn finish(self) -> Result<()> {
-        if let Some(inbound) = self.inbound {
-            inbound.finish()?;
-        }
-        if let Some(outbound) = self.outbound {
-            outbound.finish()?;
-        }
-        Ok(())
+        finish_nanoclaw_components(self.inbound, self.outbound)
     }
+}
+
+fn finish_nanoclaw_components(
+    inbound: Option<NanoClawDatabaseSource<'_>>,
+    outbound: Option<NanoClawDatabaseSource<'_>>,
+) -> Result<()> {
+    let result = inbound.map_or(Ok(()), NanoClawDatabaseSource::finish);
+    combine_sqlite_finalization(
+        result,
+        outbound.map_or(Ok(()), NanoClawDatabaseSource::finish),
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,12 +364,11 @@ impl<'connection, 'snapshot> NanoClawNativeScanner<'connection, 'snapshot> {
     }
 
     pub(super) fn finish(mut self) -> Result<()> {
-        self.finish_active_session()?;
-        if self.snapshot.revalidate()? {
-            Ok(())
-        } else {
-            Err(CaptureError::SourceChangedDuringCapture)
-        }
+        let result = self.finish_active_session();
+        combine_sqlite_finalization(
+            result,
+            super::project::require_unchanged(self.snapshot.revalidate()),
+        )
     }
 
     pub(super) fn next_page(&mut self) -> Result<NanoClawNativePage> {
@@ -578,18 +598,28 @@ impl<'connection, 'snapshot> NanoClawNativeScanner<'connection, 'snapshot> {
             &row.id,
             NanoClawMessageSource::Outbound,
         )?;
+        let inbound =
+            NanoClawDatabaseSource::open(NanoClawMessageSource::Inbound, inbound_snapshot)?;
+        let outbound = match NanoClawDatabaseSource::open(
+            NanoClawMessageSource::Outbound,
+            outbound_snapshot,
+        ) {
+            Ok(outbound) => outbound,
+            Err(primary) => {
+                let failed = match inbound {
+                    Some(inbound) => inbound.finish_with::<()>(Err(primary)),
+                    None => Err(primary),
+                };
+                return failed
+                    .map(|_| unreachable!("an error result cannot open an active session"));
+            }
+        };
         Ok(NanoClawActiveSession {
             rowid,
             row,
             retained_bytes,
-            inbound: NanoClawDatabaseSource::open(
-                NanoClawMessageSource::Inbound,
-                inbound_snapshot,
-            )?,
-            outbound: NanoClawDatabaseSource::open(
-                NanoClawMessageSource::Outbound,
-                outbound_snapshot,
-            )?,
+            inbound,
+            outbound,
         })
     }
 
@@ -739,5 +769,65 @@ fn nanoclaw_row_decode_error_is_local(error: &CaptureError) -> bool {
                 | rusqlite::Error::InvalidColumnType(..)
         ),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod finalization_tests {
+    use std::fs;
+
+    use rusqlite::Connection;
+
+    use super::*;
+    use crate::provider_sources::fail_next_opened_snapshot_cleanup_for_test;
+
+    fn create_component(path: &std::path::Path, table: &str) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(&format!("CREATE TABLE {table}(id TEXT NOT NULL)"), [])
+            .unwrap();
+    }
+
+    #[test]
+    fn two_live_component_guards_both_finalize_after_first_cleanup_failure() {
+        let session = tempfile::tempdir().unwrap();
+        let data_root = tempfile::tempdir().unwrap();
+        create_component(&session.path().join("inbound.db"), "messages_in");
+        create_component(&session.path().join("outbound.db"), "messages_out");
+        let inbound_snapshot = NanoClawProjectDatabaseSnapshot::read(
+            data_root.path(),
+            session.path(),
+            NanoClawMessageSource::Inbound,
+        )
+        .unwrap();
+        let outbound_snapshot = NanoClawProjectDatabaseSnapshot::read(
+            data_root.path(),
+            session.path(),
+            NanoClawMessageSource::Outbound,
+        )
+        .unwrap();
+        fail_next_opened_snapshot_cleanup_for_test();
+        let inbound =
+            NanoClawDatabaseSource::open(NanoClawMessageSource::Inbound, &inbound_snapshot)
+                .unwrap();
+        fail_next_opened_snapshot_cleanup_for_test();
+        let outbound =
+            NanoClawDatabaseSource::open(NanoClawMessageSource::Outbound, &outbound_snapshot)
+                .unwrap();
+        let inbound_observer = inbound.as_ref().unwrap().read.counter_observer();
+        let outbound_observer = outbound.as_ref().unwrap().read.counter_observer();
+        let error = finish_nanoclaw_components(inbound, outbound).unwrap_err();
+        assert_eq!(
+            error
+                .to_string()
+                .matches("injected SQLite snapshot cleanup failure")
+                .count(),
+            2
+        );
+        for counters in [inbound_observer.snapshot(), outbound_observer.snapshot()] {
+            assert_eq!(counters.unfinished_drops(), 0);
+            assert_eq!(counters.active_snapshots(), 0);
+        }
+        assert_eq!(fs::read_dir(data_root.path()).unwrap().count(), 0);
     }
 }

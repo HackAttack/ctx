@@ -36,20 +36,10 @@ pub use lingma::{
     LingmaDiscoveryUnavailable, LingmaInventorySelector, LingmaVscodeClient, LingmaVscodeProfile,
 };
 
-pub(crate) fn open_ordinary_file_without_following(
-    path: &std::path::Path,
-) -> crate::Result<std::fs::File> {
-    ctx_history_source_io::open_ordinary_file_without_following(path).map_err(Into::into)
-}
-
-pub fn observe_ordinary_file(
-    path: impl AsRef<std::path::Path>,
-) -> crate::Result<OrdinaryFileObservation> {
-    ctx_history_source_io::observe_ordinary_file(path).map_err(Into::into)
-}
 pub(crate) use crate::provider::sqlite::{
     sqlite_retry_decision, SqliteLogicalSnapshot, SqliteRetryDecision,
 };
+ctx_history_source_io::define_mapped_ordinary_io_compat!(crate::CaptureError);
 #[cfg(test)]
 pub(crate) use ctx_history_source_io::{
     fail_next_opened_snapshot_cleanup_for_test, SqliteSourceSnapshotCounters,

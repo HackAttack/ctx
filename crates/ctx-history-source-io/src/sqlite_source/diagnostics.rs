@@ -159,6 +159,11 @@ pub enum SqliteSourceAccessError {
         #[source]
         source: Box<SqliteSourceAccessError>,
     },
+    #[error("{primary}; SQLite snapshot cleanup also failed: {cleanup}")]
+    Finalization {
+        primary: Box<SqliteSourceAccessError>,
+        cleanup: Box<SqliteSourceAccessError>,
+    },
     #[error("certified provider SQLite content is corrupt: {source}")]
     ProviderContentCorruption {
         #[source]
@@ -217,6 +222,7 @@ impl SqliteSourceAccessError {
             Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } => {
                 source.acquisition_artifact()
             }
+            Self::Finalization { primary, .. } => primary.acquisition_artifact(),
             Self::ScratchSqliteUnavailable { .. } | Self::ScratchIoUnavailable { .. } => {
                 SqliteArtifactKind::PrivateSourceCopy
             }
@@ -250,6 +256,7 @@ impl SqliteSourceAccessError {
             || matches!(self, Self::Sqlite { source, .. } if rusqlite_resource_failure(source))
             || matches!(self, Self::SqliteControl { code, .. } if sqlite_resource_code(*code))
             || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_systemic_resource_failure())
+            || matches!(self, Self::Finalization { primary, cleanup } if primary.is_systemic_resource_failure() || cleanup.is_systemic_resource_failure())
     }
 
     pub fn is_ctx_owned_corruption(&self) -> bool {
@@ -262,6 +269,9 @@ impl SqliteSourceAccessError {
                         diagnostic.sqlite_primary_code,
                         Some(ffi::SQLITE_CORRUPT) | Some(ffi::SQLITE_NOTADB)
                     )
+            }
+            Self::Finalization { primary, cleanup } => {
+                primary.is_ctx_owned_corruption() || cleanup.is_ctx_owned_corruption()
             }
             _ => false,
         }
@@ -285,6 +295,9 @@ impl SqliteSourceAccessError {
                         Some(ffi::SQLITE_CORRUPT) | Some(ffi::SQLITE_NOTADB)
                     ))
             }
+            Self::Finalization { primary, cleanup } => {
+                primary.is_provider_corruption() || cleanup.is_provider_corruption()
+            }
             _ => false,
         }
     }
@@ -301,6 +314,9 @@ impl SqliteSourceAccessError {
             }
             Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } => {
                 source.is_provider_path_unavailable()
+            }
+            Self::Finalization { primary, cleanup } => {
+                primary.is_provider_path_unavailable() || cleanup.is_provider_path_unavailable()
             }
             _ => false,
         }
@@ -329,12 +345,16 @@ impl SqliteSourceAccessError {
                 | Self::SnapshotUnavailable { .. }
                 | Self::SnapshotNotActive
         ) || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_operational_failure())
+            || matches!(self, Self::Finalization { primary, cleanup } if primary.is_operational_failure() || cleanup.is_operational_failure())
     }
 
     pub fn diagnostic(&self) -> Option<&SqliteFailureDiagnostic> {
         match self {
             Self::Diagnosed { diagnostic, .. } => Some(diagnostic),
             Self::ProviderContentCorruption { source } => source.diagnostic(),
+            Self::Finalization { primary, cleanup } => {
+                cleanup.diagnostic().or_else(|| primary.diagnostic())
+            }
             _ => None,
         }
     }
@@ -342,6 +362,7 @@ impl SqliteSourceAccessError {
     pub fn is_source_changed(&self) -> bool {
         matches!(self, Self::SourceChanged)
             || matches!(self, Self::Diagnosed { source, .. } | Self::ProviderContentCorruption { source } if source.is_source_changed())
+            || matches!(self, Self::Finalization { primary, cleanup } if primary.is_source_changed() || cleanup.is_source_changed())
     }
 
     pub fn with_diagnostic(
@@ -379,6 +400,13 @@ impl SqliteSourceAccessError {
             Self::ProviderContentCorruption { source } => Self::ProviderContentCorruption {
                 source: Box::new(source.with_cleanup_status(cleanup)),
             },
+            Self::Finalization {
+                primary,
+                cleanup: cleanup_error,
+            } => Self::Finalization {
+                primary,
+                cleanup: Box::new(cleanup_error.with_cleanup_status(cleanup)),
+            },
             error => {
                 let artifact = error.acquisition_artifact();
                 error.with_diagnostic(SqliteFailurePhase::Cleanup, artifact, 0, 0, cleanup)
@@ -412,6 +440,14 @@ impl SqliteSourceAccessError {
             Self::SqliteControl { code, .. } => Some(*code),
             Self::CleanupUnavailable { source, .. }
             | Self::ProviderContentCorruption { source } => return source.sqlite_codes(),
+            Self::Finalization { primary, cleanup } => {
+                let primary_codes = primary.sqlite_codes();
+                return if primary_codes.0.is_some() {
+                    primary_codes
+                } else {
+                    cleanup.sqlite_codes()
+                };
+            }
             Self::Diagnosed { source, .. } => return source.sqlite_codes(),
             _ => None,
         };

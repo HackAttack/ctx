@@ -9,6 +9,7 @@
 mod error;
 mod event_files;
 mod io;
+mod mapped_io;
 mod ordinary_file;
 mod progress;
 mod sqlite;
@@ -18,6 +19,7 @@ pub use error::ProviderJsonlInventoryLimit as SourceIoJsonlInventoryLimit;
 pub use error::{ProviderJsonlInventoryLimit, Result, SourceIoError};
 pub use event_files::*;
 pub use io::*;
+pub use mapped_io::*;
 pub use ordinary_file::*;
 pub use progress::{SqliteSourceProgress, SqliteSourceProgressStage};
 pub use sqlite::*;

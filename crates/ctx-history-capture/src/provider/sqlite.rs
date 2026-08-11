@@ -3,7 +3,7 @@
     reason = "the compatibility surface remains until SQLite provider packs depend on source I/O directly"
 )]
 
-use std::{collections::BTreeSet, ops::Deref, path::Path};
+use std::{collections::BTreeSet, path::Path};
 
 use ctx_history_core::compute_payload_hash;
 use rusqlite::{limits::Limit, Connection};
@@ -163,19 +163,28 @@ pub(crate) fn sqlite_component_change_token(
     ctx_history_source_io::sqlite_component_change_token(path, observation).map_err(Into::into)
 }
 
-pub(crate) struct ReadOnlySqliteConnection(ctx_history_source_io::ReadOnlySqliteConnection);
+pub(crate) type ReadOnlySqliteConnection =
+    ctx_history_source_io::MappedReadOnlySqliteConnection<CaptureError>;
 
-impl Deref for ReadOnlySqliteConnection {
-    type Target = Connection;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+pub(crate) fn combine_sqlite_finalization<T>(
+    primary: Result<T>,
+    finalization: Result<()>,
+) -> Result<T> {
+    match (primary, finalization) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(finalization)) => Err(finalization),
+        (Err(primary), Err(finalization)) => Err(combine_sqlite_errors(primary, finalization)),
     }
 }
 
-impl ReadOnlySqliteConnection {
-    pub(crate) fn finish(self) -> Result<ctx_history_source_io::SqliteSourceEvidence> {
-        self.0.finish().map_err(Into::into)
+pub(crate) fn combine_sqlite_errors(
+    primary: CaptureError,
+    finalization: CaptureError,
+) -> CaptureError {
+    CaptureError::SqliteFinalization {
+        primary: Box::new(primary),
+        finalization: Box::new(finalization),
     }
 }
 
@@ -183,18 +192,7 @@ pub(crate) fn open_provider_sqlite_readonly(
     data_root: &Path,
     path: &Path,
 ) -> Result<ReadOnlySqliteConnection> {
-    ctx_history_source_io::open_provider_sqlite_readonly(data_root, path)
-        .map(ReadOnlySqliteConnection)
-        .map_err(Into::into)
-}
-
-pub(crate) fn open_sqlite_readonly_source(
-    data_root: &Path,
-    path: &Path,
-) -> Result<ReadOnlySqliteConnection> {
-    ctx_history_source_io::open_sqlite_readonly_source(data_root, path)
-        .map(ReadOnlySqliteConnection)
-        .map_err(Into::into)
+    ReadOnlySqliteConnection::open(data_root, path)
 }
 
 pub(crate) fn map_sqlite_source_access_error(error: SqliteSourceAccessError) -> CaptureError {

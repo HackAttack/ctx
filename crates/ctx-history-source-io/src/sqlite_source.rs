@@ -93,6 +93,19 @@ pub struct SqliteSourceSnapshotCounters {
     max_active_snapshot_bytes: u64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug)]
+pub struct SqliteSourceSnapshotCounterObserver {
+    context: Arc<SqliteSourceSnapshotContext>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl SqliteSourceSnapshotCounterObserver {
+    pub fn snapshot(&self) -> SqliteSourceSnapshotCounters {
+        self.context.snapshot()
+    }
+}
+
 impl SqliteSourceSnapshotCounters {
     pub const fn immutable_snapshot_opens(self) -> u64 {
         self.immutable_snapshot_opens
@@ -922,7 +935,10 @@ impl SqliteSourceReadSnapshot {
         if let Err(error) = self.revalidate() {
             return match self.cleanup_snapshot_storage() {
                 Ok(()) => Err(error),
-                Err(cleanup) => Err(cleanup),
+                Err(cleanup) => Err(SqliteSourceAccessError::Finalization {
+                    primary: Box::new(error),
+                    cleanup: Box::new(cleanup),
+                }),
             };
         }
         let family = match self.family.take() {
@@ -931,7 +947,10 @@ impl SqliteSourceReadSnapshot {
                 let error = SqliteSourceAccessError::SnapshotNotActive;
                 return match self.cleanup_snapshot_storage() {
                     Ok(()) => Err(error),
-                    Err(cleanup) => Err(cleanup),
+                    Err(cleanup) => Err(SqliteSourceAccessError::Finalization {
+                        primary: Box::new(error),
+                        cleanup: Box::new(cleanup),
+                    }),
                 };
             }
         };
@@ -989,10 +1008,7 @@ impl SqliteSourceReadSnapshot {
             snapshot::close_private_snapshot_directory(directory, artifact, 0, 0)
         });
         drop(self.snapshot_activity.take());
-        match (close_connection, close_directory) {
-            (_, Err(error)) | (Err(error), Ok(())) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
-        }
+        combine_sqlite_source_cleanup(close_connection, close_directory)
     }
 
     /// Compatibility path for callers that need only closing evidence.
@@ -1002,6 +1018,28 @@ impl SqliteSourceReadSnapshot {
     pub fn finish(self) -> SqliteSourceAccessResult<SqliteSourceEvidence> {
         let fence = self.seal()?;
         Ok(fence.evidence().clone())
+    }
+
+    /// Completes a provider operation and always seals the physical snapshot,
+    /// preserving both failures when the operation and finalization fail.
+    pub fn finish_with<T, E>(
+        self,
+        primary: std::result::Result<T, E>,
+    ) -> std::result::Result<T, crate::SqliteReadFinalizationError<E, SqliteSourceAccessError>>
+    {
+        crate::sqlite::combine_sqlite_read_finalization(primary, self.finish().map(|_| ()))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn snapshot_counters(&self) -> SqliteSourceSnapshotCounters {
+        self.snapshot_context.snapshot()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn counter_observer(&self) -> SqliteSourceSnapshotCounterObserver {
+        SqliteSourceSnapshotCounterObserver {
+            context: Arc::clone(&self.snapshot_context),
+        }
     }
 }
 
@@ -1053,9 +1091,22 @@ fn close_snapshot_read_connection(
         0,
         0,
     );
-    match (clear, rollback, close) {
-        (_, _, Err(error)) | (_, Err(error), Ok(())) | (Err(error), Ok(()), Ok(())) => Err(error),
-        (Ok(()), Ok(()), Ok(())) => Ok(()),
+    let result = combine_sqlite_source_cleanup(clear, rollback);
+    combine_sqlite_source_cleanup(result, close)
+}
+
+fn combine_sqlite_source_cleanup(
+    primary: SqliteSourceAccessResult<()>,
+    cleanup: SqliteSourceAccessResult<()>,
+) -> SqliteSourceAccessResult<()> {
+    match (primary, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(()), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(SqliteSourceAccessError::Finalization {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }),
     }
 }
 
