@@ -75,10 +75,10 @@ SDK_SPECS = {
             "swift --version\n"
             "bash scripts/check-sdks.sh --groups=jvm,swift --required-groups=jvm,swift"
         ),
-        "queue": "mac-shared",
+        "queue": "ctx-release-macos-arm64",
         "os": "darwin",
         "arch": "arm64",
-        "concurrency_group": "ctx/sdk-swift-required/mac-shared",
+        "concurrency_group": "ctx/sdk-swift-required/ctx-release-macos-arm64",
     },
     "sdk-windows-required": {
         "command": (
@@ -145,6 +145,12 @@ def validate_sdk_steps(blocks) -> None:
             scalar(block, "timeout_in_minutes") == "30",
             f"{key} must retain its bounded timeout",
         )
+        if key == "sdk-swift-required":
+            for marker in ("mac-shared", "ctx-m1-mini", "ctxrunner"):
+                require(
+                    marker not in block,
+                    f"{key} must not retain physical-M1 marker {marker}",
+                )
 
 
 def validate_linux_route(source: str) -> None:
@@ -303,6 +309,7 @@ def main() -> None:
         )
     mutations = (
         ("optional Swift", "sdk-swift-required", "    timeout_in_minutes: 30\n", "    soft_fail: true\n    timeout_in_minutes: 30\n"),
+        ("offline Swift runner", "sdk-swift-required", '      queue: "ctx-release-macos-arm64"\n', '      queue: "mac-shared"\n'),
         ("skipped Windows", "sdk-windows-required", "    timeout_in_minutes: 30\n", "    skip: true\n    timeout_in_minutes: 30\n"),
         ("optional macOS command", "sdk-swift-required", " --required-groups=jvm,swift", ""),
         ("optional Windows command", "sdk-windows-required", " --required-groups=typescript,python,go,dotnet", ""),

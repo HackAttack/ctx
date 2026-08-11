@@ -3,6 +3,10 @@ set -euo pipefail
 
 pipeline=".buildkite/pipeline.yml"
 macos_arm64_hosted_queue="ctx-release-macos-arm64"
+macos_x64_kvm_queue="ctx-mac-gui-shared-x64"
+macos_x64_kvm_runner_id="ctx-mac-gui-shared-x64"
+macos_x64_llvm_task_root_env="CTX_RELEASE_MACOS_X64_LLVM_TASK_ROOT"
+macos_x64_intel_concurrency_group="ctx-public-cli-macos-intel-native"
 public_ci_script="scripts/buildkite-public-ci.sh"
 public_ci_cache_test="scripts/tests/buildkite-public-ci-cache-test.sh"
 sdk_check_script="scripts/check-sdks.sh"
@@ -433,6 +437,10 @@ if command -v ruby >/dev/null 2>&1; then
     abort "pipeline must have steps" unless data.is_a?(Hash) && data["steps"].is_a?(Array)
     steps = data["steps"]
     macos_arm64_hosted_queue = ARGV.fetch(1)
+    macos_x64_kvm_queue = ARGV.fetch(2)
+    macos_x64_kvm_runner_id = ARGV.fetch(3)
+    macos_x64_llvm_task_root_env = ARGV.fetch(4)
+    macos_x64_intel_concurrency_group = ARGV.fetch(5)
     abort "pipeline should include public validation and bounded release matrices" unless steps.length == 20
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
@@ -531,10 +539,29 @@ if command -v ruby >/dev/null 2>&1; then
     end
     macos_x64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64" }
     abort "missing macOS x64 artifact step" unless macos_x64
-    abort "macos-x64 construction queue changed" unless macos_x64.dig("agents", "queue") == "mac-shared"
-    abort "macos-x64 construction must run on Darwin" unless macos_x64.dig("agents", "os") == "darwin"
-    abort "macos-x64 construction must retain Apple Silicon Rosetta construction" unless macos_x64.dig("agents", "arch") == "arm64"
-    abort "macos-x64 construction serialization changed" unless macos_x64["concurrency"] == 1 && macos_x64["concurrency_group"] == "ctx-public-cli-macos-native"
+    macos_x64_release_steps = %w[
+      public-cli-macos-x64
+      public-cli-macos-x64-native-smoke
+      semantic-runtime-macos-x64
+    ]
+    macos_x64_release_steps.each do |key|
+      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
+      abort "missing macOS x64 release step #{key}" unless step
+      abort "#{key} must use native x86_64 KVM queue #{macos_x64_kvm_queue}" unless step.dig("agents", "queue") == macos_x64_kvm_queue
+      abort "#{key} must run on Darwin" unless step.dig("agents", "os") == "darwin"
+      abort "#{key} must run as x86_64" unless step.dig("agents", "arch") == "x86_64"
+      abort "#{key} must serialize on the Intel concurrency group" unless step["concurrency"] == 1 && step["concurrency_group"] == macos_x64_intel_concurrency_group
+      abort "#{key} must not depend on offline mac-shared" if step.to_s.include?("mac-shared")
+    end
+    macos_x64_command = macos_x64["command"].to_s
+    runner_binding = "CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID=#{macos_x64_kvm_runner_id}"
+    llvm_task_root = %Q{--macos-llvm-task-root "$${#{macos_x64_llvm_task_root_env}:?}"}
+    abort "macos-x64 construction must bind the exact KVM runner identity" unless macos_x64_command.include?(runner_binding)
+    abort "macos-x64 construction must pass its verified LLVM task root" unless macos_x64_command.include?(llvm_task_root)
+    runner_binding_position = macos_x64_command.index(runner_binding)
+    packaging_position = macos_x64_command.index("//:ctx_release_macos_x64")
+    llvm_task_root_position = macos_x64_command.index(llvm_task_root)
+    abort "macos-x64 runner and LLVM authorities must be bound to construction" unless runner_binding_position && packaging_position && llvm_task_root_position && runner_binding_position < packaging_position && packaging_position < llvm_task_root_position
     {
       "public-cli-macos-arm64" => "injected",
       "public-cli-macos-x64" => "infisical",
@@ -784,7 +811,9 @@ if command -v ruby >/dev/null 2>&1; then
     abort "Semantic gather must not bind unrelated CLI source state" if gather_command.include?("CTX_PUBLIC_RELEASE_SOURCE_COMMIT") || gather_command.include?("git rev-parse --verify HEAD^{commit}")
     abort "Semantic gather must construct and stage the unsigned handoff" unless gather_command.include?("scripts/stage-semantic-release-handoff.sh")
     abort "public Semantic gather must not sign release metadata" if gather_command.match?(/sign|private/i)
-  ' "${pipeline}" "${macos_arm64_hosted_queue}"
+  ' "${pipeline}" "${macos_arm64_hosted_queue}" \
+    "${macos_x64_kvm_queue}" "${macos_x64_kvm_runner_id}" \
+    "${macos_x64_llvm_task_root_env}" "${macos_x64_intel_concurrency_group}"
 fi
 
 for required in \
@@ -1123,19 +1152,49 @@ for mac_step in public-cli-macos-arm64 semantic-coreml-archive; do
   done
 done
 
+for mac_step in \
+  public-cli-macos-x64 \
+  public-cli-macos-x64-native-smoke \
+  semantic-runtime-macos-x64; do
+  for required in \
+    "queue: \"${macos_x64_kvm_queue}\"" \
+    'os: "darwin"' \
+    'arch: "x86_64"' \
+    'concurrency: 1' \
+    "concurrency_group: \"${macos_x64_intel_concurrency_group}\""; do
+    if ! awk '
+        index($0, "key: \"" step "\"") { in_step = 1 }
+        in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
+        in_step && index($0, needle) { found = 1 }
+        END { exit found ? 0 : 1 }
+      ' step="${mac_step}" needle="${required}" "${pipeline}"; then
+      printf '%s changed native x86_64 KVM runner snippet: %s\n' \
+        "${mac_step}" "${required}" >&2
+      exit 1
+    fi
+  done
+  if awk '
+      index($0, "key: \"" step "\"") { in_step = 1 }
+      in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
+      in_step && index($0, "mac-shared") { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' step="${mac_step}" "${pipeline}"; then
+    printf '%s must not depend on offline mac-shared\n' "${mac_step}" >&2
+    exit 1
+  fi
+done
+
 for required in \
-  'queue: "mac-shared"' \
-  'os: "darwin"' \
-  'arch: "arm64"' \
-  'concurrency: 1' \
-  'concurrency_group: "ctx-public-cli-macos-native"'; do
+  "CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID=${macos_x64_kvm_runner_id}" \
+  "--macos-llvm-task-root \"\$\${${macos_x64_llvm_task_root_env}:?}\""; do
   if ! awk '
       index($0, "key: \"public-cli-macos-x64\"") { in_step = 1 }
       in_step && /^  - label:/ && index($0, "public-cli-macos-x64") == 0 { in_step = 0 }
       in_step && index($0, needle) { found = 1 }
       END { exit found ? 0 : 1 }
     ' needle="${required}" "${pipeline}"; then
-    printf 'macos-x64 artifact construction changed runner snippet: %s\n' "${required}" >&2
+    printf 'macos-x64 artifact construction changed authority snippet: %s\n' \
+      "${required}" >&2
     exit 1
   fi
 done
