@@ -37,6 +37,7 @@ source_paths=(
   crates/ctx-daemon-runtime/src
   crates/ctx-upgrade-engine/src
   crates/ctx-history-capture/src
+  crates/ctx-history-jsonl/src
   crates/ctx-history-query/src
   crates/ctx-history-capture-model/src
   crates/ctx-history-search/src
@@ -67,6 +68,19 @@ check_file() {
       return 0
       ;;
   esac
+
+  case "${policy_path}" in
+    crates/ctx-history-capture/src/pro_output.rs|crates/ctx-history-capture/src/repository_attribution/*)
+      printf 'release source contains retired capture authority: %s\n' "${path}" >&2
+      failures=$((failures + 1))
+      ;;
+  esac
+
+  if [[ "${policy_path}" != "crates/ctx-history-jsonl/src/exact_json.rs" ]] \
+    && LC_ALL=C grep -n -E 'fn (raw_object_keys_are_unique|exact_json_value)[(]' "${path}" >/dev/null 2>&1; then
+    printf 'release source defines exact JSON authority outside ctx-history-jsonl: %s\n' "${path}" >&2
+    failures=$((failures + 1))
+  fi
 
   if LC_ALL=C grep -n -E "${removed_surface_pattern}" "${path}" >/dev/null 2>&1; then
     printf 'release source contains a removed top-level/cloud surface: %s\n' "${path}" >&2
