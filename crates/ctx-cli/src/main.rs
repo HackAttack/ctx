@@ -47,7 +47,9 @@ mod observability_composition;
 mod observability_product;
 mod operation_descriptor;
 mod output;
-mod presentation_limit;
+mod presentation_limit {
+    pub(crate) use ctx_terminal::presentation_limit::*;
+}
 mod pro;
 mod process_environment;
 mod progress;

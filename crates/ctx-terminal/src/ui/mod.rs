@@ -13,23 +13,23 @@ mod glyph;
 mod style;
 mod writer;
 
-pub(crate) use bootstrap::{bootstrap_color_choice, scan_color_mode, scan_machine_output_hint};
-pub(crate) use components::{
+pub use bootstrap::{bootstrap_color_choice, scan_color_mode, scan_machine_output_hint};
+pub use components::{
     diagnostic, empty_state, evidence_list, fields, hint, is_copyable_atom, outcome, progress,
     refresh_progress, section, table, Action, Diagnostic, DiagnosticLevel, EmptyState, Evidence,
     Field, Hint, Outcome, OutcomeState, Progress, RefreshProgressSnapshot, Table,
 };
-pub(crate) use context::{ColorMode, RenderContext, StreamKind, TestContext};
-pub(crate) use document::{sanitize_untrusted_history_body_for_terminal, Document, Line, Span};
-pub(crate) use style::{trim_terminal_line_ends, Token, CLAP_STYLES};
-pub(crate) use writer::{LiveOutput, Ui};
+pub use context::{ColorMode, RenderContext, StreamKind, TestContext};
+pub use document::{sanitize_untrusted_history_body_for_terminal, Document, Line, Span};
+pub use style::{trim_terminal_line_ends, Token};
+pub use writer::{LiveOutput, Ui};
 
 /// Estimates one logical human result in a fixed, unbounded plain context.
 ///
 /// This is useful for deterministic component tests and local size decisions.
 /// Dispatch measures the actual wrapped, styled stdout and stderr bytes used
 /// for runtime delivery accounting.
-pub(crate) fn canonical_human_output_bytes(
+pub fn canonical_human_output_bytes(
     render: impl FnOnce(&RenderContext) -> Document,
 ) -> usize {
     render(&RenderContext::canonical_human_measurement())

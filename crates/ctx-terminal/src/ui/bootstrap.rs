@@ -7,7 +7,7 @@ use super::ColorMode;
 /// This is intentionally not a second CLI parser. It recognizes only the two
 /// spellings of the global color option and leaves all validation, duplicate
 /// handling, and command semantics to Clap.
-pub(crate) fn bootstrap_color_choice<I>(arguments: I)
+pub fn bootstrap_color_choice<I>(arguments: I)
 where
     I: IntoIterator<Item = OsString>,
 {
@@ -20,7 +20,7 @@ where
     mode.as_anstream().write_global();
 }
 
-pub(crate) fn scan_color_mode<I>(arguments: I) -> Option<ColorMode>
+pub fn scan_color_mode<I>(arguments: I) -> Option<ColorMode>
 where
     I: IntoIterator<Item = OsString>,
 {
@@ -55,7 +55,7 @@ where
 /// Conservatively recognizes explicit machine-output spellings before Clap
 /// renders a possible parse error. Dispatch remains the authoritative command
 /// classifier after parsing.
-pub(crate) fn scan_machine_output_hint(arguments: &[OsString]) -> bool {
+pub fn scan_machine_output_hint(arguments: &[OsString]) -> bool {
     let arguments = arguments
         .iter()
         .skip(1)

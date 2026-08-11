@@ -4,14 +4,14 @@ use crate::ui::{Document, Line, RenderContext, Span, Token};
 const FIELD_GAP: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Field<'a> {
-    pub(crate) label: &'a str,
-    pub(crate) value: &'a str,
+pub struct Field<'a> {
+    pub label: &'a str,
+    pub value: &'a str,
     value_token: Token,
 }
 
 impl<'a> Field<'a> {
-    pub(crate) const fn new(label: &'a str, value: &'a str) -> Self {
+    pub const fn new(label: &'a str, value: &'a str) -> Self {
         Self {
             label,
             value,
@@ -19,13 +19,13 @@ impl<'a> Field<'a> {
         }
     }
 
-    pub(crate) const fn with_value_token(mut self, token: Token) -> Self {
+    pub const fn with_value_token(mut self, token: Token) -> Self {
         self.value_token = token;
         self
     }
 }
 
-pub(crate) fn fields(context: &RenderContext, values: &[Field<'_>]) -> Document {
+pub fn fields(context: &RenderContext, values: &[Field<'_>]) -> Document {
     if values.is_empty() {
         return Document::new();
     }

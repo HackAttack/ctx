@@ -1,61 +1,87 @@
-use anyhow::Result;
-use ctx_history_refresh::{
-    RefreshLogicalPhase, RefreshRequestState, RefreshStatus, RefreshStatusKind,
-    SourceBackedCurrentSourceProgressStage, SourceBackedRefreshProgress,
-};
+use anyhow::{anyhow, Result};
+use serde_json::Value;
 
-use crate::progress::{format_bytes, format_count};
+use crate::{format_bytes, format_count};
 
 use super::{fields, progress, Field, Progress};
 use crate::ui::{Document, RenderContext};
 
 const MAX_DYNAMIC_TEXT_BYTES: usize = 256;
 
-/// Presentation-only view of one engine-owned status snapshot. It deliberately
-/// has no wire or Serde representation.
+/// Terminal-neutral presentation view of a refresh status. Composition code
+/// converts its domain snapshot to this owned value before rendering.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RefreshProgressSnapshot {
-    status: RefreshStatus,
+pub struct RefreshProgressSnapshot {
+    schema_v1_fields: Value,
+    request_id: Option<String>,
     kind: RefreshStatusKind,
     progress: SourceBackedRefreshProgress,
     total_sources_known: bool,
 }
 
 impl RefreshProgressSnapshot {
-    pub(crate) fn from_status(status: &RefreshStatus) -> Result<Self> {
+    pub fn from_schema_v1(fields: &Value) -> Result<Self> {
+        let object = fields.as_object().ok_or_else(|| anyhow!("refresh status is not an object"))?;
+        let request_state = parse_request_state(required_string(object, "request_state")?)?;
+        let progress_fields = object.get("progress").and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("refresh status has no progress object"))?;
+        let progress = SourceBackedRefreshProgress {
+            phase: required_string(progress_fields, "phase")?.to_owned(),
+            completed_sources: required_u64(progress_fields, "completed_sources")?,
+            total_sources: required_u64(progress_fields, "total_sources")?,
+            current_source: optional_string(progress_fields, "current_source"),
+            completed_records: optional_u64(progress_fields, "completed_records"),
+            completed_bytes: optional_u64(progress_fields, "completed_bytes"),
+            current_source_progress: progress_fields.get("current_source_progress")
+                .filter(|value| !value.is_null()).map(parse_current_source_progress).transpose()?,
+        };
+        let kind = if object.contains_key("logical_phase") {
+            RefreshStatusKind::Logical(RefreshLogicalStatus {
+                logical_phase: parse_logical_phase(required_string(object, "logical_phase")?)?,
+                physical_attempt_id: required_string(object, "physical_attempt_id")?.to_owned(),
+                physical_attempt_state: parse_request_state(required_string(object, "physical_attempt_state")?)?,
+                progress_owner_request_id: required_string(object, "progress_owner_request_id")?.to_owned(),
+                progress_owner_attempt_state: parse_request_state(required_string(object, "progress_owner_attempt_state")?)?,
+                structured_outcome: object.get("structured_outcome").filter(|value| !value.is_null())
+                    .map(parse_outcome).transpose()?,
+            })
+        } else if object.contains_key("maintenance_wake") {
+            RefreshStatusKind::BackgroundMaintenanceWake(())
+        } else {
+            RefreshStatusKind::Legacy { request_state }
+        };
         Ok(Self {
-            status: status.clone(),
-            kind: status.kind()?,
-            progress: status.progress()?,
-            total_sources_known: status.total_sources_known()?,
+            schema_v1_fields: fields.clone(),
+            request_id: optional_string(object, "request_id"),
+            kind,
+            total_sources_known: object.get("total_sources_known").and_then(Value::as_bool)
+                .or_else(|| progress_fields.get("total_sources_known").and_then(Value::as_bool))
+                .unwrap_or(false),
+            progress,
         })
     }
 
-    pub(crate) fn from_schema_v1(fields: &serde_json::Value) -> Result<Self> {
-        Self::from_status(&RefreshStatus::parse_schema_v1(fields.clone())?)
-    }
-
-    pub(crate) const fn status(&self) -> &RefreshStatus {
-        &self.status
-    }
-
-    pub(crate) const fn kind(&self) -> &RefreshStatusKind {
+    pub const fn kind(&self) -> &RefreshStatusKind {
         &self.kind
     }
 
-    pub(crate) const fn progress(&self) -> &SourceBackedRefreshProgress {
+    pub const fn progress(&self) -> &SourceBackedRefreshProgress {
         &self.progress
     }
 
-    pub(crate) const fn total_sources_known(&self) -> bool {
+    pub const fn total_sources_known(&self) -> bool {
         self.total_sources_known
     }
 
-    pub(crate) fn is_terminal(&self) -> bool {
+    pub fn schema_v1_fields(&self) -> &Value {
+        &self.schema_v1_fields
+    }
+
+    pub fn is_terminal(&self) -> bool {
         self.kind.request_state().is_terminal()
     }
 
-    pub(crate) fn phase(&self) -> String {
+    pub fn phase(&self) -> String {
         if self.is_terminal() {
             return match self.kind.request_state() {
                 RefreshRequestState::Published => "published".to_owned(),
@@ -67,11 +93,12 @@ impl RefreshProgressSnapshot {
         }
         self.progress
             .current_source_progress
+            .as_ref()
             .map(|current| current.stage.as_str().to_owned())
             .unwrap_or_else(|| self.progress.phase.clone())
     }
 
-    pub(crate) fn message(&self) -> String {
+    pub fn message(&self) -> String {
         let label = refresh_label(self);
         let sources = source_count_text(self);
         match self.progress.current_source.as_deref() {
@@ -82,8 +109,8 @@ impl RefreshProgressSnapshot {
         }
     }
 
-    pub(crate) fn byte_progress(&self) -> (u64, u64) {
-        let Some(current) = self.progress.current_source_progress else {
+    pub fn byte_progress(&self) -> (u64, u64) {
+        let Some(current) = self.progress.current_source_progress.as_ref() else {
             return (0, 0);
         };
         match current.stage {
@@ -98,7 +125,37 @@ impl RefreshProgressSnapshot {
     }
 }
 
-pub(crate) fn refresh_progress(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshRequestState { AdmissionPending, Queued, Running, Published, Failed }
+impl RefreshRequestState { pub const fn is_terminal(self) -> bool { matches!(self, Self::Published | Self::Failed) } }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshLogicalPhase { Waiting, Attached, CoverageCheck, ExactSuccessor, Direct, Terminal }
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefreshStatusKind { Legacy { request_state: RefreshRequestState }, BackgroundMaintenanceWake(()), Logical(RefreshLogicalStatus) }
+impl RefreshStatusKind { pub const fn request_state(&self) -> RefreshRequestState { match self { Self::Legacy { request_state } => *request_state, Self::BackgroundMaintenanceWake(()) => RefreshRequestState::Queued, Self::Logical(logical) => logical.physical_attempt_state } } }
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefreshLogicalStatus { pub logical_phase: RefreshLogicalPhase, pub physical_attempt_id: String, pub physical_attempt_state: RefreshRequestState, pub progress_owner_request_id: String, pub progress_owner_attempt_state: RefreshRequestState, pub structured_outcome: Option<RefreshStructuredOutcome> }
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefreshStructuredOutcome { pub code: String }
+impl RefreshStructuredOutcome { fn is_failure(&self) -> bool { self.code == "failed" || self.code.ends_with("_failed") } }
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceBackedRefreshProgress { pub phase: String, pub completed_sources: u64, pub total_sources: u64, pub current_source: Option<String>, pub completed_records: Option<u64>, pub completed_bytes: Option<u64>, pub current_source_progress: Option<SourceBackedCurrentSourceProgress> }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceBackedCurrentSourceProgressStage { SourceFamilyCopy, OnlineBackup, LogicalFingerprint, LogicalScan }
+impl SourceBackedCurrentSourceProgressStage { pub const fn as_str(self) -> &'static str { match self { Self::SourceFamilyCopy => "source_family_copy", Self::OnlineBackup => "online_backup", Self::LogicalFingerprint => "logical_fingerprint", Self::LogicalScan => "logical_scan" } } }
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceBackedCurrentSourceProgress { pub stage: SourceBackedCurrentSourceProgressStage, pub snapshot_bytes_completed: Option<u64>, pub snapshot_bytes_total: Option<u64>, pub fields: Value }
+
+fn required_string<'a>(object: &'a serde_json::Map<String, Value>, name: &str) -> Result<&'a str> { object.get(name).and_then(Value::as_str).ok_or_else(|| anyhow!("refresh status {name} is not a string")) }
+fn optional_string(object: &serde_json::Map<String, Value>, name: &str) -> Option<String> { object.get(name).and_then(Value::as_str).map(ToOwned::to_owned) }
+fn required_u64(object: &serde_json::Map<String, Value>, name: &str) -> Result<u64> { object.get(name).and_then(Value::as_u64).ok_or_else(|| anyhow!("refresh progress {name} is not a u64")) }
+fn optional_u64(object: &serde_json::Map<String, Value>, name: &str) -> Option<u64> { object.get(name).and_then(Value::as_u64) }
+fn parse_request_state(value: &str) -> Result<RefreshRequestState> { Ok(match value { "admission_pending" => RefreshRequestState::AdmissionPending, "queued" => RefreshRequestState::Queued, "running" => RefreshRequestState::Running, "published" => RefreshRequestState::Published, "failed" => RefreshRequestState::Failed, _ => return Err(anyhow!("unknown refresh request state {value}")), }) }
+fn parse_logical_phase(value: &str) -> Result<RefreshLogicalPhase> { Ok(match value { "waiting" => RefreshLogicalPhase::Waiting, "attached" => RefreshLogicalPhase::Attached, "coverage_check" => RefreshLogicalPhase::CoverageCheck, "exact_successor" => RefreshLogicalPhase::ExactSuccessor, "direct" => RefreshLogicalPhase::Direct, "terminal" => RefreshLogicalPhase::Terminal, _ => return Err(anyhow!("unknown refresh logical phase {value}")), }) }
+fn parse_outcome(value: &Value) -> Result<RefreshStructuredOutcome> { Ok(RefreshStructuredOutcome { code: value.get("code").and_then(Value::as_str).ok_or_else(|| anyhow!("refresh outcome code is not a string"))?.to_owned() }) }
+fn parse_current_source_progress(value: &Value) -> Result<SourceBackedCurrentSourceProgress> { let object = value.as_object().ok_or_else(|| anyhow!("current source progress is not an object"))?; let stage = match required_string(object, "stage")? { "source_family_copy" => SourceBackedCurrentSourceProgressStage::SourceFamilyCopy, "online_backup" => SourceBackedCurrentSourceProgressStage::OnlineBackup, "logical_fingerprint" => SourceBackedCurrentSourceProgressStage::LogicalFingerprint, "logical_scan" => SourceBackedCurrentSourceProgressStage::LogicalScan, other => return Err(anyhow!("unknown source progress stage {other}")), }; Ok(SourceBackedCurrentSourceProgress { stage, snapshot_bytes_completed: optional_u64(object, "snapshot_bytes_completed"), snapshot_bytes_total: optional_u64(object, "snapshot_bytes_total"), fields: value.clone() }) }
+
+pub fn refresh_progress(
     context: &RenderContext,
     snapshot: &RefreshProgressSnapshot,
 ) -> Document {
@@ -139,7 +196,7 @@ pub(crate) fn refresh_progress(
         details.push(("Scanned", format_bytes(bytes)));
     }
     if let RefreshStatusKind::Logical(logical) = &snapshot.kind {
-        if let Some(request_id) = snapshot.status.request_id() {
+        if let Some(request_id) = snapshot.request_id.as_deref() {
             details.push(("Logical request", bounded_dynamic_text(request_id)));
         }
         details.push((
@@ -193,7 +250,7 @@ fn refresh_label(snapshot: &RefreshProgressSnapshot) -> &'static str {
                 .structured_outcome
                 .as_ref()
                 .map(|outcome| {
-                    if outcome.code.is_failure() {
+                    if outcome.is_failure() {
                         "History refresh failed"
                     } else if outcome.code.as_str() == "completed" {
                         "History refresh complete"
@@ -219,8 +276,8 @@ fn source_count_text(snapshot: &RefreshProgressSnapshot) -> String {
     if snapshot.total_sources_known {
         format!(
             "{} / {}",
-            format_count(snapshot.progress.completed_sources),
-            format_count(
+            format_count_u64(snapshot.progress.completed_sources),
+            format_count_u64(
                 snapshot
                     .progress
                     .total_sources

@@ -2,21 +2,21 @@ use super::{fields, hint, layout::wrap_text, outcome, Action, Field, Hint, Outco
 use crate::ui::{Document, Line, RenderContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DiagnosticLevel {
+pub enum DiagnosticLevel {
     Warning,
     Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Diagnostic<'a> {
-    pub(crate) level: DiagnosticLevel,
-    pub(crate) summary: &'a str,
-    pub(crate) detail: Option<&'a str>,
-    pub(crate) fields: &'a [Field<'a>],
-    pub(crate) action: Option<Action<'a>>,
+pub struct Diagnostic<'a> {
+    pub level: DiagnosticLevel,
+    pub summary: &'a str,
+    pub detail: Option<&'a str>,
+    pub fields: &'a [Field<'a>],
+    pub action: Option<Action<'a>>,
 }
 
-pub(crate) fn diagnostic(context: &RenderContext, diagnostic: Diagnostic<'_>) -> Document {
+pub fn diagnostic(context: &RenderContext, diagnostic: Diagnostic<'_>) -> Document {
     let state = match diagnostic.level {
         DiagnosticLevel::Warning => OutcomeState::Warning,
         DiagnosticLevel::Error => OutcomeState::Error,

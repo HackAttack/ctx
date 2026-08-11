@@ -2,13 +2,13 @@ use super::layout::{display_width, wrap_text};
 use crate::ui::{Document, Line, RenderContext, Span, Token};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Evidence<'a> {
-    pub(crate) reference: &'a str,
-    pub(crate) summary: &'a str,
-    pub(crate) detail: Option<&'a str>,
+pub struct Evidence<'a> {
+    pub reference: &'a str,
+    pub summary: &'a str,
+    pub detail: Option<&'a str>,
 }
 
-pub(crate) fn evidence_list(context: &RenderContext, evidence: &[Evidence<'_>]) -> Document {
+pub fn evidence_list(context: &RenderContext, evidence: &[Evidence<'_>]) -> Document {
     let mut document = Document::new();
     for (index, item) in evidence.iter().enumerate() {
         if index > 0 {

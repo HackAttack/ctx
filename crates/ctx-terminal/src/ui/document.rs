@@ -3,28 +3,28 @@ use std::fmt::Write as _;
 use super::{RenderContext, Token};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Span {
+pub struct Span {
     text: String,
     token: Token,
 }
 
 impl Span {
-    pub(crate) fn new(text: impl Into<String>, token: Token) -> Self {
+    pub fn new(text: impl Into<String>, token: Token) -> Self {
         Self {
             text: neutralize_controls(&text.into()),
             token,
         }
     }
 
-    pub(crate) fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<String>) -> Self {
         Self::new(text, Token::Text)
     }
 
-    pub(crate) fn content(&self) -> &str {
+    pub fn content(&self) -> &str {
         &self.text
     }
 
-    pub(crate) const fn token(&self) -> Token {
+    pub const fn token(&self) -> Token {
         self.token
     }
 }
@@ -44,7 +44,7 @@ pub(super) fn neutralize_controls(text: &str) -> String {
 /// Callers must sanitize history bodies before passing them to shared layout so
 /// wrapping and measurement operate on the same plain ASCII escape text that
 /// the terminal will receive.
-pub(crate) fn sanitize_untrusted_history_body_for_terminal(text: &str) -> String {
+pub fn sanitize_untrusted_history_body_for_terminal(text: &str) -> String {
     let mut safe = String::with_capacity(text.len());
     for character in text.chars() {
         if push_visible_terminal_control(&mut safe, character) {
@@ -116,89 +116,89 @@ fn is_untrusted_history_format_control(character: char) -> bool {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Line {
+pub struct Line {
     spans: Vec<Span>,
 }
 
 impl Line {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<String>) -> Self {
         Self {
             spans: vec![Span::text(text)],
         }
     }
 
-    pub(crate) fn styled(text: impl Into<String>, token: Token) -> Self {
+    pub fn styled(text: impl Into<String>, token: Token) -> Self {
         Self {
             spans: vec![Span::new(text, token)],
         }
     }
 
-    pub(crate) fn push(&mut self, span: Span) {
+    pub fn push(&mut self, span: Span) {
         self.spans.push(span);
     }
 
-    pub(crate) fn with(mut self, span: Span) -> Self {
+    pub fn with(mut self, span: Span) -> Self {
         self.push(span);
         self
     }
 
-    pub(crate) fn spans(&self) -> &[Span] {
+    pub fn spans(&self) -> &[Span] {
         &self.spans
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.spans.iter().all(|span| span.content().is_empty())
     }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Document {
+pub struct Document {
     lines: Vec<Line>,
 }
 
 impl Document {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn from_line(line: Line) -> Self {
+    pub fn from_line(line: Line) -> Self {
         Self { lines: vec![line] }
     }
 
-    pub(crate) fn push_line(&mut self, line: Line) {
+    pub fn push_line(&mut self, line: Line) {
         self.lines.push(line);
     }
 
-    pub(crate) fn line(mut self, line: Line) -> Self {
+    pub fn line(mut self, line: Line) -> Self {
         self.push_line(line);
         self
     }
 
-    pub(crate) fn push_blank(&mut self) {
+    pub fn push_blank(&mut self) {
         self.lines.push(Line::new());
     }
 
-    pub(crate) fn append(&mut self, other: Self) {
+    pub fn append(&mut self, other: Self) {
         self.lines.extend(other.lines);
     }
 
-    pub(crate) fn lines(&self) -> &[Line] {
+    pub fn lines(&self) -> &[Line] {
         &self.lines
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
 
-    pub(crate) fn render_plain(&self) -> String {
+    pub fn render_plain(&self) -> String {
         self.render_with_styles(false)
     }
 
-    pub(crate) fn render(&self, context: &RenderContext) -> String {
+    pub fn render(&self, context: &RenderContext) -> String {
         self.render_with_styles(context.color_enabled())
     }
 

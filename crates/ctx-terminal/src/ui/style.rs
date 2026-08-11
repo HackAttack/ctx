@@ -1,24 +1,8 @@
 use anstyle::{AnsiColor, Color, Style};
 
-pub(crate) const CLAP_STYLES: clap::builder::styling::Styles =
-    clap::builder::styling::Styles::styled()
-        .header(Style::new().bold())
-        .usage(Style::new().bold())
-        .literal(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan))))
-        .placeholder(Style::new().dimmed())
-        .error(
-            Style::new()
-                .fg_color(Some(Color::Ansi(AnsiColor::Red)))
-                .bold(),
-        )
-        .valid(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green))))
-        .invalid(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow))))
-        .context(Style::new().dimmed())
-        .context_value(Style::new());
-
 /// Removes visible whitespace at terminal line ends while preserving ANSI CSI
 /// sequences that restore or establish the surrounding style.
-pub(crate) fn trim_terminal_line_ends(rendered: &str) -> String {
+pub fn trim_terminal_line_ends(rendered: &str) -> String {
     let mut trimmed = String::with_capacity(rendered.len());
     for line in rendered.split_inclusive('\n') {
         let (line, newline) = line
@@ -80,7 +64,7 @@ fn csi_sequence_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// State colors are reserved for markers and short state values. Ordinary
 /// values keep the terminal's default foreground.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Token {
+pub enum Token {
     #[default]
     Text,
     Heading,
@@ -94,7 +78,7 @@ pub(crate) enum Token {
 }
 
 impl Token {
-    pub(crate) const fn style(self) -> Style {
+    pub const fn style(self) -> Style {
         match self {
             Self::Text => Style::new(),
             Self::Heading => Style::new().bold(),

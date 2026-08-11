@@ -4,14 +4,14 @@ use crate::ui::{glyph::Glyph, Document, Line, RenderContext, Span, Token};
 const MAX_BAR_WIDTH: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Progress<'a> {
-    pub(crate) label: &'a str,
-    pub(crate) current: u64,
-    pub(crate) total: Option<u64>,
-    pub(crate) detail: Option<&'a str>,
+pub struct Progress<'a> {
+    pub label: &'a str,
+    pub current: u64,
+    pub total: Option<u64>,
+    pub detail: Option<&'a str>,
 }
 
-pub(crate) fn progress(context: &RenderContext, progress: Progress<'_>) -> Document {
+pub fn progress(context: &RenderContext, progress: Progress<'_>) -> Document {
     let percentage = progress.total.filter(|total| *total > 0).map(|total| {
         let complete = u128::from(progress.current.min(total));
         let total = u128::from(total);
