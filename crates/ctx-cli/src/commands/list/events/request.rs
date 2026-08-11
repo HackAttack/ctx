@@ -1,10 +1,8 @@
 use clap::{Args, ValueEnum};
-use ctx_history_index::{
-    CoreEventRangeDirection, CoreEventRangeDomain, CoreEventRangeScope, CoreEventRangeSelection,
-};
-use serde_json::{json, Map, Value};
+use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope};
 
-use super::{format_timestamp, DEFAULT_EVENT_QUERY_LIMIT, EVENT_QUERY_PAGE_ITEMS};
+use super::DEFAULT_EVENT_QUERY_LIMIT;
+pub(crate) use ctx_history_read_application::{EventContentProjection, EventQueryWireRequest};
 
 #[derive(Debug, Args)]
 pub(crate) struct ListEventsArgs {
@@ -78,8 +76,8 @@ pub(crate) struct ListEventsArgs {
     pub(crate) cursor: Option<String>,
     #[arg(long, default_value_t = DEFAULT_EVENT_QUERY_LIMIT, help = "Maximum events returned across the complete invocation")]
     pub(crate) limit: u64,
-    #[arg(long, value_enum, default_value_t = EventContentProjection::Full)]
-    pub(crate) content: EventContentProjection,
+    #[arg(long, value_enum, default_value_t = EventContentProjectionArg::Full)]
+    pub(crate) content: EventContentProjectionArg,
     #[arg(long, value_enum, default_value_t = EventQueryFormat::Json)]
     pub(crate) format: EventQueryFormat,
 }
@@ -91,18 +89,18 @@ pub(crate) enum EventQueryFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum EventContentProjection {
+pub(crate) enum EventContentProjectionArg {
     Full,
     Text,
     None,
 }
 
-impl EventContentProjection {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::Text => "text",
-            Self::None => "none",
+impl From<EventContentProjectionArg> for EventContentProjection {
+    fn from(value: EventContentProjectionArg) -> Self {
+        match value {
+            EventContentProjectionArg::Full => Self::Full,
+            EventContentProjectionArg::Text => Self::Text,
+            EventContentProjectionArg::None => Self::None,
         }
     }
 }
@@ -136,117 +134,5 @@ impl From<EventQueryDirection> for CoreEventRangeDirection {
             EventQueryDirection::Ascending => Self::Ascending,
             EventQueryDirection::Descending => Self::Descending,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct EventQueryWireRequest {
-    pub(crate) domain: Value,
-    pub(crate) filters: Value,
-    pub(crate) direction: &'static str,
-    pub(crate) content: EventContentProjection,
-    pub(crate) limit: usize,
-}
-
-impl EventQueryWireRequest {
-    pub(crate) fn from_selection(
-        selection: &CoreEventRangeSelection,
-        content: EventContentProjection,
-        limit: usize,
-    ) -> Self {
-        let selected = selection.filters();
-        let mut filters = Map::new();
-        if !selected.providers.is_empty() {
-            filters.insert("providers".to_owned(), json!(selected.providers));
-        }
-        let source_identity = selected.source_identity.map(|value| value.to_string());
-        let session_id = selected.session_id.map(|value| value.to_string());
-        let parent_session_id = selected.parent_session_id.map(|value| value.to_string());
-        let root_session_id = selected.root_session_id.map(|value| value.to_string());
-        for (key, value) in [
-            ("source", source_identity.as_deref()),
-            ("history_source", selected.history_source.as_deref()),
-            ("provider_key", selected.provider_key.as_deref()),
-            ("source_id", selected.source_id.as_deref()),
-            ("source_format", selected.source_format.as_deref()),
-            (
-                "provider_session_id",
-                selected.provider_session_id.as_deref(),
-            ),
-            ("session", session_id.as_deref()),
-            ("parent_session", parent_session_id.as_deref()),
-            ("root_session", root_session_id.as_deref()),
-            ("branch", selected.branch.as_deref()),
-            ("workspace", selected.workspace.as_deref()),
-            ("event_type", selected.event_type.as_deref()),
-            ("role", selected.role.as_deref()),
-            ("agent_type", selected.agent_type.as_deref()),
-            ("file", selected.file.as_deref()),
-        ] {
-            insert_optional(&mut filters, key, value);
-        }
-        if selected.scope != CoreEventRangeScope::All {
-            filters.insert(
-                "scope".to_owned(),
-                json!(match selected.scope {
-                    CoreEventRangeScope::All => "all",
-                    CoreEventRangeScope::Primary => "primary",
-                    CoreEventRangeScope::Subagent => "subagent",
-                }),
-            );
-        }
-        let domain = match selection.domain() {
-            CoreEventRangeDomain::All => json!({ "kind": "all" }),
-            CoreEventRangeDomain::Timestamped {
-                since_unix_ms,
-                until_unix_ms,
-            } => json!({
-                "kind": "range",
-                "range": {
-                    "since": format_timestamp(Some(since_unix_ms)),
-                    "until": format_timestamp(Some(until_unix_ms)),
-                },
-            }),
-        };
-        Self {
-            domain,
-            filters: Value::Object(filters),
-            direction: match selected.direction {
-                CoreEventRangeDirection::Ascending => "ascending",
-                CoreEventRangeDirection::Descending => "descending",
-            },
-            content,
-            limit,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new(
-        domain: Value,
-        filters: Value,
-        direction: CoreEventRangeDirection,
-        content: EventContentProjection,
-        limit: usize,
-    ) -> Self {
-        Self {
-            domain,
-            filters,
-            direction: match direction {
-                CoreEventRangeDirection::Ascending => "ascending",
-                CoreEventRangeDirection::Descending => "descending",
-            },
-            content,
-            limit,
-        }
-    }
-
-    pub(super) fn page_items(&self) -> usize {
-        self.limit.min(EVENT_QUERY_PAGE_ITEMS)
-    }
-}
-
-fn insert_optional(object: &mut Map<String, Value>, key: &str, value: Option<&str>) {
-    if let Some(value) = value {
-        object.insert(key.to_owned(), json!(value));
     }
 }

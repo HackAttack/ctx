@@ -64,7 +64,7 @@ fn wire_receipt_uses_the_normalized_selection() {
         "descending",
     ]);
     let selection = selection_from_args(&args).unwrap();
-    let request = EventQueryWireRequest::from_selection(&selection, args.content, 10);
+    let request = EventQueryWireRequest::from_selection(&selection, args.content.into(), 10);
 
     assert_eq!(
         request.domain,
@@ -180,7 +180,7 @@ fn every_core_filter_and_canonical_relationship_flag_maps_to_selection() {
 fn wire_cap_covers_worst_case_core_json_expansion() {
     assert_eq!(
         MAX_EVENT_QUERY_WIRE_RECORD_BYTES,
-        MAX_ENCODED_CORE_RECORD_BYTES * 6 + 1024 * 1024
+        ctx_history_core::MAX_ENCODED_CORE_RECORD_BYTES * 6 + 1024 * 1024
     );
     const { assert!(MAX_EVENT_QUERY_WIRE_RECORD_BYTES < 512 * 1024 * 1024) };
 }
@@ -264,8 +264,17 @@ fn query_authority_list_cursor_rechecks_the_retained_generation() {
     let active = open_event_range_index(temp.path(), None).unwrap();
     assert_ne!(active.generation_id(), legacy_generation);
     let selection = all_selection(CoreEventRangeDirection::Ascending);
-    let event = read_page(&active, &selection, None, 1, EVENT_QUERY_PAGE_BYTES, None)
+    let event = ctx_history_read_application::PinnedHistoryQuery::new(&active, None)
+        .list_events_page(&ctx_history_read_application::ListEventsPageRequest {
+            selection: selection.clone(),
+            cursor: None,
+            limit: 1,
+            page_items: 1,
+            byte_budget: EVENT_QUERY_PAGE_BYTES,
+            strict_budget: None,
+        })
         .unwrap()
+        .page
         .items
         .into_iter()
         .next()
@@ -637,9 +646,8 @@ fn mcp_tool_call_is_exact_omitted_when_absent_and_projection_independent() {
             serde_json::to_vec(&json_page).unwrap().len() + 1
         );
 
-        let index = open_event_range_index(temp.path(), None).unwrap();
         let mut jsonl = Vec::new();
-        write_jsonl_pages(&index, &selection, None, &request, &mut jsonl, || {}).unwrap();
+        write_jsonl_pages(temp.path(), &selection, None, &request, &mut jsonl, || {}).unwrap();
         let lines = jsonl
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
@@ -711,9 +719,8 @@ fn mcp_exchange_is_lossless_and_full_projection_only_across_cli_and_mcp() {
             assert!(json_page["events"][0].get("mcp_exchange").is_none());
         }
 
-        let index = open_event_range_index(temp.path(), None).unwrap();
         let mut jsonl = Vec::new();
-        write_jsonl_pages(&index, &selection, None, &request, &mut jsonl, || {}).unwrap();
+        write_jsonl_pages(temp.path(), &selection, None, &request, &mut jsonl, || {}).unwrap();
         let first_line: Value =
             serde_json::from_slice(jsonl.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
         assert_eq!(
@@ -766,7 +773,6 @@ fn jsonl_flushes_each_event_before_fetching_the_next_page_and_completes_once() {
     let bodies = (0..101).map(|index| index.to_string()).collect::<Vec<_>>();
     publish_fixture(temp.path(), &bodies);
     let selection = all_selection(CoreEventRangeDirection::Ascending);
-    let index = open_event_range_index(temp.path(), None).unwrap();
     let request = request(
         CoreEventRangeDirection::Ascending,
         1_000,
@@ -775,7 +781,7 @@ fn jsonl_flushes_each_event_before_fetching_the_next_page_and_completes_once() {
     let mut writer = TrackingWriter::default();
     let observed = Rc::clone(&writer.0);
     let mut page_flush_counts = Vec::new();
-    let count = write_jsonl_pages(&index, &selection, None, &request, &mut writer, || {
+    let count = write_jsonl_pages(temp.path(), &selection, None, &request, &mut writer, || {
         page_flush_counts.push(observed.borrow().flush_offsets.len())
     })
     .unwrap();

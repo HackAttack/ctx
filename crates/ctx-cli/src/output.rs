@@ -26,17 +26,6 @@ impl From<OutputFormat> for ctx_terminal::OutputFormat {
     }
 }
 
-impl OutputFormat {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Markdown => "markdown",
-            Self::Json => "json",
-            Self::Jsonl => "jsonl",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum JsonOutputFormat {
     Text,

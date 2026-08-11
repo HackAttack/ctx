@@ -3,8 +3,8 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
-use chrono::{DateTime, SecondsFormat, Utc};
+use anyhow::Result;
+use chrono::SecondsFormat;
 use ctx_history_core::{managed_data_root, utc_now};
 use ctx_history_index::{EventSearchFilters, VerifiedIndex};
 use serde_json::{json, Value};
@@ -23,7 +23,7 @@ use crate::{
 };
 
 use super::search::{
-    semantic_reason_code, NormalizedSearchQuery, SearchCollection, SearchHit, SearchPresentation,
+    semantic_reason_code, NormalizedSearchQuery, SearchCollection, SearchPresentation,
     SourceSearchRequest,
 };
 use crate::RefreshArg;
@@ -37,10 +37,9 @@ pub(super) use locate::render_locate_document;
 pub(super) use search::{render_search_document, render_search_not_ready_document};
 pub(super) use show::render_show_document;
 
-pub(in crate::commands::source_index) use ctx_history_query::SEARCH_SNIPPET_MAX_CHARS;
 #[cfg(test)]
-pub(in crate::commands::source_index) use ctx_history_query::{
-    search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES,
+pub(in crate::commands::source_index) use ctx_history_read_application::{
+    search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES, SEARCH_SNIPPET_MAX_CHARS,
 };
 
 pub(super) fn pretty_json_stdout_bytes(value: &Value) -> Result<usize> {
@@ -50,24 +49,6 @@ pub(super) fn pretty_json_stdout_bytes(value: &Value) -> Result<usize> {
 pub(super) fn stdout_body_bytes(body: &str) -> usize {
     body.len()
         .saturating_add(usize::from(!body.ends_with('\n')))
-}
-
-struct SearchJsonInput<'input> {
-    request: &'input SourceSearchRequest,
-    data_root: &'input Path,
-    index: &'input VerifiedIndex,
-    collection: &'input SearchCollection,
-    filters: &'input EventSearchFilters,
-    presentations: &'input [SearchPresentation],
-    copied_lineages: &'input [Value],
-    refresh_mode: RefreshArg,
-    metrics: SearchRenderMetrics<'input>,
-}
-
-struct SearchRenderMetrics<'a> {
-    refresh_status: &'a str,
-    refresh_source_count: usize,
-    query_duration: Duration,
 }
 
 #[cfg(test)]
@@ -124,134 +105,75 @@ pub(super) fn search_json_with_lineages(
     refresh_source_count: usize,
     query_duration: Duration,
 ) -> Result<Value> {
-    render_search_json(SearchJsonInput {
-        request,
-        data_root,
-        index,
-        collection,
-        filters,
-        presentations,
-        copied_lineages,
-        refresh_mode,
-        metrics: SearchRenderMetrics {
-            refresh_status,
-            refresh_source_count,
-            query_duration,
+    let commands = search_result_commands(request, collection, data_root);
+    let fallback_code = collection
+        .semantic_fallback
+        .as_ref()
+        .map(semantic_fallback_code);
+    let fallback_detail = collection
+        .semantic_fallback
+        .as_ref()
+        .map(|fallback| semantic_fallback_detail(fallback.reason, &fallback.detail));
+    let generated_at = utc_now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    ctx_history_read_application::render_search_json(
+        ctx_history_read_application::SearchJsonInput {
+            request,
+            index,
+            collection,
+            filters,
+            presentations,
+            copied_lineages,
+            commands: &commands,
+            freshness_mode: refresh_mode.as_str(),
+            generated_at: &generated_at,
+            semantic_fallback_code: fallback_code,
+            semantic_fallback_detail: fallback_detail.as_deref(),
+            metrics: ctx_history_read_application::SearchRenderMetrics {
+                refresh_status,
+                refresh_source_count,
+                query_duration,
+            },
         },
-    })
+    )
 }
 
-fn render_search_json(input: SearchJsonInput<'_>) -> Result<Value> {
-    let SearchJsonInput {
-        request,
-        data_root,
-        index,
-        collection,
-        filters,
-        presentations,
-        copied_lineages,
-        refresh_mode,
-        metrics,
-    } = input;
+fn search_result_commands(
+    request: &SourceSearchRequest,
+    collection: &SearchCollection,
+    data_root: &Path,
+) -> Vec<ctx_history_read_application::SearchResultCommands> {
     let normalized_query = NormalizedSearchQuery::from_request(request);
-    let result_scope = if request.events { "event" } else { "session" };
     let command_prefix = follow_up_command_prefix(data_root);
-    if presentations.len() != collection.result_window.hits.len() {
-        return Err(anyhow!(
-            "pinned Core lookup returned {} search presentations for {} hits",
-            presentations.len(),
-            collection.result_window.hits.len()
-        ));
-    }
-    if copied_lineages.len() != collection.result_window.hits.len() {
-        return Err(anyhow!(
-            "pinned Core lookup returned {} copied-lineage values for {} hits",
-            copied_lineages.len(),
-            collection.result_window.hits.len()
-        ));
-    }
-    let results = collection
+    let query_arguments = search_query_command_arguments(&normalized_query);
+    let result_scope = if request.events { "event" } else { "session" };
+    collection
         .result_window
         .hits
         .iter()
-        .zip(presentations)
-        .zip(copied_lineages)
-        .enumerate()
-        .map(|(offset, ((hit, presentation), copied_lineage))| {
-            if presentation.event_id != hit.event.event_id {
-                return Err(anyhow!(
-                    "out-of-order search presentation for event {}",
-                    presentation.event_id
+        .map(|hit| {
+            let event_id = hit.event.event_id;
+            let session_id = hit.event.session_id;
+            let mut suggested_next_commands = vec![format!(
+                "{command_prefix} show event {event_id} --window 10"
+            )];
+            if result_scope == "session" {
+                suggested_next_commands
+                    .insert(0, format!("{command_prefix} show session {session_id}"));
+            }
+            if !query_arguments.is_empty() {
+                suggested_next_commands.push(format!(
+                    "{command_prefix} search {query_arguments} --session {session_id}"
                 ));
             }
-            search_result_json(
-                hit,
-                presentation,
-                result_scope,
-                &normalized_query,
-                offset.saturating_add(1),
-                &command_prefix,
-                copied_lineage,
-            )
+            ctx_history_read_application::SearchResultCommands {
+                suggested_next_commands,
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
-    let phase_attribution = phase_attribution(metrics.query_duration);
-    let semantic_diagnostics = external_semantic_diagnostics(collection);
-    Ok(compact_json(json!({
-        "schema_version": 1,
-        "payload_type": "search_results",
-        "query": normalized_query.display(),
-        "filters": {
-            "provider": filters.provider,
-            "history_source": filters.history_source,
-            "provider_key": filters.provider_key,
-            "source_id": filters.source_id,
-            "source_format": filters.source_format,
-            "workspace": request.workspace,
-            "since": request.since,
-            "content_scope": filters.content_scope.as_str(),
-            "event_type": request.event_type,
-            "file": request.file.as_ref().map(|path| path.display().to_string()),
-            "session": request.session,
-            "primary_only": request.primary_only.then_some(true),
-            "include_subagents": request.include_subagents.then_some(true),
-            "include_current_session": request.include_current_session.then_some(true),
-        },
-        "freshness": {
-            "mode": refresh_mode.as_str(),
-            "status": metrics.refresh_status,
-            "source_count": metrics.refresh_source_count,
-        },
-        "retrieval": {
-            "requested_mode": collection.requested_backend.as_str(),
-            "effective_mode": collection.effective_backend.as_str(),
-            "semantic_weight": collection.semantic_weight,
-            "semantic_status": collection.semantic_status,
-            "semantic_fallback_code": collection.semantic_fallback.as_ref().map(semantic_fallback_code),
-            "semantic_fallback": collection.semantic_fallback.as_ref().map(|fallback| semantic_fallback_detail(fallback.reason, &fallback.detail)),
-            "semantic_diagnostics": semantic_diagnostics,
-            "index": "core",
-            "generation_id": index.generation_id(),
-            "indexed_documents": index.document_count(),
-            "phase_attribution": phase_attribution,
-        },
-        "phase_attribution": phase_attribution,
-        "generated_at": utc_now().to_rfc3339_opts(SecondsFormat::Millis, true),
-        "results": results,
-        "result_window": {
-            "limit": collection.result_window.limit,
-            "returned": results.len(),
-            "more_available": collection.result_window.more_available,
-        },
-        "truncation": {
-            "candidate_pool": collection.candidate_pool,
-            "candidate_pool_truncated": collection.candidate_pool_truncated,
-        },
-    })))
+        .collect()
 }
 
 fn semantic_fallback_code(
-    fallback: &ctx_history_query::SemanticFallbackDiagnostics,
+    fallback: &ctx_history_read_application::SemanticFallbackDiagnostics,
 ) -> &'static str {
     fallback
         .reason
@@ -259,126 +181,21 @@ fn semantic_fallback_code(
         .unwrap_or("semantic_query_failed")
 }
 
-fn external_semantic_diagnostics(collection: &SearchCollection) -> Option<Value> {
-    let mut diagnostics = collection.semantic_diagnostics.clone()?;
-    let Some(fallback) = collection.semantic_fallback.as_ref() else {
-        return Some(diagnostics);
-    };
-    let Some(object) = diagnostics.as_object_mut() else {
-        return Some(diagnostics);
-    };
-    object.insert(
-        "fallback".to_owned(),
-        json!({
-            "code": semantic_fallback_code(fallback),
-            "detail": semantic_fallback_detail(fallback.reason, &fallback.detail),
-        }),
-    );
-    Some(diagnostics)
-}
-
-fn search_result_json(
-    hit: &SearchHit,
-    presentation: &SearchPresentation,
-    result_scope: &str,
-    query: &NormalizedSearchQuery,
-    rank: usize,
-    command_prefix: &str,
-    copied_lineage: &Value,
-) -> Result<Value> {
-    let (snippet, snippet_truncated) = search_snippet(presentation);
-    let event = &hit.event;
-    let event_id = event.event_id;
-    let session_id = event.session_id;
-    let item_id = if result_scope == "session" {
-        session_id
-    } else {
-        event_id
-    };
-    let title = match event.role.as_deref() {
-        Some(role) => format!("{} {role} {}", event.provider, event.event_type),
-        None => format!("{} {}", event.provider, event.event_type),
-    };
-    let mut next = vec![format!(
-        "{command_prefix} show event {event_id} --window 10"
-    )];
-    if result_scope == "session" {
-        next.insert(0, format!("{command_prefix} show session {session_id}"));
-    }
-    let query_arguments = search_query_command_arguments(query);
-    if !query_arguments.is_empty() {
-        next.push(format!(
-            "{command_prefix} search {query_arguments} --session {session_id}"
-        ));
-    }
-    Ok(compact_json(json!({
-        "item_id": item_id,
-        "result_type": if result_scope == "session" { "session_result" } else { "event" },
-        "ctx_event_id": event_id,
-        "ctx_session_id": session_id,
-        "session_id": session_id,
-        "event_id": event_id,
-        "event_seq": event.event_sequence,
-        "title": title,
-        "snippet": snippet,
-        "snippet_truncated": snippet_truncated,
-        "snippet_max_chars": SEARCH_SNIPPET_MAX_CHARS,
-        "rank": rank,
-        "retrieval_score": hit.score,
-        "result_scope": result_scope,
-        "session_importance": (result_scope == "session").then_some(hit.score),
-        "more_matches_in_session": (result_scope == "session")
-            .then_some(hit.more_matches_in_session),
-        "provider": event.provider,
-        "provider_session_id": event.provider_session_id,
-        "source_format": event.source_format,
-        "parent_ctx_session_id": event.parent_session_id,
-        "root_ctx_session_id": event.root_session_id,
-        "session_relationship": event.session_relationship,
-        "event_origin": super::event_origin_json(&event.event_origin),
-        "copied_lineage": copied_lineage,
-        "branch": event.branch,
-        "agent_type": event.agent_type,
-        "is_primary": event.is_primary,
-        "timestamp": timestamp_json(event.occurred_at_unix_ms),
-        "workspace": event.workspace,
-        "cwd": event.cwd,
-        "suggested_next_commands": next,
-        "citations": [{
-            "item_id": event_id,
-            "target_type": "event",
-            "ctx_event_id": event_id,
-            "ctx_session_id": session_id,
-            "provider": event.provider,
-            "session_id": session_id,
-            "event_seq": event.event_sequence,
-        }],
-        "visibility": "local",
-    })))
-}
-
-fn search_snippet(presentation: &SearchPresentation) -> (&str, bool) {
-    (
-        presentation.snippet.as_str(),
-        presentation.snippet_truncated,
-    )
-}
-
 fn semantic_fallback_detail(
-    reason: Option<ctx_history_query::SemanticReason>,
+    reason: Option<ctx_history_read_application::SemanticReason>,
     detail: &str,
 ) -> String {
     match reason {
-        Some(ctx_history_query::SemanticReason::PolicyDisabled) => {
+        Some(ctx_history_read_application::SemanticReason::PolicyDisabled) => {
             "local semantic retrieval is disabled".to_owned()
         }
-        Some(ctx_history_query::SemanticReason::ExecutionUnavailable) => {
+        Some(ctx_history_read_application::SemanticReason::ExecutionUnavailable) => {
             "local semantic retrieval is unavailable because the ctx daemon is disabled".to_owned()
         }
-        Some(ctx_history_query::SemanticReason::ContentScopeUnsupported) => {
+        Some(ctx_history_read_application::SemanticReason::ContentScopeUnsupported) => {
             format!("{detail}; use --backend lexical or choose --content-scope all|transcript")
         }
-        Some(ctx_history_query::SemanticReason::EventTypeUnsupported) => {
+        Some(ctx_history_read_application::SemanticReason::EventTypeUnsupported) => {
             format!("{detail}; use --backend lexical or remove --event-type")
         }
         _ => detail.to_owned(),
@@ -635,41 +452,6 @@ fn append_copied_lineage_markdown(output: &mut String, value: &Value) {
         ));
         output.push_str(&format!("  - `{command_prefix} show session {session}`\n"));
     }
-}
-
-pub(super) fn timestamp_json(timestamp: Option<i64>) -> Option<String> {
-    timestamp
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
-        .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
-}
-
-fn phase_attribution(query: Duration) -> Value {
-    json!({
-        "discovery_seconds": 0.0,
-        "writer_open_seconds": 0.0,
-        "scan_and_stage_seconds": 0.0,
-        "scanner_worker_busy_seconds": 0.0,
-        "writer_add_document_seconds": 0.0,
-        "certification_seconds": 0.0,
-        "index_commit_seconds": 0.0,
-        "refresh_total_seconds": 0.0,
-        "query_seconds": query.as_secs_f64(),
-        "catalog_sources": 0,
-        "catalog_source_bytes": 0,
-        "cold_sources": 0,
-        "appended_sources": 0,
-        "replaced_sources": 0,
-        "replayed_sources": 0,
-        "deleted_sources": 0,
-        "scanner_bytes_read": 0,
-        "checkpoint_validation_bytes": 0,
-        "scanner_workers": 0,
-        "complete_records_scanned": 0,
-        "retained_records_scanned": 0,
-        "rejected_records_scanned": 0,
-        "ignored_records_scanned": 0,
-        "staged_documents": 0,
-    })
 }
 
 #[cfg(test)]

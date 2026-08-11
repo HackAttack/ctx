@@ -36,8 +36,7 @@ use crate::{
 };
 
 use super::{
-    compact_presentation::{reference_needs_retained_peer, CompactPresentation},
-    copied_lineage::copied_lineage_read_model,
+    compact_presentation::generation_read,
     render::{
         pretty_json_stdout_bytes, render_search_document, render_search_not_ready_document,
         search_json_with_lineages,
@@ -241,21 +240,41 @@ impl From<ctx_history_index::IndexError> for SourceSearchFailure {
     }
 }
 
-impl From<ctx_history_query::SearchExecutionError> for SourceSearchFailure {
-    fn from(error: ctx_history_query::SearchExecutionError) -> Self {
+impl From<ctx_history_read_application::SearchExecutionError> for SourceSearchFailure {
+    fn from(error: ctx_history_read_application::SearchExecutionError) -> Self {
         match error {
-            ctx_history_query::SearchExecutionError::Semantic(error) => Self::Semantic(error),
-            ctx_history_query::SearchExecutionError::Index(error) => Self::from(error),
-            ctx_history_query::SearchExecutionError::Application(error) => Self::from(error),
+            ctx_history_read_application::SearchExecutionError::Semantic(error) => {
+                Self::Semantic(error)
+            }
+            ctx_history_read_application::SearchExecutionError::Index(error) => Self::from(error),
+            ctx_history_read_application::SearchExecutionError::Application(error) => {
+                Self::from(error)
+            }
         }
+    }
+}
+
+fn application_search_failure(
+    error: ctx_history_read_application::SearchApplicationError<anyhow::Error>,
+) -> SourceSearchFailure {
+    use ctx_history_read_application::{GenerationReadError, SearchApplicationError};
+
+    match error {
+        SearchApplicationError::Generation(GenerationReadError::Port(error)) => {
+            SourceSearchFailure::from(error)
+        }
+        SearchApplicationError::Generation(GenerationReadError::Authority(error)) => {
+            SourceSearchFailure::Other(anyhow::Error::new(error))
+        }
+        SearchApplicationError::Query(error) => SourceSearchFailure::from(error),
     }
 }
 
 type SourceSearchResult<T> = std::result::Result<T, SourceSearchFailure>;
 
-pub(super) use ctx_history_query::{SearchCollection, SearchHit, SemanticFallbackDiagnostics};
+pub(super) use ctx_history_read_application::{SearchCollection, SemanticFallbackDiagnostics};
 #[cfg(test)]
-pub(super) use ctx_history_query::{SearchEventMetadata, SearchResultWindow};
+pub(super) use ctx_history_read_application::{SearchEventMetadata, SearchHit, SearchResultWindow};
 
 pub(super) struct RefreshOutcome {
     pub(super) pin: PinnedSourceBackedGeneration,
@@ -295,7 +314,8 @@ fn run_search_inner<P: HistorySemanticPort>(
     let config = config::AppConfig::load(&data_root)?;
     let refresh_mode = args.refresh;
     let policy = source_search_policy(&config);
-    let plan = ctx_history_query::plan_search(query::source_search_request(&args), policy)?;
+    let plan =
+        ctx_history_read_application::plan_search(query::source_search_request(&args), policy)?;
     let request = plan.request();
     let requested_backend = request.backend.unwrap_or(policy.default_backend);
     let semantic_weight = request.semantic_weight;
@@ -327,8 +347,16 @@ fn run_search_inner<P: HistorySemanticPort>(
     });
 
     let query_started = Instant::now();
-    let (value, collection, index, refresh_status, refresh_source_count) =
-        search_pinned_generation(plan, &data_root, refresh_mode, refresh, semantic_port)?;
+    let (value, application, refresh_status, refresh_source_count) = search_pinned_generation(
+        plan,
+        &data_root,
+        refresh_mode,
+        refresh,
+        !json_output,
+        semantic_port,
+    )?;
+    let collection = &application.query().collection;
+    let index = application.index();
     if !json_output {
         if let Some(fallback) = collection.semantic_fallback.as_ref() {
             let warning = render_semantic_fallback_warning(ui.stderr_context(), fallback);
@@ -359,13 +387,13 @@ fn run_search_inner<P: HistorySemanticPort>(
         .unwrap_or(&[]);
     let result_count = results.len();
     let search_context = if config.local_usage.enabled {
-        search_context_observation(&value, &collection, &index)
+        search_context_observation(&value, collection, index)
     } else {
         SearchContextObservation::unavailable()
     };
     let render_started = Instant::now();
     let compact_value = (!json_output)
-        .then(|| CompactPresentation::open(&index, &index_root(&data_root))?.project(&value))
+        .then(|| application.project_read_model(&value))
         .transpose()?;
     let render_value = compact_value.as_ref().unwrap_or(&value);
     let output_bytes = if args.format == JsonOutputFormat::Json {
@@ -486,7 +514,7 @@ pub(crate) fn mcp_search_with_compact(
 pub(crate) fn normalize_mcp_search_request(
     request: &mut SourceSearchRequest,
 ) -> std::result::Result<(), McpSearchError> {
-    ctx_history_query::normalize_search_request(request)
+    ctx_history_read_application::normalize_search_request(request)
         .map_err(|error| SourceSearchFailure::from(error).into_mcp())
 }
 
@@ -496,17 +524,22 @@ fn mcp_search_inner<P: HistorySemanticPort>(
     config: &config::AppConfig,
     semantic_port: &P,
 ) -> SourceSearchResult<(Value, SearchContextObservation, Value)> {
-    let plan = ctx_history_query::plan_search(request, source_search_policy(config))?;
+    let plan = ctx_history_read_application::plan_search(request, source_search_policy(config))?;
     let refresh = refresh_for_search(plan.request(), RefreshArg::Off, data_root)?;
-    let (value, collection, index, _, _) =
-        search_pinned_generation(plan, data_root, RefreshArg::Off, refresh, semantic_port)?;
+    let (value, application, _, _) = search_pinned_generation(
+        plan,
+        data_root,
+        RefreshArg::Off,
+        refresh,
+        true,
+        semantic_port,
+    )?;
     let observation = if config.local_usage.enabled {
-        search_context_observation(&value, &collection, &index)
+        search_context_observation(&value, &application.query().collection, application.index())
     } else {
         SearchContextObservation::unavailable()
     };
-    let compact_value =
-        CompactPresentation::open(&index, &index_root(data_root))?.project(&value)?;
+    let compact_value = application.project_read_model(&value)?;
     Ok((value, observation, compact_value))
 }
 
@@ -586,7 +619,7 @@ pub(super) fn refresh_for_search_with<Coordinate>(
 where
     Coordinate: FnOnce(&Path, SourceBackedRefreshMode) -> Result<SourceBackedRefreshObservation>,
 {
-    ctx_history_query::validate_search_request(request)?;
+    ctx_history_read_application::validate_search_request(request)?;
     let mode = source_backed_refresh_mode(refresh);
     let observation = match coordinate(data_root, mode) {
         Ok(observation) => observation,
@@ -636,27 +669,34 @@ pub(super) fn source_backed_refresh_mode(refresh: RefreshArg) -> SourceBackedRef
 }
 
 fn search_pinned_generation<P: HistorySemanticPort>(
-    plan: ctx_history_query::PlannedSearch,
+    plan: ctx_history_read_application::PlannedSearch,
     data_root: &Path,
     refresh_mode: RefreshArg,
     refresh: RefreshOutcome,
+    compact_projection: bool,
     semantic_port: &P,
-) -> SourceSearchResult<(Value, SearchCollection, VerifiedIndex, &'static str, usize)> {
+) -> SourceSearchResult<(
+    Value,
+    ctx_history_read_application::SearchApplicationResult,
+    &'static str,
+    usize,
+)> {
     let RefreshOutcome {
         pin,
         status,
         source_count,
     } = refresh;
-    let (value, collection, index) = search_existing_generation_with_port(
+    let (value, application) = search_existing_generation_with_port(
         plan,
         pin.into_index(),
         data_root,
         refresh_mode,
         status,
         source_count,
+        compact_projection,
         semantic_port,
     )?;
-    Ok((value, collection, index, status, source_count))
+    Ok((value, application, status, source_count))
 }
 
 #[cfg(test)]
@@ -668,13 +708,13 @@ pub(super) fn search_existing_generation(
     refresh_status: &str,
     refresh_source_count: usize,
 ) -> Result<(Value, SearchCollection, VerifiedIndex)> {
-    let policy = ctx_history_query::SearchPolicy {
+    let policy = ctx_history_read_application::SearchPolicy {
         default_backend: request.backend.unwrap_or(SearchBackendArg::Lexical),
         semantic: SemanticAvailability::Available,
     };
     let mut request = request.clone();
     request.semantic_weight = semantic_weight;
-    let plan = ctx_history_query::plan_search(request, policy)
+    let plan = ctx_history_read_application::plan_search(request, policy)
         .map_err(SourceSearchFailure::from)
         .map_err(SourceSearchFailure::into_anyhow)?;
     search_existing_generation_with_port(
@@ -684,67 +724,70 @@ pub(super) fn search_existing_generation(
         RefreshArg::Off,
         refresh_status,
         refresh_source_count,
+        false,
         &crate::semantic::SemanticQueryAdapter::new(data_root),
     )
+    .map(|(value, application)| {
+        let (query, index) = application.into_parts();
+        (value, query.collection, index)
+    })
     .map_err(SourceSearchFailure::into_anyhow)
 }
 
 fn search_existing_generation_with_port<P: HistorySemanticPort>(
-    plan: ctx_history_query::PlannedSearch,
+    plan: ctx_history_read_application::PlannedSearch,
     index: VerifiedIndex,
     data_root: &Path,
     refresh_mode: RefreshArg,
     refresh_status: &str,
     refresh_source_count: usize,
+    compact_projection: bool,
     semantic_port: &P,
-) -> SourceSearchResult<(Value, SearchCollection, VerifiedIndex)> {
-    let request = plan.request();
-    let input_references = CompactPresentation::open_if_needed(
-        &index,
-        &index_root(data_root),
-        request
-            .session
-            .as_deref()
-            .is_some_and(reference_needs_retained_peer),
-    )?;
+) -> SourceSearchResult<(Value, ctx_history_read_application::SearchApplicationResult)> {
     let active_session = active_session_exclusion();
-    let query_started = Instant::now();
-    let query = ctx_history_query::PinnedHistoryQuery::new(
-        &index,
-        input_references
-            .as_ref()
-            .and_then(CompactPresentation::retained_peer),
-    );
-    let result = query.search(plan, active_session.as_ref(), semantic_port)?;
-    let query_duration = query_started.elapsed();
-    let copied_lineages = result
-        .copied_lineages
-        .iter()
-        .map(copied_lineage_read_model)
-        .collect::<Result<Vec<_>>>()?;
+    let mut index = Some(index);
+    let mut generation_port = |request: &ctx_history_read_application::GenerationReadRequest| {
+        generation_read(
+            index.take().expect("generation port is invoked once"),
+            &index_root(data_root),
+            request,
+        )
+    };
+    let result = ctx_history_read_application::execute_search(
+        ctx_history_read_application::SearchApplicationRequest {
+            plan,
+            generation_target: ctx_history_read_application::GenerationReadTarget::Active,
+            compact_projection,
+            active_session,
+        },
+        &mut generation_port,
+        semantic_port,
+    )
+    .map_err(application_search_failure)?;
+    let query = result.query();
     let value = search_json_with_lineages(
-        &result.request,
+        &query.request,
         data_root,
-        &index,
-        &result.collection,
-        &result.filters,
-        &result.presentations,
-        &copied_lineages,
+        result.index(),
+        &query.collection,
+        &query.filters,
+        &query.presentations,
+        result.copied_lineage_read_models(),
         refresh_mode,
         refresh_status,
         refresh_source_count,
-        query_duration,
+        result.query_duration(),
     )?;
-    Ok((value, result.collection, index))
+    Ok((value, result))
 }
 
-fn active_session_exclusion() -> Option<ctx_history_query::ActiveSessionExclusion> {
+fn active_session_exclusion() -> Option<ctx_history_read_application::ActiveSessionExclusion> {
     std::env::var("CODEX_THREAD_ID")
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .map(
-            |provider_session_id| ctx_history_query::ActiveSessionExclusion {
+            |provider_session_id| ctx_history_read_application::ActiveSessionExclusion {
                 provider: ctx_history_core::CaptureProvider::Codex.as_str().to_owned(),
                 provider_session_id,
             },
@@ -781,7 +824,7 @@ fn collect_search_hits_with_port<P: HistorySemanticPort>(
 ) -> SourceSearchResult<SearchCollection> {
     let mut planned = request.clone();
     planned.semantic_weight = semantic_weight;
-    ctx_history_query::collect_search_hits(
+    ctx_history_read_application::collect_search_hits(
         &planned,
         index,
         filters,
@@ -811,7 +854,7 @@ where
 {
     let mut planned = request.clone();
     planned.semantic_weight = semantic_weight;
-    ctx_history_query::collect_search_hits_using(
+    ctx_history_read_application::collect_search_hits_using(
         &planned,
         index,
         filters,
@@ -830,4 +873,4 @@ where
 }
 
 #[cfg(test)]
-pub(super) use ctx_history_query::shape_search_result_window;
+pub(super) use ctx_history_read_application::shape_search_result_window;

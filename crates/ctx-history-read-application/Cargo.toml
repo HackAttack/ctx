@@ -1,7 +1,7 @@
 [package]
-name = "ctx-history-query"
+name = "ctx-history-read-application"
 version = "0.26.0"
-description = "Transport-neutral history query planning, ranking, and result contracts for ctx"
+description = "Transport-neutral pinned history read application and structured read models for ctx"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -16,6 +16,7 @@ chrono.workspace = true
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-index-format = { path = "../ctx-history-index-format" }
 ctx-history-index-query = { path = "../ctx-history-index-query" }
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true

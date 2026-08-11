@@ -3,7 +3,7 @@ use super::super::search::{render_semantic_fallback_warning, SemanticFallbackDia
 #[test]
 fn semantic_fallback_warning_is_structured_and_actionable_without_backend_codes() {
     let fallback = SemanticFallbackDiagnostics {
-        reason: Some(ctx_history_query::SemanticReason::PolicyDisabled),
+        reason: Some(ctx_history_read_application::SemanticReason::PolicyDisabled),
         detail: "backend_error at /private/model/cache".to_owned(),
     };
     for width in [40, 80, 120] {
