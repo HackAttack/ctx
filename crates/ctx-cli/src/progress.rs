@@ -95,7 +95,7 @@ pub(crate) fn presentation_snapshot(
                 logical.progress_owner_attempt_state,
             ),
             structured_outcome: logical.structured_outcome.map(|outcome| {
-                RefreshStructuredOutcome {
+                Box::new(RefreshStructuredOutcome {
                     code: outcome.code.as_str().to_owned(),
                     class: outcome.class.as_str().to_owned(),
                     retryable: outcome.retryable,
@@ -122,7 +122,7 @@ pub(crate) fn presentation_snapshot(
                         .map(|advice| advice.as_str().to_owned()),
                     detail: outcome.detail,
                     failure: outcome.code.is_failure(),
-                }
+                })
             }),
         }),
     };

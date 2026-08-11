@@ -435,7 +435,7 @@ mod tests {
                 physical_attempt_state: crate::ui::RefreshRequestState::Published,
                 progress_owner_request_id: "physical-attempt".to_owned(),
                 progress_owner_attempt_state: crate::ui::RefreshRequestState::Published,
-                structured_outcome: Some(crate::ui::RefreshStructuredOutcome {
+                structured_outcome: Some(Box::new(crate::ui::RefreshStructuredOutcome {
                     code: "completed".to_owned(),
                     class: "completed".to_owned(),
                     retryable: false,
@@ -448,7 +448,7 @@ mod tests {
                     retry_advice: None,
                     detail: None,
                     failure: false,
-                }),
+                })),
             }),
             crate::ui::RefreshProgress {
                 phase: "committed".to_owned(),
