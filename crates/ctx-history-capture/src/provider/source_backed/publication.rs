@@ -998,77 +998,79 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             successful_this_attempt.insert(route_identity.clone());
         }
 
-        let mut present_routes = Vec::new();
-        for (route_index, route) in registry.routes.iter().enumerate() {
-            let Some(route_identity) = route.metadata.route_identity.as_ref() else {
-                continue;
-            };
-            if route.driver.is_none() || !successful_this_attempt.contains(route_identity) {
-                continue;
-            }
-            let route_owners = owners
-                .values()
-                .filter(|owner| owner.route_index == route_index && owner.present)
-                .chain(
-                    owners
-                        .values()
-                        .filter(|owner| owner.route_index == route_index && !owner.present),
-                )
-                .map(|owner| (owner.source.identity().digest(), owner))
-                .collect::<HashMap<_, _>>();
-            let mut remaining = route_owners;
-            let base_snapshot = lifecycle.base_snapshot();
-            let base_route = base_snapshot
-                .as_ref()
-                .and_then(|base| base.source_route(route_identity))
-                .filter(|_| partial_routes.contains(route_identity));
-            let membership_unchanged = base_route.is_some_and(|snapshot| {
-                remaining.values().all(|owner| {
-                    owner.present
-                        && snapshot
-                            .sources()
-                            .binary_search_by_key(&owner.source.identity().digest(), |member| {
-                                member.identity().digest()
-                            })
-                            .ok()
-                            .and_then(|index| snapshot.sources().get(index))
-                            .is_some_and(|member| member.exact_descriptor_eq(&owner.source))
-                })
-            });
-            if membership_unchanged {
-                present_routes.push(PresentCaptureRoute::new(
-                    route_identity.clone(),
-                    base_route
-                        .expect("checked partial base route")
-                        .sources()
-                        .to_vec(),
-                ));
-                continue;
-            }
-            let mut members = base_route
-                .into_iter()
-                .flat_map(|route| route.sources())
-                .filter_map(|member| {
-                    #[cfg(test)]
-                    PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
-                        visits.set(visits.get().saturating_add(1));
-                    });
-                    match remaining.remove(&member.identity().digest()) {
-                        Some(owner) if owner.present => Some(owner.source.clone()),
-                        Some(_) => None,
-                        None => Some(member.clone()),
-                    }
-                })
-                .collect::<Vec<_>>();
-            members.extend(
-                remaining
-                    .into_values()
-                    .filter(|owner| owner.present)
-                    .map(|owner| owner.source.clone()),
-            );
-            present_routes.push(PresentCaptureRoute::new(route_identity.clone(), members));
-        }
-        lifecycle.set_present_routes(present_routes)?;
+        let partial_base_routes = lifecycle
+            .base_snapshot()
+            .map(|base| {
+                base.source_routes()
+                    .filter(|route| partial_routes.contains(route.route_identity()))
+                    .map(|route| (route.route_identity().clone(), route.sources().to_vec()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        lifecycle.set_present_routes(registry.routes.iter().enumerate().filter_map(
+            |(route_index, route)| {
+                let route_identity = route.metadata.route_identity.as_ref()?;
+                if route.driver.is_none() || !successful_this_attempt.contains(route_identity) {
+                    return None;
+                }
+                let route_owners = owners
+                    .values()
+                    .filter(|owner| owner.route_index == route_index && owner.present)
+                    .chain(
+                        owners
+                            .values()
+                            .filter(|owner| owner.route_index == route_index && !owner.present),
+                    )
+                    .map(|owner| (owner.source.identity().digest(), owner))
+                    .collect::<HashMap<_, _>>();
+                let mut remaining = route_owners;
+                let base_members = partial_base_routes
+                    .iter()
+                    .find(|(identity, _)| identity == route_identity)
+                    .map(|(_, sources)| sources.as_slice());
+                let membership_unchanged = base_members.is_some_and(|members| {
+                    remaining.values().all(|owner| {
+                        owner.present
+                            && members
+                                .binary_search_by_key(
+                                    &owner.source.identity().digest(),
+                                    |member| member.identity().digest(),
+                                )
+                                .ok()
+                                .and_then(|index| members.get(index))
+                                .is_some_and(|member| member.exact_descriptor_eq(&owner.source))
+                    })
+                });
+                if membership_unchanged {
+                    return Some(PresentCaptureRoute::new(
+                        route_identity.clone(),
+                        base_members.expect("checked partial base route").to_vec(),
+                    ));
+                }
+                let mut members = base_members
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|member| {
+                        #[cfg(test)]
+                        PARTIAL_BASE_ROUTE_MEMBER_VISITS.with(|visits| {
+                            visits.set(visits.get().saturating_add(1));
+                        });
+                        match remaining.remove(&member.identity().digest()) {
+                            Some(owner) if owner.present => Some(owner.source.clone()),
+                            Some(_) => None,
+                            None => Some(member.clone()),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                members.extend(
+                    remaining
+                        .into_values()
+                        .filter(|owner| owner.present)
+                        .map(|owner| owner.source.clone()),
+                );
+                Some(PresentCaptureRoute::new(route_identity.clone(), members))
+            },
+        ))?;
 
         require_complete_base_source_ownership(
             &lifecycle,
