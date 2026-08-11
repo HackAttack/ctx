@@ -24,41 +24,6 @@ pub(super) const HERMES_CAPTURE_REVISION: u32 = 2;
 pub(super) const HERMES_POLICY_REVISION: u32 = 6;
 
 #[derive(Clone, Debug)]
-struct HermesPreparedCoreMessage {
-    native: HermesNativeEvent,
-    record_digest: RecordDigest,
-}
-
-impl HermesPreparedCoreMessage {
-    fn owned_bytes(&self) -> usize {
-        serde_json::to_vec(&self.native.payload)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX)
-            .saturating_add(
-                serde_json::to_vec(&self.native.metadata)
-                    .map(|bytes| bytes.len())
-                    .unwrap_or(usize::MAX),
-            )
-            .saturating_add(self.native.cursor.len())
-            .saturating_add(4 * 1024)
-    }
-}
-
-fn prepare_hermes_core_message(
-    row: &HermesMessageRow,
-    source_record_ordinal: u64,
-    values: &[HermesSqliteValue],
-) -> Result<HermesPreparedCoreMessage> {
-    let mut native = hermes_native_event(row, source_record_ordinal)?;
-    let record_digest = hermes_layout_record_digest(values);
-    native.complete_text.clear();
-    Ok(HermesPreparedCoreMessage {
-        native,
-        record_digest,
-    })
-}
-
-#[derive(Clone, Debug)]
 pub(super) struct HermesNativeEvent {
     pub(super) provider_event_index: u64,
     pub(super) cursor: String,

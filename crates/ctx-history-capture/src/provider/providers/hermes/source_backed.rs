@@ -1036,11 +1036,7 @@ fn project_native_row(
                 Err(error) => Ok(rejected(error.to_string())),
             }
         }
-        HermesNativeRecord::Message {
-            row,
-            values: _,
-            prepared,
-        } => {
+        HermesNativeRecord::Message { row, values: _ } => {
             if let Some(reason) = context_rejection {
                 return Ok(rejected(reason.to_owned()));
             }
@@ -1050,7 +1046,7 @@ fn project_native_row(
                     row.id, row.session_id
                 )));
             };
-            match project_message(source, ordinal, row, prepared, context) {
+            match project_message(source, ordinal, row, context) {
                 Ok(document) => Ok(HermesSourceBackedRecord::Event(document)),
                 Err(error) => Ok(rejected(error.to_string())),
             }
@@ -1083,13 +1079,9 @@ fn project_message(
     source: &SourceKey,
     ordinal: u64,
     row: HermesMessageRow,
-    prepared: Option<super::HermesPreparedCoreMessage>,
     session: &HermesSessionContext,
 ) -> HermesSourceBackedResult<CoreRecord> {
-    let native = match prepared {
-        Some(prepared) => prepared.native,
-        None => hermes_native_event(&row, ordinal)?,
-    };
+    let native = hermes_native_event(&row, ordinal)?;
     let body = native.complete_text;
     let native_item_key = NativeItemKey::composite(
         HERMES_MESSAGE_NAMESPACE,
@@ -1196,16 +1188,8 @@ fn projected_owned_bytes(record: &HermesSourceBackedRecord) -> Result<usize, ser
 fn native_record_digest(native: &HermesNativeRow) -> HermesSourceBackedResult<[u8; 32]> {
     match &native.record {
         HermesNativeRecord::Session(row) => Ok(session_record_digest(row)),
-        HermesNativeRecord::Message {
-            values, prepared, ..
-        } => {
-            if !values.is_empty() {
-                decode_sha256(hermes_layout_record_digest(values).as_str())
-            } else if let Some(prepared) = prepared {
-                decode_sha256(prepared.record_digest.as_str())
-            } else {
-                Err(HermesSourceBackedError::InvalidLogicalDigest)
-            }
+        HermesNativeRecord::Message { values, .. } => {
+            decode_sha256(hermes_layout_record_digest(values).as_str())
         }
         HermesNativeRecord::Rejected(reason) => {
             let mut digest = Sha256::new();

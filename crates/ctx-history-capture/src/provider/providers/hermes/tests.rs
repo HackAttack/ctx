@@ -198,6 +198,51 @@ fn row_reader_scans_sessions_then_messages_and_rejects_before_hydration() {
 }
 
 #[test]
+fn oversized_non_tool_message_rejects_at_page_limit_without_hydration() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("state.db");
+    create_fixture(&path, "page-limit-session");
+    let oversized =
+        i64::try_from(crate::provider::native_ingestion::NATIVE_INGESTION_PAGE_MAX_BYTES).unwrap();
+    assert!(usize::try_from(oversized).unwrap() < crate::MAX_PROVIDER_SQLITE_VALUE_BYTES);
+    let connection = Connection::open(&path).unwrap();
+    connection.execute("DELETE FROM messages", []).unwrap();
+    connection
+        .execute(
+            "INSERT INTO messages (session_id, role, content, timestamp)
+             VALUES ('page-limit-session', 'assistant', CAST(zeroblob(?1) AS TEXT), 1782259400.0)",
+            [oversized],
+        )
+        .unwrap();
+    drop(connection);
+
+    let conn = crate::provider::sqlite::open_provider_sqlite_readonly(
+        crate::test_provider_sqlite_data_root(),
+        &path,
+    )
+    .unwrap();
+    let schema = HermesSchema::detect(&conn).unwrap();
+    let mut reader = HermesRowReader::new(&conn, &schema).unwrap();
+    let mut frontier = HermesFrontier::initial();
+    let mut message_rejection = None;
+    while let Some(row) = reader.next(frontier).unwrap() {
+        frontier = row.next_frontier;
+        if row.locator.phase == HermesPhase::Messages {
+            message_rejection = match row.record {
+                HermesNativeRecord::Rejected(reason) => Some(reason),
+                record => panic!("oversized non-tool message was not rejected: {record:?}"),
+            };
+        }
+    }
+
+    let reason = message_rejection.expect("oversized non-tool message rejection");
+    assert!(reason.contains("NativePath page"), "{reason}");
+    assert!(!reason.contains("hydration limit"), "{reason}");
+    assert_eq!(reader.session_hydration_queries, 1);
+    assert_eq!(reader.message_hydration_queries, 0);
+}
+
+#[test]
 fn result_content_uses_only_the_tool_content_column_without_a_size_cap() {
     let long = "x".repeat(16_019);
     assert_eq!(
