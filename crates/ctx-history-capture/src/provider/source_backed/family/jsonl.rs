@@ -132,6 +132,7 @@ struct JsonlSemanticPreflightBinding {
 }
 
 impl JsonlReader {
+    #[cfg(test)]
     pub(crate) fn open(
         identity: JsonlSourceIdentity,
         source_file: Arc<OpenedProviderSourceFile>,
