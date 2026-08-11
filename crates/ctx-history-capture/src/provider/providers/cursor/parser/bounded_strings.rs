@@ -1,7 +1,6 @@
 use std::fmt;
 
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use serde::Deserialize;
 
 pub(super) const MAX_CURSOR_ATOM_CHARS: usize = 512;
 pub(super) const MAX_CURSOR_PATH_CHARS: usize = 4_096;
@@ -19,17 +18,20 @@ impl<'de> DeserializeSeed<'de> for CursorPathStringSeed {
     {
         deserializer.deserialize_any(CursorPathStringVisitor {
             max_chars: self.max_chars,
+            allow_empty: true,
         })
     }
 }
 
 struct CursorPathStringVisitor {
     max_chars: usize,
+    allow_empty: bool,
 }
 
 impl CursorPathStringVisitor {
     fn exact(&self, value: &str) -> Option<String> {
-        (value.chars().count() <= self.max_chars).then(|| value.to_owned())
+        (value.chars().count() <= self.max_chars && (self.allow_empty || !value.is_empty()))
+            .then(|| value.to_owned())
     }
 }
 
@@ -58,7 +60,10 @@ impl<'de> Visitor<'de> for CursorPathStringVisitor {
     where
         E: de::Error,
     {
-        Ok((value.chars().count() <= self.max_chars).then_some(value))
+        Ok(
+            (value.chars().count() <= self.max_chars && (self.allow_empty || !value.is_empty()))
+                .then_some(value),
+        )
     }
 
     fn visit_bool<E>(self, _value: bool) -> std::result::Result<Self::Value, E>
@@ -131,8 +136,10 @@ impl<'de> DeserializeSeed<'de> for ExactBoundedStringSeed {
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        Ok((value.chars().count() <= self.max_chars).then_some(value))
+        deserializer.deserialize_any(CursorPathStringVisitor {
+            max_chars: self.max_chars,
+            allow_empty: false,
+        })
     }
 }
 

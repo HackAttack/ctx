@@ -137,6 +137,7 @@ fn is_result_shape_label_bytes(value: &[u8]) -> bool {
     [
         b"tool_use_id".as_slice(),
         b"toolUseId",
+        b"toolCallId",
         b"is_error",
         b"isError",
     ]
@@ -309,12 +310,14 @@ impl<'a> ResultScanner<'a> {
                 | (ObjectKind::Message, Field::Metadata)
                 | (ObjectKind::Block, Field::Metadata) => {
                     let is_call_id = raw_label_eq(&self.bytes[key.clone()], b"tool_use_id")
-                        || raw_label_eq(&self.bytes[key.clone()], b"toolUseId");
+                        || raw_label_eq(&self.bytes[key.clone()], b"toolUseId")
+                        || raw_label_eq(&self.bytes[key.clone()], b"toolCallId");
                     self.result.result_like_shape |= is_call_id;
-                    self.metadata_value(
-                        depth + 1,
-                        if is_call_id { 256 } else { MAX_METADATA_BYTES },
-                    )?;
+                    if is_call_id {
+                        self.skip_value(depth + 1)?;
+                    } else {
+                        self.metadata_value(depth + 1, MAX_METADATA_BYTES)?;
+                    }
                     if matches!(kind, ObjectKind::Block) && is_call_id {
                         block_primary_output = true;
                     }
@@ -353,7 +356,8 @@ impl<'a> ResultScanner<'a> {
             if matches!(kind, ObjectKind::Block)
                 && matches!(field, Field::Metadata)
                 && (raw_label_eq(&self.bytes[key.clone()], b"tool_use_id")
-                    || raw_label_eq(&self.bytes[key.clone()], b"toolUseId"))
+                    || raw_label_eq(&self.bytes[key.clone()], b"toolUseId")
+                    || raw_label_eq(&self.bytes[key.clone()], b"toolCallId"))
                 && block_call_id.is_none()
             {
                 block_call_id = Some(RawStringRange {
@@ -604,6 +608,7 @@ fn critical_field_bit(raw: &[u8]) -> Option<u16> {
         b"toolUseResult",
         b"tool_use_id",
         b"toolUseId",
+        b"toolCallId",
         b"is_error",
         b"isError",
     ]
@@ -655,9 +660,15 @@ fn is_metadata_field(raw: &[u8], kind: ObjectKind) -> bool {
         ObjectKind::Message => [b"id".as_slice(), b"role"]
             .into_iter()
             .any(|expected| raw_label_eq(raw, expected)),
-        ObjectKind::Block => [b"id".as_slice(), b"name", b"tool_use_id", b"toolUseId"]
-            .into_iter()
-            .any(|expected| raw_label_eq(raw, expected)),
+        ObjectKind::Block => [
+            b"id".as_slice(),
+            b"name",
+            b"tool_use_id",
+            b"toolUseId",
+            b"toolCallId",
+        ]
+        .into_iter()
+        .any(|expected| raw_label_eq(raw, expected)),
         ObjectKind::Ignored => false,
     }
 }
