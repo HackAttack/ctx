@@ -81,15 +81,10 @@ impl CodexSessionSemanticExecutorV0 {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
         let checkpoint = match (projection_mode, checkpoint) {
-            (JsonlFamilyProjectionMode::CertifiedAppend, Some(TypedKey::Bytes(bytes))) => Some(
-                super::super::checkpoint::CodexSemanticCheckpoint::decode(bytes)?,
-            ),
-            (JsonlFamilyProjectionMode::CertifiedAppend, None) => None,
-            (JsonlFamilyProjectionMode::CertifiedAppend, Some(_)) => {
-                return Err(CaptureError::InvalidPayload(
-                    "Codex semantic checkpoint has an invalid key type".to_owned(),
-                ));
+            (JsonlFamilyProjectionMode::CertifiedAppend, Some(checkpoint)) => {
+                Some(super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint)?)
             }
+            (JsonlFamilyProjectionMode::CertifiedAppend, None) => None,
             (JsonlFamilyProjectionMode::Cold | JsonlFamilyProjectionMode::Replacement, _) => None,
         };
         let event_identity_state = match projection_mode {
@@ -199,15 +194,7 @@ impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
         }
         let provider_checkpoint = scan
             .checkpoint
-            .map(|checkpoint| {
-                checkpoint
-                    .encode()
-                    .map_err(CaptureError::from)
-                    .and_then(|encoded| {
-                        TypedKey::bytes(encoded)
-                            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
-                    })
-            })
+            .map(|checkpoint| checkpoint.encode_key().map_err(CaptureError::from))
             .transpose()?;
         #[cfg(any(test, ctx_codex_causal_qualification))]
         {

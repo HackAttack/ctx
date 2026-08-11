@@ -1258,8 +1258,7 @@ fn certify(
         .ok_or_else(|| route_invalid("JSONL complete count overflowed"))?;
     let frontier = SourceFrontier::new(
         FAMILY_FRONTIER_KIND,
-        TypedKey::bytes(serde_json::to_vec(&checkpoint).map_err(route_invalid)?)
-            .map_err(route_invalid)?,
+        checkpoint.encode_frontier_key().map_err(route_invalid)?,
         checkpoint.physical.complete_prefix_end(),
         *checkpoint.physical.complete_prefix_sha256(),
     )
@@ -1304,12 +1303,7 @@ pub(super) fn decode_checkpoint(
             "JSONL base frontier kind changed".to_owned(),
         ));
     }
-    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-        return Err(CaptureError::InvalidPayload(
-            "JSONL base checkpoint is malformed".to_owned(),
-        ));
-    };
-    let checkpoint: FamilyCheckpoint = serde_json::from_slice(bytes)?;
+    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())?;
     let classified = checkpoint
         .represented_physical_records
         .checked_add(checkpoint.rejected_records)
@@ -1365,12 +1359,7 @@ pub(crate) fn checkpoint_admitted_revision_for_test(
             "JSONL test certificate has the wrong frontier kind".to_owned(),
         ));
     }
-    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-        return Err(CaptureError::InvalidPayload(
-            "JSONL test certificate checkpoint is malformed".to_owned(),
-        ));
-    };
-    let checkpoint: FamilyCheckpoint = serde_json::from_slice(bytes)?;
+    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())?;
     Ok((
         checkpoint.admitted_eof_sha256,
         checkpoint.complete_prefix_ends_with_terminal_nul_padding,

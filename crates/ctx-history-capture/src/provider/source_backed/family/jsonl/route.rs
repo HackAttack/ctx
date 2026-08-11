@@ -1104,6 +1104,23 @@ fn is_false(value: &bool) -> bool {
 impl FamilyCheckpoint {
     const VERSION: u32 = 4;
 
+    fn encode_frontier_key(&self) -> Result<TypedKey> {
+        TypedKey::utf8(serde_json::to_string(self)?)
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
+    }
+
+    fn decode_frontier_key(key: &TypedKey) -> Result<Self> {
+        match key {
+            // Bytes was emitted before the compact UTF-8 representation. Both
+            // carry the same v4 JSON document and remain readable.
+            TypedKey::Bytes(bytes) => Ok(serde_json::from_slice(bytes)?),
+            TypedKey::Utf8(json) => Ok(serde_json::from_str(json)?),
+            _ => Err(CaptureError::InvalidPayload(
+                "JSONL base checkpoint is malformed".to_owned(),
+            )),
+        }
+    }
+
     fn valid_for(&self, adapter: &dyn JsonlFamilyAdapter, leaf: &JsonlFamilyLeaf) -> bool {
         self.version == Self::VERSION
             && self.provider_parser_revision == adapter.parser_revision()
@@ -1146,12 +1163,7 @@ fn default_base_source_path(
             "JSONL base frontier kind changed".to_owned(),
         ));
     }
-    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-        return Err(CaptureError::InvalidPayload(
-            "JSONL base checkpoint is malformed".to_owned(),
-        ));
-    };
-    let checkpoint: FamilyCheckpoint = serde_json::from_slice(bytes)?;
+    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())?;
     if checkpoint.physical.identity().source_descriptor_digest()
         != &certificate.observation().source().exact_descriptor_digest()
     {

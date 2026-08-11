@@ -1624,10 +1624,7 @@ fn provider_checkpoints(receipt: &CommitReceipt) -> Vec<Option<TypedKey>> {
         .iter()
         .map(|source| {
             let frontier = source.frontier().unwrap();
-            let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-                panic!("family checkpoint was not bytes");
-            };
-            serde_json::from_slice::<FamilyCheckpoint>(bytes)
+            FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())
                 .unwrap()
                 .provider_checkpoint
         })
@@ -2239,11 +2236,8 @@ fn event_identity_revision_forces_replacement_with_core_base_authority() {
         .frontier()
         .unwrap()
         .checkpoint();
-    let TypedKey::Bytes(bytes) = checkpoint else {
-        panic!("family checkpoint was not bytes");
-    };
     assert_eq!(
-        serde_json::from_slice::<FamilyCheckpoint>(bytes)
+        FamilyCheckpoint::decode_frontier_key(checkpoint)
             .unwrap()
             .event_identity_revision,
         "content-occurrence-v2"

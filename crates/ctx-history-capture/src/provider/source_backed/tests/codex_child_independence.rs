@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Barrier, Mutex},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ctx_history_core::{CertifiedSource, EventOrigin, SessionRelationshipKind, SourceFrontier};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 use sha2::{Digest, Sha256};
@@ -199,6 +200,24 @@ fn mcp_terminal(call_id: &str, server: &str, marker: &str) -> serde_json::Value 
                     "isError": false
                 }
             }
+        }
+    })
+}
+
+fn checkpoint_mcp_terminal(call_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:04Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "mcp_tool_call_end",
+            "call_id": call_id,
+            "invocation": {
+                "server": "checkpoint-envelope",
+                "tool": "read",
+                "arguments": {}
+            },
+            "duration": {"secs": 0, "nanos": 1},
+            "result": {"Err": "event-body-secret-must-not-reach-checkpoint"}
         }
     })
 }
@@ -413,6 +432,54 @@ fn certificate_for(index: &VerifiedIndex, native_session_id: &str) -> CertifiedS
         .unwrap_or_else(|| panic!("missing certificate for {native_session_id}"))
 }
 
+fn semantic_checkpoint_envelope(
+    index: &VerifiedIndex,
+    native_session_id: &str,
+) -> (usize, usize, usize, serde_json::Value) {
+    let certificate = certificate_for(index, native_session_id);
+    let frontier = certificate.frontier().unwrap();
+    frontier.validate_contract().unwrap();
+    let TypedKey::Utf8(family_json) = frontier.checkpoint() else {
+        panic!("new family checkpoint was not compact UTF-8");
+    };
+    let family = serde_json::from_str::<serde_json::Value>(family_json).unwrap();
+    let provider = family
+        .get("provider_checkpoint")
+        .expect("Codex family checkpoint omitted provider state");
+    let semantic_json = provider
+        .get("Utf8")
+        .and_then(|value| value.as_str())
+        .expect("new Codex semantic checkpoint was not compact UTF-8");
+    (
+        semantic_json.len(),
+        family_json.len(),
+        serde_json::to_vec(frontier).unwrap().len(),
+        serde_json::from_str(semantic_json).unwrap(),
+    )
+}
+
+fn assert_terminal_checkpoint_authority(
+    checkpoint: &serde_json::Value,
+    entries: usize,
+    exhausted: bool,
+) {
+    let authority = &checkpoint["terminal_authority"];
+    assert_eq!(authority["mcp_exhausted"], exhausted);
+    assert_eq!(authority["result_exhausted"], exhausted);
+    for field in ["mcp_call_ids", "result_call_ids"] {
+        let packed = BASE64_STANDARD
+            .decode(authority[field].as_str().unwrap())
+            .unwrap();
+        assert_eq!(packed.len(), entries * 33);
+    }
+}
+
+fn terminal_authority_events(entries: usize) -> Vec<serde_json::Value> {
+    (0..entries)
+        .map(|index| checkpoint_mcp_terminal(&format!("mcp-checkpoint-{index:03}")))
+        .collect()
+}
+
 fn records_for(index: &VerifiedIndex, native_session_id: &str) -> Vec<CoreRecord> {
     let certificate = certificate_for(index, native_session_id);
     let page = index
@@ -579,6 +646,100 @@ fn refresh_and_assert_descendants(
         assert_exact_zero_work(&sources, descendant, Some(parent));
     }
     sources
+}
+
+#[test]
+fn terminal_authority_boundaries_fit_the_final_shared_frontier() {
+    const MAX_AUTHORITY_ENTRIES: usize = 256;
+    const MAX_FRONTIER_ENVELOPE_BYTES: usize = 64 * 1024;
+
+    let temp = crate::test_support_paths::tempdir().unwrap();
+
+    let exact_sessions = temp.path().join("exact-sessions");
+    let exact_index = temp.path().join("exact-index");
+    fs::create_dir_all(&exact_sessions).unwrap();
+    let exact_owner = "checkpoint-envelope-exact";
+    write_session(
+        &exact_sessions,
+        exact_owner,
+        SessionRelationshipKind::Root,
+        None,
+        terminal_authority_events(MAX_AUTHORITY_ENTRIES),
+    );
+    let exact_registry = register_tree(&[&exact_sessions]);
+    let exact_receipt =
+        refresh_source_backed_generation(&exact_index, &exact_registry, writer_options()).unwrap();
+    assert!(
+        exact_receipt.failed_routes.is_empty(),
+        "exact authority boundary failed publication: {:?}",
+        exact_receipt.failed_routes
+    );
+    assert!(exact_receipt.logical_source_failures.is_empty());
+    let exact = VerifiedIndex::open(&exact_index).unwrap();
+    let (exact_semantic_bytes, exact_family_bytes, exact_frontier_bytes, exact_checkpoint) =
+        semantic_checkpoint_envelope(&exact, exact_owner);
+    assert!(exact_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
+    assert!(exact_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
+    assert_terminal_checkpoint_authority(&exact_checkpoint, MAX_AUTHORITY_ENTRIES, false);
+    let exact_checkpoint_json = serde_json::to_string(&exact_checkpoint).unwrap();
+    assert!(!exact_checkpoint_json.contains("event-body-secret-must-not-reach-checkpoint"));
+    drop(exact);
+
+    let exhausted_sessions = temp.path().join("exhausted-sessions");
+    let exhausted_index = temp.path().join("exhausted-index");
+    fs::create_dir_all(&exhausted_sessions).unwrap();
+    let exhausted_owner = "checkpoint-envelope-exhausted";
+    write_session(
+        &exhausted_sessions,
+        exhausted_owner,
+        SessionRelationshipKind::Root,
+        None,
+        terminal_authority_events(MAX_AUTHORITY_ENTRIES + 1),
+    );
+    let exhausted_registry = register_tree(&[&exhausted_sessions]);
+    let exhausted_receipt =
+        refresh_source_backed_generation(&exhausted_index, &exhausted_registry, writer_options())
+            .unwrap();
+    assert!(
+        exhausted_receipt.failed_routes.is_empty(),
+        "exhausted authority boundary failed publication: {:?}",
+        exhausted_receipt.failed_routes
+    );
+    assert!(exhausted_receipt.logical_source_failures.is_empty());
+    let exhausted = VerifiedIndex::open(&exhausted_index).unwrap();
+    let (
+        exhausted_semantic_bytes,
+        exhausted_family_bytes,
+        exhausted_frontier_bytes,
+        exhausted_checkpoint,
+    ) = semantic_checkpoint_envelope(&exhausted, exhausted_owner);
+    assert!(exhausted_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
+    assert!(exhausted_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
+    assert_terminal_checkpoint_authority(&exhausted_checkpoint, 0, true);
+    drop(exhausted);
+
+    append_event(
+        &session_path(&exhausted_sessions, exhausted_owner),
+        checkpoint_mcp_terminal("mcp-checkpoint-after-exhaustion"),
+    );
+    let appended_receipt =
+        refresh_source_backed_generation(&exhausted_index, &exhausted_registry, writer_options())
+            .unwrap();
+    assert!(appended_receipt.failed_routes.is_empty());
+    assert!(appended_receipt.logical_source_failures.is_empty());
+    let appended = VerifiedIndex::open(&exhausted_index).unwrap();
+    let (
+        appended_semantic_bytes,
+        appended_family_bytes,
+        appended_frontier_bytes,
+        appended_checkpoint,
+    ) = semantic_checkpoint_envelope(&appended, exhausted_owner);
+    assert!(appended_family_bytes + 5 <= MAX_FRONTIER_ENVELOPE_BYTES);
+    assert!(appended_frontier_bytes <= MAX_FRONTIER_ENVELOPE_BYTES);
+    assert_terminal_checkpoint_authority(&appended_checkpoint, 0, true);
+    eprintln!(
+        "Codex checkpoint envelopes: exact256 semantic={exact_semantic_bytes} family={exact_family_bytes} frontier={exact_frontier_bytes}; exhausted257 semantic={exhausted_semantic_bytes} family={exhausted_family_bytes} frontier={exhausted_frontier_bytes}; exhausted_append semantic={appended_semantic_bytes} family={appended_family_bytes} frontier={appended_frontier_bytes}"
+    );
 }
 
 #[test]
@@ -2859,10 +3020,10 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
         assert_eq!(certificate.parser_revision(), CURRENT_PARSER_REVISION);
         let frontier = certificate.frontier().unwrap();
         assert_eq!(frontier.checkpoint_kind(), CURRENT_FRONTIER_KIND);
-        let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-            panic!("Codex checkpoint must be byte keyed");
+        let TypedKey::Utf8(json) = frontier.checkpoint() else {
+            panic!("Codex family checkpoint must be compact UTF-8");
         };
-        let wire = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
+        let wire = serde_json::from_str::<serde_json::Value>(json).unwrap();
         assert_eq!(wire["version"], 4);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());

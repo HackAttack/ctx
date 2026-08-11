@@ -509,11 +509,8 @@ pub(super) fn hydrate_codex_session_plan_v0(
     bool,
 )> {
     let (mut source, source_key, native_session_id) = plan;
-    if let Some(checkpoint) = provider_checkpoint.and_then(|checkpoint| match checkpoint {
-        TypedKey::Bytes(bytes) => {
-            super::super::checkpoint::CodexSemanticCheckpoint::decode(bytes).ok()
-        }
-        _ => None,
+    if let Some(checkpoint) = provider_checkpoint.and_then(|checkpoint| {
+        super::super::checkpoint::CodexSemanticCheckpoint::decode_key(checkpoint).ok()
     }) {
         let owner = checkpoint.owner();
         if owner.native_session_id != native_session_id {

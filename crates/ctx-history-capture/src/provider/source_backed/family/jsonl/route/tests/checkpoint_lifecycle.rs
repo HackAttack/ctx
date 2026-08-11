@@ -40,6 +40,37 @@ fn opaque_provider_checkpoint_and_base_lookup_resume_only_the_certified_suffix()
 }
 
 #[test]
+fn family_checkpoint_writes_compact_utf8_and_reads_legacy_bytes() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("checkpoint.jsonl"), b"{\"message\":\"prefix\"}\n").unwrap();
+
+    let receipt = capture_checkpoint_test_generation(&root, &index, 1);
+    let frontier = receipt.manifest().sources[0].frontier().unwrap();
+    let TypedKey::Utf8(json) = frontier.checkpoint() else {
+        panic!("new family checkpoint was not compact UTF-8");
+    };
+    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint()).unwrap();
+    assert_eq!(checkpoint.version, FamilyCheckpoint::VERSION);
+
+    let legacy = TypedKey::bytes(serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        FamilyCheckpoint::decode_frontier_key(&legacy).unwrap(),
+        checkpoint
+    );
+    assert!(
+        serde_json::to_vec(frontier.checkpoint()).unwrap().len()
+            < serde_json::to_vec(&legacy).unwrap().len()
+    );
+    assert_eq!(
+        serde_json::from_str::<FamilyCheckpoint>(json).unwrap(),
+        checkpoint
+    );
+}
+
+#[test]
 fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");

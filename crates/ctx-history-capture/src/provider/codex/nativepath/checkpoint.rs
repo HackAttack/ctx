@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use ctx_history_core::TypedKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -9,8 +10,8 @@ use crate::provider::codex::events::CodexInvocationOriginV0;
 
 const CODEX_PENDING_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/pending-call-id/v1\0";
 const MAX_CODEX_PENDING_TOOL_RECORD_BYTES: u64 = 16 * 1024 * 1024 + 1;
-// The shared family wraps this opaque provider payload in a TypedKey::Bytes.
-// Leave five bytes for that key's fixed tag and length envelope.
+// The shared family wraps this opaque provider payload in a typed key. Leave
+// five bytes for that key's fixed tag and length envelope.
 const MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
 pub(crate) const MAX_CODEX_TOOL_CONTEXTS: usize = 24;
 pub(super) const MAX_CODEX_TOOL_CALL_ID_BYTES: usize = 1024;
@@ -418,12 +419,22 @@ impl CodexSemanticCheckpoint {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn encode(&self) -> serde_json::Result<Vec<u8>> {
         let encoded = serde_json::to_vec(self)?;
         if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
             return Err(checkpoint_size_error(encoded.len()));
         }
         Ok(encoded)
+    }
+
+    pub(super) fn encode_key(&self) -> serde_json::Result<TypedKey> {
+        let encoded = serde_json::to_string(self)?;
+        if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
+            return Err(checkpoint_size_error(encoded.len()));
+        }
+        TypedKey::utf8(encoded)
+            .map_err(|error| <serde_json::Error as serde::ser::Error>::custom(error.to_string()))
     }
 
     pub(super) fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -433,6 +444,18 @@ impl CodexSemanticCheckpoint {
         let checkpoint = serde_json::from_slice::<Self>(bytes)?;
         checkpoint.validate_wire_state()?;
         Ok(checkpoint)
+    }
+
+    pub(super) fn decode_key(key: &TypedKey) -> serde_json::Result<Self> {
+        match key {
+            // Candidate checkpoints used Bytes. The compact representation is
+            // the same versioned JSON carried directly as UTF-8.
+            TypedKey::Bytes(bytes) => Self::decode(bytes),
+            TypedKey::Utf8(json) => Self::decode(json.as_bytes()),
+            _ => Err(<serde_json::Error as serde::de::Error>::custom(
+                "Codex semantic checkpoint has an invalid key type",
+            )),
+        }
     }
 
     pub(super) fn pending_tool_authorities(&self) -> &[CodexPendingToolAuthority] {
@@ -534,4 +557,206 @@ fn checkpoint_size_error(actual: usize) -> serde_json::Error {
     <serde_json::Error as serde::ser::Error>::custom(format!(
         "Codex semantic checkpoint payload has {actual} bytes, maximum is {MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::DateTime;
+    use ctx_history_core::SessionRelationshipKind;
+    use serde_json::json;
+
+    use super::*;
+
+    fn owner() -> CodexSessionRow {
+        CodexSessionRow {
+            native_session_id: "checkpoint-owner".to_owned(),
+            parent_native_session_id: None,
+            advisory_session_id: None,
+            root_native_session_id: Some("checkpoint-owner".to_owned()),
+            session_relationship: SessionRelationshipKind::Root,
+            started_at: DateTime::parse_from_rfc3339("2026-08-11T00:00:00Z")
+                .unwrap()
+                .to_utc(),
+            cwd: Some("/workspace".to_owned()),
+            originator: Some("codex_cli_rs".to_owned()),
+            cli_version: Some("0.1.0".to_owned()),
+            source_kind: Some("cli".to_owned()),
+            external_agent_id: None,
+            role_hint: Some("primary".to_owned()),
+            model_provider: Some("openai".to_owned()),
+            git: None,
+        }
+    }
+
+    fn terminal_entries(entries: usize) -> Vec<CodexTerminalAuthorityEntry> {
+        (0..entries)
+            .map(|index| CodexTerminalAuthorityEntry {
+                call_id_sha256: [u8::try_from(index).unwrap(); 32],
+                candidates: 1,
+            })
+            .collect()
+    }
+
+    fn repository_entries(entries: usize) -> Vec<CodexRepositoryCandidateAuthorityEntry> {
+        (0..entries)
+            .map(|index| CodexRepositoryCandidateAuthorityEntry {
+                call_id_sha256: [u8::try_from(index).unwrap(); 32],
+                calls: 1,
+                results: 1,
+            })
+            .collect()
+    }
+
+    fn checkpoint(call_id: &str) -> CodexSemanticCheckpoint {
+        CodexSemanticCheckpoint::new(
+            &[CodexPendingToolAuthority::new(
+                call_id,
+                10,
+                20,
+                1,
+                CodexInvocationOriginV0::UniqueToSession,
+            )],
+            CodexTerminalAuthorityCheckpoint {
+                mcp_call_ids: terminal_entries(2),
+                result_call_ids: terminal_entries(2),
+                mcp_exhausted: false,
+                result_exhausted: false,
+            },
+            CodexRepositoryCandidateAuthorityCheckpoint {
+                entries: repository_entries(2),
+                exhausted: false,
+            },
+            owner(),
+            true,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn semantic_codec_round_trips_both_key_generations_without_event_bodies() {
+        let call_id = "checkpoint-call-id-must-be-digested";
+        let secret = "event-body-secret-must-not-survive";
+        let checkpoint = checkpoint(call_id);
+
+        let bytes = checkpoint.encode().unwrap();
+        assert_eq!(CodexSemanticCheckpoint::decode(&bytes).unwrap(), checkpoint);
+        assert!(!String::from_utf8_lossy(&bytes).contains(call_id));
+        assert!(!String::from_utf8_lossy(&bytes).contains(secret));
+
+        let compact = checkpoint.encode_key().unwrap();
+        assert!(matches!(compact, TypedKey::Utf8(_)));
+        assert_eq!(
+            CodexSemanticCheckpoint::decode_key(&compact).unwrap(),
+            checkpoint
+        );
+        let legacy = TypedKey::bytes(bytes).unwrap();
+        assert_eq!(
+            CodexSemanticCheckpoint::decode_key(&legacy).unwrap(),
+            checkpoint
+        );
+    }
+
+    #[test]
+    fn semantic_codec_rejects_malformed_unknown_version_duplicate_and_oversize() {
+        let checkpoint = checkpoint("codec-rejection-call");
+        assert!(CodexSemanticCheckpoint::decode(b"{").is_err());
+        assert!(CodexSemanticCheckpoint::decode_key(&TypedKey::U64(1)).is_err());
+
+        let mut unknown = serde_json::to_value(&checkpoint).unwrap();
+        unknown["unknown"] = json!(true);
+        assert!(CodexSemanticCheckpoint::decode(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+        let mut version = serde_json::to_value(&checkpoint).unwrap();
+        version["version"] = json!(CODEX_SEMANTIC_CHECKPOINT_VERSION + 1);
+        assert!(CodexSemanticCheckpoint::decode(&serde_json::to_vec(&version).unwrap()).is_err());
+
+        let mut malformed_digest = serde_json::to_value(&checkpoint).unwrap();
+        malformed_digest["pending_tool_authorities"][0]["call_id_sha256"] = json!("not-base64");
+        assert!(
+            CodexSemanticCheckpoint::decode(&serde_json::to_vec(&malformed_digest).unwrap())
+                .is_err()
+        );
+
+        let mut duplicate_pending = serde_json::to_value(&checkpoint).unwrap();
+        let duplicate = duplicate_pending["pending_tool_authorities"][0].clone();
+        duplicate_pending["pending_tool_authorities"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert!(
+            CodexSemanticCheckpoint::decode(&serde_json::to_vec(&duplicate_pending).unwrap())
+                .is_err()
+        );
+
+        let mut duplicate_terminal = checkpoint.clone();
+        duplicate_terminal
+            .terminal_authority
+            .mcp_call_ids
+            .push(duplicate_terminal.terminal_authority.mcp_call_ids[0]);
+        assert!(
+            CodexSemanticCheckpoint::decode(&serde_json::to_vec(&duplicate_terminal).unwrap())
+                .is_err()
+        );
+
+        assert!(CodexSemanticCheckpoint::decode(&vec![
+            b' ';
+            MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES + 1
+        ])
+        .is_err());
+        let mut oversized = checkpoint;
+        oversized.owner.cwd = Some("x".repeat(MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES));
+        assert!(oversized.encode().is_err());
+        assert!(oversized.encode_key().is_err());
+    }
+
+    #[test]
+    fn semantic_codec_sheds_only_pending_evidence_at_the_combined_bounds() {
+        let mut pending = (0..MAX_CODEX_TOOL_CONTEXTS)
+            .map(|index| {
+                let mut authority = CodexPendingToolAuthority::new(
+                    &format!("pending-{index}"),
+                    u64::try_from(index * 2 + 1).unwrap(),
+                    u64::try_from(index * 2 + 2).unwrap(),
+                    u64::try_from(index).unwrap(),
+                    CodexInvocationOriginV0::Unproven,
+                );
+                authority.continuation_cell_id = Some(format!(
+                    "cell-{index:02}-{}",
+                    "x".repeat(MAX_CODEX_CONTINUATION_CELL_ID_BYTES - 8)
+                ));
+                authority.continuation_call_id_sha256 = (0..MAX_CODEX_TOOL_CONTEXTS)
+                    .map(|digest| {
+                        let mut value = [u8::try_from(digest + 1).unwrap(); 32];
+                        value[0] = u8::try_from(index + 1).unwrap();
+                        value
+                    })
+                    .collect();
+                authority
+            })
+            .collect::<Vec<_>>();
+        let terminal = CodexTerminalAuthorityCheckpoint {
+            mcp_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
+            result_call_ids: terminal_entries(MAX_CODEX_MCP_TERMINAL_AUTHORITIES),
+            mcp_exhausted: false,
+            result_exhausted: false,
+        };
+        let repository = CodexRepositoryCandidateAuthorityCheckpoint {
+            entries: repository_entries(MAX_CODEX_REPOSITORY_CANDIDATE_AUTHORITIES),
+            exhausted: false,
+        };
+        let checkpoint = CodexSemanticCheckpoint::new(
+            &pending,
+            terminal.clone(),
+            repository.clone(),
+            owner(),
+            true,
+        )
+        .unwrap();
+        assert!(checkpoint.pending_tool_authorities.len() < pending.len());
+        pending.truncate(checkpoint.pending_tool_authorities.len());
+        assert_eq!(checkpoint.pending_tool_authorities, pending);
+        assert_eq!(checkpoint.terminal_authority, terminal);
+        assert_eq!(checkpoint.repository_candidate_authority, repository);
+        assert!(checkpoint.encode().unwrap().len() <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES);
+    }
 }
