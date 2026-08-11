@@ -83,6 +83,9 @@ install_ubuntu_tools() {
   local missing_packages=()
   local package
   for package in "${required_packages[@]}"; do
+    if [[ "${package}" == "npm" ]] && command -v npm >/dev/null 2>&1; then
+      continue
+    fi
     if ! dpkg-query -W -f='${Status}\n' "${package}" 2>/dev/null \
       | grep -Fqx 'install ok installed'; then
       missing_packages+=("${package}")
