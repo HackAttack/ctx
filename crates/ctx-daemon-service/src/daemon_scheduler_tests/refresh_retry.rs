@@ -345,9 +345,19 @@ fn failed_attached_demand_is_terminal_replayable_and_never_executes_a_successor(
             .into())
         },
     )));
-    coordinator.enqueue_for_test(None);
-    let logical_request_id = uuid::Uuid::from_u128(0x294_0001).to_string();
     let authority = ctx_history_refresh::explicit_source_catalog_authority_for_test(7);
+    let predecessor_request_id = uuid::Uuid::from_u128(0x294_0000).to_string();
+    let predecessor = coordinator
+        .enqueue_fresh_catalog_demand_for_test(
+            &data_root,
+            None,
+            predecessor_request_id.clone(),
+            authority.clone(),
+        )
+        .expect("exhaustive predecessor");
+    assert_eq!(predecessor["request_id"], predecessor_request_id);
+    assert_eq!(predecessor["reconciliation_demand"], "exhaustive");
+    let logical_request_id = uuid::Uuid::from_u128(0x294_0001).to_string();
 
     let (iteration, attached) = std::thread::scope(|scope| {
         let scheduler_coordinator = Arc::clone(&coordinator);
