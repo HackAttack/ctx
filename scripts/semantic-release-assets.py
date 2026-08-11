@@ -8,9 +8,11 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import stat
 import tarfile
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import BinaryIO
 
@@ -19,6 +21,7 @@ SCHEMA_VERSION = 1
 MODEL_VERSION = "1.0.0"
 MODEL_ID = "intfloat/multilingual-e5-small"
 MODEL_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+MODEL_REVISION_URL = f"https://huggingface.co/{MODEL_ID}/resolve/{MODEL_REVISION}"
 MODEL_MAX_EXPANDED_BYTES = 768 * 1024 * 1024
 MODEL_PATHS = (
     "LICENSE",
@@ -30,6 +33,10 @@ MODEL_PATHS = (
     "tokenizer_config.json",
 )
 COMMON_MODEL_FILES = {
+    "LICENSE": (
+        1_104,
+        "904dc4d8749877f1dba1cda48200d2462dccbeb7c134d5e4ef6fa75e0198c8fe",
+    ),
     "config.json": (
         655,
         "69137736cab8b8903a07fe8afaafdda25aac55415a12a55d1bffa9f581abf959",
@@ -51,12 +58,14 @@ MODEL_VARIANTS = {
     "cpu-fp32": {
         "asset_id": "onnx_model",
         "artifact": "ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz",
+        "upstream_onnx": "onnx/model.onnx",
         "onnx_size": 470_268_510,
         "onnx_sha256": "ca456c06b3a9505ddfd9131408916dd79290368331e7d76bb621f1cba6bc8665",
     },
     "accelerator-o4-fp16": {
         "asset_id": "onnx_model_o4_fp16",
         "artifact": "ctx-multilingual-e5-small-onnx-o4-fp16-1.0.0.tar.xz",
+        "upstream_onnx": "onnx/model_O4.onnx",
         "onnx_size": 235_052_531,
         "onnx_sha256": "4654c156f3e4171abc9c716cdb771bf9116455d15ac1aab364aeeede0e3205b0",
     },
@@ -105,9 +114,46 @@ WINDOWS_ML_FILES = (
 COREML_ARCHIVE_SHA256 = (
     "94c6fac5c4250079401d383adf1b10270fe5d370f2091dbad17bf4823222321e"
 )
+COREML_ARCHIVE_SIZE = 423_600_648
 COREML_MANIFEST_SHA256 = (
     "576c68756563333fdf442e6859f2392ca0065b09a2cb5d73983e30de75df1ad6"
 )
+COREML_ARCHIVE_NAME = "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz"
+COREML_ARCHIVE_URL = (
+    "https://cli.ctx.rs/storage/v1/object/public/releases/artifacts/"
+    + COREML_ARCHIVE_NAME
+)
+COREML_ARCHIVE_ROOT = COREML_ARCHIVE_NAME.removesuffix(".tar.xz")
+COREML_SOURCE_PATHS = {
+    "tokenizer": "tokenizer.json",
+    "document_model": "document.mlpackage",
+    "query_model": "query.mlpackage",
+    "model_license": "LICENSES/MODEL_LICENSE.txt",
+}
+COREML_MAX_DIRECTORIES = 1_024
+MODEL_LICENSE = (
+    "The MIT License (MIT)\r\n"
+    "\r\n"
+    "Copyright (c) Microsoft Corporation\r\n"
+    "\r\n"
+    "Permission is hereby granted, free of charge, to any person obtaining a copy\r\n"
+    'of this software and associated documentation files (the "Software"), to deal\r\n'
+    "in the Software without restriction, including without limitation the rights\r\n"
+    "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\r\n"
+    "copies of the Software, and to permit persons to whom the Software is\r\n"
+    "furnished to do so, subject to the following conditions:\r\n"
+    "\r\n"
+    "The above copyright notice and this permission notice shall be included in all\r\n"
+    "copies or substantial portions of the Software.\r\n"
+    "\r\n"
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\r\n'
+    "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\r\n"
+    "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\r\n"
+    "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\r\n"
+    "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\r\n"
+    "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\r\n"
+    "SOFTWARE.\r\n"
+).encode("ascii")
 EXPECTED_ASSETS = {
     "onnx_model": {
         "role": "model",
@@ -142,9 +188,9 @@ EXPECTED_ASSETS = {
         "backend": "coreml",
         "version": MODEL_VERSION,
         "platform": "macos-arm64",
-        "artifact": "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz",
+        "artifact": COREML_ARCHIVE_NAME,
         "archive_format": "tar.xz",
-        "archive_path_prefix": "ctx-multilingual-e5-small-coreml-fp16-1.0.0",
+        "archive_path_prefix": COREML_ARCHIVE_ROOT,
         "max_expanded_bytes": 2_147_483_648,
         "max_files": 4096,
         "files": None,
@@ -269,6 +315,38 @@ def sha256_file(path: Path, maximum: int = 2 * 1024 * 1024 * 1024) -> tuple[int,
         os.close(descriptor)
 
 
+def download_exact_url(
+    url: str, destination: Path, expected_size: int, expected_sha256: str
+) -> None:
+    if destination.exists() or destination.is_symlink():
+        raise AssetError(f"refusing to replace existing download: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with urllib.request.urlopen(url, timeout=300) as response, destination.open(
+            "xb"
+        ) as output:
+            while block := response.read(1024 * 1024):
+                size += len(block)
+                if size > expected_size:
+                    raise AssetError(
+                        f"download exceeds pinned size for {url}: {size} > {expected_size}"
+                    )
+                digest.update(block)
+                output.write(block)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    actual_sha256 = digest.hexdigest()
+    if (size, actual_sha256) != (expected_size, expected_sha256):
+        destination.unlink(missing_ok=True)
+        raise AssetError(
+            f"pinned download mismatch for {url}: expected "
+            f"{expected_size}/{expected_sha256}, got {size}/{actual_sha256}"
+        )
+
+
 def validate_relative_path(value: str) -> None:
     if (
         not value
@@ -354,10 +432,6 @@ def verify_model_source(source: Path, variant: str) -> None:
     metadata = source.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise AssetError(f"model source is not a real directory: {source}")
-    license_path = source / "LICENSE"
-    license_size, _ = sha256_file(license_path, 4 * 1024 * 1024)
-    if license_size == 0:
-        raise AssetError("model LICENSE must not be empty")
     for relative, expected in model_required_files(variant).items():
         size, digest = sha256_file(source.joinpath(*relative.split("/")))
         if (size, digest) != expected:
@@ -365,6 +439,39 @@ def verify_model_source(source: Path, variant: str) -> None:
                 f"pinned model file mismatch for {relative}: "
                 f"expected {expected[0]}/{expected[1]}, got {size}/{digest}"
             )
+
+
+def prepare_model_source(args: argparse.Namespace) -> None:
+    selected = MODEL_VARIANTS[args.variant]
+    if args.output_dir.exists() or args.output_dir.is_symlink():
+        raise AssetError(f"model source output already exists: {args.output_dir}")
+    args.output_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{args.output_dir.name}.prepare.", dir=args.output_dir.parent
+    ) as temporary:
+        source = Path(temporary) / "source"
+        source.mkdir()
+        for relative, expected in COMMON_MODEL_FILES.items():
+            destination = source.joinpath(*relative.split("/"))
+            if relative == "LICENSE":
+                destination.write_bytes(MODEL_LICENSE)
+                continue
+            download_exact_url(
+                f"{MODEL_REVISION_URL}/{relative}",
+                destination,
+                expected[0],
+                expected[1],
+            )
+        onnx_expected = (selected["onnx_size"], selected["onnx_sha256"])
+        download_exact_url(
+            f"{MODEL_REVISION_URL}/{selected['upstream_onnx']}",
+            source / "onnx" / "model.onnx",
+            onnx_expected[0],
+            onnx_expected[1],
+        )
+        verify_model_source(source, args.variant)
+        os.replace(source, args.output_dir)
+    print(f"source={args.output_dir}")
 
 
 def add_tar_directory(bundle: tarfile.TarFile, name: str) -> None:
@@ -464,6 +571,137 @@ def canonical_tar_name(raw: str) -> str:
     name = raw[:-1] if directory else raw
     validate_relative_path(name)
     return name
+
+
+def extract_coreml_archive(archive: Path, destination: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        raise AssetError(f"Core ML extraction output already exists: {destination}")
+    destination.mkdir(mode=0o700)
+    try:
+        with tarfile.open(archive, "r:xz") as bundle:
+            folded: set[str] = set()
+            total = 0
+            files = 0
+            root_seen = False
+            for index, member in enumerate(bundle):
+                if index >= EXPECTED_ASSETS["apple_coreml"]["max_files"] + COREML_MAX_DIRECTORIES:
+                    raise AssetError("Core ML archive contains too many entries")
+                name = canonical_tar_name(member.name)
+                if name != COREML_ARCHIVE_ROOT and not name.startswith(
+                    f"{COREML_ARCHIVE_ROOT}/"
+                ):
+                    raise AssetError(f"Core ML archive path is outside its root: {name}")
+                relative = (
+                    "" if name == COREML_ARCHIVE_ROOT else name[len(COREML_ARCHIVE_ROOT) + 1 :]
+                )
+                key = relative.casefold()
+                if key in folded:
+                    raise AssetError(
+                        f"duplicate or case-colliding Core ML archive path: {name}"
+                    )
+                folded.add(key)
+                if not relative:
+                    if not member.isdir():
+                        raise AssetError("Core ML archive root is not a directory")
+                    root_seen = True
+                    continue
+                output_path = destination.joinpath(*relative.split("/"))
+                if member.isdir():
+                    output_path.mkdir(parents=True, exist_ok=True, mode=0o755)
+                    continue
+                if not member.isfile():
+                    raise AssetError(f"unsupported Core ML archive entry: {name}")
+                files += 1
+                total += member.size
+                if (
+                    member.size <= 0
+                    or files > EXPECTED_ASSETS["apple_coreml"]["max_files"]
+                    or total > EXPECTED_ASSETS["apple_coreml"]["max_expanded_bytes"]
+                ):
+                    raise AssetError("Core ML archive exceeds its extraction limits")
+                source = bundle.extractfile(member)
+                if source is None:
+                    raise AssetError(f"could not read Core ML archive entry: {relative}")
+                output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+                size = 0
+                with source, output_path.open("xb") as output:
+                    while block := source.read(1024 * 1024):
+                        size += len(block)
+                        if size > member.size:
+                            raise AssetError(
+                                f"Core ML archive entry exceeds its header: {relative}"
+                            )
+                        output.write(block)
+                if size != member.size:
+                    raise AssetError(f"truncated Core ML archive entry: {relative}")
+                output_path.chmod(0o644)
+            if not root_seen:
+                raise AssetError("Core ML archive is missing its root directory")
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+
+def coreml_source_paths(source: Path) -> dict[str, Path]:
+    manifest_path = source / "manifest.json"
+    _, manifest_sha256 = sha256_file(manifest_path, 1024 * 1024)
+    if manifest_sha256 != COREML_MANIFEST_SHA256:
+        raise AssetError("Core ML source manifest does not match its publication pin")
+    manifest = json.loads(
+        manifest_path.read_bytes(), object_pairs_hook=reject_duplicate_json_keys
+    )
+    expected_artifacts = {
+        key: relative
+        for key, relative in COREML_SOURCE_PATHS.items()
+        if key != "model_license"
+    }
+    if manifest.get("artifacts") != expected_artifacts:
+        raise AssetError("Core ML manifest does not name the exact prepared inputs")
+    model = manifest.get("model")
+    if (
+        manifest.get("bundle_id") != "ctx.multilingual-e5-small.coreml.fp16"
+        or manifest.get("bundle_version") != MODEL_VERSION
+        or not isinstance(model, dict)
+        or model.get("id") != MODEL_ID
+        or model.get("source_revision") != MODEL_REVISION
+    ):
+        raise AssetError("Core ML manifest does not match the pinned model authority")
+
+    paths = {
+        name: source.joinpath(*relative.split("/"))
+        for name, relative in COREML_SOURCE_PATHS.items()
+    }
+    for name in ("tokenizer", "model_license"):
+        metadata = paths[name].lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise AssetError(f"Core ML {name} is not a regular file")
+    for name in ("document_model", "query_model"):
+        metadata = paths[name].lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise AssetError(f"Core ML {name} is not a real directory")
+    return paths
+
+
+def prepare_coreml_source(args: argparse.Namespace) -> None:
+    if args.output_dir.exists() or args.output_dir.is_symlink():
+        raise AssetError(f"Core ML source output already exists: {args.output_dir}")
+    args.output_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{args.output_dir.name}.prepare.", dir=args.output_dir.parent
+    ) as temporary:
+        staging = Path(temporary)
+        archive = staging / COREML_ARCHIVE_NAME
+        download_exact_url(
+            COREML_ARCHIVE_URL,
+            archive,
+            COREML_ARCHIVE_SIZE,
+            COREML_ARCHIVE_SHA256,
+        )
+        source = staging / "source"
+        extract_coreml_archive(archive, source)
+        coreml_source_paths(source)
+        os.replace(source, args.output_dir)
+    print(f"source={args.output_dir}")
 
 
 def validate_model_archive(archive: Path, variant: str) -> list[dict[str, object]]:
@@ -895,6 +1133,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
+    prepare_model = commands.add_parser("prepare-model")
+    prepare_model.add_argument(
+        "--variant", choices=tuple(MODEL_VARIANTS), required=True
+    )
+    prepare_model.add_argument("--output-dir", type=Path, required=True)
+    prepare_model.set_defaults(run=prepare_model_source)
+
+    prepare_coreml = commands.add_parser("prepare-coreml")
+    prepare_coreml.add_argument("--output-dir", type=Path, required=True)
+    prepare_coreml.set_defaults(run=prepare_coreml_source)
+
     build = commands.add_parser("build-model")
     build.add_argument("--variant", choices=tuple(MODEL_VARIANTS), required=True)
     build.add_argument("--source", type=Path, required=True)
@@ -931,7 +1180,12 @@ def main() -> None:
     args = parse_args()
     try:
         args.run(args)
-    except (AssetError, OSError, tarfile.TarError, json.JSONDecodeError) as error:
+    except (
+        AssetError,
+        OSError,
+        tarfile.TarError,
+        json.JSONDecodeError,
+    ) as error:
         raise SystemExit(f"error: {error}") from error
 
 
