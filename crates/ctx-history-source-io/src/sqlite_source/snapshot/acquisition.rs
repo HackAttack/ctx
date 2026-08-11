@@ -2,37 +2,49 @@ use super::*;
 
 pub(super) struct AcquiredSqliteConnection {
     pub(super) connection: Connection,
-    #[cfg(any(test, feature = "test-support"))]
     pub(super) strategy: SqliteSourceSnapshotStrategy,
-    #[cfg(any(test, feature = "test-support"))]
     pub(super) copied_bytes: u64,
     pub(super) snapshot_directory: Option<TempDir>,
-    pub(super) snapshot_activity: SqliteSourceSnapshotActivity,
-}
-
-pub(super) struct CopiedFamilyIntegrity {
-    pub(super) database_digest: [u8; 32],
-    pub(super) wal_digest: Option<[u8; 32]>,
+    pub(super) snapshot_activity: Option<SqliteSourceSnapshotActivity>,
+    pub(super) scratch: Arc<SqliteRouteScratch>,
 }
 
 impl AcquiredSqliteConnection {
-    pub(super) fn cleanup(self) -> SqliteSourceAccessResult<()> {
+    pub(super) fn finalize_accounting(
+        &mut self,
+        snapshot_context: &Arc<SqliteSourceSnapshotContext>,
+    ) -> SqliteSourceAccessResult<u64> {
+        let retained_bytes = self
+            .snapshot_directory
+            .as_ref()
+            .map_or(Ok(0), |directory| {
+                measure_private_snapshot_bytes(directory.path(), self.scratch.maximum_bytes)
+            })?;
+        self.scratch.set_retained_bytes(retained_bytes)?;
+        if self.copied_bytes != 0 {
+            snapshot_context.record_source_bytes_copied(self.copied_bytes)?;
+        }
+        self.snapshot_activity = Some(snapshot_context.record_open(self.strategy, retained_bytes)?);
+        Ok(retained_bytes)
+    }
+
+    pub(super) fn cleanup(mut self) -> SqliteSourceAccessResult<()> {
         let artifact = if self.snapshot_directory.is_some() {
             SqliteArtifactKind::PrivateSourceCopy
         } else {
-            SqliteArtifactKind::PrivateScratch
+            SqliteArtifactKind::ProviderDatabase
         };
         let close = close_private_sqlite_connection(
             self.connection,
             "closing a rejected SQLite source snapshot",
             artifact,
             0,
-            0,
+            self.copied_bytes,
         );
-        let cleanup = self.snapshot_directory.map_or(Ok(()), |directory| {
-            close_private_snapshot_directory(directory, artifact, 0, 0)
+        let cleanup = self.snapshot_directory.take().map_or(Ok(()), |directory| {
+            close_private_snapshot_directory(directory, artifact, 0, self.copied_bytes)
         });
-        drop(self.snapshot_activity);
+        drop(self.snapshot_activity.take());
         match (close, cleanup) {
             (_, Err(error)) | (Err(error), Ok(())) => Err(error),
             (Ok(()), Ok(())) => Ok(()),
@@ -42,7 +54,6 @@ impl AcquiredSqliteConnection {
     pub(super) fn diagnose_validation_error(
         &self,
         error: SqliteSourceAccessError,
-        copied_bytes: u64,
     ) -> SqliteSourceAccessError {
         let artifact = if self.snapshot_directory.is_some() {
             SqliteArtifactKind::PrivateSourceCopy
@@ -54,7 +65,7 @@ impl AcquiredSqliteConnection {
                 SqliteFailurePhase::SourceValidation,
                 artifact,
                 0,
-                copied_bytes,
+                self.copied_bytes,
                 SqliteCleanupStatus::NotRequired,
             )
             .with_exact_provider_content_provenance()
@@ -65,14 +76,16 @@ impl SqliteSourceReadSnapshot {
     /// Explicitly closes a snapshot that cannot proceed to publication.
     /// Drop remains a defensive second attempt for unwind safety.
     pub fn abort(mut self) -> SqliteSourceAccessResult<()> {
+        self.snapshot_context.record_explicit_abort();
+        self.explicitly_completed = true;
         self.cleanup_snapshot_storage()
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
+    static FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_NEXT_SCRATCH_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -81,64 +94,67 @@ pub fn fail_next_opened_snapshot_cleanup_for_test() {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub fn fail_next_snapshot_write_enospc_for_test() {
+    FAIL_NEXT_SCRATCH_WRITE.with(|fail| fail.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn take_opened_snapshot_cleanup_failure_for_test() -> bool {
     FAIL_NEXT_OPENED_SNAPSHOT_CLEANUP.with(|fail| fail.replace(false))
 }
 
-pub(super) fn acquire_sqlite_connection(
-    data_root: &Path,
+#[cfg(any(test, feature = "test-support"))]
+fn take_snapshot_write_failure_for_test() -> bool {
+    FAIL_NEXT_SCRATCH_WRITE.with(|fail| fail.replace(false))
+}
+
+pub(super) fn acquire_sqlite_connection_with_progress<E>(
     snapshot_context: &Arc<SqliteSourceSnapshotContext>,
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
+    allow_immutable: bool,
+    source_limit: u64,
+    scratch_limit: u64,
     after_database_copy: impl FnOnce(),
-) -> SqliteSourceAccessResult<AcquiredSqliteConnection> {
-    if family.wal.is_none() && family.shared_memory.is_none() {
+    report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
+) -> Result<AcquiredSqliteConnection, SqliteSourceProgressError<E>> {
+    let scratch = SqliteRouteScratch::new(snapshot_context, scratch_limit);
+    let copied_bytes = enforce_snapshot_copy_bounds_with_limit(family, evidence, source_limit)?;
+    if allow_immutable && family.wal.is_none() && family.shared_memory.is_none() {
         #[cfg(target_os = "linux")]
         if immutable_procfd_available(family.database.file()) {
-            let connection = open_immutable_main(&family.database)?;
-            let snapshot_activity = match snapshot_context
-                .record_open(SqliteSourceSnapshotStrategy::ImmutableMain, 0)
-            {
-                Ok(activity) => activity,
-                Err(error) => {
-                    return match close_private_sqlite_connection(
-                        connection,
-                        "closing an untracked immutable SQLite snapshot",
-                        SqliteArtifactKind::PrivateScratch,
-                        0,
-                        0,
-                    ) {
-                        Ok(()) => Err(error),
-                        Err(cleanup) => Err(cleanup),
-                    };
-                }
-            };
             return Ok(AcquiredSqliteConnection {
-                connection,
-                #[cfg(any(test, feature = "test-support"))]
+                connection: open_immutable_main(&family.database)?,
                 strategy: SqliteSourceSnapshotStrategy::ImmutableMain,
-                #[cfg(any(test, feature = "test-support"))]
                 copied_bytes: 0,
                 snapshot_directory: None,
-                snapshot_activity,
+                snapshot_activity: None,
+                scratch,
             });
         }
     }
 
-    let copied_bytes = enforce_snapshot_copy_bounds(family, evidence)?;
-    let (snapshot_directory, snapshot_path, integrity) =
-        copy_sqlite_family_to_ctx(data_root, family, evidence, after_database_copy)?;
-    if let Err(error) = certify_private_source_copy(&snapshot_path, &integrity, copied_bytes) {
-        return match close_private_snapshot_directory(
-            snapshot_directory,
-            SqliteArtifactKind::PrivateSourceCopy,
-            0,
-            copied_bytes,
-        ) {
-            Ok(()) => Err(error.with_cleanup_status(SqliteCleanupStatus::Succeeded)),
-            Err(cleanup) => Err(cleanup),
-        };
-    }
+    let coordination_reserve = if evidence.wal.as_ref().is_some_and(|wal| wal.length != 0) {
+        SQLITE_SHM_MAX_BYTES
+    } else {
+        0
+    };
+    let admitted_capacity = copied_bytes
+        .checked_add(coordination_reserve)
+        .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
+            path: family.database.path.clone(),
+            length: u64::MAX,
+            maximum: scratch_limit,
+        })?;
+    scratch.admit_capacity(admitted_capacity)?;
+    let (snapshot_directory, snapshot_path) = copy_sqlite_family_to_ctx_with_progress(
+        snapshot_context.data_root.as_path(),
+        family,
+        evidence,
+        scratch_limit,
+        after_database_copy,
+        report_progress,
+    )?;
     let connection = Connection::open_with_flags(
         &snapshot_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -166,62 +182,20 @@ pub(super) fn acquire_sqlite_connection(
                 0,
                 copied_bytes,
             ) {
-                Ok(()) => Err(error.with_cleanup_status(SqliteCleanupStatus::Succeeded)),
-                Err(cleanup) => Err(cleanup),
-            };
-        }
-    };
-    if let Err(error) = snapshot_context.record_source_bytes_copied(copied_bytes) {
-        let close = close_private_sqlite_connection(
-            connection,
-            "closing an unaccounted SQLite source snapshot",
-            SqliteArtifactKind::PrivateSourceCopy,
-            0,
-            copied_bytes,
-        );
-        let cleanup = close_private_snapshot_directory(
-            snapshot_directory,
-            SqliteArtifactKind::PrivateSourceCopy,
-            0,
-            copied_bytes,
-        );
-        return match (close, cleanup) {
-            (_, Err(cleanup)) | (Err(cleanup), Ok(())) => Err(cleanup),
-            (Ok(()), Ok(())) => Err(error),
-        };
-    }
-    let snapshot_activity = match snapshot_context
-        .record_open(SqliteSourceSnapshotStrategy::CopiedFamily, copied_bytes)
-    {
-        Ok(activity) => activity,
-        Err(error) => {
-            let close = close_private_sqlite_connection(
-                connection,
-                "closing an untracked SQLite source snapshot",
-                SqliteArtifactKind::PrivateSourceCopy,
-                0,
-                copied_bytes,
-            );
-            let cleanup = close_private_snapshot_directory(
-                snapshot_directory,
-                SqliteArtifactKind::PrivateSourceCopy,
-                0,
-                copied_bytes,
-            );
-            return match (close, cleanup) {
-                (_, Err(cleanup)) | (Err(cleanup), Ok(())) => Err(cleanup),
-                (Ok(()), Ok(())) => Err(error),
+                Ok(()) => Err(error
+                    .with_cleanup_status(SqliteCleanupStatus::Succeeded)
+                    .into()),
+                Err(cleanup) => Err(cleanup.into()),
             };
         }
     };
     Ok(AcquiredSqliteConnection {
         connection,
-        #[cfg(any(test, feature = "test-support"))]
         strategy: SqliteSourceSnapshotStrategy::CopiedFamily,
-        #[cfg(any(test, feature = "test-support"))]
         copied_bytes,
         snapshot_directory: Some(snapshot_directory),
-        snapshot_activity,
+        snapshot_activity: None,
+        scratch,
     })
 }
 
@@ -254,23 +228,14 @@ pub(super) fn open_immutable_main(
     .map_err(|source| sqlite_error("opening the retained immutable provider database", source))
 }
 
-pub(super) fn enforce_snapshot_copy_bounds(
-    family: &SqliteSourceFamily,
-    evidence: &SqliteFamilyEvidence,
-) -> SqliteSourceAccessResult<u64> {
-    enforce_snapshot_copy_bounds_with_limit(family, evidence, SQLITE_SNAPSHOT_MAX_TOTAL_BYTES)
-}
-
 pub(super) fn enforce_snapshot_copy_bounds_with_limit(
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
     scratch_limit: u64,
 ) -> SqliteSourceAccessResult<u64> {
-    // The family total is authoritative: main and WAL may consume any share,
-    // but every observed byte from both members must fit and be copied.
     let mut total = evidence.database.length;
     match (family.wal.as_ref(), evidence.wal.as_ref()) {
-        (Some(_wal), Some(state)) => {
+        (Some(_), Some(state)) => {
             total = total.checked_add(state.length).ok_or_else(|| {
                 SqliteSourceAccessError::SnapshotTooLarge {
                     path: family.database.path.clone(),
@@ -292,40 +257,31 @@ pub(super) fn enforce_snapshot_copy_bounds_with_limit(
     Ok(total)
 }
 
-fn copy_sqlite_family_to_ctx(
-    data_root: &Path,
-    family: &SqliteSourceFamily,
-    evidence: &SqliteFamilyEvidence,
-    after_database_copy: impl FnOnce(),
-) -> SqliteSourceAccessResult<(TempDir, PathBuf, CopiedFamilyIntegrity)> {
-    match copy_sqlite_family_to_ctx_with_progress(
-        data_root,
-        family,
-        evidence,
-        after_database_copy,
-        &mut |_| Ok::<(), std::convert::Infallible>(()),
-    ) {
-        Ok(copied) => Ok(copied),
-        Err(SqliteSourceProgressError::Source(error)) => Err(error),
-        Err(SqliteSourceProgressError::Progress(never)) => match never {},
-    }
-}
-
 pub(super) fn copy_sqlite_family_to_ctx_with_progress<E>(
     data_root: &Path,
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
+    scratch_limit: u64,
     after_database_copy: impl FnOnce(),
     report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
-) -> Result<(TempDir, PathBuf, CopiedFamilyIntegrity), SqliteSourceProgressError<E>> {
-    let total_bytes = enforce_snapshot_copy_bounds(family, evidence)?;
+) -> Result<(TempDir, PathBuf), SqliteSourceProgressError<E>> {
+    let total_bytes = enforce_snapshot_copy_bounds_with_limit(family, evidence, scratch_limit)?;
     let mut completed_bytes = 0;
     let mut last_reported_bytes = 0;
     report_source_family_copy_progress(report_progress, completed_bytes, total_bytes)?;
     let directory = create_snapshot_directory(data_root, "provider-sqlite-snapshot-")?;
     let snapshot_path = directory.path().join("source.sqlite");
     let operation = (|| {
-        let database_digest = copy_sqlite_member_with_progress(
+        #[cfg(any(test, feature = "test-support"))]
+        if take_snapshot_write_failure_for_test() {
+            return Err(SqliteSourceAccessError::ScratchIoUnavailable {
+                operation: "writing a private SQLite source-family copy",
+                path: snapshot_path.clone(),
+                source: injected_storage_full_error(),
+            }
+            .into());
+        }
+        copy_sqlite_member_with_progress(
             &family.database,
             &snapshot_path,
             evidence.database.length,
@@ -336,8 +292,8 @@ pub(super) fn copy_sqlite_family_to_ctx_with_progress<E>(
         )?;
         after_database_copy();
         family.revalidate(evidence)?;
-        let wal_digest = match (family.wal.as_ref(), evidence.wal.as_ref()) {
-            (Some(wal), Some(state)) => Some(copy_sqlite_member_with_progress(
+        match (family.wal.as_ref(), evidence.wal.as_ref()) {
+            (Some(wal), Some(state)) => copy_sqlite_member_with_progress(
                 wal,
                 &directory.path().join("source.sqlite-wal"),
                 state.length,
@@ -345,37 +301,78 @@ pub(super) fn copy_sqlite_family_to_ctx_with_progress<E>(
                 &mut last_reported_bytes,
                 total_bytes,
                 report_progress,
-            )?),
-            (None, None) => None,
+            )?,
+            (None, None) => {}
             _ => return Err(SqliteSourceAccessError::SourceChanged.into()),
-        };
+        }
         if completed_bytes != total_bytes {
             return Err(SqliteSourceAccessError::SourceChanged.into());
         }
         family.revalidate(evidence)?;
-        Ok(CopiedFamilyIntegrity {
-            database_digest,
-            wal_digest,
-        })
+        Ok(())
     })();
-    let integrity = match operation {
-        Ok(integrity) => integrity,
-        Err(error) => {
-            return match close_private_snapshot_directory(
-                directory,
-                SqliteArtifactKind::PrivateSourceCopy,
-                0,
-                completed_bytes,
-            ) {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(cleanup.into()),
+    match operation {
+        Ok(()) => Ok((directory, snapshot_path)),
+        Err(error) => match close_private_snapshot_directory(
+            directory,
+            SqliteArtifactKind::PrivateSourceCopy,
+            0,
+            completed_bytes,
+        ) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(cleanup.into()),
+        },
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn injected_storage_full_error() -> std::io::Error {
+    std::io::Error::from(std::io::ErrorKind::StorageFull)
+}
+
+fn measure_private_snapshot_bytes(directory: &Path, maximum: u64) -> SqliteSourceAccessResult<u64> {
+    let mut total = 0_u64;
+    for name in [
+        "source.sqlite",
+        "source.sqlite-wal",
+        "source.sqlite-shm",
+        "source.sqlite-journal",
+    ] {
+        let path = directory.join(name);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(SqliteSourceAccessError::ScratchIoUnavailable {
+                    operation: "measuring private SQLite route scratch",
+                    path,
+                    source,
+                })
             }
+        };
+        if !metadata.file_type().is_file() {
+            return Err(SqliteSourceAccessError::UnsafeFile {
+                path,
+                reason: "private SQLite scratch artifact must be a regular file",
+            });
         }
-    };
-    // SHM is lock coordination, not provider content. Copying it would retain
-    // volatile reader marks. Stock SQLite rebuilds it only in this ctx-owned
-    // directory from the certified DB/WAL pair.
-    Ok((directory, snapshot_path, integrity))
+        total = total.checked_add(metadata.len()).ok_or_else(|| {
+            SqliteSourceAccessError::SnapshotTooLarge {
+                path: directory.to_path_buf(),
+                length: u64::MAX,
+                maximum,
+            }
+        })?;
+    }
+    if total > maximum {
+        Err(SqliteSourceAccessError::SnapshotTooLarge {
+            path: directory.to_path_buf(),
+            length: total,
+            maximum,
+        })
+    } else {
+        Ok(total)
+    }
 }
 
 pub(super) fn create_snapshot_directory(
@@ -390,15 +387,14 @@ pub(super) fn create_snapshot_directory(
             source,
         }
     })?;
-    let directory = tempfile::Builder::new()
+    tempfile::Builder::new()
         .prefix(prefix)
         .tempdir_in(&staging_root)
         .map_err(|source| SqliteSourceAccessError::ScratchIoUnavailable {
             operation: "creating a private provider SQLite snapshot",
             path: staging_root,
             source,
-        })?;
-    Ok(directory)
+        })
 }
 
 pub fn close_private_snapshot_directory(

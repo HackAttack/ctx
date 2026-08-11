@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     ffi::OsStr,
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -8,10 +7,7 @@ use std::{
 };
 
 use rusqlite::{limits::Limit, Connection};
-use serde_json::json;
 use sha2::{Digest, Sha256};
-
-use ctx_history_core::compute_payload_hash;
 
 use crate::{
     observe_ordinary_file, open_ordinary_file_without_following,
@@ -20,125 +16,6 @@ use crate::{
     SqliteSourceReadSnapshot,
 };
 use crate::{Result, SourceIoError, MAX_PROVIDER_SQLITE_VALUE_BYTES};
-
-pub fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool> {
-    let exists: i64 = conn.query_row(
-        "select count(*) from sqlite_schema where type = 'table' and name = ?1",
-        [table],
-        |row| row.get(0),
-    )?;
-    Ok(exists > 0)
-}
-
-pub fn sqlite_table_columns(conn: &Connection, table: &str) -> Result<BTreeSet<String>> {
-    let mut stmt = conn.prepare(&format!("pragma table_info({})", sqlite_ident(table)))?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    rows.collect::<std::result::Result<BTreeSet<_>, _>>()
-        .map_err(SourceIoError::from)
-}
-
-pub fn optional_column_expr<'a>(
-    columns: &BTreeSet<String>,
-    column: &'a str,
-    fallback: &'a str,
-) -> &'a str {
-    if columns.contains(column) {
-        column
-    } else {
-        fallback
-    }
-}
-
-pub fn optional_text_column_expr(
-    columns: &BTreeSet<String>,
-    column: &str,
-    fallback: &str,
-) -> String {
-    if columns.contains(column) {
-        format!("CAST({column} AS TEXT)")
-    } else {
-        fallback.to_owned()
-    }
-}
-
-pub fn optional_timestamp_millis_expr(
-    columns: &BTreeSet<String>,
-    column: &str,
-    fallback: &str,
-) -> String {
-    if !columns.contains(column) {
-        return fallback.to_owned();
-    }
-    let text = format!("trim(CAST({column} AS TEXT))");
-    let numeric_body = format!(
-        "CASE WHEN substr({text}, 1, 1) IN ('+', '-') THEN substr({text}, 2) ELSE {text} END"
-    );
-    let numeric_value = format!(
-        "CASE WHEN abs(CAST({column} AS REAL)) < 100000000000 \
-         THEN CAST(ROUND(CAST({column} AS REAL) * 1000) AS INTEGER) \
-         ELSE CAST(ROUND(CAST({column} AS REAL)) AS INTEGER) END"
-    );
-    format!(
-        "CASE WHEN {column} IS NULL THEN NULL \
-         WHEN typeof({column}) IN ('integer', 'real') THEN {numeric_value} \
-         WHEN {numeric_body} != '' \
-              AND {numeric_body} != '.' \
-              AND {numeric_body} NOT GLOB '*[^0-9.]*' \
-              AND length({numeric_body}) - length(replace({numeric_body}, '.', '')) <= 1 \
-         THEN {numeric_value} \
-         ELSE CAST(ROUND(unixepoch({column}, 'subsec') * 1000) AS INTEGER) END"
-    )
-}
-
-pub fn ensure_sqlite_table_columns(
-    columns: &BTreeSet<String>,
-    label: &str,
-    required: &[&str],
-) -> Result<()> {
-    let missing = required
-        .iter()
-        .copied()
-        .filter(|column| !columns.contains(*column))
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(SourceIoError::InvalidPayload(format!(
-            "{label} missing required column(s): {}",
-            missing.join(", ")
-        )))
-    }
-}
-
-pub fn sqlite_ident(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-/// Temporarily lifts SQLite's value-length limit for metadata-only preflight queries.
-///
-/// The provider limit is restored exactly when this guard is dropped, including while
-/// unwinding. Raw value hydration must run after the guard leaves scope.
-#[must_use = "the SQLite length limit is restored when this guard is dropped"]
-pub struct SqliteLengthPreflightGuard<'connection> {
-    conn: &'connection Connection,
-    prior_limit: i32,
-}
-
-impl<'connection> SqliteLengthPreflightGuard<'connection> {
-    pub fn new(conn: &'connection Connection) -> Self {
-        Self {
-            conn,
-            prior_limit: conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, i32::MAX),
-        }
-    }
-}
-
-impl Drop for SqliteLengthPreflightGuard<'_> {
-    fn drop(&mut self) {
-        self.conn
-            .set_limit(Limit::SQLITE_LIMIT_LENGTH, self.prior_limit);
-    }
-}
 
 const SQLITE_COMPONENT_TOKEN_DOMAIN: &[u8] = b"ctx-provider-sqlite-component-v1\0";
 const SQLITE_HEADER_BYTES: usize = 100;
@@ -276,7 +153,6 @@ fn read_sqlite_source_evidence(data_root: &Path, path: &Path) -> Result<SqliteSo
 
 struct RootAuthorizedProviderSqliteSnapshot {
     snapshot: Option<SqliteSourceReadSnapshot>,
-    authority_root: ProviderSourceRoot,
 }
 
 impl RootAuthorizedProviderSqliteSnapshot {
@@ -293,12 +169,8 @@ impl RootAuthorizedProviderSqliteSnapshot {
         snapshot
             .revalidate()
             .map_err(map_sqlite_source_access_error_to_io)?;
-        // Retain a second route authority around the already-open snapshot so
-        // ancestor replacement is fenced independently from DB-family checks.
-        let authority_root = ProviderSourceRoot::open(parent_path)?;
         Ok(Self {
             snapshot: Some(snapshot),
-            authority_root,
         })
     }
 
@@ -316,24 +188,9 @@ impl RootAuthorizedProviderSqliteSnapshot {
         let snapshot = self.snapshot.take().ok_or(SourceIoError::SystemInvariant(
             "provider SQLite source snapshot is inactive",
         ))?;
-        let finish = snapshot
+        snapshot
             .finish()
-            .map_err(map_sqlite_source_access_error_to_io);
-        let root_revalidation = self.authority_root.revalidate();
-        match (finish, root_revalidation) {
-            (Ok(evidence), Ok(())) => Ok(evidence),
-            (Err(error), _) => Err(error),
-            (_, Err(error)) => Err(error),
-        }
-    }
-}
-
-impl Drop for RootAuthorizedProviderSqliteSnapshot {
-    fn drop(&mut self) {
-        if let Some(snapshot) = self.snapshot.take() {
-            let _ = snapshot.finish();
-            let _ = self.authority_root.revalidate();
-        }
+            .map_err(map_sqlite_source_access_error_to_io)
     }
 }
 
@@ -374,7 +231,6 @@ impl ReadOnlySqliteConnection {
             .connection()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn finish(mut self) -> Result<SqliteSourceEvidence> {
         self.snapshot
             .take()
@@ -392,14 +248,6 @@ impl Deref for ReadOnlySqliteConnection {
         match self.connection() {
             Ok(connection) => connection,
             Err(_) => inactive_readonly_sqlite_connection(),
-        }
-    }
-}
-
-impl Drop for ReadOnlySqliteConnection {
-    fn drop(&mut self) {
-        if let Some(snapshot) = self.snapshot.take() {
-            let _ = snapshot.finish();
         }
     }
 }
@@ -455,41 +303,19 @@ fn map_sqlite_source_access_error_to_io(error: SqliteSourceAccessError) -> Sourc
     }
 }
 
-pub fn sqlite_schema_fingerprint(conn: &Connection) -> Result<String> {
-    let mut stmt = conn.prepare(
-        "select name, sql from sqlite_schema where type in ('table','index') order by name",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let name: String = row.get(0)?;
-        let sql: Option<String> = row.get(1)?;
-        Ok(format!("{name}:{}", sql.unwrap_or_default()))
-    })?;
-    let schema = rows.collect::<std::result::Result<Vec<_>, _>>()?.join("\n");
-    Ok(compute_payload_hash(&json!({ "schema": schema }))?)
-}
-
 #[cfg(any(test, feature = "test-support"))]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        ffi::OsString,
-        fs,
-        panic::{catch_unwind, AssertUnwindSafe},
-        path::Path,
-    };
+    use std::{collections::BTreeMap, ffi::OsString, fs, path::Path};
 
     #[cfg(target_os = "linux")]
     use rusqlite::config::DbConfig;
-    use rusqlite::{limits::Limit, params, types::Value as SqlValue, Connection};
+    use rusqlite::Connection;
 
     use super::{
-        open_provider_sqlite_readonly, optional_text_column_expr, optional_timestamp_millis_expr,
-        BTreeSet, ProviderSqliteSourceSnapshot, SqliteLengthPreflightGuard, SqliteSourceEvidence,
+        open_provider_sqlite_readonly, ProviderSqliteSourceSnapshot, SqliteSourceEvidence,
     };
     #[cfg(target_os = "linux")]
     use crate::Result;
-
-    const TEST_LENGTH_LIMIT: i32 = 16 * 1024;
 
     fn directory_file_bytes(path: &Path) -> BTreeMap<OsString, Vec<u8>> {
         fs::read_dir(path)
@@ -499,13 +325,6 @@ mod tests {
                 (entry.file_name(), fs::read(entry.path()).unwrap())
             })
             .collect()
-    }
-
-    fn connection_with_test_length_limit() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, TEST_LENGTH_LIMIT);
-        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), TEST_LENGTH_LIMIT);
-        conn
     }
 
     #[cfg(target_os = "linux")]
@@ -540,55 +359,6 @@ mod tests {
         before_finish();
         let evidence = connection.finish()?;
         Ok((body, evidence))
-    }
-
-    #[test]
-    fn length_preflight_guard_restores_exact_prior_limit_after_success() {
-        let conn = connection_with_test_length_limit();
-        {
-            let _guard = SqliteLengthPreflightGuard::new(&conn);
-            let value: i64 = conn.query_row("SELECT 1", [], |row| row.get(0)).unwrap();
-            assert_eq!(value, 1);
-            assert!(conn.limit(Limit::SQLITE_LIMIT_LENGTH) > TEST_LENGTH_LIMIT);
-        }
-        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), TEST_LENGTH_LIMIT);
-    }
-
-    #[test]
-    fn length_preflight_guard_restores_exact_prior_limit_after_sqlite_error() {
-        let conn = connection_with_test_length_limit();
-        let result = {
-            let _guard = SqliteLengthPreflightGuard::new(&conn);
-            conn.query_row::<i64, _, _>("SELECT missing FROM missing_table", [], |row| row.get(0))
-        };
-        assert!(result.is_err());
-        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), TEST_LENGTH_LIMIT);
-    }
-
-    #[test]
-    fn length_preflight_guard_restores_nested_prior_limits() {
-        let conn = connection_with_test_length_limit();
-        let outer_guard = SqliteLengthPreflightGuard::new(&conn);
-        let raised_limit = conn.limit(Limit::SQLITE_LIMIT_LENGTH);
-        assert!(raised_limit > TEST_LENGTH_LIMIT);
-        {
-            let _inner_guard = SqliteLengthPreflightGuard::new(&conn);
-            assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), raised_limit);
-        }
-        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), raised_limit);
-        drop(outer_guard);
-        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), TEST_LENGTH_LIMIT);
-    }
-
-    #[test]
-    fn length_preflight_guard_restores_exact_prior_limit_while_unwinding() {
-        let conn = connection_with_test_length_limit();
-        let unwind = catch_unwind(AssertUnwindSafe(|| {
-            let _guard = SqliteLengthPreflightGuard::new(&conn);
-            panic!("exercise SQLite length preflight guard drop");
-        }));
-        assert!(unwind.is_err());
-        assert_eq!(conn.limit(Limit::SQLITE_LIMIT_LENGTH), TEST_LENGTH_LIMIT);
     }
 
     #[cfg(target_os = "linux")]
@@ -787,96 +557,6 @@ mod tests {
         assert!(
             result.is_err(),
             "the retained parent route must be revalidated before returning the value"
-        );
-    }
-
-    #[test]
-    fn optional_sqlite_casts_normalize_native_text_and_timestamp_shapes() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute("CREATE TABLE samples (position INTEGER, value)", [])
-            .unwrap();
-        let samples = [
-            (SqlValue::Integer(1_783_653_514), Some(1_783_653_514_000)),
-            (SqlValue::Real(1_783_653_514.491), Some(1_783_653_514_491)),
-            (
-                SqlValue::Integer(1_783_653_514_491),
-                Some(1_783_653_514_491),
-            ),
-            (SqlValue::Real(1_783_653_514_491.0), Some(1_783_653_514_491)),
-            (SqlValue::Text("1783653514".into()), Some(1_783_653_514_000)),
-            (
-                SqlValue::Text("+1783653514".into()),
-                Some(1_783_653_514_000),
-            ),
-            (SqlValue::Text("-1.25".into()), Some(-1_250)),
-            (
-                SqlValue::Text("1783653514.491".into()),
-                Some(1_783_653_514_491),
-            ),
-            (
-                SqlValue::Text("1783653514491".into()),
-                Some(1_783_653_514_491),
-            ),
-            (
-                SqlValue::Text("0001783653514".into()),
-                Some(1_783_653_514_000),
-            ),
-            (
-                SqlValue::Text("2026-07-10T03:18:34.491Z".into()),
-                Some(1_783_653_514_491),
-            ),
-            (
-                SqlValue::Text("2026-07-10T05:48:34.491+02:30".into()),
-                Some(1_783_653_514_491),
-            ),
-            (SqlValue::Text("not-a-timestamp".into()), None),
-            (SqlValue::Text("  ".into()), None),
-            (SqlValue::Null, None),
-        ];
-        for (position, (value, _)) in samples.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO samples VALUES (?1, ?2)",
-                params![position as i64, value],
-            )
-            .unwrap();
-        }
-
-        let columns = BTreeSet::from(["value".to_owned()]);
-        let timestamp = optional_timestamp_millis_expr(&columns, "value", "NULL");
-        let sql = format!("SELECT {timestamp} FROM samples ORDER BY position");
-        let actual = conn
-            .prepare(&sql)
-            .unwrap()
-            .query_map([], |row| row.get::<_, Option<i64>>(0))
-            .unwrap()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(
-            actual,
-            samples
-                .iter()
-                .map(|(_, expected)| *expected)
-                .collect::<Vec<_>>()
-        );
-
-        let text = optional_text_column_expr(&columns, "value", "NULL");
-        let value: String = conn
-            .query_row(
-                &format!("SELECT {text} FROM samples WHERE position = 0"),
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(value, "1783653514");
-
-        let missing = BTreeSet::new();
-        assert_eq!(
-            optional_timestamp_millis_expr(&missing, "value", "fallback"),
-            "fallback"
-        );
-        assert_eq!(
-            optional_text_column_expr(&missing, "value", "fallback"),
-            "fallback"
         );
     }
 }

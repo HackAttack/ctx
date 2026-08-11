@@ -430,23 +430,27 @@ impl NanoClawDatabaseRead {
         expected.revalidate()
     }
 
-    pub(super) fn finish(mut self, expected: &NanoClawProjectDatabaseSnapshot) -> Result<()> {
-        if let Self::RootBound {
-            path,
-            route,
-            opened,
-            guard,
-        } = &mut self
-        {
-            guard
-                .take()
-                .ok_or(CaptureError::SystemInvariant(
-                    "NanoClaw root-bound SQLite guard is no longer active",
-                ))?
-                .finish()
-                .map_err(|error| nanoclaw_sqlite_access_error(path, error))?;
-            opened.revalidate()?;
-            route.revalidate_authority()?;
+    pub(super) fn finish(self, expected: &NanoClawProjectDatabaseSnapshot) -> Result<()> {
+        match self {
+            Self::Pathname(connection) => {
+                connection.finish()?;
+            }
+            Self::RootBound {
+                path,
+                route,
+                opened,
+                mut guard,
+            } => {
+                guard
+                    .take()
+                    .ok_or(CaptureError::SystemInvariant(
+                        "NanoClaw root-bound SQLite guard is no longer active",
+                    ))?
+                    .finish()
+                    .map_err(|error| nanoclaw_sqlite_access_error(&path, error))?;
+                opened.revalidate()?;
+                route.revalidate_authority()?;
+            }
         }
         if expected.revalidate()? {
             Ok(())

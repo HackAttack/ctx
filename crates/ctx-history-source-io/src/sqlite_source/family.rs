@@ -38,11 +38,11 @@ impl SqliteSourceFamily {
     pub(super) fn open(
         authority: &SqliteSourceDirectoryAuthority,
         database_name: &OsStr,
-        after_parent_certification: impl FnOnce(),
+        after_parent_retention: impl FnOnce(),
     ) -> SqliteSourceAccessResult<Self> {
         validate_database_leaf(database_name)?;
         authority.revalidate()?;
-        after_parent_certification();
+        after_parent_retention();
         let retained_authority = authority.clone();
         let database_path = authority.path.join(database_name);
         let database = SqliteFamilyMember::open(
@@ -158,60 +158,6 @@ impl SqliteSourceFamily {
         })
     }
 
-    /// Revalidates the authorized SQLite family topology without treating
-    /// ordinary writes to retained members as source replacement.
-    ///
-    /// Logical-online-backup snapshots admit a SQLite read view, so DB/WAL/SHM
-    /// metadata and bytes may advance after that view is pinned. The pathname
-    /// topology may not: every member that existed at admission must still
-    /// resolve to the same retained object, absent members must remain absent,
-    /// and rollback journals remain unavailable. This closes named-open and
-    /// checkpoint replacement races while allowing same-object WAL growth.
-    pub(super) fn revalidate_logical_identity(
-        &self,
-        expected: &SqliteFamilyEvidence,
-    ) -> SqliteSourceAccessResult<()> {
-        #[cfg(any(test, feature = "test-support"))]
-        let _ =
-            self.revalidation_count
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                    Some(count.saturating_add(1))
-                });
-        self.authority.revalidate()?;
-        if self.authority.identity != expected.parent_identity {
-            return Err(SqliteSourceAccessError::SourceChanged);
-        }
-        self.database
-            .revalidate_identity(&self.authority, &expected.database.identity)?;
-        revalidate_optional_member_identity(
-            &self.authority,
-            self.wal.as_ref(),
-            expected.wal.as_ref(),
-            &self.wal_name,
-            &self.wal_path,
-            None,
-        )?;
-        revalidate_optional_member_identity(
-            &self.authority,
-            self.shared_memory.as_ref(),
-            expected.shared_memory.as_ref(),
-            &self.shared_memory_name,
-            &self.shared_memory_path,
-            Some(SQLITE_SHM_MAX_BYTES),
-        )?;
-        if SqliteFamilyMember::open_optional(
-            &self.authority,
-            self.journal_name.clone(),
-            self.journal_path.clone(),
-        )
-        .map_err(map_revalidation_error)?
-        .is_some()
-        {
-            return Err(SqliteSourceAccessError::SourceChanged);
-        }
-        Ok(())
-    }
-
     /// Revalidates the exact bounded DB/WAL revision used to admit a durable
     /// no-op replay. SHM bytes remain excluded because SQLite mutates reader
     /// coordination there, but its object identity and size bound remain
@@ -248,11 +194,10 @@ impl SqliteSourceFamily {
         Ok(())
     }
 
-    /// Revalidates only the durable source identity after a private logical
-    /// backup has been certified. WAL/SHM creation, checkpoint removal, and
-    /// recreation are normal writer lifecycle after that point and cannot
-    /// change the retained backup that will be published.
-    pub(super) fn revalidate_logical_database_identity(
+    /// Revalidates only the retained database's physical identity after one
+    /// stable private copy has been acquired. WAL/SHM lifecycle cannot alter
+    /// that already-private copy.
+    pub(super) fn revalidate_database_identity(
         &self,
         expected: &SqliteFamilyEvidence,
     ) -> SqliteSourceAccessResult<()> {
@@ -721,16 +666,6 @@ impl SqliteFamilyEvidence {
 }
 
 impl SqliteSnapshotEvidence {
-    pub(super) fn same_database_view(&self, other: &Self) -> bool {
-        // SQLite's backup API may advance the destination schema cookie so an
-        // already-open destination connection reloads its schema. The provider
-        // user/application versions and exact page inventory remain stable.
-        self.schema.user_version == other.schema.user_version
-            && self.schema.application_id == other.schema.application_id
-            && self.source.page_count == other.source.page_count
-            && self.source.freelist_count == other.source.freelist_count
-    }
-
     fn hash_into(&self, digest: &mut Sha256) {
         digest.update(self.schema.schema_version.to_le_bytes());
         digest.update(self.schema.user_version.to_le_bytes());

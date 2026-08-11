@@ -11,7 +11,7 @@ fn leaf_swap_between_admission_and_stock_open_is_fail_closed() {
     create_database(&attacker, "attacker");
     let parent = retain_parent(temp.path());
 
-    let result = open_root_handle_sqlite_source_snapshot_for_test(
+    let result = open_root_handle_sqlite_source_snapshot_before_revalidation_for_test(
         &parent,
         OsStr::new("provider.sqlite"),
         || {
@@ -33,10 +33,9 @@ fn symlink_database_is_rejected_before_sqlite_open() {
     let parent = retain_parent(temp.path());
 
     let result = open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite"));
-    assert!(matches!(
-        result,
-        Err(SqliteSourceAccessError::UnsafeFile { .. })
-    ));
+    assert!(
+        matches!(result, Err(ref error) if matches!(physical_error(error), SqliteSourceAccessError::UnsafeFile { .. }))
+    );
 }
 
 #[cfg(unix)]
@@ -51,10 +50,9 @@ fn symlink_sidecar_is_rejected_before_sqlite_open() {
     let parent = retain_parent(temp.path());
 
     let result = open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite"));
-    assert!(matches!(
-        result,
-        Err(SqliteSourceAccessError::UnsafeFile { .. })
-    ));
+    assert!(
+        matches!(result, Err(ref error) if matches!(physical_error(error), SqliteSourceAccessError::UnsafeFile { .. }))
+    );
 }
 
 #[test]
@@ -64,10 +62,9 @@ fn nonregular_database_is_rejected_before_sqlite_open() {
     let parent = retain_parent(temp.path());
 
     let result = open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite"));
-    assert!(matches!(
-        result,
-        Err(SqliteSourceAccessError::UnsafeFile { .. })
-    ));
+    assert!(
+        matches!(result, Err(ref error) if matches!(physical_error(error), SqliteSourceAccessError::UnsafeFile { .. }))
+    );
 }
 
 #[test]
@@ -79,10 +76,9 @@ fn nonregular_sidecar_is_rejected_before_sqlite_open() {
     let parent = retain_parent(temp.path());
 
     let result = open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite"));
-    assert!(matches!(
-        result,
-        Err(SqliteSourceAccessError::UnsafeFile { .. })
-    ));
+    assert!(
+        matches!(result, Err(ref error) if matches!(physical_error(error), SqliteSourceAccessError::UnsafeFile { .. }))
+    );
 }
 
 #[test]
@@ -98,11 +94,11 @@ fn rollback_journal_is_typed_unavailable_without_recovery() {
     let parent = retain_parent(temp.path());
 
     let result = open_root_handle_sqlite_source_snapshot(&parent, OsStr::new("provider.sqlite"));
-    assert!(matches!(
-        result,
-        Err(SqliteSourceAccessError::UnsupportedSidecarIdentity {
+    assert!(matches!(result, Err(ref error) if matches!(
+        physical_error(error),
+        SqliteSourceAccessError::UnsupportedSidecarIdentity {
             component: SqliteSourceComponent::RollbackJournal,
             ..
-        })
-    ));
+        }
+    )));
 }

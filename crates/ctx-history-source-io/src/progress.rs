@@ -1,14 +1,12 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqliteSourceProgressStage {
     SourceFamilyCopy,
-    OnlineBackup,
 }
 
 impl SqliteSourceProgressStage {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SourceFamilyCopy => "source_family_copy",
-            Self::OnlineBackup => "online_backup",
         }
     }
 }

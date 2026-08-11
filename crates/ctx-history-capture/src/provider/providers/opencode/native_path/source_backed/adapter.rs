@@ -71,7 +71,6 @@ pub(super) struct OpenCodeSqliteWorkCounters {
     pub(super) snapshot_opens: u64,
     pub(super) immutable_snapshot_opens: u64,
     pub(super) copied_snapshot_opens: u64,
-    pub(super) logical_online_backup_opens: u64,
     pub(super) source_bytes_copied: u64,
     pub(super) schema_probe_passes: u64,
     pub(super) schema_event_validation_traversals: u64,
@@ -481,11 +480,9 @@ fn finalize_work_counters(
         .map_err(|_| source_internal("OpenCode-family work counter lock was poisoned"))?;
     work.immutable_snapshot_opens = snapshot.immutable_snapshot_opens();
     work.copied_snapshot_opens = snapshot.copied_snapshot_opens();
-    work.logical_online_backup_opens = snapshot.logical_online_backup_opens();
     work.snapshot_opens = work
         .immutable_snapshot_opens
         .checked_add(work.copied_snapshot_opens)
-        .and_then(|opens| opens.checked_add(work.logical_online_backup_opens))
         .ok_or_else(|| source_internal("OpenCode-family snapshot open count overflowed"))?;
     work.source_bytes_copied = snapshot.source_bytes_copied();
     work.terminal_fences = snapshot.terminal_fences();
@@ -495,7 +492,8 @@ fn finalize_work_counters(
     work.exact_replays = u64::from(exact_replay);
     let counters = *work;
     if counters.snapshot_opens != 1
-        || counters.logical_online_backup_opens != 1
+        || counters.immutable_snapshot_opens != 0
+        || counters.copied_snapshot_opens != 1
         || counters.schema_probe_passes != 1
         || counters.logical_fingerprint_passes != 0
         || counters.terminal_fences != 1

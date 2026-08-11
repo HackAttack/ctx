@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ffi::OsString, fs, time::Duration};
+use std::{collections::BTreeMap, ffi::OsString, fs, io::Write, time::Duration};
 
 use rusqlite::Connection;
 
@@ -385,7 +385,11 @@ fn sqlite_probe_rejects_source_mutation_during_structural_query() {
                 [],
                 |row| row.get::<_, bool>(0),
             )?;
-            Connection::open(&path)?.pragma_update(None, "user_version", 7)?;
+            let before_length = fs::metadata(&path).unwrap().len();
+            let mut source = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            source.write_all(&[0]).unwrap();
+            source.sync_all().unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().len(), before_length + 1);
             Ok(present)
         });
     assert_eq!(outcome, BoundedProbe::IoError);
@@ -405,17 +409,19 @@ fn sidecar_free_sqlite_probe_leaves_the_provider_directory_unchanged() {
     let before_directory = directory_file_bytes(temp.path());
     assert!(!before_directory.contains_key(&OsString::from("sidecar-free.db-wal")));
     assert!(!before_directory.contains_key(&OsString::from("sidecar-free.db-shm")));
-    let components = sqlite_probe_components(&path, SQLITE_PROBE_MAX_TOTAL_BYTES).unwrap();
-
-    let database = open_sqlite_probe_database(Some(data.path()), &path, &components).unwrap();
-    assert!(database
-        .connection()
-        .query_row("select exists(select 1 from sqlite_schema)", [], |row| row
-            .get::<_, bool>(
-            0
-        ))
-        .unwrap());
-    drop(database);
+    assert_eq!(
+        sqlite_structural_probe(
+            Some(data.path()),
+            &path,
+            SqliteProbeLimits::default(),
+            |connection| connection.query_row(
+                "select exists(select 1 from sqlite_schema)",
+                [],
+                |row| row.get::<_, bool>(0),
+            ),
+        ),
+        BoundedProbe::Found
+    );
     assert_eq!(sqlite_component_bytes(&path), before);
     assert_eq!(directory_file_bytes(temp.path()), before_directory);
     assert!(!path.with_file_name("sidecar-free.db-wal").exists());

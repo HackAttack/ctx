@@ -10,7 +10,7 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
     last_reported_bytes: &mut u64,
     total_bytes: u64,
     report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
-) -> Result<[u8; 32], SqliteSourceProgressError<E>> {
+) -> Result<(), SqliteSourceProgressError<E>> {
     let mut source_file =
         member
             .file()
@@ -38,7 +38,6 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
         })?;
     let mut remaining = expected_length;
     let mut buffer = [0_u8; SQLITE_COPY_BUFFER_BYTES];
-    let mut digest = Sha256::new();
     while remaining > 0 {
         let requested = usize::try_from(remaining.min(buffer.len() as u64))
             .map_err(|_| SqliteSourceAccessError::SourceChanged)?;
@@ -59,7 +58,6 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
                 path: destination.to_path_buf(),
                 source,
             })?;
-        digest.update(&buffer[..read]);
         remaining -= read as u64;
         *completed_bytes = completed_bytes.checked_add(read as u64).ok_or_else(|| {
             SqliteSourceAccessError::SnapshotUnavailable {
@@ -93,7 +91,7 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
             path: destination.to_path_buf(),
             source,
         })?;
-    Ok(digest.finalize().into())
+    Ok(())
 }
 
 pub(super) fn report_source_family_copy_progress<E>(

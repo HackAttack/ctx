@@ -10,8 +10,6 @@ pub enum SqliteSourceComponent {
 pub enum SqliteFailurePhase {
     SourceAcquisition,
     SourceValidation,
-    OnlineBackup,
-    BackupValidation,
     Schema,
     Projection,
     Cleanup,
@@ -22,8 +20,6 @@ impl SqliteFailurePhase {
         match self {
             Self::SourceAcquisition => "source_acquisition",
             Self::SourceValidation => "source_validation",
-            Self::OnlineBackup => "online_backup",
-            Self::BackupValidation => "backup_validation",
             Self::Schema => "schema",
             Self::Projection => "projection",
             Self::Cleanup => "cleanup",
@@ -37,7 +33,6 @@ pub enum SqliteArtifactKind {
     ProviderWal,
     ProviderSharedMemory,
     PrivateSourceCopy,
-    PrivateBackup,
     PrivateScratch,
 }
 
@@ -48,29 +43,7 @@ impl SqliteArtifactKind {
             Self::ProviderWal => "provider_wal",
             Self::ProviderSharedMemory => "provider_shm",
             Self::PrivateSourceCopy => "private_source_copy",
-            Self::PrivateBackup => "private_backup",
             Self::PrivateScratch => "private_scratch",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqliteRetryDecision {
-    DoNotRetry,
-    DoNotRetryCorrupt,
-    RetryBusyOrLocked,
-    RetrySourceTransition,
-    RouteFatalResource,
-}
-
-impl SqliteRetryDecision {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::DoNotRetry => "do_not_retry",
-            Self::DoNotRetryCorrupt => "do_not_retry_corrupt",
-            Self::RetryBusyOrLocked => "retry_busy_or_locked",
-            Self::RetrySourceTransition => "retry_source_transition",
-            Self::RouteFatalResource => "route_fatal_resource",
         }
     }
 }
@@ -108,7 +81,6 @@ pub struct SqliteFailureDiagnostic {
     pub sqlite_extended_code: Option<i32>,
     pub copied_pages: u64,
     pub copied_bytes: u64,
-    pub retry: SqliteRetryDecision,
     pub cleanup: SqliteCleanupStatus,
 }
 
@@ -116,14 +88,13 @@ impl std::fmt::Display for SqliteFailureDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "sqlite_phase={} artifact_kind={} sqlite_primary_code={} sqlite_extended_code={} copied_pages={} copied_bytes={} retry_decision={} cleanup_status={}",
+            "sqlite_phase={} artifact_kind={} sqlite_primary_code={} sqlite_extended_code={} copied_pages={} copied_bytes={} cleanup_status={}",
             self.phase.as_str(),
             self.artifact.as_str(),
             self.sqlite_primary_code.map_or_else(|| "none".to_owned(), |code| code.to_string()),
             self.sqlite_extended_code.map_or_else(|| "none".to_owned(), |code| code.to_string()),
             self.copied_pages,
             self.copied_bytes,
-            self.retry.as_str(),
             self.cleanup.as_str(),
         )
     }
@@ -209,6 +180,14 @@ pub enum SqliteSourceAccessError {
         length: u64,
         maximum: u64,
     },
+    #[error(
+        "provider SQLite scratch has insufficient free-space headroom for {path:?}: required {required}, available {available}"
+    )]
+    InsufficientScratchSpace {
+        path: PathBuf,
+        required: u64,
+        available: u64,
+    },
     #[error("SQLite source snapshot is unavailable: {reason}")]
     SnapshotUnavailable { reason: String },
     #[error("SQLite {component} is unavailable: {capability}")]
@@ -243,7 +222,8 @@ impl SqliteSourceAccessError {
             }
             Self::Io { path, .. }
             | Self::ResourceUnavailable { path, .. }
-            | Self::SnapshotTooLarge { path, .. } => {
+            | Self::SnapshotTooLarge { path, .. }
+            | Self::InsufficientScratchSpace { path, .. } => {
                 let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
                 if name.ends_with("-wal") {
                     SqliteArtifactKind::ProviderWal
@@ -265,6 +245,7 @@ impl SqliteSourceAccessError {
                 | Self::ScratchIoUnavailable { .. }
                 | Self::CleanupUnavailable { .. }
                 | Self::SnapshotTooLarge { .. }
+                | Self::InsufficientScratchSpace { .. }
         ) || matches!(self, Self::Io { source, .. } if resource_exhaustion_io_error(source))
             || matches!(self, Self::Sqlite { source, .. } if rusqlite_resource_failure(source))
             || matches!(self, Self::SqliteControl { code, .. } if sqlite_resource_code(*code))
@@ -276,10 +257,7 @@ impl SqliteSourceAccessError {
             Self::ProviderContentCorruption { .. } => false,
             Self::Diagnosed { diagnostic, source } => {
                 !source.is_provider_corruption()
-                    && matches!(
-                        diagnostic.artifact,
-                        SqliteArtifactKind::PrivateSourceCopy | SqliteArtifactKind::PrivateBackup
-                    )
+                    && matches!(diagnostic.artifact, SqliteArtifactKind::PrivateSourceCopy)
                     && matches!(
                         diagnostic.sqlite_primary_code,
                         Some(ffi::SQLITE_CORRUPT) | Some(ffi::SQLITE_NOTADB)
@@ -375,19 +353,6 @@ impl SqliteSourceAccessError {
         cleanup: SqliteCleanupStatus,
     ) -> Self {
         let (primary, extended) = self.sqlite_codes();
-        let retry = if self.is_systemic_resource_failure() {
-            SqliteRetryDecision::RouteFatalResource
-        } else if matches!(self, Self::SourceChanged) {
-            SqliteRetryDecision::RetrySourceTransition
-        } else if matches!(primary, Some(code) if code == ffi::SQLITE_CORRUPT || code == ffi::SQLITE_NOTADB)
-        {
-            SqliteRetryDecision::DoNotRetryCorrupt
-        } else if matches!(primary, Some(code) if code == ffi::SQLITE_BUSY || code == ffi::SQLITE_LOCKED)
-        {
-            SqliteRetryDecision::RetryBusyOrLocked
-        } else {
-            SqliteRetryDecision::DoNotRetry
-        };
         Self::Diagnosed {
             diagnostic: SqliteFailureDiagnostic {
                 phase,
@@ -396,7 +361,6 @@ impl SqliteSourceAccessError {
                 sqlite_extended_code: extended,
                 copied_pages,
                 copied_bytes,
-                retry,
                 cleanup,
             },
             source: Box::new(self),
@@ -482,11 +446,10 @@ impl SqliteSourceReadSnapshot {
         source: rusqlite::Error,
         phase: SqliteFailurePhase,
     ) -> SqliteSourceAccessError {
-        let artifact = match self.policy {
-            SqliteSourceSnapshotPolicy::StrictPhysicalFamily => {
-                SqliteArtifactKind::PrivateSourceCopy
-            }
-            SqliteSourceSnapshotPolicy::LogicalOnlineBackup => SqliteArtifactKind::PrivateBackup,
+        let artifact = if self._snapshot_directory.is_some() {
+            SqliteArtifactKind::PrivateSourceCopy
+        } else {
+            SqliteArtifactKind::ProviderDatabase
         };
         let copied_bytes = self
             .evidence
@@ -500,10 +463,10 @@ impl SqliteSourceReadSnapshot {
             SqliteCleanupStatus::NotRequired,
         );
         match self.policy {
-            SqliteSourceSnapshotPolicy::StrictPhysicalFamily => {
+            SqliteSourceSnapshotPolicy::ExactRevision => {
                 error.with_exact_provider_content_provenance()
             }
-            SqliteSourceSnapshotPolicy::LogicalOnlineBackup => error,
+            SqliteSourceSnapshotPolicy::StablePrivateCopy => error,
         }
     }
 }

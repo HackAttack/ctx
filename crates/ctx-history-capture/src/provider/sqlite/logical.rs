@@ -6,15 +6,13 @@ use sha2::{Digest, Sha256};
 const LOGICAL_REVISION_DOMAIN: &[u8] = b"ctx-sqlite-logical-snapshot-v1\0";
 const LOGICAL_REVISION_KIND: &str = "sqlite-logical-snapshot-v1";
 
-/// The provider-facing logical snapshot from one pinned SQLite transaction.
+/// Provider-owned logical evidence derived from one physical SQLite snapshot.
 ///
-/// Adapters supply only parser/schema evidence, a digest of the selected
-/// logical rows, and their counts. Physical DB/WAL evidence belongs to
-/// acquisition and is deliberately absent here. The resulting observation is
-/// stable across checkpointing, sidecar removal, page-layout changes, and
-/// `VACUUM` when the relevant schema and rows are unchanged.
+/// Physical DB/WAL acquisition and lifetime stay in `ctx-history-source-io`;
+/// parser revision, schema admission, projected rows, and Core certification
+/// remain capture policy here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SqliteLogicalSnapshot {
+pub(crate) struct SqliteLogicalSnapshot {
     parser_revision: String,
     content_digest: [u8; 32],
     counts: ScannedSourceCounts,
@@ -22,7 +20,7 @@ pub struct SqliteLogicalSnapshot {
 }
 
 impl SqliteLogicalSnapshot {
-    pub fn new(
+    pub(crate) fn new(
         parser_revision: impl Into<String>,
         schema_evidence: &[u8],
         logical_row_digest: [u8; 32],
@@ -43,7 +41,10 @@ impl SqliteLogicalSnapshot {
         }
     }
 
-    pub fn certify(&self, source: SourceKey) -> Result<CertifiedSource, ProjectionContractError> {
+    pub(crate) fn certify(
+        &self,
+        source: SourceKey,
+    ) -> Result<CertifiedSource, ProjectionContractError> {
         let observation =
             SourceObservation::new(source, LOGICAL_REVISION_KIND, self.revision.to_vec())?;
         CertifiedSource::certify(
@@ -70,7 +71,7 @@ fn hash_bytes(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 mod tests {
     use ctx_history_core::{CaptureProvider, SourceAnchor, TypedKey};
 

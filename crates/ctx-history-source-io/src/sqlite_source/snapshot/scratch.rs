@@ -34,7 +34,11 @@ impl SqliteSourceReadSnapshot {
         E: From<SqliteSourceAccessError>,
     {
         self.connection().map_err(E::from)?;
-        let maximum_pages = maximum_bytes / SQLITE_PRIVATE_SCRATCH_PAGE_BYTES;
+        let reservation = self
+            ._scratch
+            .reserve_transient(maximum_bytes)
+            .map_err(E::from)?;
+        let maximum_pages = reservation.maximum_bytes() / SQLITE_PRIVATE_SCRATCH_PAGE_BYTES;
         let maximum_pages = i64::try_from(maximum_pages).map_err(|_| {
             E::from(SqliteSourceAccessError::SnapshotUnavailable {
                 reason: "the private SQLite scratch page limit is not representable".to_owned(),
@@ -160,6 +164,19 @@ impl SqliteSourceReadSnapshot {
             }
             use_scratch(&connection, &scratch_path)
         })();
+        let exact_scratch_bytes = std::fs::metadata(&scratch_path)
+            .map_err(|source| {
+                E::from(scratch_io_error(
+                    "measuring the private provider SQLite scratch database",
+                    scratch_path.clone(),
+                    source,
+                ))
+            })
+            .and_then(|metadata| {
+                reservation
+                    .record_exact_bytes(metadata.len())
+                    .map_err(E::from)
+            });
         after_use(directory.path());
         let close = connection.close().map_err(|(_, source)| {
             E::from(scratch_sqlite_error(
@@ -174,10 +191,11 @@ impl SqliteSourceReadSnapshot {
                 source,
             ))
         });
-        match (operation, close, cleanup) {
-            (_, _, Err(cleanup)) => Err(cleanup),
-            (_, Err(close), Ok(())) => Err(close),
-            (operation, Ok(()), Ok(())) => operation,
+        match (operation, exact_scratch_bytes, close, cleanup) {
+            (_, _, _, Err(cleanup)) => Err(cleanup),
+            (_, _, Err(close), Ok(())) => Err(close),
+            (_, Err(accounting), Ok(()), Ok(())) => Err(accounting),
+            (operation, Ok(()), Ok(()), Ok(())) => operation,
         }
     }
 

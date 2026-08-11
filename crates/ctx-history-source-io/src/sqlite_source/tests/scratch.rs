@@ -29,7 +29,6 @@ fn private_scratch_cleanup_failure_is_explicit_and_typed_unavailable() {
     assert_eq!(diagnostic.phase, SqliteFailurePhase::Cleanup);
     assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateScratch);
     assert_eq!(diagnostic.cleanup, SqliteCleanupStatus::Failed);
-    assert_eq!(diagnostic.retry, SqliteRetryDecision::RouteFatalResource);
     assert!(matches!(
         error,
         SqliteSourceAccessError::Diagnosed { source, .. }

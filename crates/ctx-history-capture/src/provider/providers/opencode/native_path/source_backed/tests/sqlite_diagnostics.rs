@@ -26,7 +26,7 @@ fn schema_and_projection_sqlite_failures_have_distinct_stable_diagnostics() {
         };
         let diagnostic = source.diagnostic().unwrap();
         assert_eq!(diagnostic.phase, phase);
-        assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateBackup);
+        assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateSourceCopy);
         assert_eq!(
             diagnostic.sqlite_primary_code,
             Some(rusqlite::ffi::SQLITE_CORRUPT)
@@ -35,15 +35,17 @@ fn schema_and_projection_sqlite_failures_have_distinct_stable_diagnostics() {
             diagnostic.sqlite_extended_code,
             Some(rusqlite::ffi::SQLITE_CORRUPT)
         );
-        assert_eq!(diagnostic.retry, SqliteRetryDecision::DoNotRetryCorrupt);
+        assert_eq!(
+            sqlite_retry_decision(source),
+            SqliteRetryDecision::DoNotRetryCorrupt
+        );
         let rendered = source.to_string();
         assert!(rendered.contains("sqlite_phase="));
-        assert!(rendered.contains("artifact_kind=private_backup"));
+        assert!(rendered.contains("artifact_kind=private_source_copy"));
         assert!(rendered.contains("sqlite_primary_code=11"));
         assert!(rendered.contains("sqlite_extended_code=11"));
         assert!(rendered.contains("copied_pages=0"));
         assert!(rendered.contains("copied_bytes=0"));
-        assert!(rendered.contains("retry_decision=do_not_retry_corrupt"));
         assert!(rendered.contains("cleanup_status=not_required"));
         assert_eq!(
             adapter::route_error(error).kind,
@@ -137,12 +139,15 @@ fn real_schema_and_projection_full_failures_are_route_fatal() {
         };
         let diagnostic = source.diagnostic().unwrap();
         assert_eq!(diagnostic.phase, phase);
-        assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateBackup);
+        assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateSourceCopy);
         assert_eq!(
             diagnostic.sqlite_primary_code,
             Some(rusqlite::ffi::SQLITE_FULL)
         );
-        assert_eq!(diagnostic.retry, SqliteRetryDecision::RouteFatalResource);
+        assert_eq!(
+            sqlite_retry_decision(source),
+            SqliteRetryDecision::RouteFatalResource
+        );
         assert_eq!(
             adapter::route_error(error).kind,
             SourceBackedRouteErrorKind::ResourceUnavailable
@@ -168,7 +173,7 @@ fn actual_sqlite_full_error() -> rusqlite::Error {
 }
 
 #[test]
-fn provider_and_private_backup_corruption_take_distinct_routes() {
+fn provider_and_private_copy_corruption_take_distinct_routes() {
     for (phase, artifact, expected) in [
         (
             SqliteFailurePhase::SourceValidation,
@@ -176,8 +181,8 @@ fn provider_and_private_backup_corruption_take_distinct_routes() {
             SourceBackedRouteErrorKind::InvalidSource,
         ),
         (
-            SqliteFailurePhase::BackupValidation,
-            SqliteArtifactKind::PrivateBackup,
+            SqliteFailurePhase::SourceValidation,
+            SqliteArtifactKind::PrivateSourceCopy,
             SourceBackedRouteErrorKind::Internal,
         ),
     ] {
@@ -191,51 +196,4 @@ fn provider_and_private_backup_corruption_take_distinct_routes() {
             expected
         );
     }
-}
-
-#[test]
-fn injected_private_source_copy_corruption_routes_internal() {
-    let provider = tempfile::tempdir().unwrap();
-    let database = provider.path().join("opencode.db");
-    let writer = write_current_schema(&database, provider.path(), &json!({"type": "text"}));
-    let mode: String = writer
-        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(mode, "wal");
-    writer.execute_batch("PRAGMA wal_autocheckpoint=0").unwrap();
-    writer
-        .execute(
-            "INSERT INTO event VALUES ('private-copy-route', 'current-session', 99, 'history.updated', '{}')",
-            [],
-        )
-        .unwrap();
-    let root = ProviderSourceRoot::open(provider.path()).unwrap();
-    let directory = root.directory().unwrap();
-    let parent_handle = directory.try_clone_authority_handle().unwrap();
-    let authority = retain_sqlite_source_directory_authority(
-        crate::test_provider_sqlite_data_root(),
-        &parent_handle,
-        provider.path(),
-    )
-    .unwrap();
-
-    let source = open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test(
-        &authority,
-        OsStr::new("opencode.db"),
-        |source_copy| {
-            let mut copy = OpenOptions::new().write(true).open(source_copy).unwrap();
-            copy.seek(SeekFrom::Start(0)).unwrap();
-            copy.write_all(&[0_u8; 100]).unwrap();
-            copy.sync_all().unwrap();
-        },
-    )
-    .unwrap_err();
-    let diagnostic = source.diagnostic().unwrap();
-    assert_eq!(diagnostic.phase, SqliteFailurePhase::SourceValidation);
-    assert_eq!(diagnostic.artifact, SqliteArtifactKind::PrivateSourceCopy);
-    assert!(source.is_ctx_owned_corruption());
-    assert_eq!(
-        adapter::route_error(OpenCodeSourceBackedError::SqliteSource(source)).kind,
-        SourceBackedRouteErrorKind::Internal
-    );
 }

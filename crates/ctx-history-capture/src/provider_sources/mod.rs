@@ -47,18 +47,20 @@ pub fn observe_ordinary_file(
 ) -> crate::Result<OrdinaryFileObservation> {
     ctx_history_source_io::observe_ordinary_file(path).map_err(Into::into)
 }
+pub(crate) use crate::provider::sqlite::{
+    sqlite_retry_decision, SqliteLogicalSnapshot, SqliteRetryDecision,
+};
 #[cfg(test)]
 pub(crate) use ctx_history_source_io::{
-    fail_next_opened_snapshot_cleanup_for_test,
-    open_root_handle_sqlite_source_online_backup_after_private_source_copy_for_test,
-    SqliteRetryDecision, SqliteSourceSnapshotCounters,
+    fail_next_opened_snapshot_cleanup_for_test, SqliteSourceSnapshotCounters,
 };
 pub(crate) use ctx_history_source_io::{
-    open_root_handle_sqlite_source_snapshot, resource_exhaustion_io_error,
-    retain_sqlite_source_directory_authority, rusqlite_busy_or_locked, rusqlite_resource_failure,
-    SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteLogicalSnapshot,
-    SqliteSourceAccessError, SqliteSourceDirectoryAuthority, SqliteSourceEvidence,
-    SqliteSourceProgressError, SqliteSourceReadSnapshot,
+    open_root_handle_sqlite_source_snapshot, open_root_handle_sqlite_source_snapshot_with_limits,
+    resource_exhaustion_io_error, retain_sqlite_source_directory_authority,
+    rusqlite_busy_or_locked, rusqlite_resource_failure, SqliteArtifactKind, SqliteCleanupStatus,
+    SqliteFailurePhase, SqliteSourceAccessError, SqliteSourceDirectoryAuthority,
+    SqliteSourceEvidence, SqliteSourceProgressError, SqliteSourceReadSnapshot,
+    SqliteSourceSnapshotLimits,
 };
 pub(crate) use resolvers::PathPresence;
 pub(crate) use resolvers::{

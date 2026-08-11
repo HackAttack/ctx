@@ -70,9 +70,6 @@ impl From<ctx_history_source_io::SqliteSourceProgress> for SourceBackedCurrentSo
             ctx_history_source_io::SqliteSourceProgressStage::SourceFamilyCopy => {
                 SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
             }
-            ctx_history_source_io::SqliteSourceProgressStage::OnlineBackup => {
-                SourceBackedCurrentSourceProgressStage::OnlineBackup
-            }
         };
         Self {
             stage,
