@@ -22,7 +22,12 @@ COMMON_RUSTC_ENV = {
     "CARGO_MANIFEST_DIR": "crates/ctx-history-cli",
 }
 
-HISTORY_CLI_DEPS = ["//crates/ctx-history-read-application:lib"]
+HISTORY_CLI_DEPS = [
+    "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-ingest-application:lib",
+    "//crates/ctx-history-read-application:lib",
+]
 
 RUST_SRCS = glob(["src/**/*.rs"])
 

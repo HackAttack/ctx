@@ -6,12 +6,18 @@
 //! and observations.
 
 mod config;
+mod history_source_plugins;
 mod ports;
 mod request;
 mod search_filters;
 mod transcript;
 
 pub use config::{ConfigPortError, HistoryCliConfig, HistoryCliConfigPort};
+pub use history_source_plugins::{
+    discover_history_source_plugins_with_diagnostics, prepare_source_backed_history_source,
+    HistorySourcePluginManifestFailure, HistorySourcePluginRefresh, HistorySourcePluginSource,
+    PreparedHistorySourcePluginRefresh,
+};
 pub use ports::{
     HistoryCliObservation, HistoryCliOperation, ObservabilityPort, OutputStream, TerminalPort,
 };
