@@ -21,22 +21,6 @@ pub(in super::super) fn mcp_terminal_candidate_evidence(
     evidence.is_terminal().then_some(evidence)
 }
 
-pub(super) fn project_mcp_tool_call_attribution(
-    record: &[u8],
-    payload: &Value,
-    authority: &CodexMcpTerminalAuthority,
-) -> Option<ctx_history_core::McpToolCallAttribution> {
-    if payload.get("type").and_then(Value::as_str) != Some("mcp_tool_call_end") {
-        return None;
-    }
-    let call_id = payload.get("call_id").and_then(Value::as_str)?;
-    if !authority.is_unique(call_id) {
-        return None;
-    }
-    let evidence = serde_json::from_slice::<McpRawRecordEvidence>(record).ok()?;
-    evidence.attribution(call_id)
-}
-
 #[derive(Debug, Clone)]
 pub(in super::super) struct CodexMcpTerminalAuthority {
     mcp_call_ids: JsonlCheckpointedTerminalAuthority,
@@ -248,7 +232,6 @@ pub(in super::super) struct McpRawRecordEvidence {
     payload: Option<McpAttributionPayload>,
     call_id_sha256: Vec<[u8; 32]>,
     call_id_capacity_exceeded: bool,
-    ambiguous: bool,
 }
 
 impl McpRawRecordEvidence {
@@ -259,17 +242,6 @@ impl McpRawRecordEvidence {
                 .as_ref()
                 .and_then(|payload| payload.item_type.as_deref())
                 == Some("mcp_tool_call_end")
-    }
-
-    fn attribution(self, call_id: &str) -> Option<ctx_history_core::McpToolCallAttribution> {
-        if !self.is_terminal() || self.ambiguous || self.call_id_capacity_exceeded {
-            return None;
-        }
-        let payload = self.payload?;
-        if payload.ambiguous || payload.call_id.as_deref() != Some(call_id) {
-            return None;
-        }
-        payload.invocation?.attribution()
     }
 
     fn merge_call_ids(&mut self, payload: &McpAttributionPayload) {
@@ -313,18 +285,12 @@ impl<'de> serde::de::Visitor<'de> for McpRawRecordEvidenceVisitor {
         M: serde::de::MapAccess<'de>,
     {
         let mut evidence = McpRawRecordEvidence::default();
-        let mut saw_record_type = false;
-        let mut saw_payload = false;
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             match key.as_ref() {
                 "type" => {
-                    evidence.ambiguous |= saw_record_type;
-                    saw_record_type = true;
                     evidence.record_type = map.next_value::<BoundedStringProbe<64>>()?.value;
                 }
                 "payload" => {
-                    evidence.ambiguous |= saw_payload;
-                    saw_payload = true;
                     let payload = map.next_value::<McpAttributionPayload>()?;
                     evidence.merge_call_ids(&payload);
                     evidence.payload = Some(payload);
@@ -341,11 +307,8 @@ impl<'de> serde::de::Visitor<'de> for McpRawRecordEvidenceVisitor {
 #[derive(Default)]
 struct McpAttributionPayload {
     item_type: Option<String>,
-    call_id: Option<String>,
     call_id_sha256: Vec<[u8; 32]>,
     call_id_capacity_exceeded: bool,
-    invocation: Option<McpInvocationProbe>,
-    ambiguous: bool,
 }
 
 impl McpAttributionPayload {
@@ -363,7 +326,6 @@ impl McpAttributionPayload {
                 }
             }
         }
-        self.call_id = call_id;
     }
 }
 
@@ -390,52 +352,16 @@ impl<'de> serde::de::Visitor<'de> for McpAttributionPayloadVisitor {
         M: serde::de::MapAccess<'de>,
     {
         let mut payload = McpAttributionPayload::default();
-        let mut saw_item_type = false;
-        let mut saw_call_id = false;
-        let mut saw_invocation = false;
-        let mut saw_duration = false;
-        let mut saw_result = false;
-        let mut saw_output = false;
-        let mut saw_tools = false;
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             match key.as_ref() {
                 "type" => {
-                    payload.ambiguous |= saw_item_type;
-                    saw_item_type = true;
                     payload.item_type = map.next_value::<BoundedStringProbe<64>>()?.value;
                 }
                 "call_id" => {
-                    payload.ambiguous |= saw_call_id;
-                    saw_call_id = true;
                     let call_id = map
                         .next_value::<BoundedStringProbe<MAX_CODEX_TOOL_CALL_ID_BYTES>>()?
                         .value;
                     payload.observe_call_id(call_id);
-                }
-                "invocation" => {
-                    payload.ambiguous |= saw_invocation;
-                    saw_invocation = true;
-                    payload.invocation = Some(map.next_value()?);
-                }
-                "duration" => {
-                    payload.ambiguous |= saw_duration;
-                    saw_duration = true;
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-                "result" => {
-                    payload.ambiguous |= saw_result;
-                    saw_result = true;
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-                "output" => {
-                    payload.ambiguous |= saw_output;
-                    saw_output = true;
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-                "tools" => {
-                    payload.ambiguous |= saw_tools;
-                    saw_tools = true;
-                    map.next_value::<serde::de::IgnoredAny>()?;
                 }
                 _ => {
                     map.next_value::<serde::de::IgnoredAny>()?;
@@ -443,139 +369,6 @@ impl<'de> serde::de::Visitor<'de> for McpAttributionPayloadVisitor {
             }
         }
         Ok(payload)
-    }
-}
-
-#[derive(Default)]
-struct McpInvocationProbe {
-    server: Option<String>,
-    tool: Option<String>,
-    ambiguous: bool,
-    object: bool,
-}
-
-impl McpInvocationProbe {
-    fn attribution(self) -> Option<ctx_history_core::McpToolCallAttribution> {
-        if self.ambiguous || !self.object {
-            return None;
-        }
-        let server = self.server?;
-        let tool = self.tool?;
-        if server.is_empty()
-            || tool.is_empty()
-            || server.len() > ctx_history_core::MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES
-            || tool.len() > ctx_history_core::MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES
-        {
-            return None;
-        }
-        Some(ctx_history_core::McpToolCallAttribution { server, tool })
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for McpInvocationProbe {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(McpInvocationProbeVisitor)
-    }
-}
-
-struct McpInvocationProbeVisitor;
-
-impl<'de> serde::de::Visitor<'de> for McpInvocationProbeVisitor {
-    type Value = McpInvocationProbe;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a Codex MCP invocation object")
-    }
-
-    fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
-    where
-        M: serde::de::MapAccess<'de>,
-    {
-        let mut invocation = McpInvocationProbe {
-            object: true,
-            ..McpInvocationProbe::default()
-        };
-        let mut saw_server = false;
-        let mut saw_tool = false;
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            match key.as_ref() {
-                "server" if !saw_server => {
-                    saw_server = true;
-                    invocation.server = map
-                        .next_value::<BoundedStringProbe<
-                            { ctx_history_core::MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES },
-                        >>()?
-                        .value;
-                }
-                "tool" if !saw_tool => {
-                    saw_tool = true;
-                    invocation.tool = map
-                        .next_value::<BoundedStringProbe<
-                            { ctx_history_core::MAX_MCP_TOOL_CALL_ATTRIBUTION_COMPONENT_BYTES },
-                        >>()?
-                        .value;
-                }
-                "server" => {
-                    invocation.ambiguous = true;
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-                "tool" => {
-                    invocation.ambiguous = true;
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-                _ => {
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
-        }
-        Ok(invocation)
-    }
-
-    fn visit_bool<E>(self, _value: bool) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_i64<E>(self, _value: i64) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_u64<E>(self, _value: u64) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_f64<E>(self, _value: f64) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_str<E>(self, _value: &str) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_string<E>(self, _value: String) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
-        Ok(McpInvocationProbe::default())
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        while sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-        Ok(McpInvocationProbe::default())
     }
 }
 
