@@ -17,6 +17,7 @@ mod identity;
 mod physical;
 mod revalidation;
 mod route;
+mod single_file;
 
 pub(crate) use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
@@ -70,6 +71,7 @@ pub(crate) use route::{
     JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyTerminalProof,
     JsonlFamilyWorkerContext,
 };
+pub(crate) use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 

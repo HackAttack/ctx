@@ -11,9 +11,12 @@ use serde_json::json;
 
 use super::*;
 use crate::provider::source_backed::{
-    family::jsonl::jsonl_family_driver, refresh_source_backed_generation,
-    SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedSelectorAuthority,
-    SourceBackedSourceFailureClass,
+    family::jsonl::{
+        jsonl_family_driver, set_after_jsonl_append_observation_route_binding_hook,
+        set_before_jsonl_terminal_physical_revalidation_hook,
+    },
+    refresh_source_backed_generation, SourceBackedProviderRegistry, SourceBackedRoute,
+    SourceBackedSelectorAuthority, SourceBackedSourceFailureClass,
 };
 use crate::test_support_paths::tempdir;
 use crate::{
@@ -86,7 +89,7 @@ fn active_source_family_contract_prompt_history_rejects_same_content_pathname_re
     fs::write(&replacement, fs::read(&history).unwrap()).unwrap();
     let moved = provider_root.join("scanned-history.jsonl");
     let hook_history = history.clone();
-    adapter.set_after_scan_hook(move || {
+    set_before_jsonl_terminal_physical_revalidation_hook(history.clone(), move || {
         fs::rename(&hook_history, moved).unwrap();
         fs::rename(replacement, hook_history).unwrap();
     });
@@ -156,7 +159,7 @@ fn active_source_family_contract_prompt_history_rejects_scanner_leaf_open_same_l
     );
     let moved = provider_root.join("scanner-opened.jsonl");
     let swap_path = history.clone();
-    adapter.set_after_family_source_open_hook(move || {
+    set_after_jsonl_append_observation_route_binding_hook(history.clone(), move || {
         fs::rename(&swap_path, moved).unwrap();
         fs::rename(replacement, swap_path).unwrap();
     });
@@ -223,7 +226,9 @@ fn active_source_family_contract_prompt_history_rejects_inflight_disappearance_t
         &prompt_line("session", 1_700_000_001, "discarded prompt"),
     );
     let removed = history.clone();
-    adapter.set_after_scan_hook(move || fs::remove_file(removed).unwrap());
+    set_after_jsonl_append_observation_route_binding_hook(history.clone(), move || {
+        fs::remove_file(removed).unwrap();
+    });
 
     let failed =
         refresh_source_backed_generation(&index_root, &registry, WriterOptions::default()).unwrap();
@@ -298,7 +303,7 @@ fn active_source_family_contract_prompt_history_defers_live_suffix_exactly_once(
         );
         worker_barrier.wait();
     });
-    adapter.set_after_scan_hook(move || {
+    set_before_jsonl_terminal_physical_revalidation_hook(history.clone(), move || {
         barrier.wait();
         barrier.wait();
     });
