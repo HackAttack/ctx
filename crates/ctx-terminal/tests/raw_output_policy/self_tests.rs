@@ -40,6 +40,17 @@ fn daemon_runtime_raw_output_mutation_is_rejected() {
 }
 
 #[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_print_macro_cannot_be_allowlisted() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        "fn emit() { println!(\"unmeasured\"); }",
+    );
+
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
 fn exact_allowed_site_is_accepted() {
     let sites = scan_source(
         "src/example.rs",

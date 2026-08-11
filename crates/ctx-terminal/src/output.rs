@@ -235,7 +235,44 @@ pub fn prune_null_json(value: &mut Value) {
         _ => {}
     }
 }
+/// Writes one pretty JSON document and its trailing newline through the active
+/// measured stdout authority.
 pub fn print_json(value: Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    let rendered = serde_json::to_string_pretty(&value)?;
+    write_stdout_line(format_args!("{rendered}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{print_json, OutputMeasurement};
+    use crate::ui::StreamKind;
+
+    #[test]
+    fn print_json_measures_the_exact_pretty_document_and_trailing_newline() {
+        let expected = b"{\n  \"answer\": 42,\n  \"message\": \"measured\"\n}\n";
+        let value = json!({"answer": 42, "message": "measured"});
+        let expected_document = expected
+            .strip_suffix(b"\n")
+            .expect("expected JSON output ends in exactly one newline");
+        assert_eq!(
+            serde_json::to_string_pretty(&value).unwrap().as_bytes(),
+            expected_document
+        );
+        let measurement = OutputMeasurement::start();
+
+        assert_eq!(measurement.total_bytes(), 0);
+        print_json(value).unwrap();
+
+        let expected_bytes = u64::try_from(expected.len()).unwrap();
+        assert_eq!(
+            measurement.stream_bytes(StreamKind::Stdout),
+            expected_bytes,
+            "zero or partial accounting must fail, including a missing newline byte"
+        );
+        assert_eq!(measurement.stream_bytes(StreamKind::Stderr), 0);
+        assert_eq!(measurement.total_bytes(), expected_bytes);
+    }
 }
