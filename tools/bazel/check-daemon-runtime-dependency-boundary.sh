@@ -69,6 +69,9 @@ printf '%s\n' \
   '//crates/ctx-cli:ctx_pro_test_host' \
   '//crates/ctx-daemon-application:lib' \
   '//crates/ctx-daemon-application:test_support_lib' \
+  '//crates/ctx-daemon-cli:lib' \
+  '//crates/ctx-daemon-cli:qualification_test_support_lib' \
+  '//crates/ctx-daemon-cli:test_support_lib' \
   '//crates/ctx-daemon-runtime:lib' \
   '//crates/ctx-daemon-service:lib' \
   '//crates/ctx-daemon-service:test_support_lib' >"${expected_reverse_lib}"
@@ -85,6 +88,7 @@ printf '%s\n' \
   '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
   '//crates/ctx-cli:ctx_upgrade_test_harness' \
   '//crates/ctx-daemon-application:qualification_lib' \
+  '//crates/ctx-daemon-cli:qualification_lib' \
   '//crates/ctx-daemon-runtime:qualification_lib' \
   '//crates/ctx-daemon-service:qualification_lib' >"${expected_reverse_qualification}"
 query 'kind("rust_binary rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:qualification_lib)) union kind("rust_library rule", rdeps(//crates/..., //crates/ctx-daemon-runtime:qualification_lib))' \
@@ -113,8 +117,8 @@ while IFS= read -r manifest; do
 done < <(find "${repo_root}/crates" -mindepth 2 -maxdepth 2 -name Cargo.toml -type f | LC_ALL=C sort) \
   >"${actual_reverse_cargo}"
 printf '%s\n' \
-  'crates/ctx-cli/Cargo.toml' \
   'crates/ctx-daemon-application/Cargo.toml' \
+  'crates/ctx-daemon-cli/Cargo.toml' \
   'crates/ctx-daemon-service/Cargo.toml' >"${tmp}/expected-reverse-cargo.txt"
 if ! diff -u "${tmp}/expected-reverse-cargo.txt" "${actual_reverse_cargo}"; then
   echo 'unexpected reverse Cargo consumer of ctx-daemon-runtime' >&2
