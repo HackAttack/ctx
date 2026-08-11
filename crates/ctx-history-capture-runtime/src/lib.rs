@@ -129,26 +129,6 @@ pub trait ImmutableCaptureSnapshot {
     fn source_route(&self, route_identity: &SourceRouteIdentity) -> Option<CaptureRouteRef<'_>>;
 }
 
-/// Runtime-neutral writer sizing. The index adapter maps this one-for-one to
-/// its concrete writer options.
-#[derive(Debug, Clone)]
-pub struct CaptureLifecycleOptions {
-    pub indexer_threads: usize,
-    pub memory_bytes: usize,
-}
-
-impl Default for CaptureLifecycleOptions {
-    fn default() -> Self {
-        let parallelism = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1);
-        Self {
-            indexer_threads: parallelism.clamp(1, 8),
-            memory_bytes: 512 * 1024 * 1024,
-        }
-    }
-}
-
 /// A conclusive present-route snapshot. Its member vector is moved from the
 /// coordinator into the lifecycle implementation without another collection.
 #[derive(Debug)]
@@ -200,19 +180,17 @@ impl CaptureLifecycleRecovery {
     pub fn detail(&self) -> &str {
         &self.detail
     }
+
+    pub fn into_parts(self) -> (String, String) {
+        (self.generation_id, self.detail)
+    }
 }
 
 /// Outcome of opening a lifecycle while preserving the locked-base recovery
 /// distinction required by the coordinator.
 pub enum CaptureLifecycleOpenOutcome<L> {
     Ready(L),
-    Recovered {
-        lifecycle: L,
-        recovery: CaptureLifecycleRecovery,
-    },
-    RecoveryRequired {
-        recovery: CaptureLifecycleRecovery,
-    },
+    RecoveryRequired { recovery: CaptureLifecycleRecovery },
 }
 
 /// Static writer lifecycle for capture coordination.
@@ -223,18 +201,19 @@ pub enum CaptureLifecycleOpenOutcome<L> {
 /// erasure.
 pub trait CaptureLifecycleSink: Sized {
     type Error: Error + Send + Sync + 'static;
+    type OpenOptions;
     type BaseLookup: BaseEventLookup<Error = Self::Error>;
     type Preparation: CorePreparationPort<Failure = Self::Error>;
     type PinnedAppendBase;
-    type Commit;
-    type CommitWithMetadata;
+    type CommittedSnapshot: ImmutableCaptureSnapshot;
+    type VerifiedPublication;
     type Snapshot<'a>: ImmutableCaptureSnapshot
     where
         Self: 'a;
 
     fn open(
         root: &Path,
-        options: CaptureLifecycleOptions,
+        options: Self::OpenOptions,
     ) -> Result<CaptureLifecycleOpenOutcome<Self>, Self::Error>;
 
     fn base_snapshot(&self) -> Option<Self::Snapshot<'_>>;
@@ -345,13 +324,16 @@ pub trait CaptureLifecycleSink: Sized {
         revalidate_missing: impl Fn() -> bool + Send + 'static,
     ) -> Result<(), Self::Error>;
 
-    fn set_present_routes(&mut self, routes: Vec<PresentCaptureRoute>) -> Result<(), Self::Error>;
+    fn set_present_routes(
+        &mut self,
+        routes: impl IntoIterator<Item = PresentCaptureRoute>,
+    ) -> Result<(), Self::Error>;
 
     fn commit<F, I>(
         self,
         revalidate: F,
         revalidate_inventory: I,
-    ) -> Result<Self::Commit, Self::Error>
+    ) -> Result<CaptureCommitReceipt<Self::CommittedSnapshot>, Self::Error>
     where
         F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
         I: FnMut(&CertifiedSourceInventory) -> bool;
@@ -361,7 +343,7 @@ pub trait CaptureLifecycleSink: Sized {
         revalidate: F,
         revalidate_inventory: I,
         metadata_factory: M,
-    ) -> Result<Self::CommitWithMetadata, Self::Error>
+    ) -> Result<CaptureCommitOutcome<Self::CommittedSnapshot, Self::VerifiedPublication>, Self::Error>
     where
         F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
         I: FnMut(&CertifiedSourceInventory) -> bool,

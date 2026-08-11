@@ -15,16 +15,16 @@ use super::super::{
 };
 use super::*;
 use crate::provider::source_backed::{
-    IndexCaptureLifecycle, SourceBackedLogicalSourceFailures, SourceBackedRecordRejections,
-    SourceBackedRouteResources,
+    IndexCaptureCommitReceipt, IndexCaptureLifecycle, SourceBackedLogicalSourceFailures,
+    SourceBackedRecordRejections, SourceBackedRouteResources,
 };
 use crate::repository_attribution::AttributionInput;
+use ctx_history_capture_runtime::{CaptureLifecycleOpenOutcome, CaptureLifecycleSink};
 use ctx_history_core::{
     derive_event_id, derive_session_id, CoreRecord, EventIdentityInput, NativeItemKey,
     NativeSessionKey, SessionIdentityInput, SourceAnchor,
 };
-use ctx_history_index::{CommitReceipt, GenerationWriter, SourceRouteIdentity, WriterOptions};
-use ctx_history_index::{IndexError, RevalidationTarget, VerifiedIndex};
+use ctx_history_index::{GenerationWriter, SourceRouteIdentity, WriterOptions};
 
 #[path = "tests/behavior.rs"]
 mod behavior;
@@ -48,19 +48,20 @@ fn test_writer_options() -> WriterOptions {
 macro_rules! capture_test_generation {
     ($adapter:expr, $root:expr, $index_root:expr, $workers:expr, $capture:expr) => {{
         let resident = Mutex::new(FamilyResident::default());
-        let mut writer: IndexCaptureLifecycle =
-            GenerationWriter::open($index_root, test_writer_options())
-                .unwrap()
-                .into_writer()
-                .unwrap()
-                .into();
+        let mut writer =
+            match IndexCaptureLifecycle::open($index_root, test_writer_options()).unwrap() {
+                CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+                CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+                    panic!("test lifecycle unexpectedly requires recovery")
+                }
+            };
         let mut owners = HashMap::new();
         let mut complete_inventories = Vec::new();
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
         let mut record_rejections = SourceBackedRecordRejections::default();
         let result = {
             let mut sink = SourceBackedGenerationSink {
-                core_record_preparer: writer.core_record_preparer().into(),
+                core_record_preparer: writer.core_preparation(),
                 lifecycle: &mut writer,
                 owners: &mut owners,
                 complete_inventories: &mut complete_inventories,
@@ -1440,16 +1441,13 @@ fn capture_parallel_test_generation(
     root: &Path,
     index_root: &Path,
     workers: usize,
-) -> (CommitReceipt, JsonlFamilyScannerActivity) {
-    let (writer, _resident, ()) =
+) -> (IndexCaptureCommitReceipt, JsonlFamilyScannerActivity) {
+    let (writer, ()) =
         capture_test_generation!(adapter, root, index_root, workers, |resident, sink| {
             capture(adapter, root, resident, sink).unwrap()
         });
     let activity = jsonl_family_scanner_activity();
-    let commit = writer
-        .into_writer()
-        .commit_with_complete_inventory_revalidation(|_| true, |_| true)
-        .unwrap();
+    let commit = IndexCaptureCommitReceipt::new(writer.commit(|_| true, |_| true).unwrap());
     (commit, activity)
 }
 
@@ -1485,7 +1483,7 @@ fn capture_checkpoint_test_generation(
     root: &Path,
     index_root: &Path,
     workers: usize,
-) -> CommitReceipt {
+) -> IndexCaptureCommitReceipt {
     capture_parallel_test_generation(&CheckpointTestAdapter::default(), root, index_root, workers).0
 }
 
@@ -1548,7 +1546,7 @@ fn write_scheduler_test_leaf(root: &Path, partition: u64, phase: usize, ordinal:
     .unwrap();
 }
 
-fn provider_checkpoints(receipt: &CommitReceipt) -> Vec<Option<TypedKey>> {
+fn provider_checkpoints(receipt: &IndexCaptureCommitReceipt) -> Vec<Option<TypedKey>> {
     receipt
         .manifest()
         .sources

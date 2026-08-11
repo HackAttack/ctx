@@ -2,8 +2,8 @@
 //!
 //! Provider adapters remain responsible for discovery, parsing, projection,
 //! and source certification. This module owns the one production
-//! publication boundary: all registered adapters stage into one
-//! [`GenerationWriter`] and no adapter can publish a generation by itself.
+//! publication boundary: all registered adapters stage into one neutral
+//! lifecycle and no adapter can publish a generation by itself.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -114,7 +114,7 @@ pub use registration::*;
 pub(crate) use runtime_adapter::*;
 pub use runtime_adapter::{
     BorrowedIndexManifestView, CommittedIndexManifestView, IndexCaptureCommitReceipt,
-    IndexCaptureLifecycle, IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
+    IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
 };
 pub use watch::*;
 

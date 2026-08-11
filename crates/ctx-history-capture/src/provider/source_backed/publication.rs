@@ -547,16 +547,15 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
         mut route_controls,
         verified_publication,
     ) = {
-        let open =
-            IndexCaptureLifecycle::open_with_writer_options(index_root, writer_options.clone())?;
+        let open = IndexCaptureLifecycle::open(index_root, writer_options)?;
         let mut lifecycle = match open {
-            CaptureLifecycleOpenOutcome::Ready(lifecycle)
-            | CaptureLifecycleOpenOutcome::Recovered { lifecycle, .. } => lifecycle,
+            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
             CaptureLifecycleOpenOutcome::RecoveryRequired { recovery } => {
+                let (generation_id, detail) = recovery.into_parts();
                 return Err(
                     SourceBackedCoordinatorError::CommittedPredecessorMigrationRecovery {
-                        generation_id: recovery.generation_id().to_owned(),
-                        detail: recovery.detail().to_owned(),
+                        generation_id,
+                        detail,
                     },
                 );
             }
@@ -941,14 +940,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             .iter()
             .filter(|route| !route.certified_missing_paths.is_empty())
         {
-            let route_identity =
-                route
-                    .metadata
-                    .route_identity
-                    .as_ref()
-                    .ok_or(IndexError::WriterInvariant(
-                        "certified-missing source route has no route identity",
-                    ))?;
+            let route_identity = route.metadata.route_identity.as_ref().ok_or_else(|| {
+                index_writer_invariant("certified-missing source route has no route identity")
+            })?;
             if !attempt_selected.contains(route_identity) {
                 continue;
             }
@@ -1256,7 +1250,9 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
             )
         } else {
             (
-                lifecycle.commit(&mut revalidate_source, &mut revalidate_inventory)?,
+                IndexCaptureCommitReceipt::new(
+                    lifecycle.commit(&mut revalidate_source, &mut revalidate_inventory)?,
+                ),
                 None,
             )
         };

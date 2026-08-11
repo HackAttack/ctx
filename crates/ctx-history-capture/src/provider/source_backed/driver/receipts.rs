@@ -266,9 +266,9 @@ impl SourceBackedGenerationSink<'_> {
                 .iter()
                 .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
                 .cloned()
-                .ok_or(IndexError::WriterInvariant(
-                    "source-route snapshot names a missing certified source",
-                ))?;
+                .ok_or_else(|| {
+                    index_writer_invariant("source-route snapshot names a missing certified source")
+                })?;
             sources.insert(source.clone(), certificate);
         }
         Ok(sources)
@@ -640,9 +640,9 @@ impl SourceBackedGenerationSink<'_> {
                     && owner.source.exact_descriptor_eq(source)
                     && owner.revalidation.is_none()
             })
-            .ok_or(IndexError::WriterInvariant(
-                "source certification lost its route-local owner",
-            ))?;
+            .ok_or_else(|| {
+                index_writer_invariant("source certification lost its route-local owner")
+            })?;
         owner.revalidation = Some(revalidation);
         Ok(())
     }
@@ -1235,10 +1235,11 @@ fn source_backed_route_identity(
             digest.update(profile.as_bytes());
         }
     }
-    Ok(
-        SourceRouteIdentity::from_sha256(format!("{:x}", digest.finalize()))
-            .map_err(IndexError::from)?,
-    )
+    index_source_route_identity(SourceRouteIdentity::from_sha256(format!(
+        "{:x}",
+        digest.finalize()
+    )))
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -1247,8 +1248,7 @@ mod tests {
 
     #[test]
     fn route_identity_validation_uses_the_canonical_index_conversion() {
-        let error = SourceRouteIdentity::from_sha256("AB".repeat(32))
-            .map_err(IndexError::from)
+        let error = index_source_route_identity(SourceRouteIdentity::from_sha256("AB".repeat(32)))
             .map_err(SourceBackedCoordinatorError::from)
             .unwrap_err();
 

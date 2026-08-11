@@ -1,8 +1,8 @@
 use ctx_history_capture_runtime::{
     BaseEventLookup, CaptureCommitOutcome, CaptureCommitReceipt, CaptureLifecycleOpenOutcome,
-    CaptureLifecycleOptions, CaptureLifecycleRecovery, CaptureLifecycleSink,
-    CapturePublicationContext, CapturePublicationDisposition, CaptureRevalidationTarget,
-    CaptureRouteRef, CaptureSourceAggregateRef, CoreMaterialization, CorePreparationError,
+    CaptureLifecycleRecovery, CaptureLifecycleSink, CapturePublicationContext,
+    CapturePublicationDisposition, CaptureRevalidationTarget, CaptureRouteRef,
+    CaptureSourceAggregateRef, CoreMaterialization, CorePreparationError,
     CorePreparationFailureKind, CorePreparationPort, CorePreparedBatch, CorePreparedBatchBuilder,
     CorePreparedCapture, CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind,
     ImmutableCaptureSnapshot, PresentCaptureRoute, VerifiedCapture,
@@ -23,6 +23,25 @@ use std::{collections::BTreeSet, path::Path, sync::Arc};
 use uuid::Uuid;
 
 use super::{SourceBackedRouteError, SourceBackedRouteErrorKind};
+
+pub(crate) type IndexCaptureResult<T> = Result<T, IndexError>;
+
+pub(crate) fn index_writer_invariant(detail: &'static str) -> IndexError {
+    IndexError::WriterInvariant(detail)
+}
+
+pub(crate) fn invalid_source_route_identity() -> IndexError {
+    IndexError::InvalidSourceRouteIdentity
+}
+
+pub(crate) fn index_source_route_identity(
+    identity: Result<
+        ctx_history_capture_model::SourceRouteIdentity,
+        ctx_history_capture_model::SourceRouteIdentityError,
+    >,
+) -> IndexCaptureResult<ctx_history_capture_model::SourceRouteIdentity> {
+    identity.map_err(|_| invalid_source_route_identity())
+}
 
 /// Capture-local adapter for the index-owned immutable base identity view.
 ///
@@ -132,86 +151,33 @@ pub(crate) const SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS: usize = CORE_RECOR
 /// The index owns automatic missing-route grace. Capture supplies the route
 /// observation and terminal callback, while this adapter binds the established
 /// policy without exposing an index-specific knob.
-const AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS: u32 = 3;
+const AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS: u32 =
+    ctx_history_index::policy::AUTOMATIC_ROUTE_DELETION_GRACE_OBSERVATIONS;
 
 /// Sole concrete lifecycle exchange between source-backed capture and index.
 #[repr(transparent)]
-#[doc(hidden)]
-pub struct IndexCaptureLifecycle(GenerationWriter);
-
-impl IndexCaptureLifecycle {
-    pub(crate) fn open_with_writer_options(
-        root: &Path,
-        options: WriterOptions,
-    ) -> Result<CaptureLifecycleOpenOutcome<Self>, IndexError> {
-        Self::open(
-            root,
-            CaptureLifecycleOptions {
-                indexer_threads: options.indexer_threads,
-                memory_bytes: options.memory_bytes,
-            },
-        )
-    }
-}
-
-#[cfg(test)]
-impl From<GenerationWriter> for IndexCaptureLifecycle {
-    fn from(writer: GenerationWriter) -> Self {
-        Self(writer)
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Deref for IndexCaptureLifecycle {
-    type Target = GenerationWriter;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[cfg(test)]
-impl std::ops::DerefMut for IndexCaptureLifecycle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-#[cfg(test)]
-impl IndexCaptureLifecycle {
-    pub(crate) fn into_writer(self) -> GenerationWriter {
-        self.0
-    }
-}
+pub(crate) struct IndexCaptureLifecycle(GenerationWriter);
 
 impl CaptureLifecycleSink for IndexCaptureLifecycle {
     type Error = IndexError;
+    type OpenOptions = WriterOptions;
     type BaseLookup = IndexBaseEventLookup;
     type Preparation = IndexCorePreparation;
     type PinnedAppendBase = GenerationBaseCertifiedSource;
-    type Commit = IndexCaptureCommitReceipt;
-    type CommitWithMetadata = IndexCaptureCommitOutcome;
+    type CommittedSnapshot = CommittedIndexManifestView;
+    type VerifiedPublication = IndexVerifiedCapture;
     type Snapshot<'a> = BorrowedIndexManifestView<'a>;
 
     fn open(
         root: &Path,
-        options: CaptureLifecycleOptions,
-    ) -> Result<CaptureLifecycleOpenOutcome<Self>, Self::Error> {
-        let options = WriterOptions {
-            indexer_threads: options.indexer_threads,
-            memory_bytes: options.memory_bytes,
-        };
+        options: Self::OpenOptions,
+    ) -> IndexCaptureResult<CaptureLifecycleOpenOutcome<Self>> {
         Ok(match GenerationWriter::open(root, options)? {
             GenerationWriterOpenOutcome::Ready(writer) => {
                 CaptureLifecycleOpenOutcome::Ready(Self(writer))
             }
-            GenerationWriterOpenOutcome::RecoveredCommittedMigration { writer, recovery } => {
-                CaptureLifecycleOpenOutcome::Recovered {
-                    lifecycle: Self(writer),
-                    recovery: CaptureLifecycleRecovery::new(
-                        recovery.generation_id().to_owned(),
-                        recovery.detail().to_owned(),
-                    ),
-                }
+            GenerationWriterOpenOutcome::RecoveredCommittedMigration { writer, .. } => {
+                CaptureLifecycleOpenOutcome::Ready(Self(writer))
             }
             GenerationWriterOpenOutcome::CommittedMigrationRecoveryRequired { recovery } => {
                 CaptureLifecycleOpenOutcome::RecoveryRequired {
@@ -417,7 +383,10 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
             .map(|_| ())
     }
 
-    fn set_present_routes(&mut self, routes: Vec<PresentCaptureRoute>) -> Result<(), Self::Error> {
+    fn set_present_routes(
+        &mut self,
+        routes: impl IntoIterator<Item = PresentCaptureRoute>,
+    ) -> Result<(), Self::Error> {
         let routes = routes
             .into_iter()
             .map(|route| {
@@ -432,7 +401,7 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
         self,
         mut revalidate: F,
         revalidate_inventory: I,
-    ) -> Result<Self::Commit, Self::Error>
+    ) -> Result<CaptureCommitReceipt<Self::CommittedSnapshot>, Self::Error>
     where
         F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
         I: FnMut(&CertifiedSourceInventory) -> bool,
@@ -442,7 +411,7 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
                 |target| revalidate(index_revalidation_target(target)),
                 revalidate_inventory,
             )
-            .map(capture_commit_receipt)
+            .map(capture_runtime_commit_receipt)
     }
 
     fn commit_with_metadata<F, I, M>(
@@ -450,7 +419,7 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
         mut revalidate: F,
         revalidate_inventory: I,
         metadata_factory: M,
-    ) -> Result<Self::CommitWithMetadata, Self::Error>
+    ) -> Result<CaptureCommitOutcome<Self::CommittedSnapshot, Self::VerifiedPublication>, Self::Error>
     where
         F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
         I: FnMut(&CertifiedSourceInventory) -> bool,
@@ -954,7 +923,9 @@ pub(crate) fn capture_publication_context<'a>(
     CapturePublicationContext::new(context.generation_id(), snapshot)
 }
 
-pub(crate) fn capture_commit_receipt(receipt: CommitReceipt) -> IndexCaptureCommitReceipt {
+fn capture_runtime_commit_receipt(
+    receipt: CommitReceipt,
+) -> CaptureCommitReceipt<CommittedIndexManifestView> {
     let (
         generation_id,
         opstamp,
@@ -963,14 +934,14 @@ pub(crate) fn capture_commit_receipt(receipt: CommitReceipt) -> IndexCaptureComm
         certified_source_bytes,
         manifest,
     ) = receipt.into_parts();
-    IndexCaptureCommitReceipt::new(CaptureCommitReceipt::new(
+    CaptureCommitReceipt::new(
         generation_id,
         opstamp,
         indexed_documents,
         certified_sources,
         certified_source_bytes,
         IndexManifestView::committed(manifest),
-    ))
+    )
 }
 
 pub(crate) fn capture_commit_outcome(published: PublishedGeneration) -> IndexCaptureCommitOutcome {
@@ -1005,8 +976,9 @@ mod tests {
     use super::*;
     use ctx_history_capture_runtime::CorePreparationPort;
     use ctx_history_core::{
-        derive_event_id, derive_session_id, CoreRecordError, EventIdentityInput, NativeItemKey,
-        NativeSessionKey, ProjectionContractError, SessionIdentityInput, SourceAnchor, TypedKey,
+        derive_event_id, derive_session_id, CertifiedSource, CoreRecordError, EventIdentityInput,
+        NativeItemKey, NativeSessionKey, ProjectionContractError, ScannedSourceCounts,
+        SessionIdentityInput, SourceAnchor, SourceObservation, TypedKey,
     };
     use ctx_history_index::{GenerationWriter, WriterOptions};
 
@@ -1086,7 +1058,120 @@ mod tests {
         assert_eq!(preparation.encoded_bytes(&materialized), exact_bytes);
     }
 
+    #[test]
+    fn index_capture_lifecycle_runs_complete_neutral_exchange() {
+        let temporary = crate::test_support_paths::tempdir().unwrap();
+        let mut lifecycle = match IndexCaptureLifecycle::open(
+            temporary.path(),
+            WriterOptions {
+                indexer_threads: 1,
+                memory_bytes: 15_000_000,
+            },
+        )
+        .unwrap()
+        {
+            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { recovery } => panic!(
+                "fresh lifecycle unexpectedly requires recovery for {}: {}",
+                recovery.generation_id(),
+                recovery.detail()
+            ),
+        };
+        assert!(lifecycle.base_snapshot().is_none());
+
+        let route_identity =
+            ctx_history_capture_model::SourceRouteIdentity::from_sha256("42".repeat(32)).unwrap();
+        lifecycle
+            .set_route_plan(BTreeSet::from([route_identity.clone()]), BTreeSet::new())
+            .unwrap();
+        lifecycle.begin_route_stage(route_identity.clone()).unwrap();
+
+        let (record, source) = adapter_test_record_and_source();
+        let source_identity = source.identity();
+        lifecycle.begin_source_replace(source.clone()).unwrap();
+        let preparation = lifecycle.core_preparation();
+        let prepared = preparation.prepare(record).unwrap();
+        assert!(preparation
+            .prepared_source(&prepared)
+            .exact_descriptor_eq(&source));
+        lifecycle.add_prepared(prepared).unwrap();
+
+        let certificate = adapter_test_certificate(&source);
+        lifecycle.certify_source(certificate.clone()).unwrap();
+
+        let mut visited_targets = 0;
+        lifecycle
+            .visit_revalidation_targets(|target| {
+                let CaptureRevalidationTarget::Source(target) = target else {
+                    panic!("replace stage unexpectedly exposed a deletion target");
+                };
+                assert_eq!(target, &certificate);
+                assert_eq!(target.counts().indexed_documents, 1);
+                assert_eq!(target.observation().source().identity(), source_identity);
+                visited_targets += 1;
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(visited_targets, 1);
+
+        lifecycle.finish_route_stage(&route_identity).unwrap();
+        lifecycle
+            .set_present_routes(std::iter::once(PresentCaptureRoute::new(
+                route_identity.clone(),
+                vec![source.clone()],
+            )))
+            .unwrap();
+
+        let receipt = lifecycle
+            .commit(
+                |target| match target {
+                    CaptureRevalidationTarget::Source(target) => target == &certificate,
+                    CaptureRevalidationTarget::Deletion(_) => false,
+                },
+                |_| true,
+            )
+            .unwrap();
+        assert!(!receipt.generation_id.is_empty());
+        assert_eq!(receipt.indexed_documents, 1);
+        assert_eq!(receipt.certified_sources, 1);
+        assert_eq!(receipt.certified_source_bytes, 1);
+
+        let snapshot = receipt.snapshot();
+        assert_eq!(snapshot.sources(), std::slice::from_ref(&certificate));
+        assert_eq!(
+            snapshot.sources()[0].observation().source().identity(),
+            source_identity
+        );
+        let route = snapshot.source_route(&route_identity).unwrap();
+        assert_eq!(route.route_identity(), &route_identity);
+        assert!(!route.is_missing());
+        assert_eq!(route.sources().len(), 1);
+        assert!(route.sources()[0].exact_descriptor_eq(&source));
+        let mut aggregates = snapshot.source_aggregates();
+        assert_eq!(aggregates.len(), 1);
+        let aggregate = aggregates.next().unwrap();
+        assert_eq!(aggregate.indexed_documents(), 1);
+        assert!(aggregates.next().is_none());
+        let aggregate_identity = aggregate.source_identity_digest();
+        assert_eq!(aggregate_identity.len(), 64);
+        for (encoded, expected) in aggregate_identity
+            .as_bytes()
+            .chunks_exact(2)
+            .zip(source_identity.digest())
+        {
+            assert_eq!(
+                u8::from_str_radix(std::str::from_utf8(encoded).unwrap(), 16).unwrap(),
+                expected
+            );
+        }
+    }
+
     fn adapter_test_record() -> CoreRecord {
+        adapter_test_record_and_source().0
+    }
+
+    fn adapter_test_record_and_source() -> (CoreRecord, SourceKey) {
         let source = SourceKey::derive(
             "runtime-adapter-test",
             "runtime_adapter_fixture",
@@ -1113,17 +1198,40 @@ mod tests {
             subrecord_selector: None,
         })
         .unwrap();
-        CoreRecord::new_selected(
+        let record = CoreRecord::new_selected(
             event_id,
             session_id,
             session_id,
-            source,
+            source.clone(),
             1,
             "message",
             "primary",
             true,
             "runtime-adapter-parser-v1".to_owned(),
             "runtime adapter Core record".to_owned(),
+        )
+        .unwrap();
+        (record, source)
+    }
+
+    fn adapter_test_certificate(source: &SourceKey) -> CertifiedSource {
+        let observation =
+            SourceObservation::new(source.clone(), "runtime-adapter-observation-v1", vec![1])
+                .unwrap();
+        CertifiedSource::certify_with_frontier(
+            observation.clone(),
+            observation,
+            "runtime-adapter-parser-v1",
+            [1; 32],
+            ScannedSourceCounts {
+                complete_records: 1,
+                retained_records: 1,
+                rejected_records: 0,
+                ignored_records: 0,
+                indexed_documents: 1,
+                certified_bytes: 1,
+            },
+            None,
         )
         .unwrap()
     }

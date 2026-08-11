@@ -1,4 +1,5 @@
 use super::*;
+use ctx_history_capture_runtime::{CaptureLifecycleOpenOutcome, CaptureLifecycleSink};
 
 #[test]
 fn semantic_retry_restarts_as_replacement_before_emission_and_reports_shared_progress() {
@@ -710,18 +711,21 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
     }
     let adapter = ParallelTestAdapter;
     let resident = Mutex::new(FamilyResident::default());
-    let mut writer: IndexCaptureLifecycle =
-        GenerationWriter::open(temp.path().join("index"), test_writer_options())
+    let mut writer =
+        match IndexCaptureLifecycle::open(&temp.path().join("index"), test_writer_options())
             .unwrap()
-            .into_writer()
-            .unwrap()
-            .into();
+        {
+            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+                panic!("test lifecycle unexpectedly requires recovery")
+            }
+        };
     let mut owners = HashMap::new();
     let mut complete_inventories = Vec::new();
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
     let mut record_rejections = SourceBackedRecordRejections::default();
     let mut sink = SourceBackedGenerationSink {
-        core_record_preparer: writer.core_record_preparer().into(),
+        core_record_preparer: writer.core_preparation(),
         lifecycle: &mut writer,
         owners: &mut owners,
         complete_inventories: &mut complete_inventories,
@@ -1226,20 +1230,23 @@ fn serial_and_parallel_jsonl_emission_preserve_resource_unavailable() {
             .unwrap();
         }
         let resident = Mutex::new(FamilyResident::default());
-        let mut writer: IndexCaptureLifecycle = GenerationWriter::open(
-            temp.path().join(format!("index-{workers}")),
+        let mut writer = match IndexCaptureLifecycle::open(
+            &temp.path().join(format!("index-{workers}")),
             test_writer_options(),
         )
         .unwrap()
-        .into_writer()
-        .unwrap()
-        .into();
+        {
+            CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+            CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+                panic!("test lifecycle unexpectedly requires recovery")
+            }
+        };
         let mut owners = HashMap::new();
         let mut complete_inventories = Vec::new();
         let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
         let mut record_rejections = SourceBackedRecordRejections::default();
         let mut sink = SourceBackedGenerationSink {
-            core_record_preparer: writer.core_record_preparer().into(),
+            core_record_preparer: writer.core_preparation(),
             lifecycle: &mut writer,
             owners: &mut owners,
             complete_inventories: &mut complete_inventories,

@@ -22,9 +22,9 @@ pub(super) fn capture_staged_source_route_revalidation_receipts(
                 .filter(|owner| {
                     owner.route_index == route_index && owner.source.exact_descriptor_eq(source)
                 })
-                .ok_or(IndexError::WriterInvariant(
-                    "active route certificate has no matching source owner",
-                ))?;
+                .ok_or_else(|| {
+                    index_writer_invariant("active route certificate has no matching source owner")
+                })?;
             match (&owner.revalidation, &receipt) {
                 (None, _) => owner.revalidation = Some(receipt),
                 (
@@ -36,7 +36,7 @@ pub(super) fn capture_staged_source_route_revalidation_receipts(
                     SourceBackedRouteRevalidation::Deletion(actual),
                 ) if expected == actual => {}
                 _ => {
-                    return Err(IndexError::WriterInvariant(
+                    return Err(index_writer_invariant(
                         "active route certificate disagrees with its staged receipt",
                     ));
                 }
@@ -63,12 +63,9 @@ pub(super) fn revalidate_staged_source_route(
         .values()
         .filter(|owner| owner.route_index == route_index)
     {
-        let revalidation = owner
-            .revalidation
-            .as_ref()
-            .ok_or(IndexError::WriterInvariant(
-                "completed source route has no route-local revalidation receipt",
-            ))?;
+        let revalidation = owner.revalidation.as_ref().ok_or_else(|| {
+            index_writer_invariant("completed source route has no route-local revalidation receipt")
+        })?;
         let valid = match revalidation {
             SourceBackedRouteRevalidation::Source(certificate) if owner.present => {
                 let source = certificate.observation().source();
@@ -89,7 +86,7 @@ pub(super) fn revalidate_staged_source_route(
                     )?
             }
             _ => {
-                return Err(IndexError::WriterInvariant(
+                return Err(index_writer_invariant(
                     "source route revalidation receipt disagrees with staged ownership",
                 )
                 .into());
