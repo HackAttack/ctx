@@ -13,6 +13,7 @@ exports_files([
     "check-daemon-runtime-dependency-boundary.sh",
     "check-history-capture-build-cfg.sh",
     "check-history-query-dependency-boundary.sh",
+    "check-history-source-discovery-boundary.sh",
     "check-pro-access-build-cfg.sh",
     "check-pro-access-dependency-boundary.sh",
     "check-pro-host-dependency-boundary.sh",

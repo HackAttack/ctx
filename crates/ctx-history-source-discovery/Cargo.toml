@@ -1,0 +1,32 @@
+[package]
+name = "ctx-history-source-discovery"
+version = "0.26.0"
+description = "Provider-neutral local history source discovery for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+directories.workspace = true
+json5.workspace = true
+jsonc-parser.workspace = true
+libc.workspace = true
+quick-xml.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml_edit.workspace = true
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-source-io = { path = "../ctx-history-source-io" }
+
+[dev-dependencies]
+tempfile.workspace = true
+ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
