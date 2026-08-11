@@ -10,6 +10,7 @@ mod application;
 mod compact_presentation;
 mod event_read_model;
 mod filters;
+mod generation;
 mod json;
 mod lineage;
 mod list;
@@ -25,7 +26,11 @@ mod show_read_model;
 #[cfg(test)]
 mod application_tests;
 
-pub use application::{plan_search, PinnedHistoryQuery, PlannedSearch, SearchQueryResult};
+pub use application::{
+    execute_search, plan_search, PinnedHistoryQuery, PlannedSearch, SearchApplicationError,
+    SearchApplicationReadModelInput, SearchApplicationRequest, SearchApplicationResult,
+    SearchQueryResult,
+};
 pub use compact_presentation::{
     normalize_uuid_prefix, reference_needs_retained_peer, CompactPresentationProjection,
     UuidPrefixError,
@@ -41,6 +46,10 @@ pub use filters::{
     normalize_source_identity_filter, normalize_source_identity_filters, parse_since_filter,
     SourceIdentityFilterArgs, SourceIdentityFilterError, SourceIdentityFilters,
 };
+pub use generation::{
+    GenerationRead, GenerationReadAuthorityError, GenerationReadError, GenerationReadPort,
+    GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget, RetainedPeerRead,
+};
 pub use json::{event_origin_json, timestamp_json};
 pub use lineage::{
     copied_lineage_read_model, copied_lineage_relationship_summary, copied_lineage_summary,
@@ -51,7 +60,10 @@ pub use list::{
     ListEventsRequest, ListEventsResult, DEFAULT_EVENT_QUERY_LIMIT, MAX_EVENT_QUERY_CURSOR_CHARS,
     MAX_EVENT_QUERY_LIMIT,
 };
-pub use locate::{LocateRequest, LocateResult};
+pub use locate::{
+    execute_locate, locate_read_model, LocateApplicationError, LocateApplicationRequest,
+    LocateApplicationResult, LocateRequest, LocateResult,
+};
 pub use presentation::{
     presentations_for_search_hits_with_budget, search_snippet_fragment, SearchPresentation,
     SearchPresentationHydrationBudget, SearchPresentationRetentionBudgetExceeded,

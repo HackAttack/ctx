@@ -1,5 +1,7 @@
+#[cfg(test)]
+pub(crate) use ctx_history_read_application::copied_lineage_read_model;
 pub(crate) use ctx_history_read_application::{
-    copied_lineage_read_model, copied_lineage_relationship_summary, copied_lineage_summary,
+    copied_lineage_relationship_summary, copied_lineage_summary,
 };
 
 #[cfg(test)]

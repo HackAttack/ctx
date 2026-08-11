@@ -37,7 +37,6 @@ pub(super) use locate::render_locate_document;
 pub(super) use search::{render_search_document, render_search_not_ready_document};
 pub(super) use show::render_show_document;
 
-pub(super) use ctx_history_read_application::timestamp_json;
 #[cfg(test)]
 pub(in crate::commands::source_index) use ctx_history_read_application::{
     search_snippet_fragment, SEARCH_SNIPPET_MAX_BYTES, SEARCH_SNIPPET_MAX_CHARS,
@@ -106,34 +105,7 @@ pub(super) fn search_json_with_lineages(
     refresh_source_count: usize,
     query_duration: Duration,
 ) -> Result<Value> {
-    let normalized_query = NormalizedSearchQuery::from_request(request);
-    let command_prefix = follow_up_command_prefix(data_root);
-    let query_arguments = search_query_command_arguments(&normalized_query);
-    let result_scope = if request.events { "event" } else { "session" };
-    let commands = collection
-        .result_window
-        .hits
-        .iter()
-        .map(|hit| {
-            let event_id = hit.event.event_id;
-            let session_id = hit.event.session_id;
-            let mut suggested_next_commands = vec![format!(
-                "{command_prefix} show event {event_id} --window 10"
-            )];
-            if result_scope == "session" {
-                suggested_next_commands
-                    .insert(0, format!("{command_prefix} show session {session_id}"));
-            }
-            if !query_arguments.is_empty() {
-                suggested_next_commands.push(format!(
-                    "{command_prefix} search {query_arguments} --session {session_id}"
-                ));
-            }
-            ctx_history_read_application::SearchResultCommands {
-                suggested_next_commands,
-            }
-        })
-        .collect::<Vec<_>>();
+    let commands = search_result_commands(request, collection, data_root);
     let fallback_code = collection
         .semantic_fallback
         .as_ref()
@@ -163,6 +135,41 @@ pub(super) fn search_json_with_lineages(
             },
         },
     )
+}
+
+fn search_result_commands(
+    request: &SourceSearchRequest,
+    collection: &SearchCollection,
+    data_root: &Path,
+) -> Vec<ctx_history_read_application::SearchResultCommands> {
+    let normalized_query = NormalizedSearchQuery::from_request(request);
+    let command_prefix = follow_up_command_prefix(data_root);
+    let query_arguments = search_query_command_arguments(&normalized_query);
+    let result_scope = if request.events { "event" } else { "session" };
+    collection
+        .result_window
+        .hits
+        .iter()
+        .map(|hit| {
+            let event_id = hit.event.event_id;
+            let session_id = hit.event.session_id;
+            let mut suggested_next_commands = vec![format!(
+                "{command_prefix} show event {event_id} --window 10"
+            )];
+            if result_scope == "session" {
+                suggested_next_commands
+                    .insert(0, format!("{command_prefix} show session {session_id}"));
+            }
+            if !query_arguments.is_empty() {
+                suggested_next_commands.push(format!(
+                    "{command_prefix} search {query_arguments} --session {session_id}"
+                ));
+            }
+            ctx_history_read_application::SearchResultCommands {
+                suggested_next_commands,
+            }
+        })
+        .collect()
 }
 
 fn semantic_fallback_code(

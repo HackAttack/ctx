@@ -1,4 +1,10 @@
-use std::{path::Path, time::Duration};
+use std::{
+    cell::Cell,
+    convert::Infallible,
+    path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
@@ -16,15 +22,17 @@ use tempfile::tempdir;
 use crate::{
     copied_lineage_read_model, decode_session_event_cursor, encode_session_event_cursor,
     event_query_event_read_model, event_query_receipt, event_query_wire_request,
-    event_window_with_lineage_read_model, normalize_uuid_prefix,
+    event_window_with_lineage_read_model, execute_locate, execute_search, normalize_uuid_prefix,
     paginated_session_transcript_read_model, plan_search, render_event_read_model,
     render_search_json, retain_structured_session_page, ActiveSessionExclusion,
-    CompactPresentationProjection, EventContentProjection, EventWindowBudget, HistorySemanticBatch,
+    CompactPresentationProjection, EventContentProjection, EventWindowBudget, GenerationRead,
+    GenerationReadPort, GenerationReadRequest, GenerationReadTarget, HistorySemanticBatch,
     HistorySemanticError, HistorySemanticPort, HistorySemanticQuery, ListEventsRequest,
-    LocateRequest, LocateResult, PinnedHistoryQuery, SearchBackend, SearchJsonInput, SearchPolicy,
-    SearchRenderMetrics, SearchRequest, SearchResultCommands, SemanticReason, SessionEventMode,
-    ShowEventRequest, ShowSessionPageRequest, StructuredOutputFormat, StructuredTranscriptMode,
-    UuidPrefixError,
+    LocateApplicationRequest, LocateRequest, LocateResult, PinnedHistoryQuery, RetainedPeerRead,
+    SearchApplicationError, SearchApplicationReadModelInput, SearchApplicationRequest,
+    SearchBackend, SearchJsonInput, SearchPolicy, SearchRenderMetrics, SearchRequest,
+    SearchResultCommands, SemanticAvailability, SemanticReason, SessionEventMode, ShowEventRequest,
+    ShowSessionPageRequest, StructuredOutputFormat, StructuredTranscriptMode, UuidPrefixError,
 };
 
 struct UnusedSemanticPort;
@@ -170,6 +178,221 @@ fn lexical_request() -> SearchRequest {
     }
 }
 
+struct RecordingGenerationPort {
+    index: Option<VerifiedIndex>,
+    calls: Cell<usize>,
+    retained_peer: Cell<Option<RetainedPeerRead>>,
+}
+
+impl RecordingGenerationPort {
+    fn new(index: VerifiedIndex) -> Self {
+        Self {
+            index: Some(index),
+            calls: Cell::new(0),
+            retained_peer: Cell::new(None),
+        }
+    }
+}
+
+impl GenerationReadPort for RecordingGenerationPort {
+    type Error = Infallible;
+
+    fn read_generation(
+        &mut self,
+        request: &GenerationReadRequest,
+    ) -> Result<GenerationRead, Self::Error> {
+        self.calls.set(self.calls.get() + 1);
+        self.retained_peer.set(Some(request.retained_peer));
+        Ok(GenerationRead::new(
+            self.index.take().expect("generation read only once"),
+            None,
+        ))
+    }
+}
+
+struct CountingSemanticPort(AtomicUsize);
+
+struct CountingSemanticQuery;
+
+impl HistorySemanticPort for CountingSemanticPort {
+    type Query<'a> = CountingSemanticQuery;
+
+    fn begin_query<'a>(
+        &'a self,
+        _index: &'a VerifiedIndex,
+    ) -> Result<Self::Query<'a>, HistorySemanticError> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(CountingSemanticQuery)
+    }
+}
+
+impl HistorySemanticQuery for CountingSemanticQuery {
+    fn candidates(
+        &mut self,
+        _query: &str,
+        _filters: &ctx_history_index_query::EventSearchFilters,
+        _candidate_limit: usize,
+    ) -> Result<HistorySemanticBatch, HistorySemanticError> {
+        Ok(HistorySemanticBatch {
+            candidates: Vec::new(),
+            diagnostics: json!({"adapter": "test"}),
+        })
+    }
+}
+
+#[test]
+fn search_application_pins_once_opens_semantics_once_and_requests_peer_lazily() {
+    let temp = tempdir().unwrap();
+    let (index, _) = publish(temp.path());
+    let mut request = lexical_request();
+    request.backend = Some(SearchBackend::Hybrid);
+    let plan = plan_search(
+        request,
+        SearchPolicy {
+            default_backend: SearchBackend::Hybrid,
+            semantic: SemanticAvailability::Available,
+        },
+    )
+    .unwrap();
+    let mut generation = RecordingGenerationPort::new(index);
+    let semantic = CountingSemanticPort(AtomicUsize::new(0));
+
+    let result = execute_search(
+        SearchApplicationRequest {
+            plan,
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: false,
+            active_session: None,
+        },
+        &mut generation,
+        &semantic,
+    )
+    .unwrap();
+
+    assert_eq!(generation.calls.get(), 1);
+    assert_eq!(generation.retained_peer.get(), Some(RetainedPeerRead::Omit));
+    assert_eq!(semantic.0.load(Ordering::Relaxed), 1);
+    assert_eq!(result.query().collection.result_window.hits.len(), 3);
+    assert_eq!(
+        result.receipt().generation_id,
+        result.index().generation_id()
+    );
+    let commands = result
+        .query()
+        .collection
+        .result_window
+        .hits
+        .iter()
+        .map(|_| SearchResultCommands {
+            suggested_next_commands: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let read_model = result
+        .render_read_model(SearchApplicationReadModelInput {
+            commands: &commands,
+            freshness_mode: "test",
+            generated_at: "2026-08-11T12:00:00.000Z",
+            semantic_fallback_code: None,
+            semantic_fallback_detail: None,
+            metrics: SearchRenderMetrics {
+                refresh_status: "existing_generation",
+                refresh_source_count: 1,
+                query_duration: result.query_duration(),
+            },
+        })
+        .unwrap();
+    assert_eq!(read_model["results"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        read_model["retrieval"]["generation_id"],
+        result.receipt().generation_id
+    );
+
+    let compact_index = VerifiedIndex::open_pinned(temp.path()).unwrap();
+    let mut compact_generation = RecordingGenerationPort::new(compact_index);
+    let compact = execute_search(
+        SearchApplicationRequest {
+            plan: plan_search(
+                lexical_request(),
+                SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),
+            )
+            .unwrap(),
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: true,
+            active_session: None,
+        },
+        &mut compact_generation,
+        &UnusedSemanticPort,
+    )
+    .unwrap();
+    assert_eq!(compact_generation.calls.get(), 1);
+    assert_eq!(
+        compact_generation.retained_peer.get(),
+        Some(RetainedPeerRead::IfAvailable)
+    );
+    assert_eq!(compact.query().collection.result_window.hits.len(), 3);
+}
+
+#[test]
+fn locate_application_pins_once_and_assembles_the_neutral_read_model() {
+    let temp = tempdir().unwrap();
+    let (index, records) = publish(temp.path());
+    let mut generation = RecordingGenerationPort::new(index);
+    let located = execute_locate(
+        LocateApplicationRequest {
+            request: LocateRequest::Event {
+                selector: records[1].event_id.to_string(),
+            },
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: false,
+        },
+        &mut generation,
+    )
+    .unwrap();
+
+    assert_eq!(generation.calls.get(), 1);
+    assert_eq!(generation.retained_peer.get(), Some(RetainedPeerRead::Omit));
+    assert_eq!(located.read_model["payload_type"], "event_location");
+    assert_eq!(
+        located.read_model["ctx_event_id"],
+        records[1].event_id.as_uuid().to_string()
+    );
+}
+
+#[test]
+fn exact_generation_authority_is_checked_before_semantic_or_record_reads() {
+    let temp = tempdir().unwrap();
+    let (index, _) = publish(temp.path());
+    let mut request = lexical_request();
+    request.backend = Some(SearchBackend::Semantic);
+    let plan = plan_search(
+        request,
+        SearchPolicy {
+            default_backend: SearchBackend::Semantic,
+            semantic: SemanticAvailability::Available,
+        },
+    )
+    .unwrap();
+    let mut generation = RecordingGenerationPort::new(index);
+    let semantic = CountingSemanticPort(AtomicUsize::new(0));
+
+    let error = execute_search(
+        SearchApplicationRequest {
+            plan,
+            generation_target: GenerationReadTarget::Exact("cursor-generation".to_owned()),
+            compact_projection: false,
+            active_session: None,
+        },
+        &mut generation,
+        &semantic,
+    )
+    .err()
+    .expect("mismatched exact generation must be rejected");
+
+    assert!(matches!(error, SearchApplicationError::Generation(_)));
+    assert_eq!(generation.calls.get(), 1);
+    assert_eq!(semantic.0.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn one_pin_owns_search_locate_show_and_list_application_workflows() {
     let temp = tempdir().unwrap();
@@ -280,12 +503,6 @@ fn structured_read_models_are_composed_from_pinned_query_results() {
             &UnusedSemanticPort,
         )
         .unwrap();
-    let copied_lineages = search
-        .copied_lineages
-        .iter()
-        .map(copied_lineage_read_model)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .unwrap();
     let commands = search
         .collection
         .result_window
@@ -295,6 +512,12 @@ fn structured_read_models_are_composed_from_pinned_query_results() {
             suggested_next_commands: vec![format!("adapter command {}", hit.event.event_id)],
         })
         .collect::<Vec<_>>();
+    let copied_lineages = search
+        .copied_lineages
+        .iter()
+        .map(copied_lineage_read_model)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
     let search_value = render_search_json(SearchJsonInput {
         request: &search.request,
         index: &index,

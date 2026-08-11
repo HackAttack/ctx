@@ -98,6 +98,24 @@ if grep -REn --include='*.rs' \
   echo 'ctx-history-read-application source must remain package-local' >&2
   exit 1
 fi
+if grep -REn --include='*.rs' \
+  'dyn[[:space:]]+(GenerationReadPort|HistorySemanticPort)' \
+  "${query_root}/src"; then
+  echo 'history read application ports must use static dispatch' >&2
+  exit 1
+fi
+if [[ "$(grep -REh --include='*.rs' '^pub fn execute_search<' "${query_root}/src" | wc -l)" -ne 1 ]] \
+  || [[ "$(grep -REh --include='*.rs' '^pub fn execute_locate<' "${query_root}/src" | wc -l)" -ne 1 ]]; then
+  echo 'search and locate must each have one production application authority' >&2
+  exit 1
+fi
+if grep -Eq 'PinnedHistoryQuery|\.search\(' \
+  "${repo_root}/crates/ctx-cli/src/commands/source_index/search.rs" \
+  || grep -Eq 'PinnedHistoryQuery|\.locate\(' \
+    "${repo_root}/crates/ctx-cli/src/commands/source_index/locate.rs"; then
+  echo 'ctx-cli bypasses the application-owned search or locate authority' >&2
+  exit 1
+fi
 if [[ -e "${repo_root}/crates/ctx-history-query" ]]; then
   echo 'legacy ctx-history-query production authority still exists' >&2
   exit 1
@@ -117,7 +135,7 @@ fi
 
 physical_lines="$(find "${query_root}/src" -type f -name '*.rs' -print0 \
   | xargs -0 awk 'END { print NR }')"
-expected_physical_lines=5755
+expected_physical_lines=6425
 if (( physical_lines >= 20000 )); then
   echo "ctx-history-read-application reached its 20,000-line hard stop: ${physical_lines}" >&2
   exit 1
