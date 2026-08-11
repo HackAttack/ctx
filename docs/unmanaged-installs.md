@@ -203,7 +203,8 @@ From a checkout, use the repository's authoritative Bazel build target:
 
 ```bash
 scripts/bazelw build //crates/ctx-cli:ctx --config=release
-install -m 0755 bazel-bin/crates/ctx-cli/ctx ~/.local/bin/ctx
+install -d "$HOME/.local/bin"
+install -m 0755 bazel-bin/crates/ctx-cli/ctx "$HOME/.local/bin/ctx"
 ```
 
 Source builds are unmanaged. They do not use the official release metadata or
