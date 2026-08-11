@@ -4,6 +4,9 @@ use super::*;
 pub(super) struct SourceAliases {
     output_helpers: BTreeSet<String>,
     output_modules: BTreeSet<String>,
+    print_macro_imports: BTreeSet<usize>,
+    print_macros: BTreeSet<String>,
+    standard_modules: BTreeSet<String>,
     stdout_constructors: BTreeSet<String>,
     stderr_constructors: BTreeSet<String>,
     io_modules: BTreeSet<String>,
@@ -13,6 +16,8 @@ pub(super) struct SourceAliases {
 impl SourceAliases {
     pub(super) fn analyze(tokens: &[Token]) -> Self {
         let mut aliases = Self::default();
+        let mut imports = Vec::new();
+        let mut import_owners = Vec::new();
         for index in 0..tokens.len() {
             if tokens[index].text != "use" {
                 continue;
@@ -20,38 +25,87 @@ impl SourceAliases {
             let Some(end) = statement_end(tokens, index + 1, tokens.len()) else {
                 continue;
             };
-            let mut imports = Vec::new();
             collect_use_imports(&tokens[index + 1..end], &[], &mut imports);
-            for (path, alias) in imports {
-                let suffix = path.iter().map(String::as_str).collect::<Vec<_>>();
-                if path_ends_with(&suffix, &["std", "io", "stdout"]) {
-                    aliases.stdout_constructors.insert(alias);
-                } else if path_ends_with(&suffix, &["std", "io", "stderr"]) {
-                    aliases.stderr_constructors.insert(alias);
-                } else if path_ends_with(&suffix, &["std", "io"]) {
-                    aliases.io_modules.insert(alias);
-                } else if path_ends_with(&suffix, &["std", "io", "Write"]) {
-                    aliases.write_traits.insert(alias);
-                } else if path.last().is_some_and(|name| {
-                    matches!(
-                        name.as_str(),
-                        "stdout_writer"
-                            | "stderr_writer"
-                            | "write_stdout"
-                            | "write_stdout_line"
-                            | "write_stderr_line"
-                    )
-                }) && path[..path.len().saturating_sub(1)]
-                    .iter()
-                    .any(|segment| segment == "output")
-                {
-                    aliases.output_helpers.insert(alias);
-                } else if path.last().is_some_and(|segment| segment == "output") {
-                    aliases.output_modules.insert(alias);
+            import_owners.resize(imports.len(), index);
+        }
+        for (path, alias) in &imports {
+            let suffix = path.iter().map(String::as_str).collect::<Vec<_>>();
+            if path_ends_with(&suffix, &["std", "io", "stdout"]) {
+                aliases.stdout_constructors.insert(alias.clone());
+            } else if path_ends_with(&suffix, &["std", "io", "stderr"]) {
+                aliases.stderr_constructors.insert(alias.clone());
+            } else if path_ends_with(&suffix, &["std", "io"]) {
+                aliases.io_modules.insert(alias.clone());
+            } else if path_ends_with(&suffix, &["std", "io", "Write"]) {
+                aliases.write_traits.insert(alias.clone());
+            } else if path.last().is_some_and(|name| {
+                matches!(
+                    name.as_str(),
+                    "stdout_writer"
+                        | "stderr_writer"
+                        | "write_stdout"
+                        | "write_stdout_line"
+                        | "write_stderr_line"
+                )
+            }) && path[..path.len().saturating_sub(1)]
+                .iter()
+                .any(|segment| segment == "output")
+            {
+                aliases.output_helpers.insert(alias.clone());
+            } else if path.last().is_some_and(|segment| segment == "output") {
+                aliases.output_modules.insert(alias.clone());
+            }
+        }
+        loop {
+            let mut changed = false;
+            for (path, alias) in &imports {
+                if import_resolves_to_standard_module(path, &aliases.standard_modules) {
+                    changed |= aliases.standard_modules.insert(alias.clone());
                 }
+                if import_resolves_to_standard_print_macro(
+                    path,
+                    &aliases.standard_modules,
+                    &aliases.print_macros,
+                ) {
+                    changed |= aliases.print_macros.insert(alias.clone());
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for ((path, _), owner) in imports.iter().zip(import_owners) {
+            if import_resolves_to_standard_print_macro(
+                path,
+                &aliases.standard_modules,
+                &aliases.print_macros,
+            ) {
+                aliases.print_macro_imports.insert(owner);
             }
         }
         aliases
+    }
+
+    pub(super) fn is_standard_print_macro_import(&self, index: usize) -> bool {
+        self.print_macro_imports.contains(&index)
+    }
+
+    pub(super) fn is_standard_print_macro_call(&self, tokens: &[Token], index: usize) -> bool {
+        let Some(name) = tokens.get(index).map(|token| token.text.as_str()) else {
+            return false;
+        };
+        if tokens.get(index + 1).map(|token| token.text.as_str()) != Some("!") {
+            return false;
+        }
+        let qualifier = macro_qualifier(tokens, index);
+        if self.print_macros.contains(name) {
+            return qualifier.is_none_or(is_local_macro_qualifier);
+        }
+        if !is_standard_print_macro_name(name) {
+            return false;
+        }
+        qualifier
+            .is_none_or(|qualifier| qualifier == "std" || self.standard_modules.contains(qualifier))
     }
 
     pub(super) fn io_constructor(&self, tokens: &[Token], index: usize) -> Option<Primitive> {
@@ -99,6 +153,49 @@ impl SourceAliases {
     pub(super) fn is_imported_output_helper(&self, name: &str) -> bool {
         self.output_helpers.contains(name)
     }
+}
+
+fn import_resolves_to_standard_module(
+    path: &[String],
+    standard_modules: &BTreeSet<String>,
+) -> bool {
+    path.len() == 1 && (path[0] == "std" || standard_modules.contains(&path[0]))
+}
+
+fn import_resolves_to_standard_print_macro(
+    path: &[String],
+    standard_modules: &BTreeSet<String>,
+    print_macros: &BTreeSet<String>,
+) -> bool {
+    let Some(name) = path.last().map(String::as_str) else {
+        return false;
+    };
+    if path.len() == 2
+        && is_standard_print_macro_name(name)
+        && (path[0] == "std" || standard_modules.contains(&path[0]))
+    {
+        return true;
+    }
+    print_macros.contains(name)
+        && path[..path.len().saturating_sub(1)]
+            .iter()
+            .all(|segment| matches!(segment.as_str(), "crate" | "self" | "super"))
+}
+
+fn is_standard_print_macro_name(name: &str) -> bool {
+    matches!(name, "print" | "println" | "eprint" | "eprintln" | "dbg")
+}
+
+fn macro_qualifier(tokens: &[Token], index: usize) -> Option<&str> {
+    (index >= 3
+        && tokens[index - 2].text == ":"
+        && tokens[index - 1].text == ":"
+        && is_path_ident(&tokens[index - 3].text))
+    .then(|| tokens[index - 3].text.as_str())
+}
+
+fn is_local_macro_qualifier(qualifier: &str) -> bool {
+    matches!(qualifier, "crate" | "self" | "super")
 }
 
 fn path_ends_with(path: &[&str], suffix: &[&str]) -> bool {

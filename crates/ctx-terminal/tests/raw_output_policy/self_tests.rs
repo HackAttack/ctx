@@ -41,12 +41,153 @@ fn daemon_runtime_raw_output_mutation_is_rejected() {
 
 #[test]
 #[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
-fn terminal_print_macro_cannot_be_allowlisted() {
+fn terminal_literal_and_qualified_print_macros_cannot_be_allowlisted() {
     let sites = scan_source(
         "crates/ctx-terminal/src/example.rs",
-        "fn emit() { println!(\"unmeasured\"); }",
+        r#"
+            fn literal() { println!("unmeasured"); }
+            fn qualified() { std::println!("also unmeasured"); }
+        "#,
     );
+    assert_eq!(sites.len(), 2, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
 
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_standard_print_macro_aliases_cannot_be_allowlisted() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            use std::print as raw_print;
+            use std::println as raw_println;
+            use std::eprint as raw_eprint;
+            use std::eprintln as raw_eprintln;
+            use std::dbg as raw_dbg;
+            fn emit() {
+                raw_print!("one");
+                raw_println!("two");
+                raw_eprint!("three");
+                raw_eprintln!("four");
+                raw_dbg!(5);
+            }
+        "#,
+    );
+    assert_eq!(sites.len(), 10, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_grouped_standard_print_macro_aliases_cannot_be_allowlisted() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            use std::{
+                print as raw_print,
+                println as raw_println,
+                eprint as raw_eprint,
+                eprintln as raw_eprintln,
+                dbg as raw_dbg,
+            };
+            fn emit() {
+                raw_print!("one");
+                raw_println!("two");
+                raw_eprint!("three");
+                raw_eprintln!("four");
+                raw_dbg!(5);
+            }
+        "#,
+    );
+    assert_eq!(sites.len(), 6, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_reexported_standard_print_macro_aliases_cannot_be_allowlisted() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            pub use std::println as public_println;
+            pub use std::{
+                print as public_print,
+                eprint as public_eprint,
+                eprintln as public_eprintln,
+                dbg as public_dbg,
+            };
+            fn emit() {
+                public_print!("one");
+                public_println!("two");
+                public_eprint!("three");
+                public_eprintln!("four");
+                public_dbg!(5);
+            }
+        "#,
+    );
+    assert_eq!(sites.len(), 7, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_print_macro_reexport_is_rejected_without_a_local_call() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        "pub use std::println as externally_callable_println;",
+    );
+    assert_eq!(sites.len(), 1, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_standard_module_and_macro_alias_chains_cannot_be_allowlisted() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            use std as standard;
+            pub use standard::println as first_println;
+            use self::first_println as second_println;
+            fn emit() {
+                standard::eprintln!("one");
+                second_println!("two");
+            }
+        "#,
+    );
+    assert_eq!(sites.len(), 4, "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+fn terminal_non_print_and_nonstandard_macro_aliases_remain_allowed() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            use std::vec as raw_vec;
+            use crate::unrelated::println as unrelated_println;
+            fn build() {
+                let _ = raw_vec![1, 2, 3];
+                unrelated_println!("not the standard macro");
+            }
+        "#,
+    );
+    assert!(sites.is_empty(), "{sites:#?}");
+    assert_terminal_print_macros_are_absent(&sites);
+}
+
+#[test]
+#[should_panic(expected = "ctx-terminal production print macros bypass OutputMeasurement")]
+fn terminal_macro_rules_wrapper_body_cannot_hide_a_standard_print_macro() {
+    let sites = scan_source(
+        "crates/ctx-terminal/src/example.rs",
+        r#"
+            macro_rules! emit_unmeasured {
+                ($value:expr) => { std::println!("{}", $value) };
+            }
+        "#,
+    );
+    assert_eq!(sites.len(), 1, "{sites:#?}");
     assert_terminal_print_macros_are_absent(&sites);
 }
 
