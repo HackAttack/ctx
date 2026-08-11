@@ -1,4 +1,3 @@
-mod exact_json;
 #[cfg(test)]
 mod exact_json_tests;
 mod mcp_exchange;
@@ -8,7 +7,7 @@ mod pending_exchange;
 mod source_identity;
 mod terminal_authority;
 
-pub use exact_json::{
+pub use ctx_history_capture_model::{
     exact_bounded_string_alias, exact_json_value, raw_object_keys_are_unique, ExactJsonStringAlias,
 };
 pub use mcp_exchange::*;

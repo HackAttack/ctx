@@ -36,7 +36,7 @@ pub fn exact_bounded_string_alias<'a>(
     selected.map_or(ExactJsonStringAlias::Missing, ExactJsonStringAlias::Exact)
 }
 
-/// Provider envelopes and tool payloads are far smaller than 65,536 object
+/// Capture envelopes and tool payloads are far smaller than 65,536 object
 /// members. Keeping this limit high avoids excluding legitimate shapes while
 /// bounding the decoded keys retained by the structural-authority pass across
 /// every nested object in one record.

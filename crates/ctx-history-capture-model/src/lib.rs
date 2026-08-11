@@ -3,6 +3,7 @@
 //! This crate owns no source access, discovery execution, provider implementation,
 //! repository evidence, refresh publication, or runtime policy.
 
+mod exact_json;
 mod identity;
 mod import;
 mod output;
@@ -10,6 +11,9 @@ mod progress;
 mod record;
 mod source;
 
+pub use exact_json::{
+    exact_bounded_string_alias, exact_json_value, raw_object_keys_are_unique, ExactJsonStringAlias,
+};
 pub use identity::{fnv1a64, stable_capture_uuid};
 pub use import::{
     CatalogSummary, ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
