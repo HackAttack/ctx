@@ -26,6 +26,7 @@ PROD_SRCS = glob(
 
 CTX_HISTORY_REFRESH_EXECUTION_DEPS = [
     "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-index:lib",
 ]

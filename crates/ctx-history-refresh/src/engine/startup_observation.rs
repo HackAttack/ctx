@@ -28,6 +28,13 @@ pub(super) fn startup_routes_requiring_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ctx_history_capture::{
+        SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedRouteDriver,
+    };
+    use ctx_history_capture_model::{
+        ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
+        ProviderSourceStatus,
+    };
 
     fn watch_catalog(path: PathBuf) -> (SourceBackedWatchCatalog, SourceRouteIdentity) {
         let source = ProviderSource {

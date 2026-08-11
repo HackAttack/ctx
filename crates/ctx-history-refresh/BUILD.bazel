@@ -34,6 +34,7 @@ CTX_HISTORY_REFRESH_DEPS = [
 
 CTX_HISTORY_REFRESH_TEST_DEPS = [
     "//crates/ctx-history-capture:lib",
+    "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-index:lib",
     "//crates/ctx-history-refresh-execution:test_support_lib",
