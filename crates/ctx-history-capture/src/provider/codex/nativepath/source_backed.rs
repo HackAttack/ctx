@@ -23,7 +23,7 @@ use super::{
         revalidate_codex_catalog_source_capability,
     },
     rows::{
-        CodexProviderEventIdentityKindV0, CodexProviderEventIdentityV0, CodexSourceBackedRowV0,
+        CodexCoreRecordDraft, CodexProviderEventIdentityKindV0, CodexProviderEventIdentityV0,
         MAX_CODEX_DURABLE_METADATA_BYTES,
     },
     source::{CodexCatalogSource, CodexFileObservation},
@@ -73,12 +73,6 @@ pub enum CodexSourceBackedErrorV0 {
     InvalidCheckpoint,
     #[error("Codex scanner emitted a row without lexical body text")]
     MissingLexicalBody,
-    #[error("Codex scanner emitted a row without its native session owner")]
-    MissingPageOwner,
-    #[error("Codex scanner owner {actual:?} does not match catalog owner {expected:?}")]
-    OwnerMismatch { expected: String, actual: String },
-    #[error("Codex scan counters do not reconcile with streamed Core records")]
-    ScanCountMismatch,
     #[error("Codex source count overflow")]
     CountOverflow,
     #[error("Codex generation participant count overflow")]
@@ -90,6 +84,17 @@ pub enum CodexSourceBackedErrorV0 {
 }
 
 pub type CodexSourceBackedResultV0<T> = Result<T, CodexSourceBackedErrorV0>;
+
+impl From<CodexSourceBackedErrorV0> for CaptureError {
+    fn from(error: CodexSourceBackedErrorV0) -> Self {
+        match error {
+            CodexSourceBackedErrorV0::Capture(error) => error,
+            CodexSourceBackedErrorV0::Io(error) => Self::Io(error),
+            CodexSourceBackedErrorV0::Json(error) => Self::Json(error),
+            error => Self::InvalidPayload(error.to_string()),
+        }
+    }
+}
 
 #[cfg(any(test, ctx_codex_causal_qualification))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -206,8 +211,7 @@ pub(crate) use catalog::{
 #[cfg(test)]
 pub(crate) use causal::{install_after_codex_causal_stage_hook_v1, CodexCausalSourceObservationV1};
 pub(crate) use generation::{CodexGenerationNormalizationCoordinatorV0, CodexGenerationRouteV0};
-use identity::{
-    codex_core_record, codex_session_identity, codex_source_key, validate_owner,
-    CodexEventIdentityStateV0,
+pub(in crate::provider::codex::nativepath) use identity::{
+    codex_core_record, codex_session_identity, codex_source_key, CodexEventIdentityStateV0,
 };
 pub(crate) use jsonl_family::CodexSessionJsonlFamilyAdapterV0;

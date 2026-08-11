@@ -32,11 +32,11 @@ fn ctx_retrieval_link_survives_source_backed_page_rollover() {
     let result = sink
         .rows
         .iter()
-        .find(|row| row.event_type == EventType::CommandOutput)
+        .find(|row| row.semantic_event_type() == EventType::CommandOutput)
         .unwrap();
-    assert_eq!(result.lexical_body, output);
+    assert_eq!(result.lexical_body(), output);
     assert_eq!(
-        result.discovery_exclusion,
+        result.discovery_exclusion(),
         Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
     );
 }
@@ -67,28 +67,28 @@ fn c0_shapes_retain_conversation_summaries_calls_and_results() {
     assert_eq!(
         sink.rows
             .iter()
-            .filter(|row| row.event_type == EventType::Message)
+            .filter(|row| row.semantic_event_type() == EventType::Message)
             .count(),
         11
     );
     assert_eq!(
         sink.rows
             .iter()
-            .filter(|row| row.event_type == EventType::Summary)
+            .filter(|row| row.semantic_event_type() == EventType::Summary)
             .count(),
         3
     );
     assert_eq!(
         sink.rows
             .iter()
-            .filter(|row| row.event_type == EventType::CommandOutput)
+            .filter(|row| row.semantic_event_type() == EventType::CommandOutput)
             .count(),
         3
     );
     assert_eq!(
         sink.rows
             .iter()
-            .filter(|row| row.event_type == EventType::ToolCall)
+            .filter(|row| row.semantic_event_type() == EventType::ToolCall)
             .count(),
         3
     );
@@ -148,11 +148,11 @@ fn compacted_payloads_and_known_result_aliases_retain_known_result_content() {
     let (scan, sink) = scan_collect(discover_one(&path, "shape-owner"));
 
     assert_eq!(sink.rows.len(), 2);
-    assert_eq!(sink.rows[0].event_type, EventType::Summary);
-    assert_eq!(sink.rows[0].raw_ordinal, 1);
-    assert_eq!(sink.rows[1].event_type, EventType::ToolOutput);
-    assert_eq!(sink.rows[1].raw_ordinal, 2);
-    assert_eq!(sink.rows[1].lexical_body, "future result survives");
+    assert_eq!(sink.rows[0].semantic_event_type(), EventType::Summary);
+    assert_eq!(sink.rows[0].raw_ordinal(), 1);
+    assert_eq!(sink.rows[1].semantic_event_type(), EventType::ToolOutput);
+    assert_eq!(sink.rows[1].raw_ordinal(), 2);
+    assert_eq!(sink.rows[1].lexical_body(), "future result survives");
     assert_eq!(scan.counters.native_result_records, 2);
     assert_eq!(scan.counters.retained_json_parses, 1);
 }
@@ -209,7 +209,7 @@ fn unknown_result_like_discriminators_are_ignored_without_losing_neighbors_or_bo
     assert_eq!(
         sink.rows
             .iter()
-            .map(|row| (row.raw_ordinal, row.lexical_body.as_str()))
+            .map(|row| (row.raw_ordinal(), row.lexical_body()))
             .collect::<Vec<_>>(),
         vec![
             (1, "valid before unknown records"),
@@ -225,10 +225,10 @@ fn unknown_result_like_discriminators_are_ignored_without_losing_neighbors_or_bo
     assert_eq!(scan.complete_prefix_end, contents.len() as u64);
     assert_eq!(scan.next_raw_ordinal, 7);
     for row in &sink.rows {
-        assert!(!row.lexical_body.contains(binary_body));
-        assert!(!row.lexical_body.contains(unknown_body));
+        assert!(!row.lexical_body().contains(binary_body));
+        assert!(!row.lexical_body().contains(unknown_body));
         let structured = row
-            .structured_content
+            .structured_content()
             .as_ref()
             .map(Value::to_string)
             .unwrap_or_default();

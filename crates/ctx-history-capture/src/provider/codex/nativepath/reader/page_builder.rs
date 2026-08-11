@@ -7,44 +7,46 @@ impl CodexNativeScanner {
     ) -> Result<CodexNativePage> {
         let expected_offset = input.complete_prefix_end()?;
         Ok(CodexNativePage {
-            owner: self.owner.clone(),
             expected_offset,
-            source_backed_rows: Vec::new(),
+            records: Vec::new(),
             serialized_bytes: PAGE_FIXED_WIRE_BYTES,
             physical_records: 0,
         })
     }
 
-    pub(super) fn take_ready_semantic_page(&mut self) -> Option<CodexNativePage> {
-        self.ready_core_page.take()
+    pub(super) fn active_semantic_page(&mut self) -> Result<&mut CodexNativePage> {
+        self.active_core_page
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex NativePath lost its active semantic page",
+            ))
     }
 
-    pub(super) fn emit_active_semantic_page(
-        &mut self,
-        input: &JsonlFamilyExecutionIo,
-    ) -> Result<CodexNativePage> {
+    pub(super) fn emit_active_semantic_page(&mut self) -> Result<CodexNativePage> {
         let page = self
             .active_core_page
             .take()
             .ok_or(CaptureError::SystemInvariant(
                 "Codex NativePath has no active semantic page to emit",
             ))?;
-        self.finish_semantic_page(input, page)
+        self.finish_semantic_page(page)
     }
 
-    pub(super) fn queue_semantic_end_page(&mut self, input: &JsonlFamilyExecutionIo) -> Result<()> {
-        if let Some(page) = self.active_core_page.take() {
-            if page.has_progress() {
-                self.ready_core_page = Some(self.finish_semantic_page(input, page)?);
-            }
-        }
-        Ok(())
+    pub(super) fn emit_semantic_end_page(&mut self) -> Result<Option<CodexNativePage>> {
+        let Some(page) = self
+            .active_core_page
+            .take()
+            .filter(|page| page.physical_records != 0)
+        else {
+            return Ok(None);
+        };
+        self.finish_semantic_page(page).map(Some)
     }
 
     pub(in crate::provider::codex::nativepath) fn finish_semantic(
         mut self,
     ) -> Result<CodexSemanticScan> {
-        if !self.exhausted || self.active_core_page.is_some() || self.ready_core_page.is_some() {
+        if !self.exhausted || self.active_core_page.is_some() {
             return Err(CaptureError::InvalidPayload(
                 "Codex semantic scan must drain every owned page before checkpointing".to_owned(),
             ));
@@ -103,23 +105,17 @@ impl CodexNativeScanner {
 
     pub(super) fn finish_semantic_page(
         &mut self,
-        _input: &JsonlFamilyExecutionIo,
-        mut page: CodexNativePage,
+        page: CodexNativePage,
     ) -> Result<CodexNativePage> {
-        page.owner = self
-            .owner
-            .clone()
-            .map(|owner| validate_catalog_owner(&self.source, owner))
-            .transpose()?;
         debug_assert!(page.physical_records <= MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS);
-        debug_assert!(page.units() <= MAX_CODEX_PAGE_UNITS);
+        debug_assert!(page.records.len() <= MAX_CODEX_PAGE_UNITS);
         debug_assert!(
             page.serialized_bytes <= MAX_CODEX_PAGE_BYTES
-                || (page.source_backed_rows.len() == 1
+                || (page.records.len() == 1
                     && page.serialized_bytes <= MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES)
         );
         self.counters.emitted_pages = self.counters.emitted_pages.saturating_add(1);
-        self.counters.peak_page_rows = self.counters.peak_page_rows.max(page.units());
+        self.counters.peak_page_rows = self.counters.peak_page_rows.max(page.records.len());
         self.counters.peak_page_bytes = self.counters.peak_page_bytes.max(page.serialized_bytes);
         Ok(page)
     }

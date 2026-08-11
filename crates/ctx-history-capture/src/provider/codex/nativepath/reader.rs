@@ -7,6 +7,8 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_core::{CoreRecord, SourceKey, StableEntityId};
+use ctx_history_index::BaseEventIdentityLookup;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -25,10 +27,14 @@ use super::{
     rows::{
         build_source_backed_event_row, build_source_backed_sparse_output_row, encoded_json_len,
         provider_event_identity, source_backed_display_text, source_backed_output_eligibility,
-        CodexRetainedNonMaterialized, CodexSessionRow, CodexSourceBackedDocumentEligibility,
-        CodexSourceBackedRowV0,
+        CodexCoreRecordDraft, CodexRetainedNonMaterialized, CodexSessionRow,
+        CodexSourceBackedDocumentEligibility,
     },
     source::{CodexCatalogSource, CodexFileObservation},
+    source_backed::{
+        codex_core_record, codex_session_identity, codex_source_key, CodexEventIdentityStateV0,
+        CodexSourceBackedErrorV0,
+    },
 };
 use crate::{
     common::io::{open_provider_source_file, OpenedProviderSourceFile},
@@ -104,23 +110,11 @@ pub(crate) struct CodexScanCounters {
 }
 
 /// One owned, bounded Core page.
-#[derive(Debug)]
 pub(crate) struct CodexNativePage {
-    pub(crate) owner: Option<CodexSessionRow>,
     expected_offset: u64,
-    pub(crate) source_backed_rows: Vec<CodexSourceBackedRowV0>,
+    pub(crate) records: Vec<CoreRecord>,
     pub(crate) serialized_bytes: usize,
     pub(crate) physical_records: u64,
-}
-
-impl CodexNativePage {
-    fn units(&self) -> usize {
-        self.source_backed_rows.len()
-    }
-
-    fn has_progress(&self) -> bool {
-        self.physical_records != 0
-    }
 }
 
 pub(super) struct CodexSemanticScan {
@@ -128,7 +122,6 @@ pub(super) struct CodexSemanticScan {
     pub(super) counters: CodexScanCounters,
 }
 
-#[derive(Debug)]
 pub(crate) struct CodexNativeScanner {
     source: CodexCatalogSource,
     owner: Option<CodexSessionRow>,
@@ -139,8 +132,10 @@ pub(crate) struct CodexNativeScanner {
     repository_candidate_authority: project::CodexRepositoryCandidateAuthority,
     counters: CodexScanCounters,
     local_turn_started: bool,
+    core_source: SourceKey,
+    core_session_id: StableEntityId,
+    event_identity_state: CodexEventIdentityStateV0,
     active_core_page: Option<CodexNativePage>,
-    ready_core_page: Option<CodexNativePage>,
     exhausted: bool,
 }
 
@@ -154,14 +149,6 @@ struct SemanticScannerPosition {
 #[derive(Default)]
 struct CodexRecordProjection {
     context_mutation: Option<CodexContextMutation>,
-    source_backed_units: usize,
-    core_serialized_bytes: usize,
-}
-
-impl CodexRecordProjection {
-    fn core_units(&self) -> usize {
-        self.source_backed_units
-    }
 }
 
 // Produced once per decoded record: boxing the 296-byte source-backed mutation
@@ -174,7 +161,8 @@ enum CodexContextMutation {
         origin_call_id: String,
     },
     SourceBackedRow {
-        row: CodexSourceBackedRowV0,
+        row: CodexCoreRecordDraft,
+        estimated_bytes: usize,
         insert_context: Option<(String, CodexToolCallContext, CodexPendingToolAuthority)>,
         remove_contexts: Vec<String>,
     },

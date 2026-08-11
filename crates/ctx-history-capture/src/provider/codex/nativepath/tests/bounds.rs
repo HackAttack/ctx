@@ -38,8 +38,10 @@ fn one_valid_source_backed_record_may_roll_past_the_eight_mib_page_target() {
     let (scan, sink) = scan_collect(discover_one(&path, "source-backed-full-body-owner"));
 
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].lexical_body, full_body);
-    assert!(sink.rows[0].lexical_body.ends_with("codex-full-body-tail"));
+    assert_eq!(sink.rows[0].lexical_body(), full_body);
+    assert!(sink.rows[0]
+        .lexical_body()
+        .ends_with("codex-full-body-tail"));
     let oversized_page = sink
         .pages
         .iter()
@@ -68,7 +70,7 @@ fn records_over_16_mib_are_stream_skipped_without_losing_physical_ordinals() {
     let (scan, sink) = scan_collect(discover_one(&path, "oversized-owner"));
 
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].raw_ordinal, 3);
+    assert_eq!(sink.rows[0].raw_ordinal(), 3);
     assert_eq!(scan.next_raw_ordinal, 4);
     assert_eq!(scan.counters.complete_records, 4);
     assert_eq!(scan.counters.oversized_records, 2);
@@ -147,13 +149,13 @@ fn combined_semantic_authority_preflight_is_counted_once() {
 }
 
 #[test]
-#[ignore = "diagnostic release-mode benchmark over the 154 MB Codex fixture"]
+#[ignore = "diagnostic release-mode Core projection benchmark over the 154 MB Codex fixture"]
 fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     const EXPECTED_FILES: usize = 6_000;
     const EXPECTED_BYTES: u64 = 154_299_600;
     const EXPECTED_SHA256: &str =
         "b8558416ccb9719c5c8e0e3e1821ea94bef1e5c413a3070b9982fa759493e82b";
-    const EXPECTED_ROWS: u64 = 24_000;
+    const EXPECTED_ROWS: u64 = 30_000;
     const EXPECTED_RESULTS: u64 = 6_000;
     const EXPECTED_MALFORMED: u64 = 60;
     const EXPECTED_INCOMPLETE_TAILS: u64 = 60;
@@ -184,7 +186,18 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     let discovery = discover_codex_catalog_sources(&catalog);
     assert!(discovery.rejections.is_empty(), "{discovery:?}");
     assert_eq!(discovery.sources.len(), EXPECTED_FILES);
-    let sources = discovery.sources;
+    let mut sources = discovery.sources;
+    for (index, source) in sources.iter_mut().enumerate() {
+        let owner = format!("quickbench-{index:06}");
+        if index.is_multiple_of(10) {
+            let parent = format!("quickbench-parent-{index:06}");
+            source.catalog_parent_native_session_id = Some(parent.clone());
+            source.catalog_session_relationship = SessionRelationshipKind::Delegated;
+            source.catalog_root_native_session_id = Some(parent);
+        } else {
+            source.catalog_root_native_session_id = Some(owner);
+        }
+    }
 
     let scan_once = || {
         let mut rows = 0_u64;
@@ -213,7 +226,7 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
         assert_eq!(malformed, EXPECTED_MALFORMED);
         assert_eq!(incomplete_tails, EXPECTED_INCOMPLETE_TAILS);
         assert_eq!(structural_parses, 36_060);
-        assert_eq!(typed_parses, 30_000);
+        assert_eq!(typed_parses, 36_000);
         assert_eq!(structural_output_probes, EXPECTED_RESULTS);
         black_box((
             rows,
@@ -235,13 +248,20 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     samples.sort_unstable();
     let median = samples[1];
     println!(
-        "Codex source-backed NativePath median over {} bytes and {} sources: {:.3}s",
+        "Codex source-backed NativePath median over {} bytes and {} sources: {:.3}s; rows={} results={} malformed={} incomplete_tails={} structural_parses=36060 typed_parses=36000 structural_output_probes={}",
         EXPECTED_BYTES,
         EXPECTED_FILES,
-        median.as_secs_f64()
+        median.as_secs_f64(),
+        EXPECTED_ROWS,
+        EXPECTED_RESULTS,
+        EXPECTED_MALFORMED,
+        EXPECTED_INCOMPLETE_TAILS,
+        EXPECTED_RESULTS,
     );
+    // The exact-base full row-page plus Core bridge is about 3.6s on this
+    // fixture; retain the original benchmark's greater-than-2x gross guard.
     assert!(
-        median.as_secs_f64() < 1.0,
-        "obvious NativePath parser regression from the recorded 0.468s behavior: {median:?}"
+        median.as_secs_f64() < 8.0,
+        "obvious NativePath Core projection regression from the recorded 3.6s full-bridge behavior: {median:?}"
     );
 }

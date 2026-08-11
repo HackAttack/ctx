@@ -48,7 +48,7 @@ fn raw_ordinals_include_headers_outputs_malformed_and_ignored_records() {
     assert_eq!(
         sink.rows
             .iter()
-            .map(|row| row.raw_ordinal)
+            .map(|row| row.raw_ordinal())
             .collect::<Vec<_>>(),
         vec![1, 2, 4, 6]
     );
@@ -60,7 +60,7 @@ fn raw_ordinals_include_headers_outputs_malformed_and_ignored_records() {
     assert_eq!(
         sink.rows
             .iter()
-            .map(|row| row.session_cwd.as_deref())
+            .map(|row| row.session_cwd().as_deref())
             .collect::<Vec<_>>(),
         vec![
             Some("/workspace"),
@@ -169,10 +169,10 @@ fn source_backed_row_preserves_full_lexical_text_and_native_identity() {
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
     let row = &sink.rows[0];
-    assert_eq!(row.raw_ordinal, 1);
-    assert!(row.lexical_body.contains("MESSAGE_BEGIN"));
-    assert!(row.lexical_body.ends_with("MESSAGE_END"));
-    assert_eq!(row.session_cwd.as_deref(), Some("/workspace"));
+    assert_eq!(row.raw_ordinal(), 1);
+    assert!(row.lexical_body().contains("MESSAGE_BEGIN"));
+    assert!(row.lexical_body().ends_with("MESSAGE_END"));
+    assert_eq!(row.session_cwd().as_deref(), Some("/workspace"));
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn output_heavy_scan_retains_complete_result_bodies() {
     assert_eq!(scan.counters.structural_output_probes, 1);
     assert_eq!(scan.counters.typed_json_parses, 5);
     assert_eq!(scan.counters.retained_json_parses, 3);
-    assert_eq!(sink.rows[2].lexical_body, secret);
+    assert_eq!(sink.rows[2].lexical_body(), secret);
     assert!(format!("{:?}", sink.rows).contains("RESULT_ONLY_MARKER_"));
 }
 
@@ -211,30 +211,29 @@ fn ctx_retrieval_discovery_fixture_requires_exact_cli_envelopes_and_mcp_evidence
     let excluded = sink
         .rows
         .iter()
-        .filter(|row| row.discovery_exclusion.is_some())
+        .filter(|row| row.discovery_exclusion().is_some())
         .map(|row| {
             (
-                row.provider_event_identity
-                    .as_ref()
-                    .map(|identity| identity.value.as_str())
-                    .unwrap_or("missing"),
-                row.event_type,
+                row.provider_event_identity()
+                    .map(|identity| identity.value)
+                    .unwrap_or_else(|| "missing".to_owned()),
+                row.semantic_event_type(),
             )
         })
         .collect::<Vec<_>>();
     assert_eq!(
         excluded,
         vec![
-            ("ctx-exact", EventType::ToolCall),
-            ("ctx-exact", EventType::CommandOutput),
-            ("ctx-stderr", EventType::ToolCall),
-            ("ctx-malformed", EventType::ToolCall),
-            ("ctx-warning", EventType::ToolCall),
-            ("mcp-ctx-exact", EventType::ToolOutput),
+            ("ctx-exact".to_owned(), EventType::ToolCall),
+            ("ctx-exact".to_owned(), EventType::CommandOutput),
+            ("ctx-stderr".to_owned(), EventType::ToolCall),
+            ("ctx-malformed".to_owned(), EventType::ToolCall),
+            ("ctx-warning".to_owned(), EventType::ToolCall),
+            ("mcp-ctx-exact".to_owned(), EventType::ToolOutput),
         ]
     );
     assert!(sink.rows.iter().all(|row| {
-        row.discovery_exclusion
+        row.discovery_exclusion()
             .is_none_or(|value| value == CoreDiscoveryExclusion::CtxRetrievalDerived)
     }));
 
@@ -242,15 +241,15 @@ fn ctx_retrieval_discovery_fixture_requires_exact_cli_envelopes_and_mcp_evidence
         .rows
         .iter()
         .find(|row| {
-            row.event_type == EventType::CommandOutput
+            row.semantic_event_type() == EventType::CommandOutput
                 && row
-                    .provider_event_identity
+                    .provider_event_identity()
                     .as_ref()
                     .is_some_and(|identity| identity.value == "ctx-exact")
         })
         .unwrap();
     assert_eq!(
-        exact_output.lexical_body,
+        exact_output.lexical_body(),
         concat!(
             "Chunk ID: a1b2c3\n",
             "Wall time: 0.125 seconds\n",
@@ -276,12 +275,13 @@ fn ctx_retrieval_discovery_fixture_requires_exact_cli_envelopes_and_mcp_evidence
             sink.rows
                 .iter()
                 .filter(|row| {
-                    row.provider_event_identity
+                    row.provider_event_identity()
                         .as_ref()
                         .is_some_and(|identity| identity.value == call_id)
                 })
                 .all(|row| {
-                    row.event_type == EventType::ToolCall || row.discovery_exclusion.is_none()
+                    row.semantic_event_type() == EventType::ToolCall
+                        || row.discovery_exclusion().is_none()
                 }),
             "unexpected derived result for {call_id}"
         );
@@ -324,19 +324,19 @@ fn orphan_and_duplicate_pending_ctx_results_fail_open() {
         .rows
         .iter()
         .find(|row| {
-            row.provider_event_identity
+            row.provider_event_identity()
                 .as_ref()
                 .is_some_and(|identity| identity.value == "orphan-ctx-call")
         })
         .unwrap();
-    assert_eq!(orphan.lexical_body, output);
-    assert_eq!(orphan.discovery_exclusion, None);
+    assert_eq!(orphan.lexical_body(), output);
+    assert_eq!(orphan.discovery_exclusion(), None);
 
     let duplicate_rows = sink
         .rows
         .iter()
         .filter(|row| {
-            row.provider_event_identity
+            row.provider_event_identity()
                 .as_ref()
                 .is_some_and(|identity| identity.value == "duplicate-ctx-call")
         })
@@ -345,22 +345,22 @@ fn orphan_and_duplicate_pending_ctx_results_fail_open() {
     assert_eq!(
         duplicate_rows
             .iter()
-            .filter(|row| row.event_type == EventType::ToolCall)
+            .filter(|row| row.semantic_event_type() == EventType::ToolCall)
             .count(),
         2
     );
     assert!(duplicate_rows
         .iter()
-        .filter(|row| row.event_type == EventType::ToolCall)
+        .filter(|row| row.semantic_event_type() == EventType::ToolCall)
         .all(|row| {
-            row.discovery_exclusion == Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
+            row.discovery_exclusion() == Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
         }));
     let duplicate_result = duplicate_rows
         .iter()
-        .find(|row| row.event_type == EventType::CommandOutput)
+        .find(|row| row.semantic_event_type() == EventType::CommandOutput)
         .unwrap();
-    assert_eq!(duplicate_result.lexical_body, output);
-    assert_eq!(duplicate_result.discovery_exclusion, None);
+    assert_eq!(duplicate_result.lexical_body(), output);
+    assert_eq!(duplicate_result.discovery_exclusion(), None);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn codex_duplicate_result_terminals_fail_open_without_retracting_invocation_excl
         .rows
         .iter()
         .filter(|row| {
-            row.provider_event_identity
+            row.provider_event_identity()
                 .as_ref()
                 .is_some_and(|identity| identity.value == call_id)
         })
@@ -403,12 +403,12 @@ fn codex_duplicate_result_terminals_fail_open_without_retracting_invocation_excl
 
     assert_eq!(rows.len(), 3);
     assert_eq!(
-        rows[0].discovery_exclusion,
+        rows[0].discovery_exclusion(),
         Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
     );
     assert!(rows[1..]
         .iter()
-        .all(|row| row.discovery_exclusion.is_none() && row.lexical_body == output));
+        .all(|row| row.discovery_exclusion().is_none() && row.lexical_body() == output));
 }
 
 #[test]
@@ -445,12 +445,12 @@ fn mcp_direct_result_minimal_synthetic_retains_text_and_linkage() {
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
     let row = &sink.rows[0];
-    assert_eq!(row.event_type, EventType::ToolOutput);
-    assert_eq!(row.lexical_body, output);
-    let identity = row.provider_event_identity.as_ref().unwrap();
+    assert_eq!(row.semantic_event_type(), EventType::ToolOutput);
+    assert_eq!(row.lexical_body(), output);
+    let identity = row.provider_event_identity().unwrap();
     assert_eq!(identity.kind.as_str(), "call_id");
     assert_eq!(identity.value, call_id);
-    let native = &row.structured_content.as_ref().unwrap()["provider_native_tool_result"];
+    let native = &row.structured_content().as_ref().unwrap()["provider_native_tool_result"];
     assert_eq!(native["item_type"], "tool_result");
     assert_eq!(native["call_id"], call_id);
     assert_eq!(native["result_variant"], "Ok");
@@ -513,11 +513,15 @@ fn versioned_mcp_terminal_results_abstain_without_dropping_the_event() {
         assert_eq!(scan.counters.rejected_complete_records, 0, "{cli_version}");
         assert_eq!(sink.rows.len(), 1, "{cli_version}");
         let row = &sink.rows[0];
-        assert_eq!(row.event_type, EventType::ToolOutput, "{cli_version}");
-        assert_eq!(row.lexical_body, output, "{cli_version}");
-        assert!(row.structured_content.is_some(), "{cli_version}");
+        assert_eq!(
+            row.semantic_event_type(),
+            EventType::ToolOutput,
+            "{cli_version}"
+        );
+        assert_eq!(row.lexical_body(), output, "{cli_version}");
+        assert!(row.structured_content().is_some(), "{cli_version}");
         assert!(row.mcp_tool_call.is_none(), "{cli_version}");
-        let exchange = row.mcp_exchange.as_ref().unwrap();
+        let exchange = row.mcp_exchange().as_ref().unwrap();
         assert_eq!(exchange.provider_call_id, format!("exec-mcp-{cli_version}"));
         let invocation = exchange.invocation.as_ref().unwrap();
         assert_eq!(invocation.server, "versioned-server");
@@ -576,8 +580,9 @@ fn mcp_direct_result_retains_complete_multi_block_content() {
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].lexical_body, expected);
-    let native = &sink.rows[0].structured_content.as_ref().unwrap()["provider_native_tool_result"];
+    assert_eq!(sink.rows[0].lexical_body(), expected);
+    let native =
+        &sink.rows[0].structured_content().as_ref().unwrap()["provider_native_tool_result"];
     assert_eq!(native["result_variant"], "Ok");
     assert_eq!(native["result_metadata"]["content"][0]["type"], "text");
     assert_eq!(native["result_metadata"]["content"][1]["type"], "text");
@@ -624,8 +629,8 @@ fn mcp_direct_result_accepts_native_error_variants() {
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 2);
-    assert_eq!(sink.rows[0].lexical_body, "tool-level failure");
-    assert_eq!(sink.rows[1].lexical_body, "protocol-level failure");
+    assert_eq!(sink.rows[0].lexical_body(), "tool-level failure");
+    assert_eq!(sink.rows[1].lexical_body(), "protocol-level failure");
     assert!(sink.rows.iter().all(|row| {
         row.mcp_tool_call.as_ref()
             == Some(&ctx_history_core::McpToolCallAttribution {
@@ -634,11 +639,11 @@ fn mcp_direct_result_accepts_native_error_variants() {
             })
     }));
     assert_eq!(
-        sink.rows[1].structured_content.as_ref().unwrap()["provider_native_tool_result"]
+        sink.rows[1].structured_content().as_ref().unwrap()["provider_native_tool_result"]
             ["result_variant"],
         "Err"
     );
-    assert!(!serde_json::to_string(&sink.rows[1].structured_content)
+    assert!(!serde_json::to_string(&sink.rows[1].structured_content())
         .unwrap()
         .contains("protocol-level failure"));
 }
@@ -716,12 +721,12 @@ fn malformed_mcp_attribution_never_drops_an_ordinary_terminal_result() {
     assert_eq!(
         sink.rows
             .iter()
-            .map(|row| row.lexical_body.as_str())
+            .map(|row| row.lexical_body())
             .collect::<Vec<_>>(),
         cases.iter().map(|(marker, _)| *marker).collect::<Vec<_>>()
     );
     assert_eq!(
-        sink.rows[1].structured_content.as_ref().unwrap()["provider_native_tool_result"]
+        sink.rows[1].structured_content().as_ref().unwrap()["provider_native_tool_result"]
             ["invocation"],
         false
     );
@@ -826,7 +831,7 @@ fn malformed_or_ambiguous_mcp_direct_results_are_rejected_locally() {
     let (scan, sink) = scan_collect(discover_one(&path, "mcp-malformed-owner"));
 
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].lexical_body, "later valid record");
+    assert_eq!(sink.rows[0].lexical_body(), "later valid record");
     assert_eq!(
         scan.counters.malformed_records,
         malformed_results.len() as u64
@@ -845,8 +850,9 @@ fn redacted_real_shape_fixture_retains_mcp_direct_result() {
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].lexical_body, "REAL_SHAPE_DIRECT_RESULT");
-    let native = &sink.rows[0].structured_content.as_ref().unwrap()["provider_native_tool_result"];
+    assert_eq!(sink.rows[0].lexical_body(), "REAL_SHAPE_DIRECT_RESULT");
+    let native =
+        &sink.rows[0].structured_content().as_ref().unwrap()["provider_native_tool_result"];
     assert_eq!(native["call_id"], "exec-redacted-real-shape");
     assert_eq!(native["result_variant"], "Ok");
     assert_eq!(native["result_metadata"]["isError"], false);
@@ -886,7 +892,7 @@ fn synthetic_adversarial_fixture_requires_source_unique_terminal_authority() {
         let row = sink
             .rows
             .iter()
-            .find(|row| row.lexical_body == marker)
+            .find(|row| row.lexical_body() == marker)
             .unwrap_or_else(|| panic!("missing terminal marker {marker}"));
         assert!(
             row.mcp_tool_call.is_none(),
@@ -996,13 +1002,13 @@ fn malformed_same_id_mcp_terminals_abstain_before_and_after_valid_results() {
     assert_eq!(scan.counters.peak_mcp_terminal_authority_entries, 12);
     assert_eq!(sink.rows.len(), cases.len());
     for (row, (call_id, marker, attributed)) in sink.rows.iter().zip(cases) {
-        assert_eq!(row.lexical_body, marker);
-        let identity = row.provider_event_identity.as_ref().unwrap();
+        assert_eq!(row.lexical_body(), marker);
+        let identity = row.provider_event_identity().unwrap();
         assert_eq!(identity.kind.as_str(), "call_id");
         assert_eq!(identity.value, call_id);
         assert_eq!(row.mcp_tool_call.is_some(), attributed, "{marker}");
         assert_eq!(
-            row.structured_content.as_ref().unwrap()["provider_native_tool_result"]
+            row.structured_content().as_ref().unwrap()["provider_native_tool_result"]
                 ["result_variant"],
             "Err"
         );
@@ -1045,8 +1051,8 @@ fn source_backed_projection_prefilters_with_exact_scan_accounting() {
     assert_eq!(scan.counters.typed_json_parses, 2);
 
     let row = &sink.rows[0];
-    assert_eq!(row.raw_ordinal, 3);
-    assert_eq!(row.session_cwd.as_deref(), Some("/workspace"));
+    assert_eq!(row.raw_ordinal(), 3);
+    assert_eq!(row.session_cwd().as_deref(), Some("/workspace"));
 }
 
 #[test]

@@ -209,6 +209,13 @@ pub(super) fn validate_catalog_owner(
 ) -> Result<CodexSessionRow> {
     let catalog_owner = source.catalog_native_session_id.as_deref();
     let catalog_root = source.catalog_root_native_session_id.as_deref();
+    let tuple_valid = match source.catalog_session_relationship {
+        SessionRelationshipKind::Root => {
+            source.catalog_parent_native_session_id.is_none() && catalog_owner == catalog_root
+        }
+        SessionRelationshipKind::RelatedUnknown => false,
+        _ => source.catalog_parent_native_session_id.is_some() && catalog_root.is_some(),
+    };
     if catalog_owner != Some(scanned_owner.native_session_id.as_str())
         || source.catalog_parent_native_session_id != scanned_owner.parent_native_session_id
         || source.catalog_session_relationship != scanned_owner.session_relationship
@@ -218,6 +225,7 @@ pub(super) fn validate_catalog_owner(
             .root_native_session_id
             .as_deref()
             .is_some_and(|scanned_root| Some(scanned_root) != catalog_root)
+        || !tuple_valid
     {
         return Err(CaptureError::InvalidPayload(
             "Codex normalized catalog owner changed before NativePath admission".to_owned(),
