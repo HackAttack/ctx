@@ -22,9 +22,9 @@ use crate::{
     provider::source_backed::{
         family::jsonl::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
-            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
-            JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilyWorkerContext,
-            JsonlOversizedRecordPolicy, JsonlRecordRef,
+            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyProjector,
+            JsonlFamilyRootMissingMode, JsonlFamilyWorkerContext, JsonlOversizedRecordPolicy,
+            JsonlRecordRef,
         },
         SourceBackedRouteErrorKind,
     },
@@ -234,14 +234,6 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
 
     fn discover(&self, root: &Path) -> crate::Result<JsonlFamilyInventory> {
         self.discover_family(root)
-    }
-
-    fn observe_terminal_membership(
-        &self,
-        root: &Path,
-        opening: &JsonlFamilyInventory,
-    ) -> crate::Result<JsonlFamilyMembershipObservation> {
-        JsonlFamilyMembershipObservation::observe(root, opening)
     }
 
     fn discovery_error_kind(&self, error: &CaptureError) -> SourceBackedRouteErrorKind {
