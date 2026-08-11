@@ -8,8 +8,8 @@ use ctx_history_capture::{
 use ctx_history_core::{platform_security::establish_private_data_root, CaptureProvider};
 use ctx_history_ingest_application::{
     CaptureAdmissionPort, HistorySourcePluginSource, IngestProgressPort, IngestPublication,
-    IngestRefreshPort, ProviderRefreshModeFact, ProviderSelectionGuidance, SourceDiscoveryPort,
-    SourceStats,
+    IngestRefreshPort, IngestReport, ProviderRefreshModeFact, ProviderSelectionGuidance,
+    SourceDiscoveryPort, SourceStats,
 };
 use ctx_history_refresh::{ExplicitSourceCatalogAuthority, ExplicitSourceCatalogUpsert};
 
@@ -32,8 +32,7 @@ use super::{
         explicit_source_for_admission, relocate_explicit_source, relocation_authority_for_import,
         upsert_explicit_source,
     },
-    presentation::application_import_report,
-    ImportReport, ImportRunOptions, ProviderRefreshCollector, ProviderRefreshRuntimeFacts,
+    ImportRunOptions, ProviderRefreshCollector, ProviderRefreshRuntimeFacts,
 };
 
 pub(super) struct ApplicationImportContext<'a> {
@@ -49,7 +48,7 @@ pub(super) struct ApplicationImportContext<'a> {
 
 pub(super) fn run_application_import(
     context: ApplicationImportContext<'_>,
-) -> Result<ImportReport> {
+) -> Result<IngestReport> {
     let request = ctx_history_ingest_application::IngestRequest {
         path: context.args.path.clone(),
         provider: context
@@ -65,7 +64,6 @@ pub(super) fn run_application_import(
         reset_cursor: context.args.reset_cursor,
         no_daemon: context.args.no_daemon,
     };
-    let operation = context.options.operation;
     let mut host = CliIngestHost {
         config: context.config,
         options: context.options,
@@ -80,7 +78,7 @@ pub(super) fn run_application_import(
         context.provider_refreshes,
         context.refresh_trigger,
     );
-    Ok(application_import_report(outcome, operation))
+    Ok(outcome)
 }
 
 struct CliIngestHost<'a> {

@@ -426,6 +426,45 @@ fn exact_route_admits_and_refreshes_exactly_once() {
 }
 
 #[test]
+fn exact_failure_detail_remains_typed_for_cli_presentation() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = write_source(&temp);
+    let mut host = FakeHost::new(
+        path.clone(),
+        publication(receipt(
+            None,
+            SourceBackedRefreshRouteResult::succeeded(ROUTE.into(), true),
+        )),
+    );
+    let lineage = host.lineage_hex();
+    let mut failed =
+        SourceBackedRefreshRouteResult::failed(ROUTE.to_owned(), "incompatible".to_owned(), false);
+    failed
+        .source_failures
+        .push(SourceBackedRefreshSourceFailure {
+            route_identity: ROUTE.to_owned(),
+            source_identity: SOURCE_ID.to_owned(),
+            provider: "codex".to_owned(),
+            class: "incompatible".to_owned(),
+            carried_forward: false,
+            source_selector: path.display().to_string(),
+            detail: "unsupported source schema".to_owned(),
+        });
+    host.publication = Some(publication(receipt(Some(lineage), failed)));
+
+    let report = run_ingest(&exact_request(path.clone()), temp.path(), &mut host).unwrap();
+
+    assert_eq!(
+        report.first_failure_detail(),
+        Some((
+            path.to_str().unwrap(),
+            crate::IngestFailureType::UnsupportedSchema,
+            "unsupported source schema",
+        ))
+    );
+}
+
+#[test]
 fn pinned_generation_mismatch_is_rejected_by_application() {
     let temp = tempfile::tempdir().unwrap();
     let path = write_source(&temp);

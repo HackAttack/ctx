@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use serde_json::Value;
+use ctx_history_ingest_application::IngestReport;
 
 use crate::analytics::{ImportTelemetry, ProviderRefreshTrigger};
 use crate::progress::ProgressArg;
@@ -15,7 +15,6 @@ mod explicit_source_catalog;
 mod presentation;
 mod provider_refresh;
 mod report;
-mod totals;
 
 use application_adapter::{run_application_import, ApplicationImportContext};
 pub(crate) use ctx_history_ingest_application::SourceStats;
@@ -24,20 +23,6 @@ pub(crate) use entry::{import_report_analytics_outcome, import_report_failure_ty
 pub(crate) use explicit_source_catalog::load_explicit_source_catalog_authority;
 pub(crate) use explicit_source_catalog::ExplicitSourceCatalogAuthority;
 pub(crate) use provider_refresh::{ProviderRefreshCollector, ProviderRefreshRuntimeFacts};
-pub(crate) use totals::ImportTotals;
-
-#[derive(Debug)]
-pub(crate) struct ImportReport {
-    pub(crate) resume: bool,
-    pub(crate) totals: ImportTotals,
-    pub(crate) sources: Vec<Value>,
-}
-
-impl ImportReport {
-    pub(crate) fn resume_mode(&self) -> &'static str {
-        resume_mode_name(self.resume)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImportRunOptions {
@@ -67,7 +52,7 @@ pub(crate) fn run_import_internal(
     refresh_trigger: ProviderRefreshTrigger,
     config: &crate::config::AppConfig,
     presentation: ImportRunPresentation<'_>,
-) -> Result<ImportReport> {
+) -> Result<IngestReport> {
     let ImportRunPresentation { options, ui } = presentation;
     run_application_import(ApplicationImportContext {
         args,

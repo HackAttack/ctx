@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use ctx_history_capture::{ProviderImportSummary, ProviderImportWorkResult};
 use ctx_history_core::CaptureProvider;
+use ctx_history_ingest_application::ImportTotals;
 
 use crate::analytics::{
     count_bucket, duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome,
@@ -11,7 +12,7 @@ use crate::analytics::{
     ProviderRefreshTrigger, ProviderRefreshWorkKind, PublicEventV1,
 };
 
-use super::{ImportTotals, SourceStats};
+use super::SourceStats;
 
 #[derive(Debug, Default)]
 pub(crate) struct ProviderRefreshCollector {

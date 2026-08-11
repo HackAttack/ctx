@@ -6,25 +6,7 @@ use serde_json::{json, Value};
 
 use crate::{compact_json, progress::format_bytes};
 
-use super::ImportReport;
-
-pub(super) fn application_import_report(
-    report: ctx_history_ingest_application::IngestReport,
-    operation: &'static str,
-) -> ImportReport {
-    let sources = report
-        .sources
-        .iter()
-        .map(|source| source_json(source, operation))
-        .collect();
-    ImportReport {
-        resume: report.resume,
-        totals: report.totals,
-        sources,
-    }
-}
-
-fn source_json(source: &IngestSourceOutcome, operation: &'static str) -> Value {
+pub(super) fn source_json(source: &IngestSourceOutcome, operation: &'static str) -> Value {
     match source {
         IngestSourceOutcome::Automatic(outcome) => automatic_json(outcome),
         IngestSourceOutcome::Exact(outcome) => exact_json(outcome, operation),

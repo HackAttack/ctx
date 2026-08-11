@@ -277,15 +277,31 @@ pub struct IngestReport {
 
 impl IngestReport {
     pub fn first_failure_detail(&self) -> Option<(&str, IngestFailureType, &str)> {
-        self.sources.iter().find_map(|source| {
-            let IngestSourceOutcome::SourceFailure(failure) = source else {
-                return None;
-            };
-            Some((
+        self.sources.iter().find_map(|source| match source {
+            IngestSourceOutcome::SourceFailure(failure) => Some((
                 failure.source_selector.as_str(),
                 failure.failure_type,
                 failure.detail.as_str(),
-            ))
+            )),
+            IngestSourceOutcome::Exact(exact) if exact.route_source_failure_total != 0 => {
+                exact.requested_failure.as_ref().map_or_else(
+                    || {
+                        Some((
+                            "",
+                            exact.failure_type,
+                            "source failure detail omitted from bounded diagnostics",
+                        ))
+                    },
+                    |failure| {
+                        Some((
+                            failure.source_selector.as_str(),
+                            exact.failure_type,
+                            failure.detail.as_str(),
+                        ))
+                    },
+                )
+            }
+            _ => None,
         })
     }
 }
