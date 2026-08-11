@@ -1,0 +1,13 @@
+[package]
+name = "ctx-history-cli"
+version = "1.0.0"
+description = "Transport-neutral history command application and presentation"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
