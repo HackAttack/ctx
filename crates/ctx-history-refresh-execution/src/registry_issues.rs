@@ -164,7 +164,7 @@ pub(super) fn automatic_registry_route_less_blockers(
 }
 
 fn automatic_registry_issue_failure_class(
-    source: &ctx_history_capture::ProviderSource,
+    source: &ProviderSource,
     reason: &SourceBackedAutomaticUnavailableReason,
 ) -> Option<SourceBackedSourceFailureClass> {
     match reason {
@@ -189,15 +189,11 @@ fn automatic_registry_issue_failure_class(
     }
 }
 
-fn automatic_registry_issue_route_identity(
-    source: &ctx_history_capture::ProviderSource,
-) -> Result<SourceRouteIdentity> {
+fn automatic_registry_issue_route_identity(source: &ProviderSource) -> Result<SourceRouteIdentity> {
     automatic_source_backed_route_identity(source).map_err(Into::into)
 }
 
-fn automatic_registry_issue_source_identity(
-    source: &ctx_history_capture::ProviderSource,
-) -> Result<String> {
+fn automatic_registry_issue_source_identity(source: &ProviderSource) -> Result<String> {
     ctx_history_capture::source_backed_source_failure_identity(source).map_err(Into::into)
 }
 

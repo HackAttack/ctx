@@ -29,9 +29,11 @@ pub(super) fn startup_routes_requiring_refresh(
 mod tests {
     use super::*;
     use ctx_history_capture::{
+        SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedRouteDriver,
+    };
+    use ctx_history_capture_model::{
         ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-        ProviderSourceStatus, SourceBackedProviderRegistry, SourceBackedRoute,
-        SourceBackedRouteDriver,
+        ProviderSourceStatus,
     };
 
     fn watch_catalog(path: PathBuf) -> (SourceBackedWatchCatalog, SourceRouteIdentity) {

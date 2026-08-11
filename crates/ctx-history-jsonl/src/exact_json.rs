@@ -4,7 +4,7 @@ use serde::{
     de::{DeserializeSeed, MapAccess, SeqAccess, Visitor},
     Deserializer,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Provider envelopes and tool payloads are far smaller than 65,536 object
 /// members. Keeping this limit high avoids excluding legitimate shapes while
@@ -17,7 +17,7 @@ const MAX_TOTAL_OBJECT_MEMBERS: usize = 65_536;
 /// establish structural authority without allocating a second value tree.
 /// Member-budget exhaustion returns false, leaving callers to ordinary
 /// discovery instead of rejecting the provider record.
-pub(crate) fn raw_object_keys_are_unique(input: &[u8]) -> bool {
+pub fn raw_object_keys_are_unique(input: &[u8]) -> bool {
     let mut deserializer = serde_json::Deserializer::from_slice(input);
     let mut remaining_object_members = MAX_TOTAL_OBJECT_MEMBERS;
     if (UniqueJsonShapeSeed {
@@ -32,7 +32,7 @@ pub(crate) fn raw_object_keys_are_unique(input: &[u8]) -> bool {
 }
 
 /// Parses one exact JSON value after the shared duplicate-key preflight.
-pub(crate) fn exact_value(input: &str) -> Option<Value> {
+pub fn exact_json_value(input: &str) -> Option<Value> {
     raw_object_keys_are_unique(input.as_bytes())
         .then(|| serde_json::from_str(input).ok())
         .flatten()
@@ -137,15 +137,11 @@ impl<'de> Visitor<'de> for UniqueJsonShapeVisitor<'_> {
     }
 }
 
-pub(crate) fn default_metadata() -> Value {
-    json!({})
-}
-
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
 
-    use super::{exact_value, raw_object_keys_are_unique, MAX_TOTAL_OBJECT_MEMBERS};
+    use super::{exact_json_value, raw_object_keys_are_unique, MAX_TOTAL_OBJECT_MEMBERS};
 
     fn nested_objects_with_total_members(total_member_count: usize) -> String {
         const MEMBERS_PER_NESTED_OBJECT: usize = 256;
@@ -180,7 +176,7 @@ mod tests {
     fn exact_json_authority_rejects_duplicate_escaped_and_incomplete_values() {
         let exact = br#"{"command":"ctx search exact","nested":{"key":1},"items":[null,true]}"#;
         assert!(raw_object_keys_are_unique(exact));
-        assert!(exact_value(std::str::from_utf8(exact).unwrap()).is_some());
+        assert!(exact_json_value(std::str::from_utf8(exact).unwrap()).is_some());
         assert!(!raw_object_keys_are_unique(
             br#"{"command":"ordinary","command":"ctx search secret"}"#,
         ));
@@ -203,6 +199,6 @@ mod tests {
     fn exact_json_authority_abstains_when_nested_maps_exceed_the_total_member_limit() {
         let input = nested_objects_with_total_members(MAX_TOTAL_OBJECT_MEMBERS + 1);
         assert!(!raw_object_keys_are_unique(input.as_bytes()));
-        assert!(exact_value(&input).is_none());
+        assert!(exact_json_value(&input).is_none());
     }
 }

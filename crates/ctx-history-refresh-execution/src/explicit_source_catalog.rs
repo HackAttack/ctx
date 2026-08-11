@@ -17,10 +17,13 @@ use ctx_history_capture::{
     register_landed_source_backed_route_with_data_root, register_lingma_source_backed_route,
     register_nanoclaw_source_backed_route_with_base_sources, register_warp_source_backed_route,
     source_backed_route_constructor, source_backed_route_inventory,
-    validate_provider_source_roots_outside_data_root, DiscoveryReport, ProviderCatalogSupport,
-    ProviderImportSupport, ProviderSource, ProviderSourceKind, ProviderSourceStatus,
-    SourceBackedAutomaticRegistryBuild, SourceBackedProviderRegistry, SourceBackedRouteConstructor,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteSelection,
+    validate_provider_source_roots_outside_data_root, SourceBackedAutomaticRegistryBuild,
+    SourceBackedProviderRegistry, SourceBackedRouteConstructor, SourceBackedRouteError,
+    SourceBackedRouteErrorKind, SourceBackedRouteSelection,
+};
+use ctx_history_capture_model::{
+    DiscoveryReport, ProviderCatalogSupport, ProviderImportSupport, ProviderSource,
+    ProviderSourceKind, ProviderSourceStatus,
 };
 use ctx_history_core::{CaptureProvider, CertifiedSource, SourceAnchor, TypedKey};
 use ctx_history_index::VerifiedIndex;

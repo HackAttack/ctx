@@ -28,7 +28,10 @@ fi
 for retired_case in \
   retired-top-level-uninstall \
   retired-command-surfaces \
+  retired-capture-pro-output-authority \
+  retired-capture-repository-authority \
   retired-misplaced-pro-uninstall \
+  retired-repository-exact-json-authority \
   retired-update-invocation \
   retired-update-route; do
   if bash "${checker}" "${fixture_root}/${retired_case}" >/dev/null 2>&1; then

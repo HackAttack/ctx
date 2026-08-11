@@ -26,9 +26,12 @@ use crate::{
     },
 };
 use ctx_history_capture::{
+    SourceBackedProviderRegistry, SourceBackedRefreshScope, SourceBackedRoute,
+    SourceBackedRouteDriver, SourceBackedSelectorAuthority,
+};
+use ctx_history_capture_model::{
     ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-    ProviderSourceStatus, SourceBackedProviderRegistry, SourceBackedRefreshScope,
-    SourceBackedRoute, SourceBackedRouteDriver, SourceBackedSelectorAuthority,
+    ProviderSourceStatus,
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,

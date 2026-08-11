@@ -20,7 +20,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 #[cfg(test)]
 use ctx_history_capture::{
-    build_automatic_source_backed_registry_from_report, DiscoveryReport, ProviderSourceStatus,
+    build_automatic_source_backed_registry_from_report,
     SourceBackedDetailedRefreshProgress as CaptureSourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedRouteResult, SourceBackedSelectorAuthority,
     SourceBackedSourceFailures,
@@ -31,6 +31,8 @@ use ctx_history_capture::{
     DiscoveryContext, RouteObservation, SourceBackedCoordinatorError, SourceBackedRouteError,
     SourceBackedRouteErrorKind, SourceBackedSourceFailureClass, SourceBackedWatchCatalog,
 };
+#[cfg(test)]
+use ctx_history_capture_model::{DiscoveryReport, ProviderSourceStatus};
 use ctx_history_core::utc_now;
 #[cfg(test)]
 use ctx_history_core::CaptureProvider;

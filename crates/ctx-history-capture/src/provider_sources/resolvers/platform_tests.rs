@@ -3,8 +3,8 @@ use std::fs;
 
 use super::*;
 use crate::{
-    provider_source_for_path, provider_source_spec, ProviderImportSupport,
-    ProviderSourceStatusReason,
+    provider_source_for_path, provider_source_spec, provider_source_status_reason,
+    ProviderImportSupport, ProviderSourceStatusReason,
 };
 use rusqlite::Connection;
 
@@ -816,7 +816,7 @@ fn trae_current_database_reports_missing_valid_empty_and_malformed_states() {
         report.sources[0].import_support,
         ProviderImportSupport::Native
     );
-    assert_eq!(report.sources[0].status_reason(), None);
+    assert_eq!(provider_source_status_reason(&report.sources[0]), None);
 
     let explicit_plaintext = provider_source_for_path(CaptureProvider::Trae, current.clone());
     assert_eq!(explicit_plaintext.status, ProviderSourceStatus::Available);
@@ -828,7 +828,7 @@ fn trae_current_database_reports_missing_valid_empty_and_malformed_states() {
         explicit_plaintext.import_support,
         ProviderImportSupport::Explicit
     );
-    assert_eq!(explicit_plaintext.status_reason(), None);
+    assert_eq!(provider_source_status_reason(&explicit_plaintext), None);
 
     let encrypted_shape = (0..4096)
         .map(|index| u8::try_from((index * 131 + 17) % 251).unwrap())
@@ -855,7 +855,7 @@ fn trae_current_database_reports_missing_valid_empty_and_malformed_states() {
         ProviderImportSupport::Unsupported
     );
     assert_eq!(
-        report.sources[0].status_reason(),
+        provider_source_status_reason(&report.sources[0]),
         Some(ProviderSourceStatusReason::BlockedAuthOrEncryption)
     );
     assert_eq!(
@@ -882,7 +882,7 @@ fn trae_current_database_reports_missing_valid_empty_and_malformed_states() {
     assert_eq!(explicit.source_kind, ProviderSourceKind::DetectionOnly);
     assert_eq!(explicit.import_support, ProviderImportSupport::Unsupported);
     assert_eq!(
-        explicit.status_reason(),
+        provider_source_status_reason(&explicit),
         Some(ProviderSourceStatusReason::BlockedAuthOrEncryption)
     );
     assert_eq!(

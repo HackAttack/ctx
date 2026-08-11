@@ -25,14 +25,18 @@ use ctx_history_capture::{
     automatic_source_backed_route_identity, build_automatic_source_backed_registry_from_report,
     discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
     source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
-    DiscoveryContext, DiscoveryIssueKind, DiscoveryReport, ProviderSourceStatus,
-    SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
+    DiscoveryContext, SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
     SourceBackedCoordinatorError,
     SourceBackedDetailedRefreshProgress as CaptureSourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailures,
     SourceBackedProviderRegistry, SourceBackedRecordRejections, SourceBackedRouteError,
     SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedSourceFailureClass,
     SourceBackedSourceFailures, SourceBackedSuccessfulRouteOutcome,
+};
+#[cfg(test)]
+use ctx_history_capture_model::DiscoveryIssue;
+use ctx_history_capture_model::{
+    DiscoveryIssueKind, DiscoveryReport, ProviderSource, ProviderSourceStatus,
 };
 use ctx_history_core::{CertifiedSource, ScannedSourceCounts};
 use ctx_history_index::{

@@ -2,8 +2,11 @@ use super::*;
 use std::fs;
 
 use ctx_history_capture::{
-    provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, ProviderCatalogSupport,
-    ProviderImportSupport, ProviderSource, ProviderSourceKind, SourceBackedSelectorAuthority,
+    provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs,
+    SourceBackedSelectorAuthority,
+};
+use ctx_history_capture_model::{
+    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CoreRecord, EventIdentityInput,

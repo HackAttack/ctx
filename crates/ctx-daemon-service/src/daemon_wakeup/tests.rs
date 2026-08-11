@@ -1,9 +1,12 @@
 use super::*;
 use ctx_daemon_runtime::{NativeWatchError, NativeWatchEvent, NativeWatchIgnore};
 use ctx_history_capture::{
-    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-    ProviderSourceStatus, SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedRouteDriver,
+    SourceBackedProviderRegistry, SourceBackedRoute, SourceBackedRouteDriver,
     SourceBackedSelectorAuthority,
+};
+use ctx_history_capture_model::{
+    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
+    ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
 use std::{

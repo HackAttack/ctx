@@ -1,136 +1,26 @@
-use std::path::PathBuf;
-
+pub use ctx_history_capture_model::{
+    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderCatalogSupport,
+    ProviderDefaultLocation, ProviderImportSupport, ProviderSource, ProviderSourceKind,
+    ProviderSourceSpec, ProviderSourceStatus, ProviderSourceStatusReason,
+};
 use ctx_history_core::CaptureProvider;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiscoveryIssueKind {
-    NoDiskHistory,
-    SelectorUnreconstructible,
-    InsufficientOfficialEvidence,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveryIssue {
-    pub provider: CaptureProvider,
-    pub path: Option<PathBuf>,
-    pub kind: DiscoveryIssueKind,
-    pub reason: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DiscoveryReport {
-    pub sources: Vec<ProviderSource>,
-    pub issues: Vec<DiscoveryIssue>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderSourceKind {
-    NativeHistory,
-    DetectionOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderImportSupport {
-    Native,
-    Explicit,
-    Unsupported,
-}
-
-impl ProviderImportSupport {
-    pub fn is_importable(self) -> bool {
-        matches!(self, Self::Native | Self::Explicit)
-    }
-
-    pub fn is_auto_importable(self) -> bool {
-        matches!(self, Self::Native)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderCatalogSupport {
-    Native,
-    None,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderSourceStatus {
-    Available,
-    Empty,
-    Unknown,
-    Missing,
-    Unsupported,
-}
-
-impl ProviderSourceStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::Empty => "empty",
-            Self::Unknown => "unknown",
-            Self::Missing => "missing",
-            Self::Unsupported => "unsupported",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderSourceStatusReason {
-    BlockedAuthOrEncryption,
-}
-
-impl ProviderSourceStatusReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::BlockedAuthOrEncryption => "blocked_auth_or_encryption",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ProviderDefaultLocation {
-    pub path_components: &'static [&'static str],
-    pub source_format: &'static str,
-    pub source_kind: ProviderSourceKind,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ProviderSourceSpec {
-    pub provider: CaptureProvider,
-    pub display_name: &'static str,
-    pub default_locations: &'static [ProviderDefaultLocation],
-    pub import_support: ProviderImportSupport,
-    pub catalog_support: ProviderCatalogSupport,
-    pub unsupported_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderSource {
-    pub provider: CaptureProvider,
-    pub path: PathBuf,
-    pub exists: bool,
-    pub source_format: &'static str,
-    pub source_kind: ProviderSourceKind,
-    pub import_support: ProviderImportSupport,
-    pub catalog_support: ProviderCatalogSupport,
-    pub status: ProviderSourceStatus,
-    pub unsupported_reason: Option<&'static str>,
-}
-
-impl ProviderSource {
-    pub fn status_reason(&self) -> Option<ProviderSourceStatusReason> {
-        match (
-            self.provider,
-            self.status,
-            self.source_kind,
-            self.import_support,
-        ) {
-            (
-                CaptureProvider::Trae,
-                ProviderSourceStatus::Unknown,
-                ProviderSourceKind::DetectionOnly,
-                ProviderImportSupport::Unsupported,
-            ) => Some(ProviderSourceStatusReason::BlockedAuthOrEncryption),
-            _ => None,
-        }
+/// Applies provider discovery policy to a captured source observation.
+pub fn provider_source_status_reason(
+    source: &ProviderSource,
+) -> Option<ProviderSourceStatusReason> {
+    match (
+        source.provider,
+        source.status,
+        source.source_kind,
+        source.import_support,
+    ) {
+        (
+            CaptureProvider::Trae,
+            ProviderSourceStatus::Unknown,
+            ProviderSourceKind::DetectionOnly,
+            ProviderImportSupport::Unsupported,
+        ) => Some(ProviderSourceStatusReason::BlockedAuthOrEncryption),
+        _ => None,
     }
 }

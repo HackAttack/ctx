@@ -25,5 +25,6 @@ ctx-history-index = { path = "../ctx-history-index" }
 ctx-history-refresh-execution = { path = "../ctx-history-refresh-execution" }
 
 [dev-dependencies]
+ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-refresh-execution = { path = "../ctx-history-refresh-execution", features = ["test-support"] }
 tempfile.workspace = true

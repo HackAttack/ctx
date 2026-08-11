@@ -1,0 +1,19 @@
+[package]
+name = "ctx-history-capture-model"
+version = "0.26.0"
+description = "Provider-neutral capture contracts and value objects for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ctx-history-core = { path = "../ctx-history-core" }
+serde.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
