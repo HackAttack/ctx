@@ -120,15 +120,18 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
     snapshot_context: &Arc<SqliteSourceSnapshotContext>,
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
-    allow_immutable: bool,
-    source_limit: u64,
-    scratch_limit: u64,
+    options: SqliteSourceSnapshotOptions,
     after_database_copy: impl FnOnce(),
     report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<AcquiredSqliteConnection, SqliteSourceProgressError<E>> {
+    let source_limit = options.limits.maximum_source_bytes;
+    let scratch_limit = options.limits.maximum_scratch_bytes;
     let scratch = SqliteRouteScratch::new(snapshot_context, scratch_limit);
     let copied_bytes = enforce_snapshot_copy_bounds_with_limit(family, evidence, source_limit)?;
-    if allow_immutable && family.wal.is_none() && family.shared_memory.is_none() {
+    if options.policy == SqliteSourceSnapshotPolicy::ExactRevision
+        && family.wal.is_none()
+        && family.shared_memory.is_none()
+    {
         #[cfg(target_os = "linux")]
         if immutable_procfd_available(family.database.file()) {
             return Ok(AcquiredSqliteConnection {

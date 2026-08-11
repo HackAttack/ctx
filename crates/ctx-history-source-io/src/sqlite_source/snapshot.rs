@@ -70,6 +70,18 @@ impl Default for SqliteSourceSnapshotLimits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SqliteSourceSnapshotOptions {
+    policy: SqliteSourceSnapshotPolicy,
+    limits: SqliteSourceSnapshotLimits,
+}
+
+impl SqliteSourceSnapshotOptions {
+    const fn new(policy: SqliteSourceSnapshotPolicy, limits: SqliteSourceSnapshotLimits) -> Self {
+        Self { policy, limits }
+    }
+}
+
 /// Retains an approved parent-directory handle together with the pathname that
 /// stock SQLite is allowed to open beneath it.
 pub fn retain_sqlite_source_directory_authority(
@@ -114,8 +126,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_policy(
     match open_root_handle_sqlite_source_snapshot_with_progress_and_hooks(
         authority,
         database_name,
-        policy,
-        limits,
+        SqliteSourceSnapshotOptions::new(policy, limits),
         || {},
         || {},
         || {},
@@ -138,8 +149,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_progress<E>(
     open_root_handle_sqlite_source_snapshot_with_progress_and_hooks(
         authority,
         database_name,
-        policy,
-        limits,
+        SqliteSourceSnapshotOptions::new(policy, limits),
         || {},
         || {},
         || {},
@@ -150,8 +160,7 @@ pub(super) fn open_root_handle_sqlite_source_snapshot_with_progress<E>(
 fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,
-    policy: SqliteSourceSnapshotPolicy,
-    limits: SqliteSourceSnapshotLimits,
+    options: SqliteSourceSnapshotOptions,
     after_parent_retention: impl FnOnce(),
     after_database_copy: impl FnOnce(),
     before_source_revalidation: impl FnOnce(),
@@ -169,14 +178,11 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
             ))
         })?;
     let native_evidence = family.capture_evidence()?;
-    let allow_immutable = policy == SqliteSourceSnapshotPolicy::ExactRevision;
     let mut acquired = acquire_sqlite_connection_with_progress(
         &authority.snapshot_context,
         &family,
         &native_evidence,
-        allow_immutable,
-        limits.maximum_source_bytes,
-        limits.maximum_scratch_bytes,
+        options,
         after_database_copy,
         report_progress,
     )?;
@@ -227,7 +233,7 @@ fn open_root_handle_sqlite_source_snapshot_with_progress_and_hooks<E>(
         native_evidence,
         sqlite_evidence,
         evidence,
-        policy,
+        policy: options.policy,
         admitted_revision_is_replay_safe: true,
         strategy,
         copied_bytes,
