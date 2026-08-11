@@ -1,39 +1,40 @@
 #!/usr/bin/env python3
-"""Static dependency boundary for ctx-history-capture-runtime."""
+"""Static dependency boundary for ctx-history-capture-runtime and JSONL."""
 
 from __future__ import annotations
 
+import ast
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 
-EXPECTED_DEPENDENCIES = {"uuid": {"workspace": True}}
-EXPECTED_DEV_DEPENDENCIES = {"thiserror": {"workspace": True}}
+EXPECTED_RUNTIME_DEPENDENCIES = {"uuid": {"workspace": True}}
+EXPECTED_RUNTIME_DEV_DEPENDENCIES = {"thiserror": {"workspace": True}}
 RUNTIME_FORBIDDEN_CARGO = {
     "ctx-history-capture",
     "ctx-history-index",
     "ctx-history-jsonl",
 }
-RUNTIME_FORBIDDEN_BAZEL = (
-    "//crates/ctx-history-capture:",
-    "//crates/ctx-history-index:",
-    "//crates/ctx-history-jsonl:",
-    "provider",
-)
 JSONL_FORBIDDEN_CARGO = {"ctx-history-index", "ctx-history-index-format"}
-JSONL_FORBIDDEN_BAZEL = (
-    "//crates/ctx-history-index:",
-    "//crates/ctx-history-index-format:",
-    "@crates//:ctx-history-index",
-    "@crates//:ctx-history-index-format",
+JSONL_DIRECT_BAZEL_DEPENDENCIES = (
+    "//crates/ctx-history-capture-model:lib",
+    "//crates/ctx-history-capture-runtime:lib",
+    "//crates/ctx-history-core:lib",
 )
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
 
 
 class BoundaryError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class Token:
+    kind: str
+    value: str
 
 
 def _dependency_tables(
@@ -91,15 +92,93 @@ def _read_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def _workspace_dependencies(workspace_manifest: dict[str, Any]) -> dict[str, Any]:
+    workspace = workspace_manifest.get("workspace")
+    if not isinstance(workspace, dict):
+        raise BoundaryError("root Cargo manifest must define a workspace table")
+    dependencies = workspace.get("dependencies", {})
+    if not isinstance(dependencies, dict):
+        raise BoundaryError("root Cargo workspace.dependencies must be a table")
+    return dependencies
+
+
+def _canonical_dependency_name(
+    dependency_key: str,
+    specification: Any,
+    package: str,
+    table_name: str,
+    workspace_dependencies: dict[str, Any],
+    *,
+    workspace_entry: bool = False,
+) -> str:
+    context = f"{package} Cargo {table_name} dependency {dependency_key!r}"
+    if not isinstance(dependency_key, str) or not dependency_key:
+        raise BoundaryError(f"{context} has an invalid dependency key")
+    if isinstance(specification, str):
+        return dependency_key
+    if not isinstance(specification, dict):
+        raise BoundaryError(f"{context} must be a string or inline table")
+
+    package_name = specification.get("package")
+    if package_name is not None and (
+        not isinstance(package_name, str) or not package_name
+    ):
+        raise BoundaryError(f"{context} has an invalid package rename")
+
+    workspace_inherited = specification.get("workspace")
+    if workspace_inherited is not None and not isinstance(workspace_inherited, bool):
+        raise BoundaryError(f"{context} has a non-boolean workspace inheritance flag")
+    if workspace_entry and workspace_inherited is not None:
+        raise BoundaryError(f"{context} cannot inherit from workspace.dependencies")
+    if workspace_inherited is False:
+        raise BoundaryError(f"{context} has an ambiguous workspace = false entry")
+    if workspace_inherited is True:
+        if package_name is not None:
+            raise BoundaryError(
+                f"{context} cannot combine workspace inheritance with a package rename"
+            )
+        inherited = workspace_dependencies.get(dependency_key)
+        if inherited is None:
+            raise BoundaryError(f"{context} is absent from root workspace.dependencies")
+        return _canonical_dependency_name(
+            dependency_key,
+            inherited,
+            "root workspace",
+            "dependencies",
+            workspace_dependencies,
+            workspace_entry=True,
+        )
+    return package_name or dependency_key
+
+
+def _canonical_dependency_names(
+    manifest: dict[str, Any], package: str, workspace_manifest: dict[str, Any]
+) -> set[str]:
+    workspace_dependencies = _workspace_dependencies(workspace_manifest)
+    names: set[str] = set()
+    for table_name, table in _dependency_tables(manifest, package):
+        for dependency_key, specification in table.items():
+            names.add(
+                _canonical_dependency_name(
+                    dependency_key,
+                    specification,
+                    package,
+                    table_name,
+                    workspace_dependencies,
+                )
+            )
+    return names
+
+
 def _validate_no_forbidden_cargo_dependencies(
-    manifest: dict[str, Any], package: str, forbidden: set[str]
+    manifest: dict[str, Any],
+    package: str,
+    forbidden: set[str],
+    workspace_manifest: dict[str, Any],
 ) -> None:
-    dependency_names = {
-        name
-        for _, table in _dependency_tables(manifest, package)
-        for name in table
-    }
-    forbidden_dependencies = sorted(dependency_names & forbidden)
+    forbidden_dependencies = sorted(
+        _canonical_dependency_names(manifest, package, workspace_manifest) & forbidden
+    )
     if forbidden_dependencies:
         raise BoundaryError(
             f"{package} has forbidden Cargo dependencies: "
@@ -107,29 +186,241 @@ def _validate_no_forbidden_cargo_dependencies(
         )
 
 
-def _validate_no_forbidden_bazel_dependencies(
-    build_path: Path, package: str, forbidden: tuple[str, ...]
-) -> None:
-    build_source = build_path.read_text(encoding="utf-8")
-    forbidden_bazel = [label for label in forbidden if label in build_source]
-    if forbidden_bazel:
+def _tokenize_starlark(source: str, package: str) -> list[Token]:
+    tokens: list[Token] = []
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline == -1 else newline + 1
+            continue
+        if character in {"'", '"'}:
+            start = index
+            quote = character
+            index += 1
+            escaped = False
+            while index < len(source):
+                current = source[index]
+                index += 1
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == quote:
+                    break
+                elif current == "\n":
+                    raise BoundaryError(f"{package} Bazel has an unterminated string")
+            else:
+                raise BoundaryError(f"{package} Bazel has an unterminated string")
+            try:
+                value = ast.literal_eval(source[start:index])
+            except (SyntaxError, ValueError) as error:
+                raise BoundaryError(f"{package} Bazel has an invalid string literal") from error
+            if not isinstance(value, str):
+                raise BoundaryError(f"{package} Bazel string literal must be text")
+            tokens.append(Token("string", value))
+            continue
+        if character.isalpha() or character == "_":
+            start = index
+            index += 1
+            while index < len(source) and (
+                source[index].isalnum() or source[index] == "_"
+            ):
+                index += 1
+            tokens.append(Token("identifier", source[start:index]))
+            continue
+        tokens.append(Token("symbol", character))
+        index += 1
+    return tokens
+
+
+def _split_top_level(tokens: Sequence[Token]) -> list[list[Token]]:
+    parts: list[list[Token]] = [[]]
+    depth = 0
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closing = set(pairs.values())
+    for token in tokens:
+        if token.value in pairs:
+            depth += 1
+        elif token.value in closing:
+            depth -= 1
+            if depth < 0:
+                raise BoundaryError("Bazel has unbalanced delimiters")
+        if token.value == "," and depth == 0:
+            parts.append([])
+        else:
+            parts[-1].append(token)
+    if depth != 0:
+        raise BoundaryError("Bazel has unbalanced delimiters")
+    return [part for part in parts if part]
+
+
+def _find_call(tokens: Sequence[Token], rule: str, package: str) -> list[Token]:
+    calls: list[list[Token]] = []
+    for index, token in enumerate(tokens[:-1]):
+        if (
+            token.kind != "identifier"
+            or token.value != rule
+            or tokens[index + 1].value != "("
+        ):
+            continue
+        depth = 0
+        for end in range(index + 1, len(tokens)):
+            value = tokens[end].value
+            if value == "(":
+                depth += 1
+            elif value == ")":
+                depth -= 1
+                if depth == 0:
+                    calls.append(list(tokens[index + 2 : end]))
+                    break
+                if depth < 0:
+                    raise BoundaryError(f"{package} Bazel has unbalanced delimiters")
+        else:
+            raise BoundaryError(f"{package} Bazel has an unterminated {rule} call")
+    if len(calls) != 1:
+        raise BoundaryError(f"{package} Bazel must define exactly one {rule} target")
+    return calls[0]
+
+
+def _named_arguments(call: Sequence[Token], package: str) -> dict[str, list[Token]]:
+    arguments: dict[str, list[Token]] = {}
+    for part in _split_top_level(call):
+        if len(part) < 3 or part[0].kind != "identifier" or part[1].value != "=":
+            raise BoundaryError(f"{package} Bazel target has an unsupported argument")
+        name = part[0].value
+        if name in arguments:
+            raise BoundaryError(f"{package} Bazel target repeats {name}")
+        arguments[name] = part[2:]
+    return arguments
+
+
+def _literal_string_list(tokens: Sequence[Token], package: str, name: str) -> tuple[str, ...]:
+    if len(tokens) < 2 or tokens[0].value != "[" or tokens[-1].value != "]":
+        raise BoundaryError(f"{package} Bazel {name} must be a literal string list")
+    items = _split_top_level(tokens[1:-1])
+    values: list[str] = []
+    for item in items:
+        if len(item) != 1 or item[0].kind != "string":
+            raise BoundaryError(f"{package} Bazel {name} must contain only string labels")
+        values.append(item[0].value)
+    if len(values) != len(set(values)):
+        raise BoundaryError(f"{package} Bazel {name} has duplicate labels")
+    return tuple(values)
+
+
+def _assignment_values(tokens: Sequence[Token], name: str) -> list[list[Token]]:
+    values: list[list[Token]] = []
+    for index in range(len(tokens) - 2):
+        if (
+            tokens[index].kind == "identifier"
+            and tokens[index].value == name
+            and tokens[index + 1].value == "="
+        ):
+            value = tokens[index + 2 :]
+            if not value or value[0].value != "[":
+                values.append(value[:1])
+                continue
+            depth = 0
+            for end, token in enumerate(value):
+                if token.value == "[":
+                    depth += 1
+                elif token.value == "]":
+                    depth -= 1
+                    if depth == 0:
+                        values.append(value[: end + 1])
+                        break
+            else:
+                raise BoundaryError(f"Bazel {name} assignment has unbalanced delimiters")
+    return values
+
+
+def _is_all_crate_deps(tokens: Sequence[Token], **expected: str) -> bool:
+    if len(tokens) < 3 or tokens[0].value != "all_crate_deps" or tokens[1].value != "(":
+        return False
+    if tokens[-1].value != ")":
+        return False
+    arguments = _split_top_level(tokens[2:-1])
+    actual: dict[str, str] = {}
+    for argument in arguments:
+        if (
+            len(argument) != 3
+            or argument[0].kind != "identifier"
+            or argument[1].value != "="
+            or argument[2].kind != "identifier"
+        ):
+            return False
+        if argument[0].value in actual:
+            return False
+        actual[argument[0].value] = argument[2].value
+    return actual == expected
+
+
+def _validate_runtime_bazel(build_path: Path) -> None:
+    package = "ctx-history-capture-runtime"
+    arguments = _named_arguments(
+        _find_call(
+            _tokenize_starlark(build_path.read_text(encoding="utf-8"), package),
+            "rust_library",
+            package,
+        ),
+        package,
+    )
+    if (
+        arguments.get("name") is None
+        or [token.value for token in arguments["name"]] != ["lib"]
+    ):
+        raise BoundaryError(f"{package} Bazel rust_library must be named lib")
+    if not _is_all_crate_deps(arguments.get("deps", []), normal="True"):
         raise BoundaryError(
-            f"{package} has forbidden Bazel dependencies: "
-            + ", ".join(forbidden_bazel)
+            f"{package} Bazel deps must be exactly all_crate_deps(normal = True)"
         )
 
 
-def _validate_runtime_manifest(manifest_path: Path) -> None:
+def _validate_jsonl_bazel(build_path: Path) -> None:
+    package = "ctx-history-jsonl"
+    tokens = _tokenize_starlark(build_path.read_text(encoding="utf-8"), package)
+    assignments = _assignment_values(tokens, "JSONL_DEPS")
+    if len(assignments) != 1:
+        raise BoundaryError(f"{package} Bazel must define exactly one literal JSONL_DEPS")
+    if (
+        _literal_string_list(assignments[0], package, "JSONL_DEPS")
+        != JSONL_DIRECT_BAZEL_DEPENDENCIES
+    ):
+        raise BoundaryError(f"{package} Bazel direct dependency inventory drifted")
+    arguments = _named_arguments(_find_call(tokens, "rust_library", package), package)
+    if (
+        arguments.get("name") is None
+        or [token.value for token in arguments["name"]] != ["lib"]
+    ):
+        raise BoundaryError(f"{package} Bazel rust_library must be named lib")
+    deps = arguments.get("deps", [])
+    plus = [index for index, token in enumerate(deps) if token.value == "+"]
+    if len(plus) != 1 or not _is_all_crate_deps(deps[: plus[0]], normal="True") or [
+        token.value for token in deps[plus[0] + 1 :]
+    ] != ["JSONL_DEPS"]:
+        raise BoundaryError(
+            f"{package} Bazel deps must be exactly all_crate_deps(normal = True) + JSONL_DEPS"
+        )
+
+
+def _validate_runtime_manifest(manifest_path: Path, workspace_manifest: dict[str, Any]) -> None:
     package = "ctx-history-capture-runtime"
     manifest = _read_manifest(manifest_path)
-    _validate_no_forbidden_cargo_dependencies(manifest, package, RUNTIME_FORBIDDEN_CARGO)
+    _validate_no_forbidden_cargo_dependencies(
+        manifest, package, RUNTIME_FORBIDDEN_CARGO, workspace_manifest
+    )
     dependencies = manifest.get("dependencies", {})
-    if dependencies != EXPECTED_DEPENDENCIES:
+    if dependencies != EXPECTED_RUNTIME_DEPENDENCIES:
         raise BoundaryError(
             "ctx-history-capture-runtime Cargo production dependencies drifted: "
-            f"expected={sorted(EXPECTED_DEPENDENCIES)} actual={sorted(dependencies)}"
+            f"expected={sorted(EXPECTED_RUNTIME_DEPENDENCIES)} actual={sorted(dependencies)}"
         )
-    if manifest.get("dev-dependencies", {}) != EXPECTED_DEV_DEPENDENCIES:
+    if manifest.get("dev-dependencies", {}) != EXPECTED_RUNTIME_DEV_DEPENDENCIES:
         raise BoundaryError("ctx-history-capture-runtime Cargo dev dependencies drifted")
     build_dependencies = manifest.get("build-dependencies", {})
     if build_dependencies:
@@ -151,35 +442,30 @@ def _validate_runtime_manifest(manifest_path: Path) -> None:
 
 
 def validate(
+    workspace_manifest_path: Path,
     runtime_manifest_path: Path,
     runtime_build_path: Path,
     jsonl_manifest_path: Path,
     jsonl_build_path: Path,
 ) -> None:
-    _validate_runtime_manifest(runtime_manifest_path)
-    _validate_no_forbidden_bazel_dependencies(
-        runtime_build_path,
-        "ctx-history-capture-runtime",
-        RUNTIME_FORBIDDEN_BAZEL,
-    )
+    workspace_manifest = _read_manifest(workspace_manifest_path)
+    _validate_runtime_manifest(runtime_manifest_path, workspace_manifest)
+    _validate_runtime_bazel(runtime_build_path)
     jsonl_manifest = _read_manifest(jsonl_manifest_path)
     _validate_no_forbidden_cargo_dependencies(
         jsonl_manifest,
         "ctx-history-jsonl",
         JSONL_FORBIDDEN_CARGO,
+        workspace_manifest,
     )
-    _validate_no_forbidden_bazel_dependencies(
-        jsonl_build_path,
-        "ctx-history-jsonl",
-        JSONL_FORBIDDEN_BAZEL,
-    )
+    _validate_jsonl_bazel(jsonl_build_path)
 
 
 def main() -> int:
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 6:
         raise SystemExit(
             "usage: check_history_capture_runtime_boundary.py "
-            "RUNTIME_CARGO RUNTIME_BUILD JSONL_CARGO JSONL_BUILD"
+            "WORKSPACE_CARGO RUNTIME_CARGO RUNTIME_BUILD JSONL_CARGO JSONL_BUILD"
         )
     try:
         validate(
@@ -187,6 +473,7 @@ def main() -> int:
             Path(sys.argv[2]),
             Path(sys.argv[3]),
             Path(sys.argv[4]),
+            Path(sys.argv[5]),
         )
     except (BoundaryError, OSError, tomllib.TOMLDecodeError) as error:
         print(error, file=sys.stderr)
