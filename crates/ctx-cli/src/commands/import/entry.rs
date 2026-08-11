@@ -1,19 +1,20 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
-use ctx_history_ingest_application::{ImportTotals, IngestFailureType, IngestReport};
+use anyhow::Result;
+use ctx_history_ingest_application::{IngestReport, ProviderRefreshModeFact};
 
 use crate::analytics::{
-    ImportFailureScope as AnalyticsImportFailureScope,
+    bytes_bucket, count_bucket, ImportFailureScope as AnalyticsImportFailureScope,
     ImportFailureType as AnalyticsImportFailureType, ImportOutcome as AnalyticsImportOutcome,
-    ImportTelemetry, ProviderRefreshTrigger,
+    ImportTelemetry, ProviderRefreshSourceMode, ProviderRefreshTrigger,
 };
 use crate::ui::{diagnostic, Diagnostic, DiagnosticLevel, Ui};
 use crate::ImportArgs;
 
-use super::provider_refresh::ProviderRefreshCollector;
-use super::report::{import_error_scope, import_failure_type, print_import_report};
-use super::{run_import_internal, ImportRunOptions, ImportRunPresentation};
+use super::{
+    application_adapter::CliImportHost,
+    provider_refresh::{ProviderRefreshCollector, ProviderRefreshRuntimeFacts},
+};
 
 pub(crate) fn run_import(
     args: ImportArgs,
@@ -39,23 +40,17 @@ pub(crate) fn run_import(
         );
         ui.write_stderr(&document)?;
     }
-    let progress = args.progress;
+    let request = import_request(&args);
     provider_refreshes.start_timing();
-    let report = run_import_internal(
-        &args,
-        data_root,
-        telemetry,
-        provider_refreshes,
-        ProviderRefreshTrigger::Import,
-        config,
-        ImportRunPresentation {
-            options: ImportRunOptions {
-                progress,
-                json,
-                operation: "import",
-            },
-            ui,
-        },
+    let mut host = CliImportHost::new(config);
+    let config_snapshot = crate::history_config::CliHistoryConfigSnapshot::new(config);
+    let report = ctx_history_cli::run_import_application(
+        request,
+        &data_root,
+        crate::identity::home_dir(),
+        &config_snapshot,
+        &mut host,
+        ui,
     );
     provider_refreshes.stop_timing();
     let report = match report {
@@ -65,22 +60,21 @@ pub(crate) fn run_import(
             return Err(err);
         }
     };
+    record_application_facts(
+        &report,
+        telemetry,
+        provider_refreshes,
+        ProviderRefreshTrigger::Import,
+    );
     insert_import_report_analytics(telemetry, &report);
-    let (outcome, _) = import_report_analytics_outcome(&report.totals);
-    print_import_report(&report, json, ui)?;
-    if outcome == "failure" {
-        let detail = report
-            .first_failure_detail()
-            .map(|(selector, failure_type, error)| {
-                if failure_type == IngestFailureType::UnsupportedSchema {
-                    format!("{selector} is not importable: {error}")
-                } else {
-                    error.to_owned()
-                }
-            })
-            .map(|error| format!("; first failure: {error}"))
-            .unwrap_or_default();
-        return Err(anyhow!("all import sources failed{detail}"));
+    if json {
+        crate::output::print_json(ctx_history_cli::import_report_json(&report))?;
+    } else {
+        let document = ctx_history_cli::render_import_report_human(ui.stdout_context(), &report);
+        ui.write_stdout(&document)?;
+    }
+    if let Some(error) = ctx_history_cli::import_completion_error(&report) {
+        return Err(error);
     }
     Ok(())
 }
@@ -89,7 +83,7 @@ pub(crate) fn insert_import_report_analytics(
     telemetry: &mut ImportTelemetry,
     report: &IngestReport,
 ) {
-    let (outcome, failure_scope) = import_report_analytics_outcome(&report.totals);
+    let (outcome, failure_scope) = ctx_history_cli::import_report_outcome(&report.totals);
     telemetry.outcome = Some(match outcome {
         "success" => AnalyticsImportOutcome::Success,
         "failure" => AnalyticsImportOutcome::Failure,
@@ -103,12 +97,14 @@ pub(crate) fn insert_import_report_analytics(
         "source" => AnalyticsImportFailureScope::Source,
         _ => AnalyticsImportFailureScope::RecordAndSource,
     });
-    telemetry.failure_type = Some(match import_report_failure_type(&report.totals) {
-        "none" => AnalyticsImportFailureType::None,
-        "record_rejection" => AnalyticsImportFailureType::RecordRejection,
-        "source_failure" => AnalyticsImportFailureType::SourceFailure,
-        _ => AnalyticsImportFailureType::RecordRejectionAndSourceFailure,
-    });
+    telemetry.failure_type = Some(
+        match ctx_history_cli::import_report_failure_type(&report.totals) {
+            "none" => AnalyticsImportFailureType::None,
+            "record_rejection" => AnalyticsImportFailureType::RecordRejection,
+            "source_failure" => AnalyticsImportFailureType::SourceFailure,
+            _ => AnalyticsImportFailureType::RecordRejectionAndSourceFailure,
+        },
+    );
 }
 
 pub(crate) fn insert_import_error_analytics(
@@ -116,26 +112,91 @@ pub(crate) fn insert_import_error_analytics(
     error: &anyhow::Error,
 ) {
     telemetry.outcome = Some(AnalyticsImportOutcome::Failure);
-    telemetry.failure_scope = Some(match import_error_scope(error).as_str() {
+    telemetry.failure_scope = Some(match ctx_history_cli::import_error_scope(error).as_str() {
         "record" => AnalyticsImportFailureScope::Record,
         "source" => AnalyticsImportFailureScope::Source,
         "record_and_source" => AnalyticsImportFailureScope::RecordAndSource,
         _ => AnalyticsImportFailureScope::Invocation,
     });
-    telemetry.failure_type = Some(match import_failure_type(error).as_str() {
+    telemetry.failure_type = Some(match ctx_history_cli::import_failure_type(error).as_str() {
         "invalid_request" => AnalyticsImportFailureType::InvalidRequest,
         "io" => AnalyticsImportFailureType::Io,
         _ => AnalyticsImportFailureType::Other,
     });
 }
 
-pub(crate) fn import_report_analytics_outcome(
-    totals: &ImportTotals,
-) -> (&'static str, &'static str) {
-    let (outcome, scope) = totals.outcome();
-    (outcome.as_str(), scope.as_str())
+fn import_request(args: &ImportArgs) -> ctx_history_cli::ImportRequest {
+    ctx_history_cli::ImportRequest {
+        provider: args
+            .provider
+            .map(|provider| provider.capture_provider().into()),
+        path: args.path.clone(),
+        relocate_from: args.relocate_from.clone(),
+        history_source: args.history_source.clone(),
+        history_source_manifests: args.history_source_manifest.clone(),
+        reset_cursor: args.reset_cursor,
+        input_format: args
+            .input_format
+            .map(|_| ctx_history_cli::ImportFormat::CtxHistoryJsonlV1),
+        all: args.all,
+        resume: args.resume,
+        partial: args.partial,
+        no_daemon: args.no_daemon,
+        format: if args.format.is_json() {
+            ctx_history_cli::OutputFormat::Json
+        } else {
+            ctx_history_cli::OutputFormat::Text
+        },
+        progress: match args.progress {
+            crate::progress::ProgressArg::Auto => ctx_history_cli::ProgressMode::Auto,
+            crate::progress::ProgressArg::Plain => ctx_history_cli::ProgressMode::Plain,
+            crate::progress::ProgressArg::Json => ctx_history_cli::ProgressMode::Json,
+            crate::progress::ProgressArg::None => ctx_history_cli::ProgressMode::None,
+        },
+    }
 }
 
-pub(crate) fn import_report_failure_type(totals: &ImportTotals) -> &'static str {
-    totals.failure_type().as_str()
+fn record_application_facts(
+    outcome: &IngestReport,
+    telemetry: &mut ImportTelemetry,
+    provider_refreshes: &mut ProviderRefreshCollector,
+    refresh_trigger: ProviderRefreshTrigger,
+) {
+    if let Some(facts) = outcome.telemetry {
+        telemetry.sources_seen = Some(count_bucket(facts.sources_seen));
+        telemetry.source_files = Some(count_bucket(facts.source_files));
+        telemetry.source_bytes = Some(bytes_bucket(facts.source_bytes));
+        telemetry.failed_sources = Some(count_bucket(facts.failed_sources));
+        telemetry.sessions_imported = None;
+        telemetry.events_imported = None;
+        telemetry.edges_imported = None;
+        telemetry.skipped = None;
+        telemetry.rejected_records = None;
+    }
+    if let Some(facts) = outcome.provider_refresh.as_ref() {
+        provider_refreshes.record_success_with_facts(
+            facts.provider,
+            refresh_trigger,
+            match facts.mode {
+                ProviderRefreshModeFact::ExplicitPath => ProviderRefreshSourceMode::ExplicitPath,
+                ProviderRefreshModeFact::ExplicitFormat => {
+                    ProviderRefreshSourceMode::ExplicitFormat
+                }
+                ProviderRefreshModeFact::HistorySourcePlugin => {
+                    ProviderRefreshSourceMode::HistorySourcePlugin
+                }
+            },
+            &facts.summary,
+            &facts.stats,
+            ProviderRefreshRuntimeFacts::observed_success(facts.duration, &facts.summary),
+        );
+    }
+    if let Some(facts) = outcome.core_publication {
+        provider_refreshes.record_core_publication(
+            ProviderRefreshTrigger::Import,
+            facts.generation_changed,
+            facts.source_failure_total,
+            facts.rejected_record_total,
+        );
+    }
 }

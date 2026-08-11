@@ -13,6 +13,7 @@ publish = false
 anyhow.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+rusqlite.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 ctx-history-capture = { path = "../ctx-history-capture" }
@@ -29,7 +30,6 @@ unicode-width.workspace = true
 
 [dev-dependencies]
 anstream.workspace = true
-rusqlite.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

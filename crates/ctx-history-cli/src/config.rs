@@ -23,6 +23,19 @@ pub trait HistoryConfigPort {
     fn set_semantic_search_enabled(&mut self, enabled: bool) -> Result<(), Self::Error>;
 }
 
+/// Read-only configuration projection for history command application work.
+/// Mutable persistence remains available only through `HistoryConfigPort` at
+/// the final host boundary.
+pub trait HistoryConfigSnapshotPort {
+    fn snapshot(&self) -> HistoryCliConfig;
+}
+
+impl<T: HistoryConfigPort + ?Sized> HistoryConfigSnapshotPort for T {
+    fn snapshot(&self) -> HistoryCliConfig {
+        HistoryConfigPort::snapshot(self)
+    }
+}
+
 /// A command-local projection of the daemon-owned configuration snapshot.
 /// It deliberately carries no mutable host configuration authority.
 #[derive(Debug, Clone)]

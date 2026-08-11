@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use ctx_history_cli::{HistoryCliConfig, HistoryConfigPort};
+use ctx_history_cli::{HistoryCliConfig, HistoryConfigPort, HistoryConfigSnapshotPort};
 
 use crate::config::{self, AppConfig};
 
@@ -12,6 +12,28 @@ use crate::config::{self, AppConfig};
 pub(crate) struct CliHistoryConfigAdapter<'a> {
     data_root: &'a Path,
     config: &'a mut AppConfig,
+}
+
+/// Read-only import projection. It deliberately cannot persist or reload
+/// configuration while command application is running.
+pub(crate) struct CliHistoryConfigSnapshot<'a> {
+    config: &'a AppConfig,
+}
+
+impl<'a> CliHistoryConfigSnapshot<'a> {
+    pub(crate) const fn new(config: &'a AppConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl HistoryConfigSnapshotPort for CliHistoryConfigSnapshot<'_> {
+    fn snapshot(&self) -> HistoryCliConfig {
+        HistoryCliConfig {
+            daemon_enabled: self.config.daemon.enabled,
+            semantic_search_enabled: self.config.semantic_search_enabled(),
+            local_usage_enabled: self.config.local_usage.enabled,
+        }
+    }
 }
 
 impl<'a> CliHistoryConfigAdapter<'a> {
@@ -24,11 +46,7 @@ impl HistoryConfigPort for CliHistoryConfigAdapter<'_> {
     type Error = anyhow::Error;
 
     fn snapshot(&self) -> HistoryCliConfig {
-        HistoryCliConfig {
-            daemon_enabled: self.config.daemon.enabled,
-            semantic_search_enabled: self.config.semantic_search_enabled(),
-            local_usage_enabled: self.config.local_usage.enabled,
-        }
+        CliHistoryConfigSnapshot::new(self.config).snapshot()
     }
 
     fn write_default_config(&mut self) -> Result<(), Self::Error> {
@@ -57,7 +75,7 @@ mod tests {
 
             adapter.write_default_config().unwrap();
             adapter.set_semantic_search_enabled(true).unwrap();
-            adapter.snapshot()
+            HistoryConfigPort::snapshot(&adapter)
         });
 
         assert_eq!(

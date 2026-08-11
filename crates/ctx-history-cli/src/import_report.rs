@@ -1,4 +1,3 @@
-use anyhow::Result;
 use ctx_history_ingest_application::{ImportTotals, IngestReport, IngestSourceOutcome};
 use serde_json::{json, Value};
 
@@ -6,33 +5,50 @@ use ctx_history_capture::{
     CaptureError, ProviderSourceFailureKind, SourceBackedRouteError, SourceBackedRouteErrorKind,
 };
 
-use crate::commands::import::{
-    import_report_analytics_outcome, import_report_failure_type, presentation::source_json,
-    resume_mode_name,
-};
-use crate::compact_json;
-use crate::output::print_json;
-use crate::ui::{
+use crate::{import_presentation::source_json, output::compact_json};
+use ctx_terminal::{
     fields, hint, outcome, section, Action, Document, Field, Hint, Outcome, OutcomeState,
-    RenderContext, Ui,
+    RenderContext,
 };
 
-pub(crate) fn print_import_report(
-    report: &IngestReport,
-    json_output: bool,
-    ui: &mut Ui,
-) -> Result<()> {
-    if json_output {
-        print_json(import_report_json(report))
+pub fn import_report_outcome(totals: &ImportTotals) -> (&'static str, &'static str) {
+    let (outcome, scope) = totals.outcome();
+    (outcome.as_str(), scope.as_str())
+}
+
+pub fn import_report_failure_type(totals: &ImportTotals) -> &'static str {
+    totals.failure_type().as_str()
+}
+
+pub fn resume_mode_name(resume: bool) -> &'static str {
+    if resume {
+        "idempotent_rescan"
     } else {
-        let document = render_import_report_human(ui.stdout_context(), report);
-        ui.write_stdout(&document)?;
-        Ok(())
+        "normal_scan"
     }
 }
 
-fn import_report_json(report: &IngestReport) -> Value {
-    let (outcome, failure_scope) = import_report_analytics_outcome(&report.totals);
+pub fn import_completion_error(report: &IngestReport) -> Option<anyhow::Error> {
+    (import_report_outcome(&report.totals).0 == "failure").then(|| {
+        let detail = report
+            .first_failure_detail()
+            .map(|(selector, failure_type, error)| {
+                if failure_type
+                    == ctx_history_ingest_application::IngestFailureType::UnsupportedSchema
+                {
+                    format!("{selector} is not importable: {error}")
+                } else {
+                    error.to_owned()
+                }
+            })
+            .map(|error| format!("; first failure: {error}"))
+            .unwrap_or_default();
+        anyhow::anyhow!("all import sources failed{detail}")
+    })
+}
+
+pub fn import_report_json(report: &IngestReport) -> Value {
+    let (outcome, failure_scope) = import_report_outcome(&report.totals);
     let sources = report
         .sources
         .iter()
@@ -113,7 +129,7 @@ fn import_totals_json(totals: &ImportTotals) -> Value {
     value
 }
 
-fn render_import_report_human(context: &RenderContext, report: &IngestReport) -> Document {
+pub fn render_import_report_human(context: &RenderContext, report: &IngestReport) -> Document {
     let totals = &report.totals;
     let rejected_records = u64::try_from(totals.failed).unwrap_or(u64::MAX);
     let (state, title, detail) = import_outcome_copy(totals);
@@ -392,13 +408,13 @@ fn fields_from_owned(context: &RenderContext, values: &[(&'static str, String)])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImportFailureScope {
+pub enum ImportFailureScope {
     Source,
     System,
 }
 
 impl ImportFailureScope {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Source => "source",
             Self::System => "system",
@@ -407,7 +423,7 @@ impl ImportFailureScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImportFailureType {
+pub enum ImportFailureType {
     UnsupportedSchema,
     NotFound,
     Permission,
@@ -420,7 +436,7 @@ pub(crate) enum ImportFailureType {
 }
 
 impl ImportFailureType {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::UnsupportedSchema => "unsupported_schema",
             Self::NotFound => "not_found",
@@ -435,7 +451,7 @@ impl ImportFailureType {
     }
 }
 
-pub(crate) fn import_error_scope(error: &anyhow::Error) -> ImportFailureScope {
+pub fn import_error_scope(error: &anyhow::Error) -> ImportFailureScope {
     if error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<CaptureError>(),
@@ -452,7 +468,7 @@ pub(crate) fn import_error_scope(error: &anyhow::Error) -> ImportFailureScope {
     }
 }
 
-pub(crate) fn import_failure_type(error: &anyhow::Error) -> ImportFailureType {
+pub fn import_failure_type(error: &anyhow::Error) -> ImportFailureType {
     for cause in error.chain() {
         if let Some(capture) = cause.downcast_ref::<CaptureError>() {
             return match capture {
@@ -569,7 +585,7 @@ mod tests {
         )
     }
 
-    fn failed_exact_report() -> IngestReport {
+    fn failed_source_report() -> IngestReport {
         let selector = "/history/codex/sessions.jsonl";
         report(
             false,
@@ -579,49 +595,18 @@ mod tests {
                 work_result: ProviderImportWorkResult::NoOp,
                 ..ImportTotals::default()
             },
-            vec![IngestSourceOutcome::Exact(
-                ctx_history_ingest_application::ExactPublicationOutcome {
+            vec![IngestSourceOutcome::SourceFailure(
+                ctx_history_ingest_application::SourceFailureOutcome {
                     status: ctx_history_ingest_application::IngestStatus::Failure,
                     failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
                     failure_type:
                         ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
-                    provider: ctx_history_core::CaptureProvider::Codex,
-                    path: Path::new(selector).to_path_buf(),
-                    source_format: "codex_sessions_jsonl_v1",
-                    stats: ctx_history_ingest_application::SourceStats {
-                        files: 1,
-                        bytes: 8,
-                        change_token: Some([7; 32]),
-                    },
-                    route_identity: "route-1".to_owned(),
-                    catalog_lineage: "lineage-1".to_owned(),
-                    request_overlay:
-                        ctx_history_refresh::explicit_source_catalog_authority_for_test(1),
-                    previous_generation: Some("generation-0".to_owned()),
-                    published_generation: "generation-1".to_owned(),
-                    generation_changed: false,
-                    scanned_routes: 1,
-                    successful_routes: 0,
-                    source_failure_total: 3,
-                    route_source_failure_total: 3,
-                    rejected_record_total: 0,
-                    rejection_diagnostics: Vec::new(),
-                    request_id: Some("request-1".to_owned()),
-                    change: ctx_history_ingest_application::IngestChange::NoOp,
-                    current: ctx_history_refresh::SourceBackedRefreshCurrent::default(),
-                    requested_failure: Some(ctx_history_ingest_application::SourceFailureOutcome {
-                        status: ctx_history_ingest_application::IngestStatus::Failure,
-                        failure_scope: ctx_history_ingest_application::IngestFailureScope::Source,
-                        failure_type:
-                            ctx_history_ingest_application::IngestFailureType::UnsupportedSchema,
-                        source_identity: "source-1".to_owned(),
-                        provider: "codex".to_owned(),
-                        source_failure_class: "incompatible".to_owned(),
-                        carried_forward: true,
-                        source_selector: selector.to_owned(),
-                        detail: "unsupported source schema".to_owned(),
-                    }),
-                    requested_failure_class: Some("incompatible".to_owned()),
+                    source_identity: "source-1".to_owned(),
+                    provider: "codex".to_owned(),
+                    source_failure_class: "incompatible".to_owned(),
+                    carried_forward: true,
+                    source_selector: selector.to_owned(),
+                    detail: "unsupported source schema".to_owned(),
                 },
             )],
         )
@@ -802,8 +787,8 @@ mod tests {
     }
 
     #[test]
-    fn failed_exact_route_projects_bounded_human_detail_before_omissions() {
-        let report = failed_exact_report();
+    fn failed_source_projects_bounded_human_detail_before_omissions() {
+        let report = failed_source_report();
 
         assert_eq!(
             source_failure_fields(&report),

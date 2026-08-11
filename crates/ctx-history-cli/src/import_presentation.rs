@@ -4,9 +4,9 @@ use ctx_history_ingest_application::{
 };
 use serde_json::{json, Value};
 
-use crate::{compact_json, progress::format_bytes};
+use crate::{output::compact_json, progress::format_bytes};
 
-pub(super) fn source_json(source: &IngestSourceOutcome, operation: &'static str) -> Value {
+pub(crate) fn source_json(source: &IngestSourceOutcome, operation: &'static str) -> Value {
     match source {
         IngestSourceOutcome::Automatic(outcome) => automatic_json(outcome),
         IngestSourceOutcome::Exact(outcome) => exact_json(outcome, operation),

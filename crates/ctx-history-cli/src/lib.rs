@@ -10,6 +10,9 @@ mod cli;
 mod config;
 mod dispatch;
 mod history_source_plugins;
+mod import_application;
+mod import_presentation;
+mod import_report;
 mod list_events;
 mod local_usage;
 mod mcp_tool_call;
@@ -35,6 +38,12 @@ mod test_query_authority;
 pub use cli::{
     ContentScopeArg, LocateArgs, LocateEventArgs, LocateSessionArgs, LocateTarget, SearchArgs,
     SearchBackendArg, ShowArgs, ShowEventArgs, ShowSessionArgs, ShowTarget,
+};
+pub use import_application::{run_import_application, ImportApplicationPort};
+pub use import_report::{
+    import_completion_error, import_error_scope, import_failure_type, import_report_failure_type,
+    import_report_json, import_report_outcome, render_import_report_human, resume_mode_name,
+    ImportFailureScope, ImportFailureType,
 };
 pub use list_events::{
     decode_cursor, event_query_error_value, event_range_page_value,
@@ -67,7 +76,7 @@ pub use source_index::{
 };
 pub use sources::{run_sources, SourcesDiscoveryObservation, SourcesExecutionObservation};
 
-pub use config::{HistoryCliConfig, HistoryConfigPort};
+pub use config::{HistoryCliConfig, HistoryConfigPort, HistoryConfigSnapshotPort};
 pub use history_source_plugins::{
     discover_history_source_plugins_with_diagnostics, prepare_source_backed_history_source,
     HistorySourcePluginManifestFailure, HistorySourcePluginRefresh, HistorySourcePluginSource,
