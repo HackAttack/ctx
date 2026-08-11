@@ -143,6 +143,19 @@ fn legacy_bridge_and_direct_core_record_bytes_match_edge_fixture_oracles() {
     .concat();
     let (_repository_temp, repository_path) = write_source(&repository_mcp);
 
+    let repeated_touch = "/workspace/raw\\segment/\"quoted name\".rs";
+    let touched_paths = [
+        session_meta("oracle-touched-paths"),
+        repository_call(
+            "touched-paths-call",
+            &format!(
+                "*** Begin Patch\n*** Update File: {repeated_touch}\n@@\n*** Delete File: {repeated_touch}\n*** Add File: relative/雪 \\ raw.rs\n*** End Patch"
+            ),
+        ),
+    ]
+    .concat();
+    let (_touched_paths_temp, touched_paths_path) = write_source(&touched_paths);
+
     let malformed = [
         session_meta("oracle-malformed"),
         "{malformed json}\n".to_owned(),
@@ -174,6 +187,7 @@ fn legacy_bridge_and_direct_core_record_bytes_match_edge_fixture_oracles() {
         snapshot(discover_one(&normal_path, "oracle-normal")),
         snapshot(copied_child_source(&child_path, child, parent)),
         snapshot(discover_one(&repository_path, "oracle-repository-mcp")),
+        snapshot(discover_one(&touched_paths_path, "oracle-touched-paths")),
         snapshot(discover_one(&malformed_path, "oracle-malformed")),
         snapshot(discover_one(&oversized_path, "oracle-singleton")),
         snapshot(discover_one(&rollback_path, "oracle-rollback")),
@@ -192,17 +206,23 @@ fn legacy_bridge_and_direct_core_record_bytes_match_edge_fixture_oracles() {
         .rows
         .iter()
         .any(|row| row.mcp_tool_call.is_some()));
-    assert!(cases[4]
+    assert_eq!(
+        cases[3].2.rows[0].metadata["codex_native_activity"]["touched_paths"],
+        serde_json::json!([repeated_touch, repeated_touch, "relative/雪 \\ raw.rs",])
+    );
+    assert!(cases[5]
         .2
         .pages
         .iter()
         .any(|(_, bytes)| *bytes > MAX_CODEX_PAGE_BYTES));
-    assert_eq!(cases[4].2.pages.first().map(|page| page.0), Some(1));
-    assert!(cases[4].2.pages.len() > 1);
+    assert_eq!(cases[5].2.pages.first().map(|page| page.0), Some(1));
     assert!(cases[5].2.pages.len() > 1);
-    // Generated in an exact-base 2ae70373f control by moving every legacy
-    // row-page entry through codex_core_record, then hashing each length and
-    // encode_stored byte sequence under the same domain as snapshot().
+    assert!(cases[6].2.pages.len() > 1);
+    // The original cases were generated in an exact-base 2ae70373f control by
+    // moving every legacy row-page entry through codex_core_record. The touched
+    // path case was frozen before removing the duplicate draft vector. Every
+    // case hashes each length and encode_stored byte sequence under the same
+    // domain as snapshot().
     let expected = [
         (
             4,
@@ -215,6 +235,10 @@ fn legacy_bridge_and_direct_core_record_bytes_match_edge_fixture_oracles() {
         (
             3,
             "81ed0c7880191e75d3c950918869c2d607dd8921d03aae0d85bcbe1ea0c5ad46",
+        ),
+        (
+            1,
+            "2d6037b5e9991de578648b92dc7c774268e272648c064e2571ef0dcd1decbeb6",
         ),
         (
             2,

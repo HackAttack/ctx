@@ -6,61 +6,58 @@ use std::{
 
 use super::*;
 
-#[derive(Debug, Clone)]
-enum CodexGenerationParticipantV0 {
+#[derive(Debug)]
+enum CodexGenerationParticipantAuthorityV0 {
     SessionTree {
-        roots: Arc<[PathBuf]>,
+        roots: Box<[PathBuf]>,
     },
     ExplicitSession {
         input: CodexExplicitSessionSourceBackedInputV0,
     },
 }
 
+#[derive(Debug)]
+struct CodexGenerationParticipantV0 {
+    id: usize,
+    authority: CodexGenerationParticipantAuthorityV0,
+}
+
 #[derive(Clone)]
 pub(crate) struct CodexGenerationRouteV0 {
     coordinator: Arc<CodexGenerationNormalizationCoordinatorV0>,
-    participant: usize,
-    session_tree: bool,
+    participant: Arc<CodexGenerationParticipantV0>,
 }
 
 impl CodexGenerationRouteV0 {
     pub(crate) fn participant(&self) -> usize {
-        self.participant
+        self.participant.id
     }
 
     pub(super) fn is_session_tree(&self) -> bool {
-        self.session_tree
+        matches!(
+            &self.participant.authority,
+            CodexGenerationParticipantAuthorityV0::SessionTree { .. }
+        )
     }
 
     pub(super) fn prepared(&self) -> CodexSourceBackedResultV0<CodexPreparedRouteV0> {
-        self.coordinator.prepared(self.participant)
+        self.coordinator.prepared(self.participant.id)
     }
 
-    pub(super) fn session_tree_roots(&self) -> CodexSourceBackedResultV0<Option<Arc<[PathBuf]>>> {
-        match self.participant_definition()? {
-            CodexGenerationParticipantV0::SessionTree { roots } => Ok(Some(roots)),
-            CodexGenerationParticipantV0::ExplicitSession { .. } => Ok(None),
+    pub(super) fn session_tree_roots(&self) -> Option<&[PathBuf]> {
+        match &self.participant.authority {
+            CodexGenerationParticipantAuthorityV0::SessionTree { roots } => Some(roots),
+            CodexGenerationParticipantAuthorityV0::ExplicitSession { .. } => None,
         }
     }
 
     pub(super) fn explicit_session_input(
         &self,
-    ) -> CodexSourceBackedResultV0<Option<CodexExplicitSessionSourceBackedInputV0>> {
-        match self.participant_definition()? {
-            CodexGenerationParticipantV0::SessionTree { .. } => Ok(None),
-            CodexGenerationParticipantV0::ExplicitSession { input } => Ok(Some(input)),
+    ) -> Option<&CodexExplicitSessionSourceBackedInputV0> {
+        match &self.participant.authority {
+            CodexGenerationParticipantAuthorityV0::SessionTree { .. } => None,
+            CodexGenerationParticipantAuthorityV0::ExplicitSession { input } => Some(input),
         }
-    }
-
-    fn participant_definition(&self) -> CodexSourceBackedResultV0<CodexGenerationParticipantV0> {
-        self.coordinator
-            .state
-            .lock()
-            .map_err(|_| CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)?
-            .participants
-            .get(&self.participant)
-            .cloned()
-            .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
     }
 }
 
@@ -77,7 +74,7 @@ struct CodexPreparedGenerationV0 {
 #[derive(Default)]
 struct CodexGenerationCoordinatorStateV0 {
     next_participant: usize,
-    participants: BTreeMap<usize, CodexGenerationParticipantV0>,
+    participants: BTreeMap<usize, Arc<CodexGenerationParticipantV0>>,
     prepared: Option<CodexPreparedGenerationV0>,
 }
 
@@ -104,8 +101,8 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
-        self.register(CodexGenerationParticipantV0::SessionTree {
-            roots: roots.into(),
+        self.register(CodexGenerationParticipantAuthorityV0::SessionTree {
+            roots: roots.into_boxed_slice(),
         })
     }
 
@@ -113,12 +110,12 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         self: &Arc<Self>,
         input: CodexExplicitSessionSourceBackedInputV0,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
-        self.register(CodexGenerationParticipantV0::ExplicitSession { input })
+        self.register(CodexGenerationParticipantAuthorityV0::ExplicitSession { input })
     }
 
     fn register(
         self: &Arc<Self>,
-        participant: CodexGenerationParticipantV0,
+        authority: CodexGenerationParticipantAuthorityV0,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
         let mut state = self
             .state
@@ -129,15 +126,12 @@ impl CodexGenerationNormalizationCoordinatorV0 {
             .next_participant
             .checked_add(1)
             .ok_or(CodexSourceBackedErrorV0::GenerationParticipantCountOverflow)?;
-        state.participants.insert(id, participant);
+        let participant = Arc::new(CodexGenerationParticipantV0 { id, authority });
+        state.participants.insert(id, Arc::clone(&participant));
         state.prepared = None;
         Ok(CodexGenerationRouteV0 {
             coordinator: Arc::clone(self),
-            participant: id,
-            session_tree: matches!(
-                state.participants.get(&id),
-                Some(CodexGenerationParticipantV0::SessionTree { .. })
-            ),
+            participant,
         })
     }
 
@@ -157,7 +151,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                     state
                         .participants
                         .get(id)
-                        .cloned()
+                        .map(Arc::clone)
                         .map(|participant| (*id, participant))
                         .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
                 })
@@ -167,15 +161,15 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         let mut routes = HashMap::with_capacity(participants.len());
         let mut established_owners = HashMap::<(PathBuf, String), usize>::new();
         let mut descriptor_bindings = HashMap::<[u8; 32], (SourceKey, String)>::new();
-        for (participant, discovery) in participants {
-            let (missing, discovered) = match discovery {
-                CodexGenerationParticipantV0::SessionTree { roots } => {
+        for (participant_id, participant) in participants {
+            let (missing, discovered) = match &participant.authority {
+                CodexGenerationParticipantAuthorityV0::SessionTree { roots } => {
                     let sources =
-                        super::catalog::discover_codex_deferred_session_tree_inventory_v0(&roots)?;
+                        super::catalog::discover_codex_deferred_session_tree_inventory_v0(roots)?;
                     (false, sources)
                 }
-                CodexGenerationParticipantV0::ExplicitSession { input } => {
-                    let plan = observe_codex_explicit_session_source_backed_v0(&input)?;
+                CodexGenerationParticipantAuthorityV0::ExplicitSession { input } => {
+                    let plan = observe_codex_explicit_session_source_backed_v0(input)?;
                     (plan.is_none(), plan.into_iter().collect())
                 }
             };
@@ -196,7 +190,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
 
                 let observation = (plan.0.source_path.clone(), plan.2.clone());
                 if established_owners
-                    .insert(observation, participant)
+                    .insert(observation, participant_id)
                     .is_some()
                 {
                     continue;
@@ -208,7 +202,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 // same child-local tuple from its own checkpoint.
                 sources.push(plan);
             }
-            routes.insert(participant, CodexPreparedRouteV0 { missing, sources });
+            routes.insert(participant_id, CodexPreparedRouteV0 { missing, sources });
         }
 
         self.state

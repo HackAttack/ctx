@@ -1,6 +1,6 @@
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CoreRecord, EventIdentityInput, NativeItemKey,
-    NativeSessionKey, PositionStability, SessionIdentityInput, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, AgentType, CoreRecord, EventIdentityInput,
+    NativeItemKey, PositionStability, SourceKey, StableEntityId, TypedKey,
 };
 
 use super::{
@@ -61,13 +61,12 @@ pub(super) fn stable_session_id(
     source: &SourceKey,
     native_session_id: &str,
 ) -> CodexPromptHistorySourceBackedResultV0<StableEntityId> {
-    let native_session_key =
-        NativeSessionKey::native_id(SESSION_KEY_NAMESPACE, TypedKey::utf8(native_session_id)?)?;
-    Ok(derive_session_id(SessionIdentityInput {
+    Ok(derive_native_session_id(
         source,
-        logical_session_kind: LOGICAL_SESSION_KIND,
-        native_session_key: &native_session_key,
-    })?)
+        LOGICAL_SESSION_KIND,
+        SESSION_KEY_NAMESPACE,
+        TypedKey::utf8(native_session_id)?,
+    )?)
 }
 
 pub(super) fn retained_record_bytes(record: &CoreRecord) -> usize {

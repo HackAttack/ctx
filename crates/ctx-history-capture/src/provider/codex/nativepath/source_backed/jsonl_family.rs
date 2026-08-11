@@ -446,10 +446,10 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
     }
 
     fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
-        if let Some(roots) = self.generation.session_tree_roots()? {
-            self.discover_tree_family(root, &roots)
-        } else if let Some(input) = self.generation.explicit_session_input()? {
-            self.discover_explicit_family(root, &input)
+        if let Some(roots) = self.generation.session_tree_roots() {
+            self.discover_tree_family(root, roots)
+        } else if let Some(input) = self.generation.explicit_session_input() {
+            self.discover_explicit_family(root, input)
         } else {
             Err(CaptureError::SystemInvariant(
                 "Codex generation route has no discovery authority",
@@ -537,11 +537,11 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
     }
 
     fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
-        if let Some(roots) = self.generation.session_tree_roots()? {
+        if let Some(roots) = self.generation.session_tree_roots() {
             roots.first().cloned().ok_or(CaptureError::SystemInvariant(
                 "Codex JSONL family has no route root",
             ))
-        } else if let Some(input) = self.generation.explicit_session_input()? {
+        } else if let Some(input) = self.generation.explicit_session_input() {
             Ok(input.path().to_path_buf())
         } else {
             Err(CaptureError::SystemInvariant(

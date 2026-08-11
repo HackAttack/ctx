@@ -5,9 +5,9 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
-    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, CaptureProvider, CertifiedSource, CoreRecord,
+    CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceKey,
+    StableEntityId, TypedKey,
 };
 use ctx_history_index::{BaseEventIdentityLookup, IndexError};
 use sha2::{Digest, Sha256};
