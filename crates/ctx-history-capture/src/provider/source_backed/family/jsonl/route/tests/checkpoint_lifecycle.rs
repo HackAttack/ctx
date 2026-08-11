@@ -83,10 +83,7 @@ fn nonterminal_checkpoint_noops_then_resumes_only_its_uncertified_tail() {
     .unwrap();
     let writer = GenerationWriter::open(
         temp.path().join("index"),
-        WriterOptions {
-            indexer_threads: 1,
-            memory_bytes: 15_000_000,
-        },
+        test_writer_options(),
     )
     .unwrap()
     .into_writer()
