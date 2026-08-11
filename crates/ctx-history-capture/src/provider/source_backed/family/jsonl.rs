@@ -49,7 +49,7 @@ use revalidation::hash_prefix;
 pub(crate) use revalidation::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_final_jsonl_prefix_hash_hook,
     set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_prefix_hash_hook,
-    set_after_second_jsonl_prefix_hash_hook,
+    set_after_jsonl_semantic_preflight_hook, set_after_second_jsonl_prefix_hash_hook,
 };
 pub(crate) use revalidation::{
     observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
@@ -110,6 +110,7 @@ pub(crate) struct JsonlReader {
     bind_admitted_eof: bool,
     complete_prefix_ends_with_terminal_nul_padding: bool,
     semantic_append_resume: Option<JsonlSemanticAppendResume>,
+    semantic_preflight_binding: Option<JsonlSemanticPreflightBinding>,
     oversized_record_policy: JsonlOversizedRecordPolicy,
 }
 
@@ -117,6 +118,12 @@ struct JsonlSemanticAppendResume {
     previous: JsonlCheckpoint,
     admitted_eof_sha256: [u8; 32],
     position: Option<JsonlPhysicalStreamPosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JsonlSemanticPreflightBinding {
+    physical: physical::JsonlPhysicalPassBinding,
+    complete_prefix_ends_with_terminal_nul_padding: bool,
 }
 
 impl JsonlReader {
@@ -364,6 +371,7 @@ impl JsonlReader {
             bind_admitted_eof,
             complete_prefix_ends_with_terminal_nul_padding: false,
             semantic_append_resume,
+            semantic_preflight_binding: None,
             oversized_record_policy: JsonlOversizedRecordPolicy::RejectSource,
         })
     }
@@ -512,6 +520,7 @@ impl JsonlReader {
         &mut self,
         initial: JsonlPhysicalStreamPosition,
     ) -> Result<bool> {
+        let binding = self.semantic_pass_binding()?;
         let restore = if let Some(resume) = self.semantic_append_resume.as_ref() {
             let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
                 "semantic JSONL append lost its physical stream",
@@ -534,6 +543,9 @@ impl JsonlReader {
         } else {
             initial
         };
+        self.semantic_preflight_binding = Some(binding);
+        #[cfg(test)]
+        revalidation::run_after_jsonl_semantic_preflight_hook(self.identity.source_path());
         self.physical
             .as_mut()
             .ok_or(CaptureError::SystemInvariant(
@@ -543,6 +555,25 @@ impl JsonlReader {
         self.finished = false;
         self.outcome = None;
         Ok(true)
+    }
+
+    fn semantic_pass_binding(&self) -> Result<JsonlSemanticPreflightBinding> {
+        let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+            "semantic JSONL input lost its physical stream",
+        ))?;
+        if !self.finished
+            || self.outcome.is_none()
+            || physical.offset() != self.observation.length()
+        {
+            return Err(CaptureError::SystemInvariant(
+                "semantic JSONL pass was sealed before its admitted EOF",
+            ));
+        }
+        Ok(JsonlSemanticPreflightBinding {
+            physical: physical.admitted_pass_binding()?,
+            complete_prefix_ends_with_terminal_nul_padding: self
+                .complete_prefix_ends_with_terminal_nul_padding,
+        })
     }
 
     pub(crate) fn visit_page<E>(
@@ -729,6 +760,24 @@ impl JsonlReader {
     }
 
     fn finish(&mut self, terminal: bool) -> Result<()> {
+        if let Some(expected) = self.semantic_preflight_binding.as_ref() {
+            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?;
+            if physical.terminal() != terminal {
+                return Err(CaptureError::SystemInvariant(
+                    "semantic JSONL terminal state disagreed with physical framing",
+                ));
+            }
+            let actual = JsonlSemanticPreflightBinding {
+                physical: physical.admitted_pass_binding()?,
+                complete_prefix_ends_with_terminal_nul_padding: self
+                    .complete_prefix_ends_with_terminal_nul_padding,
+            };
+            if &actual != expected {
+                return Err(CaptureError::SourceChangedDuringCapture);
+            }
+        }
         let checkpoint = self.checkpoint(terminal);
         let current = observe_metadata(
             self.identity.source_path(),
@@ -950,7 +999,10 @@ fn read_bounded_line(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write,
+    };
 
     use super::*;
     use crate::common::io::open_provider_source_file;
@@ -964,6 +1016,24 @@ mod tests {
             })?
             .is_some()
         {}
+        Ok(records)
+    }
+
+    fn semantic_identity(source_path: &Path, revision: &str) -> JsonlSourceIdentity {
+        JsonlSourceIdentity::new(
+            "test",
+            revision,
+            "semantic-pass-binding-policy-v1",
+            [9; 32],
+            source_path.to_owned(),
+        )
+    }
+
+    fn finish_semantic_pass(reader: &mut JsonlReader) -> Result<Vec<JsonlPhysicalRecord>> {
+        let mut records = Vec::new();
+        while let Some(record) = reader.next_execution_record()? {
+            records.push(record);
+        }
         Ok(records)
     }
 
@@ -994,5 +1064,137 @@ mod tests {
 
         assert_eq!(drain(&mut first).unwrap(), expected);
         assert_eq!(drain(&mut second).unwrap(), expected);
+    }
+
+    #[test]
+    fn semantic_projection_rejects_same_length_rewrite_after_preflight() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let source_path = temp.path().join("source.jsonl");
+        let admitted = b"{\"message\":\"authority-a\"}\n{\"message\":\"stable-z\"}\n";
+        let rewritten = b"{\"message\":\"projected-b\"}\n{\"message\":\"stable-z\"}\n";
+        assert_eq!(admitted.len(), rewritten.len());
+        fs::write(&source_path, admitted).unwrap();
+        let source_file = Arc::new(open_provider_source_file(&source_path).unwrap());
+        let mut reader = JsonlReader::open_semantic_with_record_framing(
+            semantic_identity(&source_path, "semantic-rewrite-v1"),
+            source_file,
+            None,
+            None,
+            None,
+            JsonlRecordFraming::ordinary(),
+            None,
+        )
+        .unwrap();
+
+        let initial = reader.execution_position().unwrap();
+        finish_semantic_pass(&mut reader).unwrap();
+        let hook_path = source_path.clone();
+        set_after_jsonl_semantic_preflight_hook(source_path, move || {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(hook_path)
+                .unwrap();
+            file.write_all(rewritten).unwrap();
+            file.sync_all().unwrap();
+        });
+        assert!(reader.settle_semantic_preflight(initial).unwrap());
+
+        let mut projected = Vec::new();
+        let error = loop {
+            match reader.next_execution_record() {
+                Ok(Some(record)) => {
+                    projected.push(reader.execution_record_bytes(record).unwrap().to_vec());
+                }
+                Ok(None) => {
+                    panic!("rewritten projection unexpectedly satisfied the preflight seal")
+                }
+                Err(error) => break error,
+            }
+        };
+        assert!(matches!(error, CaptureError::SourceChangedDuringCapture));
+        assert_eq!(
+            projected,
+            vec![
+                br#"{"message":"projected-b"}"#.to_vec(),
+                br#"{"message":"stable-z"}"#.to_vec()
+            ]
+        );
+        assert!(reader.outcome().is_none());
+    }
+
+    #[test]
+    fn semantic_binding_preserves_incomplete_tail_completion_ordinal() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let source_path = temp.path().join("source.jsonl");
+        fs::write(&source_path, b"first\npartial").unwrap();
+        let identity = semantic_identity(&source_path, "semantic-tail-v1");
+        let source_file = Arc::new(open_provider_source_file(&source_path).unwrap());
+        let mut first = JsonlReader::open_semantic_with_record_framing(
+            identity.clone(),
+            source_file,
+            None,
+            None,
+            None,
+            JsonlRecordFraming::ordinary(),
+            None,
+        )
+        .unwrap();
+
+        let initial = first.execution_position().unwrap();
+        finish_semantic_pass(&mut first).unwrap();
+        let hook_path = source_path.clone();
+        set_after_jsonl_semantic_preflight_hook(source_path.clone(), move || {
+            let mut file = OpenOptions::new().append(true).open(hook_path).unwrap();
+            file.write_all(b"-done\n").unwrap();
+            file.sync_all().unwrap();
+        });
+        assert!(first.settle_semantic_preflight(initial).unwrap());
+        let first_records = finish_semantic_pass(&mut first).unwrap();
+        assert_eq!(first_records.len(), 2);
+        assert_eq!(first_records[1].physical_ordinal, 1);
+        assert!(!first_records[1].complete);
+        assert_eq!(
+            first
+                .outcome()
+                .unwrap()
+                .checkpoint()
+                .next_physical_ordinal(),
+            1
+        );
+        let checkpoint = first.outcome().unwrap().checkpoint().clone();
+        let admitted_eof_sha256 = first.admitted_eof_sha256().unwrap().unwrap();
+        drop(first);
+
+        let source_file = Arc::new(open_provider_source_file(&source_path).unwrap());
+        let mut resumed = JsonlReader::open_semantic_with_record_framing(
+            identity,
+            source_file,
+            Some(&checkpoint),
+            Some(admitted_eof_sha256),
+            None,
+            JsonlRecordFraming::ordinary(),
+            None,
+        )
+        .unwrap();
+        let preflight_start = resumed.execution_position().unwrap();
+        finish_semantic_pass(&mut resumed).unwrap();
+        assert!(resumed.settle_semantic_preflight(preflight_start).unwrap());
+        let completed = resumed.next_execution_record().unwrap().unwrap();
+        assert_eq!(completed.physical_ordinal, 1);
+        assert!(completed.complete);
+        assert_eq!(
+            resumed.execution_record_bytes(completed).unwrap(),
+            b"partial-done"
+        );
+        assert!(resumed.next_execution_record().unwrap().is_none());
+        assert_eq!(
+            resumed
+                .outcome()
+                .unwrap()
+                .checkpoint()
+                .next_physical_ordinal(),
+            2
+        );
     }
 }

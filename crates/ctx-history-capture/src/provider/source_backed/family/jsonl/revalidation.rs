@@ -29,8 +29,17 @@ struct AppendObservationHook {
 }
 
 #[cfg(test)]
+struct SemanticPreflightHook {
+    source_path: PathBuf,
+    hook: Box<dyn FnOnce() + Send>,
+}
+
+#[cfg(test)]
 static AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS: Mutex<Vec<AppendObservationHook>> =
     Mutex::new(Vec::new());
+
+#[cfg(test)]
+static AFTER_SEMANTIC_PREFLIGHT_HOOKS: Mutex<Vec<SemanticPreflightHook>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(crate) fn reset_jsonl_prefix_hash_bytes() {
@@ -84,6 +93,26 @@ pub(crate) fn set_after_jsonl_append_observation_route_binding_hook(
 }
 
 #[cfg(test)]
+pub(crate) fn set_after_jsonl_semantic_preflight_hook(
+    source_path: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    let mut hooks = AFTER_SEMANTIC_PREFLIGHT_HOOKS
+        .lock()
+        .expect("JSONL semantic-preflight hook lock was poisoned");
+    assert!(
+        hooks
+            .iter()
+            .all(|pending| pending.source_path != source_path),
+        "JSONL semantic-preflight hook is already installed for {source_path:?}"
+    );
+    hooks.push(SemanticPreflightHook {
+        source_path,
+        hook: Box::new(hook),
+    });
+}
+
+#[cfg(test)]
 fn run_after_jsonl_prefix_hash_hook() {
     AFTER_PREFIX_HASH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -116,6 +145,22 @@ fn run_after_jsonl_append_observation_route_binding_hook(source_path: &Path) {
         let mut hooks = AFTER_APPEND_OBSERVATION_ROUTE_BINDING_HOOKS
             .lock()
             .expect("JSONL append-observation hook lock was poisoned");
+        hooks
+            .iter()
+            .position(|pending| pending.source_path == source_path)
+            .map(|index| hooks.remove(index).hook)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn run_after_jsonl_semantic_preflight_hook(source_path: &Path) {
+    let hook = {
+        let mut hooks = AFTER_SEMANTIC_PREFLIGHT_HOOKS
+            .lock()
+            .expect("JSONL semantic-preflight hook lock was poisoned");
         hooks
             .iter()
             .position(|pending| pending.source_path == source_path)

@@ -18,7 +18,7 @@ use crate::provider::codex::nativepath::{
 };
 use crate::provider::source_backed::family::jsonl::{
     checkpoint_admitted_revision_for_test, new_prefix_hasher, prefix_digest,
-    set_after_jsonl_append_observation_route_binding_hook,
+    set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_semantic_preflight_hook,
     set_before_jsonl_terminal_physical_revalidation_hook,
 };
 
@@ -176,6 +176,29 @@ fn successful_result(call_id: &str, output: String) -> serde_json::Value {
             "output": format!(
                 "Chunk ID: abc123\nWall time: 0.125 seconds\nProcess exited with code 0\nFinal output:\n{output}"
             )
+        }
+    })
+}
+
+fn mcp_terminal(call_id: &str, server: &str, marker: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:04Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "mcp_tool_call_end",
+            "call_id": call_id,
+            "invocation": {
+                "server": server,
+                "tool": "race-tool",
+                "arguments": {}
+            },
+            "duration": {"secs": 0, "nanos": 42},
+            "result": {
+                "Ok": {
+                    "content": [{"type": "text", "text": marker}],
+                    "isError": false
+                }
+            }
         }
     })
 }
@@ -2302,6 +2325,157 @@ fn direct_source_rewrite_delete_and_reappearance_replace_only_that_source() {
             .cold_sources,
         1
     );
+}
+
+#[test]
+fn semantic_preflight_rewrite_cannot_publish_stale_mcp_or_repository_authority() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    let repository = temp.path().join("repository");
+    fs::create_dir_all(&sessions).unwrap();
+    initialize_repository(&repository);
+    let oid = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let oid = oid.trim();
+    let native_session_id = "019fb000-0000-7000-8000-000000000044";
+    let path = session_path(&sessions, native_session_id);
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [message("preflightbindinglastgoodtoken")],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let last_good = VerifiedIndex::open(&index_root).unwrap();
+    let last_good_generation = last_good.generation_id().to_owned();
+    let last_good_snapshot = source_snapshot(
+        &last_good,
+        native_session_id,
+        "preflightbindinglastgoodtoken",
+    );
+    drop(last_good);
+
+    let fixture = |second_repository_call_id: &str, second_mcp_call_id: &str| {
+        let mut metadata = session_meta(native_session_id, SessionRelationshipKind::Root, None);
+        metadata["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cli_version");
+        jsonl_bytes([
+            metadata,
+            turn_context(),
+            exec_call_in(
+                "semantic-repo-call-a",
+                "git commit -m semantic-race && git rev-parse HEAD",
+                &repository,
+            ),
+            successful_result(
+                "semantic-repo-call-a",
+                format!("stalerepoauthorityfirsttoken\n[main abc1234] semantic-race\n{oid}\n"),
+            ),
+            exec_call_in(
+                second_repository_call_id,
+                "git commit -m semantic-race && git rev-parse HEAD",
+                &repository,
+            ),
+            successful_result(
+                second_repository_call_id,
+                format!("stalerepoauthoritysecondtoken\n[main abc1234] semantic-race\n{oid}\n"),
+            ),
+            mcp_terminal(
+                "semantic-mcp-call-a",
+                "semantic-server-a",
+                "stalemcpauthorityfirsttoken",
+            ),
+            mcp_terminal(
+                second_mcp_call_id,
+                "semantic-server-b",
+                "stalemcpauthoritysecondtoken",
+            ),
+        ])
+    };
+    let admitted_a = fixture("semantic-repo-call-b", "semantic-mcp-call-b");
+    let rewritten_b = fixture("semantic-repo-call-a", "semantic-mcp-call-a");
+    assert_ne!(admitted_a, rewritten_b);
+    assert_eq!(admitted_a.len(), rewritten_b.len());
+    fs::write(&path, &admitted_a).unwrap();
+    let hook_path = path.clone();
+    set_after_jsonl_semantic_preflight_hook(path.clone(), move || {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(hook_path)
+            .unwrap();
+        file.write_all(&rewritten_b).unwrap();
+        file.sync_all().unwrap();
+    });
+
+    let failed =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert_eq!(failed.failed_routes.len(), 1);
+    assert!(failed.failed_routes[0].carried_forward);
+    let retained = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(retained.generation_id(), last_good_generation);
+    assert_eq!(
+        source_snapshot(
+            &retained,
+            native_session_id,
+            "preflightbindinglastgoodtoken"
+        ),
+        last_good_snapshot
+    );
+    for marker in [
+        "stalerepoauthorityfirsttoken",
+        "stalerepoauthoritysecondtoken",
+        "stalemcpauthorityfirsttoken",
+        "stalemcpauthoritysecondtoken",
+    ] {
+        assert!(
+            retained
+                .search_event_candidates(marker, 8)
+                .unwrap()
+                .is_empty(),
+            "inter-pass rewrite published stale-authority record {marker}"
+        );
+    }
+    drop(retained);
+
+    let fresh = refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(fresh.failed_routes.is_empty());
+    assert!(fresh.logical_source_failures.is_empty());
+    let rebound = VerifiedIndex::open(&index_root).unwrap();
+    let records = records_for(&rebound, native_session_id);
+    assert_no_repository_causality(
+        &records,
+        &[
+            "stalerepoauthorityfirsttoken",
+            "stalerepoauthoritysecondtoken",
+        ],
+    );
+    let mcp_records = records
+        .iter()
+        .filter(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("stalemcpauthority"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mcp_records.len(), 2);
+    assert!(mcp_records
+        .iter()
+        .all(|record| record.mcp_tool_call.is_none()));
 }
 
 #[test]

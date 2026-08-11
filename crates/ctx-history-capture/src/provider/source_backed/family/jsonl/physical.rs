@@ -3,7 +3,7 @@ use std::{
     io::{BufReader, Seek, SeekFrom},
 };
 
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
@@ -127,6 +127,18 @@ pub(crate) struct JsonlPhysicalStreamPosition {
     next_physical_ordinal: u64,
     complete_prefix_end: u64,
     digest: JsonlPhysicalDigest,
+    incomplete_tail: bool,
+    exhausted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct JsonlPhysicalPassBinding {
+    frozen_length: u64,
+    offset: u64,
+    next_physical_ordinal: u64,
+    complete_prefix_end: u64,
+    complete_prefix_sha256: [u8; 32],
+    admitted_eof_sha256: [u8; 32],
     incomplete_tail: bool,
     exhausted: bool,
 }
@@ -314,6 +326,25 @@ impl JsonlPhysicalStream {
 
     pub(crate) fn digest(&self) -> &JsonlPhysicalDigest {
         &self.digest
+    }
+
+    pub(super) fn admitted_pass_binding(&self) -> Result<JsonlPhysicalPassBinding> {
+        let full = self
+            .digest
+            .full_hasher()
+            .ok_or(CaptureError::SystemInvariant(
+                "bound JSONL pass omitted its admitted-EOF digest",
+            ))?;
+        Ok(JsonlPhysicalPassBinding {
+            frozen_length: self.frozen_length,
+            offset: self.offset,
+            next_physical_ordinal: self.next_physical_ordinal,
+            complete_prefix_end: self.complete_prefix_end,
+            complete_prefix_sha256: self.digest.complete_hasher().clone().finalize().into(),
+            admitted_eof_sha256: full.clone().finalize().into(),
+            incomplete_tail: self.incomplete_tail,
+            exhausted: self.exhausted,
+        })
     }
 
     pub(crate) fn terminal(&self) -> bool {
