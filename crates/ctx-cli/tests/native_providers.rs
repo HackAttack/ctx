@@ -1079,27 +1079,26 @@ fn nanoclaw_import_tolerates_partial_auxiliary_tables() {
 
 #[test]
 fn personal_agent_sqlite_imports_report_corrupt_databases() {
-    for (provider, path) in [("lingma", "corrupt-lingma-local.db")] {
-        let temp = tempdir();
-        let db_path = temp.path().join(path);
-        fs::write(&db_path, b"not sqlite").unwrap();
-        let output = ctx(&temp)
-            .args([
-                "import",
-                "--provider",
-                provider,
-                "--path",
-                db_path.to_str().unwrap(),
-                "--format=json",
-            ])
-            .assert()
-            .failure()
-            .get_output()
-            .stderr
-            .clone();
-        let stderr = String::from_utf8(output).unwrap();
-        assert!(stderr.contains("not a database"), "{stderr}");
-    }
+    let (provider, path) = ("lingma", "corrupt-lingma-local.db");
+    let temp = tempdir();
+    let db_path = temp.path().join(path);
+    fs::write(&db_path, b"not sqlite").unwrap();
+    let output = ctx(&temp)
+        .args([
+            "import",
+            "--provider",
+            provider,
+            "--path",
+            db_path.to_str().unwrap(),
+            "--format=json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(output).unwrap();
+    assert!(stderr.contains("not a database"), "{stderr}");
 
     let temp = tempdir();
     let db_path = temp.path().join(".astrbot/data/data_v4.db");
