@@ -1,15 +1,16 @@
 use anyhow::{anyhow, Result};
 use clap::{Args, ValueEnum};
+use ctx_agent_application::{
+    integrations::slash_commands::{self as application, SlashCommandInstallApplicationRequest},
+    ProductIdentity,
+};
 use ctx_agent_integrations::slash_commands::{
-    execute_install, SlashCommandAgent, SlashCommandInstallRequest,
-    SlashCommandInstallResult as InstallResult, SlashCommandInstallStatus, SlashCommandScope,
-    COMMAND_NAME,
+    SlashCommandAgent, SlashCommandInstallResult as InstallResult, SlashCommandInstallStatus,
+    SlashCommandScope, COMMAND_NAME,
 };
 use serde_json::{json, Value};
 
-use crate::analytics::{
-    count_bucket, IntegrationResult, IntegrationScope, IntegrationTelemetry, TargetSelection,
-};
+use crate::analytics::{count_bucket, IntegrationScope, IntegrationTelemetry, TargetSelection};
 use crate::output::JsonOutputFormat;
 use crate::ui::{
     diagnostic, empty_state, fields, hint, outcome, section, table, Action, Diagnostic,
@@ -122,12 +123,13 @@ pub(crate) fn insert_install_analytics(
 pub(crate) fn run_install(
     args: SlashCommandInstallArgs,
     context: &PathContext,
+    identity: ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
     let json_output = args.format.is_json();
-    let receipt = execute_install(
-        SlashCommandInstallRequest {
+    let outcome = application::install(
+        SlashCommandInstallApplicationRequest {
             agents: args
                 .agent
                 .iter()
@@ -137,19 +139,12 @@ pub(crate) fn run_install(
             all_agents: args.all_agents,
             project: args.project,
             force: args.force,
-            product_version: env!("CARGO_PKG_VERSION").to_owned(),
         },
         context,
+        identity,
     )?;
-    telemetry.resolved_agents = Some(count_bucket(receipt.results.len() as u64));
-    telemetry.result = Some(if receipt.failed == 0 {
-        IntegrationResult::Ok
-    } else {
-        IntegrationResult::PartialError
-    });
-    telemetry.already_installed = Some(receipt.already_installed);
-    telemetry.updated = Some(receipt.updated);
-    telemetry.modified_targets = Some(count_bucket(receipt.modified_targets as u64));
+    crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
+    let receipt = outcome.receipt;
     if json_output {
         println!(
             "{}",
@@ -163,7 +158,9 @@ pub(crate) fn run_install(
     } else {
         let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;
-        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &receipt.results) {
+        if let Some(diagnostics) =
+            render_install_failures(ui.stderr_context(), identity, &receipt.results)
+        {
             ui.write_stderr(&diagnostics)?;
         }
     }
@@ -292,14 +289,15 @@ fn render_install_results(context: &RenderContext, results: &[InstallResult]) ->
     document
 }
 
-fn render_install_failures(context: &RenderContext, results: &[InstallResult]) -> Option<Document> {
+fn render_install_failures(
+    context: &RenderContext,
+    identity: ProductIdentity<'_>,
+    results: &[InstallResult],
+) -> Option<Document> {
     let mut document = Document::new();
     for result in results.iter().filter(|result| !result.success) {
         let summary = format!("{} was not changed", result.agent.display_name());
-        let command = format!(
-            "ctx integrations install slash-commands --agent {} --force",
-            result.agent.id()
-        );
+        let command = application::force_install_command(identity, result);
         if !document.is_empty() {
             document.push_blank();
         }
@@ -310,8 +308,7 @@ fn render_install_failures(context: &RenderContext, results: &[InstallResult]) -
                 summary: &summary,
                 detail: result.error.as_deref(),
                 fields: &[],
-                action: (result.status == SlashCommandInstallStatus::Modified)
-                    .then_some(Action { command: &command }),
+                action: command.as_deref().map(|command| Action { command }),
             },
         ));
     }

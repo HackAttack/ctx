@@ -2,8 +2,14 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::{
-    analytics::{IntegrationAction, IntegrationTarget, IntegrationTelemetry},
+    analytics::{
+        count_bucket, IntegrationAction, IntegrationResult, IntegrationTarget,
+        IntegrationTelemetry, TargetSelection,
+    },
     skill,
+};
+use ctx_agent_application::{
+    IntegrationResultFact, IntegrationTelemetryFacts, ProductIdentity, TargetSelectionFact,
 };
 
 mod mcp;
@@ -86,20 +92,20 @@ pub(crate) fn run(
                 telemetry.target = Some(IntegrationTarget::Mcp);
                 args.add_initial_analytics(telemetry);
                 let context = mcp::McpPathContext::from_env()?;
-                run_mcp_install(args, &context, telemetry, ui)
+                run_mcp_install(args, &context, product_identity(), telemetry, ui)
             }
             IntegrationInstallTarget::Skills(args) => {
                 telemetry.action = Some(IntegrationAction::Install);
                 telemetry.target = Some(IntegrationTarget::Skills);
                 args.add_initial_analytics(telemetry);
-                skill::run_install_command(args, telemetry, ui)
+                skill::run_install_command(args, product_identity(), telemetry, ui)
             }
             IntegrationInstallTarget::SlashCommands(args) => {
                 telemetry.action = Some(IntegrationAction::Install);
                 telemetry.target = Some(IntegrationTarget::SlashCommands);
                 slash_commands::insert_install_analytics(telemetry, &args);
                 let context = slash_commands::PathContext::from_env()?;
-                slash_commands::run_install(args, &context, telemetry, ui)
+                slash_commands::run_install(args, &context, product_identity(), telemetry, ui)
             }
         },
         IntegrationCommand::Status(args) => match args.target {
@@ -108,14 +114,66 @@ pub(crate) fn run(
                 telemetry.target = Some(IntegrationTarget::Mcp);
                 args.add_initial_analytics(telemetry);
                 let context = mcp::McpPathContext::from_env()?;
-                run_mcp_status(args, &context, telemetry, ui)
+                run_mcp_status(args, &context, product_identity(), telemetry, ui)
             }
             IntegrationStatusTarget::Skills(args) => {
                 telemetry.action = Some(IntegrationAction::Status);
                 telemetry.target = Some(IntegrationTarget::Skills);
                 args.add_initial_analytics(telemetry);
-                skill::run_status_command(args, telemetry, ui)
+                skill::run_status_command(args, product_identity(), telemetry, ui)
             }
         },
     }
+}
+
+fn product_identity() -> ProductIdentity<'static> {
+    ProductIdentity {
+        name: "ctx",
+        version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
+pub(crate) fn apply_workflow_telemetry(
+    facts: IntegrationTelemetryFacts,
+    telemetry: &mut IntegrationTelemetry,
+) {
+    if let Some(selection) = facts.selection {
+        telemetry.selection = Some(match selection {
+            TargetSelectionFact::Explicit => TargetSelection::Explicit,
+            TargetSelectionFact::All => TargetSelection::All,
+            TargetSelectionFact::Picker => TargetSelection::Picker,
+            TargetSelectionFact::Detected => TargetSelection::Detected,
+            TargetSelectionFact::Fallback => TargetSelection::Fallback,
+        });
+    }
+    telemetry.resolved_agents = facts
+        .resolved_agents
+        .map(|count| count_bucket(count as u64));
+    telemetry.result = facts.result.map(|result| match result {
+        IntegrationResultFact::Ok => IntegrationResult::Ok,
+        IntegrationResultFact::PartialError => IntegrationResult::PartialError,
+        IntegrationResultFact::AllCurrent => IntegrationResult::AllCurrent,
+        IntegrationResultFact::NoneCurrent => IntegrationResult::NoneCurrent,
+        IntegrationResultFact::PartiallyCurrent => IntegrationResult::PartiallyCurrent,
+    });
+    telemetry.already_installed = facts.already_installed;
+    telemetry.updated = facts.updated;
+    telemetry.modified_targets = facts
+        .modified_targets
+        .map(|count| count_bucket(count as u64));
+    telemetry.current_targets = facts
+        .current_targets
+        .map(|count| count_bucket(count as u64));
+    telemetry.missing_targets = facts
+        .missing_targets
+        .map(|count| count_bucket(count as u64));
+    telemetry.conflicting_targets = facts
+        .conflicting_targets
+        .map(|count| count_bucket(count as u64));
+    telemetry.invalid_targets = facts
+        .invalid_targets
+        .map(|count| count_bucket(count as u64));
+    telemetry.unsupported_targets = facts
+        .unsupported_targets
+        .map(|count| count_bucket(count as u64));
 }

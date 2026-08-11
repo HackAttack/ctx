@@ -1,13 +1,12 @@
 use anyhow::{anyhow, Result};
+use ctx_agent_application::{skill as application, ProductIdentity};
 use ctx_agent_integrations::skill::{
-    bundled_hash, execute_install, execute_status, InstallResult, SkillAgentSelection,
-    SkillInstallRequest, SkillInstallStatus, SkillSelectionSource, SkillStatusRequest, SkillTarget,
-    StatusResult,
+    bundled_hash, InstallResult, SkillInstallStatus, StatusResult,
 };
 use serde_json::{json, Value};
 
 use crate::{
-    analytics::{count_bucket, IntegrationResult, IntegrationTelemetry, TargetSelection},
+    analytics::IntegrationTelemetry,
     ui::{
         diagnostic, fields, hint, outcome, section, Action, Diagnostic, DiagnosticLevel, Document,
         Field, Hint, Outcome, OutcomeState, RenderContext, Ui,
@@ -22,28 +21,14 @@ use super::{
 pub(super) fn run_install(
     args: SkillInstallArgs,
     context: &super::paths::PathContext,
+    identity: ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
     let selection = install_agent_selection(&args, context)?;
-    insert_selection_analytics(telemetry, &selection);
-    let receipt = execute_install(
-        SkillInstallRequest {
-            selection,
-            project: args.project,
-            force: args.force,
-            product_version: env!("CARGO_PKG_VERSION").to_owned(),
-        },
-        context,
-    )?;
-    telemetry.result = Some(if receipt.fatal_failures == 0 {
-        IntegrationResult::Ok
-    } else {
-        IntegrationResult::PartialError
-    });
-    telemetry.already_installed = Some(receipt.already_installed);
-    telemetry.updated = Some(receipt.updated);
-    telemetry.modified_targets = Some(count_bucket(receipt.modified_targets as u64));
+    let outcome = application::install(selection, args.project, args.force, context, identity)?;
+    crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
+    let receipt = outcome.receipt;
     if args.format.is_json() {
         println!(
             "{}",
@@ -56,7 +41,9 @@ pub(super) fn run_install(
     } else {
         let document = render_install_results(ui.stdout_context(), &receipt.results);
         ui.write_stdout(&document)?;
-        if let Some(diagnostics) = render_install_failures(ui.stderr_context(), &receipt.results) {
+        if let Some(diagnostics) =
+            render_install_failures(ui.stderr_context(), identity, &receipt.results)
+        {
             ui.write_stderr(&diagnostics)?;
         }
     }
@@ -75,40 +62,15 @@ pub(super) fn run_install(
 pub(super) fn run_status(
     args: SkillStatusArgs,
     context: &super::paths::PathContext,
+    identity: ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
     let selection = status_agent_selection(&args, context);
-    insert_selection_analytics(telemetry, &selection);
-    let receipt = execute_status(
-        SkillStatusRequest {
-            selection,
-            project: args.project,
-        },
-        context,
-    )?;
-    telemetry.result = Some(if receipt.current_count == receipt.results.len() {
-        IntegrationResult::AllCurrent
-    } else if receipt.current_count == 0 {
-        IntegrationResult::NoneCurrent
-    } else {
-        IntegrationResult::PartiallyCurrent
-    });
-    telemetry.current_targets = Some(count_bucket(receipt.current_count as u64));
-    telemetry.missing_targets = Some(count_bucket(
-        receipt
-            .results
-            .iter()
-            .filter(|result| result.status == SkillInstallStatus::Missing)
-            .count() as u64,
-    ));
-    telemetry.conflicting_targets = Some(count_bucket(
-        receipt
-            .results
-            .iter()
-            .filter(|result| result.status == SkillInstallStatus::Modified)
-            .count() as u64,
-    ));
+    let outcome = application::status(selection, args.project, context, identity)?;
+    crate::integrations::apply_workflow_telemetry(outcome.telemetry, telemetry);
+    let recovery_command = outcome.recovery_command;
+    let receipt = outcome.receipt;
     if args.format.is_json() {
         println!(
             "{}",
@@ -119,27 +81,11 @@ pub(super) fn run_status(
             })
         );
     } else {
-        let recovery_command =
-            status_install_command(&receipt.selection, args.project, &receipt.results);
         let document =
             render_status_results(ui.stdout_context(), &receipt.results, &recovery_command);
         ui.write_stdout(&document)?;
     }
     Ok(())
-}
-
-fn insert_selection_analytics(
-    telemetry: &mut IntegrationTelemetry,
-    selection: &SkillAgentSelection,
-) {
-    telemetry.selection = Some(match selection.source {
-        SkillSelectionSource::Explicit => TargetSelection::Explicit,
-        SkillSelectionSource::All => TargetSelection::All,
-        SkillSelectionSource::Picker => TargetSelection::Picker,
-        SkillSelectionSource::Detected => TargetSelection::Detected,
-        SkillSelectionSource::Fallback => TargetSelection::Fallback,
-    });
-    telemetry.resolved_agents = Some(count_bucket(selection.agents.len() as u64));
 }
 
 fn status_result_json(result: &StatusResult) -> Value {
@@ -232,14 +178,18 @@ fn render_install_results(context: &RenderContext, results: &[InstallResult]) ->
     document
 }
 
-fn render_install_failures(context: &RenderContext, results: &[InstallResult]) -> Option<Document> {
+fn render_install_failures(
+    context: &RenderContext,
+    identity: ProductIdentity<'_>,
+    results: &[InstallResult],
+) -> Option<Document> {
     let mut document = Document::new();
     for result in results.iter().filter(|result| !result.success) {
         let summary = format!(
             "{} Agent Skill was not changed",
             result.target.agent.display_name()
         );
-        let command = force_install_command(&result.target);
+        let command = application::force_install_command(identity, &result.target);
         if !document.is_empty() {
             document.push_blank();
         }
@@ -256,18 +206,6 @@ fn render_install_failures(context: &RenderContext, results: &[InstallResult]) -
         ));
     }
     (!document.is_empty()).then_some(document)
-}
-
-fn force_install_command(target: &SkillTarget) -> String {
-    let project = if target.scope.as_str() == "project" {
-        " --project"
-    } else {
-        ""
-    };
-    format!(
-        "ctx integrations install skills --agent {}{project} --force",
-        target.agent.id()
-    )
 }
 
 fn render_status_results(
@@ -333,34 +271,6 @@ fn render_status_results(
     document
 }
 
-fn status_install_command(
-    selection: &SkillAgentSelection,
-    project: bool,
-    results: &[StatusResult],
-) -> String {
-    let mut tokens = ["ctx", "integrations", "install", "skills"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if selection.source == SkillSelectionSource::All {
-        tokens.push("--all-agents".to_owned());
-    } else {
-        for agent in &selection.agents {
-            tokens.extend(["--agent".to_owned(), agent.id().to_owned()]);
-        }
-    }
-    if project {
-        tokens.push("--project".to_owned());
-    }
-    if results
-        .iter()
-        .any(|result| result.status == SkillInstallStatus::Modified)
-    {
-        tokens.push("--force".to_owned());
-    }
-    tokens.join(" ")
-}
-
 #[cfg(test)]
 mod render_tests {
     use std::io::Write as _;
@@ -372,6 +282,11 @@ mod render_tests {
     };
     use ctx_agent_integrations::skill::{
         install_target, resolve_targets_for_agents, status_target,
+    };
+
+    const PRODUCT: ProductIdentity<'static> = ProductIdentity {
+        name: "ctx",
+        version: "1.0.0-test",
     };
 
     fn render_context(width: usize, color: ColorMode) -> RenderContext {
@@ -447,15 +362,11 @@ mod render_tests {
             temp.path().join("home"),
             temp.path().join("repo"),
         );
-        let selection = SkillAgentSelection {
-            agents: vec![SkillAgentArg::Universal],
-            source: SkillSelectionSource::Explicit,
-        };
-        let target = resolve_targets_for_agents(&selection.agents, true, &path_context)
+        let target = resolve_targets_for_agents(&[SkillAgentArg::Universal], true, &path_context)
             .unwrap()
             .remove(0);
         let result = status_target(&target).unwrap();
-        let command = status_install_command(&selection, true, std::slice::from_ref(&result));
+        let command = "ctx integrations install skills --agent universal --project".to_owned();
         assert_eq!(
             command,
             "ctx integrations install skills --agent universal --project"
@@ -510,10 +421,14 @@ mod render_tests {
                     TestContext::tty(StreamKind::Stderr, width).color(ColorMode::Always),
                 );
                 let plain_document =
-                    render_install_failures(&plain_context, std::slice::from_ref(&result)).unwrap();
-                let styled_document =
-                    render_install_failures(&styled_context, std::slice::from_ref(&result))
+                    render_install_failures(&plain_context, PRODUCT, std::slice::from_ref(&result))
                         .unwrap();
+                let styled_document = render_install_failures(
+                    &styled_context,
+                    PRODUCT,
+                    std::slice::from_ref(&result),
+                )
+                .unwrap();
 
                 assert_eq!(semantic_command(&plain_document), expected);
                 let normalized = plain_document

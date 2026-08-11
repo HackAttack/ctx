@@ -153,7 +153,25 @@ def main() -> None:
         fail(f"stale CLI MCP application authorities remain: {remaining}")
 
     required_authorities = {
+        "crates/ctx-agent-application/src/integrations/mcp.rs": [
+            "McpInstallOutcome",
+            "McpStatusOutcome",
+            "force_install_command",
+        ],
+        "crates/ctx-agent-application/src/integrations/slash_commands.rs": [
+            "SlashCommandInstallApplicationRequest",
+            "SlashCommandInstallOutcome",
+        ],
         "crates/ctx-agent-application/src/mcp_tool_call.rs": ["invoke_mcp_tool_call"],
+        "crates/ctx-agent-application/src/skill/install.rs": [
+            "SkillInstallOutcome",
+            "SkillStatusOutcome",
+            "status_install_command",
+        ],
+        "crates/ctx-agent-application/src/skill/selection.rs": [
+            "SkillInstallSelectionPlan",
+            "plan_install_selection",
+        ],
         "crates/ctx-agent-application/src/tool_backend/mod.rs": [
             "HistoryReadPort",
             "SearchReadinessPort",
@@ -180,6 +198,70 @@ def main() -> None:
     ]
     if stale_cli_orchestration:
         fail(f"stale CLI tool orchestration remains: {stale_cli_orchestration}")
+
+    cli_workflow_checks = {
+        "crates/ctx-cli/src/integrations/mcp/operation.rs": [
+            "execute_install",
+            "execute_status",
+            "fn status_install_command(",
+            "fn force_install_command(",
+        ],
+        "crates/ctx-cli/src/integrations/slash_commands.rs": [
+            "execute_install",
+            'env!("CARGO_PKG_VERSION")',
+        ],
+        "crates/ctx-cli/src/skill/install.rs": [
+            "execute_install",
+            "execute_status",
+            "fn insert_selection_analytics(",
+            "fn status_install_command(",
+            "fn force_install_command(",
+        ],
+        "crates/ctx-cli/src/skill/selection.rs": [
+            "default_agent_selection",
+            "explicit_agent_selection",
+            "picker_agent_selection",
+            "fn picker_prompt_lines(\n    context:",
+        ],
+    }
+    for relative, symbols in cli_workflow_checks.items():
+        body = (root / relative).read_text(encoding="utf-8")
+        stale = [symbol for symbol in symbols if symbol in body]
+        if stale:
+            fail(f"stale CLI workflow authority in {relative}: {stale}")
+
+    contract_paths = [
+        "integrations.rs",
+        "integrations_mcp.rs",
+        "mcp.rs",
+        "mcp/input_validation.rs",
+        "mcp_attribution_privacy.rs",
+        "mcp_integration_e2e.rs",
+        "mcp_local_usage_v2.rs",
+        "mcp_telemetry.rs",
+        "skill.rs",
+        "slash_command_e2e.rs",
+        "support/mcp.rs",
+    ]
+    stale_contracts = [
+        path for path in contract_paths if (root / f"crates/ctx-cli/tests/{path}").exists()
+    ]
+    if stale_contracts:
+        fail(f"stale CLI-owned agent application contracts remain: {stale_contracts}")
+    missing_contracts = [
+        path
+        for path in contract_paths
+        if not (root / f"crates/ctx-agent-application/tests/contracts/{path}").is_file()
+    ]
+    if missing_contracts:
+        fail(f"missing application-owned final-binary contracts: {missing_contracts}")
+    contract_build = (
+        root / "crates/ctx-agent-application/test_targets.bzl"
+    ).read_text(encoding="utf-8")
+    if 'binary = "//crates/ctx-cli:ctx"' not in contract_build:
+        fail("application contracts do not execute the final ctx binary")
+    if "ctx-cli:lib" in build + contract_build or "ctx_cli" in build + contract_build:
+        fail("application BUILD has a Rust test or production backedge to ctx-cli")
 
     cloc = approximate_physical_cloc(sources)
     if cloc >= HARD_CLOC_LIMIT:

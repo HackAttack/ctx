@@ -21,6 +21,7 @@ mod daemon;
 #[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_fixtures))]
 mod fixtures;
 mod history_plugins;
+#[path = "../../../ctx-agent-application/tests/contracts/support/mcp.rs"]
 mod mcp;
 #[cfg(any(all(test, not(ctx_cli_bazel_test)), ctx_cli_test_support_fixtures))]
 mod native_fixtures;

@@ -13,13 +13,7 @@ mod agents {
 }
 
 mod paths {
-    #[cfg(test)]
-    pub(super) use ctx_agent_integrations::skill::ensure_path_inside;
     pub(super) use ctx_agent_integrations::skill::PathContext;
-}
-
-mod target {
-    pub(super) use ctx_agent_integrations::skill::single_target;
 }
 
 #[cfg(test)]
@@ -30,8 +24,6 @@ use install::{run_install, run_status};
 use paths::PathContext;
 
 use ctx_agent_integrations::skill::BUNDLED_SKILL_NAME;
-#[cfg(test)]
-const METADATA_FILE: &str = ".ctx-skill.json";
 
 #[derive(Debug, Args)]
 pub(crate) struct SkillInstallArgs {
@@ -107,20 +99,22 @@ impl SkillStatusArgs {
 
 pub(crate) fn run_install_command(
     args: SkillInstallArgs,
+    identity: ctx_agent_application::ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
     let context = PathContext::from_env()?;
-    run_install(args, &context, telemetry, ui)
+    run_install(args, &context, identity, telemetry, ui)
 }
 
 pub(crate) fn run_status_command(
     args: SkillStatusArgs,
+    identity: ctx_agent_application::ProductIdentity<'_>,
     telemetry: &mut IntegrationTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
     let context = PathContext::from_env()?;
-    run_status(args, &context, telemetry, ui)
+    run_status(args, &context, identity, telemetry, ui)
 }
 
 fn insert_target_analytics(

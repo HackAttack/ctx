@@ -1,53 +1,58 @@
 use std::io::{self, IsTerminal, Write};
 
 use anyhow::{anyhow, Context, Result};
-use ctx_agent_integrations::skill::{
-    default_agent_selection, detected_agents, explicit_agent_selection, parse_picker_selection,
-    picker_agent_selection, SkillAgentSelection,
+use ctx_agent_application::skill::{
+    complete_picker_selection, plan_install_selection, status_selection, SkillInstallSelectionPlan,
+    SkillPickerPrompt, SkillSelectionRequest,
 };
+use ctx_agent_integrations::skill::{parse_picker_selection, SkillAgentSelection};
 
 use super::{
     agents::{picker_agents, SkillAgentArg},
     paths::PathContext,
-    target::single_target,
-    SkillInstallArgs, SkillStatusArgs, BUNDLED_SKILL_NAME,
+    SkillInstallArgs, SkillStatusArgs,
 };
-
-pub(super) fn default_picker_agents(context: &PathContext) -> Vec<SkillAgentArg> {
-    default_agent_selection(context).agents
-}
 
 pub(super) fn install_agent_selection(
     args: &SkillInstallArgs,
     context: &PathContext,
 ) -> Result<SkillAgentSelection> {
-    if let Some(selection) = explicit_agent_selection(&args.agent, args.all_agents) {
-        return Ok(selection);
+    match plan_install_selection(
+        SkillSelectionRequest {
+            agents: &args.agent,
+            all_agents: args.all_agents,
+            allow_picker: !args.format.is_json() && can_prompt(),
+        },
+        context,
+    )? {
+        SkillInstallSelectionPlan::Selected(selection) => Ok(selection),
+        SkillInstallSelectionPlan::Prompt(prompt) => {
+            Ok(complete_picker_selection(prompt_for_agents(&prompt)?))
+        }
     }
-    if args.format.is_json() || !can_prompt() {
-        return Ok(default_agent_selection(context));
-    }
-    Ok(picker_agent_selection(prompt_for_agents(context)?))
 }
 
 pub(super) fn status_agent_selection(
     args: &SkillStatusArgs,
     context: &PathContext,
 ) -> SkillAgentSelection {
-    explicit_agent_selection(&args.agent, args.all_agents)
-        .unwrap_or_else(|| default_agent_selection(context))
+    status_selection(&args.agent, args.all_agents, context)
 }
 
 fn can_prompt() -> bool {
     io::stdin().is_terminal() && io::stderr().is_terminal()
 }
 
-fn prompt_for_agents(context: &PathContext) -> Result<Vec<SkillAgentArg>> {
+fn prompt_for_agents(prompt: &SkillPickerPrompt) -> Result<Vec<SkillAgentArg>> {
     let options = picker_agents();
-    let detected = detected_agents(context);
-    let defaults = default_picker_agents(context);
+    let defaults = prompt
+        .options
+        .iter()
+        .filter(|option| option.selected_by_default)
+        .map(|option| option.agent)
+        .collect::<Vec<_>>();
     let mut stderr = crate::output::stderr_writer();
-    for line in picker_prompt_lines(context, options, &detected, &defaults)? {
+    for line in picker_prompt_lines(prompt) {
         writeln!(stderr, "{line}")?;
     }
     loop {
@@ -76,34 +81,27 @@ fn prompt_for_agents(context: &PathContext) -> Result<Vec<SkillAgentArg>> {
     }
 }
 
-fn picker_prompt_lines(
-    context: &PathContext,
-    options: &[SkillAgentArg],
-    detected: &[SkillAgentArg],
-    defaults: &[SkillAgentArg],
-) -> Result<Vec<String>> {
+fn picker_prompt_lines(prompt: &SkillPickerPrompt) -> Vec<String> {
     let mut lines = vec![
-        format!("Select where to install {BUNDLED_SKILL_NAME}. Detected agents are preselected."),
+        format!(
+            "Select where to install {}. Detected agents are preselected.",
+            prompt.skill_name
+        ),
         "Press Enter for the marked defaults, or enter numbers like 1,2.".to_owned(),
     ];
-    for (index, agent) in options.iter().enumerate() {
-        let marker = if defaults.contains(agent) { "*" } else { " " };
-        let detected_hint = if detected.contains(agent) {
-            " detected"
-        } else {
-            ""
-        };
-        let target = single_target(*agent, false, context)?;
+    for (index, option) in prompt.options.iter().enumerate() {
+        let marker = if option.selected_by_default { "*" } else { " " };
+        let detected_hint = if option.detected { " detected" } else { "" };
         lines.push(format!(
             "  {}. [{}] {} -> {}{}",
             index + 1,
             marker,
-            agent.display_name(),
-            target.skill_dir.display(),
+            option.agent.display_name(),
+            option.target.skill_dir.display(),
             detected_hint
         ));
     }
-    Ok(lines)
+    lines
 }
 
 #[cfg(test)]
@@ -114,9 +112,18 @@ mod prompt_tests {
     fn interactive_picker_prompt_is_explicit_and_actionable() {
         let temp = tempfile::tempdir().unwrap();
         let context = PathContext::for_tests(temp.path().join("home"), temp.path().join("repo"));
-        let options = picker_agents();
-        let defaults = vec![SkillAgentArg::Universal];
-        let lines = picker_prompt_lines(&context, options, &[], &defaults).unwrap();
+        let SkillInstallSelectionPlan::Prompt(prompt) = plan_install_selection(
+            SkillSelectionRequest {
+                agents: &[],
+                all_agents: false,
+                allow_picker: true,
+            },
+            &context,
+        )
+        .unwrap() else {
+            panic!("interactive selection should request a prompt");
+        };
+        let lines = picker_prompt_lines(&prompt);
         let rendered = lines.join("\n");
 
         assert!(rendered.contains("Select where to install"));

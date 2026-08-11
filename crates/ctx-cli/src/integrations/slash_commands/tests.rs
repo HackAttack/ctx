@@ -11,6 +11,11 @@ use super::*;
 use crate::ui::{ColorMode, StreamKind, TestContext};
 use tempfile::tempdir;
 
+const PRODUCT: ProductIdentity<'static> = ProductIdentity {
+    name: "ctx",
+    version: "1.0.0-test",
+};
+
 fn render_context(width: usize, color: ColorMode) -> RenderContext {
     RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
 }
@@ -103,6 +108,7 @@ fn modified_target_has_a_force_recovery_command() {
 
     let diagnostic = render_install_failures(
         &context,
+        PRODUCT,
         &[install_result(SlashCommandInstallStatus::Modified)],
     )
     .unwrap()
@@ -142,6 +148,7 @@ fn failed_target_details_and_recovery_are_written_to_stderr() {
             force: false,
         },
         &context,
+        PRODUCT,
         &mut telemetry,
         &mut ui,
     );
