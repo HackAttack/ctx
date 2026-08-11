@@ -35,6 +35,7 @@ CTX_DAEMON_RUNTIME_DEPS = [
 
 CTX_DAEMON_RUNTIME_RUSTC_FLAGS = [
     "--check-cfg=cfg(ctx_release_qualification)",
+    "--check-cfg=cfg(test)",
 ]
 
 rust_library(
