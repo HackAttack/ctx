@@ -26,7 +26,7 @@ use crate::{
         native_ingestion::{NATIVE_INGESTION_PAGE_MAX_BYTES, NATIVE_INGESTION_PAGE_MAX_UNITS},
         normalization::provider_required_timestamp_seconds,
         source_backed::{
-            family::document::{DocumentLeafFingerprint, ObservedDocumentLeaf},
+            family::document::{DocumentAppendBase, DocumentLeafFingerprint, ObservedDocumentLeaf},
             SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
             SourceBackedReconciliationDemand, SourceBackedRouteControlExpectation,
             SourceBackedRouteError, SourceBackedRouteResult,
@@ -47,8 +47,8 @@ use super::{
     layout::{HermesMessageRow, HermesSchema, HermesSessionRow},
     sqlite::{
         hermes_max_rowid, hermes_message_cursor_page, hermes_message_session_id,
-        hermes_session_identity_page, HermesNativeRecord, HermesNativeRow, HermesPhase,
-        HermesRowReader,
+        hermes_session_identity_page, HermesExactMessageSpool, HermesMessageSpoolRange,
+        HermesNativeRecord, HermesNativeRow, HermesPhase, HermesRowReader,
     },
     HERMES_CAPTURE_REVISION, HERMES_POLICY_REVISION,
 };
@@ -183,11 +183,12 @@ pub(crate) struct HermesSessionLeaf {
     source: SourceKey,
     observation_revision: Vec<u8>,
     incremental: Option<HermesIncrementalLeaf>,
+    exact_message_range: Option<HermesMessageSpoolRange>,
 }
 
 #[derive(Debug, Clone)]
 struct HermesIncrementalLeaf {
-    base: Option<CertifiedSource>,
+    base: Option<DocumentAppendBase>,
     session: HermesNativeRow,
     messages: Vec<HermesNativeRow>,
 }
@@ -201,12 +202,13 @@ struct HermesSessionInventory {
     max_message_rowid: i64,
     reconciliation_demand: SourceBackedReconciliationDemand,
     publication_receipt: Option<HermesRefreshReceipt>,
+    message_spool: Option<HermesExactMessageSpool>,
 }
 
 trait HermesReconciliationContext {
     fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand;
     fn route_control(&self) -> Option<&[u8]>;
-    fn exact_base_source(&self, source: &SourceKey) -> Option<CertifiedSource>;
+    fn exact_base_source(&self, source: &SourceKey) -> Option<DocumentAppendBase>;
     fn report_progress(
         &mut self,
         progress: SourceBackedCurrentSourceProgress,
@@ -368,6 +370,14 @@ pub(crate) fn hermes_route_control_exact_due_for_profile(
         .then_some(receipt.exact_due_at_ms <= now_ms)
 }
 
+pub(crate) fn hermes_route_control_database_identity(control: &[u8]) -> Option<[u8; 32]> {
+    let receipt = hermes_refresh_receipt(Some(control))?;
+    (receipt.kind == HERMES_ROUTE_CONTROL_KIND
+        && receipt.version == HERMES_ROUTE_CONTROL_VERSION
+        && receipt.outcome == "successful")
+        .then_some(receipt.database_identity)
+}
+
 struct HermesSessionProjection {
     certificate: CertifiedSource,
     decoded_rows: u64,
@@ -389,14 +399,20 @@ fn project_hermes_session_snapshot(
     leaf: &HermesSessionLeaf,
     schema: &HermesSchema,
     conn: &rusqlite::Connection,
+    message_spool: &mut HermesExactMessageSpool,
     emit: &mut dyn FnMut(HermesSourceBackedPage) -> HermesSourceBackedResult<()>,
 ) -> HermesSourceBackedResult<HermesSessionProjection> {
-    project_hermes_session_snapshot_with_progress(candidate, leaf, schema, conn, &mut |output| {
-        match output {
+    project_hermes_session_snapshot_with_progress(
+        candidate,
+        leaf,
+        schema,
+        conn,
+        message_spool,
+        &mut |output| match output {
             HermesSnapshotProjectionOutput::Page(page) => emit(page),
             HermesSnapshotProjectionOutput::Progress(_) => Ok(()),
-        }
-    })
+        },
+    )
 }
 
 fn project_hermes_session_snapshot_with_progress(
@@ -404,6 +420,7 @@ fn project_hermes_session_snapshot_with_progress(
     leaf: &HermesSessionLeaf,
     schema: &HermesSchema,
     conn: &rusqlite::Connection,
+    message_spool: &mut HermesExactMessageSpool,
     emit: &mut dyn FnMut(HermesSnapshotProjectionOutput) -> HermesSourceBackedResult<()>,
 ) -> HermesSourceBackedResult<HermesSessionProjection> {
     leaf.source.validate_contract()?;
@@ -413,6 +430,12 @@ fn project_hermes_session_snapshot_with_progress(
         .ok_or_else(|| HermesSourceBackedError::InvalidProfilePath(candidate.path.clone()))?
         .to_owned();
     let mut reader = HermesRowReader::for_session(conn, schema, &leaf.provider_session_id)
+        .map_err(HermesSourceBackedError::from)
+        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
+    let mut message_replay = leaf
+        .exact_message_range
+        .map(|range| message_spool.prepare_replay(range))
+        .transpose()
         .map_err(HermesSourceBackedError::from)
         .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
     let mut context = None;
@@ -433,10 +456,26 @@ fn project_hermes_session_snapshot_with_progress(
                 hermes_logical_progress(SourceBackedCurrentSourceProgressStage::LogicalScan, 0, 0),
             ))?;
 
+            let mut session_read = false;
+            let mut consumed_messages = 0_u64;
             loop {
-                let native_page = reader.next_page(frontier)?;
+                let native_page = if !session_read {
+                    session_read = true;
+                    reader.next_session_inventory_page(None)?
+                } else if let Some(replay) = message_replay.as_mut() {
+                    reader.exact_message_page(replay, consumed_messages, frontier.next_ordinal)?
+                } else {
+                    Vec::new()
+                };
                 if native_page.is_empty() {
                     break;
+                }
+                if session_read && native_page[0].locator.phase == HermesPhase::Messages {
+                    consumed_messages = checked_add(
+                        consumed_messages,
+                        u64::try_from(native_page.len())
+                            .map_err(|_| HermesSourceBackedError::CountOverflow)?,
+                    )?;
                 }
                 frontier = native_page
                     .last()
@@ -643,10 +682,12 @@ fn project_hermes_incremental_leaf_with_progress(
     let mut counts = incremental
         .base
         .as_ref()
-        .map_or_else(ScannedSourceCounts::default, |base| base.counts());
+        .map_or_else(ScannedSourceCounts::default, |base| {
+            base.certificate().counts()
+        });
     if let Some(base) = incremental.base.as_ref() {
         digest.update(HERMES_INCREMENTAL_CONTENT_DOMAIN);
-        digest.update(base.content_digest());
+        digest.update(base.certificate().content_digest());
     } else {
         digest.update(HERMES_SOURCE_DIGEST_DOMAIN);
     }
@@ -737,7 +778,7 @@ fn project_hermes_incremental_leaf_with_progress(
             incremental
                 .base
                 .as_ref()
-                .map_or(0, |base| base.counts().complete_records),
+                .map_or(0, |base| base.certificate().counts().complete_records),
         ),
         1,
     );

@@ -30,6 +30,7 @@ use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CoreRecord,
     ScannedSourceCounts, SourceFrontier, SourceKey, SourceObservation, TypedKey,
 };
+use ctx_history_index::GenerationBaseCertifiedSource;
 const DOCUMENT_FRONTIER_KIND: &str = "ctx-document-full-snapshot-v1";
 const MAX_PARALLEL_DOCUMENT_LEAF_WORKERS: usize = 4;
 
@@ -76,7 +77,7 @@ impl<'scan, 'writer> DocumentBaseRoute<'scan, 'writer> {
         self.sink.report_current_source_progress(progress)
     }
 
-    pub(crate) fn exact_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+    pub(crate) fn exact_source(&self, source: &SourceKey) -> Option<DocumentAppendBase> {
         #[cfg(test)]
         DOCUMENT_BASE_ROUTE_SOURCE_VISITS.with(|visits| {
             visits.set(visits.get().saturating_add(1));
@@ -84,24 +85,25 @@ impl<'scan, 'writer> DocumentBaseRoute<'scan, 'writer> {
         if !(self.owns_source)(source) {
             return None;
         }
-        let manifest = self.sink.writer.base_manifest()?;
-        let route = manifest.source_route(&self.sink.route_identity)?;
-        let source_key = source.identity().digest();
-        let member = route
-            .sources()
-            .binary_search_by_key(&source_key, |candidate| candidate.identity().digest())
-            .ok()
-            .and_then(|index| route.sources().get(index))
-            .filter(|candidate| candidate.exact_descriptor_eq(source))?;
-        manifest
-            .sources
-            .binary_search_by_key(&source_key, |candidate| {
-                candidate.observation().source().identity().digest()
-            })
-            .ok()
-            .and_then(|index| manifest.sources.get(index))
-            .filter(|candidate| candidate.observation().source().exact_descriptor_eq(member))
-            .cloned()
+        self.sink
+            .writer
+            .generation_base_certified_source(&self.sink.route_identity, source)
+            .map(DocumentAppendBase::Generation)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DocumentAppendBase {
+    Generation(GenerationBaseCertifiedSource),
+    Certificate(CertifiedSource),
+}
+
+impl DocumentAppendBase {
+    pub(crate) fn certificate(&self) -> &CertifiedSource {
+        match self {
+            Self::Generation(base) => base.certificate(),
+            Self::Certificate(base) => base,
+        }
     }
 }
 
@@ -363,7 +365,7 @@ pub(crate) trait ReplacementDocumentTree: Send + Sync + 'static {
         &self,
         _authority: &Self::TreeAuthority,
         _leaf: &Self::Leaf,
-    ) -> Option<CertifiedSource> {
+    ) -> Option<DocumentAppendBase> {
         None
     }
     fn revalidate_complete(

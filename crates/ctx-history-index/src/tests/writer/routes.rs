@@ -372,3 +372,72 @@ fn unpublished_route_checkpoint_is_reclaimed_after_reopen() {
         initial.generation_id
     );
 }
+
+#[test]
+fn incremental_route_delta_exposes_full_manifest_materialization() {
+    let temp = tempdir().unwrap();
+    let route = SourceRouteIdentity::from_sha256("58".repeat(32)).unwrap();
+    let base_sources = (0_u8..3)
+        .map(|index| source(&format!("materialized-base-{index}.jsonl")))
+        .collect::<Vec<_>>();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    for (index, current) in base_sources.iter().enumerate() {
+        initial.begin_source(current.clone()).unwrap();
+        initial
+            .add_core_record(document(current, index as u64 + 1, "base materialization"))
+            .unwrap();
+        initial
+            .certify_source(certificate(current, index as u8 + 1, 1))
+            .unwrap();
+    }
+    initial
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            route.clone(),
+            base_sources.clone(),
+        )
+        .unwrap()])
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let appended = source("materialized-append.jsonl");
+    let mut incremental = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    incremental
+        .set_source_route_plan(BTreeSet::from([route.clone()]), BTreeSet::new())
+        .unwrap();
+    incremental.begin_source_route_stage(route.clone()).unwrap();
+    incremental
+        .retain_unstaged_source_route_members(&route)
+        .unwrap();
+    incremental.begin_source(appended.clone()).unwrap();
+    incremental
+        .add_core_record(document(&appended, 4, "delta materialization"))
+        .unwrap();
+    incremental
+        .certify_source(certificate(&appended, 4, 1))
+        .unwrap();
+    incremental.finish_source_route_stage(&route).unwrap();
+    incremental.set_present_source_routes(Vec::new()).unwrap();
+
+    crate::writer_publication::reset_manifest_materialization_visits();
+    let published = incremental.commit(|_| true).unwrap();
+    assert_eq!(
+        crate::writer_publication::manifest_materialization_visits(),
+        (3, 3),
+        "the current self-contained manifest format still materializes every base certificate and partial-route member once"
+    );
+    assert_eq!(
+        published
+            .manifest()
+            .source_route(&route)
+            .unwrap()
+            .sources()
+            .len(),
+        4
+    );
+}

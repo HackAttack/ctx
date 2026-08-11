@@ -28,7 +28,12 @@ impl GenerationWriter {
                 canonical.extend(
                     base.source_routes()
                         .iter()
-                        .filter(|route| plan.carried_from_base.contains(route.route_identity()))
+                        .filter(|route| {
+                            plan.carried_from_base.contains(route.route_identity())
+                                || self
+                                    .partial_source_route_deltas
+                                    .contains_key(route.route_identity())
+                        })
                         .cloned(),
                 );
             }
@@ -161,6 +166,7 @@ impl GenerationWriter {
             observed_missing_routes: self.observed_missing_routes.clone(),
             route_publication_revalidation_len: self.route_publication_revalidations.len(),
             partially_reconciled_routes: self.partially_reconciled_routes.clone(),
+            partial_source_route_deltas: self.partial_source_route_deltas.clone(),
             source_identities: self.source_identities.clone(),
         };
         self.active_source_route_stage = Some(checkpoint);
@@ -214,6 +220,25 @@ impl GenerationWriter {
         if let Some(writer) = self.writer.as_mut() {
             writer.commit()?;
         }
+        if self.partially_reconciled_routes.contains(route_identity) {
+            let checkpoint = self.active_source_route_stage.as_ref().ok_or_else(|| {
+                IndexError::SourceRouteStagingNotActive(route_identity.as_str().into())
+            })?;
+            let mut delta = PartialSourceRouteDelta::default();
+            for (token, pending) in &self.pending {
+                if !checkpoint.pending.contains_key(token) {
+                    let source = pending.source.clone();
+                    delta.upserts.insert(source.identity().digest(), source);
+                }
+            }
+            for source in self.deletions.keys() {
+                if !checkpoint.deletions.contains_key(source) {
+                    delta.deletions.insert(source.identity().digest());
+                }
+            }
+            self.partial_source_route_deltas
+                .insert(route_identity.clone(), delta);
+        }
         self.active_source_route_stage = None;
         self.source_route_plan
             .as_mut()
@@ -248,6 +273,7 @@ impl GenerationWriter {
         self.route_publication_revalidations
             .truncate(checkpoint.route_publication_revalidation_len);
         self.partially_reconciled_routes = checkpoint.partially_reconciled_routes;
+        self.partial_source_route_deltas = checkpoint.partial_source_route_deltas;
         self.source_identities = checkpoint.source_identities;
         Ok(())
     }

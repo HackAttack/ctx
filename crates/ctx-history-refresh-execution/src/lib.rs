@@ -30,16 +30,16 @@ use ctx_history_capture::{
     SourceBackedDetailedRefreshProgress as CaptureSourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedFailedRouteOutcome, SourceBackedLogicalSourceFailures,
     SourceBackedProviderRegistry, SourceBackedRecordRejections, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedSourceFailureClass,
-    SourceBackedSourceFailures, SourceBackedSuccessfulRouteOutcome,
-    MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
+    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteSelection,
+    SourceBackedSelectorAuthority, SourceBackedSourceFailureClass, SourceBackedSourceFailures,
+    SourceBackedSuccessfulRouteOutcome, MAX_SOURCE_BACKED_ROUTE_CONTROL_BYTES,
 };
 #[cfg(test)]
 use ctx_history_capture_model::DiscoveryIssue;
 use ctx_history_capture_model::{
     DiscoveryIssueKind, DiscoveryReport, ProviderSource, ProviderSourceStatus,
 };
-use ctx_history_core::{CertifiedSource, ScannedSourceCounts};
+use ctx_history_core::{CaptureProvider, CertifiedSource, ScannedSourceCounts};
 use ctx_history_index::{
     GenerationManifest, GenerationWriter, IndexError, PublicationDisposition, SourceRouteIdentity,
     VerifiedIndex, WriterOptions,

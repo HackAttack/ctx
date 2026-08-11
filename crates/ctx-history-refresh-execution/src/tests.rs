@@ -37,24 +37,26 @@ impl PublishedSourceBackedStatePort for TestPublishedState {
             }
             Err(error) => return Err(error.into()),
         };
-        let (explicit_source_catalog, catalog_route_bindings) = if let Some(index) = verified_index
-            .as_ref()
-            .filter(|index| index.publication_metadata().is_some())
+        let (explicit_source_catalog, catalog_route_bindings, route_controls) = if let Some(index) =
+            verified_index
+                .as_ref()
+                .filter(|index| index.publication_metadata().is_some())
         {
             let metadata = SourceBackedPublicationMetadata::decode(index)?;
             let receipt = published_refresh_receipt_for_index(&metadata.response_value(), index)?;
             (
                 receipt.published_explicit_source_catalog,
                 receipt.catalog_route_bindings,
+                metadata.route_controls,
             )
         } else {
-            (None, Vec::new())
+            (None, Vec::new(), BTreeMap::new())
         };
         Ok(PublishedSourceBackedState {
             verified_index,
             explicit_source_catalog,
             catalog_route_bindings,
-            route_controls: BTreeMap::new(),
+            route_controls,
         })
     }
 }

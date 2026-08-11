@@ -116,9 +116,15 @@ pub(super) fn observe_hermes_incremental_inventory(
     for provider_session_id in touched {
         let source = hermes_session_source_key(&candidate.source, &provider_session_id)?;
         let base = context.exact_base_source(&source).filter(|base| {
-            base.observation().source().exact_descriptor_eq(&source)
-                && hermes_provider_session_id(&candidate.source, base.observation().source())
-                    .as_deref()
+            base.certificate()
+                .observation()
+                .source()
+                .exact_descriptor_eq(&source)
+                && hermes_provider_session_id(
+                    &candidate.source,
+                    base.certificate().observation().source(),
+                )
+                .as_deref()
                     == Some(provider_session_id.as_str())
         });
         if base.is_none() && !new_sessions.contains_key(&provider_session_id) {
@@ -141,7 +147,7 @@ pub(super) fn observe_hermes_incremental_inventory(
         }
         let mut next_ordinal = base
             .as_ref()
-            .map_or(0, |base| base.counts().complete_records);
+            .map_or(0, |base| base.certificate().counts().complete_records);
         if base.is_none() {
             session.ordinal = 0;
             session.next_frontier.next_ordinal = 1;
@@ -178,6 +184,7 @@ pub(super) fn observe_hermes_incremental_inventory(
                     session,
                     messages: delta_messages,
                 }),
+                exact_message_range: None,
             },
         ));
     }
@@ -192,6 +199,7 @@ pub(super) fn observe_hermes_incremental_inventory(
         max_message_rowid: after_message_rowid,
         reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
         publication_receipt: None,
+        message_spool: None,
     })
 }
 

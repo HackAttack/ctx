@@ -335,7 +335,8 @@ fn failed_attached_demand_is_terminal_replayable_and_never_executes_a_successor(
     let observed_executions = Arc::clone(&executions);
     let coordinator = Arc::new(CoreRefreshEngine::with_executor(Arc::new(
         move |_execution: SourceBackedRefreshExecution<'_>| {
-            observed_executions.fetch_add(1, Ordering::SeqCst);
+            let invocation = observed_executions.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(invocation, 0, "failed attached demand executed a successor");
             executor_entered.wait();
             executor_release.wait();
             Err(SourceBackedRouteError::new(
@@ -375,11 +376,11 @@ fn failed_attached_demand_is_terminal_replayable_and_never_executes_a_successor(
                 authority.clone(),
             )
             .expect("attached logical freshness demand");
-        assert_eq!(attached["logical_phase"], "attached");
         release.wait();
         (scheduler.join().unwrap(), attached)
     });
 
+    assert_eq!(attached["logical_phase"], "attached");
     assert!(iteration.failed);
     let physical_attempt_id = attached["physical_attempt_id"].as_str().unwrap().to_owned();
     let terminal = coordinator
