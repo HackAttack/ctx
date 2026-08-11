@@ -54,6 +54,7 @@ use uuid::Uuid;
 
 use request::SourceBackedRefreshOperation;
 
+pub use ctx_history_capture::SourceBackedReconciliationDemand;
 pub use ctx_history_capture::SourceBackedRefreshScope;
 pub use ctx_history_capture::SourceBackedRefreshScope as RefreshScope;
 #[cfg(any(test, feature = "test-support"))]
@@ -66,6 +67,7 @@ pub use ctx_history_refresh_execution::{
     ExplicitSourceCatalogRouteBinding, ExplicitSourceCatalogUpsert,
     ExplicitSourceRelocationAuthority, SourceBackedCurrentSourceProgress,
     SourceBackedCurrentSourceProgressStage, SourceBackedPublicationMetadata,
+    SourceBackedReconciliationDemand as RefreshReconciliationDemand,
     SourceBackedRefreshCatalogRouteOutcome, SourceBackedRefreshCurrent,
     SourceBackedRefreshExecution, SourceBackedRefreshPublication, SourceBackedRefreshReceipt,
     SourceBackedRefreshRecordRejection, SourceBackedRefreshRouteOutcome,

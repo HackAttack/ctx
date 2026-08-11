@@ -67,8 +67,6 @@ pub fn provider_selection_guidance(
     ctx_history_ingest_application::ProviderSelectionGuidance {
         display_name: provider_cli_name(provider).to_owned(),
         manual_path_command: manual_path_guidance(provider),
-        unavailable_reason: (provider == CaptureProvider::Hermes)
-            .then(|| ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON.to_owned()),
     }
 }
 
@@ -391,12 +389,12 @@ mod tests {
     }
 
     #[test]
-    fn hermes_remains_recognized_but_has_typed_application_guidance() {
+    fn hermes_has_importable_application_guidance() {
         let guidance = provider_selection_guidance(CaptureProvider::Hermes);
         assert_eq!(guidance.display_name, "hermes");
         assert_eq!(
-            guidance.unavailable_reason.as_deref(),
-            Some(ctx_history_capture::HERMES_STATE_DB_UNSUPPORTED_REASON)
+            guidance.manual_path_command,
+            "ctx import --provider hermes --path <path>"
         );
     }
 }

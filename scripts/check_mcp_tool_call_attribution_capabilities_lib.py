@@ -63,12 +63,12 @@ PUBLIC_AUTHORITY_SOURCE_PATHS = (
 
 ALLOWED_STATUSES = {"exact", "not-qualified", "excluded"}
 EXACT_PROVIDERS = {"codex", "copilot_cli", "warp"}
-EXPECTED_PROVIDER_STATUS_COUNTS = {"exact": 3, "not-qualified": 37, "excluded": 0}
-EXPECTED_LANE_STATUS_COUNTS = {"exact": 3, "not-qualified": 41, "excluded": 1}
+EXPECTED_PROVIDER_STATUS_COUNTS = {"exact": 3, "not-qualified": 38, "excluded": 0}
+EXPECTED_LANE_STATUS_COUNTS = {"exact": 3, "not-qualified": 42, "excluded": 1}
 EXPECTED_COUNTS = {
-    "providers": 40,
-    "base_routes": 42,
-    "capability_lanes": 45,
+    "providers": 41,
+    "base_routes": 43,
+    "capability_lanes": 46,
     "lane_statuses": EXPECTED_LANE_STATUS_COUNTS,
     "provider_statuses": EXPECTED_PROVIDER_STATUS_COUNTS,
 }
@@ -96,6 +96,7 @@ EXPECTED_NOT_QUALIFIED_REASONS = {
     "codebuddy": "writer_version_unproven",
     "trae": "route_mismatch",
     "openclaw": "route_mismatch",
+    "hermes": "lossy_composite",
     "nanoclaw": "no_unique_terminal_link",
     "astrbot": "no_server_field",
     "shelley": "no_server_field",
@@ -831,7 +832,7 @@ def validate_public_docs(
     normalized_main = " ".join(main.split())
     required = (
         "Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`",
-        "45 capability lanes: three `exact`, 41 `not-qualified`, and one `excluded`",
+        "46 capability lanes: three `exact`, 42 `not-qualified`, and one `excluded`",
         "for unversioned producer generation 1 only",
         "versions 0.200.0, 0.201.0, and 0.202.0 are separate explicit `not-qualified` lanes",
         "Warp `warp_sqlite` / `warp-agent-task-protobuf-v1`",
@@ -856,7 +857,7 @@ def validate_public_docs(
     for snippet in (
         CONFORMANCE_MANIFEST,
         CONFORMANCE_SUITES,
-        "three `supported`, 41 `not_qualified`, and one `excluded`",
+        "three `supported`, 42 `not_qualified`, and one `excluded`",
         "only unversioned generation 1 is supported",
     ):
         if snippet not in runbook:
@@ -923,8 +924,8 @@ def validate_contract(
         if provider_id in support_by_id:
             fail(f"duplicate support provider: {provider_id}")
         support_by_id[provider_id] = row
-    if len(support_by_id) != 40:
-        fail(f"support matrix must contain 40 providers, found {len(support_by_id)}")
+    if len(support_by_id) != 41:
+        fail(f"support matrix must contain 41 providers, found {len(support_by_id)}")
 
     rows, lane_statuses, provider_statuses = validate_routes(capability, support_by_id)
     exact_suites, exact_tests, exact_links = validate_exact_checks(

@@ -503,6 +503,7 @@ fn recover_pending_attempt(
         refresh_scope,
     );
     attempt.request_id = request_id.to_owned();
+    attempt.reconciliation_demand = recover_reconciliation_demand(job, operation)?;
     attempt.physical_attempt_id = optional_pending_string(job, "physical_attempt_id")?;
     attempt.state = if request_state == Some("admission_pending") {
         SourceBackedRefreshState::AdmissionPending

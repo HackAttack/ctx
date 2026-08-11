@@ -177,6 +177,7 @@ Secondary traits are noted only to guide tests and hardening work.
 | CodeBuddy | `codebuddy_history_json` | JSON session/task document | JSON history documents from editor state. |
 | Trae | `trae_state_vscdb` | SQLite encoded/blob store | Released plaintext ItemTable compatibility with JSON chat values, including safely recognized copies at the official current database location. The current SQLCipher-encrypted relational database is detected but not imported. |
 | OpenClaw | `openclaw_session_jsonl_tree` | JSONL transcript stream/tree | Session tree with possible sidecar data. |
+| Hermes Agent | `hermes_state_sqlite` | SQLite message store | SQLite sessions/messages with bounded exact reconciliation. |
 | NanoClaw | `nanoclaw_project` | SQLite message store | Native project root containing central and per-session SQLite databases, discovered from exact CWD or official launchd/systemd service registration; exact `--path` remains available. |
 | AstrBot | `astrbot_data_v4_sqlite` | SQLite message store | SQLite conversation/platform rows. |
 | Shelley | `shelley_sqlite` | SQLite message store | SQLite conversations, messages, and tool rows. |
@@ -203,10 +204,11 @@ Secondary traits are noted only to guide tests and hardening work.
 | Cline | `cline_task_directory_json` | JSON session/task document | Task directory JSON. |
 | Roo Code | `roo_task_directory_json` | JSON session/task document | Task directory JSON. |
 
-Hermes `hermes_state_sqlite` is intentionally outside the supported storage
-families. Discovery retains the route for diagnostics and last-good continuity,
-but current schemas have no provider-owned transactionally maintained
-per-session content revision, so no parser or body read is admitted.
+Hermes `hermes_state_sqlite` is a supported SQLite message-store route with a
+bounded consistency window. New sessions and appended records converge
+immediately on native-watch and search refreshes. Structural edits and deletions
+reconcile within one hour with the daemon, or immediately after
+`ctx import --provider hermes` or `ctx import --all`.
 
 ## Active-Writer Lifecycle Contract
 

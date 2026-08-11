@@ -662,6 +662,12 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
             write_native_openclaw_fixture,
         ),
         (
+            "hermes",
+            "hermes",
+            "hermes_state_sqlite",
+            write_native_hermes_fixture,
+        ),
+        (
             "nanoclaw",
             "nanoclaw",
             "nanoclaw_project",
@@ -886,6 +892,13 @@ fn personal_agent_provider_imports_are_idempotent_and_incremental() {
             append_native_openclaw_event as fn(&str, &str),
         ),
         (
+            "hermes",
+            "hermes",
+            "hermes_state_sqlite",
+            write_native_hermes_fixture,
+            append_native_hermes_event,
+        ),
+        (
             "nanoclaw",
             "nanoclaw",
             "nanoclaw_project",
@@ -912,6 +925,12 @@ fn personal_agent_provider_imports_are_idempotent_and_incremental() {
         let incremental_query = format!("{stored_provider}-incremental-next-oracle");
         let fixture_path = fixture(&temp, &initial_query);
         let (path, automatic, exact_cwd) = match stored_provider {
+            "hermes" => {
+                let path = temp.path().join(".hermes/state.db");
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::copy(&fixture_path, &path).unwrap();
+                (path.display().to_string(), true, false)
+            }
             "astrbot" => {
                 fs::write(temp.path().join(".astrbot"), b"cli marker").unwrap();
                 let path = temp.path().join("data/data_v4.db");
@@ -1079,26 +1098,30 @@ fn nanoclaw_import_tolerates_partial_auxiliary_tables() {
 
 #[test]
 fn personal_agent_sqlite_imports_report_corrupt_databases() {
-    let (provider, path) = ("lingma", "corrupt-lingma-local.db");
-    let temp = tempdir();
-    let db_path = temp.path().join(path);
-    fs::write(&db_path, b"not sqlite").unwrap();
-    let output = ctx(&temp)
-        .args([
-            "import",
-            "--provider",
-            provider,
-            "--path",
-            db_path.to_str().unwrap(),
-            "--format=json",
-        ])
-        .assert()
-        .failure()
-        .get_output()
-        .stderr
-        .clone();
-    let stderr = String::from_utf8(output).unwrap();
-    assert!(stderr.contains("not a database"), "{stderr}");
+    for (provider, path) in [
+        ("hermes", "corrupt-hermes-state.db"),
+        ("lingma", "corrupt-lingma-local.db"),
+    ] {
+        let temp = tempdir();
+        let db_path = temp.path().join(path);
+        fs::write(&db_path, b"not sqlite").unwrap();
+        let output = ctx(&temp)
+            .args([
+                "import",
+                "--provider",
+                provider,
+                "--path",
+                db_path.to_str().unwrap(),
+                "--format=json",
+            ])
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let stderr = String::from_utf8(output).unwrap();
+        assert!(stderr.contains("not a database"), "{stderr}");
+    }
 
     let temp = tempdir();
     let db_path = temp.path().join(".astrbot/data/data_v4.db");
@@ -1160,6 +1183,7 @@ fn native_provider_cli_requires_existing_history_or_explicit_path() {
         "copilot-cli",
         "factory-ai-droid",
         "openclaw",
+        "hermes",
         "nanoclaw",
         "astrbot",
         "shelley",
@@ -1187,20 +1211,6 @@ fn native_provider_cli_requires_existing_history_or_explicit_path() {
             "{cli_provider}: {stderr}"
         );
     }
-
-    let hermes = failure_stderr(ctx(&temp).current_dir(temp.path()).args([
-        "import",
-        "--provider",
-        "hermes",
-        "--no-daemon",
-        "--format=json",
-    ]));
-    assert!(hermes.contains("Hermes import is unavailable"), "{hermes}");
-    assert!(
-        hermes.contains("transactionally maintained per-session content revision"),
-        "{hermes}"
-    );
-    assert!(!hermes.contains("--path"), "{hermes}");
 }
 
 #[test]

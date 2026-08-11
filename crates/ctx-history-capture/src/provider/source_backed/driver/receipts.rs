@@ -164,6 +164,12 @@ pub struct SourceBackedGenerationSink<'writer> {
     >,
 }
 
+impl SourceBackedGenerationSink<'_> {
+    pub fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+        self.resources.reconciliation_demand()
+    }
+}
+
 #[derive(Clone)]
 pub(in super::super) struct SourceOwner {
     pub(in super::super) route_index: usize,
@@ -694,6 +700,37 @@ pub struct SourceBackedRoute {
 }
 
 impl SourceBackedRoute {
+    #[cfg(test)]
+    pub(in crate::provider) fn explicit_manual_unchecked_for_test(
+        source: ProviderSource,
+        selector_authority: SourceBackedSelectorAuthority,
+        certified_source_format: &'static str,
+        watch_target_kind: SourceBackedWatchTargetKind,
+        driver: SourceBackedRouteDriver,
+    ) -> SourceBackedCoordinatorResult<Self> {
+        let route_identity = source_backed_route_identity(
+            &source,
+            certified_source_format,
+            SourceBackedRouteSelection::ExplicitManual,
+            selector_authority,
+        )?;
+        Ok(Self {
+            metadata: SourceBackedRouteMetadata {
+                source,
+                certified_source_format,
+                selection: Some(SourceBackedRouteSelection::ExplicitManual),
+                selector_authority,
+                unsupported_reason: None,
+                route_identity: Some(route_identity),
+                watch_target_kind,
+            },
+            driver: Some(driver),
+            certified_missing_paths: Vec::new(),
+            retire_after_success: Vec::new(),
+            codex_generation_participant: None,
+        })
+    }
+
     pub fn automatic(
         source: ProviderSource,
         selector_authority: SourceBackedSelectorAuthority,

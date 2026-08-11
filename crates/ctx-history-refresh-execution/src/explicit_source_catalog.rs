@@ -14,6 +14,7 @@ use ctx_history_capture::{
     automatic_source_backed_route_identity, explicit_source_catalog_lineage,
     provider_source_for_path, register_custom_history_source_backed_route,
     register_forgecode_explicit_source_backed_route, register_goose_source_backed_route,
+    register_hermes_explicit_source_backed_route,
     register_landed_source_backed_route_with_data_root, register_lingma_source_backed_route,
     register_nanoclaw_source_backed_route_with_base_sources, register_warp_source_backed_route,
     source_backed_route_constructor, source_backed_route_inventory,
@@ -597,6 +598,12 @@ fn register_enabled_catalog_route(
                     registry, source, data_root, lineage,
                 )?
             }
+            CaptureProvider::Hermes => register_hermes_explicit_source_backed_route(
+                registry,
+                source,
+                data_root,
+                SourceAnchor::CatalogLineage(lineage),
+            )?,
             _ => register_landed_source_backed_route_with_data_root(
                 registry,
                 source,

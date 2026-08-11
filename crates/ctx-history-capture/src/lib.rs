@@ -85,6 +85,7 @@ pub(crate) const KIMI_CODE_CLI_SOURCE_FORMAT: &str = "kimi_code_cli_wire_jsonl";
 pub(crate) const ROVODEV_SOURCE_FORMAT: &str = "rovodev_session_json_tree";
 pub(crate) const FORGECODE_SQLITE_SOURCE_FORMAT: &str = "forgecode_sqlite";
 pub(crate) const DEEPAGENTS_SQLITE_SOURCE_FORMAT: &str = "deepagents_sessions_sqlite";
+pub(crate) const HERMES_SQLITE_SOURCE_FORMAT: &str = "hermes_state_sqlite";
 pub(crate) const MISTRAL_VIBE_SOURCE_FORMAT: &str = "mistral_vibe_session_jsonl";
 pub(crate) const MUX_SOURCE_FORMAT: &str = "mux_session_jsonl";
 pub(crate) const PROVIDER_MAX_PREVIEW_CHARS: usize = 4_000;
@@ -125,6 +126,17 @@ pub(crate) fn test_provider_sqlite_data_root() -> &'static std::path::Path {
 }
 
 pub(crate) mod provider;
+
+/// Reads only persisted Core certificates; it never opens Hermes provider data.
+pub fn hermes_sources_require_exact_reconciliation(
+    sources: &[ctx_history_core::CertifiedSource],
+    now_ms: i64,
+) -> bool {
+    provider::providers::hermes::source_backed::hermes_sources_require_exact_reconciliation(
+        sources, now_ms,
+    )
+}
+
 pub use provider::adapter::{CaptureWorkLimit, ProviderAdapterContext, ProviderImportOptions};
 pub use provider::source_backed::register_nanoclaw_source_backed_route_with_base_sources;
 pub use provider::source_backed::{
@@ -136,12 +148,13 @@ pub use provider::source_backed::{
     register_codex_prompt_history_source_backed_route, register_crush_source_backed_route,
     register_cursor_source_backed_route, register_custom_history_source_backed_route,
     register_forgecode_explicit_source_backed_route, register_gemini_source_backed_route,
-    register_goose_source_backed_route, register_landed_source_backed_route,
-    register_landed_source_backed_route_with_data_root, register_lingma_source_backed_route,
-    register_nanoclaw_source_backed_route, register_shelley_source_backed_route,
-    register_warp_source_backed_route, source_backed_refresh_work_budget,
-    source_backed_refresh_writer_options, source_backed_route_constructor,
-    source_backed_route_inventory, source_backed_source_failure_identity, CrushProjectDatabaseV0,
+    register_goose_source_backed_route, register_hermes_explicit_source_backed_route,
+    register_landed_source_backed_route, register_landed_source_backed_route_with_data_root,
+    register_lingma_source_backed_route, register_nanoclaw_source_backed_route,
+    register_shelley_source_backed_route, register_warp_source_backed_route,
+    source_backed_refresh_work_budget, source_backed_refresh_writer_options,
+    source_backed_route_constructor, source_backed_route_inventory,
+    source_backed_source_failure_identity, CrushProjectDatabaseV0,
     CrushProjectInventoryObservationV0, CrushProjectInventorySourceV0, RouteObservation,
     SourceBackedAutomaticRegistryBuild, SourceBackedAutomaticRegistryIssue,
     SourceBackedAutomaticUnavailableReason, SourceBackedCertifiedRemoval,
@@ -149,14 +162,15 @@ pub use provider::source_backed::{
     SourceBackedCurrentSourceProgressStage, SourceBackedDetailedRefreshProgress,
     SourceBackedFailedRoute, SourceBackedFailedRouteOutcome, SourceBackedGenerationSink,
     SourceBackedLogicalSourceFailure, SourceBackedLogicalSourceFailures,
-    SourceBackedProviderRegistry, SourceBackedProviderRouteMetadata, SourceBackedRecordCompletion,
-    SourceBackedRecordRejection, SourceBackedRecordRejectionClass, SourceBackedRecordRejections,
-    SourceBackedRefreshExecutor, SourceBackedRefreshProgress, SourceBackedRefreshReceipt,
-    SourceBackedRefreshScope, SourceBackedRevalidationTarget, SourceBackedRoute,
-    SourceBackedRouteConstructor, SourceBackedRouteDriver, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteMetadata, SourceBackedRouteResult,
-    SourceBackedRouteSelection, SourceBackedSelectorAuthority, SourceBackedSourceFailureClass,
-    SourceBackedSourceFailures, SourceBackedSuccessfulRouteOutcome, SourceBackedWatchCatalog,
-    SourceBackedWatchTargetKind, LANDED_SOURCE_BACKED_ROUTES, MAX_RECORDED_SOURCE_BACKED_FAILURES,
+    SourceBackedProviderRegistry, SourceBackedProviderRouteMetadata,
+    SourceBackedReconciliationDemand, SourceBackedRecordCompletion, SourceBackedRecordRejection,
+    SourceBackedRecordRejectionClass, SourceBackedRecordRejections, SourceBackedRefreshExecutor,
+    SourceBackedRefreshProgress, SourceBackedRefreshReceipt, SourceBackedRefreshScope,
+    SourceBackedRevalidationTarget, SourceBackedRoute, SourceBackedRouteConstructor,
+    SourceBackedRouteDriver, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteMetadata, SourceBackedRouteResult, SourceBackedRouteSelection,
+    SourceBackedSelectorAuthority, SourceBackedSourceFailureClass, SourceBackedSourceFailures,
+    SourceBackedSuccessfulRouteOutcome, SourceBackedWatchCatalog, SourceBackedWatchTargetKind,
+    LANDED_SOURCE_BACKED_ROUTES, MAX_RECORDED_SOURCE_BACKED_FAILURES,
     MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES, MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES,
 };

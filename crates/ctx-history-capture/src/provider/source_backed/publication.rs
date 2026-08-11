@@ -191,6 +191,25 @@ impl SourceBackedRefreshExecutor {
         )
     }
 
+    pub fn refresh_scope_with_detailed_progress_and_reconciliation(
+        &self,
+        index_root: impl AsRef<Path>,
+        scope: SourceBackedRefreshScope,
+        reconciliation_demand: SourceBackedReconciliationDemand,
+        report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
+    ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+        refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
+            index_root,
+            &self.registry,
+            self.writer_options.clone(),
+            SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
+            SourceBackedRefreshPlan::isolate(scope)
+                .with_reconciliation_demand(reconciliation_demand),
+            report_progress,
+            None,
+        )
+    }
+
     /// Publishes one scope with control-plane metadata bound into the same
     /// opaque Core commit payload. The factory runs only for a pointer-
     /// advancing generation; exact reuse retains the active metadata.
@@ -198,6 +217,25 @@ impl SourceBackedRefreshExecutor {
         &self,
         index_root: impl AsRef<Path>,
         scope: SourceBackedRefreshScope,
+        report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
+        metadata_factory: impl for<'a> FnMut(
+            SourceBackedPublicationMetadataContext<'a>,
+        ) -> ctx_history_index::Result<Vec<u8>>,
+    ) -> SourceBackedCoordinatorResult<SourceBackedRefreshReceipt> {
+        self.refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+            index_root,
+            scope,
+            SourceBackedReconciliationDemand::Exhaustive,
+            report_progress,
+            metadata_factory,
+        )
+    }
+
+    pub fn refresh_scope_with_detailed_progress_publication_metadata_and_reconciliation(
+        &self,
+        index_root: impl AsRef<Path>,
+        scope: SourceBackedRefreshScope,
+        reconciliation_demand: SourceBackedReconciliationDemand,
         report_progress: impl FnMut(SourceBackedDetailedRefreshProgress) -> SourceBackedRouteResult<()>,
         mut metadata_factory: impl for<'a> FnMut(
             SourceBackedPublicationMetadataContext<'a>,
@@ -208,7 +246,8 @@ impl SourceBackedRefreshExecutor {
             &self.registry,
             self.writer_options.clone(),
             SourceBackedRefreshExecutionBudget::new(self.discovery_duration, self.work_budget),
-            SourceBackedRefreshPlan::isolate(scope),
+            SourceBackedRefreshPlan::isolate(scope)
+                .with_reconciliation_demand(reconciliation_demand),
             report_progress,
             Some(&mut metadata_factory),
         )

@@ -539,7 +539,6 @@ pub struct SqliteSourceEvidence {
 }
 
 impl SqliteSourceEvidence {
-    #[cfg(any(test, feature = "test-support"))]
     pub fn identity(&self) -> &[u8; 32] {
         &self.identity
     }

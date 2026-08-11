@@ -14,7 +14,6 @@ use crate::{HistorySourcePluginSource, IngestPublication, SourceStats};
 pub struct ProviderSelectionGuidance {
     pub display_name: String,
     pub manual_path_command: String,
-    pub unavailable_reason: Option<String>,
 }
 
 /// Coarse discovery boundary. Implementations return one fully assembled
@@ -75,8 +74,6 @@ pub trait IngestProgressPort {
 #[derive(Debug, Clone)]
 pub struct AutomaticSourcePreflight {
     pub sources: Vec<ProviderSource>,
-    pub has_importable_source: bool,
-    pub hermes_only_candidate: Option<ProviderSource>,
 }
 
 pub fn automatic_source_preflight(
@@ -85,24 +82,8 @@ pub fn automatic_source_preflight(
 ) -> Result<AutomaticSourcePreflight> {
     let snapshot = discovery.discover_all()?;
     validate_provider_source_roots_outside_data_root(data_root, snapshot.sources.iter())?;
-    let has_importable_source = snapshot.sources.iter().any(|source| {
-        source.exists
-            && source.status == ProviderSourceStatus::Available
-            && source.import_support.is_importable()
-    });
-    let hermes_only_candidate = snapshot
-        .sources
-        .iter()
-        .find(|source| {
-            source.provider == CaptureProvider::Hermes
-                && source.exists
-                && source.status == ProviderSourceStatus::Unsupported
-        })
-        .cloned();
     Ok(AutomaticSourcePreflight {
         sources: snapshot.sources,
-        has_importable_source,
-        hermes_only_candidate,
     })
 }
 
@@ -160,18 +141,6 @@ pub(crate) fn validate_selected_provider(
         return Ok(());
     }
     let guidance = discovery.provider_selection_guidance(provider);
-    if provider == CaptureProvider::Hermes {
-        if report.sources.iter().any(|source| source.exists) {
-            return Ok(());
-        }
-        return Err(anyhow!(
-            "Hermes import is unavailable in this ctx release: {}",
-            guidance
-                .unavailable_reason
-                .as_deref()
-                .unwrap_or("no supported Hermes history source is available")
-        ));
-    }
     if let Some(source) = report
         .sources
         .iter()

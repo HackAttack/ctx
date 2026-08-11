@@ -214,6 +214,7 @@ impl RefreshStatusKind {
 pub struct RefreshSubmission {
     pub(crate) request_id: String,
     pub(crate) operation: RefreshOperation,
+    pub(crate) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(crate) explicit_source_catalog: Option<ExplicitSourceCatalogAuthority>,
     pub(crate) refresh_scope: SourceBackedRefreshScope,
     pub(crate) fresh_after_admitted_snapshot: bool,
@@ -229,14 +230,24 @@ impl RefreshSubmission {
         fresh_after_admitted_snapshot: bool,
         maintenance_wake: bool,
     ) -> Self {
+        let reconciliation_demand = match operation {
+            RefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
+            RefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
+        };
         Self {
             request_id,
             operation,
+            reconciliation_demand,
             explicit_source_catalog,
             refresh_scope,
             fresh_after_admitted_snapshot,
             maintenance_wake,
         }
+    }
+
+    pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
+        self.reconciliation_demand = demand;
+        self
     }
 
     pub fn request_id(&self) -> &str {

@@ -12,6 +12,7 @@ impl CoreRefreshEngine {
             SourceBackedRefreshScope::All,
             SourceRefreshLogicalDemand {
                 admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
                 route_observations: BTreeMap::new(),
                 request_id: None,
                 request_fingerprint: None,
@@ -44,6 +45,7 @@ impl CoreRefreshEngine {
             SourceBackedRefreshScope::All,
             SourceRefreshLogicalDemand {
                 admission: SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot,
+                reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
                 route_observations: admission_route_observations,
                 request_id: Some(request_id),
                 request_fingerprint: None,
@@ -72,6 +74,7 @@ impl CoreRefreshEngine {
             SourceBackedRefreshScope::All,
             SourceRefreshLogicalDemand {
                 admission: SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot,
+                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
                 route_observations: BTreeMap::new(),
                 request_id: Some(request_id),
                 request_fingerprint: None,
@@ -107,6 +110,7 @@ impl CoreRefreshEngine {
             SourceBackedRefreshScope::All,
             SourceRefreshLogicalDemand {
                 admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                reconciliation_demand: SourceBackedReconciliationDemand::Incremental,
                 route_observations: BTreeMap::new(),
                 request_id: None,
                 request_fingerprint: None,
@@ -147,6 +151,7 @@ impl CoreRefreshEngine {
     ) -> Result<Value> {
         let SourceRefreshLogicalDemand {
             admission,
+            reconciliation_demand,
             route_observations: mut admission_route_observations,
             request_id: logical_request_id,
             request_fingerprint,
@@ -173,7 +178,11 @@ impl CoreRefreshEngine {
             if let Some(active) = find_attempt_mut(state, &active_request_id) {
                 if active.state.is_active() {
                     if is_manual_all {
-                        continuation_predecessor = Some(active.request_id.clone());
+                        if active.state == SourceBackedRefreshState::Queued
+                            || active.reconciliation_demand >= reconciliation_demand
+                        {
+                            continuation_predecessor = Some(active.request_id.clone());
+                        }
                         if active.state == SourceBackedRefreshState::Queued {
                             if let Some(requested_catalog) = requested_catalog.as_ref() {
                                 if active.requested_explicit_source_catalog.is_none() {
@@ -182,6 +191,8 @@ impl CoreRefreshEngine {
                                 }
                             }
                             active.refresh_scope = SourceBackedRefreshScope::All;
+                            active.reconciliation_demand =
+                                active.reconciliation_demand.max(reconciliation_demand);
                             let _ = coalesce_attempt(active, metadata.clone());
                             active.coalesced_logical_demands =
                                 active.coalesced_logical_demands.saturating_add(1);
@@ -213,10 +224,18 @@ impl CoreRefreshEngine {
                             active.refresh_scope = SourceBackedRefreshScope::All;
                             return Ok(coalesce_attempt(active, metadata));
                         }
+                        let stronger_running_demand = active.state
+                            == SourceBackedRefreshState::Running
+                            && reconciliation_demand > active.reconciliation_demand;
                         if active.requested_explicit_source_catalog.as_ref()
                             == requested_catalog.as_ref()
                             && active.refresh_scope == refresh_scope
+                            && !stronger_running_demand
                         {
+                            if active.state == SourceBackedRefreshState::Queued {
+                                active.reconciliation_demand =
+                                    active.reconciliation_demand.max(reconciliation_demand);
+                            }
                             return Ok(coalesce_attempt(active, metadata));
                         }
                         // A running refresh is immutable. Preserve both catalog
@@ -226,9 +245,7 @@ impl CoreRefreshEngine {
             }
         }
 
-        if admission != SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot
-            && requested_catalog.is_some()
-        {
+        if admission != SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot {
             let coalesced_request_id = state.pending_request_ids.iter().find_map(|request_id| {
                 find_attempt(state, request_id)
                     .filter(|attempt| {
@@ -236,6 +253,7 @@ impl CoreRefreshEngine {
                             && attempt.requested_explicit_source_catalog.as_ref()
                                 == requested_catalog.as_ref()
                             && attempt.refresh_scope == refresh_scope
+                            && attempt.reconciliation_demand >= reconciliation_demand
                     })
                     .map(|attempt| attempt.request_id.clone())
             });
@@ -267,6 +285,7 @@ impl CoreRefreshEngine {
         attempt.request_fingerprint = request_fingerprint;
         attempt.fresh_after_admitted_snapshot =
             admission == SourceRefreshAdmissionRequirement::FreshAfterAdmittedSnapshot;
+        attempt.reconciliation_demand = reconciliation_demand;
         let request_id = attempt.request_id.clone();
         let terminal_persistence_owns_root = state.pending_terminal_persistence.is_some();
         let active_attempt_owns_root = state
@@ -358,6 +377,11 @@ impl CoreRefreshEngine {
     fn operation(&self, request_id: &str) -> Option<SourceBackedRefreshOperation> {
         let state = self.lock_state();
         find_attempt(&state, request_id).map(|attempt| attempt.operation)
+    }
+
+    fn reconciliation_demand(&self, request_id: &str) -> Option<SourceBackedReconciliationDemand> {
+        let state = self.lock_state();
+        find_attempt(&state, request_id).map(|attempt| attempt.reconciliation_demand)
     }
 
     #[cfg(any(test, feature = "test-support"))]

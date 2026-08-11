@@ -43,7 +43,7 @@ use read_model::{
 };
 use runtime_metadata::{canonical_daemon_mode, SourceRefreshRuntimeMetadata};
 pub use runtime_metadata::{RefreshRuntime, RefreshRuntimeMetadata};
-use startup_observation::startup_routes_requiring_refresh;
+use startup_observation::{overdue_hermes_exact_routes, startup_routes_requiring_refresh};
 #[cfg(test)]
 pub(crate) use test_support::TestRefreshJournal;
 #[cfg(test)]
@@ -214,6 +214,7 @@ enum SourceRefreshAdmissionRequirement {
 
 struct SourceRefreshLogicalDemand {
     admission: SourceRefreshAdmissionRequirement,
+    reconciliation_demand: SourceBackedReconciliationDemand,
     route_observations: BTreeMap<SourceRouteIdentity, Option<String>>,
     request_id: Option<String>,
     request_fingerprint: Option<String>,
@@ -609,6 +610,67 @@ impl CoreRefreshEngine {
         Ok(state
             .dirty_routes
             .seed_clean_exact_routes(pending, watermark, observed_at_ms))
+    }
+
+    /// Inspects only persisted Core Hermes control receipts and queues exact
+    /// route reconciliation when their one-hour deadline is due.
+    pub fn enqueue_overdue_hermes_exact_reconciliation(
+        &self,
+        data_root: &Path,
+        now_ms: u64,
+    ) -> Result<bool> {
+        let Some(index) = open_published_generation(data_root, self.journal.as_ref())? else {
+            return Ok(false);
+        };
+        let routes = overdue_hermes_exact_routes(&index, i64::try_from(now_ms).unwrap_or(i64::MAX));
+        if routes.is_empty() {
+            return Ok(false);
+        }
+        let routes = {
+            let mut state = self.lock_state();
+            let routes = routes
+                .into_iter()
+                .filter(|route| state.known_route_ids.contains(route))
+                .collect::<BTreeSet<_>>();
+            if routes.is_empty() {
+                return Ok(false);
+            }
+            let watermark = state.dirty_routes.seed_watermark();
+            state
+                .dirty_routes
+                .seed_exact_routes(routes.iter().cloned(), watermark, now_ms);
+            routes
+        };
+        let response = match self.enqueue_with_catalog_metadata(
+            Some(index.generation_id().to_owned()),
+            SourceRefreshRuntimeMetadata::periodic(),
+            None,
+            SourceBackedRefreshScope::Exact(routes),
+            SourceRefreshLogicalDemand {
+                admission: SourceRefreshAdmissionRequirement::AttachEquivalent,
+                reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
+                route_observations: BTreeMap::new(),
+                request_id: None,
+                request_fingerprint: None,
+                admission_pending: false,
+            },
+        ) {
+            Ok(response) => response,
+            Err(error)
+                if error
+                    .downcast_ref::<SourceBackedRefreshQueueFull>()
+                    .is_some() =>
+            {
+                return Ok(false)
+            }
+            Err(error) => return Err(error),
+        };
+        let request_id = response
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("overdue Hermes exact refresh has no request ID"))?;
+        self.persist_job_status(data_root, request_id)?;
+        Ok(true)
     }
 
     pub fn enqueue_next_scheduled_refresh(&self, data_root: &Path, now_ms: u64) -> Result<bool> {

@@ -90,6 +90,7 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Firebender
         | CaptureProvider::ForgeCode
         | CaptureProvider::DeepAgents
+        | CaptureProvider::Hermes
         | CaptureProvider::Trae
         | CaptureProvider::MiMoCode => {
             let data_root = data_root.ok_or_else(|| {
@@ -100,10 +101,6 @@ fn register_landed_source_backed_route_inner(
             })?;
             sqlite::register_route(registry, source, selection, data_root)
         }
-        CaptureProvider::Hermes => Err(invalid_route(
-            source.provider,
-            crate::HERMES_STATE_DB_UNSUPPORTED_REASON,
-        )),
         CaptureProvider::Auggie
         | CaptureProvider::RovoDev
         | CaptureProvider::Continue

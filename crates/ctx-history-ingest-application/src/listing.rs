@@ -185,7 +185,6 @@ mod tests {
             crate::ProviderSelectionGuidance {
                 display_name: provider.as_str().to_owned(),
                 manual_path_command: String::new(),
-                unavailable_reason: None,
             }
         }
     }

@@ -406,6 +406,7 @@ fn recover_terminal_attempt(
     attempt.request_id =
         required_nonempty_string(job, "request_id", "terminal source refresh")?.to_owned();
     attempt.physical_attempt_id = optional_string(job, "physical_attempt_id")?;
+    attempt.reconciliation_demand = recover_reconciliation_demand(job, operation)?;
     attempt.state = state;
     attempt.requested_at_ms = optional_i64(job, "requested_at_ms")?
         .or(optional_i64(job, "last_run_at_ms")?)

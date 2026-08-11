@@ -147,6 +147,7 @@ impl SourceRecordProgress {
 
 pub(super) struct SourceBackedRefreshPlan {
     pub(super) scope: SourceBackedRefreshScope,
+    pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
     #[cfg(test)]
     resource_limits: Option<(u64, u64)>,
 }
@@ -155,9 +156,18 @@ impl SourceBackedRefreshPlan {
     pub(super) fn isolate(scope: SourceBackedRefreshScope) -> Self {
         Self {
             scope,
+            reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
             #[cfg(test)]
             resource_limits: None,
         }
+    }
+
+    pub(super) fn with_reconciliation_demand(
+        mut self,
+        demand: SourceBackedReconciliationDemand,
+    ) -> Self {
+        self.reconciliation_demand = demand;
+        self
     }
 
     #[cfg(test)]
@@ -173,9 +183,11 @@ impl SourceBackedRefreshPlan {
     pub(super) fn route_resources(&self, work_budget: usize) -> SourceBackedRouteResources {
         #[cfg(test)]
         if let Some((output, scratch)) = self.resource_limits {
-            return SourceBackedRouteResources::for_test(work_budget, output, scratch);
+            return SourceBackedRouteResources::for_test(work_budget, output, scratch)
+                .with_reconciliation_demand(self.reconciliation_demand);
         }
         SourceBackedRouteResources::production(work_budget)
+            .with_reconciliation_demand(self.reconciliation_demand)
     }
 }
 

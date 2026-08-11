@@ -1,5 +1,33 @@
 use super::*;
 
+pub(super) fn overdue_hermes_exact_routes(
+    index: &VerifiedIndex,
+    now_ms: i64,
+) -> BTreeSet<SourceRouteIdentity> {
+    let manifest = index.manifest();
+    manifest
+        .source_routes()
+        .iter()
+        .filter_map(|route| {
+            let route_sources = route
+                .sources()
+                .iter()
+                .map(|source| source.identity().digest())
+                .collect::<BTreeSet<_>>();
+            let certificates = manifest
+                .sources
+                .iter()
+                .filter(|source| {
+                    route_sources.contains(&source.observation().source().identity().digest())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            ctx_history_capture::hermes_sources_require_exact_reconciliation(&certificates, now_ms)
+                .then(|| route.route_identity().clone())
+        })
+        .collect()
+}
+
 pub(super) fn startup_routes_requiring_refresh(
     catalog: &SourceBackedWatchCatalog,
     expected: Option<&BTreeMap<SourceRouteIdentity, String>>,
@@ -35,6 +63,79 @@ mod tests {
         ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
         ProviderSourceStatus,
     };
+    use ctx_history_core::{
+        CertifiedSource, ScannedSourceCounts, SourceKey, SourceObservation, TypedKey,
+    };
+    use ctx_history_index::{GenerationWriter, SourceRouteSnapshot, VerifiedIndex, WriterOptions};
+
+    fn hermes_control_index(
+        root: &Path,
+        route: &SourceRouteIdentity,
+        exact_due_at_ms: i64,
+    ) -> VerifiedIndex {
+        let source = SourceKey::derive_provider_native(
+            CaptureProvider::Hermes.as_str(),
+            "hermes_state_sqlite",
+            "hermes-state-control-v1",
+            1,
+            "hermes-test-control",
+            TypedKey::U64(1),
+        )
+        .unwrap();
+        let database_identity = [1_u8; 32];
+        let schema_evidence = [2_u8; 32];
+        let revision = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "database_identity": database_identity,
+            "schema_evidence": schema_evidence,
+            "session_rowid": 4,
+            "message_rowid": 9,
+            "last_successful_exhaustive_at_ms": 100,
+            "exact_due_at_ms": exact_due_at_ms,
+            "exhaustive_sequence": 1,
+            "mode": "exhaustive",
+            "outcome": "successful",
+        }))
+        .unwrap();
+        let observation =
+            SourceObservation::new(source.clone(), "hermes-refresh-control-v1", revision).unwrap();
+        let certificate = CertifiedSource::certify(
+            observation.clone(),
+            observation,
+            "hermes-source-backed-v3",
+            [3; 32],
+            ScannedSourceCounts::default(),
+        )
+        .unwrap();
+        let mut writer = GenerationWriter::open(root, WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        writer.begin_source(source.clone()).unwrap();
+        writer.certify_source(certificate).unwrap();
+        writer
+            .set_present_source_routes(vec![SourceRouteSnapshot::present(
+                route.clone(),
+                vec![source],
+            )
+            .unwrap()])
+            .unwrap();
+        writer.commit(|_| true).unwrap();
+        VerifiedIndex::open(root).unwrap()
+    }
+
+    #[test]
+    fn persisted_hermes_deadline_selects_only_overdue_exact_routes() {
+        let temp = tempfile::tempdir().unwrap();
+        let route = SourceRouteIdentity::from_sha256("a7".repeat(32)).unwrap();
+        let future = hermes_control_index(&temp.path().join("future"), &route, 1_001);
+        assert!(overdue_hermes_exact_routes(&future, 1_000).is_empty());
+        let overdue = hermes_control_index(&temp.path().join("overdue"), &route, 1_000);
+        assert_eq!(
+            overdue_hermes_exact_routes(&overdue, 1_000),
+            BTreeSet::from([route])
+        );
+    }
 
     fn watch_catalog(path: PathBuf) -> (SourceBackedWatchCatalog, SourceRouteIdentity) {
         let source = ProviderSource {

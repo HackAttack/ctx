@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::*;
 
 #[test]
-fn provider_vocabulary_keeps_41_recognized_native_providers_and_40_importable() {
+fn provider_vocabulary_keeps_all_41_recognized_native_providers_importable() {
     let recognized = native_provider_cli_specs()
         .iter()
         .map(|spec| spec.provider.as_str())
@@ -19,8 +19,8 @@ fn provider_vocabulary_keeps_41_recognized_native_providers_and_40_importable() 
         .iter()
         .filter(|provider| parse_native_provider_name(provider).is_some_and(provider_is_importable))
         .collect::<BTreeSet<_>>();
-    assert_eq!(importable.len(), 40, "importable provider count changed");
-    assert!(!provider_is_importable(CaptureProvider::Hermes));
+    assert_eq!(importable.len(), 41, "importable provider count changed");
+    assert!(provider_is_importable(CaptureProvider::Hermes));
     assert!(cli_supported_provider(CaptureProvider::Hermes));
 }
 

@@ -430,6 +430,15 @@ where
             WatchCatalogReconcileTrigger::Startup,
             false,
         );
+        if let Some(source_refresh) = refresh_service
+            .as_ref()
+            .and(runtime.source_refresh_coordinator.as_deref())
+        {
+            source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+                data_root,
+                source_route_ledger_now_ms(),
+            )?;
+        }
         // Linearize the final handoff check, Ready publication, and restart
         // acknowledgement with every writer of durable handoff intent.
         let lifecycle_ready = !stop_disabled
@@ -732,12 +741,17 @@ where
                 && runtime.history_retry.ready();
             if safety_due {
                 next_safety_reconcile = Instant::now() + safety_interval;
+                if let Some(source_refresh) = source_refresh {
+                    source_refresh.enqueue_overdue_hermes_exact_reconciliation(
+                        data_root,
+                        source_route_ledger_now_ms(),
+                    )?;
+                }
             }
             let watch_reconcile_trigger = wake
                 .source_watch
                 .reconcile
                 .map(WatchCatalogReconcileTrigger::CatalogControl)
-                .or_else(|| safety_due.then_some(WatchCatalogReconcileTrigger::SafetyTimeout))
                 .or_else(|| {
                     wake.source_watch
                         .rearm

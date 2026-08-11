@@ -27,7 +27,7 @@ DOCUMENT_TREE_FAMILY = "replacement_document_tree"
 EVENT_FILE_FAMILY = "event_file"
 PROVIDER_SPECIFIC_EXCEPTION = "provider_specific_exception"
 
-# The executable source-backed inventory has 41 provider identities. Codex's
+# The executable source-backed inventory has 42 provider identities. Codex's
 # session and prompt-history formats share one JSONL gate; explicit leaf/tree
 # variants remain in the same family. Custom is explicit-only and therefore
 # keeps its provider-local gate instead of acquiring an automatic corpus.
@@ -62,6 +62,7 @@ PROVIDER_FAMILY_COVERAGE = (
         "cross-leaf lineage is intentionally serial",
     ),
     ("openclaw", JSONL_FAMILY, None),
+    ("hermes", SQLITE_WAL_FAMILY, None),
     ("nanoclaw", SQLITE_WAL_FAMILY, "compound central/component inventory"),
     ("astrbot", SQLITE_WAL_FAMILY, None),
     ("shelley", SQLITE_WAL_FAMILY, "exact-CWD single logical leaf"),
@@ -113,8 +114,8 @@ class FamilyCorpus:
 class SourceFamilyTaxonomyTest(unittest.TestCase):
     def test_every_landed_provider_has_one_family_or_exception(self) -> None:
         providers = [provider for provider, _, _ in PROVIDER_FAMILY_COVERAGE]
-        self.assertEqual(len(providers), 41)
-        self.assertEqual(len(set(providers)), 41)
+        self.assertEqual(len(providers), 42)
+        self.assertEqual(len(set(providers)), 42)
         self.assertEqual(
             {family for _, family, _ in PROVIDER_FAMILY_COVERAGE},
             {

@@ -3,12 +3,14 @@ use sha2::{Digest as _, Sha256};
 
 fn request_fingerprint(
     operation: SourceBackedRefreshOperation,
+    reconciliation_demand: SourceBackedReconciliationDemand,
     requested_catalog: Option<&ExplicitSourceCatalogAuthority>,
     refresh_scope: &SourceBackedRefreshScope,
     admission: SourceRefreshAdmissionRequirement,
 ) -> Result<String> {
     let authority = compact_json(json!({
         "operation": operation.as_str(),
+        "reconciliation_demand": reconciliation_demand.as_str(),
         "explicit_source_catalog": requested_catalog
             .map(ExplicitSourceCatalogAuthority::to_json),
         "fresh_after_admitted_snapshot": admission
@@ -52,6 +54,7 @@ impl CoreRefreshEngine {
         }
         let fingerprint = request_fingerprint(
             submission.operation,
+            submission.reconciliation_demand,
             submission.explicit_source_catalog.as_ref(),
             &submission.refresh_scope,
             admission,
@@ -66,6 +69,7 @@ impl CoreRefreshEngine {
             refresh_scope: submission.refresh_scope,
             logical_demand: SourceRefreshLogicalDemand {
                 admission,
+                reconciliation_demand: submission.reconciliation_demand,
                 route_observations: BTreeMap::new(),
                 request_id: Some(submission.request_id),
                 request_fingerprint: Some(fingerprint),

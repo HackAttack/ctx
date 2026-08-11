@@ -495,15 +495,9 @@ fn native_provider_default_discovery_uses_importer_specific_file_predicates() {
         .into_iter()
         .find(|source| source.provider == CaptureProvider::Hermes)
         .unwrap();
-    assert_eq!(hermes_source.status, ProviderSourceStatus::Unsupported);
-    assert_eq!(
-        hermes_source.import_support,
-        ProviderImportSupport::Unsupported
-    );
-    assert_eq!(
-        hermes_source.unsupported_reason,
-        Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON)
-    );
+    assert_eq!(hermes_source.status, ProviderSourceStatus::Available);
+    assert_eq!(hermes_source.import_support, ProviderImportSupport::Native);
+    assert!(hermes_source.unsupported_reason.is_none());
 
     let astrbot = temp.path().join(".astrbot/data");
     std::fs::create_dir_all(&astrbot).unwrap();

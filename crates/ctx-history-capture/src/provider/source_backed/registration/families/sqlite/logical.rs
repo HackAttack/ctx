@@ -58,6 +58,70 @@ pub(super) fn register_opencode_family_route(
     )
 }
 
+pub(super) fn register_hermes_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    data_root: &Path,
+) -> SourceBackedCoordinatorResult<()> {
+    if selection != SourceBackedRouteSelection::Automatic {
+        return Err(invalid_route(
+            source.provider,
+            "manual Hermes registration requires persistent explicit catalog lineage",
+        ));
+    }
+    let candidate = HermesSourceCandidate::automatic(data_root, source.clone())
+        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+    register_hermes_candidate(
+        registry,
+        source,
+        selection,
+        SourceBackedSelectorAuthority::DiscoveredWinner,
+        candidate,
+    )
+}
+
+fn register_hermes_candidate(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    authority: SourceBackedSelectorAuthority,
+    candidate: HermesSourceCandidate,
+) -> SourceBackedCoordinatorResult<()> {
+    register_replacement_document_tree_route_with_authority(
+        registry, source, selection, authority, candidate,
+    )
+}
+
+pub fn register_hermes_explicit_source_backed_route(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    data_root: &Path,
+    anchor: SourceAnchor,
+) -> SourceBackedCoordinatorResult<()> {
+    let candidate = hermes_source_backed_explicit(data_root, source.path.clone(), anchor)
+        .map_err(|error| invalid_route(source.provider, error.to_string()))?;
+    #[cfg(test)]
+    {
+        return crate::provider::source_backed::family::document::register_replacement_document_tree_route_unchecked_for_test(
+            registry,
+            source,
+            SourceBackedSelectorAuthority::ExplicitPath,
+            crate::HERMES_SQLITE_SOURCE_FORMAT,
+            SourceBackedWatchTargetKind::SqliteDatabase,
+            candidate,
+        );
+    }
+    #[cfg(not(test))]
+    register_hermes_candidate(
+        registry,
+        source,
+        SourceBackedRouteSelection::ExplicitManual,
+        SourceBackedSelectorAuthority::ExplicitPath,
+        candidate,
+    )
+}
+
 pub(super) fn register_trae_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,

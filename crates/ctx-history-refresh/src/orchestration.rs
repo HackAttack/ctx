@@ -6,6 +6,7 @@ use catalog_witness::retained_catalog_witness;
 pub(super) struct SourceBackedRefreshPlan<'a> {
     pub(super) explicit_source_catalog: Option<&'a ExplicitSourceCatalogAuthority>,
     pub(super) operation: SourceBackedRefreshOperation,
+    pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(super) scope: SourceBackedRefreshScope,
     pub(super) covered_route_ids: BTreeSet<SourceRouteIdentity>,
     pub(super) covered_publication: SourceBackedRefreshCoveredPublication,
@@ -56,19 +57,22 @@ pub(super) fn execute_source_backed_refresh(
             },
         )
     };
-    executor.refresh(SourceBackedRefreshExecution::new(
-        data_root,
-        &index_root,
-        request_id,
-        plan.operation,
-        plan.explicit_source_catalog,
-        plan.scope,
-        plan.covered_route_ids,
-        plan.covered_publication,
-        &discovery_context,
-        &published_state,
-        &report_progress,
-    ))
+    executor.refresh(
+        SourceBackedRefreshExecution::new(
+            data_root,
+            &index_root,
+            request_id,
+            plan.operation,
+            plan.explicit_source_catalog,
+            plan.scope,
+            plan.covered_route_ids,
+            plan.covered_publication,
+            &discovery_context,
+            &published_state,
+            &report_progress,
+        )
+        .with_reconciliation_demand(plan.reconciliation_demand),
+    )
 }
 
 #[cfg(test)]

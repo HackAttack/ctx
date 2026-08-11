@@ -429,6 +429,10 @@ pub(super) fn new_refresh_attempt(
         published_generation: observed_generation,
         refresh_scope,
         operation: metadata.operation,
+        reconciliation_demand: match metadata.operation {
+            SourceBackedRefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
+            SourceBackedRefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
+        },
         requested_explicit_source_catalog: requested_catalog,
         fresh_after_admitted_snapshot: false,
         request_fingerprint: None,
@@ -455,6 +459,21 @@ pub(super) fn new_refresh_attempt(
         failure_type: None,
         failure_outcome: None,
         last_error: None,
+    }
+}
+
+pub(super) fn recover_reconciliation_demand(
+    job: &Value,
+    operation: SourceBackedRefreshOperation,
+) -> Result<SourceBackedReconciliationDemand> {
+    match job.get("reconciliation_demand") {
+        Some(Value::String(value)) => SourceBackedReconciliationDemand::parse(value)
+            .ok_or_else(|| anyhow!("durable source refresh has invalid reconciliation demand")),
+        Some(_) => bail!("durable source refresh has invalid reconciliation demand"),
+        None => Ok(match operation {
+            SourceBackedRefreshOperation::Refresh => SourceBackedReconciliationDemand::Incremental,
+            SourceBackedRefreshOperation::Import => SourceBackedReconciliationDemand::Exhaustive,
+        }),
     }
 }
 

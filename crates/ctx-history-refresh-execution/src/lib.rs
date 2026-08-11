@@ -53,7 +53,7 @@ use registry_issues::{
 };
 type SourceBackedRefreshOperation = RefreshOperation;
 
-pub use ctx_history_capture::SourceBackedRefreshScope;
+pub use ctx_history_capture::{SourceBackedReconciliationDemand, SourceBackedRefreshScope};
 pub use current_state::SourceBackedRefreshCurrent;
 #[doc(hidden)]
 pub use execution::{

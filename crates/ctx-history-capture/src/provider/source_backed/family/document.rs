@@ -17,10 +17,13 @@ use crate::provider::source_backed::{
     ParallelLeafScanCancelled, ParallelLeafScanComplete, ParallelLeafScanEmitter,
     ParallelLeafScanError, ParallelLeafScanJob, ParallelLeafScanWorkerError,
     SourceBackedCoordinatorResult, SourceBackedCurrentSourceProgress, SourceBackedGenerationSink,
-    SourceBackedProviderRegistry, SourceBackedRecordRejectionDrafts, SourceBackedRouteDriver,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
-    SourceBackedRouteSelection, SourceBackedSelectorAuthority, SourceBackedSourceOutcome,
+    SourceBackedProviderRegistry, SourceBackedReconciliationDemand,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteDriver, SourceBackedRouteError,
+    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteSelection,
+    SourceBackedSelectorAuthority, SourceBackedSourceOutcome,
 };
+#[cfg(test)]
+use crate::provider::source_backed::{SourceBackedRoute, SourceBackedWatchTargetKind};
 use crate::ProviderSource;
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CoreRecord,
@@ -234,6 +237,16 @@ pub(crate) trait ReplacementDocumentTree: Send + Sync + 'static {
     ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
         self.discover_complete_with_base(base_sources)
     }
+    fn discover_complete_with_reconciliation(
+        &self,
+        base_sources: &[CertifiedSource],
+        _reconciliation_demand: SourceBackedReconciliationDemand,
+        report_progress: &mut dyn FnMut(
+            SourceBackedCurrentSourceProgress,
+        ) -> SourceBackedRouteResult<()>,
+    ) -> SourceBackedRouteResult<CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>> {
+        self.discover_complete_with_progress(base_sources, report_progress)
+    }
     fn scan_changed(
         &self,
         authority: &Self::TreeAuthority,
@@ -288,6 +301,29 @@ where
         source,
         selection,
         selector_authority,
+        driver,
+    )?);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn register_replacement_document_tree_route_unchecked_for_test<A>(
+    registry: &mut SourceBackedProviderRegistry,
+    source: ProviderSource,
+    selector_authority: SourceBackedSelectorAuthority,
+    certified_source_format: &'static str,
+    watch_target_kind: SourceBackedWatchTargetKind,
+    adapter: A,
+) -> SourceBackedCoordinatorResult<()>
+where
+    A: ReplacementDocumentTree,
+{
+    let driver = replacement_document_tree_driver(&source, adapter);
+    registry.register(SourceBackedRoute::explicit_manual_unchecked_for_test(
+        source,
+        selector_authority,
+        certified_source_format,
+        watch_target_kind,
         driver,
     )?);
     Ok(())
@@ -368,9 +404,11 @@ where
     A: ReplacementDocumentTree,
 {
     let base_sources = source_backed_base_sources(sink, |source| adapter.owns_source(source));
-    let mut tree = adapter.discover_complete_with_progress(&base_sources, &mut |progress| {
-        sink.report_current_source_progress(progress)
-    })?;
+    let mut tree = adapter.discover_complete_with_reconciliation(
+        &base_sources,
+        sink.reconciliation_demand(),
+        &mut |progress| sink.report_current_source_progress(progress),
+    )?;
     validate_unique_leaf_fingerprints(&tree.leaves)?;
     bind_durable_replay_sources(adapter, &mut tree)?;
     let mut replayable = HashMap::new();

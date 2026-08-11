@@ -22,15 +22,15 @@ AUDIT_STATUS_TO_MANIFEST = {
 }
 EXPECTED_PROVIDER_STATUS_ROWS = {
     "supported": 3,
-    "not_qualified": 37,
+    "not_qualified": 38,
     "excluded": 0,
 }
 EXPECTED_AUDIT_COUNTS = {
-    "providers": 40,
-    "base_routes": 42,
-    "capability_lanes": 45,
-    "lane_statuses": {"exact": 3, "not-qualified": 41, "excluded": 1},
-    "provider_statuses": {"exact": 3, "not-qualified": 37, "excluded": 0},
+    "providers": 41,
+    "base_routes": 43,
+    "capability_lanes": 46,
+    "lane_statuses": {"exact": 3, "not-qualified": 42, "excluded": 1},
+    "provider_statuses": {"exact": 3, "not-qualified": 38, "excluded": 0},
 }
 LOCAL_DEEPAGENTS_ROUTE = (
     "deepagents",

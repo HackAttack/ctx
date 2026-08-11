@@ -6,7 +6,7 @@ ctx imports existing agent history through conservative provider adapters. Each 
 
 The public CLI supports these local-history harnesses:
 
-Codex, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, MiMo Code.
+Codex, Pi, Claude, OpenCode, Kilo Code, Kiro CLI, Crush, Goose, Lingma, Qoder, Warp, CodeBuddy, Trae, OpenClaw, Hermes Agent, NanoClaw, AstrBot, Shelley, Continue, OpenHands, Antigravity, Gemini, Tabnine, Cursor, Windsurf, Zed, Copilot CLI, Factory AI Droid, Qwen Code, Kimi Code CLI, Auggie, Junie, Firebender, ForgeCode, Deep Agents, Mistral Vibe, Mux, Rovo Dev, Cline, Roo Code, MiMo Code.
 
 Use `ctx sources` for the truth on the current machine:
 
@@ -33,7 +33,7 @@ remain lineage/origin unknown.
 
 Exact MCP server/tool attribution is a separate, narrower event capability.
 Supported provider import does not automatically qualify it. The complete
-40-provider importable route/format partition is documented in
+41-provider importable route/format partition is documented in
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) and its
 machine-readable
 [`capability contract`](mcp-tool-call-attribution-capabilities.json).
@@ -67,15 +67,12 @@ excluded from setup, `--all`, daemon refresh, and search refresh. Removing an
 old automatic probe does not delete indexed history; a still-supported
 compatible path can be selected explicitly.
 
-Hermes Agent is currently detection-only. ctx keeps its stable discovered
-`hermes_state_sqlite` route, but all known `state.db` schemas are typed
-unsupported because they lack a provider-owned, transactionally maintained
-per-session content revision. `ctx sources` reports `importable: false`, and
-automatic or explicit imports report `unsupported_schema` without opening or
-modifying the database. There is no override or compatibility path. For
-same-epoch indexes produced by an earlier build, refresh keeps last-good Hermes
-records as stale with an unsupported source diagnostic rather than treating the
-route as a deletion.
+Hermes Agent is supported through the native `hermes_state_sqlite` route. New
+sessions and appended records converge immediately on native-watch and search
+refreshes. Structural edits and deletions reconcile within one hour with the
+daemon, or immediately after `ctx import --provider hermes` or
+`ctx import --all`. All scans use a read-only SQLite snapshot and never modify
+Hermes history.
 
 Interactive discovery captures a fresh allowlisted environment and current
 working directory. A long-lived daemon uses the named environment/CWD snapshot

@@ -359,6 +359,9 @@ impl CoreRefreshEngine {
                 let operation = coordinator
                     .operation(request_id)
                     .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
+                let reconciliation_demand = coordinator
+                    .reconciliation_demand(request_id)
+                    .ok_or_else(|| anyhow!("source refresh request `{request_id}` is unknown"))?;
                 let (covered_route_ids, covered_publication) =
                     coordinator.admit_refresh_scope(request_id, &refresh_scope)?;
                 coordinator.persist_job_status(data_root, request_id)?;
@@ -370,6 +373,7 @@ impl CoreRefreshEngine {
                     SourceBackedRefreshPlan {
                         explicit_source_catalog: requested_catalog.as_ref(),
                         operation,
+                        reconciliation_demand,
                         scope: refresh_scope.clone(),
                         covered_route_ids,
                         covered_publication,

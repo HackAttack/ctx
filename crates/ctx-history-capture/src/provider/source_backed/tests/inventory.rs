@@ -2,7 +2,7 @@ use super::*;
 use std::str::FromStr;
 
 #[test]
-fn provider_inventory_separates_supported_routes_from_hermes_detection() {
+fn provider_inventory_covers_supported_automatic_routes() {
     assert_eq!(LANDED_SOURCE_BACKED_ROUTES.len(), 52);
     assert_eq!(
         LANDED_SOURCE_BACKED_ROUTES
@@ -16,25 +16,20 @@ fn provider_inventory_separates_supported_routes_from_hermes_detection() {
             .iter()
             .filter(|route| route.automatic && route.unsupported_reason.is_some())
             .count(),
-        1
+        0
     );
     assert_eq!(
         LANDED_SOURCE_BACKED_ROUTES
             .iter()
             .filter(|route| route.automatic && route.unsupported_reason.is_none())
             .count(),
-        41
+        42
     );
     let unsupported = LANDED_SOURCE_BACKED_ROUTES
         .iter()
         .filter(|route| route.unsupported_reason.is_some())
         .collect::<Vec<_>>();
-    assert_eq!(unsupported.len(), 1);
-    assert_eq!(unsupported[0].provider, CaptureProvider::Hermes);
-    assert_eq!(
-        unsupported[0].unsupported_reason,
-        Some(crate::HERMES_STATE_DB_UNSUPPORTED_REASON)
-    );
+    assert!(unsupported.is_empty());
     let providers_with_automatic_routes = LANDED_SOURCE_BACKED_ROUTES
         .iter()
         .filter(|route| route.automatic && route.unsupported_reason.is_none())
@@ -56,10 +51,7 @@ fn provider_inventory_separates_supported_routes_from_hermes_detection() {
         );
         assert!(!route.source_format.is_empty());
         assert!(!route.certified_source_format.is_empty());
-        assert_eq!(
-            route.unsupported_reason.is_some(),
-            route.provider == CaptureProvider::Hermes
-        );
+        assert!(route.unsupported_reason.is_none());
     }
 
     for spec in crate::provider_source_specs() {
@@ -241,14 +233,14 @@ fn provider_inventory_separates_supported_routes_from_hermes_detection() {
 }
 
 #[test]
-fn hermes_route_identity_is_retained_but_parser_registration_is_unreachable() {
+fn hermes_route_is_executable_for_automatic_registration() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
     let database = home.join(".hermes/state.db");
     fs::create_dir_all(database.parent().unwrap()).unwrap();
     fs::create_dir_all(&cwd).unwrap();
-    fs::write(&database, b"must not be opened as SQLite").unwrap();
+    fs::write(&database, b"registration must not open provider content").unwrap();
     let context = DiscoveryContext::new(
         &home,
         &cwd,
@@ -256,12 +248,7 @@ fn hermes_route_identity_is_retained_but_parser_registration_is_unreachable() {
         crate::DiscoveryPlatformDirs::default(),
     );
     let source = crate::provider_source_for_path(CaptureProvider::Hermes, database);
-    let mut historical = source.clone();
-    historical.source_kind = ProviderSourceKind::NativeHistory;
-    historical.import_support = ProviderImportSupport::Native;
-    historical.status = ProviderSourceStatus::Available;
-    historical.unsupported_reason = None;
-    let historical_identity = automatic_source_backed_route_identity(&historical).unwrap();
+    let route_identity = automatic_source_backed_route_identity(&source).unwrap();
 
     let build = build_automatic_source_backed_registry_from_parts(
         &context,
@@ -269,33 +256,23 @@ fn hermes_route_identity_is_retained_but_parser_registration_is_unreachable() {
         vec![source.clone()],
         Vec::new(),
     );
-    assert_eq!(build.executable_route_count(), 0);
-    assert_eq!(build.unsupported_route_count(), 1);
-    assert!(build.issues.iter().any(|issue| matches!(
-        issue,
-        SourceBackedAutomaticRegistryIssue::Unavailable {
-            source,
-            reason: SourceBackedAutomaticUnavailableReason::UnsupportedFormat { detail },
-        } if source.provider == CaptureProvider::Hermes
-            && *detail == crate::HERMES_STATE_DB_UNSUPPORTED_REASON
-    )));
+    assert_eq!(build.executable_route_count(), 1);
+    assert_eq!(build.unsupported_route_count(), 0);
+    assert!(build.issues.is_empty());
     assert_eq!(
         automatic_source_backed_route_identity(&source).unwrap(),
-        historical_identity
+        route_identity
     );
 
     let mut registry = SourceBackedProviderRegistry::new();
-    let error = register_landed_source_backed_route_with_data_root(
+    register_landed_source_backed_route_with_data_root(
         &mut registry,
-        historical,
+        source,
         SourceBackedRouteSelection::Automatic,
         &temp.path().join("ctx-data"),
     )
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains(crate::HERMES_STATE_DB_UNSUPPORTED_REASON));
-    assert_eq!(registry.executable_route_count(), 0);
+    .unwrap();
+    assert_eq!(registry.executable_route_count(), 1);
 }
 
 #[test]

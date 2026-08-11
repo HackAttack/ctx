@@ -52,14 +52,14 @@ the ordinary event without attribution.
 
 ## Provider and format capability
 
-General provider support remains the 40-provider local-history contract in
+General provider support remains the 41-provider local-history contract in
 [`provider-support-matrix.json`](provider-support-matrix.json). Exact MCP
 attribution has a separate provider + route + source format + format version
 contract in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 
-Capability revision 3 evaluates all 40 providers across 42 base routes and 45
-capability lanes: three `exact`, 41 `not-qualified`, and one `excluded`.
+Capability revision 3 evaluates all 41 providers across 43 base routes and 46
+capability lanes: three `exact`, 42 `not-qualified`, and one `excluded`.
 Codex contributes separate session-tree and legacy prompt-history routes;
 Deep Agents contributes its local SQLite import plus a separately excluded
 Deep Agents hosted trace. Capability revision 3 exact providers are
@@ -79,9 +79,9 @@ Codex, Warp, and Copilot CLI. The exact full tuples are:
   strict unversioned format generation 1. Versions 0.0.393 and 1.0.77 and the
   pinned source commit are observed evidence, not runtime admission selectors.
 
-The 41 `not-qualified` tuple rows include Codex's three observed semver lanes,
-its separate legacy prompt-history route, Mistral Vibe, and the local Deep
-Agents SQLite route. Mistral persists
+The 42 `not-qualified` tuple rows include Codex's three observed semver lanes,
+its separate legacy prompt-history route, Hermes Agent, Mistral Vibe, and the
+local Deep Agents SQLite route. Mistral persists
 the tool and a transport URL or command, but its server alias exists only
 inside a combined function name; ctx does not reconstruct it by suffix
 splitting. Deep Agents similarly persists a combined MCP wire name rather than

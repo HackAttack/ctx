@@ -37,6 +37,7 @@ EXPECTED_PROVIDER_LINEAGE_SUPPORT = {
     "crush": ("exact_relationship", "explicit_no_copy"),
     "goose": ("exact_relationship", "unknown"),
     "openclaw": ("exact_relationship", "explicit_no_copy"),
+    "hermes": ("exact_relationship", "unknown"),
     "gemini_cli": ("exact_relationship", "explicit_no_copy"),
     "zed": ("exact_relationship", "explicit_no_copy"),
     "mistral_vibe": ("exact_relationship", "unknown"),
@@ -420,9 +421,7 @@ def validate_detected_unsupported_sources(
         require_string_list(entry["history_locations"], f"{label}.history_locations")
         if entry["importable"] is not False:
             fail(f"{label}.importable must be false")
-        reason = require_non_empty_string(entry["reason"], f"{label}.reason")
-        if "transactionally maintained per-session content revision" not in reason:
-            fail(f"{label}.reason must state the child-independent revision blocker")
+        require_non_empty_string(entry["reason"], f"{label}.reason")
         public_docs = require_repo_path(entry["public_docs"], f"{label}.public_docs")
         if entry["display_name"] not in public_docs.read_text(encoding="utf-8"):
             fail(f"{label}.public_docs does not mention the detected provider")
