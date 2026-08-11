@@ -1,0 +1,36 @@
+[package]
+name = "ctx-history-cli"
+version = "1.0.0"
+description = "Transport-neutral history command application and presentation"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+ctx-history-capture = { path = "../ctx-history-capture" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-ingest-application = { path = "../ctx-history-ingest-application" }
+ctx-history-index = { path = "../ctx-history-index" }
+ctx-history-read-application = { path = "../ctx-history-read-application" }
+ctx-history-refresh = { path = "../ctx-history-refresh" }
+ctx-daemon-cli = { path = "../ctx-daemon-cli" }
+ctx-client-observability = { path = "../ctx-client-observability" }
+ctx-terminal = { path = "../ctx-terminal" }
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+anstream.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

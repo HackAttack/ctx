@@ -1,8 +1,6 @@
 use serde_json::Value;
 
-use crate::commands::mcp_tool_call::{
-    append_mcp_tool_call_text, MCP_TOOL_CALL_STRUCTURED_GUIDANCE,
-};
+use ctx_history_cli::{append_mcp_tool_call_text, MCP_TOOL_CALL_STRUCTURED_GUIDANCE};
 
 mod pro;
 
@@ -734,7 +732,7 @@ mod tests {
     fn show_fallback_text_safely_marks_bounded_mcp_identity() {
         let server = format!(
             "literal\\n\n# heading\u{202e}\u{1b}[2J{}",
-            "x".repeat(crate::commands::mcp_tool_call::MCP_TOOL_CALL_DISPLAY_MAX_CHARS)
+            "x".repeat(ctx_history_cli::MCP_TOOL_CALL_DISPLAY_MAX_CHARS)
         );
         let value = json!({
             "payload_type": "event_window",

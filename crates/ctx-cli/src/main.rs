@@ -1,7 +1,5 @@
 use std::process::ExitCode;
 
-use ctx_history_core::CaptureProvider;
-
 // Keep every direct CLI write on the same measured stdout/stderr seam as the
 // structured terminal UI. These preserve the standard print macro behavior;
 // `output` only adds content-free byte accounting while a command is active.
@@ -37,6 +35,7 @@ mod deprecated_controls;
 mod dispatch;
 mod docs;
 mod execution_capabilities;
+mod history_config;
 mod history_source_plugins;
 mod identity;
 mod integrations;
@@ -85,15 +84,6 @@ pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};
 pub(crate) use transcript::TranscriptMode;
 pub(crate) use value_parsers::parse_event_window_limit;
-
-const DEFAULT_VISIBLE_SOURCE_PROVIDERS: &[CaptureProvider] = &[
-    CaptureProvider::Claude,
-    CaptureProvider::Codex,
-    CaptureProvider::Cursor,
-    CaptureProvider::Pi,
-    CaptureProvider::CopilotCli,
-    CaptureProvider::OpenCode,
-];
 
 fn main() -> ExitCode {
     ui::bootstrap_color_choice(std::env::args_os());
