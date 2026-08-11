@@ -8,12 +8,11 @@ use std::{
 use ctx_history_core::{CaptureProvider, SessionRelationshipKind};
 use serde::{Deserialize, Serialize};
 
-use super::checkpoint::CodexNativeCheckpoint;
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     common::time::system_time_ms,
     provider::codex::catalog::CatalogSession,
-    CaptureError, Result as CaptureResult, CODEX_SESSION_SOURCE_FORMAT,
+    CODEX_SESSION_SOURCE_FORMAT,
 };
 
 const CATALOG_CHANGE_TOKEN_KEY: &str = "inventory_file_change_token_v1";
@@ -202,84 +201,5 @@ fn decode_hex_nibble(value: u8) -> Option<u8> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexSourceIdentity {
-    pub(crate) canonical_source_key: String,
-    pub(crate) source_root: String,
-    pub(crate) source_path: PathBuf,
-}
-
-impl CodexSourceIdentity {
-    pub(crate) fn new(
-        canonical_source_key: impl Into<String>,
-        source_root: impl Into<String>,
-        source_path: PathBuf,
-    ) -> CaptureResult<Self> {
-        let identity = Self {
-            canonical_source_key: canonical_source_key.into(),
-            source_root: source_root.into(),
-            source_path,
-        };
-        if identity.canonical_source_key.trim().is_empty()
-            || identity.source_root.trim().is_empty()
-            || identity.source_path.as_os_str().is_empty()
-        {
-            return Err(CaptureError::InvalidPayload(
-                "Codex append proof identity is incomplete".to_owned(),
-            ));
-        }
-        Ok(identity)
-    }
-
-    pub(crate) fn matches_catalog_source(&self, source: &CodexCatalogSource) -> bool {
-        self.source_root == source.source_root && self.source_path == source.source_path
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CodexCheckpointGeneration(u64);
-
-impl CodexCheckpointGeneration {
-    pub(crate) const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub(crate) const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexAppendProof {
-    pub(crate) identity: CodexSourceIdentity,
-    pub(crate) generation: CodexCheckpointGeneration,
-    pub(crate) checkpoint: CodexNativeCheckpoint,
-}
-
-impl CodexAppendProof {
-    pub(crate) fn new(
-        identity: CodexSourceIdentity,
-        generation: CodexCheckpointGeneration,
-        checkpoint: CodexNativeCheckpoint,
-    ) -> Self {
-        Self {
-            identity,
-            generation,
-            checkpoint,
-        }
-    }
-
-    pub(crate) fn validate_source(&self, source: &CodexCatalogSource) -> CaptureResult<()> {
-        if !self.identity.matches_catalog_source(source) {
-            return Err(CaptureError::InvalidPayload(format!(
-                "Codex append proof generation {} does not belong to catalog source {}",
-                self.generation.get(),
-                source.source_path.display()
-            )));
-        }
-        Ok(())
     }
 }

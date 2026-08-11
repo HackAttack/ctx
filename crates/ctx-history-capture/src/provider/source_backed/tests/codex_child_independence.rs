@@ -9,6 +9,7 @@ use std::{
 
 use ctx_history_core::{CertifiedSource, EventOrigin, SessionRelationshipKind};
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::provider::codex::nativepath::{
@@ -16,13 +17,14 @@ use crate::provider::codex::nativepath::{
     CodexCausalSourceObservationV1,
 };
 use crate::provider::source_backed::family::jsonl::{
+    checkpoint_admitted_revision_for_test, new_prefix_hasher, prefix_digest,
     set_after_jsonl_append_observation_route_binding_hook,
     set_before_jsonl_terminal_physical_revalidation_hook,
 };
 
 const CURRENT_PARSER_REVISION: &str =
     "codex-nativepath-core-record-v31-repository-positive-exact-authority";
-const CURRENT_FRONTIER_KIND: &str = "codex-nativepath-checkpoint-v18";
+const CURRENT_FRONTIER_KIND: &str = "borrowed-jsonl-family-checkpoint-v1";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -44,6 +46,12 @@ fn jsonl_bytes(records: impl IntoIterator<Item = serde_json::Value>) -> Vec<u8> 
             line
         })
         .collect()
+}
+
+fn jsonl_prefix_digest(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = new_prefix_hasher();
+    hasher.update(bytes);
+    prefix_digest(&hasher)
 }
 
 fn session_meta(
@@ -536,7 +544,11 @@ fn refresh_and_assert_descendants(
 ) -> BTreeMap<String, CodexCausalSourceObservationV1> {
     let observed = capture_causal_stage();
     let receipt = refresh_source_backed_generation(index_root, registry, writer_options()).unwrap();
-    assert!(receipt.failed_routes.is_empty());
+    assert!(
+        receipt.failed_routes.is_empty(),
+        "unexpected failed routes: {:?}",
+        receipt.failed_routes
+    );
     assert!(receipt.logical_source_failures.is_empty());
     let sources = causal_by_id(&observed);
     for (descendant, parent) in descendants {
@@ -798,7 +810,7 @@ fn nested_root_advisory_is_admitted_and_changed_child_processes_only_itself() {
 }
 
 #[test]
-fn append_after_large_terminal_authority_prefix_scans_only_the_suffix() {
+fn append_after_large_terminal_authority_prefix_replays_combined_authority_once() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions");
     let index_root = temp.path().join("index");
@@ -835,7 +847,11 @@ fn append_after_large_terminal_authority_prefix_scans_only_the_suffix() {
     assert_eq!(counters.complete_records_scanned, 1);
     assert_eq!(counters.retained_records_scanned, 1);
     assert_eq!(counters.staged_documents, 1);
-    assert!(counters.mcp_terminal_authority_bytes_read < 4 * 1024);
+    assert_eq!(
+        counters.mcp_terminal_authority_bytes_read,
+        fs::metadata(&path).unwrap().len()
+    );
+    assert!(counters.scanner_bytes_read < 4 * 1024);
     let appended = VerifiedIndex::open(&index_root).unwrap();
     let appended_certificate =
         serde_json::to_vec(&certificate_for(&appended, native_session_id)).unwrap();
@@ -861,6 +877,141 @@ fn append_after_large_terminal_authority_prefix_scans_only_the_suffix() {
             .map(|candidate| candidate.event.event_id)
             .collect::<Vec<_>>(),
         appended_event_ids
+    );
+}
+
+#[test]
+fn pending_prefix_call_is_restored_and_completed_by_append_suffix() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000000a";
+    let path = session_path(&sessions, native_session_id);
+    write_session(
+        &sessions,
+        native_session_id,
+        SessionRelationshipKind::Root,
+        None,
+        [exec_call("pending-prefix-call")],
+    );
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    append_event(
+        &path,
+        exec_result("pending-prefix-call", "pendingprefixcompletedbysuffix"),
+    );
+    let observed = capture_causal_stage();
+    let appended =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    let counters = causal_by_id(&observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.appended_sources, 1);
+    assert_eq!(counters.replaced_sources, 0);
+    let verified = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        verified
+            .search_event_candidates("pendingprefixcompletedbysuffix", 8)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn terminal_nul_checkpoint_forces_replacement_and_binds_full_admitted_revision() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-00000000000b";
+    let path = session_path(&sessions, native_session_id);
+    let mut initial = jsonl_bytes([
+        session_meta(native_session_id, SessionRelationshipKind::Root, None),
+        message("terminal-nul-initial"),
+    ]);
+    initial.resize(initial.len() + 4 * 1024, 0);
+    fs::write(&path, &initial).unwrap();
+    let registry = register_tree(&[&sessions]);
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let initial_index = VerifiedIndex::open(&index_root).unwrap();
+    let initial_certificate = certificate_for(&initial_index, native_session_id);
+    let initial_frontier = initial_certificate.frontier().unwrap();
+    assert_eq!(
+        initial_frontier.certified_prefix_bytes(),
+        initial.len() as u64
+    );
+    assert_eq!(
+        *initial_frontier.certified_prefix_digest(),
+        jsonl_prefix_digest(&initial)
+    );
+    assert_eq!(
+        checkpoint_admitted_revision_for_test(&initial_certificate).unwrap(),
+        (Some(Sha256::digest(&initial).into()), true)
+    );
+    drop(initial_index);
+
+    append_event(&path, message("terminal-nul-after-boundary"));
+    let appended_bytes = fs::read(&path).unwrap();
+    let observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let counters = causal_by_id(&observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.appended_sources, 0);
+    assert_eq!(counters.replaced_sources, 1);
+    let replaced = VerifiedIndex::open(&index_root).unwrap();
+    let replaced_certificate = certificate_for(&replaced, native_session_id);
+    let replaced_frontier = replaced_certificate.frontier().unwrap();
+    assert_eq!(
+        replaced_frontier.certified_prefix_bytes(),
+        appended_bytes.len() as u64
+    );
+    assert_eq!(
+        *replaced_frontier.certified_prefix_digest(),
+        jsonl_prefix_digest(&appended_bytes)
+    );
+    assert_eq!(
+        checkpoint_admitted_revision_for_test(&replaced_certificate).unwrap(),
+        (Some(Sha256::digest(&appended_bytes).into()), false)
+    );
+    drop(replaced);
+
+    let mut rewritten = jsonl_bytes([
+        session_meta(native_session_id, SessionRelationshipKind::Root, None),
+        message("terminal-nul-rewrite-visible"),
+    ]);
+    rewritten.resize(appended_bytes.len(), 0);
+    fs::write(&path, &rewritten).unwrap();
+    let rewritten_receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(
+        rewritten_receipt.failed_routes.is_empty(),
+        "unexpected rewrite failures: {:?}",
+        rewritten_receipt.failed_routes
+    );
+    let rewritten_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(
+        rewritten_index
+            .search_event_candidates("terminal-nul-rewrite-visible", 8)
+            .unwrap()
+            .len(),
+        1
+    );
+    let rewritten_certificate = certificate_for(&rewritten_index, native_session_id);
+    let rewritten_frontier = rewritten_certificate.frontier().unwrap();
+    assert_eq!(
+        *rewritten_frontier.certified_prefix_digest(),
+        jsonl_prefix_digest(&rewritten)
+    );
+    assert_eq!(
+        checkpoint_admitted_revision_for_test(&rewritten_certificate).unwrap(),
+        (Some(Sha256::digest(&rewritten).into()), true)
     );
 }
 
@@ -1301,6 +1452,29 @@ fn root_owned_exact_commit_and_pr_203_share_certified_repository_origin() {
         commit_outcome.0.repository_binding_id,
         pr_observation.repository_binding_id
     );
+    drop(verified);
+
+    let path = session_path(&sessions, native_session_id);
+    append_event(&path, message("repository-authority-unrelated-append"));
+    let observed = capture_causal_stage();
+    refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    let counters = causal_by_id(&observed)
+        .get(native_session_id)
+        .unwrap()
+        .counters;
+    assert_eq!(counters.appended_sources, 1);
+    assert_eq!(counters.replaced_sources, 0);
+    let appended = VerifiedIndex::open(&index_root).unwrap();
+    assert!(records_for(&appended, native_session_id)
+        .iter()
+        .any(|record| {
+            record
+                .content
+                .normalized_body
+                .as_deref()
+                .is_some_and(|body| body.contains("exact-root-commit"))
+                && !record.repository_vcs_observations.is_empty()
+        }));
 }
 
 #[test]
@@ -2514,7 +2688,7 @@ fn parser_revision_migration_rescans_each_source_once_without_legacy_decode() {
             panic!("Codex checkpoint must be byte keyed");
         };
         let wire = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
-        assert_eq!(wire["version"], 18);
+        assert_eq!(wire["version"], 4);
         assert!(wire.get("certified_lineage_facts").is_none());
         assert!(wire.get("dependency_digest").is_none());
     }

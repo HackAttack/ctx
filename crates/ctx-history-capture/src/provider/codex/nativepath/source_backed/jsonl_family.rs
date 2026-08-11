@@ -10,12 +10,13 @@ use crate::{
     common::io::OpenedProviderSourceFile,
     provider::source_backed::{
         family::jsonl::{
-            observe_opened_file, observe_opened_file_allow_append, JsonlFamilyAdapter,
-            JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
-            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
-            JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector, JsonlFamilyPublication,
-            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
-            JsonlFileObservation,
+            observe_opened_file, observe_opened_file_allow_append, provider_checkpoint_for_base,
+            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
+            JsonlFamilyExecutionIo, JsonlFamilyInventory, JsonlFamilyInventoryMode,
+            JsonlFamilyLeaf, JsonlFamilyMembershipObservation, JsonlFamilyProjectionMode,
+            JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
+            JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+            JsonlFamilyWorkerContext, JsonlFileObservation, JsonlRecordFraming,
         },
         SourceBackedRouteErrorKind,
     },
@@ -28,12 +29,13 @@ fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
 ) -> Result<JsonlFileObservation> {
     let opened = reopen_codex_source_capability(source)?;
-    let observation = observe_opened_file_allow_append(&source.source_path, &opened)?;
-    // The shared observation deliberately owns only current same-object route
-    // binding. Run the Codex catalog proof afterward so a mutation during that
-    // observation cannot land beyond the exact frozen-prefix digest check.
     revalidate_codex_catalog_source_capability(source, &opened)?;
-    Ok(observation)
+    let admitted = observe_opened_file(&source.source_path, &opened)?;
+    let current = observe_opened_file_allow_append(&source.source_path, &opened)?;
+    if !admitted.admits_frozen_prefix_in(&current) {
+        return Err(CaptureError::SourceChangedDuringCapture);
+    }
+    Ok(admitted)
 }
 
 #[derive(Default)]
@@ -48,69 +50,241 @@ struct CodexSessionJsonlFamilyStateV0 {
     stage_pending: bool,
 }
 
-fn scan_codex_session_jsonl_leaf_v0(
-    adapter: &dyn JsonlFamilyAdapter,
-    state: &Mutex<CodexSessionJsonlFamilyStateV0>,
-    leaf: &JsonlFamilyLeaf,
-    base: Option<&CertifiedSource>,
-    base_event_lookup: &BaseEventIdentityLookup,
-    worker: &mut JsonlFamilyWorkerContext,
-    emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
-) -> Result<JsonlFamilyOptimizedLeafOutcome> {
-    let plan = {
-        let state = state.lock().map_err(|_| codex_family_state_error())?;
-        state.plans.get(leaf.source()).cloned().ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex JSONL family leaf has no native source plan".to_owned(),
-            )
-        })?
-    };
-    if plan.0.source_path != leaf.source_path() {
-        return Err(CaptureError::SourceChangedDuringCapture);
-    }
+struct CodexSessionSemanticExecutorV0 {
     #[cfg(any(test, ctx_codex_causal_qualification))]
-    let causal_native_session_id = plan.2.clone();
-    let mut scan_context = CodexJsonlFamilyLeafContextV0 {
-        base_event_lookup,
-        repository_attributor: worker.repository_attributor(),
-    };
-    let outcome = scan_codex_jsonl_family_leaf_v0(
-        plan.0,
-        plan.1,
-        plan.2,
-        base,
-        &mut scan_context,
-        |publication, completed_bytes, records| {
-            let publication = match publication {
-                CodexJsonlFamilyPublicationV0::Append => JsonlFamilyPublication::Append,
-                CodexJsonlFamilyPublicationV0::Replace => JsonlFamilyPublication::Replace,
+    state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
+    source_key: SourceKey,
+    native_session_id: String,
+    scanner: Option<CodexNativeScanner>,
+    checkpoint: Option<super::super::checkpoint::CodexSemanticCheckpoint>,
+    event_identity_state: CodexEventIdentityStateV0,
+    projection_mode: JsonlFamilyProjectionMode,
+    staged_documents: u64,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    repository_probes_before: Option<usize>,
+    #[cfg(any(test, ctx_codex_causal_qualification))]
+    repository_probes_after: usize,
+}
+
+impl CodexSessionSemanticExecutorV0 {
+    fn new(
+        state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
+        leaf: &JsonlFamilyLeaf,
+        checkpoint: Option<&TypedKey>,
+        base_event_lookup: Option<BaseEventIdentityLookup>,
+        projection_mode: JsonlFamilyProjectionMode,
+    ) -> Result<Self> {
+        let plan = {
+            let state = state.lock().map_err(|_| codex_family_state_error())?;
+            state.plans.get(leaf.source()).cloned().ok_or_else(|| {
+                CaptureError::InvalidPayload(
+                    "Codex JSONL family leaf has no native source plan".to_owned(),
+                )
+            })?
+        };
+        if plan.0.source_path != leaf.source_path() {
+            return Err(CaptureError::SourceChangedDuringCapture);
+        }
+        let checkpoint = match (projection_mode, checkpoint) {
+            (JsonlFamilyProjectionMode::CertifiedAppend, Some(TypedKey::Bytes(bytes))) => Some(
+                super::super::checkpoint::CodexSemanticCheckpoint::decode(bytes)?,
+            ),
+            (JsonlFamilyProjectionMode::CertifiedAppend, None) => None,
+            (JsonlFamilyProjectionMode::CertifiedAppend, Some(_)) => {
+                return Err(CaptureError::InvalidPayload(
+                    "Codex semantic checkpoint has an invalid key type".to_owned(),
+                ));
+            }
+            (JsonlFamilyProjectionMode::Cold | JsonlFamilyProjectionMode::Replacement, _) => None,
+        };
+        let event_identity_state = match projection_mode {
+            JsonlFamilyProjectionMode::CertifiedAppend => {
+                CodexEventIdentityStateV0::for_append(base_event_lookup.ok_or(
+                    CaptureError::SystemInvariant("Codex semantic append has no base event lookup"),
+                )?)
+            }
+            JsonlFamilyProjectionMode::Cold | JsonlFamilyProjectionMode::Replacement => {
+                CodexEventIdentityStateV0::default()
+            }
+        };
+        let scanner = CodexNativeScanner::new_semantic(plan.0, checkpoint.clone())?;
+        Ok(Self {
+            #[cfg(any(test, ctx_codex_causal_qualification))]
+            state,
+            source_key: plan.1,
+            native_session_id: plan.2,
+            scanner: Some(scanner),
+            checkpoint,
+            event_identity_state,
+            projection_mode,
+            staged_documents: 0,
+            #[cfg(any(test, ctx_codex_causal_qualification))]
+            repository_probes_before: None,
+            #[cfg(any(test, ctx_codex_causal_qualification))]
+            repository_probes_after: 0,
+        })
+    }
+}
+
+impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
+    fn preflight(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+    ) -> Result<JsonlFamilySemanticPreflight> {
+        if self.projection_mode == JsonlFamilyProjectionMode::CertifiedAppend
+            && self.checkpoint.is_none()
+        {
+            return Ok(JsonlFamilySemanticPreflight::RetryReplacement);
+        }
+        let retry = self
+            .scanner
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex semantic executor lost its scanner",
+            ))?
+            .preflight_semantic(input, self.checkpoint.as_ref())?;
+        Ok(if retry {
+            JsonlFamilySemanticPreflight::RetryReplacement
+        } else {
+            JsonlFamilySemanticPreflight::Ready
+        })
+    }
+
+    fn next_page(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+        worker: &mut JsonlFamilyWorkerContext,
+    ) -> Result<Option<JsonlFamilySemanticPage>> {
+        #[cfg(any(test, ctx_codex_causal_qualification))]
+        {
+            let probes = worker
+                .repository_attributor()
+                .full_certification_probe_count();
+            self.repository_probes_before.get_or_insert(probes);
+        }
+        let Some(page) = self
+            .scanner
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex semantic executor lost its scanner",
+            ))?
+            .next_semantic_page(input)?
+        else {
+            return Ok(None);
+        };
+        let mut records = Vec::with_capacity(page.source_backed_rows.len());
+        if !page.source_backed_rows.is_empty() {
+            let owner = page.owner.as_ref().ok_or_else(|| {
+                codex_family_capture_error(CodexSourceBackedErrorV0::MissingPageOwner)
+            })?;
+            validate_owner(owner, &self.native_session_id).map_err(codex_family_capture_error)?;
+            let session_id = codex_session_identity(&self.source_key, &self.native_session_id)
+                .map_err(codex_family_capture_error)?;
+            for row in page.source_backed_rows {
+                records.push(
+                    codex_core_record(
+                        &self.source_key,
+                        session_id,
+                        owner,
+                        row,
+                        &mut self.event_identity_state,
+                        worker.repository_attributor(),
+                    )
+                    .map_err(codex_family_capture_error)?,
+                );
+                self.staged_documents = self.staged_documents.checked_add(1).ok_or_else(|| {
+                    codex_family_capture_error(CodexSourceBackedErrorV0::CountOverflow)
+                })?;
+            }
+        }
+        #[cfg(any(test, ctx_codex_causal_qualification))]
+        {
+            self.repository_probes_after = worker
+                .repository_attributor()
+                .full_certification_probe_count();
+        }
+        Ok(Some(JsonlFamilySemanticPage::new(records)))
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<JsonlFamilySemanticSummary> {
+        let scan = self
+            .scanner
+            .take()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex semantic executor lost its scanner",
+            ))?
+            .finish_semantic()?;
+        if scan.counters.retained_records != self.staged_documents {
+            return Err(codex_family_capture_error(
+                CodexSourceBackedErrorV0::ScanCountMismatch,
+            ));
+        }
+        let provider_checkpoint = scan
+            .checkpoint
+            .map(|checkpoint| {
+                checkpoint
+                    .encode()
+                    .map_err(CaptureError::from)
+                    .and_then(|encoded| {
+                        TypedKey::bytes(encoded)
+                            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
+                    })
+            })
+            .transpose()?;
+        #[cfg(any(test, ctx_codex_causal_qualification))]
+        {
+            let mut counters = CodexSourceBackedCountersV0 {
+                catalog_sources: 1,
+                cold_sources: u64::from(self.projection_mode == JsonlFamilyProjectionMode::Cold),
+                appended_sources: u64::from(
+                    self.projection_mode == JsonlFamilyProjectionMode::CertifiedAppend,
+                ),
+                replaced_sources: u64::from(
+                    self.projection_mode == JsonlFamilyProjectionMode::Replacement,
+                ),
+                writer_mutated_sources: 1,
+                scanner_workers: 1,
+                scanner_source_opens: 1,
+                scanner_sources_started: 1,
+                scanner_sources_completed: 1,
+                staged_documents: self.staged_documents,
+                repository_full_git_certification_probes: u64::try_from(
+                    self.repository_probes_after.saturating_sub(
+                        self.repository_probes_before
+                            .unwrap_or(self.repository_probes_after),
+                    ),
+                )
+                .unwrap_or(u64::MAX),
+                ..CodexSourceBackedCountersV0::default()
             };
-            emit_page(publication, completed_bytes, records)
-                .map_err(CodexSourceBackedErrorV0::Capture)
-        },
-    )
-    .map_err(codex_family_capture_error)?;
-    let terminal_proof = JsonlFamilyTerminalProof::frozen_prefix(
-        adapter,
-        leaf,
-        &outcome.certificate,
-        outcome.terminal_prefix_bytes,
-        outcome.terminal_prefix_sha256,
-    )?;
-    let family_outcome = match outcome.append {
-        Some(append) => JsonlFamilyOptimizedLeafOutcome::append(append, terminal_proof),
-        None => JsonlFamilyOptimizedLeafOutcome::replacement(outcome.certificate, terminal_proof),
-    };
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    {
-        let mut state = state.lock().map_err(|_| codex_family_state_error())?;
-        state.counters.add_assign(outcome.counters);
-        state
-            .causal
-            .observe_scan(&causal_native_session_id, outcome.counters);
-        state.stage_pending = true;
+            counters.add_scan(scan.counters);
+            let mut state = self.state.lock().map_err(|_| codex_family_state_error())?;
+            state.counters.add_assign(counters);
+            state.causal.observe_scan(&self.native_session_id, counters);
+            state.stage_pending = true;
+        }
+        Ok(JsonlFamilySemanticSummary::new(
+            scan.counters.retained_records,
+            scan.counters.rejected_complete_records,
+            provider_checkpoint,
+        ))
     }
-    Ok(family_outcome)
+}
+
+fn codex_semantic_executor_v0(
+    state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
+    leaf: &JsonlFamilyLeaf,
+    checkpoint: Option<&TypedKey>,
+    base_event_lookup: Option<BaseEventIdentityLookup>,
+    projection_mode: JsonlFamilyProjectionMode,
+) -> Result<Box<dyn JsonlFamilySemanticExecutor>> {
+    Ok(Box::new(CodexSessionSemanticExecutorV0::new(
+        state,
+        leaf,
+        checkpoint,
+        base_event_lookup,
+        projection_mode,
+    )?))
 }
 
 fn codex_family_state_error() -> CaptureError {
@@ -118,6 +292,7 @@ fn codex_family_state_error() -> CaptureError {
 }
 
 fn prepare_codex_session_jsonl_scans_v0(
+    adapter: &dyn JsonlFamilyAdapter,
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &[JsonlFamilyLeaf],
     bases: &HashMap<[u8; 32], &CertifiedSource>,
@@ -140,8 +315,18 @@ fn prepare_codex_session_jsonl_scans_v0(
             .get(&plan.1.exact_descriptor_digest())
             .copied()
             .filter(|base| base.observation().source().exact_descriptor_eq(&plan.1));
-        let (plan, work, exact_replay) = super::catalog::hydrate_codex_session_plan_v0(plan, base)
-            .map_err(codex_family_capture_error)?;
+        let provider_checkpoint = match base {
+            Some(base) if base.parser_revision() == adapter.parser_revision() => leaves
+                .iter()
+                .find(|leaf| leaf.source().exact_descriptor_eq(&plan.1))
+                .map(|leaf| provider_checkpoint_for_base(adapter, leaf, base))
+                .transpose()?
+                .flatten(),
+            Some(_) | None => None,
+        };
+        let (plan, work, exact_replay) =
+            super::catalog::hydrate_codex_session_plan_v0(plan, provider_checkpoint.as_ref())
+                .map_err(codex_family_capture_error)?;
         #[cfg(any(test, ctx_codex_causal_qualification))]
         {
             state.counters.add_catalog_work(work);
@@ -292,7 +477,7 @@ impl CodexSessionTreeJsonlFamilyAdapterV0 {
                 let opened = authority.open_file(&authority_path)?;
                 observe_opened_file(&source.source_path, &opened)?
             };
-            leaves.push(JsonlFamilyLeaf::bind_observed(
+            leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
                 source_key.clone(),
                 source.source_path.clone(),
                 Arc::clone(&authority),
@@ -401,6 +586,14 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         JsonlFamilyAppendMode::CertifiedSuffix
     }
 
+    fn record_framing(&self) -> JsonlRecordFraming {
+        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES)
+    }
+
+    fn bind_admitted_eof(&self) -> bool {
+        true
+    }
+
     fn inventory_mode(&self) -> JsonlFamilyInventoryMode {
         JsonlFamilyInventoryMode::FrozenOpeningAllowAdditions
     }
@@ -460,7 +653,7 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         leaves: &[JsonlFamilyLeaf],
         bases: &HashMap<[u8; 32], &CertifiedSource>,
     ) -> Result<Option<usize>> {
-        prepare_codex_session_jsonl_scans_v0(&self.state, leaves, bases)
+        prepare_codex_session_jsonl_scans_v0(self, &self.state, leaves, bases)
     }
 
     fn finish_leaf_scans(&self) -> Result<()> {
@@ -474,26 +667,24 @@ impl JsonlFamilyAdapter for CodexSessionTreeJsonlFamilyAdapterV0 {
         _imported_at: DateTime<Utc>,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         Err(CaptureError::SystemInvariant(
-            "Codex JSONL leaves require the native optimized executor",
+            "Codex JSONL leaves require the native semantic executor",
         ))
     }
 
-    fn scan_optimized_leaf(
+    fn semantic_executor(
         &self,
         leaf: &JsonlFamilyLeaf,
-        base: Option<&CertifiedSource>,
-        base_event_lookup: &BaseEventIdentityLookup,
-        worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
-    ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
-        scan_codex_session_jsonl_leaf_v0(
-            self,
-            &self.state,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        checkpoint: Option<&TypedKey>,
+        base_event_lookup: Option<BaseEventIdentityLookup>,
+        mode: JsonlFamilyProjectionMode,
+    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+        codex_semantic_executor_v0(
+            Arc::clone(&self.state),
             leaf,
-            base,
+            checkpoint,
             base_event_lookup,
-            worker,
-            emit_page,
+            mode,
         )
         .map(Some)
     }
@@ -603,7 +794,7 @@ impl CodexExplicitSessionJsonlFamilyAdapterV0 {
                 let opened = authority.open_file(&authority_path)?;
                 observe_opened_file(&plan.0.source_path, &opened)?
             };
-            leaves.push(JsonlFamilyLeaf::bind_observed(
+            leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
                 plan.1.clone(),
                 plan.0.source_path.clone(),
                 Arc::clone(&authority),
@@ -694,6 +885,14 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         JsonlFamilyAppendMode::CertifiedSuffix
     }
 
+    fn record_framing(&self) -> JsonlRecordFraming {
+        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES)
+    }
+
+    fn bind_admitted_eof(&self) -> bool {
+        true
+    }
+
     fn root_missing_mode(&self) -> JsonlFamilyRootMissingMode {
         JsonlFamilyRootMissingMode::AuthoritativeEmpty
     }
@@ -736,7 +935,7 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         leaves: &[JsonlFamilyLeaf],
         bases: &HashMap<[u8; 32], &CertifiedSource>,
     ) -> Result<Option<usize>> {
-        prepare_codex_session_jsonl_scans_v0(&self.state, leaves, bases)
+        prepare_codex_session_jsonl_scans_v0(self, &self.state, leaves, bases)
     }
 
     fn projector(
@@ -746,26 +945,24 @@ impl JsonlFamilyAdapter for CodexExplicitSessionJsonlFamilyAdapterV0 {
         _imported_at: DateTime<Utc>,
     ) -> Result<Box<dyn JsonlFamilyProjector>> {
         Err(CaptureError::SystemInvariant(
-            "Codex JSONL leaves require the native optimized executor",
+            "Codex JSONL leaves require the native semantic executor",
         ))
     }
 
-    fn scan_optimized_leaf(
+    fn semantic_executor(
         &self,
         leaf: &JsonlFamilyLeaf,
-        base: Option<&CertifiedSource>,
-        base_event_lookup: &BaseEventIdentityLookup,
-        worker: &mut JsonlFamilyWorkerContext,
-        emit_page: &mut dyn FnMut(JsonlFamilyPublication, u64, Vec<CoreRecord>) -> Result<()>,
-    ) -> Result<Option<JsonlFamilyOptimizedLeafOutcome>> {
-        scan_codex_session_jsonl_leaf_v0(
-            self,
-            &self.state,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        checkpoint: Option<&TypedKey>,
+        base_event_lookup: Option<BaseEventIdentityLookup>,
+        mode: JsonlFamilyProjectionMode,
+    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+        codex_semantic_executor_v0(
+            Arc::clone(&self.state),
             leaf,
-            base,
+            checkpoint,
             base_event_lookup,
-            worker,
-            emit_page,
+            mode,
         )
         .map(Some)
     }

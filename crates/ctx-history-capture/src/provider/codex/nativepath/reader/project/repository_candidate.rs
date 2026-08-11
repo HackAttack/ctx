@@ -171,6 +171,7 @@ impl CodexRepositoryCandidateAuthority {
         self.entries.entry(digest).or_default();
     }
 
+    #[cfg(test)]
     pub(in super::super) fn observe_call_if_candidate(&mut self, call_id: &str) {
         if self.exhausted {
             return;
@@ -183,6 +184,7 @@ impl CodexRepositoryCandidateAuthority {
         }
     }
 
+    #[cfg(test)]
     pub(in super::super) fn observe_result_if_candidate(&mut self, call_id: &str) -> bool {
         if self.exhausted {
             return false;
@@ -197,42 +199,12 @@ impl CodexRepositoryCandidateAuthority {
         true
     }
 
-    pub(in super::super) fn observe_call_if_new_candidate(
-        &mut self,
-        call_id: &str,
-        prefix: &CodexRepositoryCandidateAuthority,
-    ) {
-        let digest = repository_candidate_call_id_digest(call_id);
-        if !prefix.entries.contains_key(&digest) {
-            self.observe_call_if_candidate(call_id);
-        }
-    }
-
-    pub(in super::super) fn observe_result_if_new_candidate(
-        &mut self,
-        call_id: &str,
-        prefix: &CodexRepositoryCandidateAuthority,
-    ) {
-        let digest = repository_candidate_call_id_digest(call_id);
-        if !prefix.entries.contains_key(&digest) {
-            self.observe_result_if_candidate(call_id);
-        }
-    }
-
     pub(in super::super) fn contains_candidate(&self, call_id: &str) -> bool {
         self.entries
             .contains_key(&repository_candidate_call_id_digest(call_id))
     }
 
-    pub(in super::super) fn has_candidates_not_in(
-        &self,
-        prefix: &CodexRepositoryCandidateAuthority,
-    ) -> bool {
-        self.entries
-            .keys()
-            .any(|digest| !prefix.entries.contains_key(digest))
-    }
-
+    #[cfg(test)]
     pub(in super::super) fn exhausted(&self) -> bool {
         self.exhausted
     }

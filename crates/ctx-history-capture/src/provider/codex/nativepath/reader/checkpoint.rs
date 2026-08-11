@@ -1,39 +1,15 @@
 use super::super::rows::source_backed_tool_context;
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
-    read_bounded_record_unhashed as read_shared_bounded_record_unhashed, retained_file_identity,
-    JsonlBoundedRecordRead as BoundedRecordRead, JsonlFileIdentityPolicy, JsonlRecordFraming,
+    retained_file_identity, JsonlFileIdentityPolicy,
 };
 use ctx_history_core::SessionRelationshipKind;
-
-pub(super) fn read_bounded_record_unhashed(
-    reader: &mut BufReader<File>,
-    storage: &mut Vec<u8>,
-    maximum_bytes: u64,
-) -> Result<Option<BoundedRecordRead>> {
-    read_shared_bounded_record_unhashed(
-        reader,
-        storage,
-        maximum_bytes,
-        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
-        source_changed_during_scan,
-    )
-}
 
 pub(super) fn trim_jsonl_terminator(mut record: &[u8]) -> &[u8] {
     if record.last() == Some(&b'\r') {
         record = &record[..record.len() - 1];
     }
     record
-}
-
-pub(super) struct ValidatedCheckpoint {
-    pub(super) bytes_read: u64,
-    pub(super) complete_prefix_hasher: Sha256,
-    pub(super) complete_prefix_ends_with_terminal_nul_padding: bool,
-    pub(super) pending_tool_contexts: BTreeMap<String, CodexToolCallContext>,
-    pub(super) pending_tool_authorities: BTreeMap<String, CodexPendingToolAuthority>,
-    pub(super) pending_continuations: BTreeMap<String, String>,
 }
 
 pub(super) fn decode_pending_tool_authority(
@@ -152,259 +128,88 @@ pub(super) fn decode_pending_tool_authority(
     Ok((call_id, bound_tool_context(context)))
 }
 
-pub(super) fn validate_checkpoint_source(
-    reader: &mut BufReader<File>,
-    checkpoint: &CodexNativeCheckpoint,
-    append_replay: bool,
-) -> Result<ValidatedCheckpoint> {
-    // The prefix proof is the sole read pass over checkpointed bytes. On
-    // append, only the at-most-24 authority spans are retained long enough to
-    // reconstruct transient correlation state during that same pass.
-    reader.seek(SeekFrom::Start(0))?;
-    let complete_prefix_end = checkpoint.complete_prefix_end();
-    let mut remaining = checkpoint.observation.len;
-    let mut offset = 0_u64;
-    let mut buffer = vec![0_u8; CHECKPOINT_READ_BUFFER_BYTES];
-    let mut full_hasher = Sha256::new();
-    let mut complete_prefix_hasher = Sha256::new();
-    let mut incomplete_tail_hasher = Sha256::new();
-    let mut complete_records = 0_u64;
-    let mut final_prefix_byte = None;
-    let mut terminal_suffix_all_nul = true;
-    let mut terminal_suffix_len = 0_u64;
-    let mut tail_contains_newline = false;
-    let mut authorities = checkpoint
-        .pending_tool_authorities()
-        .iter()
-        .collect::<Vec<_>>();
-    authorities.sort_by_key(|authority| authority.record_start);
-    let mut authority_index = 0_usize;
-    let mut current_record_start = 0_u64;
-    let mut pending_tool_record = Vec::new();
-    let mut pending_tool_contexts = BTreeMap::new();
-    let mut pending_tool_authorities = BTreeMap::new();
+pub(super) fn restore_pending_continuations(
+    pending_tool_contexts: &mut BTreeMap<String, CodexToolCallContext>,
+    pending_tool_authorities: &BTreeMap<String, CodexPendingToolAuthority>,
+) -> Result<BTreeMap<String, String>> {
     let mut pending_continuations = BTreeMap::new();
-
-    while remaining != 0 {
-        let wanted = usize::try_from(remaining.min(CHECKPOINT_READ_BUFFER_BYTES as u64))
-            .map_err(|_| CaptureError::SystemInvariant("Codex checkpoint read exceeds usize"))?;
-        let read = reader.read(&mut buffer[..wanted])?;
-        if read == 0 {
-            return Err(invalid_checkpoint_proof(
-                "checkpoint observation ends after source EOF",
-            ));
-        }
-        let chunk = &buffer[..read];
-        full_hasher.update(chunk);
-        let read_u64 = u64::try_from(read)
-            .map_err(|_| CaptureError::SystemInvariant("Codex checkpoint read exceeds u64"))?;
-        let chunk_end = offset
-            .checked_add(read_u64)
-            .ok_or(CaptureError::SystemInvariant(
-                "Codex checkpoint offset exceeds u64",
-            ))?;
-
-        if offset < complete_prefix_end {
-            let prefix_len = usize::try_from((complete_prefix_end.min(chunk_end)) - offset)
-                .map_err(|_| CaptureError::SystemInvariant("Codex prefix length exceeds usize"))?;
-            let prefix = &chunk[..prefix_len];
-            complete_prefix_hasher.update(prefix);
-            for (index, byte) in prefix.iter().enumerate() {
-                let absolute_offset = offset
-                    .checked_add(u64::try_from(index).unwrap_or(u64::MAX))
-                    .ok_or(CaptureError::SystemInvariant(
-                        "Codex checkpoint record offset exceeds u64",
-                    ))?;
-                if append_replay
-                    && authorities.get(authority_index).is_some_and(|authority| {
-                        absolute_offset >= authority.record_start
-                            && absolute_offset < authority.record_end
-                    })
-                {
-                    pending_tool_record.push(*byte);
-                }
-                if *byte != b'\n' {
-                    terminal_suffix_all_nul &= *byte == 0;
-                    terminal_suffix_len = terminal_suffix_len.saturating_add(1);
-                    continue;
-                }
-                let record_end =
-                    absolute_offset
-                        .checked_add(1)
-                        .ok_or(CaptureError::SystemInvariant(
-                            "Codex checkpoint record boundary exceeds u64",
-                        ))?;
-                if let Some(authority) = authorities.get(authority_index) {
-                    if authority.record_start < record_end {
-                        if authority.record_start != current_record_start
-                            || authority.record_end != record_end
-                            || authority.raw_ordinal != complete_records
-                        {
-                            return Err(invalid_checkpoint_proof(
-                                "pending tool-call authority does not match its JSONL record boundary",
-                            ));
-                        }
-                        if append_replay {
-                            let (call_id, context) = decode_pending_tool_authority(
-                                pending_tool_record.as_slice(),
-                                authority,
-                                &checkpoint.owner,
-                                checkpoint.local_turn_started(),
-                            )?;
-                            if pending_tool_contexts
-                                .insert(call_id.clone(), context)
-                                .is_some()
-                                || pending_tool_authorities
-                                    .insert(call_id, (*authority).clone())
-                                    .is_some()
-                            {
-                                return Err(invalid_checkpoint_proof(
-                                    "pending tool-call authority correlation is duplicated",
-                                ));
-                            }
-                            pending_tool_record.clear();
-                        }
-                        authority_index = authority_index.saturating_add(1);
-                    }
-                }
-                current_record_start = record_end;
-                complete_records = complete_records.saturating_add(1);
-                terminal_suffix_all_nul = true;
-                terminal_suffix_len = 0;
-            }
-            final_prefix_byte = prefix.last().copied().or(final_prefix_byte);
-            if prefix_len < chunk.len() {
-                let tail = &chunk[prefix_len..];
-                incomplete_tail_hasher.update(tail);
-                tail_contains_newline |= tail.contains(&b'\n');
-            }
-        } else {
-            incomplete_tail_hasher.update(chunk);
-            tail_contains_newline |= chunk.contains(&b'\n');
-        }
-        offset = chunk_end;
-        remaining -= read_u64;
-    }
-
-    let full_revision_sha256: [u8; 32] = full_hasher.finalize().into();
-    let complete_prefix_sha256: [u8; 32] = complete_prefix_hasher.clone().finalize().into();
-    let complete_prefix_ends_with_terminal_nul_padding =
-        terminal_suffix_len != 0 && terminal_suffix_all_nul;
-    if complete_prefix_ends_with_terminal_nul_padding {
-        complete_records = complete_records.saturating_add(1);
-    }
-    if full_revision_sha256 != checkpoint.full_revision_sha256
-        || complete_prefix_sha256 != checkpoint.complete_prefix_sha256
-        || complete_records != checkpoint.next_raw_ordinal()
-        || authority_index != authorities.len()
-        || (complete_prefix_end != 0
-            && final_prefix_byte != Some(b'\n')
-            && !complete_prefix_ends_with_terminal_nul_padding)
-    {
-        return Err(invalid_checkpoint_proof(
-            "checkpoint digest, boundary, or raw ordinal does not match source bytes",
-        ));
-    }
-
-    match checkpoint.incomplete_tail() {
-        None if complete_prefix_end == checkpoint.observation.len => {}
-        Some((tail_len, tail_sha256))
-            if !tail_contains_newline
-                && tail_len == checkpoint.observation.len - complete_prefix_end
-                && <[u8; 32]>::from(incomplete_tail_hasher.finalize()) == tail_sha256 => {}
-        _ => {
-            return Err(invalid_checkpoint_proof(
-                "checkpoint incomplete-tail proof does not match source bytes",
-            ));
-        }
-    }
-    if append_replay {
-        for (call_id, authority) in &pending_tool_authorities {
-            if let Some(cell_id) = authority.continuation_cell_id() {
-                if authority.continuation_conflicted() {
-                    if pending_continuations
-                        .insert(cell_id.to_owned(), String::new())
-                        .is_some()
-                    {
-                        return Err(invalid_checkpoint_proof(
-                            "pending conflicted continuation cell is duplicated",
-                        ));
-                    }
-                    continue;
-                }
-                let Some(origin) = pending_tool_contexts.get(call_id) else {
-                    return Err(invalid_checkpoint_proof(
-                        "pending continuation origin context is unavailable",
-                    ));
-                };
-                if (origin.exact_command.is_none() && !origin.command_too_large)
-                    || origin.continuation_cell_id.is_some()
-                {
-                    return Err(invalid_checkpoint_proof(
-                        "pending continuation authority is not an exact origin command",
-                    ));
-                }
+    for (call_id, authority) in pending_tool_authorities {
+        if let Some(cell_id) = authority.continuation_cell_id() {
+            if authority.continuation_conflicted() {
                 if pending_continuations
-                    .insert(cell_id.to_owned(), call_id.clone())
+                    .insert(cell_id.to_owned(), String::new())
                     .is_some()
                 {
                     return Err(invalid_checkpoint_proof(
-                        "pending continuation cell is assigned more than once",
+                        "pending conflicted continuation cell is duplicated",
                     ));
                 }
-            }
-        }
-        let wait_calls = pending_tool_contexts
-            .iter()
-            .filter_map(|(call_id, context)| {
-                context
-                    .continuation_cell_id
-                    .as_ref()
-                    .map(|cell_id| (call_id.clone(), cell_id.clone()))
-            })
-            .collect::<Vec<_>>();
-        for (call_id, cell_id) in wait_calls {
-            let Some(origin_call_id) = pending_continuations.get(&cell_id) else {
                 continue;
+            }
+            let Some(origin) = pending_tool_contexts.get(call_id) else {
+                return Err(invalid_checkpoint_proof(
+                    "pending continuation origin context is unavailable",
+                ));
             };
-            if origin_call_id.is_empty() {
-                continue;
+            if (origin.exact_command.is_none() && !origin.command_too_large)
+                || origin.continuation_cell_id.is_some()
+            {
+                return Err(invalid_checkpoint_proof(
+                    "pending continuation authority is not an exact origin command",
+                ));
             }
-            let origin = pending_tool_contexts
-                .get(origin_call_id)
-                .cloned()
-                .ok_or_else(|| {
-                    invalid_checkpoint_proof("pending continuation origin is unavailable")
-                })?;
-            let context = pending_tool_contexts.get_mut(&call_id).ok_or_else(|| {
-                invalid_checkpoint_proof("pending continuation wait context is unavailable")
-            })?;
-            context.exact_command = origin.exact_command;
-            context.command_too_large = origin.command_too_large;
-            context.session_cwd = origin.session_cwd;
-            context.declared_workdir = origin.declared_workdir;
-            context.origin_call_id = Some(origin_call_id.clone());
-            context.origin_event_sequence = origin.origin_event_sequence;
-            context.origin_occurred_at_unix_ms = origin.origin_occurred_at_unix_ms;
-            context.continuation_call_id_sha256 = origin.continuation_call_id_sha256;
-            context.continuation_capacity_exceeded = origin.continuation_capacity_exceeded;
-            context.correlation_ambiguous = origin.correlation_ambiguous;
-            context.invocation_origin = origin.invocation_origin;
+            if pending_continuations
+                .insert(cell_id.to_owned(), call_id.clone())
+                .is_some()
+            {
+                return Err(invalid_checkpoint_proof(
+                    "pending continuation cell is assigned more than once",
+                ));
+            }
         }
     }
-
-    Ok(ValidatedCheckpoint {
-        bytes_read: checkpoint.observation.len,
-        complete_prefix_hasher,
-        complete_prefix_ends_with_terminal_nul_padding,
-        pending_tool_contexts,
-        pending_tool_authorities,
-        pending_continuations,
-    })
+    let wait_calls = pending_tool_contexts
+        .iter()
+        .filter_map(|(call_id, context)| {
+            context
+                .continuation_cell_id
+                .as_ref()
+                .map(|cell_id| (call_id.clone(), cell_id.clone()))
+        })
+        .collect::<Vec<_>>();
+    for (call_id, cell_id) in wait_calls {
+        let Some(origin_call_id) = pending_continuations.get(&cell_id) else {
+            continue;
+        };
+        if origin_call_id.is_empty() {
+            continue;
+        }
+        let origin = pending_tool_contexts
+            .get(origin_call_id)
+            .cloned()
+            .ok_or_else(|| {
+                invalid_checkpoint_proof("pending continuation origin is unavailable")
+            })?;
+        let context = pending_tool_contexts.get_mut(&call_id).ok_or_else(|| {
+            invalid_checkpoint_proof("pending continuation wait context is unavailable")
+        })?;
+        context.exact_command = origin.exact_command;
+        context.command_too_large = origin.command_too_large;
+        context.session_cwd = origin.session_cwd;
+        context.declared_workdir = origin.declared_workdir;
+        context.origin_call_id = Some(origin_call_id.clone());
+        context.origin_event_sequence = origin.origin_event_sequence;
+        context.origin_occurred_at_unix_ms = origin.origin_occurred_at_unix_ms;
+        context.continuation_call_id_sha256 = origin.continuation_call_id_sha256;
+        context.continuation_capacity_exceeded = origin.continuation_capacity_exceeded;
+        context.correlation_ambiguous = origin.correlation_ambiguous;
+        context.invocation_origin = origin.invocation_origin;
+    }
+    Ok(pending_continuations)
 }
 
 pub(super) fn invalid_checkpoint_proof(reason: &str) -> CaptureError {
-    CaptureError::InvalidPayload(format!("invalid Codex append proof: {reason}"))
+    CaptureError::InvalidPayload(format!("invalid Codex semantic checkpoint: {reason}"))
 }
 
 pub(super) fn observed_opened_file(
@@ -463,19 +268,6 @@ pub(crate) fn opened_file_prefix_sha256(file: &File, len: u64) -> Result<[u8; 32
     Ok(hasher.finalize().into())
 }
 
-pub(crate) fn open_codex_source_capability(
-    source: &CodexCatalogSource,
-) -> Result<Arc<OpenedProviderSourceFile>> {
-    if let Some(opened) = source.opened.as_ref() {
-        return Ok(Arc::clone(opened));
-    }
-    reopen_codex_source_capability(source)
-}
-
-/// Reopens the authority-relative directory entry instead of consulting a
-/// previously retained leaf capability. Generation preparation uses this to
-/// prove that the path still names the cataloged ordinary file before any
-/// route worker can consume its child-local source plan.
 pub(crate) fn reopen_codex_source_capability(
     source: &CodexCatalogSource,
 ) -> Result<Arc<OpenedProviderSourceFile>> {

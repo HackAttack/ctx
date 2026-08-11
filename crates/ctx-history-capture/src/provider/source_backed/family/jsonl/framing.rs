@@ -95,6 +95,41 @@ struct CompleteAndBoundedPrefixSha256<'a> {
     bounded_prefix_remaining: &'a mut u64,
 }
 
+struct FullCompleteAndBoundedPrefixSha256<'a> {
+    full_hasher: &'a mut Sha256,
+    complete_hasher: &'a mut Sha256,
+    complete_before_record: Sha256,
+    record_hasher: Sha256,
+    bounded_prefix_hasher: &'a mut Sha256,
+    bounded_prefix_remaining: &'a mut u64,
+}
+
+impl JsonlRecordDigest for FullCompleteAndBoundedPrefixSha256<'_> {
+    #[inline(always)]
+    fn update(&mut self, chunk: &[u8]) {
+        self.full_hasher.update(chunk);
+        self.complete_hasher.update(chunk);
+        self.record_hasher.update(chunk);
+        let take = usize::try_from((*self.bounded_prefix_remaining).min(chunk.len() as u64))
+            .unwrap_or(chunk.len());
+        self.bounded_prefix_hasher.update(&chunk[..take]);
+        *self.bounded_prefix_remaining = self
+            .bounded_prefix_remaining
+            .saturating_sub(u64::try_from(take).unwrap_or(u64::MAX));
+    }
+
+    #[inline(always)]
+    fn finish(self) -> [u8; 32] {
+        self.record_hasher.finalize().into()
+    }
+
+    #[inline(always)]
+    fn finish_incomplete(self) -> [u8; 32] {
+        *self.complete_hasher = self.complete_before_record;
+        self.record_hasher.finalize().into()
+    }
+}
+
 impl JsonlRecordDigest for CompleteAndBoundedPrefixSha256<'_> {
     #[inline(always)]
     fn update(&mut self, chunk: &[u8]) {
@@ -224,6 +259,39 @@ pub(crate) fn read_bounded_record_complete_and_prefix_sha256(
         return Ok(None);
     }
     let digest = CompleteAndBoundedPrefixSha256 {
+        complete_before_record: complete_hasher.clone(),
+        complete_hasher,
+        record_hasher: Sha256::new(),
+        bounded_prefix_hasher,
+        bounded_prefix_remaining,
+    };
+    read_bounded_record_with_digest(
+        reader,
+        storage,
+        maximum_bytes,
+        framing,
+        source_changed,
+        digest,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_bounded_record_full_complete_and_prefix_sha256(
+    reader: &mut BufReader<File>,
+    storage: &mut Vec<u8>,
+    full_hasher: &mut Sha256,
+    complete_hasher: &mut Sha256,
+    bounded_prefix_hasher: &mut Sha256,
+    bounded_prefix_remaining: &mut u64,
+    maximum_bytes: u64,
+    framing: JsonlRecordFraming,
+    source_changed: fn() -> CaptureError,
+) -> Result<Option<JsonlBoundedRecordRead>> {
+    if maximum_bytes == 0 {
+        return Ok(None);
+    }
+    let digest = FullCompleteAndBoundedPrefixSha256 {
+        full_hasher,
         complete_before_record: complete_hasher.clone(),
         complete_hasher,
         record_hasher: Sha256::new(),

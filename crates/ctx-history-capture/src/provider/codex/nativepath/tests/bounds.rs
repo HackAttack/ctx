@@ -7,7 +7,7 @@ fn retained_rows_stream_in_pages_bounded_by_64_units_and_8_mib() {
         contents.push_str(&message("assistant", &format!("bounded-row-{index}")));
     }
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "paged-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "paged-owner"));
 
     assert_eq!(sink.rows.len(), 5_001);
     assert_eq!(sink.pages.len(), 79);
@@ -35,7 +35,7 @@ fn one_valid_source_backed_record_may_roll_past_the_eight_mib_page_target() {
     .concat();
     assert!(contents.len() < MAX_CODEX_RECORD_BYTES);
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-full-body-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-full-body-owner"));
 
     assert_eq!(sink.rows.len(), 1);
     assert_eq!(sink.rows[0].lexical_body, full_body);
@@ -65,7 +65,7 @@ fn records_over_16_mib_are_stream_skipped_without_losing_physical_ordinals() {
     contents.push_str(&message("assistant", "survives oversized records"));
 
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "oversized-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "oversized-owner"));
 
     assert_eq!(sink.rows.len(), 1);
     assert_eq!(sink.rows[0].raw_ordinal, 3);
@@ -78,7 +78,7 @@ fn records_over_16_mib_are_stream_skipped_without_losing_physical_ordinals() {
 }
 
 #[test]
-fn repository_candidate_correlation_scan_is_conditional_and_counted() {
+fn combined_semantic_authority_preflight_is_counted_once() {
     let no_candidate = [
         session_meta("no-repository-candidate"),
         message("assistant", "ordinary display only"),
@@ -86,11 +86,18 @@ fn repository_candidate_correlation_scan_is_conditional_and_counted() {
     ]
     .concat();
     let (_temp, path) = write_source(&no_candidate);
-    let (scan, _) = scan_collect(discover_one(&path, "no-repository-candidate"), None);
-    assert_eq!(scan.counters.repository_candidate_authority_bytes_read, 0);
+    let (scan, _) = scan_collect(discover_one(&path, "no-repository-candidate"));
+    assert_eq!(
+        scan.counters.repository_candidate_authority_bytes_read,
+        no_candidate.len() as u64
+    );
+    assert_eq!(
+        scan.counters.mcp_terminal_authority_bytes_read,
+        no_candidate.len() as u64
+    );
     assert_eq!(
         scan.counters.repository_candidate_authority_records_visited,
-        0
+        3
     );
 
     let mut candidate = session_meta("repository-candidate");
@@ -121,71 +128,22 @@ fn repository_candidate_correlation_scan_is_conditional_and_counted() {
         "Final output:\n[main abc1234] exact\n0123456789abcdef0123456789abcdef01234567",
     ));
     let (_temp, path) = write_source(&candidate);
-    let (scan, _) = scan_collect(discover_one(&path, "repository-candidate"), None);
-    assert_eq!(scan.counters.repository_candidate_authority_bytes_read, 0);
+    let (scan, _) = scan_collect(discover_one(&path, "repository-candidate"));
+    assert_eq!(
+        scan.counters.repository_candidate_authority_bytes_read,
+        candidate.len() as u64
+    );
+    assert_eq!(
+        scan.counters.mcp_terminal_authority_bytes_read,
+        candidate.len() as u64
+    );
     assert_eq!(
         scan.counters.repository_candidate_authority_records_visited,
-        0
+        304
     );
     assert_eq!(scan.counters.peak_repository_candidate_authority_entries, 1);
     assert_eq!(scan.counters.peak_repository_occurrence_cache_entries, 301);
     assert!(scan.counters.peak_repository_occurrence_cache_bytes <= 20_000);
-}
-
-#[test]
-fn newly_admitted_append_candidate_counts_prior_serial_call_in_exact_prefix_scan() {
-    let initial = [
-        session_meta("late-repository-candidate"),
-        tool_call("late-repository-call"),
-    ]
-    .concat();
-    let (_temp, path) = write_source(&initial);
-    let (first, _) = scan_collect(discover_one(&path, "late-repository-candidate"), None);
-    let proof = first
-        .bind_checkpoint(
-            "late-repository-candidate",
-            CodexCheckpointGeneration::new(92),
-        )
-        .unwrap()
-        .unwrap();
-
-    let suffix = [
-        jsonl(json!({
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "response_item",
-            "payload": {
-                "type": "function_call",
-                "name": "exec_command",
-                "call_id": "late-repository-call",
-                "arguments": json!({
-                    "cmd": "git commit -m exact && git rev-parse HEAD",
-                    "workdir": "/workspace"
-                }).to_string()
-            }
-        })),
-        successful_tool_output(
-            "late-repository-call",
-            "Final output:\n[main abc1234] exact\n0123456789abcdef0123456789abcdef01234567",
-        ),
-    ]
-    .concat();
-    fs::write(&path, format!("{initial}{suffix}")).unwrap();
-    let (appended, sink) = scan_collect(
-        discover_one(&path, "late-repository-candidate"),
-        Some(&proof),
-    );
-    assert_eq!(appended.disposition, CodexParseDisposition::AppendDelta);
-    assert_eq!(
-        appended.counters.repository_candidate_authority_bytes_read,
-        initial.len() as u64
-    );
-    assert_eq!(
-        appended
-            .counters
-            .repository_candidate_authority_records_visited,
-        2
-    );
-    assert!(sink.rows.iter().all(|row| row.repository_result.is_none()));
 }
 
 #[test]
@@ -237,14 +195,9 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
         let mut typed_parses = 0_u64;
         let mut structural_output_probes = 0_u64;
         for source in &sources {
-            let mut scanner =
-                CodexNativeScanner::new_source_backed_v0(source.clone(), None).unwrap();
-            while let Some(page) = scanner.next_page().unwrap() {
-                let CodexNativeOwnedPage::Core(page) = &page;
-                rows = rows.saturating_add(page.source_backed_rows.len() as u64);
-                black_box(page);
-            }
-            let scan = scanner.finish().unwrap();
+            let (scan, sink) = scan_collect(source.clone());
+            rows = rows.saturating_add(sink.rows.len() as u64);
+            black_box(sink);
             results = results.saturating_add(scan.counters.native_result_records);
             malformed = malformed.saturating_add(scan.counters.malformed_records);
             incomplete_tails =

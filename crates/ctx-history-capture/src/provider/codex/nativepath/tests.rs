@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     fs,
     hint::black_box,
-    io::Write,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -17,7 +16,13 @@ use tempfile::TempDir;
 
 use super::rows::CodexSourceBackedRowV0;
 use super::*;
-use crate::{common::io::open_provider_source_file, CODEX_SESSION_SOURCE_FORMAT};
+use crate::{
+    common::io::open_provider_source_file,
+    provider::source_backed::family::jsonl::{
+        JsonlFamilyExecutionIo, JsonlReader, JsonlRecordFraming, JsonlSourceIdentity,
+    },
+    CODEX_SESSION_SOURCE_FORMAT,
+};
 
 fn jsonl(value: Value) -> String {
     let mut line = serde_json::to_string(&value).unwrap();
@@ -80,27 +85,6 @@ fn successful_tool_output(call_id: &str, output: &str) -> String {
         call_id,
         &format!("Script completed\nProcess exited with code 0\n{output}"),
     )
-}
-
-fn failed_tool_output(call_id: &str, output: &str) -> String {
-    tool_output(
-        call_id,
-        &format!("Process exited with code 7\nWall time: 0.25 seconds\n{output}"),
-    )
-}
-
-fn timed_out_tool_output(call_id: &str, output: &str) -> String {
-    jsonl(json!({
-        "timestamp": "2026-01-01T00:00:03Z",
-        "type": "response_item",
-        "payload": {
-            "type": "function_call_output",
-            "call_id": call_id,
-            "timed_out": true,
-            "duration_ms": 9_000,
-            "output": format!("command timed out\n{output}")
-        }
-    }))
 }
 
 fn reasoning(text: &str) -> String {
@@ -171,19 +155,43 @@ struct CollectingSink {
     rows: Vec<CodexSourceBackedRowV0>,
     pages: Vec<(usize, usize)>,
     physical_records: Vec<u64>,
-    frontiers: Vec<(CodexNativeFrontier, CodexNativeFrontier)>,
     owner_ids: BTreeSet<String>,
 }
 
-fn scan_collect(
-    source: CodexCatalogSource,
-    proof: Option<&CodexAppendProof>,
-) -> (CodexSourceScan, CollectingSink) {
-    let mut scanner = CodexNativeScanner::new_source_backed_v0(source, proof).unwrap();
+struct TestSemanticScan {
+    counters: CodexScanCounters,
+    complete_prefix_end: u64,
+    next_raw_ordinal: u64,
+    incomplete_tail: Option<()>,
+}
+
+fn scan_collect(source: CodexCatalogSource) -> (TestSemanticScan, CollectingSink) {
+    let opened = super::reader::reopen_codex_source_capability(&source).unwrap();
+    let identity = JsonlSourceIdentity::new(
+        "codex",
+        "codex-semantic-test-v1",
+        "shared-jsonl-semantic-io-v1",
+        [7; 32],
+        source.source_path.clone(),
+    );
+    let reader = JsonlReader::open_semantic_with_record_framing(
+        identity,
+        opened,
+        None,
+        None,
+        None,
+        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
+        None,
+    )
+    .unwrap();
+    let mut input = JsonlFamilyExecutionIo::new(reader);
+    let initial = input.position().unwrap();
+    let mut scanner = CodexNativeScanner::new_semantic(source, None).unwrap();
+    assert!(!scanner.preflight_semantic(&mut input, None).unwrap());
+    assert!(input.settle_preflight(initial).unwrap());
     let mut collected = CollectingSink::default();
-    while let Some(page) = scanner.next_page().unwrap() {
-        let CodexNativeOwnedPage::Core(page) = page;
-        assert!(page.core_rows.is_empty());
+    while let Some(page) = scanner.next_semantic_page(&mut input).unwrap() {
+        input.release_record_buffer().unwrap();
         let units = page.source_backed_rows.len();
         assert!(units <= MAX_CODEX_PAGE_ROWS);
         assert!(
@@ -191,30 +199,30 @@ fn scan_collect(
                 || (units == 1
                     && page.serialized_bytes <= MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES)
         );
-        assert_eq!(
-            page.next_safe_frontier
-                .next_raw_ordinal
-                .saturating_sub(page.expected_frontier.next_raw_ordinal),
-            page.physical_records
-        );
         if let Some(owner) = page.owner.as_ref() {
             collected.owner_ids.insert(owner.native_session_id.clone());
         }
         collected.pages.push((units, page.serialized_bytes));
         collected.physical_records.push(page.physical_records);
-        collected
-            .frontiers
-            .push((page.expected_frontier, page.next_safe_frontier));
         collected.rows.extend(page.source_backed_rows);
     }
-    let scan = scanner.finish().unwrap();
-    (scan, collected)
+    let complete_prefix_end = input.complete_prefix_end().unwrap();
+    let scan = scanner.finish_semantic().unwrap();
+    let incomplete_tail = (scan.counters.incomplete_records != 0).then_some(());
+    (
+        TestSemanticScan {
+            next_raw_ordinal: scan.counters.complete_records,
+            complete_prefix_end,
+            incomplete_tail,
+            counters: scan.counters,
+        },
+        collected,
+    )
 }
 
 use super::record;
 
 mod bounds;
-mod lifecycle;
 mod paging;
 mod profiles;
 mod structure;
@@ -258,24 +266,4 @@ fn quickbench_fixture_hash(fixture_root: &Path, paths: &[PathBuf]) -> (u64, Stri
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     (byte_size, sha256)
-}
-
-fn assert_checkpoint_replay_rejected(
-    path: &Path,
-    native_session_id: &str,
-    checkpoint: CodexNativeCheckpoint,
-) {
-    let identity = CodexSourceIdentity::new(
-        "canonical-tampered",
-        path.parent().unwrap().display().to_string(),
-        path.to_path_buf(),
-    )
-    .unwrap();
-    let proof = CodexAppendProof::new(identity, CodexCheckpointGeneration::new(88), checkpoint);
-    let error = CodexNativeScanner::new_source_backed_v0(
-        discover_one(path, native_session_id),
-        Some(&proof),
-    )
-    .unwrap_err();
-    assert!(format!("{error}").contains("invalid Codex append proof"));
 }

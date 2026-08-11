@@ -5,16 +5,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::rows::CodexSessionRow;
-use super::source::CodexFileObservation;
 use crate::provider::codex::events::CodexInvocationOriginV0;
 
-const CODEX_NATIVE_CHECKPOINT_VERSION: u8 = 18;
 const CODEX_PENDING_CALL_ID_DOMAIN: &[u8] = b"ctx/codex-nativepath/pending-call-id/v1\0";
 const MAX_CODEX_PENDING_TOOL_RECORD_BYTES: u64 = 16 * 1024 * 1024 + 1;
-// SourceFrontier encodes a TypedKey::Bytes as one tag byte, one four-byte
-// length, and this payload. Keeping the payload five bytes below Core's fixed
-// 64 KiB source-checkpoint ceiling makes the entire encoded frontier key fit.
-pub(crate) const MAX_CODEX_NATIVE_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
+// The shared family wraps this opaque provider payload in a TypedKey::Bytes.
+// Leave five bytes for that key's fixed tag and length envelope.
+const MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES: usize = 64 * 1024 - 5;
 pub(crate) const MAX_CODEX_TOOL_CONTEXTS: usize = 24;
 pub(super) const MAX_CODEX_TOOL_CALL_ID_BYTES: usize = 1024;
 pub(super) const MAX_CODEX_CONTINUATION_CELL_ID_BYTES: usize = 1024;
@@ -378,72 +375,32 @@ impl CodexPendingToolAuthority {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum CodexCheckpointBoundary {
-    Terminal {
-        complete_eof: u64,
-    },
-    Incomplete {
-        complete_prefix_end: u64,
-        incomplete_tail_len: u64,
-        incomplete_tail_sha256: [u8; 32],
-    },
-}
+const CODEX_SEMANTIC_CHECKPOINT_VERSION: u8 = 1;
 
+/// Provider-only continuation state. Physical position, framing, digests,
+/// observations, and lifecycle evidence live exclusively in the enclosing
+/// shared JSONL family checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CodexNativeCheckpoint {
+pub(super) struct CodexSemanticCheckpoint {
     version: u8,
-    pub(crate) observation: CodexFileObservation,
-    pub(crate) full_revision_sha256: [u8; 32],
-    pub(crate) complete_prefix_sha256: [u8; 32],
-    boundary: CodexCheckpointBoundary,
-    complete_record_count: u64,
     pending_tool_authorities: Vec<CodexPendingToolAuthority>,
     terminal_authority: CodexTerminalAuthorityCheckpoint,
     repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
-    pub(crate) owner: CodexSessionRow,
+    owner: CodexSessionRow,
     local_turn_started: bool,
 }
 
-impl CodexNativeCheckpoint {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the checkpoint constructor mirrors its fixed, versioned wire fields"
-    )]
+impl CodexSemanticCheckpoint {
     pub(super) fn new(
-        observation: CodexFileObservation,
-        full_revision_sha256: [u8; 32],
-        complete_prefix_sha256: [u8; 32],
-        complete_prefix_end: u64,
-        complete_record_count: u64,
-        incomplete_tail: Option<(u64, [u8; 32])>,
         pending_tool_authorities: &[CodexPendingToolAuthority],
         terminal_authority: CodexTerminalAuthorityCheckpoint,
         repository_candidate_authority: CodexRepositoryCandidateAuthorityCheckpoint,
         owner: CodexSessionRow,
         local_turn_started: bool,
     ) -> serde_json::Result<Self> {
-        let boundary = match incomplete_tail {
-            Some((incomplete_tail_len, incomplete_tail_sha256)) => {
-                CodexCheckpointBoundary::Incomplete {
-                    complete_prefix_end,
-                    incomplete_tail_len,
-                    incomplete_tail_sha256,
-                }
-            }
-            None => CodexCheckpointBoundary::Terminal {
-                complete_eof: complete_prefix_end,
-            },
-        };
         let mut checkpoint = Self {
-            version: CODEX_NATIVE_CHECKPOINT_VERSION,
-            observation,
-            full_revision_sha256,
-            complete_prefix_sha256,
-            boundary,
-            complete_record_count,
+            version: CODEX_SEMANTIC_CHECKPOINT_VERSION,
             pending_tool_authorities: pending_tool_authorities.to_vec(),
             terminal_authority,
             repository_candidate_authority,
@@ -452,59 +409,30 @@ impl CodexNativeCheckpoint {
         };
         loop {
             let encoded = serde_json::to_vec(&checkpoint)?;
-            if encoded.len() <= MAX_CODEX_NATIVE_CHECKPOINT_BYTES {
+            if encoded.len() <= MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
                 return Ok(checkpoint);
             }
-            // Pending invocations are optional future-correlation evidence.
-            // Shedding one can only make a later result unjoined/Unknown; it
-            // cannot create a positive attribution. Terminal multiplicities
-            // and owner identity are never shed.
             if checkpoint.pending_tool_authorities.pop().is_none() {
                 return Err(checkpoint_size_error(encoded.len()));
             }
         }
     }
 
-    pub(crate) fn encode(&self) -> serde_json::Result<Vec<u8>> {
+    pub(super) fn encode(&self) -> serde_json::Result<Vec<u8>> {
         let encoded = serde_json::to_vec(self)?;
-        if encoded.len() > MAX_CODEX_NATIVE_CHECKPOINT_BYTES {
+        if encoded.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
             return Err(checkpoint_size_error(encoded.len()));
         }
         Ok(encoded)
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
-        if bytes.len() > MAX_CODEX_NATIVE_CHECKPOINT_BYTES {
+    pub(super) fn decode(bytes: &[u8]) -> serde_json::Result<Self> {
+        if bytes.len() > MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES {
             return Err(checkpoint_size_error(bytes.len()));
         }
         let checkpoint = serde_json::from_slice::<Self>(bytes)?;
         checkpoint.validate_wire_state()?;
         Ok(checkpoint)
-    }
-
-    pub(crate) fn complete_prefix_end(&self) -> u64 {
-        match self.boundary {
-            CodexCheckpointBoundary::Terminal { complete_eof } => complete_eof,
-            CodexCheckpointBoundary::Incomplete {
-                complete_prefix_end,
-                ..
-            } => complete_prefix_end,
-        }
-    }
-
-    pub(crate) fn next_raw_ordinal(&self) -> u64 {
-        self.complete_record_count
-    }
-
-    pub(crate) fn incomplete_tail(&self) -> Option<(u64, [u8; 32])> {
-        match self.boundary {
-            CodexCheckpointBoundary::Terminal { .. } => None,
-            CodexCheckpointBoundary::Incomplete {
-                incomplete_tail_len,
-                incomplete_tail_sha256,
-                ..
-            } => Some((incomplete_tail_len, incomplete_tail_sha256)),
-        }
     }
 
     pub(super) fn pending_tool_authorities(&self) -> &[CodexPendingToolAuthority] {
@@ -521,104 +449,89 @@ impl CodexNativeCheckpoint {
         &self.repository_candidate_authority
     }
 
-    pub(crate) fn local_turn_started(&self) -> bool {
+    pub(super) fn owner(&self) -> &CodexSessionRow {
+        &self.owner
+    }
+
+    pub(super) fn local_turn_started(&self) -> bool {
         self.local_turn_started
     }
 
     fn validate_wire_state(&self) -> serde_json::Result<()> {
-        if self.version != CODEX_NATIVE_CHECKPOINT_VERSION {
-            return Err(serde::de::Error::custom(format!(
-                "unsupported Codex NativePath checkpoint version {}",
-                self.version
-            )));
-        }
-        match self.boundary {
-            CodexCheckpointBoundary::Terminal { complete_eof }
-                if complete_eof == self.observation.len => {}
-            CodexCheckpointBoundary::Incomplete {
-                complete_prefix_end,
-                incomplete_tail_len,
-                ..
-            } if incomplete_tail_len != 0
-                && complete_prefix_end
-                    .checked_add(incomplete_tail_len)
-                    .is_some_and(|end| end == self.observation.len) => {}
-            _ => {
-                return Err(serde::de::Error::custom(
-                    "invalid Codex NativePath checkpoint boundary state",
-                ));
-            }
-        }
-        let mut call_ids = BTreeSet::new();
-        let mut record_spans = BTreeSet::new();
-        let mut raw_ordinals = BTreeSet::new();
-        let mut continuation_cells = BTreeSet::new();
-        if !self.terminal_authority.validate_wire_state() {
-            return Err(serde::de::Error::custom(
-                "Codex NativePath checkpoint terminal authority is invalid",
-            ));
-        }
-        if !self.repository_candidate_authority.validate_wire_state() {
-            return Err(serde::de::Error::custom(
-                "Codex NativePath checkpoint repository candidate authority is invalid",
-            ));
-        }
-        if self.pending_tool_authorities.len() > MAX_CODEX_TOOL_CONTEXTS
-            || self.pending_tool_authorities.iter().any(|authority| {
-                (matches!(
-                    self.owner.session_relationship,
-                    ctx_history_core::SessionRelationshipKind::Forked
-                        | ctx_history_core::SessionRelationshipKind::ResumedFrom
-                ) && !self.local_turn_started
-                    && matches!(
-                        authority.invocation_origin(),
-                        CodexInvocationOriginV0::UniqueToSession
-                    ))
-                    || authority.record_start >= authority.record_end
-                    || authority.record_end > self.complete_prefix_end()
-                    || authority.record_end.saturating_sub(authority.record_start)
-                        > MAX_CODEX_PENDING_TOOL_RECORD_BYTES
-                    || authority.raw_ordinal >= self.complete_record_count
-                    || authority.call_id_sha256 == [0; 32]
-                    || !call_ids.insert(authority.call_id_sha256)
-                    || !record_spans.insert((authority.record_start, authority.record_end))
-                    || !raw_ordinals.insert(authority.raw_ordinal)
-                    || authority
-                        .continuation_cell_id
-                        .as_ref()
-                        .is_some_and(|cell_id| {
-                            cell_id.is_empty()
-                                || cell_id.len() > MAX_CODEX_CONTINUATION_CELL_ID_BYTES
-                                || !cell_id.bytes().all(|byte| {
-                                    byte.is_ascii_alphanumeric()
-                                        || matches!(byte, b'-' | b'_' | b'.' | b':')
-                                })
-                                || !continuation_cells.insert(cell_id.clone())
-                        })
-                    || authority.continuation_call_id_sha256.len() > MAX_CODEX_TOOL_CONTEXTS
-                    || (authority.continuation_capacity_exceeded
-                        && authority.continuation_call_id_sha256.len() != MAX_CODEX_TOOL_CONTEXTS)
-                    || (authority.continuation_conflicted
-                        && authority.continuation_cell_id.is_none())
-                    || authority.continuation_call_id_sha256.contains(&[0; 32])
-                    || authority
-                        .continuation_call_id_sha256
-                        .iter()
-                        .collect::<BTreeSet<_>>()
-                        .len()
-                        != authority.continuation_call_id_sha256.len()
-            })
+        if self.version != CODEX_SEMANTIC_CHECKPOINT_VERSION
+            || !self.terminal_authority.validate_wire_state()
+            || !self.repository_candidate_authority.validate_wire_state()
+            || !pending_tool_authorities_are_valid(
+                &self.pending_tool_authorities,
+                &self.owner,
+                self.local_turn_started,
+            )
         {
             return Err(serde::de::Error::custom(
-                "Codex NativePath checkpoint pending-tool authority is invalid",
+                "invalid Codex semantic checkpoint state",
             ));
         }
         Ok(())
     }
 }
 
+fn pending_tool_authorities_are_valid(
+    authorities: &[CodexPendingToolAuthority],
+    owner: &CodexSessionRow,
+    local_turn_started: bool,
+) -> bool {
+    let mut call_ids = BTreeSet::new();
+    let mut record_spans = BTreeSet::new();
+    let mut raw_ordinals = BTreeSet::new();
+    let mut continuation_cells = BTreeSet::new();
+    authorities.len() <= MAX_CODEX_TOOL_CONTEXTS
+        && authorities.iter().all(|authority| {
+            !(matches!(
+                owner.session_relationship,
+                ctx_history_core::SessionRelationshipKind::Forked
+                    | ctx_history_core::SessionRelationshipKind::ResumedFrom
+            ) && !local_turn_started
+                && matches!(
+                    authority.invocation_origin(),
+                    CodexInvocationOriginV0::UniqueToSession
+                ))
+                && authority.record_start < authority.record_end
+                && authority
+                    .record_end
+                    .checked_sub(authority.record_start)
+                    .is_some_and(|len| len <= MAX_CODEX_PENDING_TOOL_RECORD_BYTES)
+                && authority.call_id_sha256 != [0; 32]
+                && call_ids.insert(authority.call_id_sha256)
+                && record_spans.insert((authority.record_start, authority.record_end))
+                && raw_ordinals.insert(authority.raw_ordinal)
+                && authority
+                    .continuation_cell_id
+                    .as_ref()
+                    .is_none_or(|cell_id| {
+                        !cell_id.is_empty()
+                            && cell_id.len() <= MAX_CODEX_CONTINUATION_CELL_ID_BYTES
+                            && cell_id.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric()
+                                    || matches!(byte, b'-' | b'_' | b'.' | b':')
+                            })
+                            && continuation_cells.insert(cell_id.clone())
+                    })
+                && authority.continuation_call_id_sha256.len() <= MAX_CODEX_TOOL_CONTEXTS
+                && (!authority.continuation_capacity_exceeded
+                    || authority.continuation_call_id_sha256.len() == MAX_CODEX_TOOL_CONTEXTS)
+                && (!authority.continuation_conflicted || authority.continuation_cell_id.is_some())
+                && !authority.continuation_call_id_sha256.contains(&[0; 32])
+                && authority
+                    .continuation_call_id_sha256
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == authority.continuation_call_id_sha256.len()
+        })
+}
+
 fn checkpoint_size_error(actual: usize) -> serde_json::Error {
     <serde_json::Error as serde::ser::Error>::custom(format!(
-        "Codex NativePath checkpoint payload has {actual} bytes, maximum is {MAX_CODEX_NATIVE_CHECKPOINT_BYTES}"
+        "Codex semantic checkpoint payload has {actual} bytes, maximum is {MAX_CODEX_SEMANTIC_CHECKPOINT_BYTES}"
     ))
 }

@@ -43,7 +43,10 @@ const FAMILY_DISCOVERY_REVISION: &str = "borrowed-jsonl-discovery-v1";
 const FAMILY_INVENTORY_DOMAIN: &[u8] = b"ctx-borrowed-jsonl-inventory-v1\0";
 mod leaf;
 #[cfg(test)]
+pub(crate) use leaf::checkpoint_admitted_revision_for_test;
+#[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
+pub(crate) use leaf::provider_checkpoint_for_base;
 use leaf::{physical_identity, scan_leaves};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
@@ -66,8 +69,10 @@ use scanner::{
     FAMILY_SCANNER_WORKERS_OVERRIDE,
 };
 pub(crate) use scanner::{
-    JsonlFamilyAppendMode, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
-    JsonlFamilyPublication, JsonlFamilyWorkerContext,
+    JsonlFamilyAppendMode, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
+    JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyPublication,
+    JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+    JsonlFamilyWorkerContext,
 };
 mod terminal;
 pub(crate) use terminal::JsonlFamilyTerminalProof;
@@ -138,6 +143,26 @@ pub(crate) trait JsonlFamilyProjector: Send {
     }
 }
 
+pub(crate) trait JsonlFamilySemanticExecutor: Send {
+    /// Runs before writer staging or record emission. Append executors may ask
+    /// the family to reopen and retry this leaf once as a replacement.
+    fn preflight(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+    ) -> Result<JsonlFamilySemanticPreflight>;
+
+    /// Produces one bounded semantic page from shared-owned physical input.
+    /// Returning `None` means the input is exhausted and no page remains.
+    fn next_page(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+        worker: &mut JsonlFamilyWorkerContext,
+    ) -> Result<Option<JsonlFamilySemanticPage>>;
+
+    /// Returns only semantic classification and opaque continuation state.
+    fn finish(self: Box<Self>) -> Result<JsonlFamilySemanticSummary>;
+}
+
 pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     fn provider(&self) -> CaptureProvider;
     fn source_format(&self) -> &'static str;
@@ -156,6 +181,12 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     /// whole-record leaves retain their separate exact-file behavior.
     fn record_framing(&self) -> JsonlRecordFraming {
         JsonlRecordFraming::ordinary()
+    }
+
+    /// Binds the complete admitted EOF, including an unfinished tail, with a
+    /// raw SHA-256 digest owned and revalidated by the shared family.
+    fn bind_admitted_eof(&self) -> bool {
+        false
     }
 
     fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
@@ -292,14 +323,21 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         self.projector(leaf, source_file, imported_at)
     }
 
-    /// Optional optimized execution for one JSONL leaf.
-    ///
-    /// Returning `None` selects the family's ordinary framed reader and
-    /// per-record projector. Returning an outcome lets an adapter retain a
-    /// native prefilter/parser or a bounded staged replay when flattening that
-    /// work into `project` would add passes, hashes, or unbounded buffering.
-    /// The shared family still validates the terminal certificate and owns all
-    /// writer publication through `emit_page`.
+    /// Optional bounded semantic executor. The family has already selected the
+    /// physical projection mode and retains all lifecycle/publication authority.
+    fn semantic_executor(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _checkpoint: Option<&TypedKey>,
+        _base_event_lookup: Option<BaseEventIdentityLookup>,
+        _mode: JsonlFamilyProjectionMode,
+    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+        Ok(None)
+    }
+
+    /// Legacy optimized execution retained for adapters outside the Codex
+    /// convergence tranche. New adapters must use `semantic_executor`.
     fn scan_optimized_leaf(
         &self,
         _leaf: &JsonlFamilyLeaf,
@@ -584,6 +622,7 @@ pub(crate) struct JsonlFamilyLeaf {
     identity_probe: Option<JsonlProbe>,
     identity_probe_rejected_records: u64,
     whole_record: bool,
+    freeze_observation_at_scan: bool,
 }
 
 impl JsonlFamilyLeaf {
@@ -627,6 +666,29 @@ impl JsonlFamilyLeaf {
             identity_probe: None,
             identity_probe_rejected_records: 0,
             whole_record: false,
+            freeze_observation_at_scan: false,
+        }
+    }
+
+    pub(crate) fn bind_frozen_observed(
+        source: SourceKey,
+        source_path: PathBuf,
+        authority: Arc<ProviderSourceRoot>,
+        authority_path: PathBuf,
+        binding: TypedKey,
+        observation: JsonlFileObservation,
+    ) -> Self {
+        Self {
+            source,
+            source_path,
+            authority_path,
+            authority,
+            observation,
+            binding,
+            identity_probe: None,
+            identity_probe_rejected_records: 0,
+            whole_record: false,
+            freeze_observation_at_scan: true,
         }
     }
 
@@ -696,6 +758,7 @@ impl JsonlFamilyLeaf {
             identity_probe: Some(identity_probe),
             identity_probe_rejected_records,
             whole_record: false,
+            freeze_observation_at_scan: false,
         })
     }
 
@@ -720,6 +783,7 @@ impl JsonlFamilyLeaf {
             identity_probe: None,
             identity_probe_rejected_records: 0,
             whole_record,
+            freeze_observation_at_scan: false,
         })
     }
 
@@ -737,6 +801,10 @@ impl JsonlFamilyLeaf {
 
     pub(crate) fn observation(&self) -> &JsonlFileObservation {
         &self.observation
+    }
+
+    pub(super) fn frozen_scan_observation(&self) -> Option<&JsonlFileObservation> {
+        self.freeze_observation_at_scan.then_some(&self.observation)
     }
 
     pub(super) fn estimated_scan_bytes(&self) -> u64 {
@@ -767,6 +835,9 @@ impl JsonlFamilyLeaf {
             || !self.observation.admits_frozen_prefix_in(&current)
         {
             return Err(CaptureError::SourceChangedDuringCapture);
+        }
+        if self.freeze_observation_at_scan {
+            return Ok((self.clone(), Arc::new(opened)));
         }
         let mut leaf = self.clone();
         leaf.observation = current.clone();
@@ -1020,10 +1091,18 @@ struct FamilyCheckpoint {
     event_identity_revision: String,
     binding_digest: [u8; 32],
     physical: JsonlCheckpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admitted_eof_sha256: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    complete_prefix_ends_with_terminal_nul_padding: bool,
     represented_physical_records: u64,
     rejected_records: u64,
     indexed_documents: u64,
     provider_checkpoint: Option<TypedKey>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl FamilyCheckpoint {
@@ -1036,6 +1115,7 @@ impl FamilyCheckpoint {
             && binding_digest(leaf).is_ok_and(|digest| self.binding_digest == digest)
             && self.physical.is_internally_consistent()
             && self.physical.identity() == &physical_identity(adapter, leaf)
+            && (self.admitted_eof_sha256.is_some() == adapter.bind_admitted_eof())
             && self
                 .provider_checkpoint
                 .as_ref()

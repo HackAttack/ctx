@@ -43,7 +43,7 @@ fn raw_ordinals_include_headers_outputs_malformed_and_ignored_records() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "ordinal-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "ordinal-owner"));
 
     assert_eq!(
         sink.rows
@@ -95,7 +95,7 @@ fn valid_retained_records_without_indexable_text_are_ignored_not_rejected() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "unmaterialized-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "unmaterialized-owner"));
 
     assert!(sink.rows.is_empty());
     assert_eq!(scan.counters.rejected_complete_records, 0);
@@ -148,7 +148,7 @@ fn malformed_retained_shapes_remain_rejected_without_hiding_later_records() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "malformed-retained-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "malformed-retained-owner"));
 
     assert!(sink.rows.is_empty());
     assert_eq!(scan.counters.complete_records, 7);
@@ -164,7 +164,7 @@ fn source_backed_row_preserves_full_lexical_text_and_native_identity() {
     let message_record = message("assistant", &complete_message);
     let contents = [header, message_record.clone()].concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "direct-core-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "direct-core-owner"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
@@ -187,7 +187,7 @@ fn output_heavy_scan_retains_complete_result_bodies() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "output-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "output-owner"));
 
     assert_eq!(sink.rows.len(), 4);
     assert_eq!(scan.counters.native_result_records, 1);
@@ -204,7 +204,7 @@ fn output_heavy_scan_retains_complete_result_bodies() {
 fn ctx_retrieval_discovery_fixture_requires_exact_cli_envelopes_and_mcp_evidence() {
     let contents = include_str!("fixtures/ctx_retrieval_discovery.jsonl");
     let (_temp, path) = write_source(contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "ctx-retrieval-discovery"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "ctx-retrieval-discovery"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 19);
@@ -318,7 +318,7 @@ fn orphan_and_duplicate_pending_ctx_results_fail_open() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (_, sink) = scan_collect(discover_one(&path, "ctx-linkage-fail-open"), None);
+    let (_, sink) = scan_collect(discover_one(&path, "ctx-linkage-fail-open"));
 
     let orphan = sink
         .rows
@@ -390,7 +390,7 @@ fn codex_duplicate_result_terminals_fail_open_without_retracting_invocation_excl
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (_, sink) = scan_collect(discover_one(&path, "duplicate-ctx-result-owner"), None);
+    let (_, sink) = scan_collect(discover_one(&path, "duplicate-ctx-result-owner"));
     let rows = sink
         .rows
         .iter()
@@ -440,7 +440,7 @@ fn mcp_direct_result_minimal_synthetic_retains_text_and_linkage() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-direct-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-direct-owner"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
@@ -508,7 +508,7 @@ fn versioned_mcp_terminal_results_abstain_without_dropping_the_event() {
         ]
         .concat();
         let (_temp, path) = write_source(&contents);
-        let (scan, sink) = scan_collect(discover_one(&path, &owner), None);
+        let (scan, sink) = scan_collect(discover_one(&path, &owner));
 
         assert_eq!(scan.counters.rejected_complete_records, 0, "{cli_version}");
         assert_eq!(sink.rows.len(), 1, "{cli_version}");
@@ -572,7 +572,7 @@ fn mcp_direct_result_retains_complete_multi_block_content() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-complete-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-complete-owner"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
@@ -620,7 +620,7 @@ fn mcp_direct_result_accepts_native_error_variants() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-error-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-error-owner"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 2);
@@ -708,7 +708,7 @@ fn malformed_mcp_attribution_never_drops_an_ordinary_terminal_result() {
         })));
     }
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-invalid-attribution-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-invalid-attribution-owner"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), cases.len());
@@ -767,7 +767,7 @@ fn exact_mcp_attribution_preserves_opaque_names_and_component_bound() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-exact-attribution-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-exact-attribution-owner"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 2);
@@ -823,7 +823,7 @@ fn malformed_or_ambiguous_mcp_direct_results_are_rejected_locally() {
     }
     contents.push_str(&message("assistant", "later valid record"));
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-malformed-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-malformed-owner"));
 
     assert_eq!(sink.rows.len(), 1);
     assert_eq!(sink.rows[0].lexical_body, "later valid record");
@@ -841,7 +841,7 @@ fn malformed_or_ambiguous_mcp_direct_results_are_rejected_locally() {
 fn redacted_real_shape_fixture_retains_mcp_direct_result() {
     let contents = include_str!("fixtures/mcp_tool_call_end_direct_result.jsonl");
     let (_temp, path) = write_source(contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "redacted-mcp-direct-result"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "redacted-mcp-direct-result"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 1);
@@ -867,7 +867,7 @@ fn redacted_real_shape_fixture_retains_mcp_direct_result() {
 fn synthetic_adversarial_fixture_requires_source_unique_terminal_authority() {
     let contents = include_str!("fixtures/mcp_tool_call_attribution_adversarial.jsonl");
     let (_temp, path) = write_source(contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "redacted-mcp-attribution"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "redacted-mcp-attribution"));
 
     assert_eq!(scan.counters.rejected_complete_records, 0);
     assert_eq!(sink.rows.len(), 14);
@@ -989,7 +989,7 @@ fn malformed_same_id_mcp_terminals_abstain_before_and_after_valid_results() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "mcp-malformed-duplicate-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "mcp-malformed-duplicate-owner"));
 
     assert_eq!(scan.counters.malformed_records, 4);
     assert_eq!(scan.counters.rejected_complete_records, 4);
@@ -1028,7 +1028,7 @@ fn source_backed_projection_prefilters_with_exact_scan_accounting() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-prefilter-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-prefilter-owner"));
 
     assert_eq!(sink.rows.len(), 1);
     assert_eq!(sink.pages.len(), 1);
@@ -1047,19 +1047,6 @@ fn source_backed_projection_prefilters_with_exact_scan_accounting() {
     let row = &sink.rows[0];
     assert_eq!(row.raw_ordinal, 3);
     assert_eq!(row.session_cwd.as_deref(), Some("/workspace"));
-    assert_eq!(scan.counters.legacy_body_json_serializations, 0);
-    assert_eq!(scan.counters.legacy_row_json_serializations, 0);
-    assert_eq!(scan.counters.legacy_json_serialized_bytes, 0);
-    assert_eq!(scan.counters.legacy_file_touch_rows_created, 0);
-    assert_eq!(scan.counters.legacy_page_owner_json_serializations, 0);
-    assert_eq!(
-        scan.counters.legacy_page_identity_owner_json_serializations,
-        0
-    );
-    assert_eq!(
-        scan.counters.legacy_page_identity_row_json_serializations,
-        0
-    );
 }
 
 #[test]
@@ -1076,142 +1063,10 @@ fn source_backed_projection_batches_ignored_records_in_one_bounded_page() {
     }
     contents.push_str(&message("assistant", "one retained projection"));
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-batching-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-batching-owner"));
 
     assert_eq!(sink.physical_records, vec![(IGNORED_RECORDS + 2) as u64]);
     assert_eq!(scan.counters.emitted_pages, 1);
     assert_eq!(sink.rows.len(), 1);
     assert_eq!(scan.next_raw_ordinal, (IGNORED_RECORDS + 2) as u64);
-}
-
-#[test]
-fn pending_call_checkpoint_keeps_fresh_and_append_source_backed_outputs_identical() {
-    let initial = [
-        session_meta("split-owner"),
-        tool_call("split-success"),
-        tool_call("split-failure"),
-        tool_call("split-timeout"),
-        tool_call("split-unknown"),
-    ]
-    .concat();
-    let appended = [
-        successful_tool_output("split-success", "success"),
-        failed_tool_output("split-failure", "failure"),
-        timed_out_tool_output("split-timeout", "timeout"),
-        tool_output("split-unknown", ""),
-    ]
-    .concat();
-    let complete = format!("{initial}{appended}");
-    let (_temp, path) = write_source(&initial);
-
-    let (initial_scan, _) = scan_collect(discover_one(&path, "split-owner"), None);
-    let proof = initial_scan
-        .bind_checkpoint("canonical-split", CodexCheckpointGeneration::new(90))
-        .unwrap()
-        .unwrap();
-    let checkpoint_wire =
-        serde_json::from_slice::<Value>(&proof.checkpoint.encode().unwrap()).unwrap();
-    assert_eq!(
-        checkpoint_wire["pending_tool_authorities"]
-            .as_array()
-            .unwrap()
-            .len(),
-        4
-    );
-    let checkpoint_text = serde_json::to_string(&checkpoint_wire).unwrap();
-    assert!(!checkpoint_text.contains("split-success"));
-    assert!(!checkpoint_text.contains("printf retained"));
-
-    fs::write(&path, &complete).unwrap();
-    let (append_scan, append) = scan_collect(discover_one(&path, "split-owner"), Some(&proof));
-    let (fresh_scan, fresh) = scan_collect(discover_one(&path, "split-owner"), None);
-    let fresh_output_rows = fresh
-        .rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.event_type,
-                EventType::CommandOutput | EventType::ToolOutput
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
-    assert_eq!(append.rows, fresh_output_rows);
-    assert_eq!(
-        append
-            .rows
-            .iter()
-            .map(|row| row.raw_ordinal)
-            .collect::<Vec<_>>(),
-        vec![5, 6, 7, 8]
-    );
-    assert_eq!(
-        append_scan.counters.rejected_complete_records,
-        fresh_scan.counters.rejected_complete_records
-    );
-    assert_eq!(append_scan.counters.bytes_read, complete.len() as u64);
-    assert_eq!(
-        append_scan.counters.checkpoint_validation_bytes,
-        initial.len() as u64
-    );
-    assert_eq!(
-        append_scan.complete_prefix_sha256,
-        fresh_scan.complete_prefix_sha256
-    );
-    assert_eq!(append_scan.next_raw_ordinal, fresh_scan.next_raw_ordinal);
-}
-
-#[test]
-fn pending_ctx_retrieval_link_restores_exact_result_exclusion() {
-    let call_id = "split-ctx-retrieval";
-    let initial = [
-        session_meta("split-ctx-retrieval-owner"),
-        jsonl(json!({
-            "timestamp": "2026-08-05T13:00:01Z",
-            "type": "response_item",
-            "payload": {
-                "type": "function_call",
-                "name": "exec_command",
-                "call_id": call_id,
-                "arguments": {"cmd": "ctx show session aabbccdd"}
-            }
-        })),
-    ]
-    .concat();
-    let output = concat!(
-        "Chunk ID: 012abc\n",
-        "Wall time: 0.031 seconds\n",
-        "Process exited with code 0\n",
-        "Final output:\n",
-        "{\"session\":{\"id\":\"session-1\"}}"
-    );
-    let appended = tool_output(call_id, output);
-    let complete = format!("{initial}{appended}");
-    let (_temp, path) = write_source(&initial);
-
-    let (initial_scan, _) = scan_collect(discover_one(&path, "split-ctx-retrieval-owner"), None);
-    let proof = initial_scan
-        .bind_checkpoint("split-ctx-retrieval", CodexCheckpointGeneration::new(91))
-        .unwrap()
-        .unwrap();
-    fs::write(&path, &complete).unwrap();
-
-    let (_, append) = scan_collect(
-        discover_one(&path, "split-ctx-retrieval-owner"),
-        Some(&proof),
-    );
-    let (_, fresh) = scan_collect(discover_one(&path, "split-ctx-retrieval-owner"), None);
-    let fresh_result = fresh
-        .rows
-        .iter()
-        .find(|row| row.event_type == EventType::CommandOutput)
-        .unwrap();
-
-    assert_eq!(append.rows, vec![fresh_result.clone()]);
-    assert_eq!(append.rows[0].lexical_body, output);
-    assert_eq!(
-        append.rows[0].discovery_exclusion,
-        Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
-    );
 }

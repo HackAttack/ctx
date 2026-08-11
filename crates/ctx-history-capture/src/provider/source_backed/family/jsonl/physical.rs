@@ -7,7 +7,8 @@ use sha2::Sha256;
 
 use super::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
-    read_bounded_record_complete_sha256, JsonlRecordFraming,
+    read_bounded_record_complete_sha256, read_bounded_record_full_complete_and_prefix_sha256,
+    JsonlRecordFraming,
 };
 use crate::{CaptureError, Result};
 
@@ -21,6 +22,12 @@ pub(crate) enum JsonlPhysicalDigest {
         complete: Sha256,
     },
     CompleteAndBoundedPrefix {
+        complete: Sha256,
+        bounded_prefix: Sha256,
+        bounded_prefix_remaining: u64,
+    },
+    FullCompleteAndBoundedPrefix {
+        full: Sha256,
         complete: Sha256,
         bounded_prefix: Sha256,
         bounded_prefix_remaining: u64,
@@ -48,17 +55,33 @@ impl JsonlPhysicalDigest {
         Self::FullAndComplete { full, complete }
     }
 
+    pub(crate) fn full_complete_and_bounded_prefix(
+        full: Sha256,
+        complete: Sha256,
+        bounded_prefix: Sha256,
+        bounded_prefix_remaining: u64,
+    ) -> Self {
+        Self::FullCompleteAndBoundedPrefix {
+            full,
+            complete,
+            bounded_prefix,
+            bounded_prefix_remaining,
+        }
+    }
+
     pub(crate) fn complete_hasher(&self) -> &Sha256 {
         match self {
             Self::Complete { complete }
             | Self::FullAndComplete { complete, .. }
-            | Self::CompleteAndBoundedPrefix { complete, .. } => complete,
+            | Self::CompleteAndBoundedPrefix { complete, .. }
+            | Self::FullCompleteAndBoundedPrefix { complete, .. } => complete,
         }
     }
 
     pub(crate) fn full_hasher(&self) -> Option<&Sha256> {
         match self {
-            Self::FullAndComplete { full, .. } => Some(full),
+            Self::FullAndComplete { full, .. }
+            | Self::FullCompleteAndBoundedPrefix { full, .. } => Some(full),
             _ => None,
         }
     }
@@ -66,6 +89,11 @@ impl JsonlPhysicalDigest {
     pub(crate) fn bounded_prefix(&self) -> Option<(&Sha256, u64)> {
         match self {
             Self::CompleteAndBoundedPrefix {
+                bounded_prefix,
+                bounded_prefix_remaining,
+                ..
+            } => Some((bounded_prefix, *bounded_prefix_remaining)),
+            Self::FullCompleteAndBoundedPrefix {
                 bounded_prefix,
                 bounded_prefix_remaining,
                 ..
@@ -189,6 +217,22 @@ impl JsonlPhysicalStream {
                 self.framing,
                 self.source_changed,
             )?,
+            JsonlPhysicalDigest::FullCompleteAndBoundedPrefix {
+                full,
+                complete,
+                bounded_prefix,
+                bounded_prefix_remaining,
+            } => read_bounded_record_full_complete_and_prefix_sha256(
+                &mut self.reader,
+                &mut self.record_buffer,
+                full,
+                complete,
+                bounded_prefix,
+                bounded_prefix_remaining,
+                remaining,
+                self.framing,
+                self.source_changed,
+            )?,
         }
         .ok_or_else(|| (self.source_changed)())?;
         let byte_start = self.offset;
@@ -226,18 +270,6 @@ impl JsonlPhysicalStream {
 
     pub(crate) fn record_bytes(&self, record: JsonlPhysicalRecord) -> &[u8] {
         &self.record_buffer[..record.stored_len]
-    }
-
-    /// Transfers the bounded record scratch to a projector that needs mutable
-    /// access to its enclosing scanner while inspecting the current record.
-    /// The caller must return the allocation before reading another record.
-    pub(crate) fn take_record_buffer(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.record_buffer)
-    }
-
-    pub(crate) fn restore_record_buffer(&mut self, record_buffer: Vec<u8>) {
-        debug_assert!(self.record_buffer.is_empty());
-        self.record_buffer = record_buffer;
     }
 
     /// Drops retained record capacity before a prepared page crosses a worker
@@ -314,9 +346,6 @@ mod tests {
 
         let first = stream.next_record().unwrap().unwrap();
         assert_eq!(stream.record_bytes(first), b"one");
-        let record_buffer = stream.take_record_buffer();
-        assert_eq!(&record_buffer[..first.stored_len], b"one");
-        stream.restore_record_buffer(record_buffer);
         let after_first = stream.position();
         let second = stream.next_record().unwrap().unwrap();
         assert_eq!(stream.record_bytes(second), b"two");

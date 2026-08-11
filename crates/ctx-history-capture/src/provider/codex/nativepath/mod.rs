@@ -8,29 +8,24 @@ mod rows;
 mod source;
 mod source_backed;
 
-pub(crate) use checkpoint::{CodexNativeCheckpoint, MAX_CODEX_TOOL_CONTEXTS};
+pub(crate) use checkpoint::MAX_CODEX_TOOL_CONTEXTS;
 pub(crate) use prompt_history::{
     CodexPromptHistoryJsonlFamilyAdapterV0, CodexPromptHistorySourceBackedInputV0,
 };
-pub(crate) use reader::{
-    opened_codex_file_observation, CodexNativeOwnedPage, CodexNativeScanner, CodexSourceScan,
-};
+pub(crate) use reader::{opened_codex_file_observation, CodexNativeScanner};
 #[cfg(test)]
 pub(crate) use reader::{
-    CodexNativeFrontier, CodexParseDisposition, MAX_CODEX_PAGE_BYTES, MAX_CODEX_PAGE_ROWS,
-    MAX_CODEX_RECORD_BYTES, MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES,
+    CodexScanCounters, MAX_CODEX_PAGE_BYTES, MAX_CODEX_PAGE_ROWS, MAX_CODEX_RECORD_BYTES,
+    MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES,
 };
 pub(crate) use rows::CodexSessionRow;
-pub(crate) use source::{
-    discover_codex_catalog_sources, CodexAppendProof, CodexCheckpointGeneration,
-    CodexFileObservation,
-};
 #[cfg(test)]
-pub(crate) use source::{CodexCatalogSource, CodexSourceIdentity};
+pub(crate) use source::CodexCatalogSource;
+pub(crate) use source::{discover_codex_catalog_sources, CodexFileObservation};
 pub(crate) use source_backed::{
     codex_session_root_rank, CodexExplicitSessionJsonlFamilyAdapterV0,
-    CodexExplicitSessionSourceBackedInputV0, CodexGenerationCarriedRouteV0,
-    CodexGenerationNormalizationCoordinatorV0, CodexSessionTreeJsonlFamilyAdapterV0,
+    CodexExplicitSessionSourceBackedInputV0, CodexGenerationNormalizationCoordinatorV0,
+    CodexSessionTreeJsonlFamilyAdapterV0,
 };
 #[cfg(test)]
 pub(crate) use source_backed::{

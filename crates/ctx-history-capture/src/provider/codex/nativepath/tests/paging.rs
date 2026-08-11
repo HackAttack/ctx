@@ -27,7 +27,7 @@ fn ctx_retrieval_link_survives_source_backed_page_rollover() {
     contents.push_str(&tool_output(call_id, output));
     let (_temp, path) = write_source(&contents);
 
-    let (_, sink) = scan_collect(discover_one(&path, "paged-ctx-retrieval-owner"), None);
+    let (_, sink) = scan_collect(discover_one(&path, "paged-ctx-retrieval-owner"));
     assert!(sink.pages.len() >= 2);
     let result = sink
         .rows
@@ -39,54 +39,6 @@ fn ctx_retrieval_link_survives_source_backed_page_rollover() {
         result.discovery_exclusion,
         Some(CoreDiscoveryExclusion::CtxRetrievalDerived)
     );
-}
-
-#[test]
-fn terminal_authority_defers_a_verified_append_and_retry_advances_the_prefix() {
-    let initial = [
-        session_meta("mutation-owner"),
-        message("user", "before mutation"),
-        successful_tool_output("mutation-call", "stable output"),
-    ]
-    .concat();
-    let (_temp, path) = write_source(&initial);
-    let mut scanner =
-        CodexNativeScanner::new_source_backed_v0(discover_one(&path, "mutation-owner"), None)
-            .unwrap();
-    let mut safe_frontier = None;
-    while let Some(page) = scanner.next_page().unwrap() {
-        let CodexNativeOwnedPage::Core(page) = page;
-        assert!(page.terminal);
-        safe_frontier = Some(page.next_safe_frontier);
-    }
-    let safe_frontier = safe_frontier.expect("terminal Core page");
-
-    let appended = message("assistant", "after mutation");
-    fs::write(&path, format!("{initial}{appended}")).unwrap();
-    let frozen = scanner.finish().unwrap();
-    assert_eq!(frozen.complete_prefix_end, initial.len() as u64);
-    assert_eq!(frozen.next_raw_ordinal, 3);
-    assert_eq!(frozen.before_observation, frozen.after_observation);
-
-    let (retry_scan, retry) = scan_collect(discover_one(&path, "mutation-owner"), None);
-    assert_eq!(
-        retry.frontiers[0].0,
-        CodexNativeFrontier {
-            complete_prefix_end: 0,
-            next_raw_ordinal: 0,
-            complete_prefix_sha256: Sha256::digest([]).into(),
-        }
-    );
-    assert_eq!(safe_frontier.next_raw_ordinal, 3);
-    assert_eq!(
-        retry
-            .rows
-            .iter()
-            .map(|row| row.raw_ordinal)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3]
-    );
-    assert_eq!(retry_scan.next_raw_ordinal, 4);
 }
 
 #[test]
@@ -108,7 +60,7 @@ fn c0_shapes_retain_conversation_summaries_calls_and_results() {
         baseline.push_str(&tool_output(&format!("call-{index}"), "excluded"));
     }
     let (_temp, path) = write_source(&baseline);
-    let (scan, sink) = scan_collect(discover_one(&path, "c0-baseline"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "c0-baseline"));
     assert_eq!(sink.rows.len(), 20);
     assert_eq!(scan.counters.retained_records, 20);
     assert_eq!(scan.counters.native_result_records, 3);
@@ -160,7 +112,7 @@ fn c0_shapes_retain_conversation_summaries_calls_and_results() {
         ));
     }
     fs::write(&path, output_heavy).unwrap();
-    let (scan, sink) = scan_collect(discover_one(&path, "c0-output-heavy"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "c0-output-heavy"));
     assert_eq!(sink.rows.len(), 20);
     assert_eq!(scan.counters.native_result_records, 8);
 }
@@ -193,7 +145,7 @@ fn compacted_payloads_and_known_result_aliases_retain_known_result_content() {
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "shape-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "shape-owner"));
 
     assert_eq!(sink.rows.len(), 2);
     assert_eq!(sink.rows[0].event_type, EventType::Summary);
@@ -252,7 +204,7 @@ fn unknown_result_like_discriminators_are_ignored_without_losing_neighbors_or_bo
     ]
     .concat();
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "unknown-result-like-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "unknown-result-like-owner"));
 
     assert_eq!(
         sink.rows

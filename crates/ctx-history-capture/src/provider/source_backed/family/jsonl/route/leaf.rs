@@ -11,13 +11,13 @@ use ctx_history_core::{
 use ctx_history_index::BaseEventIdentityLookup;
 
 use super::super::{
-    JsonlCheckpoint, JsonlFileObservation, JsonlProbe, JsonlReader, JsonlSourceChange,
-    JsonlSourceIdentity,
+    JsonlFileObservation, JsonlProbe, JsonlReader, JsonlSourceChange, JsonlSourceIdentity,
 };
 use super::{
     binding_digest, contract_error, route_internal, route_invalid, route_scan, FamilyCheckpoint,
-    JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome,
-    JsonlFamilyProjectionMode, JsonlFamilyPublication, JsonlFamilyTerminalProof,
+    JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyExecutionIo, JsonlFamilyLeaf,
+    JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyPublication,
+    JsonlFamilySemanticExecutor, JsonlFamilySemanticPreflight, JsonlFamilyTerminalProof,
     JsonlFamilyWorkerContext, TerminalSourceEvidence, FAMILY_FRONTIER_KIND, FAMILY_POLICY_REVISION,
     FAMILY_SOURCE_REVISION_KIND,
 };
@@ -761,22 +761,7 @@ pub(super) fn prepare_leaf(
         checkpoint.physical.source_observation() == leaf.observation()
             || adapter.append_mode() == JsonlFamilyAppendMode::CertifiedSuffix
     });
-    let mut reader = if leaf.whole_record {
-        JsonlReader::open_whole_record(
-            physical_identity(adapter, &leaf),
-            Arc::clone(&opened),
-            previous_physical.map(|checkpoint| &checkpoint.physical),
-        )
-    } else {
-        JsonlReader::open_with_record_framing(
-            physical_identity(adapter, &leaf),
-            Arc::clone(&opened),
-            previous_physical.map(|checkpoint| &checkpoint.physical),
-            leaf.identity_probe.clone(),
-            adapter.record_framing(),
-        )
-    }?;
-    reader.set_oversized_record_policy(adapter.oversized_record_policy());
+    let mut reader = open_leaf_reader(adapter, &leaf, &opened, previous_physical)?;
 
     if reader.source_change() == JsonlSourceChange::Unchanged {
         let base = base.ok_or_else(|| {
@@ -810,10 +795,17 @@ pub(super) fn prepare_leaf(
         return Ok(PreparedLeaf {
             certificate: base.clone(),
             append: Some(append),
-            terminal_proof: terminal_proof_for_checkpoint(adapter, &leaf, base, &decoded.physical)?,
+            terminal_proof: terminal_proof_for_checkpoint(adapter, &leaf, base, &decoded)?,
         });
     }
 
+    if reader.source_change() == JsonlSourceChange::Append
+        && previous
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.complete_prefix_ends_with_terminal_nul_padding)
+    {
+        reader = open_leaf_reader(adapter, &leaf, &opened, None)?;
+    }
     let is_append = reader.source_change() == JsonlSourceChange::Append;
     if is_append && adapter.append_mode() != JsonlFamilyAppendMode::CertifiedSuffix {
         return Err(CaptureError::SystemInvariant(
@@ -834,6 +826,60 @@ pub(super) fn prepare_leaf(
     } else {
         JsonlFamilyProjectionMode::Cold
     };
+    if let Some(mut executor) = adapter.semantic_executor(
+        &leaf,
+        Arc::clone(&opened),
+        resumed.and_then(|checkpoint| checkpoint.provider_checkpoint.as_ref()),
+        base.is_some().then(|| base_event_lookup.clone()),
+        projection_mode,
+    )? {
+        let mut input = JsonlFamilyExecutionIo::new(reader);
+        let preflight_start = input.position()?;
+        let preflight = executor.preflight(&mut input)?;
+        let physical_ready = input.settle_preflight(preflight_start)?;
+        match (preflight, physical_ready) {
+            (JsonlFamilySemanticPreflight::Ready, true) => {}
+            (JsonlFamilySemanticPreflight::RetryReplacement, _) | (_, false) if is_append => {
+                drop(input);
+                input =
+                    JsonlFamilyExecutionIo::new(open_leaf_reader(adapter, &leaf, &opened, None)?);
+                executor = adapter
+                    .semantic_executor(
+                        &leaf,
+                        Arc::clone(&opened),
+                        None,
+                        Some(base_event_lookup.clone()),
+                        JsonlFamilyProjectionMode::Replacement,
+                    )?
+                    .ok_or(CaptureError::SystemInvariant(
+                        "JSONL semantic executor disappeared for replacement retry",
+                    ))?;
+                let replacement_start = input.position()?;
+                let replacement_preflight = executor.preflight(&mut input)?;
+                let replacement_physical_ready = input.settle_preflight(replacement_start)?;
+                if replacement_preflight != JsonlFamilySemanticPreflight::Ready
+                    || !replacement_physical_ready
+                {
+                    return Err(CaptureError::InvalidPayload(
+                        "JSONL semantic executor requested more than one replacement retry"
+                            .to_owned(),
+                    ));
+                }
+                return prepare_semantic_leaf(
+                    adapter, &leaf, base, None, worker, output, executor, input, false,
+                );
+            }
+            (JsonlFamilySemanticPreflight::RetryReplacement, _) | (_, false) => {
+                return Err(CaptureError::InvalidPayload(
+                    "JSONL semantic executor requested replacement outside append preflight"
+                        .to_owned(),
+                ));
+            }
+        }
+        return prepare_semantic_leaf(
+            adapter, &leaf, base, resumed, worker, output, executor, input, is_append,
+        );
+    }
     let mut projector = adapter.projector_with_provider_checkpoint(
         &leaf,
         opened,
@@ -902,6 +948,9 @@ pub(super) fn prepare_leaf(
     if documents != before_finish {
         represented_records = physical_records;
     }
+    let admitted_eof_sha256 = reader.admitted_eof_sha256()?;
+    let complete_prefix_ends_with_terminal_nul_padding =
+        reader.complete_prefix_ends_with_terminal_nul_padding();
     let outcome = reader.outcome().ok_or_else(|| {
         CaptureError::InvalidPayload("JSONL replacement scan has no terminal checkpoint".to_owned())
     })?;
@@ -916,13 +965,14 @@ pub(super) fn prepare_leaf(
         event_identity_revision: adapter.event_identity_revision().to_owned(),
         binding_digest: binding_digest(&leaf)?,
         physical: outcome.checkpoint().clone(),
+        admitted_eof_sha256,
+        complete_prefix_ends_with_terminal_nul_padding,
         represented_physical_records: represented_records,
         rejected_records,
         indexed_documents: documents,
         provider_checkpoint,
     };
-    let terminal_checkpoint = outcome.checkpoint().clone();
-    let certificate = certify(adapter, &leaf, checkpoint)
+    let certificate = certify(adapter, &leaf, checkpoint.clone())
         .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
     let append = if is_append {
         let base = base.ok_or_else(|| {
@@ -943,8 +993,177 @@ pub(super) fn prepare_leaf(
     } else {
         None
     };
-    let terminal_proof =
-        terminal_proof_for_checkpoint(adapter, &leaf, &certificate, &terminal_checkpoint)?;
+    let terminal_proof = terminal_proof_for_checkpoint(adapter, &leaf, &certificate, &checkpoint)?;
+    Ok(PreparedLeaf {
+        certificate,
+        append,
+        terminal_proof,
+    })
+}
+
+fn open_leaf_reader(
+    adapter: &dyn JsonlFamilyAdapter,
+    leaf: &JsonlFamilyLeaf,
+    opened: &Arc<crate::common::io::OpenedProviderSourceFile>,
+    previous: Option<&FamilyCheckpoint>,
+) -> Result<JsonlReader> {
+    let mut reader = if leaf.whole_record {
+        JsonlReader::open_whole_record(
+            physical_identity(adapter, leaf),
+            Arc::clone(opened),
+            previous.map(|checkpoint| &checkpoint.physical),
+        )
+    } else {
+        if adapter.bind_admitted_eof() {
+            JsonlReader::open_semantic_with_record_framing(
+                physical_identity(adapter, leaf),
+                Arc::clone(opened),
+                previous.map(|checkpoint| &checkpoint.physical),
+                previous.and_then(|checkpoint| checkpoint.admitted_eof_sha256),
+                leaf.identity_probe.clone(),
+                adapter.record_framing(),
+                leaf.frozen_scan_observation(),
+            )
+        } else {
+            JsonlReader::open_with_record_framing(
+                physical_identity(adapter, leaf),
+                Arc::clone(opened),
+                previous.map(|checkpoint| &checkpoint.physical),
+                leaf.identity_probe.clone(),
+                adapter.record_framing(),
+            )
+        }
+    }?;
+    reader.set_oversized_record_policy(adapter.oversized_record_policy());
+    Ok(reader)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_semantic_leaf(
+    adapter: &dyn JsonlFamilyAdapter,
+    leaf: &JsonlFamilyLeaf,
+    base: Option<&CertifiedSource>,
+    resumed: Option<&FamilyCheckpoint>,
+    worker: &mut JsonlFamilyWorkerContext,
+    output: &mut JsonlLeafOutput<'_>,
+    mut executor: Box<dyn JsonlFamilySemanticExecutor>,
+    mut input: JsonlFamilyExecutionIo,
+    is_append: bool,
+) -> Result<PreparedLeaf> {
+    let initial_ordinal = resumed.map_or_else(
+        || {
+            leaf.identity_probe
+                .as_ref()
+                .map(JsonlProbe::next_physical_ordinal)
+                .unwrap_or(0)
+        },
+        |checkpoint| checkpoint.physical.next_physical_ordinal(),
+    );
+    let mut documents = resumed.map_or(0, |checkpoint| checkpoint.indexed_documents);
+    let mut reported_prefix_end = input.complete_prefix_end()?;
+    while let Some(page) = executor.next_page(&mut input, worker)? {
+        let complete_prefix_end = input.complete_prefix_end()?;
+        let completed_bytes = complete_prefix_end
+            .checked_sub(reported_prefix_end)
+            .ok_or_else(|| {
+                CaptureError::InvalidPayload(
+                    "JSONL semantic physical progress regressed".to_owned(),
+                )
+            })?;
+        reported_prefix_end = complete_prefix_end;
+        let records = page.into_records();
+        if records
+            .iter()
+            .any(|record| !record.source.exact_descriptor_eq(leaf.source()))
+        {
+            return Err(CaptureError::InvalidPayload(
+                "JSONL semantic executor changed the bound source".to_owned(),
+            ));
+        }
+        documents = documents
+            .checked_add(u64::try_from(records.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| {
+                CaptureError::InvalidPayload("JSONL document count overflowed".to_owned())
+            })?;
+        input.release_record_buffer()?;
+        output.emit_page(is_append, completed_bytes, records)?;
+    }
+    input.release_record_buffer()?;
+    let summary = executor.finish()?;
+    let admitted_eof_sha256 = input.admitted_eof_sha256()?;
+    let complete_prefix_ends_with_terminal_nul_padding =
+        input.complete_prefix_ends_with_terminal_nul_padding();
+    let reader = input.into_reader();
+    let outcome = reader.outcome().ok_or_else(|| {
+        CaptureError::InvalidPayload("JSONL semantic scan has no terminal checkpoint".to_owned())
+    })?;
+    let terminal_checkpoint = outcome.checkpoint().clone();
+    let scanned_physical_records = terminal_checkpoint
+        .next_physical_ordinal()
+        .checked_sub(initial_ordinal)
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload("JSONL semantic ordinal regressed".to_owned())
+        })?;
+    let classified = summary
+        .represented_physical_records()
+        .checked_add(summary.rejected_records())
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload("JSONL semantic classified count overflowed".to_owned())
+        })?;
+    if classified > scanned_physical_records {
+        return Err(CaptureError::InvalidPayload(
+            "JSONL semantic classified count exceeds physical records".to_owned(),
+        ));
+    }
+    let represented_physical_records = resumed
+        .map_or(0, |checkpoint| checkpoint.represented_physical_records)
+        .checked_add(summary.represented_physical_records())
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload("JSONL represented count overflowed".to_owned())
+        })?;
+    let rejected_records = resumed
+        .map_or(leaf.identity_probe_rejected_records, |checkpoint| {
+            checkpoint.rejected_records
+        })
+        .checked_add(summary.rejected_records())
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload("JSONL rejected count overflowed".to_owned())
+        })?;
+    let checkpoint = FamilyCheckpoint {
+        version: FamilyCheckpoint::VERSION,
+        provider_parser_revision: adapter.parser_revision().to_owned(),
+        event_identity_revision: adapter.event_identity_revision().to_owned(),
+        binding_digest: binding_digest(leaf)?,
+        physical: terminal_checkpoint.clone(),
+        admitted_eof_sha256,
+        complete_prefix_ends_with_terminal_nul_padding,
+        represented_physical_records,
+        rejected_records,
+        indexed_documents: documents,
+        provider_checkpoint: summary.into_provider_checkpoint(),
+    };
+    let certificate = certify(adapter, leaf, checkpoint.clone())
+        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+    let append = if is_append {
+        let base = base.ok_or_else(|| {
+            CaptureError::InvalidPayload("JSONL semantic append base is absent".to_owned())
+        })?;
+        let frontier = base.frontier().ok_or_else(|| {
+            CaptureError::InvalidPayload("JSONL semantic append frontier is absent".to_owned())
+        })?;
+        Some(
+            CertifiedSourceAppend::certify(
+                base,
+                certificate.clone(),
+                frontier.certified_prefix_bytes(),
+                *frontier.certified_prefix_digest(),
+            )
+            .map_err(contract_error)?,
+        )
+    } else {
+        None
+    };
+    let terminal_proof = terminal_proof_for_checkpoint(adapter, leaf, &certificate, &checkpoint)?;
     Ok(PreparedLeaf {
         certificate,
         append,
@@ -994,17 +1213,25 @@ fn terminal_proof_for_checkpoint(
     adapter: &dyn JsonlFamilyAdapter,
     leaf: &JsonlFamilyLeaf,
     certificate: &CertifiedSource,
-    checkpoint: &JsonlCheckpoint,
+    checkpoint: &FamilyCheckpoint,
 ) -> Result<JsonlFamilyTerminalProof> {
     if leaf.whole_record || adapter.append_mode() == JsonlFamilyAppendMode::Replacement {
         JsonlFamilyTerminalProof::exact_file(adapter, leaf, certificate)
+    } else if let Some(admitted_eof_sha256) = checkpoint.admitted_eof_sha256 {
+        JsonlFamilyTerminalProof::frozen_prefix(
+            adapter,
+            leaf,
+            certificate,
+            checkpoint.physical.source_observation().length(),
+            admitted_eof_sha256,
+        )
     } else {
         JsonlFamilyTerminalProof::frozen_shared_prefix(
             adapter,
             leaf,
             certificate,
-            checkpoint.complete_prefix_end(),
-            *checkpoint.complete_prefix_sha256(),
+            checkpoint.physical.complete_prefix_end(),
+            *checkpoint.physical.complete_prefix_sha256(),
         )
     }
 }
@@ -1117,6 +1344,39 @@ pub(super) fn decode_checkpoint(
         ));
     }
     Ok(checkpoint)
+}
+
+pub(crate) fn provider_checkpoint_for_base(
+    adapter: &dyn JsonlFamilyAdapter,
+    leaf: &JsonlFamilyLeaf,
+    certificate: &CertifiedSource,
+) -> Result<Option<TypedKey>> {
+    Ok(decode_checkpoint(adapter, leaf, certificate)?.provider_checkpoint)
+}
+
+#[cfg(test)]
+pub(crate) fn checkpoint_admitted_revision_for_test(
+    certificate: &CertifiedSource,
+) -> Result<(Option<[u8; 32]>, bool)> {
+    certificate.validate_contract().map_err(contract_error)?;
+    let frontier = certificate.frontier().ok_or_else(|| {
+        CaptureError::InvalidPayload("JSONL test certificate has no frontier".to_owned())
+    })?;
+    if frontier.checkpoint_kind() != FAMILY_FRONTIER_KIND {
+        return Err(CaptureError::InvalidPayload(
+            "JSONL test certificate has the wrong frontier kind".to_owned(),
+        ));
+    }
+    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
+        return Err(CaptureError::InvalidPayload(
+            "JSONL test certificate checkpoint is malformed".to_owned(),
+        ));
+    };
+    let checkpoint: FamilyCheckpoint = serde_json::from_slice(bytes)?;
+    Ok((
+        checkpoint.admitted_eof_sha256,
+        checkpoint.complete_prefix_ends_with_terminal_nul_padding,
+    ))
 }
 
 fn preserve_coordinator_error(

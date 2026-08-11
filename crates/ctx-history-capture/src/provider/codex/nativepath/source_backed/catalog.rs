@@ -560,26 +560,26 @@ fn catalog_source_from_body(
 
 pub(super) fn hydrate_codex_session_plan_v0(
     plan: (CodexCatalogSource, SourceKey, String),
-    base: Option<&CertifiedSource>,
+    provider_checkpoint: Option<&TypedKey>,
 ) -> CodexSourceBackedResultV0<(
     (CodexCatalogSource, SourceKey, String),
     CodexCatalogWorkV0,
     bool,
 )> {
     let (mut source, source_key, native_session_id) = plan;
-    if let Some(proof) = base
-        .filter(|base| base.parser_revision() == CODEX_PARSER_REVISION)
-        .and_then(|base| decode_append_proof(&source, &source_key, base).ok())
-        .filter(|proof| proof.checkpoint.observation == source.catalog_observation)
-    {
-        if proof.checkpoint.owner.native_session_id != native_session_id {
+    if let Some(checkpoint) = provider_checkpoint.and_then(|checkpoint| match checkpoint {
+        TypedKey::Bytes(bytes) => {
+            super::super::checkpoint::CodexSemanticCheckpoint::decode(bytes).ok()
+        }
+        _ => None,
+    }) {
+        let owner = checkpoint.owner();
+        if owner.native_session_id != native_session_id {
             return Err(CodexSourceBackedErrorV0::InvalidCheckpoint);
         }
-        source.catalog_prefix_sha256 = Some(proof.checkpoint.full_revision_sha256);
-        source.catalog_parent_native_session_id =
-            proof.checkpoint.owner.parent_native_session_id.clone();
-        source.catalog_session_relationship = proof.checkpoint.owner.session_relationship;
-        source.catalog_advisory_session_id = proof.checkpoint.owner.advisory_session_id.clone();
+        source.catalog_parent_native_session_id = owner.parent_native_session_id.clone();
+        source.catalog_session_relationship = owner.session_relationship;
+        source.catalog_advisory_session_id = owner.advisory_session_id.clone();
         set_child_local_root(&mut source, &native_session_id)?;
         return Ok((
             (source, source_key, native_session_id),

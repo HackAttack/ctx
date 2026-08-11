@@ -45,11 +45,6 @@ pub(super) struct CodexPreparedRouteV0 {
     pub(super) work: CodexCatalogWorkV0,
 }
 
-pub(crate) struct CodexGenerationCarriedRouteV0 {
-    pub(crate) participant: usize,
-    pub(crate) sources: HashMap<SourceKey, CertifiedSource>,
-}
-
 #[cfg(any(test, ctx_codex_causal_qualification))]
 #[derive(Clone)]
 pub(super) struct CodexPreparedCatalogObservationV0 {
@@ -125,19 +120,11 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         })
     }
 
-    pub(crate) fn prepare(
-        &self,
-        selected: &[usize],
-        carried: Vec<CodexGenerationCarriedRouteV0>,
-    ) -> CodexSourceBackedResultV0<()> {
+    pub(crate) fn prepare(&self, selected: &[usize]) -> CodexSourceBackedResultV0<()> {
         // Participant IDs encode registration order. Preserve that order when
         // overlapping automatic and explicit routes establish exact source
         // ownership, independent of HashMap randomization.
         let selected = selected.iter().copied().collect::<BTreeSet<_>>();
-        let carried = carried
-            .into_iter()
-            .map(|route| (route.participant, route.sources))
-            .collect::<HashMap<_, _>>();
         let participants = {
             let state = self
                 .state
@@ -185,22 +172,8 @@ impl CodexGenerationNormalizationCoordinatorV0 {
 
             let mut sources = Vec::with_capacity(discovered.len());
             #[cfg(any(test, ctx_codex_causal_qualification))]
-            let mut catalog_observations = Vec::with_capacity(discovered.len());
+            let catalog_observations = Vec::new();
             for plan in discovered {
-                let base = carried
-                    .get(&participant)
-                    .and_then(|sources| sources.get(&plan.1));
-                let (plan, hydration_work, exact_replay) =
-                    super::catalog::hydrate_codex_session_plan_v0(plan, base)?;
-                #[cfg(any(test, ctx_codex_causal_qualification))]
-                catalog_observations.push(CodexPreparedCatalogObservationV0 {
-                    native_session_id: plan.2.clone(),
-                    parent_native_session_id: plan.0.catalog_parent_native_session_id.clone(),
-                    work: hydration_work,
-                    exact_replay,
-                });
-                #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-                let _ = (hydration_work, exact_replay);
                 let descriptor = plan.1.exact_descriptor_digest();
                 if let Some((existing, native_session_id)) = descriptor_bindings.get(&descriptor) {
                     if !existing.exact_descriptor_eq(&plan.1) || native_session_id != &plan.2 {
@@ -232,7 +205,10 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 CodexPreparedRouteV0 {
                     missing,
                     sources,
-                    prehydrated: true,
+                    // Family checkpoint unwrapping requires the admitted leaf.
+                    // Defer both exact replay and cold metadata hydration to
+                    // `prepare_leaf_scans`, before ordering or publication.
+                    prehydrated: false,
                     #[cfg(any(test, ctx_codex_causal_qualification))]
                     catalog_observations,
                     #[cfg(any(test, ctx_codex_causal_qualification))]
