@@ -1,9 +1,9 @@
 use super::*;
 
 use crate::provider::codex::nativepath::{
-    codex_session_root_rank, CodexExplicitSessionJsonlFamilyAdapterV0,
-    CodexExplicitSessionSourceBackedInputV0, CodexPromptHistoryJsonlFamilyAdapterV0,
-    CodexPromptHistorySourceBackedInputV0, CodexSessionTreeJsonlFamilyAdapterV0,
+    codex_session_root_rank, CodexExplicitSessionSourceBackedInputV0,
+    CodexPromptHistoryJsonlFamilyAdapterV0, CodexPromptHistorySourceBackedInputV0,
+    CodexSessionJsonlFamilyAdapterV0,
 };
 
 pub(super) fn register_codex_session_tree_route(
@@ -52,12 +52,10 @@ pub(in crate::provider::source_backed) fn register_codex_session_tree_routes(
         .get_or_insert_with(|| Arc::new(CodexGenerationNormalizationCoordinatorV0::default()))
         .clone();
     let generation = coordinator
-        .register_session_tree(roots.clone())
+        .register_session_tree(roots)
         .map_err(|error| invalid_route(CaptureProvider::Codex, error.to_string()))?;
     let participant = generation.participant();
-    let adapter = CodexSessionTreeJsonlFamilyAdapterV0::new(roots)
-        .map(|adapter| adapter.with_generation(generation))
-        .map_err(|error| invalid_route(CaptureProvider::Codex, error.to_string()))?;
+    let adapter = CodexSessionJsonlFamilyAdapterV0::new(generation);
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         Arc::new(adapter),
         source.path.clone(),
@@ -89,7 +87,7 @@ pub(super) fn register_codex_explicit_session_route(
         .register_explicit_session(input.clone())
         .map_err(|error| invalid_route(source.provider, error.to_string()))?;
     let participant = generation.participant();
-    let adapter = CodexExplicitSessionJsonlFamilyAdapterV0::new(input).with_generation(generation);
+    let adapter = CodexSessionJsonlFamilyAdapterV0::new(generation);
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         Arc::new(adapter),
         route_path,

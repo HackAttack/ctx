@@ -23,9 +23,8 @@ pub(crate) use rows::CodexSessionRow;
 pub(crate) use source::CodexCatalogSource;
 pub(crate) use source::{discover_codex_catalog_sources, CodexFileObservation};
 pub(crate) use source_backed::{
-    codex_session_root_rank, CodexExplicitSessionJsonlFamilyAdapterV0,
-    CodexExplicitSessionSourceBackedInputV0, CodexGenerationNormalizationCoordinatorV0,
-    CodexSessionTreeJsonlFamilyAdapterV0,
+    absolute_lexical_path, codex_session_root_rank, CodexExplicitSessionSourceBackedInputV0,
+    CodexGenerationNormalizationCoordinatorV0, CodexSessionJsonlFamilyAdapterV0,
 };
 #[cfg(test)]
 pub(crate) use source_backed::{

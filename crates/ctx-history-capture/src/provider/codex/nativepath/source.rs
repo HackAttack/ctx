@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    sync::Arc,
     time::SystemTime,
 };
 
@@ -9,8 +8,7 @@ use ctx_history_core::{CaptureProvider, SessionRelationshipKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    common::time::system_time_ms,
+    common::{io::ProviderSourceRoot, time::system_time_ms},
     provider::codex::catalog::CatalogSession,
     CODEX_SESSION_SOURCE_FORMAT,
 };
@@ -57,7 +55,6 @@ impl CodexFileObservation {
 pub(crate) struct CodexCatalogSource {
     pub(crate) source_root: String,
     pub(crate) source_path: PathBuf,
-    pub(crate) cataloged_at_ms: i64,
     pub(crate) catalog_observation: CodexFileObservation,
     /// SHA-256 of exactly `catalog_observation.len` bytes from the retained
     /// discovery authority. This is task-local admission evidence, not a
@@ -68,27 +65,9 @@ pub(crate) struct CodexCatalogSource {
     pub(crate) catalog_session_relationship: SessionRelationshipKind,
     pub(crate) catalog_advisory_session_id: Option<String>,
     pub(crate) catalog_root_native_session_id: Option<String>,
-    pub(crate) opened: Option<Arc<OpenedProviderSourceFile>>,
     pub(crate) authority_root: Option<ProviderSourceRoot>,
     pub(crate) authority_relative_path: Option<PathBuf>,
 }
-
-impl PartialEq for CodexCatalogSource {
-    fn eq(&self, other: &Self) -> bool {
-        self.source_root == other.source_root
-            && self.source_path == other.source_path
-            && self.cataloged_at_ms == other.cataloged_at_ms
-            && self.catalog_observation == other.catalog_observation
-            && self.catalog_prefix_sha256 == other.catalog_prefix_sha256
-            && self.catalog_native_session_id == other.catalog_native_session_id
-            && self.catalog_parent_native_session_id == other.catalog_parent_native_session_id
-            && self.catalog_session_relationship == other.catalog_session_relationship
-            && self.catalog_advisory_session_id == other.catalog_advisory_session_id
-            && self.catalog_root_native_session_id == other.catalog_root_native_session_id
-    }
-}
-
-impl Eq for CodexCatalogSource {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexCatalogRejection {
@@ -161,7 +140,6 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
     Ok(CodexCatalogSource {
         source_root: session.source_root.clone(),
         source_path: PathBuf::from(&session.source_path),
-        cataloged_at_ms: session.cataloged_at_ms,
         catalog_observation: CodexFileObservation {
             len: session.file_size_bytes,
             modified_at_ms: session.file_modified_at_ms,
@@ -174,7 +152,6 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
         catalog_session_relationship: session.session_relationship,
         catalog_advisory_session_id: session.advisory_session_id.clone(),
         catalog_root_native_session_id: None,
-        opened: None,
         authority_root: None,
         authority_relative_path: None,
     })

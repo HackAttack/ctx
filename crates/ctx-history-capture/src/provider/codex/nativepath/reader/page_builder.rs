@@ -8,7 +8,6 @@ impl CodexNativeScanner {
         let expected_offset = input.complete_prefix_end()?;
         Ok(CodexNativePage {
             owner: self.owner.clone(),
-            next_safe_offset: expected_offset,
             expected_offset,
             source_backed_rows: Vec::new(),
             serialized_bytes: PAGE_FIXED_WIRE_BYTES,
@@ -111,7 +110,7 @@ impl CodexNativeScanner {
 
     pub(super) fn finish_semantic_page(
         &mut self,
-        input: &JsonlFamilyExecutionIo,
+        _input: &JsonlFamilyExecutionIo,
         mut page: CodexNativePage,
     ) -> Result<CodexNativePage> {
         page.owner = self
@@ -119,7 +118,6 @@ impl CodexNativeScanner {
             .clone()
             .map(|owner| validate_catalog_owner(&self.source, owner))
             .transpose()?;
-        page.next_safe_offset = input.complete_prefix_end()?;
         debug_assert!(page.physical_records <= MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS);
         debug_assert!(page.units() <= MAX_CODEX_PAGE_UNITS);
         debug_assert!(

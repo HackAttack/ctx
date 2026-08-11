@@ -22,6 +22,7 @@ enum CodexGenerationParticipantV0 {
 pub(crate) struct CodexGenerationRouteV0 {
     coordinator: Arc<CodexGenerationNormalizationCoordinatorV0>,
     participant: usize,
+    session_tree: bool,
 }
 
 impl CodexGenerationRouteV0 {
@@ -29,8 +30,39 @@ impl CodexGenerationRouteV0 {
         self.participant
     }
 
+    pub(super) fn is_session_tree(&self) -> bool {
+        self.session_tree
+    }
+
     pub(super) fn prepared(&self) -> CodexSourceBackedResultV0<CodexPreparedRouteV0> {
         self.coordinator.prepared(self.participant)
+    }
+
+    pub(super) fn session_tree_roots(&self) -> CodexSourceBackedResultV0<Option<Arc<[PathBuf]>>> {
+        match self.participant_definition()? {
+            CodexGenerationParticipantV0::SessionTree { roots } => Ok(Some(roots)),
+            CodexGenerationParticipantV0::ExplicitSession { .. } => Ok(None),
+        }
+    }
+
+    pub(super) fn explicit_session_input(
+        &self,
+    ) -> CodexSourceBackedResultV0<Option<CodexExplicitSessionSourceBackedInputV0>> {
+        match self.participant_definition()? {
+            CodexGenerationParticipantV0::SessionTree { .. } => Ok(None),
+            CodexGenerationParticipantV0::ExplicitSession { input } => Ok(Some(input)),
+        }
+    }
+
+    fn participant_definition(&self) -> CodexSourceBackedResultV0<CodexGenerationParticipantV0> {
+        self.coordinator
+            .state
+            .lock()
+            .map_err(|_| CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)?
+            .participants
+            .get(&self.participant)
+            .cloned()
+            .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
     }
 }
 
@@ -104,6 +136,10 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         Ok(CodexGenerationRouteV0 {
             coordinator: Arc::clone(self),
             participant: id,
+            session_tree: matches!(
+                state.participants.get(&id),
+                Some(CodexGenerationParticipantV0::SessionTree { .. })
+            ),
         })
     }
 
@@ -136,13 +172,12 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         for (participant, discovery) in participants {
             let (missing, discovered) = match discovery {
                 CodexGenerationParticipantV0::SessionTree { roots } => {
-                    let inventory =
+                    let sources =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(&roots)?;
-                    (false, inventory.sources)
+                    (false, sources)
                 }
                 CodexGenerationParticipantV0::ExplicitSession { input } => {
-                    let inventory = observe_codex_explicit_session_source_backed_v0(&input)?;
-                    let plan = inventory.source_plan();
+                    let plan = observe_codex_explicit_session_source_backed_v0(&input)?;
                     (plan.is_none(), plan.into_iter().collect())
                 }
             };

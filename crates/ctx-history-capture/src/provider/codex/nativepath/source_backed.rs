@@ -195,12 +195,12 @@ mod causal;
 mod generation;
 mod identity;
 mod jsonl_family;
-use catalog::discover_codex_session_tree_inventory_v0;
 #[cfg(test)]
 pub(crate) use catalog::install_after_codex_metadata_inventory_hook;
 #[cfg(any(test, ctx_codex_causal_qualification))]
 use catalog::CodexCatalogWorkV0;
 pub(crate) use catalog::{
+    absolute_lexical_path, codex_session_root_rank,
     observe_codex_explicit_session_source_backed_v0, CodexExplicitSessionSourceBackedInputV0,
 };
 #[cfg(test)]
@@ -210,7 +210,4 @@ use identity::{
     codex_core_record, codex_session_identity, codex_source_key, validate_owner,
     CodexEventIdentityStateV0,
 };
-pub(crate) use jsonl_family::{
-    codex_session_root_rank, CodexExplicitSessionJsonlFamilyAdapterV0,
-    CodexSessionTreeJsonlFamilyAdapterV0,
-};
+pub(crate) use jsonl_family::CodexSessionJsonlFamilyAdapterV0;

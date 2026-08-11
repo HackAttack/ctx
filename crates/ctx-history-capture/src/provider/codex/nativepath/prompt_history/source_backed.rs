@@ -15,6 +15,7 @@ use ctx_history_core::{
 };
 use thiserror::Error;
 
+use super::super::absolute_lexical_path;
 use super::PromptLine;
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -30,9 +31,7 @@ use crate::{
     CaptureError,
 };
 
-mod path;
 mod projection;
-use path::absolute_lexical_path;
 use projection::{core_record, retained_record_bytes};
 
 const SOURCE_FORMAT: &str = "codex_history_jsonl";
@@ -106,7 +105,6 @@ struct CodexPromptHistoryJsonlFamilyStateV0 {
 #[derive(Clone)]
 pub(crate) struct CodexPromptHistoryJsonlFamilyAdapterV0 {
     input: CodexPromptHistorySourceBackedInputV0,
-    route_path: PathBuf,
     #[cfg(test)]
     state: Arc<Mutex<CodexPromptHistoryJsonlFamilyStateV0>>,
 }
@@ -119,14 +117,13 @@ impl CodexPromptHistoryJsonlFamilyAdapterV0 {
         input.path = route_path.clone();
         Ok(Self {
             input,
-            route_path,
             #[cfg(test)]
             state: Arc::new(Mutex::new(CodexPromptHistoryJsonlFamilyStateV0::default())),
         })
     }
 
     pub(crate) fn route_path(&self) -> &Path {
-        &self.route_path
+        self.input.path()
     }
 
     #[cfg(test)]
@@ -144,7 +141,7 @@ impl CodexPromptHistoryJsonlFamilyAdapterV0 {
     }
 
     fn discover_family(&self, route_path: &Path) -> crate::Result<JsonlFamilyInventory> {
-        if route_path != self.route_path {
+        if route_path != self.input.path() {
             return Err(CaptureError::InvalidPayload(
                 "Codex prompt-history JSONL route path changed".to_owned(),
             ));
@@ -292,7 +289,7 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
         &self,
         _certificate: &ctx_history_core::CertifiedSource,
     ) -> crate::Result<PathBuf> {
-        Ok(self.route_path.clone())
+        Ok(self.input.path().to_path_buf())
     }
 }
 

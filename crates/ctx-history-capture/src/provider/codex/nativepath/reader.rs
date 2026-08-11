@@ -111,7 +111,6 @@ pub(crate) struct CodexScanCounters {
 pub(crate) struct CodexNativePage {
     pub(crate) owner: Option<CodexSessionRow>,
     expected_offset: u64,
-    next_safe_offset: u64,
     pub(crate) source_backed_rows: Vec<CodexSourceBackedRowV0>,
     pub(crate) serialized_bytes: usize,
     pub(crate) physical_records: u64,

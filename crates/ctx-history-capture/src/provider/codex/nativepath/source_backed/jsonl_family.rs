@@ -1,10 +1,9 @@
-use std::{collections::BTreeMap, marker::PhantomData, sync::Mutex};
+use std::{collections::BTreeMap, sync::Mutex};
 
 use chrono::{DateTime, Utc};
 
 #[cfg(any(test, ctx_codex_causal_qualification))]
 use super::causal::CodexCausalLedgerV1;
-use super::generation::CodexPreparedRouteV0;
 use super::*;
 use crate::{
     common::io::OpenedProviderSourceFile,
@@ -372,75 +371,21 @@ fn missing_codex_inventory_v0(
     JsonlFamilyInventory::missing(CaptureProvider::Codex, route_path)
 }
 
-#[derive(Clone)]
-enum CodexSessionDiscoveryAuthorityV0 {
-    SessionTree {
-        roots: Arc<[PathBuf]>,
-    },
-    ExplicitSession {
-        input: CodexExplicitSessionSourceBackedInputV0,
-    },
-}
-
-pub(crate) enum CodexSessionTreeAdapterKindV0 {}
-pub(crate) enum CodexExplicitSessionAdapterKindV0 {}
-
 /// Codex session inventory and semantic JSONL execution for either explicit or
 /// tree discovery. Shared JSONL owns carried bases and the physical lifecycle;
-/// the authority variant owns only route discovery and terminal membership.
+/// its mandatory generation route owns discovery and terminal membership.
 #[derive(Clone)]
-pub(crate) struct CodexSessionJsonlFamilyAdapterV0<Kind> {
-    authority: CodexSessionDiscoveryAuthorityV0,
+pub(crate) struct CodexSessionJsonlFamilyAdapterV0 {
     state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
-    generation: Option<CodexGenerationRouteV0>,
-    kind: PhantomData<fn() -> Kind>,
+    generation: CodexGenerationRouteV0,
 }
 
-pub(crate) type CodexSessionTreeJsonlFamilyAdapterV0 =
-    CodexSessionJsonlFamilyAdapterV0<CodexSessionTreeAdapterKindV0>;
-pub(crate) type CodexExplicitSessionJsonlFamilyAdapterV0 =
-    CodexSessionJsonlFamilyAdapterV0<CodexExplicitSessionAdapterKindV0>;
-
-impl CodexSessionTreeJsonlFamilyAdapterV0 {
-    pub(crate) fn new(mut roots: Vec<PathBuf>) -> CodexSourceBackedResultV0<Self> {
-        roots.sort_by(|left, right| {
-            codex_session_root_rank(left)
-                .cmp(&codex_session_root_rank(right))
-                .then_with(|| left.cmp(right))
-        });
-        roots.dedup();
-        if roots.is_empty() {
-            return Err(CaptureError::InvalidPayload(
-                "Codex session-tree authority has no roots".to_owned(),
-            )
-            .into());
-        }
-        Ok(Self {
-            authority: CodexSessionDiscoveryAuthorityV0::SessionTree {
-                roots: roots.into(),
-            },
-            state: Arc::new(Mutex::new(CodexSessionJsonlFamilyStateV0::default())),
-            generation: None,
-            kind: PhantomData,
-        })
-    }
-}
-
-impl CodexExplicitSessionJsonlFamilyAdapterV0 {
-    pub(crate) fn new(input: CodexExplicitSessionSourceBackedInputV0) -> Self {
+impl CodexSessionJsonlFamilyAdapterV0 {
+    pub(crate) fn new(generation: CodexGenerationRouteV0) -> Self {
         Self {
-            authority: CodexSessionDiscoveryAuthorityV0::ExplicitSession { input },
             state: Arc::new(Mutex::new(CodexSessionJsonlFamilyStateV0::default())),
-            generation: None,
-            kind: PhantomData,
+            generation,
         }
-    }
-}
-
-impl<Kind> CodexSessionJsonlFamilyAdapterV0<Kind> {
-    pub(crate) fn with_generation(mut self, generation: CodexGenerationRouteV0) -> Self {
-        self.generation = Some(generation);
-        self
     }
 
     fn discover_tree_family(
@@ -450,26 +395,10 @@ impl<Kind> CodexSessionJsonlFamilyAdapterV0<Kind> {
     ) -> Result<JsonlFamilyInventory> {
         // Shared JSONL invokes this only after route admission and freezes the
         // opening inventory before leaf workers start.
-        let prepared = match self.generation.as_ref() {
-            Some(generation) => generation.prepared().map_err(codex_family_capture_error)?,
-            None => {
-                let inventory = discover_codex_session_tree_inventory_v0(roots)
-                    .map_err(codex_family_capture_error)?;
-                let sources = inventory
-                    .sources
-                    .into_iter()
-                    .map(|mut plan| {
-                        super::catalog::set_child_local_root(&mut plan.0, &plan.2)?;
-                        Ok(plan)
-                    })
-                    .collect::<CodexSourceBackedResultV0<Vec<_>>>()
-                    .map_err(codex_family_capture_error)?;
-                CodexPreparedRouteV0 {
-                    missing: false,
-                    sources,
-                }
-            }
-        };
+        let prepared = self
+            .generation
+            .prepared()
+            .map_err(codex_family_capture_error)?;
         if prepared.missing {
             return Err(CaptureError::SystemInvariant(
                 "Codex session-tree generation partition is missing",
@@ -494,12 +423,7 @@ impl<Kind> CodexSessionJsonlFamilyAdapterV0<Kind> {
                     .ok_or(CaptureError::SystemInvariant(
                         "Codex catalog source has no authority path",
                     ))?;
-            let observation = if self.generation.is_some() {
-                observe_generation_source_capability_v0(source)?
-            } else {
-                let opened = authority.open_file(&authority_path)?;
-                observe_opened_file(&source.source_path, &opened)?
-            };
+            let observation = observe_generation_source_capability_v0(source)?;
             leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
                 source_key.clone(),
                 source.source_path.clone(),
@@ -540,22 +464,10 @@ impl<Kind> CodexSessionJsonlFamilyAdapterV0<Kind> {
                 "explicit Codex JSONL route path changed".to_owned(),
             ));
         }
-        let prepared = match self.generation.as_ref() {
-            Some(generation) => generation.prepared().map_err(codex_family_capture_error)?,
-            None => {
-                let inventory = observe_codex_explicit_session_source_backed_v0(input)
-                    .map_err(codex_family_capture_error)?;
-                let Some(mut plan) = inventory.source_plan() else {
-                    return missing_codex_inventory_v0(&self.state, route_path, completed_stage);
-                };
-                super::catalog::set_child_local_root(&mut plan.0, &plan.2)
-                    .map_err(codex_family_capture_error)?;
-                CodexPreparedRouteV0 {
-                    missing: false,
-                    sources: vec![plan],
-                }
-            }
-        };
+        let prepared = self
+            .generation
+            .prepared()
+            .map_err(codex_family_capture_error)?;
         if prepared.missing {
             return missing_codex_inventory_v0(&self.state, route_path, completed_stage);
         }
@@ -569,12 +481,7 @@ impl<Kind> CodexSessionJsonlFamilyAdapterV0<Kind> {
         let plans = prepared.sources;
         let mut leaves = Vec::with_capacity(plans.len());
         for plan in &plans {
-            let observation = if self.generation.is_some() {
-                observe_generation_source_capability_v0(&plan.0)?
-            } else {
-                let opened = authority.open_file(&authority_path)?;
-                observe_opened_file(&plan.0.source_path, &opened)?
-            };
+            let observation = observe_generation_source_capability_v0(&plan.0)?;
             leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
                 plan.1.clone(),
                 plan.0.source_path.clone(),
@@ -615,7 +522,7 @@ impl<Kind> CodexSessionJsonlFamilyAdapterV0<Kind> {
     }
 }
 
-impl<Kind: Send + Sync> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<Kind> {
+impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
     }
@@ -645,13 +552,10 @@ impl<Kind: Send + Sync> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<
     }
 
     fn root_missing_mode(&self) -> JsonlFamilyRootMissingMode {
-        match &self.authority {
-            CodexSessionDiscoveryAuthorityV0::SessionTree { .. } => {
-                JsonlFamilyRootMissingMode::Unavailable
-            }
-            CodexSessionDiscoveryAuthorityV0::ExplicitSession { .. } => {
-                JsonlFamilyRootMissingMode::AuthoritativeEmpty
-            }
+        if self.generation.is_session_tree() {
+            JsonlFamilyRootMissingMode::Unavailable
+        } else {
+            JsonlFamilyRootMissingMode::AuthoritativeEmpty
         }
     }
 
@@ -664,13 +568,22 @@ impl<Kind: Send + Sync> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<
     }
 
     fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
-        match &self.authority {
-            CodexSessionDiscoveryAuthorityV0::SessionTree { roots } => {
-                self.discover_tree_family(root, roots)
-            }
-            CodexSessionDiscoveryAuthorityV0::ExplicitSession { input } => {
-                self.discover_explicit_family(root, input)
-            }
+        if let Some(roots) = self
+            .generation
+            .session_tree_roots()
+            .map_err(codex_family_capture_error)?
+        {
+            self.discover_tree_family(root, &roots)
+        } else if let Some(input) = self
+            .generation
+            .explicit_session_input()
+            .map_err(codex_family_capture_error)?
+        {
+            self.discover_explicit_family(root, &input)
+        } else {
+            Err(CaptureError::SystemInvariant(
+                "Codex generation route has no discovery authority",
+            ))
         }
     }
 
@@ -680,37 +593,32 @@ impl<Kind: Send + Sync> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<
         opening: &JsonlFamilyInventory,
     ) -> Result<JsonlFamilyMembershipObservation> {
         self.run_pending_stage_observer()?;
-        match &self.authority {
-            CodexSessionDiscoveryAuthorityV0::SessionTree { .. } => {
-                let mut observation =
-                    JsonlFamilyMembershipObservation::observe_authorities(opening)?;
-                let candidates = observation
-                    .unbound_routes()
-                    .map(|(path, authority, authority_path)| {
-                        (path.to_path_buf(), authority, authority_path.to_path_buf())
-                    })
-                    .collect::<Vec<_>>();
-                for (path, authority, authority_path) in candidates {
-                    if let Some(native_session_id) =
-                        super::catalog::codex_terminal_native_session_id_hint(
-                            &path,
-                            &authority,
-                            &authority_path,
-                        )
-                        .map_err(codex_family_capture_error)?
-                    {
-                        observation.bind_source_hint(
-                            path,
-                            codex_source_key(&native_session_id)
-                                .map_err(codex_family_capture_error)?,
-                        );
-                    }
+        if self.generation.is_session_tree() {
+            let mut observation = JsonlFamilyMembershipObservation::observe_authorities(opening)?;
+            let candidates = observation
+                .unbound_routes()
+                .map(|(path, authority, authority_path)| {
+                    (path.to_path_buf(), authority, authority_path.to_path_buf())
+                })
+                .collect::<Vec<_>>();
+            for (path, authority, authority_path) in candidates {
+                if let Some(native_session_id) =
+                    super::catalog::codex_terminal_native_session_id_hint(
+                        &path,
+                        &authority,
+                        &authority_path,
+                    )
+                    .map_err(codex_family_capture_error)?
+                {
+                    observation.bind_source_hint(
+                        path,
+                        codex_source_key(&native_session_id).map_err(codex_family_capture_error)?,
+                    );
                 }
-                Ok(observation)
             }
-            CodexSessionDiscoveryAuthorityV0::ExplicitSession { .. } => {
-                JsonlFamilyMembershipObservation::observe(root, opening)
-            }
+            Ok(observation)
+        } else {
+            JsonlFamilyMembershipObservation::observe(root, opening)
         }
     }
 
@@ -773,15 +681,24 @@ impl<Kind: Send + Sync> JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0<
     }
 
     fn base_source_path(&self, _certificate: &CertifiedSource) -> Result<PathBuf> {
-        match &self.authority {
-            CodexSessionDiscoveryAuthorityV0::SessionTree { roots } => {
-                roots.first().cloned().ok_or(CaptureError::SystemInvariant(
-                    "Codex JSONL family has no route root",
-                ))
-            }
-            CodexSessionDiscoveryAuthorityV0::ExplicitSession { input } => {
-                Ok(input.path().to_path_buf())
-            }
+        if let Some(roots) = self
+            .generation
+            .session_tree_roots()
+            .map_err(codex_family_capture_error)?
+        {
+            roots.first().cloned().ok_or(CaptureError::SystemInvariant(
+                "Codex JSONL family has no route root",
+            ))
+        } else if let Some(input) = self
+            .generation
+            .explicit_session_input()
+            .map_err(codex_family_capture_error)?
+        {
+            Ok(input.path().to_path_buf())
+        } else {
+            Err(CaptureError::SystemInvariant(
+                "Codex generation route has no base source path",
+            ))
         }
     }
 }
@@ -831,13 +748,5 @@ fn codex_systemic_error_kind(error: &CaptureError) -> Option<SourceBackedRouteEr
             Some(SourceBackedRouteErrorKind::Internal)
         }
         _ => None,
-    }
-}
-
-pub(crate) fn codex_session_root_rank(root: &Path) -> u8 {
-    match root.file_name().and_then(std::ffi::OsStr::to_str) {
-        Some("sessions") => 0,
-        Some("archived_sessions") => 1,
-        _ => 2,
     }
 }
