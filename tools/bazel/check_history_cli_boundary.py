@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import ast
+import os
+import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 
 HISTORY_PACKAGE = "ctx-history-cli"
@@ -41,6 +44,21 @@ HISTORY_TEST_SUPPORT_LABEL = "//crates/ctx-history-cli:test_support_lib"
 HISTORY_CARGO_DATA_LABEL = "//crates/ctx-history-cli:cargo_package_data"
 HISTORY_BUILD_LABEL = "//crates/ctx-history-cli:BUILD.bazel"
 HISTORY_CARGO_LABEL = "//crates/ctx-history-cli:Cargo.toml"
+EVALUATED_REVERSE_BAZEL_CONSUMERS = {
+    HISTORY_LABEL: (
+        "//crates/ctx-cli:ctx",
+        "//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture",
+        "//crates/ctx-cli:ctx_hosted_uninstall_test_host",
+        "//crates/ctx-cli:ctx_pro_test_host",
+        "//crates/ctx-cli:ctx_upgrade_test_harness",
+        "//crates/ctx-history-cli:lib",
+        "//crates/ctx-history-cli:request_parity_tests",
+    ),
+    HISTORY_TEST_SUPPORT_LABEL: (
+        "//crates/ctx-cli:unit_tests",
+        "//crates/ctx-history-cli:test_support_lib",
+    ),
+}
 DEPENDENCY_TABLES = {"dependencies", "dev-dependencies", "build-dependencies"}
 HISTORY_LOADS = {
     "@crates//:defs.bzl": {"aliases", "all_crate_deps", "crate_edition"},
@@ -594,6 +612,69 @@ def _validate_reverse_build_inventory(
             )
 
 
+def validate_evaluated_reverse_bazel_consumers(
+    query: Callable[[str], Sequence[str]],
+) -> None:
+    """Require the exact direct Bazel consumers after Starlark evaluation.
+
+    The lexical BUILD inventory above deliberately constrains the reviewed
+    files. This check is separate because labels may also be composed or
+    provided by a loaded macro, neither of which can be safely inferred from
+    raw string tokens.
+    """
+    for target, expected in EVALUATED_REVERSE_BAZEL_CONSUMERS.items():
+        actual = tuple(sorted(query(f"rdeps(//..., {target}, 1)")))
+        if actual != expected:
+            raise BoundaryError(
+                "ctx-history-cli evaluated reverse Bazel consumers drifted: "
+                f"target={target} expected={list(expected)} actual={list(actual)}"
+            )
+
+
+def _validate_live_reverse_bazel_consumers(workspace_path: Path) -> None:
+    repo_root = workspace_path.parent.resolve()
+    bazel_wrapper = repo_root / "scripts/bazelw"
+    if not bazel_wrapper.is_file() or not os.access(bazel_wrapper, os.X_OK):
+        raise BoundaryError("history CLI boundary requires an executable scripts/bazelw")
+
+    # Bazel may set TEST_TMPDIR beneath the checkout. Its repository cache must
+    # remain outside the workspace, so do not let tempfile inherit that path.
+    with tempfile.TemporaryDirectory(
+        prefix="ctx-history-cli-boundary-", dir="/tmp"
+    ) as scratch:
+        scratch_path = Path(scratch)
+        environment = os.environ.copy()
+        environment.pop("BUILD_WORKSPACE_DIRECTORY", None)
+        environment.update(
+            {
+                "HOME": str(scratch_path / "home"),
+                "BAZEL_OUTPUT_USER_ROOT": str(scratch_path / "bazel-output"),
+                "CTX_BAZEL_SANDBOX_BASE": str(scratch_path / "bazel-sandboxes"),
+                "CTX_BAZEL_WORKSPACE": str(repo_root),
+            }
+        )
+        (scratch_path / "home").mkdir()
+
+        def query(expression: str) -> tuple[str, ...]:
+            result = subprocess.run(
+                [str(bazel_wrapper), "query", expression, "--output=label"],
+                check=False,
+                capture_output=True,
+                cwd=repo_root,
+                env=environment,
+                text=True,
+            )
+            if result.returncode:
+                detail = result.stderr.strip() or result.stdout.strip()
+                raise BoundaryError(
+                    "history CLI evaluated reverse Bazel query failed"
+                    + (f": {detail}" if detail else "")
+                )
+            return tuple(line for line in result.stdout.splitlines() if line)
+
+        validate_evaluated_reverse_bazel_consumers(query)
+
+
 def _raw_rust_string_end(source: str, index: int) -> int | None:
     marker = index
     if source.startswith(("br", "cr"), marker):
@@ -755,6 +836,7 @@ def main() -> int:
             tuple(Path(argument) for argument in sys.argv[9:build_separator]),
             tuple(Path(argument) for argument in sys.argv[build_separator + 1 :]),
         )
+        _validate_live_reverse_bazel_consumers(Path(sys.argv[1]))
     except (BoundaryError, OSError, tomllib.TOMLDecodeError) as error:
         print(error, file=sys.stderr)
         return 1
