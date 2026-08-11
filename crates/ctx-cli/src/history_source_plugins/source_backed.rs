@@ -25,19 +25,15 @@ pub(crate) const COMMAND_ONLY_UNSUPPORTED_REASON: &str =
 
 #[derive(Debug)]
 pub(crate) struct PreparedHistorySourcePluginRefresh {
-    source: HistorySourcePluginSource,
     provider_source: ProviderSource,
 }
 
 impl PreparedHistorySourcePluginRefresh {
-    pub(crate) fn source(&self) -> &HistorySourcePluginSource {
-        &self.source
-    }
-
     pub(crate) fn provider_source(&self) -> &ProviderSource {
         &self.provider_source
     }
 
+    #[cfg(test)]
     pub(crate) fn source_path(&self) -> &Path {
         &self.provider_source.path
     }
@@ -61,7 +57,6 @@ pub(crate) fn prepare_source_backed_history_source(
     })?;
     validate_provider_owned_source(&source, &source_path)?;
     Ok(PreparedHistorySourcePluginRefresh {
-        source,
         provider_source: ProviderSource {
             provider: CaptureProvider::Custom,
             path: source_path,

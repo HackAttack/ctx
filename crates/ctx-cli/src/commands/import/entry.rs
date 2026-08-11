@@ -141,25 +141,10 @@ pub(crate) fn insert_import_error_analytics(
 pub(crate) fn import_report_analytics_outcome(
     totals: &ImportTotals,
 ) -> (&'static str, &'static str) {
-    if !totals.has_usable_source_result() && totals.failed_sources > 0 {
-        return ("failure", "source");
-    }
-    match (totals.failed_sources > 0, totals.failed > 0) {
-        (false, false) => ("success", "none"),
-        (false, true) => ("completed_with_rejections", "record"),
-        (true, false) => ("completed_with_source_failures", "source"),
-        (true, true) => (
-            "completed_with_rejections_and_source_failures",
-            "record_and_source",
-        ),
-    }
+    let (outcome, scope) = totals.outcome();
+    (outcome.as_str(), scope.as_str())
 }
 
 pub(crate) fn import_report_failure_type(totals: &ImportTotals) -> &'static str {
-    match (totals.failed_sources > 0, totals.failed > 0) {
-        (false, false) => "none",
-        (false, true) => "record_rejection",
-        (true, false) => "source_failure",
-        (true, true) => "record_rejection_and_source_failure",
-    }
+    totals.failure_type().as_str()
 }

@@ -37,6 +37,17 @@ impl SourceDiscoveryPort for CliSourceDiscoveryPort {
     fn discover_provider(&self, provider: CaptureProvider) -> Result<DiscoveryReport> {
         Ok(discovered_sources_for_provider_report(provider))
     }
+
+    fn provider_selection_guidance(
+        &self,
+        provider: CaptureProvider,
+    ) -> ctx_history_ingest_application::ProviderSelectionGuidance {
+        ctx_history_ingest_application::ProviderSelectionGuidance {
+            display_name: provider_cli_name(provider).to_owned(),
+            manual_path_command: manual_path_guidance(provider),
+            unavailable_reason: None,
+        }
+    }
 }
 pub(crate) fn discovered_plugin_sources_json(data_root: &Path) -> Result<Vec<Value>> {
     let plugin_discovery = discover_history_source_plugins_with_diagnostics(data_root, &[])?;
