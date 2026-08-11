@@ -29,9 +29,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use crate::ordinary_file::ORDINARY_FILE_V2_TOKEN_DOMAIN;
 use crate::{Result, SourceIoError};
-
-const ORDINARY_FILE_TOKEN_DOMAIN: &[u8] = b"ctx-ordinary-file-observation-v2\0";
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 #[path = "root_handle/unix.rs"]
@@ -617,10 +616,86 @@ impl OpenedProviderSourceFile {
 
 fn ordinary_file_token(stamp: &platform::ObjectStamp) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(ORDINARY_FILE_TOKEN_DOMAIN);
+    digest.update(ORDINARY_FILE_V2_TOKEN_DOMAIN);
     digest.update(b"platform\0");
     digest.update(platform::object_change_token(stamp));
     digest.finalize().into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetainedFileIdentityVersion {
+    SharedJsonlV1,
+    OrdinaryFileV2,
+}
+
+#[cfg(unix)]
+fn retained_file_identity(
+    _path: &Path,
+    _file: &File,
+    metadata: &Metadata,
+    version: RetainedFileIdentityVersion,
+) -> Result<Option<([u8; 32], [u8; 32])>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut stable = Sha256::new();
+    let mut change = Sha256::new();
+    match version {
+        RetainedFileIdentityVersion::SharedJsonlV1 => {
+            stable.update(b"ctx-jsonl-retained-file-identity-v1\0unix-stable\0");
+            change.update(b"ctx-jsonl-retained-file-identity-v1\0unix-change\0");
+        }
+        RetainedFileIdentityVersion::OrdinaryFileV2 => {
+            stable.update(b"ctx-ordinary-file-observation-v2\0unix-stable\0");
+            change.update(b"ctx-ordinary-file-observation-v2\0unix-change\0");
+        }
+    }
+    stable.update(metadata.dev().to_le_bytes());
+    stable.update(metadata.ino().to_le_bytes());
+    if version == RetainedFileIdentityVersion::OrdinaryFileV2 {
+        stable.update(metadata.mode().to_le_bytes());
+        change.update(metadata.dev().to_le_bytes());
+        change.update(metadata.ino().to_le_bytes());
+    }
+    change.update(metadata.ctime().to_le_bytes());
+    change.update(metadata.ctime_nsec().to_le_bytes());
+    Ok(Some((stable.finalize().into(), change.finalize().into())))
+}
+
+#[cfg(not(unix))]
+fn retained_file_identity(
+    path: &Path,
+    file: &File,
+    metadata: &Metadata,
+    version: RetainedFileIdentityVersion,
+) -> Result<Option<([u8; 32], [u8; 32])>> {
+    platform::retained_file_identity(file, metadata, version)
+        .map_err(|error| map_open_error(path, error))
+}
+
+pub(crate) fn retained_jsonl_file_v1_identity(
+    path: &Path,
+    file: &File,
+    metadata: &Metadata,
+) -> Result<Option<([u8; 32], [u8; 32])>> {
+    retained_file_identity(
+        path,
+        file,
+        metadata,
+        RetainedFileIdentityVersion::SharedJsonlV1,
+    )
+}
+
+pub(crate) fn retained_ordinary_file_v2_identity(
+    path: &Path,
+    file: &File,
+    metadata: &Metadata,
+) -> Result<Option<([u8; 32], [u8; 32])>> {
+    retained_file_identity(
+        path,
+        file,
+        metadata,
+        RetainedFileIdentityVersion::OrdinaryFileV2,
+    )
 }
 
 /// Opens an ordinary provider file with a no-follow component walk and retains

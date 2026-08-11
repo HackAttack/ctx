@@ -2,6 +2,10 @@ use super::*;
 use ctx_history_core::CoreDiscoveryExclusion;
 use std::{fs::OpenOptions, io::Write, path::Path};
 
+use crate::provider::source_backed::{
+    family::jsonl::set_after_jsonl_semantic_preflight_hook, SourceBackedSourceFailureClass,
+};
+
 fn projected(values: &[Value]) -> Vec<ctx_history_core::CoreRecord> {
     let temp = TempDir::new().unwrap();
     let root = fixture_root(&temp);
@@ -322,6 +326,73 @@ fn late_duplicate_result_replacement_corrects_the_earlier_result() {
             .unwrap();
         assert!(!excluded(result));
     }
+}
+
+#[test]
+fn gemini_projector_preflight_rejects_same_length_interpass_rewrite() {
+    use crate::provider::source_backed::refresh_source_backed_generation;
+
+    let temp = TempDir::new().unwrap();
+    let root = fixture_root(&temp);
+    let native_session_id = "gemini-preflight-race";
+    let path = write_transcript(
+        &root,
+        &[
+            header(native_session_id, "main"),
+            json!({
+                "id": "stable-record",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "type": "user",
+                "content": "stable baseline"
+            }),
+        ],
+    );
+    let registry = registry(&root);
+    let index = temp.path().join("index");
+    let writer_options = ctx_history_index::WriterOptions {
+        indexer_threads: 1,
+        memory_bytes: 15_000_000,
+    };
+    let initial =
+        refresh_source_backed_generation(&index, &registry, writer_options.clone()).unwrap();
+    assert!(initial.failed_routes.is_empty());
+
+    let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+    serde_json::to_writer(
+        &mut file,
+        &json!({
+            "id": "racing-record",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "type": "gemini",
+            "content": "race-before"
+        }),
+    )
+    .unwrap();
+    file.write_all(b"\n").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let hook_path = fs::canonicalize(&path).unwrap();
+    set_after_jsonl_semantic_preflight_hook(hook_path.clone(), move || {
+        let before = fs::read_to_string(&hook_path).unwrap();
+        let after = before.replace("race-before", "race-after!");
+        assert_eq!(before.len(), after.len());
+        assert_ne!(before, after);
+        fs::write(hook_path, after).unwrap();
+    });
+
+    let failed = refresh_source_backed_generation(&index, &registry, writer_options).unwrap();
+    assert_eq!(failed.failed_routes.len(), 1);
+    assert_eq!(
+        failed.failed_routes[0].class,
+        SourceBackedSourceFailureClass::SourceChanged
+    );
+    assert!(failed.failed_routes[0].carried_forward);
+    let retained = indexed_records(&index);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(
+        retained[0].content.normalized_body.as_deref(),
+        Some("stable baseline")
+    );
 }
 
 #[test]

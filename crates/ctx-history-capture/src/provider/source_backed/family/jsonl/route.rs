@@ -4,9 +4,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(test)]
+use super::JsonlSourceIdentity;
 use super::{
     observe_opened_file, revalidate_frozen_prefix, JsonlCheckpoint, JsonlFileObservation,
-    JsonlOversizedRecordPolicy, JsonlProbe, JsonlRecordRef,
+    JsonlOversizedRecordPolicy, JsonlProbe, JsonlReader, JsonlRecordFraming, JsonlRecordRef,
 };
 use crate::{
     common::io::{
@@ -28,7 +30,8 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::ScannedSourceCounts;
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceDeletion, CertifiedSourceInventory,
-    CoreRecord, SourceInventoryObservation, SourceKey, TypedKey,
+    CoreRecord, ProjectionContractError, SourceFrontier, SourceInventoryObservation, SourceKey,
+    TypedKey,
 };
 use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
@@ -43,7 +46,10 @@ const FAMILY_DISCOVERY_REVISION: &str = "borrowed-jsonl-discovery-v1";
 const FAMILY_INVENTORY_DOMAIN: &[u8] = b"ctx-borrowed-jsonl-inventory-v1\0";
 mod leaf;
 #[cfg(test)]
+pub(crate) use leaf::checkpoint_admitted_revision_for_test;
+#[cfg(test)]
 use leaf::family_scanner_worker_count_policy;
+pub(crate) use leaf::provider_checkpoint_for_base;
 use leaf::{physical_identity, scan_leaves};
 #[cfg(test)]
 use leaf::{prepare_leaf, JsonlLeafOutput, JsonlLeafOutputEvent};
@@ -66,14 +72,13 @@ use scanner::{
     FAMILY_SCANNER_WORKERS_OVERRIDE,
 };
 pub(crate) use scanner::{
-    JsonlFamilyAppendMode, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
-    JsonlFamilyPublication, JsonlFamilyWorkerContext,
+    JsonlFamilyAppendMode, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
+    JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode, JsonlFamilyPublication,
+    JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+    JsonlFamilyWorkerContext,
 };
 mod terminal;
 pub(crate) use terminal::JsonlFamilyTerminalProof;
-// Keep the pre-extraction route-local type paths available to descendants.
-#[allow(unused_imports)]
-pub(crate) use terminal::{JsonlFamilyTerminalLeafBinding, JsonlFamilyTerminalPrefixHash};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JsonlFamilyRootMissingMode {
@@ -108,6 +113,16 @@ pub(crate) enum JsonlFamilyBaseScope {
 }
 
 pub(crate) trait JsonlFamilyProjector: Send {
+    fn preflight(
+        &mut self,
+        _reader: &mut JsonlReader,
+        _certified_prefix_end: Option<u64>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn retry_replacement(&mut self) {}
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
@@ -138,6 +153,26 @@ pub(crate) trait JsonlFamilyProjector: Send {
     }
 }
 
+pub(crate) trait JsonlFamilySemanticExecutor: Send {
+    /// Runs before writer staging or record emission. Append executors may ask
+    /// the family to reopen and retry this leaf once as a replacement.
+    fn preflight(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+    ) -> Result<JsonlFamilySemanticPreflight>;
+
+    /// Produces one bounded semantic page from shared-owned physical input.
+    /// Returning `None` means the input is exhausted and no page remains.
+    fn next_page(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+        worker: &mut JsonlFamilyWorkerContext,
+    ) -> Result<Option<JsonlFamilySemanticPage>>;
+
+    /// Returns only semantic classification and opaque continuation state.
+    fn finish(self: Box<Self>) -> Result<JsonlFamilySemanticSummary>;
+}
+
 pub(crate) trait JsonlFamilyAdapter: Send + Sync {
     fn provider(&self) -> CaptureProvider;
     fn source_format(&self) -> &'static str;
@@ -150,6 +185,19 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         ""
     }
     fn append_mode(&self) -> JsonlFamilyAppendMode;
+
+    /// Selects the physical record framing for ordinary JSONL leaves. The
+    /// family copies this policy into the reader once when the leaf opens;
+    /// whole-record leaves retain their separate exact-file behavior.
+    fn record_framing(&self) -> JsonlRecordFraming {
+        JsonlRecordFraming::ordinary()
+    }
+
+    /// Binds the complete admitted EOF, including an unfinished tail, with a
+    /// raw SHA-256 digest owned and revalidated by the shared family.
+    fn bind_admitted_eof(&self) -> bool {
+        false
+    }
 
     fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
         JsonlOversizedRecordPolicy::RejectSource
@@ -258,10 +306,12 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
 
     fn projector(
         &self,
-        leaf: &JsonlFamilyLeaf,
-        source_file: Arc<OpenedProviderSourceFile>,
-        imported_at: DateTime<Utc>,
-    ) -> Result<Box<dyn JsonlFamilyProjector>>;
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<dyn JsonlFamilyProjector>> {
+        Err(CaptureError::SystemInvariant("missing JSONL projector"))
+    }
 
     /// Constructs a projector for a cold/replacement scan or from the opaque
     /// provider state persisted at the validated prefix frontier. Any scan with
@@ -285,14 +335,31 @@ pub(crate) trait JsonlFamilyAdapter: Send + Sync {
         self.projector(leaf, source_file, imported_at)
     }
 
-    /// Optional optimized execution for one JSONL leaf.
-    ///
-    /// Returning `None` selects the family's ordinary framed reader and
-    /// per-record projector. Returning an outcome lets an adapter retain a
-    /// native prefilter/parser or a bounded staged replay when flattening that
-    /// work into `project` would add passes, hashes, or unbounded buffering.
-    /// The shared family still validates the terminal certificate and owns all
-    /// writer publication through `emit_page`.
+    /// Optional bounded semantic executor. The family has already selected the
+    /// physical projection mode and retains all lifecycle/publication authority.
+    fn semantic_executor(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _checkpoint: Option<&TypedKey>,
+        _base_event_lookup: Option<BaseEventIdentityLookup>,
+        _mode: JsonlFamilyProjectionMode,
+    ) -> Result<Option<Box<dyn JsonlFamilySemanticExecutor>>> {
+        Ok(None)
+    }
+
+    /// Removes one unit of provider-declared optional checkpoint evidence.
+    /// The shared family calls this only when the completed FamilyCheckpoint
+    /// fails the real SourceFrontier typed-key contract. Durable provider
+    /// authority must never be removed by this hook.
+    fn shed_optional_provider_checkpoint_evidence(
+        &self,
+        _checkpoint: &TypedKey,
+    ) -> Result<Option<TypedKey>> {
+        Ok(None)
+    }
+
+    /// Legacy optimized execution retained for adapters outside the Codex
+    /// convergence tranche. New adapters must use `semantic_executor`.
     fn scan_optimized_leaf(
         &self,
         _leaf: &JsonlFamilyLeaf,
@@ -577,6 +644,7 @@ pub(crate) struct JsonlFamilyLeaf {
     identity_probe: Option<JsonlProbe>,
     identity_probe_rejected_records: u64,
     whole_record: bool,
+    freeze_observation_at_scan: bool,
 }
 
 impl JsonlFamilyLeaf {
@@ -620,6 +688,29 @@ impl JsonlFamilyLeaf {
             identity_probe: None,
             identity_probe_rejected_records: 0,
             whole_record: false,
+            freeze_observation_at_scan: false,
+        }
+    }
+
+    pub(crate) fn bind_frozen_observed(
+        source: SourceKey,
+        source_path: PathBuf,
+        authority: Arc<ProviderSourceRoot>,
+        authority_path: PathBuf,
+        binding: TypedKey,
+        observation: JsonlFileObservation,
+    ) -> Self {
+        Self {
+            source,
+            source_path,
+            authority_path,
+            authority,
+            observation,
+            binding,
+            identity_probe: None,
+            identity_probe_rejected_records: 0,
+            whole_record: false,
+            freeze_observation_at_scan: true,
         }
     }
 
@@ -689,6 +780,7 @@ impl JsonlFamilyLeaf {
             identity_probe: Some(identity_probe),
             identity_probe_rejected_records,
             whole_record: false,
+            freeze_observation_at_scan: false,
         })
     }
 
@@ -713,6 +805,7 @@ impl JsonlFamilyLeaf {
             identity_probe: None,
             identity_probe_rejected_records: 0,
             whole_record,
+            freeze_observation_at_scan: false,
         })
     }
 
@@ -730,6 +823,10 @@ impl JsonlFamilyLeaf {
 
     pub(crate) fn observation(&self) -> &JsonlFileObservation {
         &self.observation
+    }
+
+    pub(super) fn frozen_scan_observation(&self) -> Option<&JsonlFileObservation> {
+        self.freeze_observation_at_scan.then_some(&self.observation)
     }
 
     pub(super) fn estimated_scan_bytes(&self) -> u64 {
@@ -760,6 +857,9 @@ impl JsonlFamilyLeaf {
             || !self.observation.admits_frozen_prefix_in(&current)
         {
             return Err(CaptureError::SourceChangedDuringCapture);
+        }
+        if self.freeze_observation_at_scan {
+            return Ok((self.clone(), Arc::new(opened)));
         }
         let mut leaf = self.clone();
         leaf.observation = current.clone();
@@ -1013,14 +1113,58 @@ struct FamilyCheckpoint {
     event_identity_revision: String,
     binding_digest: [u8; 32],
     physical: JsonlCheckpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admitted_eof_sha256: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    complete_prefix_ends_with_terminal_nul_padding: bool,
     represented_physical_records: u64,
     rejected_records: u64,
     indexed_documents: u64,
     provider_checkpoint: Option<TypedKey>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl FamilyCheckpoint {
     const VERSION: u32 = 4;
+
+    fn encode_frontier_key(&self) -> Result<TypedKey> {
+        TypedKey::utf8(serde_json::to_string(self)?)
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
+    }
+
+    fn decode_frontier_key(key: &TypedKey) -> Result<Self> {
+        match key {
+            // Bytes was emitted before the compact UTF-8 representation. Both
+            // carry the same v4 JSON document and remain readable.
+            TypedKey::Bytes(bytes) => Ok(serde_json::from_slice(bytes)?),
+            TypedKey::Utf8(json) => Ok(serde_json::from_str(json)?),
+            _ => Err(CaptureError::InvalidPayload(
+                "JSONL base checkpoint is malformed".to_owned(),
+            )),
+        }
+    }
+
+    fn fits_frontier_key(&self) -> Result<bool> {
+        let json = serde_json::to_string(self)?;
+        let key = match TypedKey::utf8(json) {
+            Ok(key) => key,
+            Err(ProjectionContractError::FieldTooLarge { .. }) => return Ok(false),
+            Err(error) => return Err(CaptureError::InvalidPayload(error.to_string())),
+        };
+        match SourceFrontier::new(
+            FAMILY_FRONTIER_KIND,
+            key,
+            self.physical.complete_prefix_end(),
+            *self.physical.complete_prefix_sha256(),
+        ) {
+            Ok(_) => Ok(true),
+            Err(ProjectionContractError::FieldTooLarge { .. }) => Ok(false),
+            Err(error) => Err(CaptureError::InvalidPayload(error.to_string())),
+        }
+    }
 
     fn valid_for(&self, adapter: &dyn JsonlFamilyAdapter, leaf: &JsonlFamilyLeaf) -> bool {
         self.version == Self::VERSION
@@ -1029,6 +1173,7 @@ impl FamilyCheckpoint {
             && binding_digest(leaf).is_ok_and(|digest| self.binding_digest == digest)
             && self.physical.is_internally_consistent()
             && self.physical.identity() == &physical_identity(adapter, leaf)
+            && (self.admitted_eof_sha256.is_some() == adapter.bind_admitted_eof())
             && self
                 .provider_checkpoint
                 .as_ref()
@@ -1038,6 +1183,51 @@ impl FamilyCheckpoint {
                 .checked_add(self.rejected_records)
                 .is_some_and(|classified| classified <= self.physical.next_physical_ordinal())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn full_family_checkpoint_frontier_contract_for_test(
+    provider_checkpoint: TypedKey,
+    source_path_bytes: usize,
+) -> Result<(usize, bool)> {
+    use std::time::UNIX_EPOCH;
+
+    let physical = JsonlCheckpoint::new(
+        JsonlSourceIdentity::new(
+            "codex",
+            "codex-nativepath-core-record-v31-repository-positive-exact-authority",
+            FAMILY_POLICY_REVISION,
+            [u8::MAX; 32],
+            PathBuf::from("p".repeat(source_path_bytes)),
+        ),
+        JsonlFileObservation::new(u64::MAX, UNIX_EPOCH, false, Some([1; 32]), Some([2; 32])),
+        u64::MAX,
+        [u8::MAX; 32],
+        u64::MAX,
+        true,
+    );
+    let checkpoint = FamilyCheckpoint {
+        version: FamilyCheckpoint::VERSION,
+        provider_parser_revision:
+            "codex-nativepath-core-record-v31-repository-positive-exact-authority".to_owned(),
+        event_identity_revision: String::new(),
+        binding_digest: [u8::MAX; 32],
+        physical,
+        admitted_eof_sha256: Some([u8::MAX; 32]),
+        complete_prefix_ends_with_terminal_nul_padding: true,
+        represented_physical_records: u64::MAX,
+        rejected_records: 0,
+        indexed_documents: u64::MAX,
+        provider_checkpoint: Some(provider_checkpoint),
+    };
+    let family_json = serde_json::to_string(&checkpoint)?;
+    // TypedKey's binary contract is one tag byte plus an eight-byte length
+    // prefix. Production does not rely on this calculation; it constructs the
+    // real SourceFrontier below through `fits_frontier_key`.
+    let encoded_key_bytes = family_json
+        .len()
+        .saturating_add(1 + std::mem::size_of::<u64>());
+    Ok((encoded_key_bytes, checkpoint.fits_frontier_key()?))
 }
 
 #[derive(Debug, Clone)]
@@ -1063,12 +1253,7 @@ fn default_base_source_path(
             "JSONL base frontier kind changed".to_owned(),
         ));
     }
-    let TypedKey::Bytes(bytes) = frontier.checkpoint() else {
-        return Err(CaptureError::InvalidPayload(
-            "JSONL base checkpoint is malformed".to_owned(),
-        ));
-    };
-    let checkpoint: FamilyCheckpoint = serde_json::from_slice(bytes)?;
+    let checkpoint = FamilyCheckpoint::decode_frontier_key(frontier.checkpoint())?;
     if checkpoint.physical.identity().source_descriptor_digest()
         != &certificate.observation().source().exact_descriptor_digest()
     {
@@ -1382,6 +1567,9 @@ fn normalized_jsonl_error_kind(error: &CaptureError) -> Option<SourceBackedRoute
         }
         CaptureError::Io(_) | CaptureError::SystemIo { .. } => {
             Some(SourceBackedRouteErrorKind::ResourceUnavailable)
+        }
+        CaptureError::SystemInvariant(_) | CaptureError::WorkerPanicked(_) => {
+            Some(SourceBackedRouteErrorKind::Internal)
         }
         _ => None,
     }

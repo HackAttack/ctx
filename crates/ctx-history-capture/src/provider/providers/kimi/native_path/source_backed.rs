@@ -14,9 +14,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, EventType, NativeSessionKey, ProjectionContractError, SessionIdentityInput,
-    SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    CoreRecordError, EventIdentityInput, EventType, ProjectionContractError, SourceKey,
+    StableEntityId, TypedKey,
 };
 use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
@@ -575,16 +575,13 @@ fn read_auxiliary_bytes(
 }
 
 fn source_key(provider_session_id: &str) -> KimiSourceBackedResult<SourceKey> {
-    let anchor = SourceAnchor::provider_native(
-        KIMI_SOURCE_ANCHOR_NAMESPACE,
-        TypedKey::utf8(provider_session_id)?,
-    )?;
-    Ok(SourceKey::derive(
+    Ok(SourceKey::derive_provider_native(
         CaptureProvider::KimiCodeCli.as_str(),
         KIMI_CODE_CLI_SOURCE_FORMAT,
         KIMI_SOURCE_SCHEMA_VARIANT,
         1,
-        anchor,
+        KIMI_SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(provider_session_id)?,
     )?)
 }
 
@@ -592,15 +589,12 @@ fn session_identity(
     source: &SourceKey,
     provider_session_id: &str,
 ) -> KimiSourceBackedResult<StableEntityId> {
-    let key = NativeSessionKey::native_id(
+    Ok(derive_native_session_id(
+        source,
+        KIMI_LOGICAL_SESSION_KIND,
         KIMI_NATIVE_SESSION_NAMESPACE,
         TypedKey::utf8(provider_session_id)?,
-    )?;
-    Ok(derive_session_id(SessionIdentityInput {
-        source,
-        logical_session_kind: KIMI_LOGICAL_SESSION_KIND,
-        native_session_key: &key,
-    })?)
+    )?)
 }
 
 fn lineage_session_identity(provider_session_id: &str) -> KimiSourceBackedResult<StableEntityId> {

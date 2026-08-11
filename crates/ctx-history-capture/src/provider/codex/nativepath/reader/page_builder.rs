@@ -1,156 +1,94 @@
 use super::*;
 
 impl CodexNativeScanner {
-    /// Drops the bounded physical-record scratch allocation before ownership
-    /// of a prepared page crosses to the writer. The next window reserves and
-    /// reacquires that input capacity through the shared preparation budget.
-    pub(crate) fn release_transient_record_buffer(&mut self) {
-        if let Some(physical) = self.physical.as_mut() {
-            physical.release_record_buffer();
-        }
-    }
-
-    pub(super) fn new_core_page(&mut self) -> Result<CodexNativePage> {
-        let expected_frontier = self.frontier()?;
+    pub(super) fn new_semantic_page(
+        &mut self,
+        input: &JsonlFamilyExecutionIo,
+    ) -> Result<CodexNativePage> {
+        let expected_offset = input.complete_prefix_end()?;
         Ok(CodexNativePage {
-            owner: self.owner.clone(),
-            next_safe_frontier: expected_frontier.clone(),
-            expected_frontier,
-            core_rows: Vec::new(),
-            source_backed_rows: Vec::new(),
+            expected_offset,
+            records: Vec::new(),
             serialized_bytes: PAGE_FIXED_WIRE_BYTES,
             physical_records: 0,
-            terminal: false,
         })
     }
 
-    pub(super) fn take_ready_page(&mut self) -> Option<CodexNativeOwnedPage> {
-        self.ready_core_page
-            .take()
-            .map(Box::new)
-            .map(CodexNativeOwnedPage::Core)
+    pub(super) fn active_semantic_page(&mut self) -> Result<&mut CodexNativePage> {
+        self.active_core_page
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "Codex NativePath lost its active semantic page",
+            ))
     }
 
-    pub(super) fn emit_active_core_page(&mut self) -> Result<CodexNativeOwnedPage> {
+    pub(super) fn emit_active_semantic_page(&mut self) -> Result<CodexNativePage> {
         let page = self
             .active_core_page
             .take()
             .ok_or(CaptureError::SystemInvariant(
-                "Codex NativePath has no active Core page to emit",
+                "Codex NativePath has no active semantic page to emit",
             ))?;
-        Ok(CodexNativeOwnedPage::Core(Box::new(
-            self.finish_page(page)?,
-        )))
+        self.finish_semantic_page(page)
     }
 
-    pub(super) fn queue_end_pages(&mut self, terminal: bool) -> Result<()> {
-        if let Some(mut page) = self.active_core_page.take() {
-            if page.has_progress() {
-                page.terminal = terminal;
-                self.ready_core_page = Some(self.finish_page(page)?);
-            }
-        }
-        Ok(())
+    pub(super) fn emit_semantic_end_page(&mut self) -> Result<Option<CodexNativePage>> {
+        let Some(page) = self
+            .active_core_page
+            .take()
+            .filter(|page| page.physical_records != 0)
+        else {
+            return Ok(None);
+        };
+        self.finish_semantic_page(page).map(Some)
     }
 
-    pub(crate) fn finish(mut self) -> Result<CodexSourceScan> {
-        if !self.exhausted || self.active_core_page.is_some() || self.ready_core_page.is_some() {
+    pub(in crate::provider::codex::nativepath) fn finish_semantic(
+        mut self,
+    ) -> Result<CodexSemanticScan> {
+        if !self.exhausted || self.active_core_page.is_some() {
             return Err(CaptureError::InvalidPayload(
-                "Codex NativePath scan must drain every owned page before certification".to_owned(),
+                "Codex semantic scan must drain every owned page before checkpointing".to_owned(),
             ));
         }
-        if let Some(mut replay) = self.replay.take() {
-            let current = opened_file_observation(&replay.source.source_path, self.opened.file())?;
-            self.opened.revalidate_same_object()?;
-            if current != replay.before_observation {
-                revalidate_opened_prefix(
-                    self.opened.file(),
-                    replay.before_observation.len,
-                    replay.full_revision_sha256,
-                )?;
-                self.opened.revalidate_same_object()?;
-            }
-            replay.after_observation = replay.before_observation.clone();
-            return Ok(replay);
-        }
-
-        let physical = self.physical.take().ok_or(CaptureError::SystemInvariant(
-            "Codex NativePath has no physical JSONL stream to certify",
-        ))?;
-        let full_revision_sha256: [u8; 32] = physical
-            .digest()
-            .full_hasher()
-            .ok_or(CaptureError::SystemInvariant(
-                "Codex NativePath physical stream omitted its full digest",
-            ))?
-            .clone()
-            .finalize()
-            .into();
-        let complete_prefix_sha256: [u8; 32] = physical
-            .digest()
-            .complete_hasher()
-            .clone()
-            .finalize()
-            .into();
-        let complete_prefix_end = physical.complete_prefix_end();
-        let next_raw_ordinal = physical.next_physical_ordinal();
-        let current = opened_file_observation(&self.source.source_path, self.opened.file())?;
-        self.opened.revalidate_same_object()?;
-        if current != self.before {
-            revalidate_opened_prefix(self.opened.file(), self.before.len, full_revision_sha256)?;
-            self.opened.revalidate_same_object()?;
-        }
-        if let Some(owner) = self.owner.as_ref() {
-            validate_catalog_owner(&self.source, owner.clone())?;
-        }
-
-        Ok(CodexSourceScan {
-            source: self.source,
-            before_observation: self.before.clone(),
-            after_observation: self.before,
-            disposition: self.disposition,
-            full_revision_sha256,
-            complete_prefix_sha256,
-            complete_prefix_end,
-            next_raw_ordinal,
-            owner: self.owner,
-            pending_tool_authorities: self.tool_authorities.into_values().collect(),
-            terminal_authority: self.mcp_terminal_authority.checkpoint(),
-            repository_candidate_authority: self.repository_candidate_authority.checkpoint(),
-            incomplete_tail: self.incomplete_tail,
+        let checkpoint = self
+            .owner
+            .take()
+            .map(|owner| {
+                let owner = validate_catalog_owner(&self.source, owner)?;
+                Ok::<_, CaptureError>(CodexSemanticCheckpoint::new(&owner))
+            })
+            .transpose()?;
+        Ok(CodexSemanticScan {
+            checkpoint,
             counters: self.counters,
-            local_turn_started: self.local_turn_started,
         })
     }
 
-    pub(super) fn position(&self) -> Result<ScannerPosition> {
-        Ok(ScannerPosition {
-            physical: self
-                .physical
-                .as_ref()
-                .ok_or(CaptureError::SystemInvariant(
-                    "Codex NativePath lost its physical JSONL stream",
-                ))?
-                .position(),
+    pub(super) fn semantic_position(
+        &self,
+        input: &JsonlFamilyExecutionIo,
+    ) -> Result<SemanticScannerPosition> {
+        Ok(SemanticScannerPosition {
+            input: input.position()?,
             had_owner: self.owner.is_some(),
             counters: self.counters,
             local_turn_started: self.local_turn_started,
         })
     }
 
-    pub(super) fn restore(&mut self, position: ScannerPosition) -> Result<()> {
+    pub(super) fn restore_semantic(
+        &mut self,
+        input: &mut JsonlFamilyExecutionIo,
+        position: SemanticScannerPosition,
+    ) -> Result<()> {
         let actual_parse_counts = (
             self.counters.prefiltered_records,
             self.counters.structural_json_parses,
             self.counters.typed_json_parses,
             self.counters.structural_output_probes,
         );
-        self.physical
-            .as_mut()
-            .ok_or(CaptureError::SystemInvariant(
-                "Codex NativePath lost its physical JSONL stream",
-            ))?
-            .restore(position.physical)?;
+        input.restore(position.input)?;
         if !position.had_owner {
             self.owner = None;
         }
@@ -165,38 +103,19 @@ impl CodexNativeScanner {
         Ok(())
     }
 
-    pub(super) fn frontier(&self) -> Result<CodexNativeFrontier> {
-        let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
-            "Codex NativePath lost its physical JSONL stream",
-        ))?;
-        Ok(CodexNativeFrontier {
-            complete_prefix_end: physical.complete_prefix_end(),
-            next_raw_ordinal: physical.next_physical_ordinal(),
-            complete_prefix_sha256: physical
-                .digest()
-                .complete_hasher()
-                .clone()
-                .finalize()
-                .into(),
-        })
-    }
-
-    pub(super) fn finish_page(&mut self, mut page: CodexNativePage) -> Result<CodexNativePage> {
-        page.owner = self
-            .owner
-            .clone()
-            .map(|owner| validate_catalog_owner(&self.source, owner))
-            .transpose()?;
-        page.next_safe_frontier = self.frontier()?;
+    pub(super) fn finish_semantic_page(
+        &mut self,
+        page: CodexNativePage,
+    ) -> Result<CodexNativePage> {
         debug_assert!(page.physical_records <= MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS);
-        debug_assert!(page.units() <= MAX_CODEX_PAGE_UNITS);
+        debug_assert!(page.records.len() <= MAX_CODEX_PAGE_UNITS);
         debug_assert!(
             page.serialized_bytes <= MAX_CODEX_PAGE_BYTES
-                || (page.source_backed_rows.len() == 1
+                || (page.records.len() == 1
                     && page.serialized_bytes <= MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES)
         );
         self.counters.emitted_pages = self.counters.emitted_pages.saturating_add(1);
-        self.counters.peak_page_rows = self.counters.peak_page_rows.max(page.units());
+        self.counters.peak_page_rows = self.counters.peak_page_rows.max(page.records.len());
         self.counters.peak_page_bytes = self.counters.peak_page_bytes.max(page.serialized_bytes);
         Ok(page)
     }

@@ -1,408 +1,12 @@
-use super::super::rows::{build_event_row, tool_context_from_row};
 use super::*;
-use crate::provider::source_backed::family::jsonl::{
-    read_bounded_record_unhashed as read_shared_bounded_record_unhashed, retained_file_identity,
-    JsonlBoundedRecordRead as BoundedRecordRead, JsonlFileIdentityPolicy, JsonlRecordFraming,
-};
 use ctx_history_core::SessionRelationshipKind;
-
-pub(super) fn read_bounded_record_unhashed(
-    reader: &mut BufReader<File>,
-    storage: &mut Vec<u8>,
-    maximum_bytes: u64,
-) -> Result<Option<BoundedRecordRead>> {
-    read_shared_bounded_record_unhashed(
-        reader,
-        storage,
-        maximum_bytes,
-        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES),
-        source_changed_during_scan,
-    )
-}
+use ctx_history_source_io::SourceIoError;
 
 pub(super) fn trim_jsonl_terminator(mut record: &[u8]) -> &[u8] {
     if record.last() == Some(&b'\r') {
         record = &record[..record.len() - 1];
     }
     record
-}
-
-pub(super) struct ValidatedCheckpoint {
-    pub(super) bytes_read: u64,
-    pub(super) complete_prefix_hasher: Sha256,
-    pub(super) complete_prefix_ends_with_terminal_nul_padding: bool,
-    pub(super) pending_tool_contexts: BTreeMap<String, CodexToolCallContext>,
-    pub(super) pending_tool_authorities: BTreeMap<String, CodexPendingToolAuthority>,
-    pub(super) pending_continuations: BTreeMap<String, String>,
-}
-
-pub(super) fn decode_pending_tool_authority(
-    record: &[u8],
-    authority: &CodexPendingToolAuthority,
-    owner: &CodexSessionRow,
-    local_turn_started: bool,
-) -> Result<(String, CodexToolCallContext)> {
-    match authority.invocation_origin() {
-        CodexInvocationOriginV0::UniqueToSession
-            if owner.session_relationship == SessionRelationshipKind::RelatedUnknown =>
-        {
-            return Err(invalid_checkpoint_proof(
-                "pending tool-call authority claims unique origin for unknown lineage",
-            ));
-        }
-        CodexInvocationOriginV0::UniqueToSession
-            if matches!(
-                owner.session_relationship,
-                SessionRelationshipKind::Forked | SessionRelationshipKind::ResumedFrom
-            ) && !local_turn_started =>
-        {
-            return Err(invalid_checkpoint_proof(
-                "pending tool-call authority claims unique origin before a local turn",
-            ));
-        }
-        CodexInvocationOriginV0::CopiedFromAncestor {
-            ancestor_native_session_id,
-        } if !matches!(
-            owner.session_relationship,
-            SessionRelationshipKind::Forked | SessionRelationshipKind::ResumedFrom
-        ) || owner.parent_native_session_id.as_deref()
-            != Some(ancestor_native_session_id.as_str()) =>
-        {
-            return Err(invalid_checkpoint_proof(
-                "pending tool-call copied origin does not match source ownership",
-            ));
-        }
-        CodexInvocationOriginV0::UniqueToSession
-        | CodexInvocationOriginV0::CopiedFromAncestor { .. }
-        | CodexInvocationOriginV0::Unproven => {}
-    }
-    // The surrounding checkpoint walk has already matched this authority to
-    // an exact JSONL boundary. The current scanner scratch omits the delimiter;
-    // the pending-authority scratch includes it.
-    let record = record.strip_suffix(b"\n").unwrap_or(record);
-    let record = trim_jsonl_terminator(record);
-    let probe = classify_codex_record(record).map_err(|_| {
-        invalid_checkpoint_proof("pending tool-call authority is not valid Codex JSON")
-    })?;
-    if probe.lineage_malformed() {
-        return Err(invalid_checkpoint_proof(
-            "pending tool-call authority has malformed lineage fields",
-        ));
-    }
-    let CodexRecordClass::Retained(kind @ super::super::record::CodexRetainedKind::ToolCall) =
-        probe.class
-    else {
-        return Err(invalid_checkpoint_proof(
-            "pending tool-call authority does not identify a tool call",
-        ));
-    };
-    let retained = parse_decoded_record(record, owner)
-        .ok_or_else(|| invalid_checkpoint_proof("pending tool-call authority cannot be decoded"))?;
-    let row = match build_event_row(authority.raw_ordinal, kind, &retained)? {
-        Ok(row) => row,
-        Err(
-            CodexRetainedNonMaterialized::ValidUnmaterializable
-            | CodexRetainedNonMaterialized::Malformed,
-        ) => {
-            return Err(invalid_checkpoint_proof(
-                "pending tool-call authority cannot be projected",
-            ));
-        }
-    };
-    let (call_id, mut context) = tool_context_from_row(&row).ok_or_else(|| {
-        invalid_checkpoint_proof("pending tool-call authority has no correlation identity")
-    })?;
-    if !authority.matches_call_id(&call_id) {
-        return Err(invalid_checkpoint_proof(
-            "pending tool-call authority correlation does not match checkpoint state",
-        ));
-    }
-    if let [evidence] =
-        crate::provider::codex::repository::repository_tool_evidence(&retained.payload).as_slice()
-    {
-        // Fresh source-backed projection redacts provider-native arguments
-        // from display/Core text. Append-proof reconstruction must recover
-        // that same bounded context, not revive the legacy preview.
-        context.command_preview = None;
-        context.arguments_preview = None;
-        context.tool_name.clone_from(&evidence.tool_name);
-        context.session_cwd = owner.cwd.clone();
-        context.exact_command.clone_from(&evidence.command);
-        context.command_too_large = evidence.command_too_large;
-        context
-            .declared_workdir
-            .clone_from(&evidence.declared_workdir);
-        context
-            .continuation_cell_id
-            .clone_from(&evidence.continuation_cell_id);
-        if context.exact_command.is_some() || context.command_too_large {
-            context.origin_call_id = Some(call_id.clone());
-            context.origin_event_sequence = Some(authority.raw_ordinal);
-            context.origin_occurred_at_unix_ms = Some(retained.occurred_at.timestamp_millis());
-        }
-    }
-    context.continuation_call_id_sha256 = authority.continuation_call_id_sha256().to_vec();
-    context.continuation_capacity_exceeded = authority.continuation_capacity_exceeded();
-    context.correlation_ambiguous = authority.correlation_ambiguous();
-    context
-        .invocation_origin
-        .clone_from(authority.invocation_origin());
-    Ok((call_id, bound_tool_context(context)))
-}
-
-pub(super) fn validate_checkpoint_source(
-    reader: &mut BufReader<File>,
-    checkpoint: &CodexNativeCheckpoint,
-    append_replay: bool,
-) -> Result<ValidatedCheckpoint> {
-    // The prefix proof is the sole read pass over checkpointed bytes. On
-    // append, only the at-most-24 authority spans are retained long enough to
-    // reconstruct transient correlation state during that same pass.
-    reader.seek(SeekFrom::Start(0))?;
-    let complete_prefix_end = checkpoint.complete_prefix_end();
-    let mut remaining = checkpoint.observation.len;
-    let mut offset = 0_u64;
-    let mut buffer = vec![0_u8; CHECKPOINT_READ_BUFFER_BYTES];
-    let mut full_hasher = Sha256::new();
-    let mut complete_prefix_hasher = Sha256::new();
-    let mut incomplete_tail_hasher = Sha256::new();
-    let mut complete_records = 0_u64;
-    let mut final_prefix_byte = None;
-    let mut terminal_suffix_all_nul = true;
-    let mut terminal_suffix_len = 0_u64;
-    let mut tail_contains_newline = false;
-    let mut authorities = checkpoint
-        .pending_tool_authorities()
-        .iter()
-        .collect::<Vec<_>>();
-    authorities.sort_by_key(|authority| authority.record_start);
-    let mut authority_index = 0_usize;
-    let mut current_record_start = 0_u64;
-    let mut pending_tool_record = Vec::new();
-    let mut pending_tool_contexts = BTreeMap::new();
-    let mut pending_tool_authorities = BTreeMap::new();
-    let mut pending_continuations = BTreeMap::new();
-
-    while remaining != 0 {
-        let wanted = usize::try_from(remaining.min(CHECKPOINT_READ_BUFFER_BYTES as u64))
-            .map_err(|_| CaptureError::SystemInvariant("Codex checkpoint read exceeds usize"))?;
-        let read = reader.read(&mut buffer[..wanted])?;
-        if read == 0 {
-            return Err(invalid_checkpoint_proof(
-                "checkpoint observation ends after source EOF",
-            ));
-        }
-        let chunk = &buffer[..read];
-        full_hasher.update(chunk);
-        let read_u64 = u64::try_from(read)
-            .map_err(|_| CaptureError::SystemInvariant("Codex checkpoint read exceeds u64"))?;
-        let chunk_end = offset
-            .checked_add(read_u64)
-            .ok_or(CaptureError::SystemInvariant(
-                "Codex checkpoint offset exceeds u64",
-            ))?;
-
-        if offset < complete_prefix_end {
-            let prefix_len = usize::try_from((complete_prefix_end.min(chunk_end)) - offset)
-                .map_err(|_| CaptureError::SystemInvariant("Codex prefix length exceeds usize"))?;
-            let prefix = &chunk[..prefix_len];
-            complete_prefix_hasher.update(prefix);
-            for (index, byte) in prefix.iter().enumerate() {
-                let absolute_offset = offset
-                    .checked_add(u64::try_from(index).unwrap_or(u64::MAX))
-                    .ok_or(CaptureError::SystemInvariant(
-                        "Codex checkpoint record offset exceeds u64",
-                    ))?;
-                if append_replay
-                    && authorities.get(authority_index).is_some_and(|authority| {
-                        absolute_offset >= authority.record_start
-                            && absolute_offset < authority.record_end
-                    })
-                {
-                    pending_tool_record.push(*byte);
-                }
-                if *byte != b'\n' {
-                    terminal_suffix_all_nul &= *byte == 0;
-                    terminal_suffix_len = terminal_suffix_len.saturating_add(1);
-                    continue;
-                }
-                let record_end =
-                    absolute_offset
-                        .checked_add(1)
-                        .ok_or(CaptureError::SystemInvariant(
-                            "Codex checkpoint record boundary exceeds u64",
-                        ))?;
-                if let Some(authority) = authorities.get(authority_index) {
-                    if authority.record_start < record_end {
-                        if authority.record_start != current_record_start
-                            || authority.record_end != record_end
-                            || authority.raw_ordinal != complete_records
-                        {
-                            return Err(invalid_checkpoint_proof(
-                                "pending tool-call authority does not match its JSONL record boundary",
-                            ));
-                        }
-                        if append_replay {
-                            let (call_id, context) = decode_pending_tool_authority(
-                                pending_tool_record.as_slice(),
-                                authority,
-                                &checkpoint.owner,
-                                checkpoint.local_turn_started(),
-                            )?;
-                            if pending_tool_contexts
-                                .insert(call_id.clone(), context)
-                                .is_some()
-                                || pending_tool_authorities
-                                    .insert(call_id, (*authority).clone())
-                                    .is_some()
-                            {
-                                return Err(invalid_checkpoint_proof(
-                                    "pending tool-call authority correlation is duplicated",
-                                ));
-                            }
-                            pending_tool_record.clear();
-                        }
-                        authority_index = authority_index.saturating_add(1);
-                    }
-                }
-                current_record_start = record_end;
-                complete_records = complete_records.saturating_add(1);
-                terminal_suffix_all_nul = true;
-                terminal_suffix_len = 0;
-            }
-            final_prefix_byte = prefix.last().copied().or(final_prefix_byte);
-            if prefix_len < chunk.len() {
-                let tail = &chunk[prefix_len..];
-                incomplete_tail_hasher.update(tail);
-                tail_contains_newline |= tail.contains(&b'\n');
-            }
-        } else {
-            incomplete_tail_hasher.update(chunk);
-            tail_contains_newline |= chunk.contains(&b'\n');
-        }
-        offset = chunk_end;
-        remaining -= read_u64;
-    }
-
-    let full_revision_sha256: [u8; 32] = full_hasher.finalize().into();
-    let complete_prefix_sha256: [u8; 32] = complete_prefix_hasher.clone().finalize().into();
-    let complete_prefix_ends_with_terminal_nul_padding =
-        terminal_suffix_len != 0 && terminal_suffix_all_nul;
-    if complete_prefix_ends_with_terminal_nul_padding {
-        complete_records = complete_records.saturating_add(1);
-    }
-    if full_revision_sha256 != checkpoint.full_revision_sha256
-        || complete_prefix_sha256 != checkpoint.complete_prefix_sha256
-        || complete_records != checkpoint.next_raw_ordinal()
-        || authority_index != authorities.len()
-        || (complete_prefix_end != 0
-            && final_prefix_byte != Some(b'\n')
-            && !complete_prefix_ends_with_terminal_nul_padding)
-    {
-        return Err(invalid_checkpoint_proof(
-            "checkpoint digest, boundary, or raw ordinal does not match source bytes",
-        ));
-    }
-
-    match checkpoint.incomplete_tail() {
-        None if complete_prefix_end == checkpoint.observation.len => {}
-        Some((tail_len, tail_sha256))
-            if !tail_contains_newline
-                && tail_len == checkpoint.observation.len - complete_prefix_end
-                && <[u8; 32]>::from(incomplete_tail_hasher.finalize()) == tail_sha256 => {}
-        _ => {
-            return Err(invalid_checkpoint_proof(
-                "checkpoint incomplete-tail proof does not match source bytes",
-            ));
-        }
-    }
-    if append_replay {
-        for (call_id, authority) in &pending_tool_authorities {
-            if let Some(cell_id) = authority.continuation_cell_id() {
-                if authority.continuation_conflicted() {
-                    if pending_continuations
-                        .insert(cell_id.to_owned(), String::new())
-                        .is_some()
-                    {
-                        return Err(invalid_checkpoint_proof(
-                            "pending conflicted continuation cell is duplicated",
-                        ));
-                    }
-                    continue;
-                }
-                let Some(origin) = pending_tool_contexts.get(call_id) else {
-                    return Err(invalid_checkpoint_proof(
-                        "pending continuation origin context is unavailable",
-                    ));
-                };
-                if (origin.exact_command.is_none() && !origin.command_too_large)
-                    || origin.continuation_cell_id.is_some()
-                {
-                    return Err(invalid_checkpoint_proof(
-                        "pending continuation authority is not an exact origin command",
-                    ));
-                }
-                if pending_continuations
-                    .insert(cell_id.to_owned(), call_id.clone())
-                    .is_some()
-                {
-                    return Err(invalid_checkpoint_proof(
-                        "pending continuation cell is assigned more than once",
-                    ));
-                }
-            }
-        }
-        let wait_calls = pending_tool_contexts
-            .iter()
-            .filter_map(|(call_id, context)| {
-                context
-                    .continuation_cell_id
-                    .as_ref()
-                    .map(|cell_id| (call_id.clone(), cell_id.clone()))
-            })
-            .collect::<Vec<_>>();
-        for (call_id, cell_id) in wait_calls {
-            let Some(origin_call_id) = pending_continuations.get(&cell_id) else {
-                continue;
-            };
-            if origin_call_id.is_empty() {
-                continue;
-            }
-            let origin = pending_tool_contexts
-                .get(origin_call_id)
-                .cloned()
-                .ok_or_else(|| {
-                    invalid_checkpoint_proof("pending continuation origin is unavailable")
-                })?;
-            let context = pending_tool_contexts.get_mut(&call_id).ok_or_else(|| {
-                invalid_checkpoint_proof("pending continuation wait context is unavailable")
-            })?;
-            context.exact_command = origin.exact_command;
-            context.command_too_large = origin.command_too_large;
-            context.session_cwd = origin.session_cwd;
-            context.declared_workdir = origin.declared_workdir;
-            context.origin_call_id = Some(origin_call_id.clone());
-            context.origin_event_sequence = origin.origin_event_sequence;
-            context.origin_occurred_at_unix_ms = origin.origin_occurred_at_unix_ms;
-            context.continuation_call_id_sha256 = origin.continuation_call_id_sha256;
-            context.continuation_capacity_exceeded = origin.continuation_capacity_exceeded;
-            context.correlation_ambiguous = origin.correlation_ambiguous;
-            context.invocation_origin = origin.invocation_origin;
-        }
-    }
-
-    Ok(ValidatedCheckpoint {
-        bytes_read: checkpoint.observation.len,
-        complete_prefix_hasher,
-        complete_prefix_ends_with_terminal_nul_padding,
-        pending_tool_contexts,
-        pending_tool_authorities,
-        pending_continuations,
-    })
-}
-
-pub(super) fn invalid_checkpoint_proof(reason: &str) -> CaptureError {
-    CaptureError::InvalidPayload(format!("invalid Codex append proof: {reason}"))
 }
 
 pub(super) fn observed_opened_file(
@@ -428,11 +32,10 @@ pub(super) fn observed_opened_file(
     let expected_prefix = source
         .catalog_prefix_sha256
         .ok_or(CaptureError::SourceChangedDuringCapture)?;
-    revalidate_opened_prefix(
-        opened.file(),
-        source.catalog_observation.len,
-        expected_prefix,
-    )?;
+    if opened_file_prefix_sha256(opened.file(), source.catalog_observation.len)? != expected_prefix
+    {
+        return Err(source_changed_during_scan());
+    }
     opened.revalidate_same_object()?;
     // Discovery admitted this ordinary-file identity and froze this refresh's
     // EOF. Growth after that observation is deferred to the next refresh;
@@ -440,40 +43,11 @@ pub(super) fn observed_opened_file(
     Ok(source.catalog_observation.clone())
 }
 
-pub(super) fn revalidate_opened_prefix(
-    file: &File,
-    len: u64,
-    expected_sha256: [u8; 32],
-) -> Result<()> {
-    let mut hasher = Sha256::new();
-    let mut reader = file.try_clone()?;
-    hash_opened_file_range(&mut reader, 0, len, &mut hasher)?;
-    if <[u8; 32]>::from(hasher.finalize()) != expected_sha256 {
-        return Err(source_changed_during_scan());
-    }
-    Ok(())
-}
-
 pub(crate) fn opened_file_prefix_sha256(file: &File, len: u64) -> Result<[u8; 32]> {
-    let mut hasher = Sha256::new();
-    let mut reader = file.try_clone()?;
-    hash_opened_file_range(&mut reader, 0, len, &mut hasher)?;
-    Ok(hasher.finalize().into())
+    ctx_history_source_io::opened_file_prefix_sha256(file, len)
+        .map_err(map_ordinary_file_observation_error)
 }
 
-pub(crate) fn open_codex_source_capability(
-    source: &CodexCatalogSource,
-) -> Result<Arc<OpenedProviderSourceFile>> {
-    if let Some(opened) = source.opened.as_ref() {
-        return Ok(Arc::clone(opened));
-    }
-    reopen_codex_source_capability(source)
-}
-
-/// Reopens the authority-relative directory entry instead of consulting a
-/// previously retained leaf capability. Generation preparation uses this to
-/// prove that the path still names the cataloged ordinary file before any
-/// route worker can consume its child-local source plan.
 pub(crate) fn reopen_codex_source_capability(
     source: &CodexCatalogSource,
 ) -> Result<Arc<OpenedProviderSourceFile>> {
@@ -507,108 +81,21 @@ pub(crate) fn revalidate_codex_catalog_source_capability(
 }
 
 pub(crate) fn opened_file_observation(path: &Path, file: &File) -> Result<CodexFileObservation> {
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() {
-        return Err(source_changed_during_scan());
-    }
-    let platform_before =
-        retained_file_identity(path, file, &metadata, JsonlFileIdentityPolicy::OrdinaryV2)?;
-    let content_fingerprint = if platform_before.is_some() {
-        None
-    } else {
-        Some(opened_file_content_fingerprint(file, &metadata)?)
-    };
-    let current = file.metadata()?;
-    let platform_after =
-        retained_file_identity(path, file, &current, JsonlFileIdentityPolicy::OrdinaryV2)?;
-    if current.len() != metadata.len()
-        || current.modified().ok() != metadata.modified().ok()
-        || platform_after != platform_before
-    {
-        return Err(source_changed_during_scan());
-    }
+    let observation = ctx_history_source_io::observe_opened_ordinary_file_v2(path, file)
+        .map_err(map_ordinary_file_observation_error)?;
     Ok(CodexFileObservation::from_parts(
-        metadata.len(),
-        metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
-        platform_before.map(|tokens| tokens.stable()),
-        combine_opened_file_token(
-            platform_before.map(|tokens| tokens.change()),
-            content_fingerprint,
-        ),
+        observation.len(),
+        observation.modified_at(),
+        observation.stable_token(),
+        observation.change_token(),
     ))
 }
 
-fn combine_opened_file_token(
-    platform_token: Option<[u8; 32]>,
-    content_fingerprint: Option<[u8; 32]>,
-) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    if let Some(platform_token) = platform_token {
-        hasher.update(b"platform\0");
-        hasher.update(platform_token);
-    } else {
-        hasher.update(b"portable\0");
-        match content_fingerprint {
-            Some(content_fingerprint) => hasher.update(content_fingerprint),
-            None => hasher.update(b"missing-content-fingerprint\0"),
-        }
+fn map_ordinary_file_observation_error(error: SourceIoError) -> CaptureError {
+    match error {
+        SourceIoError::SourceChangedDuringCapture => source_changed_during_scan(),
+        error => error.into(),
     }
-    hasher.finalize().into()
-}
-
-fn opened_file_content_fingerprint(file: &File, metadata: &std::fs::Metadata) -> Result<[u8; 32]> {
-    let len = metadata.len();
-    let mut hasher = Sha256::new();
-    hasher.update(ORDINARY_FILE_TOKEN_DOMAIN);
-    hasher.update(len.to_le_bytes());
-    let mut reader = file.try_clone()?;
-    let original_position = reader.stream_position()?;
-    if len <= ORDINARY_FILE_FULL_FINGERPRINT_MAX_BYTES {
-        hasher.update(b"full\0");
-        hash_opened_file_range(&mut reader, 0, len, &mut hasher)?;
-    } else {
-        hasher.update(b"sparse\0");
-        for offset in opened_file_sparse_sample_offsets(len) {
-            let sample_len = ORDINARY_FILE_SPARSE_SAMPLE_BYTES.min(len.saturating_sub(offset));
-            hasher.update(offset.to_le_bytes());
-            hasher.update(sample_len.to_le_bytes());
-            hash_opened_file_range(&mut reader, offset, sample_len, &mut hasher)?;
-        }
-    }
-    reader.seek(SeekFrom::Start(original_position))?;
-    Ok(hasher.finalize().into())
-}
-
-fn opened_file_sparse_sample_offsets(len: u64) -> std::collections::BTreeSet<u64> {
-    let last = len.saturating_sub(ORDINARY_FILE_SPARSE_SAMPLE_BYTES);
-    [0, len / 4, len / 2, len.saturating_mul(3) / 4, last]
-        .into_iter()
-        .map(|offset| offset.min(last))
-        .collect()
-}
-
-fn hash_opened_file_range(
-    file: &mut File,
-    offset: u64,
-    len: u64,
-    hasher: &mut Sha256,
-) -> Result<()> {
-    file.seek(SeekFrom::Start(offset))?;
-    let mut remaining = len;
-    let mut buffer = [0_u8; 8 * 1024];
-    while remaining > 0 {
-        let take = buffer
-            .len()
-            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        let read = file.read(&mut buffer[..take])?;
-        if read == 0 {
-            return Err(source_changed_during_scan());
-        }
-        hasher.update(&buffer[..read]);
-        remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
-    }
-    Ok(())
 }
 
 pub(super) fn validate_catalog_owner(
@@ -617,6 +104,13 @@ pub(super) fn validate_catalog_owner(
 ) -> Result<CodexSessionRow> {
     let catalog_owner = source.catalog_native_session_id.as_deref();
     let catalog_root = source.catalog_root_native_session_id.as_deref();
+    let tuple_valid = match source.catalog_session_relationship {
+        SessionRelationshipKind::Root => {
+            source.catalog_parent_native_session_id.is_none() && catalog_owner == catalog_root
+        }
+        SessionRelationshipKind::RelatedUnknown => false,
+        _ => source.catalog_parent_native_session_id.is_some() && catalog_root.is_some(),
+    };
     if catalog_owner != Some(scanned_owner.native_session_id.as_str())
         || source.catalog_parent_native_session_id != scanned_owner.parent_native_session_id
         || source.catalog_session_relationship != scanned_owner.session_relationship
@@ -626,6 +120,7 @@ pub(super) fn validate_catalog_owner(
             .root_native_session_id
             .as_deref()
             .is_some_and(|scanned_root| Some(scanned_root) != catalog_root)
+        || !tuple_valid
     {
         return Err(CaptureError::InvalidPayload(
             "Codex normalized catalog owner changed before NativePath admission".to_owned(),
@@ -633,18 +128,6 @@ pub(super) fn validate_catalog_owner(
     }
     scanned_owner.root_native_session_id = catalog_root.map(str::to_owned);
     Ok(scanned_owner)
-}
-
-pub(super) fn validate_checkpoint_catalog_owner(
-    source: &CodexCatalogSource,
-    scanned_owner: CodexSessionRow,
-) -> Result<CodexSessionRow> {
-    if scanned_owner.root_native_session_id.is_none() {
-        return Err(CaptureError::InvalidPayload(
-            "Codex checkpoint owner is not normalized".to_owned(),
-        ));
-    }
-    validate_catalog_owner(source, scanned_owner)
 }
 
 pub(super) fn source_changed_during_scan() -> CaptureError {

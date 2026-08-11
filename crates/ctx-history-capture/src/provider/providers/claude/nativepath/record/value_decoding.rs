@@ -1,5 +1,9 @@
 use super::super::rows::ClaudeDiscoveryResultEvidence;
 use super::*;
+use crate::common::json::{exact_bounded_string_alias, ExactJsonStringAlias};
+
+const RESULT_CALL_ID_ALIASES: &[&str] = &["tool_use_id", "toolUseId", "toolCallId"];
+const MAX_RESULT_CALL_ID_BYTES: usize = 256;
 
 pub(super) fn complete_output_rows(
     raw_ordinal: u64,
@@ -23,10 +27,7 @@ pub(super) fn complete_output_rows(
     let direct_content = message
         .get("content")
         .filter(|_| result_blocks.is_empty() && outputs.len() == 1);
-    let direct_call_id = ["tool_use_id", "toolUseId", "toolCallId"]
-        .into_iter()
-        .find_map(|key| message.get(key).and_then(Value::as_str))
-        .filter(|call_id| !call_id.is_empty() && call_id.len() <= 256);
+    let direct_call_id = result_call_id(message);
     let tool_use_result = value
         .get("toolUseResult")
         .or_else(|| message.get("toolUseResult"));
@@ -39,8 +40,14 @@ pub(super) fn complete_output_rows(
                 .as_deref()
                 .and_then(|call_id| {
                     result_blocks.iter().enumerate().find(|(index, block)| {
-                        !consumed_result_blocks[*index]
-                            && block.get("tool_use_id").and_then(Value::as_str) == Some(call_id)
+                        if consumed_result_blocks[*index] {
+                            return false;
+                        }
+                        match result_call_id(block) {
+                            ExactJsonStringAlias::Exact(block_call_id) => block_call_id == call_id,
+                            ExactJsonStringAlias::Ambiguous => true,
+                            ExactJsonStringAlias::Missing => false,
+                        }
                     })
                 })
                 .or_else(|| {
@@ -79,6 +86,7 @@ pub(super) fn complete_output_rows(
             } else {
                 claude_discovery_result_evidence(block, tool_use_result, &content)
             };
+            let call_id = block.map_or(direct_call_id, |block| result_call_id(block));
             ClaudeRetainedRow {
                 identity,
                 native_order: order(identity),
@@ -92,22 +100,32 @@ pub(super) fn complete_output_rows(
                 body_text_retention: None,
                 tool_call: None,
                 tool_result: Some(ClaudeToolResult {
-                    call_id: output
-                        .call_id
-                        .clone()
-                        .or_else(|| direct_call_id.map(str::to_owned)),
+                    call_id: match call_id {
+                        ExactJsonStringAlias::Exact(call_id) => Some(call_id.to_owned()),
+                        ExactJsonStringAlias::Missing | ExactJsonStringAlias::Ambiguous => None,
+                    },
                     outcome,
                     exit_code: output.outcome.exit_code,
                     duration_ms: output.outcome.duration_ms,
                     content,
                     tool_use_result: tool_use_result.cloned(),
                     discovery_evidence,
-                    retrieval_input_ambiguous: false,
+                    retrieval_input_ambiguous: matches!(call_id, ExactJsonStringAlias::Ambiguous),
                 }),
                 locator: locator.clone(),
             }
         })
         .collect()
+}
+
+fn result_call_id(value: &Value) -> ExactJsonStringAlias<'_> {
+    value
+        .as_object()
+        .map_or(ExactJsonStringAlias::Missing, result_call_id_object)
+}
+
+fn result_call_id_object(object: &serde_json::Map<String, Value>) -> ExactJsonStringAlias<'_> {
+    exact_bounded_string_alias(object, RESULT_CALL_ID_ALIASES, MAX_RESULT_CALL_ID_BYTES)
 }
 
 fn claude_discovery_result_evidence(
@@ -123,7 +141,7 @@ fn claude_discovery_result_evidence(
     }
     if block.len() != 4
         || block.get("type").and_then(Value::as_str) != Some("tool_result")
-        || block.get("tool_use_id").and_then(Value::as_str).is_none()
+        || !matches!(result_call_id_object(block), ExactJsonStringAlias::Exact(_))
         || block.get("content") != Some(selected_content)
     {
         return ClaudeDiscoveryResultEvidence::Unknown;

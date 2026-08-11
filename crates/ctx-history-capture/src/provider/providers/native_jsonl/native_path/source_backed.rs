@@ -6,10 +6,10 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, NativeItemKey, NativeSessionKey, PositionStability,
-    ProjectionContractError, SessionIdentityInput, SessionRelationshipKind, SourceAnchor,
-    SourceKey, StableEntityId, SubrecordSelector, TypedKey, MAX_CORE_CONTENT_BYTES,
+    derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, CoreRecordError,
+    EventIdentityInput, NativeItemKey, PositionStability, ProjectionContractError,
+    SessionRelationshipKind, SourceKey, StableEntityId, SubrecordSelector, TypedKey,
+    MAX_CORE_CONTENT_BYTES,
 };
 #[cfg(test)]
 use ctx_history_core::{McpJsonCapture, McpPayloadOmissionReason};
@@ -112,16 +112,13 @@ impl DirectJsonlFamilyAdapter {
     }
 
     fn source_key(self, native_session_id: &str) -> DirectJsonlAdapterResult<SourceKey> {
-        let anchor = SourceAnchor::provider_native(
-            format!("{}.direct-jsonl-session", self.provider.as_str()),
-            TypedKey::utf8(native_session_id)?,
-        )?;
-        Ok(SourceKey::derive(
+        Ok(SourceKey::derive_provider_native(
             self.provider.as_str(),
             self.source_format,
             self.schema_variant,
             DIRECT_JSONL_SOURCE_IDENTITY_VERSION,
-            anchor,
+            format!("{}.direct-jsonl-session", self.provider.as_str()),
+            TypedKey::utf8(native_session_id)?,
         )?)
     }
 
@@ -130,15 +127,12 @@ impl DirectJsonlFamilyAdapter {
         native_session_id: &str,
     ) -> DirectJsonlAdapterResult<(SourceKey, StableEntityId)> {
         let source = self.source_key(native_session_id)?;
-        let native_session_key = NativeSessionKey::native_id(
+        let session_id = derive_native_session_id(
+            &source,
+            "direct-jsonl-session",
             format!("{}.direct-jsonl-session", self.provider.as_str()),
             TypedKey::utf8(native_session_id)?,
         )?;
-        let session_id = derive_session_id(SessionIdentityInput {
-            source: &source,
-            logical_session_kind: "direct-jsonl-session",
-            native_session_key: &native_session_key,
-        })?;
         Ok((source, session_id))
     }
 

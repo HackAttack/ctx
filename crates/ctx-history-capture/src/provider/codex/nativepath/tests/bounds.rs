@@ -7,7 +7,7 @@ fn retained_rows_stream_in_pages_bounded_by_64_units_and_8_mib() {
         contents.push_str(&message("assistant", &format!("bounded-row-{index}")));
     }
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "paged-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "paged-owner"));
 
     assert_eq!(sink.rows.len(), 5_001);
     assert_eq!(sink.pages.len(), 79);
@@ -35,11 +35,13 @@ fn one_valid_source_backed_record_may_roll_past_the_eight_mib_page_target() {
     .concat();
     assert!(contents.len() < MAX_CODEX_RECORD_BYTES);
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-full-body-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "source-backed-full-body-owner"));
 
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].lexical_body, full_body);
-    assert!(sink.rows[0].lexical_body.ends_with("codex-full-body-tail"));
+    assert_eq!(sink.rows[0].lexical_body(), full_body);
+    assert!(sink.rows[0]
+        .lexical_body()
+        .ends_with("codex-full-body-tail"));
     let oversized_page = sink
         .pages
         .iter()
@@ -65,10 +67,10 @@ fn records_over_16_mib_are_stream_skipped_without_losing_physical_ordinals() {
     contents.push_str(&message("assistant", "survives oversized records"));
 
     let (_temp, path) = write_source(&contents);
-    let (scan, sink) = scan_collect(discover_one(&path, "oversized-owner"), None);
+    let (scan, sink) = scan_collect(discover_one(&path, "oversized-owner"));
 
     assert_eq!(sink.rows.len(), 1);
-    assert_eq!(sink.rows[0].raw_ordinal, 3);
+    assert_eq!(sink.rows[0].raw_ordinal(), 3);
     assert_eq!(scan.next_raw_ordinal, 4);
     assert_eq!(scan.counters.complete_records, 4);
     assert_eq!(scan.counters.oversized_records, 2);
@@ -78,7 +80,7 @@ fn records_over_16_mib_are_stream_skipped_without_losing_physical_ordinals() {
 }
 
 #[test]
-fn repository_candidate_correlation_scan_is_conditional_and_counted() {
+fn combined_semantic_authority_preflight_is_counted_once() {
     let no_candidate = [
         session_meta("no-repository-candidate"),
         message("assistant", "ordinary display only"),
@@ -86,11 +88,18 @@ fn repository_candidate_correlation_scan_is_conditional_and_counted() {
     ]
     .concat();
     let (_temp, path) = write_source(&no_candidate);
-    let (scan, _) = scan_collect(discover_one(&path, "no-repository-candidate"), None);
-    assert_eq!(scan.counters.repository_candidate_authority_bytes_read, 0);
+    let (scan, _) = scan_collect(discover_one(&path, "no-repository-candidate"));
+    assert_eq!(
+        scan.counters.repository_candidate_authority_bytes_read,
+        no_candidate.len() as u64
+    );
+    assert_eq!(
+        scan.counters.mcp_terminal_authority_bytes_read,
+        no_candidate.len() as u64
+    );
     assert_eq!(
         scan.counters.repository_candidate_authority_records_visited,
-        0
+        3
     );
 
     let mut candidate = session_meta("repository-candidate");
@@ -121,11 +130,18 @@ fn repository_candidate_correlation_scan_is_conditional_and_counted() {
         "Final output:\n[main abc1234] exact\n0123456789abcdef0123456789abcdef01234567",
     ));
     let (_temp, path) = write_source(&candidate);
-    let (scan, _) = scan_collect(discover_one(&path, "repository-candidate"), None);
-    assert_eq!(scan.counters.repository_candidate_authority_bytes_read, 0);
+    let (scan, _) = scan_collect(discover_one(&path, "repository-candidate"));
+    assert_eq!(
+        scan.counters.repository_candidate_authority_bytes_read,
+        candidate.len() as u64
+    );
+    assert_eq!(
+        scan.counters.mcp_terminal_authority_bytes_read,
+        candidate.len() as u64
+    );
     assert_eq!(
         scan.counters.repository_candidate_authority_records_visited,
-        0
+        304
     );
     assert_eq!(scan.counters.peak_repository_candidate_authority_entries, 1);
     assert_eq!(scan.counters.peak_repository_occurrence_cache_entries, 301);
@@ -133,69 +149,13 @@ fn repository_candidate_correlation_scan_is_conditional_and_counted() {
 }
 
 #[test]
-fn newly_admitted_append_candidate_counts_prior_serial_call_in_exact_prefix_scan() {
-    let initial = [
-        session_meta("late-repository-candidate"),
-        tool_call("late-repository-call"),
-    ]
-    .concat();
-    let (_temp, path) = write_source(&initial);
-    let (first, _) = scan_collect(discover_one(&path, "late-repository-candidate"), None);
-    let proof = first
-        .bind_checkpoint(
-            "late-repository-candidate",
-            CodexCheckpointGeneration::new(92),
-        )
-        .unwrap()
-        .unwrap();
-
-    let suffix = [
-        jsonl(json!({
-            "timestamp": "2026-01-01T00:00:02Z",
-            "type": "response_item",
-            "payload": {
-                "type": "function_call",
-                "name": "exec_command",
-                "call_id": "late-repository-call",
-                "arguments": json!({
-                    "cmd": "git commit -m exact && git rev-parse HEAD",
-                    "workdir": "/workspace"
-                }).to_string()
-            }
-        })),
-        successful_tool_output(
-            "late-repository-call",
-            "Final output:\n[main abc1234] exact\n0123456789abcdef0123456789abcdef01234567",
-        ),
-    ]
-    .concat();
-    fs::write(&path, format!("{initial}{suffix}")).unwrap();
-    let (appended, sink) = scan_collect(
-        discover_one(&path, "late-repository-candidate"),
-        Some(&proof),
-    );
-    assert_eq!(appended.disposition, CodexParseDisposition::AppendDelta);
-    assert_eq!(
-        appended.counters.repository_candidate_authority_bytes_read,
-        initial.len() as u64
-    );
-    assert_eq!(
-        appended
-            .counters
-            .repository_candidate_authority_records_visited,
-        2
-    );
-    assert!(sink.rows.iter().all(|row| row.repository_result.is_none()));
-}
-
-#[test]
-#[ignore = "diagnostic release-mode benchmark over the 154 MB Codex fixture"]
+#[ignore = "diagnostic release-mode Core projection benchmark over the 154 MB Codex fixture"]
 fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     const EXPECTED_FILES: usize = 6_000;
     const EXPECTED_BYTES: u64 = 154_299_600;
     const EXPECTED_SHA256: &str =
         "b8558416ccb9719c5c8e0e3e1821ea94bef1e5c413a3070b9982fa759493e82b";
-    const EXPECTED_ROWS: u64 = 24_000;
+    const EXPECTED_ROWS: u64 = 30_000;
     const EXPECTED_RESULTS: u64 = 6_000;
     const EXPECTED_MALFORMED: u64 = 60;
     const EXPECTED_INCOMPLETE_TAILS: u64 = 60;
@@ -226,7 +186,18 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     let discovery = discover_codex_catalog_sources(&catalog);
     assert!(discovery.rejections.is_empty(), "{discovery:?}");
     assert_eq!(discovery.sources.len(), EXPECTED_FILES);
-    let sources = discovery.sources;
+    let mut sources = discovery.sources;
+    for (index, source) in sources.iter_mut().enumerate() {
+        let owner = format!("quickbench-{index:06}");
+        if index.is_multiple_of(10) {
+            let parent = format!("quickbench-parent-{index:06}");
+            source.catalog_parent_native_session_id = Some(parent.clone());
+            source.catalog_session_relationship = SessionRelationshipKind::Delegated;
+            source.catalog_root_native_session_id = Some(parent);
+        } else {
+            source.catalog_root_native_session_id = Some(owner);
+        }
+    }
 
     let scan_once = || {
         let mut rows = 0_u64;
@@ -237,14 +208,9 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
         let mut typed_parses = 0_u64;
         let mut structural_output_probes = 0_u64;
         for source in &sources {
-            let mut scanner =
-                CodexNativeScanner::new_source_backed_v0(source.clone(), None).unwrap();
-            while let Some(page) = scanner.next_page().unwrap() {
-                let CodexNativeOwnedPage::Core(page) = &page;
-                rows = rows.saturating_add(page.source_backed_rows.len() as u64);
-                black_box(page);
-            }
-            let scan = scanner.finish().unwrap();
+            let (scan, sink) = scan_collect(source.clone());
+            rows = rows.saturating_add(sink.rows.len() as u64);
+            black_box(sink);
             results = results.saturating_add(scan.counters.native_result_records);
             malformed = malformed.saturating_add(scan.counters.malformed_records);
             incomplete_tails =
@@ -260,7 +226,7 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
         assert_eq!(malformed, EXPECTED_MALFORMED);
         assert_eq!(incomplete_tails, EXPECTED_INCOMPLETE_TAILS);
         assert_eq!(structural_parses, 36_060);
-        assert_eq!(typed_parses, 30_000);
+        assert_eq!(typed_parses, 36_000);
         assert_eq!(structural_output_probes, EXPECTED_RESULTS);
         black_box((
             rows,
@@ -282,13 +248,20 @@ fn source_backed_quickbench_guards_the_nativepath_parser_hot_path() {
     samples.sort_unstable();
     let median = samples[1];
     println!(
-        "Codex source-backed NativePath median over {} bytes and {} sources: {:.3}s",
+        "Codex source-backed NativePath median over {} bytes and {} sources: {:.3}s; rows={} results={} malformed={} incomplete_tails={} structural_parses=36060 typed_parses=36000 structural_output_probes={}",
         EXPECTED_BYTES,
         EXPECTED_FILES,
-        median.as_secs_f64()
+        median.as_secs_f64(),
+        EXPECTED_ROWS,
+        EXPECTED_RESULTS,
+        EXPECTED_MALFORMED,
+        EXPECTED_INCOMPLETE_TAILS,
+        EXPECTED_RESULTS,
     );
+    // The exact-base full row-page plus Core bridge is about 3.6s on this
+    // fixture; retain the original benchmark's greater-than-2x gross guard.
     assert!(
-        median.as_secs_f64() < 1.0,
-        "obvious NativePath parser regression from the recorded 0.468s behavior: {median:?}"
+        median.as_secs_f64() < 8.0,
+        "obvious NativePath Core projection regression from the recorded 3.6s full-bridge behavior: {median:?}"
     );
 }

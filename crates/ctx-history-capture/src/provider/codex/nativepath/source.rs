@@ -1,19 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    sync::Arc,
     time::SystemTime,
 };
 
 use ctx_history_core::{CaptureProvider, SessionRelationshipKind};
 use serde::{Deserialize, Serialize};
 
-use super::checkpoint::CodexNativeCheckpoint;
 use crate::{
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    common::time::system_time_ms,
+    common::{io::ProviderSourceRoot, time::system_time_ms},
     provider::codex::catalog::CatalogSession,
-    CaptureError, Result as CaptureResult, CODEX_SESSION_SOURCE_FORMAT,
+    CODEX_SESSION_SOURCE_FORMAT,
 };
 
 const CATALOG_CHANGE_TOKEN_KEY: &str = "inventory_file_change_token_v1";
@@ -58,7 +55,6 @@ impl CodexFileObservation {
 pub(crate) struct CodexCatalogSource {
     pub(crate) source_root: String,
     pub(crate) source_path: PathBuf,
-    pub(crate) cataloged_at_ms: i64,
     pub(crate) catalog_observation: CodexFileObservation,
     /// SHA-256 of exactly `catalog_observation.len` bytes from the retained
     /// discovery authority. This is task-local admission evidence, not a
@@ -69,27 +65,9 @@ pub(crate) struct CodexCatalogSource {
     pub(crate) catalog_session_relationship: SessionRelationshipKind,
     pub(crate) catalog_advisory_session_id: Option<String>,
     pub(crate) catalog_root_native_session_id: Option<String>,
-    pub(crate) opened: Option<Arc<OpenedProviderSourceFile>>,
     pub(crate) authority_root: Option<ProviderSourceRoot>,
     pub(crate) authority_relative_path: Option<PathBuf>,
 }
-
-impl PartialEq for CodexCatalogSource {
-    fn eq(&self, other: &Self) -> bool {
-        self.source_root == other.source_root
-            && self.source_path == other.source_path
-            && self.cataloged_at_ms == other.cataloged_at_ms
-            && self.catalog_observation == other.catalog_observation
-            && self.catalog_prefix_sha256 == other.catalog_prefix_sha256
-            && self.catalog_native_session_id == other.catalog_native_session_id
-            && self.catalog_parent_native_session_id == other.catalog_parent_native_session_id
-            && self.catalog_session_relationship == other.catalog_session_relationship
-            && self.catalog_advisory_session_id == other.catalog_advisory_session_id
-            && self.catalog_root_native_session_id == other.catalog_root_native_session_id
-    }
-}
-
-impl Eq for CodexCatalogSource {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexCatalogRejection {
@@ -162,7 +140,6 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
     Ok(CodexCatalogSource {
         source_root: session.source_root.clone(),
         source_path: PathBuf::from(&session.source_path),
-        cataloged_at_ms: session.cataloged_at_ms,
         catalog_observation: CodexFileObservation {
             len: session.file_size_bytes,
             modified_at_ms: session.file_modified_at_ms,
@@ -175,7 +152,6 @@ fn catalog_source(session: &CatalogSession) -> Result<CodexCatalogSource, &'stat
         catalog_session_relationship: session.session_relationship,
         catalog_advisory_session_id: session.advisory_session_id.clone(),
         catalog_root_native_session_id: None,
-        opened: None,
         authority_root: None,
         authority_relative_path: None,
     })
@@ -202,84 +178,5 @@ fn decode_hex_nibble(value: u8) -> Option<u8> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexSourceIdentity {
-    pub(crate) canonical_source_key: String,
-    pub(crate) source_root: String,
-    pub(crate) source_path: PathBuf,
-}
-
-impl CodexSourceIdentity {
-    pub(crate) fn new(
-        canonical_source_key: impl Into<String>,
-        source_root: impl Into<String>,
-        source_path: PathBuf,
-    ) -> CaptureResult<Self> {
-        let identity = Self {
-            canonical_source_key: canonical_source_key.into(),
-            source_root: source_root.into(),
-            source_path,
-        };
-        if identity.canonical_source_key.trim().is_empty()
-            || identity.source_root.trim().is_empty()
-            || identity.source_path.as_os_str().is_empty()
-        {
-            return Err(CaptureError::InvalidPayload(
-                "Codex append proof identity is incomplete".to_owned(),
-            ));
-        }
-        Ok(identity)
-    }
-
-    pub(crate) fn matches_catalog_source(&self, source: &CodexCatalogSource) -> bool {
-        self.source_root == source.source_root && self.source_path == source.source_path
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CodexCheckpointGeneration(u64);
-
-impl CodexCheckpointGeneration {
-    pub(crate) const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub(crate) const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexAppendProof {
-    pub(crate) identity: CodexSourceIdentity,
-    pub(crate) generation: CodexCheckpointGeneration,
-    pub(crate) checkpoint: CodexNativeCheckpoint,
-}
-
-impl CodexAppendProof {
-    pub(crate) fn new(
-        identity: CodexSourceIdentity,
-        generation: CodexCheckpointGeneration,
-        checkpoint: CodexNativeCheckpoint,
-    ) -> Self {
-        Self {
-            identity,
-            generation,
-            checkpoint,
-        }
-    }
-
-    pub(crate) fn validate_source(&self, source: &CodexCatalogSource) -> CaptureResult<()> {
-        if !self.identity.matches_catalog_source(source) {
-            return Err(CaptureError::InvalidPayload(format!(
-                "Codex append proof generation {} does not belong to catalog source {}",
-                self.generation.get(),
-                source.source_path.display()
-            )));
-        }
-        Ok(())
     }
 }

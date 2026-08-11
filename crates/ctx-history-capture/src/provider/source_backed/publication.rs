@@ -465,54 +465,8 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 .filter_map(|route| route.codex_generation_participant)
                 .collect::<Vec<_>>();
             if !selected_participants.is_empty() {
-                let mut carried = Vec::new();
-                if let Some(base) = writer.base_manifest() {
-                    let base_sources = base
-                        .sources
-                        .iter()
-                        .map(|source| {
-                            (
-                                source.observation().source().exact_descriptor_digest(),
-                                source,
-                            )
-                        })
-                        .collect::<HashMap<_, _>>();
-                    for route in &registry.routes {
-                        let (Some(route_identity), Some(participant)) = (
-                            route.metadata.route_identity.as_ref(),
-                            route.codex_generation_participant,
-                        ) else {
-                            continue;
-                        };
-                        if !selected_route_ids.contains(route_identity)
-                            && !carried_unselected_route_ids.contains(route_identity)
-                        {
-                            continue;
-                        }
-                        let sources = base
-                            .source_route(route_identity)
-                            .into_iter()
-                            .flat_map(|snapshot| snapshot.sources())
-                            .filter_map(|source_key| {
-                                base_sources
-                                    .get(&source_key.exact_descriptor_digest())
-                                    .filter(|source| {
-                                        source
-                                            .observation()
-                                            .source()
-                                            .exact_descriptor_eq(source_key)
-                                    })
-                                    .map(|source| (source_key.clone(), (**source).clone()))
-                            })
-                            .collect::<HashMap<_, _>>();
-                        carried.push(CodexGenerationCarriedRouteV0 {
-                            participant,
-                            sources,
-                        });
-                    }
-                }
                 coordinator
-                    .prepare(&selected_participants, carried)
+                    .prepare(&selected_participants)
                     .map_err(|error| SourceBackedCoordinatorError::RouteScan {
                         provider: CaptureProvider::Codex,
                         source: SourceBackedRouteError::new(

@@ -17,6 +17,7 @@ mod identity;
 mod physical;
 mod revalidation;
 mod route;
+mod single_file;
 
 pub(crate) use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
@@ -36,31 +37,40 @@ pub(crate) use ctx_history_jsonl::{
 use framing::read_bounded_record_complete_sha256;
 pub(crate) use framing::{
     read_bounded_record, read_bounded_record_complete_and_prefix_sha256,
-    read_bounded_record_unhashed, JsonlBoundedRecordRead, JsonlRecordFraming,
+    read_bounded_record_full_complete_and_prefix_sha256, read_bounded_record_unhashed,
+    JsonlRecordFraming,
 };
 use identity::observe_metadata;
-pub(crate) use identity::{retained_file_identity, JsonlFileIdentityPolicy};
-pub(crate) use physical::{JsonlPhysicalDigest, JsonlPhysicalStream, JsonlPhysicalStreamPosition};
+pub(crate) use physical::{
+    JsonlPhysicalDigest, JsonlPhysicalRecord, JsonlPhysicalStream, JsonlPhysicalStreamPosition,
+};
 use revalidation::hash_prefix;
 #[cfg(test)]
 pub(crate) use revalidation::{
     jsonl_prefix_hash_bytes, reset_jsonl_prefix_hash_bytes, set_after_final_jsonl_prefix_hash_hook,
     set_after_jsonl_append_observation_route_binding_hook, set_after_jsonl_prefix_hash_hook,
-    set_after_second_jsonl_prefix_hash_hook,
+    set_after_jsonl_semantic_preflight_hook, set_after_second_jsonl_prefix_hash_hook,
 };
 pub(crate) use revalidation::{
     observe_opened_file, observe_opened_file_allow_append, revalidate_frozen_prefix,
     revalidate_frozen_prefix_sha256,
 };
 #[cfg(test)]
-pub(crate) use route::set_before_jsonl_terminal_physical_revalidation_hook;
 pub(crate) use route::{
-    jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope,
+    checkpoint_admitted_revision_for_test, full_family_checkpoint_frontier_contract_for_test,
+    set_before_jsonl_terminal_physical_revalidation_hook,
+};
+pub(crate) use route::{
+    jsonl_family_driver, provider_checkpoint_for_base, JsonlFamilyAdapter, JsonlFamilyAppendMode,
+    JsonlFamilyBaseScope, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
     JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
     JsonlFamilyMembershipObservation, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjectionMode,
     JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
-    JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+    JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
+    JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyTerminalProof,
+    JsonlFamilyWorkerContext,
 };
+pub(crate) use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
@@ -99,7 +109,28 @@ pub(crate) struct JsonlReader {
     record_buffer: Vec<u8>,
     whole_record: bool,
     append_log: bool,
+    bind_admitted_eof: bool,
+    complete_prefix_ends_with_terminal_nul_padding: bool,
+    semantic_append_resume: Option<JsonlSemanticAppendResume>,
+    semantic_preflight_binding: Option<JsonlSemanticPreflightBinding>,
     oversized_record_policy: JsonlOversizedRecordPolicy,
+}
+
+struct JsonlSemanticAppendResume {
+    previous: JsonlCheckpoint,
+    admitted_eof_sha256: Option<[u8; 32]>,
+    position: Option<JsonlPhysicalStreamPosition>,
+}
+
+pub(crate) enum JsonlSemanticPreflightMode {
+    AdmittedEof(Option<[u8; 32]>),
+    CompletePrefix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JsonlSemanticPreflightBinding {
+    physical: physical::JsonlPhysicalPassBinding,
+    complete_prefix_ends_with_terminal_nul_padding: bool,
 }
 
 impl JsonlReader {
@@ -109,7 +140,59 @@ impl JsonlReader {
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
     ) -> Result<Self> {
-        Self::open_with_framing(identity, source_file, previous, probe, false)
+        Self::open_with_record_framing(
+            identity,
+            source_file,
+            previous,
+            probe,
+            JsonlRecordFraming::ordinary(),
+        )
+    }
+
+    pub(crate) fn open_with_record_framing(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile>,
+        previous: Option<&JsonlCheckpoint>,
+        probe: Option<JsonlProbe>,
+        record_framing: JsonlRecordFraming,
+    ) -> Result<Self> {
+        Self::open_with_framing(
+            identity,
+            source_file,
+            previous,
+            probe,
+            record_framing,
+            false,
+            false,
+            None,
+            None,
+        )
+    }
+
+    pub(crate) fn open_semantic_with_record_framing(
+        identity: JsonlSourceIdentity,
+        source_file: Arc<OpenedProviderSourceFile>,
+        previous: Option<&JsonlCheckpoint>,
+        mode: JsonlSemanticPreflightMode,
+        probe: Option<JsonlProbe>,
+        record_framing: JsonlRecordFraming,
+        frozen_observation: Option<&JsonlFileObservation>,
+    ) -> Result<Self> {
+        let (bind_admitted_eof, deferred_append_eof_sha256) = match mode {
+            JsonlSemanticPreflightMode::AdmittedEof(previous) => (true, previous.map(Some)),
+            JsonlSemanticPreflightMode::CompletePrefix => (false, Some(None)),
+        };
+        Self::open_with_framing(
+            identity,
+            source_file,
+            previous,
+            probe,
+            record_framing,
+            false,
+            bind_admitted_eof,
+            deferred_append_eof_sha256,
+            frozen_observation,
+        )
     }
 
     pub(crate) fn open_whole_record(
@@ -117,7 +200,17 @@ impl JsonlReader {
         source_file: Arc<OpenedProviderSourceFile>,
         previous: Option<&JsonlCheckpoint>,
     ) -> Result<Self> {
-        Self::open_with_framing(identity, source_file, previous, None, true)
+        Self::open_with_framing(
+            identity,
+            source_file,
+            previous,
+            None,
+            JsonlRecordFraming::ordinary(),
+            true,
+            false,
+            None,
+            None,
+        )
     }
 
     fn open_with_framing(
@@ -125,19 +218,30 @@ impl JsonlReader {
         source_file: Arc<OpenedProviderSourceFile>,
         previous: Option<&JsonlCheckpoint>,
         probe: Option<JsonlProbe>,
+        record_framing: JsonlRecordFraming,
         whole_record: bool,
+        bind_admitted_eof: bool,
+        deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
+        frozen_observation: Option<&JsonlFileObservation>,
     ) -> Result<Self> {
         source_file.revalidate_same_object()?;
         let current_metadata = source_file.file().metadata()?;
-        let observation = observe_metadata(
+        let current_observation = observe_metadata(
             identity.source_path(),
             source_file.file(),
             &current_metadata,
         )?;
         let mut file = source_file.reopen_same_object()?;
-        if observe_metadata(identity.source_path(), &file, &file.metadata()?)? != observation {
+        if observe_metadata(identity.source_path(), &file, &file.metadata()?)?
+            != current_observation
+        {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
+        let observation = match frozen_observation {
+            Some(frozen) if frozen.admits_frozen_prefix_in(&current_observation) => frozen.clone(),
+            Some(_) => return Err(CaptureError::SourceChangedDuringCapture),
+            None => current_observation,
+        };
 
         let mut prefix_hasher = new_prefix_hasher();
         let mut complete_prefix_end = 0_u64;
@@ -149,6 +253,7 @@ impl JsonlReader {
         };
         let mut skip_scan = false;
         let mut unchanged_checkpoint = None;
+        let mut semantic_append_resume = None;
 
         if let Some(previous) = previous.filter(|checkpoint| checkpoint.supports(&identity)) {
             let previous_observation = previous.source_observation();
@@ -167,22 +272,32 @@ impl JsonlReader {
                 skip_scan = true;
                 unchanged_checkpoint = Some(previous.clone());
             } else if same_file && observation.length() >= previous.complete_prefix_end() {
-                let observed_prefix = hash_prefix(
-                    &mut file,
-                    previous.complete_prefix_end(),
-                    new_prefix_hasher(),
-                )?;
-                if prefix_digest(&observed_prefix) == *previous.complete_prefix_sha256() {
-                    prefix_hasher = observed_prefix;
-                    complete_prefix_end = previous.complete_prefix_end();
-                    next_physical_ordinal = previous.next_physical_ordinal();
-                    if previous.terminal() && observation.length() == previous.complete_prefix_end()
-                    {
-                        source_change = JsonlSourceChange::Unchanged;
-                        skip_scan = true;
-                        unchanged_checkpoint = Some(previous.clone());
-                    } else {
-                        source_change = JsonlSourceChange::Append;
+                if let Some(admitted_eof_sha256) = deferred_append_eof_sha256 {
+                    source_change = JsonlSourceChange::Append;
+                    semantic_append_resume = Some(JsonlSemanticAppendResume {
+                        previous: previous.clone(),
+                        admitted_eof_sha256,
+                        position: None,
+                    });
+                } else {
+                    let observed_prefix = hash_prefix(
+                        &mut file,
+                        previous.complete_prefix_end(),
+                        new_prefix_hasher(),
+                    )?;
+                    if prefix_digest(&observed_prefix) == *previous.complete_prefix_sha256() {
+                        prefix_hasher = observed_prefix;
+                        complete_prefix_end = previous.complete_prefix_end();
+                        next_physical_ordinal = previous.next_physical_ordinal();
+                        if previous.terminal()
+                            && observation.length() == previous.complete_prefix_end()
+                        {
+                            source_change = JsonlSourceChange::Unchanged;
+                            skip_scan = true;
+                            unchanged_checkpoint = Some(previous.clone());
+                        } else {
+                            source_change = JsonlSourceChange::Append;
+                        }
                     }
                 }
             }
@@ -210,6 +325,16 @@ impl JsonlReader {
                 next_physical_ordinal = probe.next_physical_ordinal;
             }
         }
+        let full_hasher = if semantic_append_resume
+            .as_ref()
+            .is_some_and(|resume| resume.admitted_eof_sha256.is_some())
+        {
+            Some(Sha256::new())
+        } else {
+            bind_admitted_eof
+                .then(|| hash_prefix(&mut file, complete_prefix_end, Sha256::new()))
+                .transpose()?
+        };
         file.seek(SeekFrom::Start(complete_prefix_end))?;
         let (reader, physical) = if whole_record {
             (Some(BufReader::new(file)), None)
@@ -221,8 +346,21 @@ impl JsonlReader {
                     observation.length(),
                     complete_prefix_end,
                     next_physical_ordinal,
-                    JsonlRecordFraming::ordinary(),
-                    JsonlPhysicalDigest::complete(prefix_hasher.clone()),
+                    record_framing,
+                    match (full_hasher, semantic_append_resume.as_ref()) {
+                        (Some(full), Some(resume)) if resume.admitted_eof_sha256.is_some() => {
+                            JsonlPhysicalDigest::full_complete_and_bounded_prefix(
+                                full,
+                                prefix_hasher.clone(),
+                                Sha256::new(),
+                                resume.previous.source_observation().length(),
+                            )
+                        }
+                        (Some(full), _) => {
+                            JsonlPhysicalDigest::full_and_complete(full, prefix_hasher.clone())
+                        }
+                        (None, _) => JsonlPhysicalDigest::complete(prefix_hasher.clone()),
+                    },
                     || CaptureError::SourceChangedDuringCapture,
                 )?),
             )
@@ -244,6 +382,10 @@ impl JsonlReader {
             record_buffer: Vec::new(),
             whole_record,
             append_log: !whole_record,
+            bind_admitted_eof,
+            complete_prefix_ends_with_terminal_nul_padding: false,
+            semantic_append_resume,
+            semantic_preflight_binding: None,
             oversized_record_policy: JsonlOversizedRecordPolicy::RejectSource,
         })
     }
@@ -258,6 +400,204 @@ impl JsonlReader {
 
     pub(crate) fn outcome(&self) -> Option<&JsonlScanOutcome> {
         self.outcome.as_ref()
+    }
+
+    pub(super) fn next_execution_record(&mut self) -> Result<Option<JsonlPhysicalRecord>> {
+        if self.finished {
+            return Ok(None);
+        }
+        if self.skip_scan {
+            self.finish(true)?;
+            return Ok(None);
+        }
+        if self.whole_record {
+            return Err(CaptureError::SystemInvariant(
+                "whole-record JSON input cannot use the semantic executor",
+            ));
+        }
+        self.capture_semantic_append_position()?;
+        let record = self
+            .physical
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .next_record()?;
+        match record {
+            None => self.finish(true)?,
+            Some(record) if !record.complete => self.finish(false)?,
+            Some(record) => {
+                self.complete_prefix_ends_with_terminal_nul_padding = record.terminal_nul_padding;
+            }
+        }
+        Ok(record)
+    }
+
+    fn capture_semantic_append_position(&mut self) -> Result<()> {
+        if let Some(resume) = self.semantic_append_resume.as_mut() {
+            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL append lost its physical stream",
+            ))?;
+            let expected_end = resume.previous.complete_prefix_end();
+            if resume.position.is_none() && physical.offset() == expected_end {
+                if physical.next_physical_ordinal() == resume.previous.next_physical_ordinal()
+                    && prefix_digest(physical.digest().complete_hasher())
+                        == *resume.previous.complete_prefix_sha256()
+                {
+                    resume.position = Some(physical.position());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn execution_record_bytes(&self, record: JsonlPhysicalRecord) -> Result<&[u8]> {
+        Ok(self
+            .physical
+            .as_ref()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .record_bytes(record))
+    }
+
+    pub(super) fn execution_position(&self) -> Result<JsonlPhysicalStreamPosition> {
+        Ok(self
+            .physical
+            .as_ref()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .position())
+    }
+
+    pub(super) fn restore_execution_position(
+        &mut self,
+        position: JsonlPhysicalStreamPosition,
+    ) -> Result<()> {
+        self.physical
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .restore(position)
+    }
+
+    pub(super) fn execution_offset(&self) -> Result<u64> {
+        Ok(self
+            .physical
+            .as_ref()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .offset())
+    }
+
+    pub(super) fn execution_complete_prefix_end(&self) -> Result<u64> {
+        Ok(self
+            .physical
+            .as_ref()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .complete_prefix_end())
+    }
+
+    pub(super) fn execution_certified_prefix_end(&self) -> Option<u64> {
+        self.semantic_append_resume
+            .as_ref()
+            .map(|resume| resume.previous.complete_prefix_end())
+    }
+
+    pub(super) fn release_execution_record_buffer(&mut self) -> Result<()> {
+        self.physical
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .release_record_buffer();
+        Ok(())
+    }
+
+    pub(super) fn admitted_eof_sha256(&self) -> Result<Option<[u8; 32]>> {
+        if !self.bind_admitted_eof {
+            return Ok(None);
+        }
+        let full = self
+            .physical
+            .as_ref()
+            .ok_or(CaptureError::SystemInvariant(
+                "admitted-EOF JSONL input lost its physical stream",
+            ))?
+            .digest()
+            .full_hasher()
+            .ok_or(CaptureError::SystemInvariant(
+                "admitted-EOF JSONL input lost its full digest",
+            ))?;
+        Ok(Some(full.clone().finalize().into()))
+    }
+
+    pub(super) fn complete_prefix_ends_with_terminal_nul_padding(&self) -> bool {
+        self.complete_prefix_ends_with_terminal_nul_padding
+    }
+
+    pub(super) fn settle_semantic_preflight(
+        &mut self,
+        initial: JsonlPhysicalStreamPosition,
+        resume_append: bool,
+        retain_failed_preflight: bool,
+    ) -> Result<bool> {
+        let binding = self.semantic_pass_binding()?;
+        let (restore, ready) = match self.semantic_append_resume.as_ref() {
+            Some(resume) => {
+                let prefix_matches = resume.admitted_eof_sha256.is_none_or(|expected| {
+                    self.physical
+                        .as_ref()
+                        .and_then(|physical| physical.digest().bounded_prefix())
+                        .is_some_and(|(digest, remaining)| {
+                            remaining == 0
+                                && <[u8; 32]>::from(digest.clone().finalize()) == expected
+                        })
+                });
+                match (resume_append && prefix_matches, resume.position.clone()) {
+                    (true, Some(position)) => (position, true),
+                    _ if !retain_failed_preflight => return Ok(false),
+                    _ => (initial, false),
+                }
+            }
+            None => (initial, true),
+        };
+        self.semantic_preflight_binding = Some(binding);
+        #[cfg(test)]
+        revalidation::run_after_jsonl_semantic_preflight_hook(self.identity.source_path());
+        self.physical
+            .as_mut()
+            .ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?
+            .restore(restore)?;
+        self.finished = false;
+        self.outcome = None;
+        Ok(ready)
+    }
+
+    fn semantic_pass_binding(&self) -> Result<JsonlSemanticPreflightBinding> {
+        let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+            "semantic JSONL input lost its physical stream",
+        ))?;
+        if !self.finished
+            || self.outcome.is_none()
+            || physical.offset() != self.observation.length()
+        {
+            return Err(CaptureError::SystemInvariant(
+                "semantic JSONL pass was sealed before its admitted EOF",
+            ));
+        }
+        Ok(JsonlSemanticPreflightBinding {
+            physical: physical.admitted_pass_binding(),
+            complete_prefix_ends_with_terminal_nul_padding: self
+                .complete_prefix_ends_with_terminal_nul_padding,
+        })
     }
 
     pub(crate) fn visit_page<E>(
@@ -281,6 +621,7 @@ impl JsonlReader {
         let mut records = 0_usize;
         let mut page_bytes = 0_usize;
         while records < PAGE_MAX_RECORDS {
+            self.capture_semantic_append_position().map_err(E::from)?;
             let (position, record) = {
                 let physical = self.physical.as_mut().ok_or_else(|| {
                     E::from(CaptureError::SystemInvariant(
@@ -298,6 +639,7 @@ impl JsonlReader {
                 self.finish(false).map_err(E::from)?;
                 break;
             }
+            self.complete_prefix_ends_with_terminal_nul_padding = record.terminal_nul_padding;
             let wire_bytes = usize::try_from(record.byte_len()).unwrap_or(usize::MAX);
             let stored_record_bytes = {
                 let record_bytes = self
@@ -443,6 +785,24 @@ impl JsonlReader {
     }
 
     fn finish(&mut self, terminal: bool) -> Result<()> {
+        if let Some(expected) = self.semantic_preflight_binding.as_ref() {
+            let physical = self.physical.as_ref().ok_or(CaptureError::SystemInvariant(
+                "semantic JSONL input lost its physical stream",
+            ))?;
+            if physical.terminal() != terminal {
+                return Err(CaptureError::SystemInvariant(
+                    "semantic JSONL terminal state disagreed with physical framing",
+                ));
+            }
+            let actual = JsonlSemanticPreflightBinding {
+                physical: physical.admitted_pass_binding(),
+                complete_prefix_ends_with_terminal_nul_padding: self
+                    .complete_prefix_ends_with_terminal_nul_padding,
+            };
+            if &actual != expected {
+                return Err(CaptureError::SourceChangedDuringCapture);
+            }
+        }
         let checkpoint = self.checkpoint(terminal);
         let current = observe_metadata(
             self.identity.source_path(),
@@ -664,7 +1024,10 @@ fn read_bounded_line(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write,
+    };
 
     use super::*;
     use crate::common::io::open_provider_source_file;
@@ -678,6 +1041,24 @@ mod tests {
             })?
             .is_some()
         {}
+        Ok(records)
+    }
+
+    fn semantic_identity(source_path: &Path, revision: &str) -> JsonlSourceIdentity {
+        JsonlSourceIdentity::new(
+            "test",
+            revision,
+            "semantic-pass-binding-policy-v1",
+            [9; 32],
+            source_path.to_owned(),
+        )
+    }
+
+    fn finish_semantic_pass(reader: &mut JsonlReader) -> Result<Vec<JsonlPhysicalRecord>> {
+        let mut records = Vec::new();
+        while let Some(record) = reader.next_execution_record()? {
+            records.push(record);
+        }
         Ok(records)
     }
 
@@ -708,5 +1089,147 @@ mod tests {
 
         assert_eq!(drain(&mut first).unwrap(), expected);
         assert_eq!(drain(&mut second).unwrap(), expected);
+    }
+
+    #[test]
+    fn semantic_projection_rejects_same_length_rewrite_after_preflight() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let source_path = temp.path().join("source.jsonl");
+        let admitted = b"{\"message\":\"authority-a\"}\n{\"message\":\"stable-z\"}\n";
+        let rewritten = b"{\"message\":\"projected-b\"}\n{\"message\":\"stable-z\"}\n";
+        assert_eq!(admitted.len(), rewritten.len());
+        fs::write(&source_path, admitted).unwrap();
+        let source_file = Arc::new(open_provider_source_file(&source_path).unwrap());
+        let mut reader = JsonlReader::open_semantic_with_record_framing(
+            semantic_identity(&source_path, "semantic-rewrite-v1"),
+            source_file,
+            None,
+            JsonlSemanticPreflightMode::AdmittedEof(None),
+            None,
+            JsonlRecordFraming::ordinary(),
+            None,
+        )
+        .unwrap();
+
+        let initial = reader.execution_position().unwrap();
+        finish_semantic_pass(&mut reader).unwrap();
+        let hook_path = source_path.clone();
+        set_after_jsonl_semantic_preflight_hook(source_path, move || {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(hook_path)
+                .unwrap();
+            file.write_all(rewritten).unwrap();
+            file.sync_all().unwrap();
+        });
+        assert!(reader
+            .settle_semantic_preflight(initial, true, false)
+            .unwrap());
+
+        let mut projected = Vec::new();
+        let error = loop {
+            match reader.next_execution_record() {
+                Ok(Some(record)) => {
+                    projected.push(reader.execution_record_bytes(record).unwrap().to_vec());
+                }
+                Ok(None) => {
+                    panic!("rewritten projection unexpectedly satisfied the preflight seal")
+                }
+                Err(error) => break error,
+            }
+        };
+        assert!(matches!(error, CaptureError::SourceChangedDuringCapture));
+        assert_eq!(
+            projected,
+            vec![
+                br#"{"message":"projected-b"}"#.to_vec(),
+                br#"{"message":"stable-z"}"#.to_vec()
+            ]
+        );
+        assert!(reader.outcome().is_none());
+    }
+
+    #[test]
+    fn semantic_binding_preserves_incomplete_tail_completion_ordinal() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let source_path = temp.path().join("source.jsonl");
+        fs::write(&source_path, b"first\npartial").unwrap();
+        let identity = semantic_identity(&source_path, "semantic-tail-v1");
+        let source_file = Arc::new(open_provider_source_file(&source_path).unwrap());
+        let mut first = JsonlReader::open_semantic_with_record_framing(
+            identity.clone(),
+            source_file,
+            None,
+            JsonlSemanticPreflightMode::AdmittedEof(None),
+            None,
+            JsonlRecordFraming::ordinary(),
+            None,
+        )
+        .unwrap();
+
+        let initial = first.execution_position().unwrap();
+        finish_semantic_pass(&mut first).unwrap();
+        let hook_path = source_path.clone();
+        set_after_jsonl_semantic_preflight_hook(source_path.clone(), move || {
+            let mut file = OpenOptions::new().append(true).open(hook_path).unwrap();
+            file.write_all(b"-done\n").unwrap();
+            file.sync_all().unwrap();
+        });
+        assert!(first
+            .settle_semantic_preflight(initial, true, false)
+            .unwrap());
+        let first_records = finish_semantic_pass(&mut first).unwrap();
+        assert_eq!(first_records.len(), 2);
+        assert_eq!(first_records[1].physical_ordinal, 1);
+        assert!(!first_records[1].complete);
+        assert_eq!(
+            first
+                .outcome()
+                .unwrap()
+                .checkpoint()
+                .next_physical_ordinal(),
+            1
+        );
+        let checkpoint = first.outcome().unwrap().checkpoint().clone();
+        let admitted_eof_sha256 = first.admitted_eof_sha256().unwrap().unwrap();
+        drop(first);
+
+        let source_file = Arc::new(open_provider_source_file(&source_path).unwrap());
+        let mut resumed = JsonlReader::open_semantic_with_record_framing(
+            identity,
+            source_file,
+            Some(&checkpoint),
+            JsonlSemanticPreflightMode::AdmittedEof(Some(admitted_eof_sha256)),
+            None,
+            JsonlRecordFraming::ordinary(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            resumed.execution_certified_prefix_end(),
+            Some(checkpoint.complete_prefix_end())
+        );
+        let preflight_start = resumed.execution_position().unwrap();
+        finish_semantic_pass(&mut resumed).unwrap();
+        assert!(resumed
+            .settle_semantic_preflight(preflight_start, true, false)
+            .unwrap());
+        let completed = resumed.next_execution_record().unwrap().unwrap();
+        assert_eq!(completed.physical_ordinal, 1);
+        assert!(completed.complete);
+        assert_eq!(
+            resumed.execution_record_bytes(completed).unwrap(),
+            b"partial-done"
+        );
+        assert!(resumed.next_execution_record().unwrap().is_none());
+        assert_eq!(
+            resumed
+                .outcome()
+                .unwrap()
+                .checkpoint()
+                .next_physical_ordinal(),
+            2
+        );
     }
 }

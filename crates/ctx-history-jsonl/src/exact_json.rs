@@ -6,6 +6,36 @@ use serde::{
 };
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExactJsonStringAlias<'a> {
+    Missing,
+    Exact(&'a str),
+    Ambiguous,
+}
+
+/// Selects one nonempty bounded string from an exact set of object-key
+/// aliases. Multiple aliases are ambiguous even when their values agree.
+pub fn exact_bounded_string_alias<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    aliases: &[&str],
+    max_bytes: usize,
+) -> ExactJsonStringAlias<'a> {
+    let mut selected = None;
+    for value in aliases.iter().filter_map(|alias| object.get(*alias)) {
+        if selected.is_some() {
+            return ExactJsonStringAlias::Ambiguous;
+        }
+        let Some(value) = value
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= max_bytes)
+        else {
+            return ExactJsonStringAlias::Ambiguous;
+        };
+        selected = Some(value);
+    }
+    selected.map_or(ExactJsonStringAlias::Missing, ExactJsonStringAlias::Exact)
+}
+
 /// Provider envelopes and tool payloads are far smaller than 65,536 object
 /// members. Keeping this limit high avoids excluding legitimate shapes while
 /// bounding the decoded keys retained by the structural-authority pass across

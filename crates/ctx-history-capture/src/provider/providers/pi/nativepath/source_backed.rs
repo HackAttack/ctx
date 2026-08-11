@@ -9,9 +9,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, EventIdentityInput,
-    EventType, NativeItemKey, NativeSessionKey, SessionIdentityInput, SessionRelationshipKind,
-    SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    EventIdentityInput, EventType, NativeItemKey, SessionRelationshipKind, SourceKey,
+    StableEntityId, TypedKey,
 };
 use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
@@ -677,32 +677,24 @@ fn event_timestamp(value: &Value) -> Option<DateTime<Utc>> {
 }
 
 fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    let anchor = SourceAnchor::provider_native(
-        SOURCE_ANCHOR_NAMESPACE,
-        TypedKey::utf8(native_session_id).map_err(contract)?,
-    )
-    .map_err(contract)?;
-    SourceKey::derive(
+    SourceKey::derive_provider_native(
         CaptureProvider::Pi.as_str(),
         PI_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
-        anchor,
+        SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(native_session_id).map_err(contract)?,
     )
     .map_err(contract)
 }
 
 fn session_identity(source: &SourceKey, native_session_id: &str) -> Result<StableEntityId> {
-    let native_session_key = NativeSessionKey::native_id(
+    derive_native_session_id(
+        source,
+        LOGICAL_SESSION_KIND,
         NATIVE_SESSION_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
     )
-    .map_err(contract)?;
-    derive_session_id(SessionIdentityInput {
-        source,
-        logical_session_kind: LOGICAL_SESSION_KIND,
-        native_session_key: &native_session_key,
-    })
     .map_err(contract)
 }
 

@@ -95,44 +95,6 @@ impl CodexRepositoryOccurrenceCache {
 }
 
 impl CodexRepositoryCandidateAuthority {
-    pub(in super::super) fn from_checkpoint(
-        checkpoint: &CodexRepositoryCandidateAuthorityCheckpoint,
-    ) -> Self {
-        Self {
-            entries: checkpoint
-                .entries
-                .iter()
-                .map(|entry| {
-                    (
-                        entry.call_id_sha256,
-                        RepositoryCandidateAuthorityState {
-                            calls: entry.calls,
-                            results: entry.results,
-                        },
-                    )
-                })
-                .collect(),
-            exhausted: checkpoint.exhausted,
-        }
-    }
-
-    pub(in super::super) fn checkpoint(&self) -> CodexRepositoryCandidateAuthorityCheckpoint {
-        CodexRepositoryCandidateAuthorityCheckpoint {
-            entries: self
-                .entries
-                .iter()
-                .map(
-                    |(call_id_sha256, state)| CodexRepositoryCandidateAuthorityEntry {
-                        call_id_sha256: *call_id_sha256,
-                        calls: state.calls,
-                        results: state.results,
-                    },
-                )
-                .collect(),
-            exhausted: self.exhausted,
-        }
-    }
-
     pub(in super::super) fn appended_suffix_invalidates(
         &self,
         combined: &CodexRepositoryCandidateAuthority,
@@ -171,6 +133,7 @@ impl CodexRepositoryCandidateAuthority {
         self.entries.entry(digest).or_default();
     }
 
+    #[cfg(test)]
     pub(in super::super) fn observe_call_if_candidate(&mut self, call_id: &str) {
         if self.exhausted {
             return;
@@ -183,6 +146,7 @@ impl CodexRepositoryCandidateAuthority {
         }
     }
 
+    #[cfg(test)]
     pub(in super::super) fn observe_result_if_candidate(&mut self, call_id: &str) -> bool {
         if self.exhausted {
             return false;
@@ -197,42 +161,12 @@ impl CodexRepositoryCandidateAuthority {
         true
     }
 
-    pub(in super::super) fn observe_call_if_new_candidate(
-        &mut self,
-        call_id: &str,
-        prefix: &CodexRepositoryCandidateAuthority,
-    ) {
-        let digest = repository_candidate_call_id_digest(call_id);
-        if !prefix.entries.contains_key(&digest) {
-            self.observe_call_if_candidate(call_id);
-        }
-    }
-
-    pub(in super::super) fn observe_result_if_new_candidate(
-        &mut self,
-        call_id: &str,
-        prefix: &CodexRepositoryCandidateAuthority,
-    ) {
-        let digest = repository_candidate_call_id_digest(call_id);
-        if !prefix.entries.contains_key(&digest) {
-            self.observe_result_if_candidate(call_id);
-        }
-    }
-
     pub(in super::super) fn contains_candidate(&self, call_id: &str) -> bool {
         self.entries
             .contains_key(&repository_candidate_call_id_digest(call_id))
     }
 
-    pub(in super::super) fn has_candidates_not_in(
-        &self,
-        prefix: &CodexRepositoryCandidateAuthority,
-    ) -> bool {
-        self.entries
-            .keys()
-            .any(|digest| !prefix.entries.contains_key(digest))
-    }
-
+    #[cfg(test)]
     pub(in super::super) fn exhausted(&self) -> bool {
         self.exhausted
     }
@@ -315,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_result_serial_call_and_overflow_abstain_durably() {
+    fn duplicate_result_serial_call_and_overflow_abstain() {
         let mut duplicate = CodexRepositoryCandidateAuthority::default();
         duplicate.observe_candidate_call("duplicate");
         duplicate.observe_result_if_candidate("duplicate");
@@ -335,8 +269,7 @@ mod tests {
             overflow.observe_result_if_candidate(&call_id);
         }
         assert!(overflow.exhausted);
-        let restarted = CodexRepositoryCandidateAuthority::from_checkpoint(&overflow.checkpoint());
-        assert!(!restarted.is_unique_call_and_result("candidate-0"));
+        assert!(!overflow.is_unique_call_and_result("candidate-0"));
     }
 
     #[test]

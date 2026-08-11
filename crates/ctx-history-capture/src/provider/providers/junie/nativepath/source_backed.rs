@@ -7,9 +7,8 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, EventIdentityInput,
-    EventType, NativeItemKey, NativeSessionKey, SessionIdentityInput, SourceAnchor, SourceKey,
-    StableEntityId, TypedKey,
+    derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
+    EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId, TypedKey,
 };
 use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
@@ -265,31 +264,24 @@ impl JunieProjector {
 }
 
 fn source_key(provider_session_id: &str) -> Result<SourceKey> {
-    SourceKey::derive(
+    SourceKey::derive_provider_native(
         CaptureProvider::Junie.as_str(),
         JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
-        SourceAnchor::provider_native(
-            SOURCE_ANCHOR_NAMESPACE,
-            TypedKey::utf8(provider_session_id).map_err(contract)?,
-        )
-        .map_err(contract)?,
+        SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(provider_session_id).map_err(contract)?,
     )
     .map_err(contract)
 }
 
 fn session_identity(source: &SourceKey, provider_session_id: &str) -> Result<StableEntityId> {
-    let native_session_key = NativeSessionKey::native_id(
+    derive_native_session_id(
+        source,
+        LOGICAL_SESSION_KIND,
         NATIVE_SESSION_NAMESPACE,
         TypedKey::utf8(provider_session_id).map_err(contract)?,
     )
-    .map_err(contract)?;
-    derive_session_id(SessionIdentityInput {
-        source,
-        logical_session_kind: LOGICAL_SESSION_KIND,
-        native_session_key: &native_session_key,
-    })
     .map_err(contract)
 }
 

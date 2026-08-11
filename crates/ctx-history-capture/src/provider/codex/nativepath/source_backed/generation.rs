@@ -6,8 +6,6 @@ use std::{
 
 use super::*;
 
-type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
-
 #[derive(Debug, Clone)]
 enum CodexGenerationParticipantV0 {
     SessionTree {
@@ -22,6 +20,7 @@ enum CodexGenerationParticipantV0 {
 pub(crate) struct CodexGenerationRouteV0 {
     coordinator: Arc<CodexGenerationNormalizationCoordinatorV0>,
     participant: usize,
+    session_tree: bool,
 }
 
 impl CodexGenerationRouteV0 {
@@ -29,8 +28,39 @@ impl CodexGenerationRouteV0 {
         self.participant
     }
 
+    pub(super) fn is_session_tree(&self) -> bool {
+        self.session_tree
+    }
+
     pub(super) fn prepared(&self) -> CodexSourceBackedResultV0<CodexPreparedRouteV0> {
         self.coordinator.prepared(self.participant)
+    }
+
+    pub(super) fn session_tree_roots(&self) -> CodexSourceBackedResultV0<Option<Arc<[PathBuf]>>> {
+        match self.participant_definition()? {
+            CodexGenerationParticipantV0::SessionTree { roots } => Ok(Some(roots)),
+            CodexGenerationParticipantV0::ExplicitSession { .. } => Ok(None),
+        }
+    }
+
+    pub(super) fn explicit_session_input(
+        &self,
+    ) -> CodexSourceBackedResultV0<Option<CodexExplicitSessionSourceBackedInputV0>> {
+        match self.participant_definition()? {
+            CodexGenerationParticipantV0::SessionTree { .. } => Ok(None),
+            CodexGenerationParticipantV0::ExplicitSession { input } => Ok(Some(input)),
+        }
+    }
+
+    fn participant_definition(&self) -> CodexSourceBackedResultV0<CodexGenerationParticipantV0> {
+        self.coordinator
+            .state
+            .lock()
+            .map_err(|_| CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)?
+            .participants
+            .get(&self.participant)
+            .cloned()
+            .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
     }
 }
 
@@ -38,25 +68,6 @@ impl CodexGenerationRouteV0 {
 pub(super) struct CodexPreparedRouteV0 {
     pub(super) missing: bool,
     pub(super) sources: Vec<CodexSessionPlanV0>,
-    pub(super) prehydrated: bool,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    pub(super) catalog_observations: Vec<CodexPreparedCatalogObservationV0>,
-    #[cfg(any(test, ctx_codex_causal_qualification))]
-    pub(super) work: CodexCatalogWorkV0,
-}
-
-pub(crate) struct CodexGenerationCarriedRouteV0 {
-    pub(crate) participant: usize,
-    pub(crate) sources: HashMap<SourceKey, CertifiedSource>,
-}
-
-#[cfg(any(test, ctx_codex_causal_qualification))]
-#[derive(Clone)]
-pub(super) struct CodexPreparedCatalogObservationV0 {
-    pub(super) native_session_id: String,
-    pub(super) parent_native_session_id: Option<String>,
-    pub(super) work: CodexCatalogWorkV0,
-    pub(super) exact_replay: bool,
 }
 
 struct CodexPreparedGenerationV0 {
@@ -72,10 +83,11 @@ struct CodexGenerationCoordinatorStateV0 {
 
 /// Coordinates route registration without coupling one Codex source to another.
 ///
-/// The shared publication layer still selects routes and supplies their carried
-/// certificates. This provider-owned coordinator performs only route-local
-/// inventory. It never opens, parses, scans, revalidates, or schedules an
-/// ancestor or descendant on behalf of a selected leaf.
+/// Shared JSONL selects routes and owns carried bases plus the physical
+/// lifecycle. This provider-owned coordinator performs only route-local
+/// inventory for Codex semantic execution. It never opens, parses, scans,
+/// revalidates, or schedules an ancestor or descendant on behalf of a selected
+/// leaf.
 #[derive(Default)]
 pub(crate) struct CodexGenerationNormalizationCoordinatorV0 {
     state: Mutex<CodexGenerationCoordinatorStateV0>,
@@ -122,22 +134,18 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         Ok(CodexGenerationRouteV0 {
             coordinator: Arc::clone(self),
             participant: id,
+            session_tree: matches!(
+                state.participants.get(&id),
+                Some(CodexGenerationParticipantV0::SessionTree { .. })
+            ),
         })
     }
 
-    pub(crate) fn prepare(
-        &self,
-        selected: &[usize],
-        carried: Vec<CodexGenerationCarriedRouteV0>,
-    ) -> CodexSourceBackedResultV0<()> {
+    pub(crate) fn prepare(&self, selected: &[usize]) -> CodexSourceBackedResultV0<()> {
         // Participant IDs encode registration order. Preserve that order when
         // overlapping automatic and explicit routes establish exact source
         // ownership, independent of HashMap randomization.
         let selected = selected.iter().copied().collect::<BTreeSet<_>>();
-        let carried = carried
-            .into_iter()
-            .map(|route| (route.participant, route.sources))
-            .collect::<HashMap<_, _>>();
         let participants = {
             let state = self
                 .state
@@ -160,47 +168,20 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         let mut established_owners = HashMap::<(PathBuf, String), usize>::new();
         let mut descriptor_bindings = HashMap::<[u8; 32], (SourceKey, String)>::new();
         for (participant, discovery) in participants {
-            let (missing, discovered, work) = match discovery {
+            let (missing, discovered) = match discovery {
                 CodexGenerationParticipantV0::SessionTree { roots } => {
-                    let inventory =
+                    let sources =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(&roots)?;
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    let work = inventory.work;
-                    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-                    let work = ();
-                    (false, inventory.sources, work)
+                    (false, sources)
                 }
                 CodexGenerationParticipantV0::ExplicitSession { input } => {
-                    let inventory = observe_codex_explicit_session_source_backed_v0(&input)?;
-                    let plan = inventory.source_plan();
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    let work = CodexCatalogWorkV0::default();
-                    #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-                    let work = ();
-                    (plan.is_none(), plan.into_iter().collect(), work)
+                    let plan = observe_codex_explicit_session_source_backed_v0(&input)?;
+                    (plan.is_none(), plan.into_iter().collect())
                 }
             };
-            #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-            let _ = work;
 
             let mut sources = Vec::with_capacity(discovered.len());
-            #[cfg(any(test, ctx_codex_causal_qualification))]
-            let mut catalog_observations = Vec::with_capacity(discovered.len());
             for plan in discovered {
-                let base = carried
-                    .get(&participant)
-                    .and_then(|sources| sources.get(&plan.1));
-                let (plan, hydration_work, exact_replay) =
-                    super::catalog::hydrate_codex_session_plan_v0(plan, base)?;
-                #[cfg(any(test, ctx_codex_causal_qualification))]
-                catalog_observations.push(CodexPreparedCatalogObservationV0 {
-                    native_session_id: plan.2.clone(),
-                    parent_native_session_id: plan.0.catalog_parent_native_session_id.clone(),
-                    work: hydration_work,
-                    exact_replay,
-                });
-                #[cfg(not(any(test, ctx_codex_causal_qualification)))]
-                let _ = (hydration_work, exact_replay);
                 let descriptor = plan.1.exact_descriptor_digest();
                 if let Some((existing, native_session_id)) = descriptor_bindings.get(&descriptor) {
                     if !existing.exact_descriptor_eq(&plan.1) || native_session_id != &plan.2 {
@@ -227,18 +208,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 // same child-local tuple from its own checkpoint.
                 sources.push(plan);
             }
-            routes.insert(
-                participant,
-                CodexPreparedRouteV0 {
-                    missing,
-                    sources,
-                    prehydrated: true,
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    catalog_observations,
-                    #[cfg(any(test, ctx_codex_causal_qualification))]
-                    work,
-                },
-            );
+            routes.insert(participant, CodexPreparedRouteV0 { missing, sources });
         }
 
         self.state

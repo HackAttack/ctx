@@ -250,7 +250,7 @@ pub(super) fn same_object(left: &ObjectStamp, right: &ObjectStamp) -> bool {
 
 pub(super) fn object_change_token(stamp: &ObjectStamp) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(super::ORDINARY_FILE_TOKEN_DOMAIN);
+    digest.update(super::ORDINARY_FILE_V2_TOKEN_DOMAIN);
     digest.update(b"windows\0");
     digest.update(stamp.volume_serial_number.to_le_bytes());
     digest.update(stamp.file_id);
@@ -258,6 +258,52 @@ pub(super) fn object_change_token(stamp: &ObjectStamp) -> [u8; 32] {
     digest.update(stamp.last_write_time.to_le_bytes());
     digest.update(stamp.length.to_le_bytes());
     digest.finalize().into()
+}
+
+pub(super) fn retained_file_identity(
+    file: &File,
+    metadata: &Metadata,
+    version: super::RetainedFileIdentityVersion,
+) -> Result<Option<([u8; 32], [u8; 32])>, AuthorityOpenError> {
+    let mut basic = FILE_BASIC_INFO::default();
+    query_handle_info(file, FileBasicInfo, &mut basic)?;
+    if basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(AuthorityOpenError::Rejected(
+            "reparse-point provider transcript files are rejected",
+        ));
+    }
+    let mut id = FILE_ID_INFO::default();
+    query_handle_info(file, FileIdInfo, &mut id)?;
+    let mut stable = Sha256::new();
+    let mut change = Sha256::new();
+    match version {
+        super::RetainedFileIdentityVersion::SharedJsonlV1 => {
+            stable.update(b"ctx-jsonl-retained-file-identity-v1\0windows-stable\0");
+            change.update(b"ctx-jsonl-retained-file-identity-v1\0windows-change\0");
+        }
+        super::RetainedFileIdentityVersion::OrdinaryFileV2 => {
+            stable.update(b"ctx-ordinary-file-observation-v2\0windows-stable\0");
+            change.update(b"ctx-ordinary-file-observation-v2\0windows-change\0");
+        }
+    }
+    stable.update(id.VolumeSerialNumber.to_le_bytes());
+    stable.update(id.FileId.Identifier);
+    if version == super::RetainedFileIdentityVersion::OrdinaryFileV2 {
+        stable.update(basic.CreationTime.to_le_bytes());
+        change.update(id.VolumeSerialNumber.to_le_bytes());
+        change.update(id.FileId.Identifier);
+    }
+    change.update(basic.ChangeTime.to_le_bytes());
+    change.update(basic.LastWriteTime.to_le_bytes());
+    match version {
+        super::RetainedFileIdentityVersion::SharedJsonlV1 => {
+            change.update(basic.FileAttributes.to_le_bytes());
+        }
+        super::RetainedFileIdentityVersion::OrdinaryFileV2 => {
+            change.update(metadata.len().to_le_bytes());
+        }
+    }
+    Ok(Some((stable.finalize().into(), change.finalize().into())))
 }
 
 pub(super) fn read_exact_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()> {

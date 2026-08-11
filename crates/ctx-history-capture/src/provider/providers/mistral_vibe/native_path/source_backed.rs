@@ -7,9 +7,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_event_id, derive_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
-    NativeItemKey, NativeSessionKey, PositionStability, SessionIdentityInput,
-    SessionRelationshipKind, SourceAnchor, SourceKey, StableEntityId, SubrecordSelector, TypedKey,
+    derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
+    NativeItemKey, PositionStability, SessionRelationshipKind, SourceKey, StableEntityId,
+    SubrecordSelector, TypedKey,
 };
 use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
@@ -571,32 +571,24 @@ fn relative_to_authority(authority: &ProviderSourceRoot, path: &Path) -> Result<
 }
 
 fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    let anchor = SourceAnchor::provider_native(
-        SOURCE_ANCHOR_NAMESPACE,
-        TypedKey::utf8(native_session_id).map_err(contract)?,
-    )
-    .map_err(contract)?;
-    SourceKey::derive(
+    SourceKey::derive_provider_native(
         CaptureProvider::MistralVibe.as_str(),
         MISTRAL_VIBE_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
-        anchor,
+        SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(native_session_id).map_err(contract)?,
     )
     .map_err(contract)
 }
 
 fn session_identity(source: &SourceKey, native_session_id: &str) -> Result<StableEntityId> {
-    let native = NativeSessionKey::native_id(
+    derive_native_session_id(
+        source,
+        LOGICAL_SESSION_KIND,
         NATIVE_SESSION_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
     )
-    .map_err(contract)?;
-    derive_session_id(SessionIdentityInput {
-        source,
-        logical_session_kind: LOGICAL_SESSION_KIND,
-        native_session_key: &native,
-    })
     .map_err(contract)
 }
 

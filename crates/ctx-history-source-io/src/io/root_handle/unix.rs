@@ -218,7 +218,7 @@ pub(super) fn same_object(left: &ObjectStamp, right: &ObjectStamp) -> bool {
 
 pub(super) fn object_change_token(stamp: &ObjectStamp) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(super::ORDINARY_FILE_TOKEN_DOMAIN);
+    digest.update(super::ORDINARY_FILE_V2_TOKEN_DOMAIN);
     digest.update(b"unix\0");
     digest.update(stamp.device.to_le_bytes());
     digest.update(stamp.inode.to_le_bytes());

@@ -5,37 +5,30 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(test)]
-use std::sync::Mutex;
-
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     CaptureProvider, CoreRecord, CoreRecordError, ProjectionContractError, SourceAnchor, SourceKey,
-    TypedKey,
 };
 use thiserror::Error;
 
+use super::super::absolute_lexical_path;
 use super::PromptLine;
 use crate::{
-    common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    provider::source_backed::{
-        family::jsonl::{
-            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
-            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
-            JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilyWorkerContext,
-            JsonlOversizedRecordPolicy, JsonlRecordRef,
-        },
-        SourceBackedRouteErrorKind,
+    common::io::OpenedProviderSourceFile,
+    provider::source_backed::family::jsonl::{
+        jsonl_single_file_inventory, JsonlFamilyAdapter, JsonlFamilyAppendMode,
+        JsonlFamilyBaseScope, JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+        JsonlFamilyProjector, JsonlFamilyRootMissingMode, JsonlFamilyWorkerContext,
+        JsonlOversizedRecordPolicy, JsonlRecordRef,
     },
     CaptureError,
 };
 
-mod path;
 mod projection;
-use path::absolute_lexical_path;
 use projection::{core_record, retained_record_bytes};
 
 const SOURCE_FORMAT: &str = "codex_history_jsonl";
+const PATH_KIND: &str = "Codex prompt-history JSONL";
 const SOURCE_SCHEMA_VARIANT: &str = "codex-prompt-history-jsonl-v1";
 const SOURCE_IDENTITY_VERSION: u32 = 1;
 const PARSER_REVISION: &str = "codex-prompt-history-shared-jsonl-v4";
@@ -50,13 +43,9 @@ pub(crate) enum CodexPromptHistorySourceBackedErrorV0 {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Capture(#[from] CaptureError),
-    #[error(transparent)]
     Projection(#[from] ProjectionContractError),
     #[error(transparent)]
     CoreRecord(#[from] CoreRecordError),
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
     #[error("Codex prompt-history Core record exceeds its retained-record bound")]
     RecordTooLarge,
 }
@@ -78,10 +67,6 @@ impl CodexPromptHistorySourceBackedInputV0 {
         }
     }
 
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub(crate) fn source_key(&self) -> CodexPromptHistorySourceBackedResultV0<SourceKey> {
         Ok(SourceKey::derive(
             CaptureProvider::Codex.as_str(),
@@ -93,108 +78,27 @@ impl CodexPromptHistorySourceBackedInputV0 {
     }
 }
 
-#[cfg(test)]
-#[derive(Default)]
-struct CodexPromptHistoryJsonlFamilyStateV0 {
-    after_scan_hook: Option<Box<dyn FnOnce() + Send>>,
-    after_family_source_open_hook: Option<Box<dyn FnOnce() + Send>>,
-}
-
 /// The shared family owns framing, checkpoints, append classification, paging,
 /// publication, deletion, and terminal validation. This adapter supplies only
-/// Codex prompt discovery and per-record projection semantics.
+/// the exact source binding and per-record Codex projection.
 #[derive(Clone)]
 pub(crate) struct CodexPromptHistoryJsonlFamilyAdapterV0 {
-    input: CodexPromptHistorySourceBackedInputV0,
-    route_path: PathBuf,
-    #[cfg(test)]
-    state: Arc<Mutex<CodexPromptHistoryJsonlFamilyStateV0>>,
+    route_path: Box<Path>,
+    source: SourceKey,
 }
 
 impl CodexPromptHistoryJsonlFamilyAdapterV0 {
     pub(crate) fn new(
-        mut input: CodexPromptHistorySourceBackedInputV0,
+        input: CodexPromptHistorySourceBackedInputV0,
     ) -> CodexPromptHistorySourceBackedResultV0<Self> {
-        let route_path = absolute_lexical_path(input.path())?;
-        input.path = route_path.clone();
         Ok(Self {
-            input,
-            route_path,
-            #[cfg(test)]
-            state: Arc::new(Mutex::new(CodexPromptHistoryJsonlFamilyStateV0::default())),
+            route_path: absolute_lexical_path(&input.path)?.into_boxed_path(),
+            source: input.source_key()?,
         })
     }
 
     pub(crate) fn route_path(&self) -> &Path {
         &self.route_path
-    }
-
-    #[cfg(test)]
-    fn set_after_scan_hook(&self, hook: impl FnOnce() + Send + 'static) {
-        let mut state = self.state.lock().expect("prompt-history state lock");
-        assert!(state.after_scan_hook.is_none());
-        state.after_scan_hook = Some(Box::new(hook));
-    }
-
-    #[cfg(test)]
-    fn set_after_family_source_open_hook(&self, hook: impl FnOnce() + Send + 'static) {
-        let mut state = self.state.lock().expect("prompt-history state lock");
-        assert!(state.after_family_source_open_hook.is_none());
-        state.after_family_source_open_hook = Some(Box::new(hook));
-    }
-
-    fn discover_family(&self, route_path: &Path) -> crate::Result<JsonlFamilyInventory> {
-        if route_path != self.route_path {
-            return Err(CaptureError::InvalidPayload(
-                "Codex prompt-history JSONL route path changed".to_owned(),
-            ));
-        }
-        let parent = route_path.parent().ok_or_else(|| {
-            CaptureError::InvalidPayload("Codex prompt-history JSONL path has no parent".to_owned())
-        })?;
-        let authority_path = route_path.file_name().map(PathBuf::from).ok_or_else(|| {
-            CaptureError::InvalidPayload(
-                "Codex prompt-history JSONL path has no filename".to_owned(),
-            )
-        })?;
-        let retained = (|| -> crate::Result<_> {
-            let authority = Arc::new(ProviderSourceRoot::open(parent)?);
-            let opened = authority.open_file(&authority_path)?;
-            Ok((authority, opened))
-        })();
-        let (authority, opened) = match retained {
-            Ok(retained) => retained,
-            Err(error) if capture_error_is_not_found(&error) => {
-                return JsonlFamilyInventory::missing(CaptureProvider::Codex, route_path);
-            }
-            Err(error) => return Err(error),
-        };
-        #[cfg(test)]
-        if let Some(hook) = self
-            .state
-            .lock()
-            .map_err(|_| prompt_family_state_error())?
-            .after_family_source_open_hook
-            .take()
-        {
-            hook();
-        }
-        let source = self
-            .input
-            .source_key()
-            .map_err(prompt_family_capture_error)?;
-        let binding = TypedKey::bytes(source.exact_descriptor_digest().to_vec())
-            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
-        let leaf = JsonlFamilyLeaf::bind_opened(
-            source,
-            route_path.to_path_buf(),
-            Arc::clone(&authority),
-            authority_path,
-            binding,
-            &opened,
-        )?;
-        authority.revalidate()?;
-        JsonlFamilyInventory::present(CaptureProvider::Codex, route_path, authority, vec![leaf])
     }
 }
 
@@ -236,23 +140,12 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
     }
 
     fn discover(&self, root: &Path) -> crate::Result<JsonlFamilyInventory> {
-        self.discover_family(root)
-    }
-
-    fn observe_terminal_membership(
-        &self,
-        root: &Path,
-        opening: &JsonlFamilyInventory,
-    ) -> crate::Result<JsonlFamilyMembershipObservation> {
-        JsonlFamilyMembershipObservation::observe(root, opening)
-    }
-
-    fn discovery_error_kind(&self, error: &CaptureError) -> SourceBackedRouteErrorKind {
-        prompt_family_error_kind(error, false)
-    }
-
-    fn scan_error_kind(&self, error: &CaptureError) -> SourceBackedRouteErrorKind {
-        prompt_family_error_kind(error, true)
+        if root != self.route_path() {
+            return Err(CaptureError::InvalidPayload(
+                "Codex prompt-history JSONL route path changed".to_owned(),
+            ));
+        }
+        jsonl_single_file_inventory(self.provider(), root, self.source.clone(), PATH_KIND)
     }
 
     fn projector(
@@ -261,38 +154,13 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
         _source_file: Arc<OpenedProviderSourceFile>,
         _imported_at: DateTime<Utc>,
     ) -> crate::Result<Box<dyn JsonlFamilyProjector>> {
-        let source = self
-            .input
-            .source_key()
-            .map_err(prompt_family_capture_error)?;
-        if !source.exact_descriptor_eq(leaf.source()) {
+        if !self.source.exact_descriptor_eq(leaf.source()) {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
         Ok(Box::new(CodexPromptHistoryProjector {
-            source,
+            source: self.source.clone(),
             rejected_records: 0,
         }))
-    }
-
-    fn finish_leaf_scans(&self) -> crate::Result<()> {
-        #[cfg(test)]
-        if let Some(hook) = self
-            .state
-            .lock()
-            .map_err(|_| prompt_family_state_error())?
-            .after_scan_hook
-            .take()
-        {
-            hook();
-        }
-        Ok(())
-    }
-
-    fn base_source_path(
-        &self,
-        _certificate: &ctx_history_core::CertifiedSource,
-    ) -> crate::Result<PathBuf> {
-        Ok(self.route_path.clone())
     }
 }
 
@@ -334,7 +202,7 @@ impl JsonlFamilyProjector for CodexPromptHistoryProjector {
             }
         };
         let projected = core_record(&self.source, line, record.evidence().physical_ordinal())
-            .map_err(prompt_family_capture_error)?;
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
         if retained_record_bytes(&projected) > MAX_RETAINED_RECORD_BYTES {
             return Err(CaptureError::InvalidPayload(
                 CodexPromptHistorySourceBackedErrorV0::RecordTooLarge.to_string(),
@@ -345,42 +213,6 @@ impl JsonlFamilyProjector for CodexPromptHistoryProjector {
 
     fn rejected_records(&self) -> u64 {
         self.rejected_records
-    }
-}
-
-fn capture_error_is_not_found(error: &CaptureError) -> bool {
-    match error {
-        CaptureError::Io(error) => error.kind() == std::io::ErrorKind::NotFound,
-        CaptureError::SystemIo { source, .. } => source.kind() == std::io::ErrorKind::NotFound,
-        _ => false,
-    }
-}
-
-fn prompt_family_capture_error(error: CodexPromptHistorySourceBackedErrorV0) -> CaptureError {
-    match error {
-        CodexPromptHistorySourceBackedErrorV0::Capture(error) => error,
-        CodexPromptHistorySourceBackedErrorV0::Json(error) => CaptureError::Json(error),
-        error => CaptureError::InvalidPayload(error.to_string()),
-    }
-}
-
-#[cfg(test)]
-fn prompt_family_state_error() -> CaptureError {
-    CaptureError::InvalidPayload(
-        "Codex prompt-history JSONL family state lock was poisoned".to_owned(),
-    )
-}
-
-fn prompt_family_error_kind(error: &CaptureError, scanning: bool) -> SourceBackedRouteErrorKind {
-    match error {
-        CaptureError::SourceChangedDuringCapture => SourceBackedRouteErrorKind::SourceChanged,
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound && scanning => {
-            SourceBackedRouteErrorKind::SourceChanged
-        }
-        CaptureError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            SourceBackedRouteErrorKind::Unavailable
-        }
-        _ => SourceBackedRouteErrorKind::InvalidSource,
     }
 }
 

@@ -20,6 +20,7 @@ pub use root_handle::{
     ProviderSourceDirectory, ProviderSourceRoot, NON_REGULAR_PROVIDER_SOURCE_REASON,
     REPARSE_PROVIDER_SOURCE_REASON, SYMLINK_PROVIDER_SOURCE_REASON,
 };
+pub(crate) use root_handle::{retained_jsonl_file_v1_identity, retained_ordinary_file_v2_identity};
 
 /// Maximum directories admitted by one provider JSONL inventory.
 ///
