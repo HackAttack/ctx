@@ -1,4 +1,4 @@
-use super::super::rows::{build_event_row, tool_context_from_row};
+use super::super::rows::source_backed_tool_context;
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
     read_bounded_record_unhashed as read_shared_bounded_record_unhashed, retained_file_identity,
@@ -98,8 +98,13 @@ pub(super) fn decode_pending_tool_authority(
     };
     let retained = parse_decoded_record(record, owner)
         .ok_or_else(|| invalid_checkpoint_proof("pending tool-call authority cannot be decoded"))?;
-    let row = match build_event_row(authority.raw_ordinal, kind, &retained)? {
-        Ok(row) => row,
+    let (call_id, mut context) = match source_backed_tool_context(kind, &retained) {
+        Ok(Some(tool_context)) => tool_context,
+        Ok(None) => {
+            return Err(invalid_checkpoint_proof(
+                "pending tool-call authority has no correlation identity",
+            ));
+        }
         Err(
             CodexRetainedNonMaterialized::ValidUnmaterializable
             | CodexRetainedNonMaterialized::Malformed,
@@ -109,9 +114,6 @@ pub(super) fn decode_pending_tool_authority(
             ));
         }
     };
-    let (call_id, mut context) = tool_context_from_row(&row).ok_or_else(|| {
-        invalid_checkpoint_proof("pending tool-call authority has no correlation identity")
-    })?;
     if !authority.matches_call_id(&call_id) {
         return Err(invalid_checkpoint_proof(
             "pending tool-call authority correlation does not match checkpoint state",
