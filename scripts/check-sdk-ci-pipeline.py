@@ -67,6 +67,11 @@ REQUIRED_CONDITION = (
     'build.source != "schedule" || '
     'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"'
 )
+LINUX_SDK_INVOCATION = (
+    "bash scripts/check-sdks.sh "
+    "--groups=contracts,typescript,python,go,jvm,dotnet "
+    "--required-groups=contracts,typescript,python,go,jvm,dotnet"
+)
 
 SDK_SPECS = {
     "sdk-swift-required": {
@@ -135,14 +140,31 @@ def validate_sdk_steps(blocks) -> None:
 
 
 def validate_linux_route(source: str) -> None:
-    invocation = (
-        "bash scripts/check-sdks.sh "
-        "--groups=contracts,typescript,python,go,jvm,dotnet "
-        "--required-groups=contracts,typescript,python,go,jvm,dotnet"
-    )
+    parts = source.rsplit("\n}\n", 1)
     require(
-        source.count(invocation) == 1,
-        "Linux CI must require contracts, TypeScript, Python, Go, JVM, and .NET once",
+        len(parts) == 2,
+        "Linux CI must end its function definitions before execution",
+    )
+    commands = []
+    for line in parts[1].splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        require(
+            line == line.lstrip(),
+            "Linux CI execution commands must remain top-level",
+        )
+        commands.append(line)
+    require(
+        commands
+        == [
+            "init_buildkite_job_tool_env",
+            "install_ubuntu_tools",
+            "configure_bazelisk",
+            "print_tool_versions",
+            LINUX_SDK_INVOCATION,
+            'bash scripts/check.sh "${check_args[@]}"',
+        ],
+        "Linux CI must retain its exact fail-closed top-level execution sequence",
     )
 
 
@@ -336,6 +358,26 @@ def main() -> None:
         ),
         sdk_runner,
     )
+    require(
+        public_ci.count(LINUX_SDK_INVOCATION) == 1,
+        "Linux SDK bypass mutations must match exactly once",
+    )
+    for label, replacement in (
+        (
+            "Linux SDK bypassed by early exit",
+            f"exit 0\n{LINUX_SDK_INVOCATION}",
+        ),
+        (
+            "Linux SDK failures ignored",
+            f"{LINUX_SDK_INVOCATION} || true",
+        ),
+    ):
+        expect_rejection(
+            label,
+            pipeline,
+            public_ci.replace(LINUX_SDK_INVOCATION, replacement, 1),
+            sdk_runner,
+        )
     npm_capability_check = (
         '    if [[ "${package}" == "npm" ]] '
         "&& command -v npm >/dev/null 2>&1; then\n"
