@@ -576,7 +576,7 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                     fields["CTX_RELEASE_SEMANTIC_ASSETS"], validate=True
                 )
             )["assets"]
-            self.assertEqual(len(assets), 10)
+            self.assertEqual(len(assets), 9)
             self.assertEqual(
                 authorities[
                     "CTX_RELEASE_SEMANTIC_AUTHORITY_apple_silicon_coreml"
