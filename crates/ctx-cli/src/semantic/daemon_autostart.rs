@@ -29,7 +29,6 @@ use super::{
         daemon_lock_is_active, daemon_lock_is_owned_by, daemon_lock_path, daemon_root_path,
         pid_lock_guard_path, write_private_json_file,
     },
-    query_service::daemon_source_refresh_request,
     runtime_limits::{DAEMON_IDLE_EXIT_SECONDS_CAP, DAEMON_QUERY_ENDPOINT_FILE},
 };
 
@@ -51,15 +50,14 @@ use autostart::{
 };
 #[cfg(test)]
 use autostart::{daemon_autostart_allowed, daemon_supervisor_launch_policy};
-pub(super) use handoff::daemon_upgrade_handoff_fences_start;
 #[cfg(test)]
 use handoff::daemon_upgrade_handoff_is_active;
 pub(crate) use handoff::prepare_daemon_uninstall;
 use handoff::remove_daemon_restart_requests;
 pub(super) use handoff::{
     acknowledge_daemon_restart_requests, current_process_owns_daemon_upgrade_handoff,
-    daemon_upgrade_handoff_blocks_current_process, read_daemon_restart_request,
-    terminate_current_executable_daemon, write_daemon_restart_request,
+    daemon_upgrade_handoff_blocks_current_process, defer_restart_for_upgrade_handoff,
+    read_daemon_restart_request, terminate_current_executable_daemon, write_daemon_restart_request,
 };
 pub(crate) use handoff::{
     begin_current_daemon_upgrade_handoff, begin_daemon_upgrade_handoff,

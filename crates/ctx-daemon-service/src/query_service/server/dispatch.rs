@@ -10,6 +10,8 @@ use ctx_semantic_model::{
 };
 use serde_json::{json, Value};
 
+pub(crate) use ctx_daemon_runtime::DaemonLifecycleState;
+
 use crate::compact_json;
 use crate::{
     daemon_wakeup::DaemonWakeup,
@@ -211,8 +213,10 @@ pub(crate) struct CtxAuthenticatedRequestHandler {
     source_refresh: Arc<CoreRefreshEngine>,
     wakeup: Arc<DaemonWakeup>,
     config: &'static dyn DaemonConfigPort,
+    lifecycle: Arc<DaemonLifecycleState>,
 }
 
+#[cfg(test)]
 pub(crate) fn ctx_authenticated_request_handler(
     data_root: &Path,
     runtime: SharedSemanticRuntime,
@@ -220,12 +224,31 @@ pub(crate) fn ctx_authenticated_request_handler(
     wakeup: Arc<DaemonWakeup>,
     config: &'static dyn DaemonConfigPort,
 ) -> Arc<CtxAuthenticatedRequestHandler> {
+    ctx_authenticated_request_handler_with_lifecycle(
+        data_root,
+        runtime,
+        source_refresh,
+        wakeup,
+        config,
+        Arc::new(DaemonLifecycleState::starting()),
+    )
+}
+
+pub(crate) fn ctx_authenticated_request_handler_with_lifecycle(
+    data_root: &Path,
+    runtime: SharedSemanticRuntime,
+    source_refresh: Arc<CoreRefreshEngine>,
+    wakeup: Arc<DaemonWakeup>,
+    config: &'static dyn DaemonConfigPort,
+    lifecycle: Arc<DaemonLifecycleState>,
+) -> Arc<CtxAuthenticatedRequestHandler> {
     Arc::new(CtxAuthenticatedRequestHandler {
         data_root: data_root.to_path_buf(),
         runtime,
         source_refresh,
         wakeup,
         config,
+        lifecycle,
     })
 }
 
@@ -326,6 +349,18 @@ enum SourceRefreshResponse {
 }
 
 impl CtxAuthenticatedRequestHandler {
+    fn lifecycle_response(&self, key: &str, value: impl Into<Value>) -> SourceRefreshResponse {
+        let mut response = json!({
+            "schema_version": 1,
+            "ok": true,
+            "owner": "daemon",
+            "service": "lifecycle",
+            "pid": std::process::id(),
+        });
+        response[key] = value.into();
+        SourceRefreshResponse::Value(response)
+    }
+
     fn handle_source_refresh(&self, request: &Value) -> Result<SourceRefreshResponse> {
         if let Some(response) =
             wire::handle_ipc_request(&self.source_refresh, &self.data_root, request)?
@@ -333,6 +368,29 @@ impl CtxAuthenticatedRequestHandler {
             return Ok(SourceRefreshResponse::Wire(response));
         }
         let op = request.get("op").and_then(Value::as_str).unwrap_or("");
+        if op == "lifecycle_ping" {
+            return Ok(self.lifecycle_response("readiness", self.lifecycle.readiness()));
+        }
+        if op == "lifecycle_wakeup" {
+            self.wakeup.signal_ipc();
+            return Ok(self.lifecycle_response("lifecycle_wakeup", "accepted"));
+        }
+        if op == "upgrade_handoff" {
+            self.lifecycle.mark_stopping();
+            self.wakeup.signal_shutdown();
+            return Ok(self.lifecycle_response("upgrade_handoff", "accepted"));
+        }
+        if matches!(op, "shutdown" | "supervisor_handoff") {
+            let config = self.config.load(&self.data_root)?;
+            if config.daemon.enabled == (op == "shutdown") {
+                return Err(anyhow!(
+                    "daemon {op} is not allowed by current configuration"
+                ));
+            }
+            self.lifecycle.mark_stopping();
+            self.wakeup.signal_shutdown();
+            return Ok(self.lifecycle_response(op, "accepted"));
+        }
         if op == "ping" {
             let published_generation =
                 read_daemon_job_status(&daemon_source_backed_refresh_job_path(&self.data_root))
@@ -348,49 +406,6 @@ impl CtxAuthenticatedRequestHandler {
                 "service": "source_refresh",
                 "pid": std::process::id(),
                 "published_generation": published_generation,
-            }))));
-        }
-        if op == "shutdown" {
-            let config = self.config.load(&self.data_root)?;
-            if config.daemon.enabled {
-                return Err(anyhow!("daemon shutdown requires [daemon] enabled = false"));
-            }
-            self.wakeup.signal_shutdown();
-            return Ok(SourceRefreshResponse::Value(compact_json(json!({
-                "ok": true,
-                "schema_version": 1,
-                "owner": "daemon",
-                "service": "source_refresh",
-                "shutdown": "accepted",
-                "pid": std::process::id(),
-            }))));
-        }
-        if op == "lifecycle_wakeup" {
-            self.wakeup.signal_ipc();
-            return Ok(SourceRefreshResponse::Value(compact_json(json!({
-                "ok": true,
-                "schema_version": 1,
-                "owner": "daemon",
-                "service": "source_refresh",
-                "lifecycle_wakeup": "accepted",
-                "pid": std::process::id(),
-            }))));
-        }
-        if op == "supervisor_handoff" {
-            let config = self.config.load(&self.data_root)?;
-            if !config.daemon.enabled {
-                return Err(anyhow!(
-                    "native-supervisor handoff requires an enabled daemon"
-                ));
-            }
-            self.wakeup.signal_shutdown();
-            return Ok(SourceRefreshResponse::Value(compact_json(json!({
-                "ok": true,
-                "schema_version": 1,
-                "owner": "daemon",
-                "service": "source_refresh",
-                "supervisor_handoff": "accepted",
-                "pid": std::process::id(),
             }))));
         }
         Err(anyhow!("unknown daemon source refresh operation `{op}`"))

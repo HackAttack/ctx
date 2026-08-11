@@ -111,6 +111,47 @@ pub fn remove_daemon_service_endpoint_at(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+pub fn remove_released_daemon_service_endpoints(
+    data_root: &Path,
+    endpoint_paths: &[PathBuf],
+) -> Result<()> {
+    let _quiescence = crate::DaemonQuiescenceGuard::acquire(data_root)?.ok_or_else(|| {
+        anyhow!(
+            "refusing to remove daemon service artifacts while lifecycle ownership remains active"
+        )
+    })?;
+    for endpoint_path in endpoint_paths {
+        let identity = read_daemon_service_endpoint_identity_at(endpoint_path)
+            .context("inspect released daemon service endpoint")?;
+        #[cfg(unix)]
+        if let Some(DaemonQueryEndpointIdentity {
+            endpoint: DaemonQueryEndpoint::Unix { path, .. },
+            ..
+        }) = identity
+        {
+            remove_file_if_present(&path)
+                .with_context(|| format!("remove released daemon socket {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        let _ = identity;
+        remove_file_if_present(endpoint_path).with_context(|| {
+            format!(
+                "remove released daemon endpoint identity {}",
+                endpoint_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn read_daemon_service_endpoint_identity_at(
     path: &Path,
 ) -> Result<Option<DaemonQueryEndpointIdentity>> {

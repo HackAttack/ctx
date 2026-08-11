@@ -24,13 +24,13 @@ pub(crate) use ctx_daemon_runtime::{
 };
 #[cfg(all(test, unix))]
 pub(crate) use dispatch::bind_daemon_query_listener;
-#[allow(unused_imports)]
-pub(crate) use dispatch::{
-    ctx_authenticated_request_handler, start_daemon_query_service,
-    start_daemon_source_refresh_service, CtxAuthenticatedRequestHandler,
-};
 #[cfg(test)]
 pub(crate) use dispatch::{
-    start_daemon_query_service_with_request_timeout,
+    ctx_authenticated_request_handler, start_daemon_query_service_with_request_timeout,
     start_daemon_source_refresh_service_with_request_timeout,
+};
+#[allow(unused_imports)]
+pub(crate) use dispatch::{
+    ctx_authenticated_request_handler_with_lifecycle, start_daemon_query_service,
+    start_daemon_source_refresh_service, CtxAuthenticatedRequestHandler, DaemonLifecycleState,
 };

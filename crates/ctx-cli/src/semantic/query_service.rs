@@ -8,12 +8,7 @@ use serde_json::{json, Value};
 
 use crate::compact_json;
 
-#[cfg_attr(not(unix), allow(unused_imports))]
-pub(crate) use ctx_daemon_service::DaemonQueryEndpoint;
-pub(crate) use ctx_daemon_service::{
-    daemon_query_request, daemon_service_endpoint_path, daemon_source_refresh_request,
-    read_daemon_service_endpoint_identity, DaemonIpcService,
-};
+pub(crate) use ctx_daemon_service::daemon_query_request;
 
 pub(crate) fn daemon_query_service_available(data_root: &Path) -> bool {
     daemon_query_service_ping(data_root).unwrap_or(false)

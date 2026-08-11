@@ -1,9 +1,9 @@
-use std::process;
+use std::{fs, process};
 
 use ctx_daemon_runtime::DaemonLock;
 use ctx_daemon_service::{
-    DaemonRunArgs as ServiceDaemonRunArgs, DaemonStartMode, DaemonSupervisor, DaemonTrigger,
-    DaemonUpgradePorts,
+    DaemonIpcService, DaemonQueryEndpoint, DaemonRunArgs as ServiceDaemonRunArgs, DaemonStartMode,
+    DaemonSupervisor, DaemonTrigger, DaemonUpgradePorts,
 };
 
 use super::super::{

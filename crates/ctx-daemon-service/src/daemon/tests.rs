@@ -3,7 +3,6 @@ mod recovery_cadence;
 mod startup_recovery;
 
 use std::{
-    cell::Cell,
     collections::BTreeSet,
     fs,
     path::PathBuf,
@@ -511,8 +510,8 @@ fn safety_reconciliation_recreates_a_failed_startup_watcher_without_healthy_cata
     let wakeup = Arc::new(DaemonWakeup::default());
     let mut watch_runtime =
         DaemonWatchRuntime::new(Arc::clone(&wakeup), &crate::test_support::CONFIG);
-    let catalog_attempts = Cell::new(0_u64);
-    let watcher_attempts = Cell::new(0_u64);
+    let catalog_attempts = std::cell::Cell::new(0_u64);
+    let watcher_attempts = std::cell::Cell::new(0_u64);
 
     watch_runtime.reconcile_catalog_and_route_authority_with(
         &data_root,

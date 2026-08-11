@@ -1,5 +1,5 @@
 use super::*;
-use std::cell::Cell;
+use std::cell::RefCell;
 
 const DAEMON_ENV_PROBE_STAGE: &str = "CTX_DAEMON_ENV_PROBE_STAGE";
 const DAEMON_ENV_PROBE_EXPECTED_CHANNEL: &str = "CTX_DAEMON_ENV_PROBE_EXPECTED_CHANNEL";
@@ -156,337 +156,6 @@ fn test_config() -> DaemonConfigSnapshot {
     }
 }
 
-#[test]
-fn setup_handoff_wait_accepts_authoritative_running_observation_without_sleep() -> Result<()> {
-    let status = json!({
-        "status": "running",
-        "pid": 41,
-        "heartbeat_at_ms": 1234,
-        "config_reload": {"status": "applied"},
-    });
-    let mut observations = std::collections::VecDeque::from([
-        DaemonHandoffObservation::Pending,
-        daemon_handoff_observation_from(Some(&status), Some(41), true, Some(41), None, 1234),
-    ]);
-    let pauses = std::cell::Cell::new(0);
-
-    let handoff = wait_for_daemon_handoff_with(
-        3,
-        || {
-            observations
-                .pop_front()
-                .unwrap_or(DaemonHandoffObservation::Pending)
-        },
-        || Ok(None),
-        || pauses.set(pauses.get() + 1),
-    )?;
-
-    assert_eq!(
-        handoff,
-        DaemonHandoff {
-            pid: 41,
-            heartbeat_at_ms: 1234,
-        }
-    );
-    assert_eq!(pauses.get(), 1);
-    Ok(())
-}
-
-#[test]
-fn setup_handoff_accepts_a_slow_healthy_daemon_owned_first_build() {
-    let expected = test_config();
-    let status = json!({
-        "status": "running",
-        "pid": 41,
-        "started_at_ms": 1_000,
-        "heartbeat_at_ms": 1_050,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": expected.enabled,
-                "daemon_mode": expected.mode.as_str(),
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
-    });
-    let refresh_job = json!({
-        "owner": "daemon",
-        "kind": "core_refresh",
-        "status": "running",
-        "request_id": "cold-build",
-        "request_state": "running",
-        "last_run_at_ms": 1_025,
-        "progress": {
-            "phase": "refreshing",
-            "completed_sources": 800,
-            "total_sources": 5_781,
-        },
-    });
-    let observation = daemon_handoff_observation_from(
-        Some(&status),
-        Some(41),
-        true,
-        Some(41),
-        Some(&expected),
-        1_050,
-    );
-    let active_refresh = daemon_owned_source_refresh_is_active(
-        Some(&status),
-        Some(&refresh_job),
-        Some(41),
-        None,
-        None,
-        1_050,
-    );
-
-    assert!(active_refresh);
-    assert_eq!(
-        complete_daemon_handoff_observation(
-            observation,
-            Some(&status),
-            Some(41),
-            true,
-            &expected,
-            false,
-            active_refresh,
-        ),
-        DaemonHandoffObservation::Running(DaemonHandoff {
-            pid: 41,
-            heartbeat_at_ms: 1_050,
-        })
-    );
-}
-
-#[test]
-fn setup_handoff_accepts_fresh_same_owner_job_progress_with_a_stale_lifecycle_heartbeat() {
-    let expected = test_config();
-    let now_ms = 100_000;
-    let stale_heartbeat_at_ms = now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1;
-    let status = json!({
-        "status": "running",
-        "pid": 41,
-        "started_at_ms": 1_000,
-        "heartbeat_at_ms": stale_heartbeat_at_ms,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": expected.enabled,
-                "daemon_mode": expected.mode.as_str(),
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
-    });
-    let refresh_job = json!({
-        "owner": "daemon",
-        "kind": "core_refresh",
-        "status": "running",
-        "request_id": "cold-build",
-        "request_state": "running",
-        "last_run_at_ms": 2_000,
-        "progress": {
-            "phase": "refreshing",
-            "completed_sources": 3,
-            "total_sources": 4,
-        },
-        "last_error": null,
-    });
-
-    assert_eq!(
-        daemon_handoff_observation_with_refresh_job_from(
-            Some(&status),
-            Some(&refresh_job),
-            Some(41),
-            true,
-            Some(41),
-            Some(&expected),
-            Some(now_ms),
-            now_ms,
-        ),
-        (
-            DaemonHandoffObservation::Running(DaemonHandoff {
-                pid: 41,
-                heartbeat_at_ms: stale_heartbeat_at_ms,
-            }),
-            true,
-        )
-    );
-
-    for invalid_job in [
-        {
-            let mut job = refresh_job.clone();
-            job["owner"] = json!("cli");
-            job
-        },
-        {
-            let mut job = refresh_job.clone();
-            job["request_id"] = json!("");
-            job
-        },
-        {
-            let mut job = refresh_job.clone();
-            job["request_state"] = json!("failed");
-            job
-        },
-        {
-            let mut job = refresh_job.clone();
-            job["last_error"] = json!("refresh failed");
-            job
-        },
-    ] {
-        assert_eq!(
-            daemon_handoff_observation_with_refresh_job_from(
-                Some(&status),
-                Some(&invalid_job),
-                Some(41),
-                true,
-                Some(41),
-                Some(&expected),
-                Some(now_ms),
-                now_ms,
-            ),
-            (DaemonHandoffObservation::Pending, false),
-            "invalid owner/request/error state must not gain handoff authority: {invalid_job}"
-        );
-    }
-}
-
-#[test]
-fn setup_handoff_accepts_an_immediately_ready_endpoint() {
-    let expected = test_config();
-    let status = json!({
-        "status": "running",
-        "pid": 42,
-        "started_at_ms": 2_000,
-        "heartbeat_at_ms": 2_010,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": expected.enabled,
-                "daemon_mode": expected.mode.as_str(),
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
-    });
-    let observation = daemon_handoff_observation_from(
-        Some(&status),
-        Some(42),
-        true,
-        Some(42),
-        Some(&expected),
-        2_010,
-    );
-
-    assert_eq!(
-        complete_daemon_handoff_observation(
-            observation,
-            Some(&status),
-            Some(42),
-            true,
-            &expected,
-            true,
-            false,
-        ),
-        DaemonHandoffObservation::Running(DaemonHandoff {
-            pid: 42,
-            heartbeat_at_ms: 2_010,
-        })
-    );
-}
-
-#[test]
-fn setup_handoff_rejects_real_daemon_and_refresh_failures() {
-    let expected = test_config();
-    let failed_status = json!({
-        "status": "failed",
-        "pid": 43,
-        "started_at_ms": 3_000,
-        "heartbeat_at_ms": 3_010,
-        "last_error": "cold build failed",
-    });
-    let failed_observation = daemon_handoff_observation_from(
-        Some(&failed_status),
-        Some(43),
-        true,
-        Some(43),
-        Some(&expected),
-        3_010,
-    );
-    assert_eq!(
-        complete_daemon_handoff_observation(
-            failed_observation,
-            Some(&failed_status),
-            Some(43),
-            true,
-            &expected,
-            false,
-            false,
-        ),
-        DaemonHandoffObservation::Failed("cold build failed".to_owned())
-    );
-
-    let running_status = json!({
-        "status": "running",
-        "pid": 44,
-        "started_at_ms": 4_000,
-        "heartbeat_at_ms": 4_010,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": expected.enabled,
-                "daemon_mode": expected.mode.as_str(),
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
-    });
-    let failed_refresh = json!({
-        "owner": "daemon",
-        "kind": "core_refresh",
-        "status": "failed",
-        "request_id": "failed-build",
-        "request_state": "failed",
-        "last_run_at_ms": 4_005,
-        "progress": {"phase": "failed"},
-        "last_error": "invalid generation",
-    });
-    assert!(!daemon_owned_source_refresh_is_active(
-        Some(&running_status),
-        Some(&failed_refresh),
-        Some(44),
-        None,
-        None,
-        4_010,
-    ));
-    assert_eq!(
-        complete_daemon_handoff_observation(
-            daemon_handoff_observation_from(
-                Some(&running_status),
-                Some(44),
-                true,
-                Some(44),
-                Some(&expected),
-                4_010,
-            ),
-            Some(&running_status),
-            Some(44),
-            true,
-            &expected,
-            false,
-            false,
-        ),
-        DaemonHandoffObservation::Pending
-    );
-}
-
-#[test]
-fn enabled_daemon_handoff_is_bounded_to_five_seconds() {
-    let pauses = DAEMON_SETUP_HANDOFF_POLL_ATTEMPTS.saturating_sub(1);
-    let maximum_wait = DAEMON_UPGRADE_POLL_INTERVAL
-        .checked_mul(u32::try_from(pauses).unwrap())
-        .unwrap();
-    assert_eq!(maximum_wait, Duration::from_secs(5));
-    assert_eq!(DAEMON_SETUP_HANDOFF_TIMEOUT, maximum_wait);
-}
-
 fn test_daemon_owner(owner_id: &str, pid: u32) -> DaemonOwnerIdentity {
     DaemonOwnerIdentity {
         owner_id: owner_id.to_owned(),
@@ -496,208 +165,16 @@ fn test_daemon_owner(owner_id: &str, pid: u32) -> DaemonOwnerIdentity {
     }
 }
 
-#[test]
-fn hung_listener_is_terminated_only_after_bounded_unusable_owner_proof() -> Result<()> {
-    let owner = test_daemon_owner("hung-owner", 41);
-    let current_checks = Cell::new(0);
-    let active_checks = Cell::new(0);
-    let endpoint_checks = Cell::new(0);
-    let terminations = Cell::new(0);
-
-    let terminated = recover_unusable_daemon_owner_with(
-        &owner,
-        || {
-            current_checks.set(current_checks.get() + 1);
-            Ok(Some(owner.clone()))
-        },
-        || {
-            active_checks.set(active_checks.get() + 1);
-            false
-        },
-        || {
-            endpoint_checks.set(endpoint_checks.get() + 1);
-            Ok(false)
-        },
-        |owner_id| {
-            assert_eq!(owner_id, "hung-owner");
-            terminations.set(terminations.get() + 1);
-            Ok(())
-        },
-    )?;
-
-    assert!(terminated);
-    assert_eq!(current_checks.get(), 2);
-    assert_eq!(active_checks.get(), 2);
-    assert_eq!(endpoint_checks.get(), 1);
-    assert_eq!(terminations.get(), 1);
-    Ok(())
-}
-
-#[test]
-fn concurrent_recovery_never_terminates_a_replacement_owner() -> Result<()> {
-    let unusable_owner = test_daemon_owner("unusable-owner", 41);
-    let replacement_owner = test_daemon_owner("replacement-owner", 42);
-    let current_checks = Cell::new(0);
-    let terminations = Cell::new(0);
-
-    let terminated = recover_unusable_daemon_owner_with(
-        &unusable_owner,
-        || {
-            let check = current_checks.get();
-            current_checks.set(check + 1);
-            Ok(Some(if check == 0 {
-                unusable_owner.clone()
-            } else {
-                replacement_owner.clone()
-            }))
-        },
-        || false,
-        || Ok(false),
-        |_| {
-            terminations.set(terminations.get() + 1);
-            Ok(())
-        },
-    )?;
-
-    assert!(!terminated);
-    assert_eq!(current_checks.get(), 2);
-    assert_eq!(terminations.get(), 0);
-    Ok(())
-}
-
-fn running_refresh_status(heartbeat_at_ms: i64) -> (Value, Value) {
-    (
-        json!({
-            "status": "running",
-            "pid": 41,
-            "started_at_ms": 1_000,
-            "heartbeat_at_ms": heartbeat_at_ms,
-        }),
-        json!({
-            "owner": "daemon",
-            "kind": "core_refresh",
-            "status": "running",
-            "request_id": "slow-refresh",
-            "request_state": "running",
-            "last_run_at_ms": 2_000,
-            "progress": {
-                "phase": "refreshing",
-                "completed_sources": 800,
-                "total_sources": 5_781,
-            },
-        }),
-    )
-}
-
-#[test]
-fn stale_running_refresh_does_not_suppress_bounded_owner_takeover() -> Result<()> {
-    let owner = test_daemon_owner("stale-refresh-owner", 41);
-    let now_ms = 100_000;
-    let stale_at_ms = now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1;
-    let (status, refresh_job) = running_refresh_status(stale_at_ms);
-    let endpoint_checks = Cell::new(0);
-    let terminations = Cell::new(0);
-
-    let terminated = recover_unusable_daemon_owner_with(
-        &owner,
-        || Ok(Some(owner.clone())),
-        || {
-            daemon_owned_source_refresh_is_active(
-                Some(&status),
-                Some(&refresh_job),
-                Some(owner.pid),
-                Some(owner.started_at_ms),
-                Some(stale_at_ms),
-                now_ms,
-            )
-        },
-        || {
-            endpoint_checks.set(endpoint_checks.get() + 1);
-            Ok(false)
-        },
-        |owner_id| {
-            assert_eq!(owner_id, "stale-refresh-owner");
-            terminations.set(terminations.get() + 1);
-            Ok(())
-        },
-    )?;
-
-    assert!(terminated);
-    assert_eq!(endpoint_checks.get(), 1);
-    assert_eq!(terminations.get(), 1);
-    Ok(())
-}
-
-#[test]
-fn fresh_slow_refresh_progress_prevents_unusable_endpoint_takeover() -> Result<()> {
-    let owner = test_daemon_owner("refresh-owner", 41);
-    let now_ms = 100_000;
-    let stale_heartbeat_at_ms = now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1;
-    let (status, refresh_job) = running_refresh_status(stale_heartbeat_at_ms);
-    let endpoint_checks = Cell::new(0);
-    let terminations = Cell::new(0);
-
-    let terminated = recover_unusable_daemon_owner_with(
-        &owner,
-        || Ok(Some(owner.clone())),
-        || {
-            daemon_owned_source_refresh_is_active(
-                Some(&status),
-                Some(&refresh_job),
-                Some(owner.pid),
-                Some(owner.started_at_ms),
-                Some(now_ms),
-                now_ms,
-            )
-        },
-        || {
-            endpoint_checks.set(endpoint_checks.get() + 1);
-            Ok(false)
-        },
-        |_| {
-            terminations.set(terminations.get() + 1);
-            Ok(())
-        },
-    )?;
-
-    assert!(!terminated);
-    assert_eq!(endpoint_checks.get(), 0);
-    assert_eq!(terminations.get(), 0);
-    Ok(())
-}
-
-#[test]
-fn setup_handoff_waits_for_requested_config_instead_of_previous_applied_mode() {
-    let expected = test_config();
-    let previous = json!({
+fn running_status(
+    owner: &DaemonOwnerIdentity,
+    expected: &DaemonConfigSnapshot,
+    heartbeat_at_ms: i64,
+) -> Value {
+    json!({
         "status": "running",
-        "pid": 41,
-        "heartbeat_at_ms": 1234,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": expected.enabled,
-                "daemon_mode": "source-refresh-only",
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
-    });
-    assert_eq!(
-        daemon_handoff_observation_from(
-            Some(&previous),
-            Some(41),
-            true,
-            None,
-            Some(&expected),
-            1234,
-        ),
-        DaemonHandoffObservation::Pending
-    );
-
-    let current = json!({
-        "status": "running",
-        "pid": 42,
-        "heartbeat_at_ms": 1235,
+        "pid": owner.pid,
+        "started_at_ms": owner.started_at_ms,
+        "heartbeat_at_ms": heartbeat_at_ms,
         "config_reload": {
             "status": "applied",
             "applied": {
@@ -706,242 +183,419 @@ fn setup_handoff_waits_for_requested_config_instead_of_previous_applied_mode() {
                 "semantic_enabled": expected.semantic_enabled,
             },
         },
-    });
+    })
+}
+
+fn ready_response(pid: u32) -> Value {
+    json!({
+        "schema_version": 1,
+        "ok": true,
+        "owner": "daemon",
+        "service": "lifecycle",
+        "pid": pid,
+        "readiness": "ready",
+    })
+}
+
+#[test]
+fn blocked_or_fresh_catch_up_without_lifecycle_endpoint_is_pending() {
+    let owner = test_daemon_owner("catch-up-owner", 41);
+    let expected = test_config();
+    let now_ms = 100_000;
+    let stale_heartbeat = now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1;
+
+    for (label, heartbeat_at_ms, catch_up) in [
+        (
+            "blocked",
+            stale_heartbeat,
+            json!({"status": "running", "progress": {"phase": "blocked"}}),
+        ),
+        (
+            "fresh",
+            now_ms,
+            json!({"status": "running", "progress": {"phase": "refreshing"}}),
+        ),
+    ] {
+        let mut status = running_status(&owner, &expected, heartbeat_at_ms);
+        status["catch_up"] = catch_up;
+        let candidate = daemon_handoff_status_observation_from(
+            Some(&status),
+            Some(&owner),
+            Some(owner.pid),
+            &expected,
+            now_ms,
+        );
+
+        assert!(matches!(candidate, DaemonHandoffObservation::Running(_)));
+        assert_eq!(
+            complete_daemon_handoff_observation(candidate, Some(&owner), Some(&owner), false,),
+            DaemonHandoffObservation::Pending,
+            "{label} catch-up state must not replace a live lifecycle response",
+        );
+    }
+}
+
+#[test]
+fn live_ready_endpoint_with_stale_heartbeat_can_succeed() {
+    let owner = test_daemon_owner("idle-owner", 42);
+    let expected = test_config();
+    let now_ms = 100_000;
+    let stale_heartbeat = now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1;
+    let status = running_status(&owner, &expected, stale_heartbeat);
+    let candidate = daemon_handoff_status_observation_from(
+        Some(&status),
+        Some(&owner),
+        Some(owner.pid),
+        &expected,
+        now_ms,
+    );
+
     assert_eq!(
-        daemon_handoff_observation_from(
-            Some(&current),
-            Some(42),
-            true,
-            None,
-            Some(&expected),
-            1235,
+        complete_daemon_handoff_observation(
+            candidate,
+            Some(&owner),
+            Some(&owner),
+            daemon_lifecycle_ready_response_matches(&ready_response(owner.pid), owner.pid),
         ),
         DaemonHandoffObservation::Running(DaemonHandoff {
-            pid: 42,
-            heartbeat_at_ms: 1235,
+            pid: owner.pid,
+            heartbeat_at_ms: stale_heartbeat,
         })
     );
 }
 
 #[test]
-fn setup_handoff_wait_surfaces_daemon_failure_without_sleep() {
-    let status = json!({
+fn lifecycle_readiness_response_requires_every_strict_field() {
+    let valid = ready_response(43);
+    assert!(daemon_lifecycle_ready_response_matches(&valid, 43));
+
+    let mut invalid_responses = Vec::new();
+    for (field, value) in [
+        ("schema_version", json!(2)),
+        ("ok", json!(false)),
+        ("owner", json!("cli")),
+        ("service", json!("source_refresh")),
+        ("pid", json!(44)),
+        ("readiness", json!("starting")),
+        ("readiness", json!("stopping")),
+    ] {
+        let mut response = valid.clone();
+        response[field] = value;
+        invalid_responses.push(response);
+    }
+    for field in [
+        "schema_version",
+        "ok",
+        "owner",
+        "service",
+        "pid",
+        "readiness",
+    ] {
+        let mut response = valid.clone();
+        response
+            .as_object_mut()
+            .expect("test response must be an object")
+            .remove(field);
+        invalid_responses.push(response);
+    }
+
+    for response in invalid_responses {
+        assert!(
+            !daemon_lifecycle_ready_response_matches(&response, 43),
+            "malformed lifecycle readiness gained authority: {response}",
+        );
+    }
+}
+
+#[test]
+fn status_owner_start_time_and_exact_config_are_required_before_probe() {
+    let owner = test_daemon_owner("strict-owner", 44);
+    let expected = test_config();
+    let status = running_status(&owner, &expected, 50_000);
+
+    assert!(matches!(
+        daemon_handoff_status_observation_from(
+            Some(&status),
+            Some(&owner),
+            Some(owner.pid),
+            &expected,
+            50_000,
+        ),
+        DaemonHandoffObservation::Running(_)
+    ));
+
+    let mut invalid_statuses = Vec::new();
+    let mut wrong_pid = status.clone();
+    wrong_pid["pid"] = json!(owner.pid + 1);
+    invalid_statuses.push(wrong_pid);
+    let mut wrong_start = status.clone();
+    wrong_start["started_at_ms"] = json!(owner.started_at_ms + 1);
+    invalid_statuses.push(wrong_start);
+    for (field, value) in [
+        ("daemon_enabled", json!(!expected.enabled)),
+        ("daemon_mode", json!(DaemonMode::SourceRefreshOnly.as_str())),
+        ("semantic_enabled", json!(!expected.semantic_enabled)),
+    ] {
+        let mut wrong_config = status.clone();
+        wrong_config["config_reload"]["applied"][field] = value;
+        invalid_statuses.push(wrong_config);
+    }
+
+    for invalid in invalid_statuses {
+        let observation = daemon_handoff_status_observation_from(
+            Some(&invalid),
+            Some(&owner),
+            Some(owner.pid),
+            &expected,
+            50_000,
+        );
+        assert_eq!(
+            complete_daemon_handoff_observation(observation, Some(&owner), Some(&owner), true,),
+            DaemonHandoffObservation::Pending,
+            "invalid status/config gained readiness authority: {invalid}",
+        );
+    }
+    assert_eq!(
+        daemon_handoff_status_observation_from(
+            Some(&status),
+            None,
+            Some(owner.pid),
+            &expected,
+            50_000,
+        ),
+        DaemonHandoffObservation::Pending,
+    );
+}
+
+#[test]
+fn owner_replacement_during_probe_rejects_readiness() {
+    let owner = test_daemon_owner("probed-owner", 45);
+    let expected = test_config();
+    let status = running_status(&owner, &expected, 60_000);
+    let candidate = daemon_handoff_status_observation_from(
+        Some(&status),
+        Some(&owner),
+        Some(owner.pid),
+        &expected,
+        60_000,
+    );
+    let mut replacements = Vec::new();
+    let mut changed_owner_id = owner.clone();
+    changed_owner_id.owner_id = "replacement-owner".to_owned();
+    replacements.push(changed_owner_id);
+    let mut changed_pid = owner.clone();
+    changed_pid.pid += 1;
+    replacements.push(changed_pid);
+    let mut changed_start = owner.clone();
+    changed_start.started_at_ms += 1;
+    replacements.push(changed_start);
+    let mut changed_digest = owner.clone();
+    changed_digest.binary_sha256 = "fedcba9876543210".to_owned();
+    replacements.push(changed_digest);
+
+    for replacement in replacements {
+        assert_eq!(
+            complete_daemon_handoff_observation(
+                candidate.clone(),
+                Some(&owner),
+                Some(&replacement),
+                true,
+            ),
+            DaemonHandoffObservation::Pending,
+            "changed owner tuple gained readiness: {replacement:?}",
+        );
+    }
+}
+
+#[test]
+fn fresh_spawned_failure_requires_the_full_active_owner_identity() {
+    let expected = test_config();
+    let now_ms = 70_000;
+    let owner = test_daemon_owner("spawned-failure", 46);
+    let fresh_failure = json!({
         "status": "failed",
-        "pid": 42,
-        "heartbeat_at_ms": 1235,
+        "pid": owner.pid,
+        "started_at_ms": owner.started_at_ms,
+        "heartbeat_at_ms": now_ms,
         "last_error": "query service failed",
     });
-    let pauses = std::cell::Cell::new(0);
-
-    let error = wait_for_daemon_handoff_with(
-        3,
-        || daemon_handoff_observation_from(Some(&status), None, false, Some(42), None, 1235),
-        || Ok(None),
-        || pauses.set(pauses.get() + 1),
-    )
-    .expect_err("failed status must reject the handoff");
-
-    assert_eq!(error.to_string(), "query service failed");
-    assert_eq!(pauses.get(), 0);
-}
-
-#[test]
-fn setup_handoff_wait_ignores_stale_or_unowned_existing_failure_without_sleep() {
-    let stale = json!({
-        "status": "failed",
-        "pid": 42,
-        "heartbeat_at_ms": 1_000,
-        "last_error": "old failure",
-    });
-    let unowned = json!({
-        "status": "failed",
-        "pid": 42,
-        "heartbeat_at_ms": 35_000,
-        "last_error": "unowned failure",
-    });
-
-    for (status, lock_pid, lock_active) in [
-        (&stale, Some(42), true),
-        (&unowned, Some(43), true),
-        (&unowned, Some(42), false),
-    ] {
-        let pauses = std::cell::Cell::new(0);
-        let error = wait_for_daemon_handoff_with(
-            2,
-            || {
-                daemon_handoff_observation_from(
-                    Some(status),
-                    lock_pid,
-                    lock_active,
-                    None,
-                    None,
-                    35_000,
-                )
-            },
-            || Ok(None),
-            || pauses.set(pauses.get() + 1),
-        )
-        .expect_err("stale or unowned existing failure must remain pending");
-
-        assert!(error.to_string().contains("timed out"), "{error:#}");
-        assert_eq!(pauses.get(), 1);
-    }
-}
-
-#[test]
-fn setup_handoff_wait_surfaces_fresh_owned_existing_failure_without_sleep() {
-    let status = json!({
-        "status": "failed",
-        "pid": 42,
-        "heartbeat_at_ms": 35_000,
-        "last_error": "current failure",
-    });
-    let pauses = std::cell::Cell::new(0);
-
-    let error = wait_for_daemon_handoff_with(
-        2,
-        || daemon_handoff_observation_from(Some(&status), Some(42), true, None, None, 35_000),
-        || Ok(None),
-        || pauses.set(pauses.get() + 1),
-    )
-    .expect_err("fresh failure owned by the active daemon must reject the handoff");
-
-    assert_eq!(error.to_string(), "current failure");
-    assert_eq!(pauses.get(), 0);
-}
-
-#[test]
-fn setup_handoff_wait_times_out_on_status_lock_identity_race_without_sleep() {
-    let status = json!({
-        "status": "running",
-        "pid": 43,
-        "heartbeat_at_ms": 1236,
-        "config_reload": {"status": "applied"},
-    });
-    let pauses = std::cell::Cell::new(0);
-
-    let error = wait_for_daemon_handoff_with(
-        3,
-        || daemon_handoff_observation_from(Some(&status), Some(44), true, Some(43), None, 1236),
-        || Ok(None),
-        || pauses.set(pauses.get() + 1),
-    )
-    .expect_err("mismatched status and lock identities must not become ready");
-
-    assert!(error.to_string().contains("timed out"), "{error:#}");
-    assert_eq!(pauses.get(), 2);
-}
-
-#[test]
-fn setup_handoff_wait_rejects_stale_or_future_heartbeat_without_sleep() {
-    for heartbeat_at_ms in [1_000, 40_001] {
-        let status = json!({
-            "status": "running",
-            "pid": 45,
-            "heartbeat_at_ms": heartbeat_at_ms,
-            "config_reload": {"status": "applied"},
-        });
-        let pauses = std::cell::Cell::new(0);
-
-        let error = wait_for_daemon_handoff_with(
-            2,
-            || {
-                daemon_handoff_observation_from(
-                    Some(&status),
-                    Some(45),
-                    true,
-                    Some(45),
-                    None,
-                    35_000,
-                )
-            },
-            || Ok(None),
-            || pauses.set(pauses.get() + 1),
-        )
-        .expect_err("an implausible heartbeat must not verify daemon readiness");
-
-        assert!(error.to_string().contains("timed out"), "{error:#}");
-        assert_eq!(pauses.get(), 1);
-    }
-}
-
-#[test]
-fn responsive_owned_endpoint_allows_an_idle_event_driven_daemon() {
-    let mut expected = test_config();
-    expected.enabled = true;
-    let status = json!({
-        "status": "running",
-        "pid": 45,
-        "heartbeat_at_ms": 1_000,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": true,
-                "daemon_mode": expected.mode.as_str(),
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
-    });
-
     assert_eq!(
-        daemon_live_endpoint_observation_from(Some(&status), Some(45), &expected),
-        DaemonHandoffObservation::Running(DaemonHandoff {
-            pid: 45,
-            heartbeat_at_ms: 1_000,
-        })
+        daemon_handoff_status_observation_from(
+            Some(&fresh_failure),
+            Some(&owner),
+            Some(owner.pid),
+            &expected,
+            now_ms,
+        ),
+        DaemonHandoffObservation::Failed("query service failed".to_owned()),
+    );
+    assert_eq!(
+        daemon_handoff_status_observation_from(
+            Some(&fresh_failure),
+            None,
+            Some(owner.pid),
+            &expected,
+            now_ms,
+        ),
+        DaemonHandoffObservation::Pending,
+    );
+
+    let mut stale_failure = fresh_failure.clone();
+    stale_failure["heartbeat_at_ms"] =
+        json!(now_ms - DAEMON_SETUP_HANDOFF_MAX_HEARTBEAT_AGE_MS - 1);
+    assert_eq!(
+        daemon_handoff_status_observation_from(
+            Some(&stale_failure),
+            Some(&owner),
+            Some(owner.pid),
+            &expected,
+            now_ms,
+        ),
+        DaemonHandoffObservation::Pending,
     );
 }
 
 #[test]
-fn responsive_endpoint_does_not_waive_owner_or_config_identity() {
-    let mut expected = test_config();
-    expected.enabled = true;
-    let status = json!({
-        "status": "running",
-        "pid": 45,
-        "heartbeat_at_ms": 1_000,
-        "config_reload": {
-            "status": "applied",
-            "applied": {
-                "daemon_enabled": false,
-                "daemon_mode": expected.mode.as_str(),
-                "semantic_enabled": expected.semantic_enabled,
-            },
-        },
+fn fresh_existing_owner_failure_matches_full_lifecycle_identity() {
+    let owner = test_daemon_owner("failed-owner", 47);
+    let expected = test_config();
+    let now_ms = 80_000;
+    let failure = json!({
+        "status": "failed",
+        "pid": owner.pid,
+        "started_at_ms": owner.started_at_ms,
+        "heartbeat_at_ms": now_ms,
+        "last_error": "existing daemon failed",
     });
 
     assert_eq!(
-        daemon_live_endpoint_observation_from(Some(&status), Some(46), &expected),
-        DaemonHandoffObservation::Pending
-    );
-    assert_eq!(
-        daemon_live_endpoint_observation_from(Some(&status), Some(45), &expected),
-        DaemonHandoffObservation::Pending
+        daemon_handoff_status_observation_from(
+            Some(&failure),
+            Some(&owner),
+            None,
+            &expected,
+            now_ms,
+        ),
+        DaemonHandoffObservation::Failed("existing daemon failed".to_owned()),
     );
 }
 
 #[test]
-fn setup_handoff_wait_ignores_stale_nested_config_failure_without_sleep() {
-    let status = json!({
-        "status": "running",
-        "pid": 45,
-        "heartbeat_at_ms": 1_000,
-        "last_error": "old daemon failure",
-        "config_reload": {
-            "status": "activation_failed",
-            "last_error": "old config failure",
-        },
+fn fresh_failure_from_reused_pid_does_not_match_existing_owner() {
+    let owner = test_daemon_owner("current-owner", 48);
+    let expected = test_config();
+    let now_ms = 90_000;
+    let failure = json!({
+        "status": "failed",
+        "pid": owner.pid,
+        "started_at_ms": owner.started_at_ms - 1,
+        "heartbeat_at_ms": now_ms,
+        "last_error": "previous process failed",
     });
-    let pauses = std::cell::Cell::new(0);
 
-    let error = wait_for_daemon_handoff_with(
-        2,
-        || daemon_handoff_observation_from(Some(&status), Some(45), true, None, None, 35_000),
-        || Ok(None),
-        || pauses.set(pauses.get() + 1),
-    )
-    .expect_err("stale nested config failure must remain pending");
+    assert_eq!(
+        daemon_handoff_status_observation_from(
+            Some(&failure),
+            Some(&owner),
+            None,
+            &expected,
+            now_ms,
+        ),
+        DaemonHandoffObservation::Pending,
+    );
+}
 
-    assert!(error.to_string().contains("timed out"), "{error:#}");
-    assert_eq!(pauses.get(), 1);
+#[test]
+fn recovery_probes_first_then_revalidates_the_full_owner_before_termination() -> Result<()> {
+    let owner = test_daemon_owner("unusable-owner", 47);
+    let events = RefCell::new(Vec::new());
+
+    let terminated = recover_unusable_daemon_owner_with(
+        &owner,
+        || {
+            events.borrow_mut().push("probe");
+            Ok(false)
+        },
+        || {
+            events.borrow_mut().push("revalidate");
+            Ok(Some(owner.clone()))
+        },
+        |owner_id| {
+            assert_eq!(owner_id, owner.owner_id.as_str());
+            events.borrow_mut().push("terminate");
+            Ok(())
+        },
+    )?;
+
+    assert!(terminated);
+    assert_eq!(
+        events.borrow().as_slice(),
+        &["probe", "revalidate", "terminate"]
+    );
+    Ok(())
+}
+
+#[test]
+fn recovery_never_terminates_an_owner_replaced_during_the_probe() -> Result<()> {
+    let owner = test_daemon_owner("unusable-owner", 48);
+    let mut replacement = owner.clone();
+    replacement.binary_sha256 = "replacement-binary-digest".to_owned();
+    let events = RefCell::new(Vec::new());
+
+    let terminated = recover_unusable_daemon_owner_with(
+        &owner,
+        || {
+            events.borrow_mut().push("probe");
+            Ok(false)
+        },
+        || {
+            events.borrow_mut().push("revalidate");
+            Ok(Some(replacement.clone()))
+        },
+        |_| {
+            events.borrow_mut().push("terminate");
+            Ok(())
+        },
+    )?;
+
+    assert!(!terminated);
+    assert_eq!(events.borrow().as_slice(), &["probe", "revalidate"]);
+    Ok(())
+}
+
+#[test]
+fn recovery_preserves_a_daemon_with_a_live_ready_endpoint() -> Result<()> {
+    let owner = test_daemon_owner("ready-owner", 49);
+    let events = RefCell::new(Vec::new());
+
+    let terminated = recover_unusable_daemon_owner_with(
+        &owner,
+        || {
+            events.borrow_mut().push("probe");
+            Ok(true)
+        },
+        || {
+            events.borrow_mut().push("revalidate");
+            Ok(Some(owner.clone()))
+        },
+        |_| {
+            events.borrow_mut().push("terminate");
+            Ok(())
+        },
+    )?;
+
+    assert!(!terminated);
+    assert_eq!(events.borrow().as_slice(), &["probe"]);
+    Ok(())
+}
+
+#[test]
+fn enabled_daemon_handoff_is_bounded_to_five_seconds() {
+    let pauses = DAEMON_SETUP_HANDOFF_POLL_ATTEMPTS.saturating_sub(1);
+    let maximum_wait = DAEMON_UPGRADE_POLL_INTERVAL
+        .checked_mul(u32::try_from(pauses).expect("bounded test attempt count"))
+        .expect("bounded handoff duration");
+    assert_eq!(maximum_wait, Duration::from_secs(5));
+    assert_eq!(DAEMON_SETUP_HANDOFF_TIMEOUT, maximum_wait);
+    assert!(DAEMON_HEALTH_TIMEOUT < DAEMON_SETUP_HANDOFF_TIMEOUT);
 }

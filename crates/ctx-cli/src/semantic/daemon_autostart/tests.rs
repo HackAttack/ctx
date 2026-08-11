@@ -704,40 +704,6 @@ fn scheduled_helper_owns_fence_until_its_process_exits() -> Result<()> {
 }
 
 #[test]
-fn scheduled_fence_does_not_remain_owned_by_old_parent() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    write_daemon_upgrade_handoff(temp.path(), "handoff", "scheduled", None)?;
-    assert!(!daemon_upgrade_handoff_is_active(temp.path()));
-    Ok(())
-}
-
-#[test]
-fn handoff_and_restart_dtos_preserve_schema_v1_fields() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let handoff_id = "ua_01890f3e-2c80-7000-8000-000000000020";
-    write_daemon_upgrade_handoff(temp.path(), handoff_id, "scheduled", Some(42))?;
-    let handoff = read_daemon_upgrade_handoff(temp.path()).expect("handoff DTO");
-    assert_eq!(handoff["schema_version"], 1);
-    assert_eq!(handoff["handoff_id"], handoff_id);
-    assert_eq!(handoff["phase"], "scheduled");
-    assert_eq!(handoff["owner_pid"], process::id());
-    assert_eq!(handoff["helper_pid"], 42);
-    assert!(handoff["updated_at_ms"].as_i64().is_some());
-    assert_eq!(handoff.as_object().map(serde_json::Map::len), Some(6));
-
-    let restart_path =
-        write_daemon_restart_request(temp.path(), DaemonTriggerCommandArg::Setup, handoff_id)?;
-    let restart: Value = serde_json::from_slice(&fs::read(restart_path)?)?;
-    assert_eq!(restart["schema_version"], 1);
-    assert_eq!(restart["request_id"], handoff_id);
-    assert_eq!(restart["trigger_command"], "setup");
-    assert_eq!(restart["requester_pid"], process::id());
-    assert!(restart["requested_at_ms"].as_i64().is_some());
-    assert_eq!(restart.as_object().map(serde_json::Map::len), Some(5));
-    Ok(())
-}
-
-#[test]
 fn current_format_recovery_reexec_preserves_daemon_restart_intent() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let attempt_id = "ua_01890f3e-2c80-7000-8000-000000000007";
@@ -805,7 +771,7 @@ fn replacement_handoff_waits_for_daemon_ready_ack() -> Result<()> {
         read_daemon_upgrade_handoff(&root)
             .and_then(|value| value["phase"].as_str().map(ToOwned::to_owned))
             .as_deref(),
-        Some("scheduled")
+        Some("finalizing")
     );
     finish_replacement_daemon_handoff(&root, handoff_id)?;
     assert_eq!(

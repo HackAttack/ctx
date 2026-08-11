@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::Result;
 use ctx_client_observability::analytics::PublicEventV1;
-use ctx_daemon_runtime::NormalizedLaunch;
+use ctx_daemon_runtime::{DaemonHandoffRestartDeferral, NormalizedLaunch};
 use serde_json::Value;
 
 mod control;
@@ -48,8 +48,11 @@ pub trait DaemonApplicationHost: Send + Sync {
     fn managed_install_executable(&self) -> Result<Option<PathBuf>>;
     fn installation_upgrade_active(&self) -> Result<bool>;
     fn daemon_config(&self, data_root: &Path) -> Result<DaemonConfigSnapshot>;
-    fn daemon_upgrade_handoff_fences_start(&self, data_root: &Path) -> bool;
-    fn write_restart_request(&self, data_root: &Path, trigger: DaemonTrigger) -> Result<PathBuf>;
+    fn defer_restart_for_upgrade_handoff(
+        &self,
+        data_root: &Path,
+        trigger: DaemonTrigger,
+    ) -> Result<Option<DaemonHandoffRestartDeferral>>;
     fn request_lifecycle_wakeup(
         &self,
         data_root: &Path,
@@ -339,12 +342,12 @@ impl DaemonApplicationHost for TestHost {
         })
     }
 
-    fn daemon_upgrade_handoff_fences_start(&self, _data_root: &Path) -> bool {
-        false
-    }
-
-    fn write_restart_request(&self, data_root: &Path, _trigger: DaemonTrigger) -> Result<PathBuf> {
-        Ok(data_root.to_path_buf())
+    fn defer_restart_for_upgrade_handoff(
+        &self,
+        _data_root: &Path,
+        _trigger: DaemonTrigger,
+    ) -> Result<Option<DaemonHandoffRestartDeferral>> {
+        Ok(None)
     }
 
     fn request_lifecycle_wakeup(
