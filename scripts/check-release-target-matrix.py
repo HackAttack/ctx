@@ -17,7 +17,7 @@ BAZEL_CONSUMER_PATH = ROOT / "tools" / "bazel" / "release_inventory.bzl"
 GENERATED_BEGIN = "# BEGIN GENERATED: contracts/release-targets-v1.json"
 GENERATED_END = "# END GENERATED: contracts/release-targets-v1.json"
 SUPPORTED_TARGET_IDS = tuple(
-    "freebsd-x64 linux-arm64 linux-x64 macos-arm64 macos-x64 windows-x64".split()
+    "linux-arm64 linux-x64 macos-arm64 macos-x64 windows-x64".split()
 )
 STRING_FIELDS = set(
     """
@@ -120,7 +120,7 @@ def load_and_validate(path: Path = MATRIX_PATH) -> dict[str, Any]:
         raise ValueError("release target entries must be objects")
     ids = [target.get("id") for target in value["targets"]]
     if ids != list(SUPPORTED_TARGET_IDS) or len(ids) != len(set(ids)):
-        raise ValueError("release target IDs must be the exact sorted Day One matrix")
+        raise ValueError("release target IDs must be the exact sorted prebuilt matrix")
     for target in value["targets"]:
         validate_target(target)
     return value

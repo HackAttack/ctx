@@ -202,7 +202,6 @@ cli_sources=(
   ctx-macos-arm64
   ctx-macos-x64
   ctx.exe
-  ctx-freebsd-x64
 )
 legacy_runtimes=(
   ctx-onnxruntime-linux-x64.tar.gz
@@ -210,7 +209,6 @@ legacy_runtimes=(
   ctx-onnxruntime-macos-arm64.tar.gz
   ctx-onnxruntime-macos-x64.tar.gz
   ctx-onnxruntime-windows-x64.zip
-  ctx-onnxruntime-freebsd-x64.tar.gz
 )
 semantic_runtimes=(
   ctx-onnxruntime-linux-x64.tar.zst
@@ -218,7 +216,6 @@ semantic_runtimes=(
   ctx-onnxruntime-macos-arm64.tar.zst
   ctx-onnxruntime-macos-x64.tar.zst
   ctx-windowsml-windows-x64.zip
-  ctx-onnxruntime-freebsd-x64.tar.zst
 )
 extra_semantic_assets=(
   ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz
@@ -345,12 +342,10 @@ test "${completed_before}" = "$(
 )"
 
 default_assets=(
-  ctx-freebsd-x64
   ctx-linux-aarch64
   ctx-linux-x64
   ctx-macos-arm64
   ctx-macos-x64
-  ctx-onnxruntime-freebsd-x64.tar.gz
   ctx-onnxruntime-linux-aarch64.tar.gz
   ctx-onnxruntime-linux-x64.tar.gz
   ctx-onnxruntime-macos-arm64.tar.gz
@@ -359,8 +354,6 @@ default_assets=(
   ctx-windows-x64.exe
 )
 cli_evidence_assets=(
-  ctx-freebsd-x64.cdx.json
-  ctx-freebsd-x64.third-party-notices.txt
   ctx-linux-aarch64.cdx.json
   ctx-linux-aarch64.third-party-notices.txt
   ctx-linux-x64.cdx.json
@@ -404,16 +397,15 @@ CTX_FAKE_SBOM_LOG="${default_sbom_log}" \
   CTX_REAL_PYTHON3="${real_python3}" \
   PATH="${fake_bin}:${PATH}" \
   /bin/bash "${stage}" "${matrix}" "${default_output}"
-assert_exact_assets "${default_output}" 24 "${default_assets[@]}"
+assert_exact_assets "${default_output}" 20 "${default_assets[@]}"
 default_authority="${default_output}.authority"
-test "$(find "${default_authority}" -maxdepth 1 -type f | wc -l)" -eq 19
+test "$(find "${default_authority}" -maxdepth 1 -type f | wc -l)" -eq 17
 for candidate in \
   ctx.candidate.json \
   ctx-linux-aarch64.candidate.json \
   ctx-macos-arm64.candidate.json \
   ctx-macos-x64.candidate.json \
-  ctx.exe.candidate.json \
-  ctx-freebsd-x64.candidate.json; do
+  ctx.exe.candidate.json; do
   test -s "${default_authority}/${candidate}"
   test -s "${default_authority}/${candidate}.sha256"
   test "$(sha256sum "${default_authority}/${candidate}" | awk '{print $1}')" = \
@@ -436,9 +428,9 @@ cmp "${default_authority}/ctx.exe" "${default_output}/ctx-windows-x64.exe"
 cmp "${default_authority}/SHA256SUMS" "${default_output}/SHA256SUMS"
 cmp "${default_authority}/ctx-onnxruntime-windows-x64.zip" \
   "${default_output}/ctx-onnxruntime-windows-x64.zip"
-test "$(wc -l < "${default_sbom_log}")" -eq 6
-test "$(wc -l < "${default_build_info_log}")" -eq 6
-test "$(grep -Fc -- "--source-commit ${source_commit}" "${default_build_info_log}")" -eq 6
+test "$(wc -l < "${default_sbom_log}")" -eq 5
+test "$(wc -l < "${default_build_info_log}")" -eq 5
+test "$(grep -Fc -- "--source-commit ${source_commit}" "${default_build_info_log}")" -eq 5
 grep -Fq -- "--artifact ${tmp_dir}/.github-release-assets." \
   "${default_build_info_log}"
 grep -Fq -- "--artifact ${tmp_dir}/.github-release-assets." \
@@ -459,8 +451,8 @@ CTX_FAKE_SBOM_LOG="${tmp_dir}/semantic-sbom.log" \
   PATH="${fake_bin}:${PATH}" \
   /bin/bash "${stage}" \
   --with-semantic "${matrix}" "${semantic_output}"
-assert_exact_assets "${semantic_output}" 34 "${semantic_assets[@]}"
-test "$(find "${semantic_output}.authority" -maxdepth 1 -type f | wc -l)" -eq 19
+assert_exact_assets "${semantic_output}" 29 "${semantic_assets[@]}"
+test "$(find "${semantic_output}.authority" -maxdepth 1 -type f | wc -l)" -eq 17
 
 stale_authority="${tmp_dir}/stale-authority"
 mkdir "${stale_authority}"
@@ -490,7 +482,7 @@ test ! -e "${tmp_dir}/aliased-output"
 
 late_copy="${tmp_dir}/late-copy"
 cp -a "${matrix}" "${late_copy}"
-late_copy_leaf="${late_copy}/ctx-freebsd-x64"
+late_copy_leaf="${late_copy}/ctx-macos-arm64"
 printf 'late foreign CLI bytes\n' >"${tmp_dir}/late-copy-foreign"
 if CTX_FAKE_SBOM_LOG="${tmp_dir}/late-copy-sbom.log" \
   CTX_FAKE_BUILD_INFO_LOG="${tmp_dir}/late-copy-build-info.log" \
@@ -534,7 +526,7 @@ CTX_FAKE_SBOM_LOG="${tmp_dir}/ignored-proof-sbom.log" \
   CTX_REAL_PYTHON3="${real_python3}" \
   PATH="${fake_bin}:${PATH}" \
   /bin/bash "${stage}" "${matrix}" "${ignored_proof_output}"
-assert_exact_assets "${ignored_proof_output}" 24 "${default_assets[@]}"
+assert_exact_assets "${ignored_proof_output}" 20 "${default_assets[@]}"
 test ! -e "${ignored_proof_output}/ctx-linux-x64.native-runtime-proof.txt"
 
 printf 'mutated runtime bytes\n' >> "${matrix}/ctx-onnxruntime-linux-x64.tar.gz"

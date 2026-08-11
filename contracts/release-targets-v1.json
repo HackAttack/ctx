@@ -2,24 +2,6 @@
   "schema_version": 1,
   "targets": [
     {
-      "id": "freebsd-x64",
-      "os": "freebsd",
-      "arch": "x86_64",
-      "public_rust_target": "x86_64-unknown-freebsd",
-      "helper_rust_target": "x86_64-unknown-freebsd",
-      "public_artifact": "ctx-freebsd-x64",
-      "helper_artifact": "ctx-pro-freebsd-x64",
-      "public_construction_authority": "bazel-release-route-v1",
-      "public_construction_label": "//:ctx_release_freebsd_x64",
-      "bazel_platform": "//tools/bazel/platforms:release_freebsd_x64",
-      "archive": "tar.gz",
-      "vault": "secret-service",
-      "runtime_authority": "native-freebsd-x86_64",
-      "diagnostic_authorities": ["freebsd-15.1"],
-      "platform_signature": "release-manifest",
-      "linux_build": null
-    },
-    {
       "id": "linux-arm64",
       "os": "linux",
       "arch": "aarch64",

@@ -233,10 +233,9 @@ scripts/bazelw run //:ctx_release_linux_x64 --config=release -- \
 
 The route labels are `//:ctx_release_linux_x64`,
 `//:ctx_release_linux_arm64`, `//:ctx_release_macos_arm64`,
-`//:ctx_release_macos_x64`, `//:ctx_release_windows_x64`, and
-`//:ctx_release_freebsd_x64`. Their distribution names come only from
-`contracts/release-targets-v1.json`; the packager preserves the raw
-construction names consumed by `scripts/stage-github-release-assets.sh`.
+`//:ctx_release_macos_x64`, and `//:ctx_release_windows_x64`. Their distribution
+names come only from `contracts/release-targets-v1.json`; the packager preserves
+the raw construction names consumed by `scripts/stage-github-release-assets.sh`.
 
 Linux release lanes use the tracked native builder rather than hand-authoring
 the Linux `--build-info` input:
@@ -267,21 +266,21 @@ pinned static-ABI and native-runtime gates pass. The release packager
 reconstructs those source/version/target/toolchain bindings from its declared
 runfiles and rejects any changed or non-canonical build-info bytes.
 
-With no mode flag, the staging helper validates and stages the six CLI binaries
-paired with the six legacy runtime transports. `--with-semantic` preserves
+With no mode flag, the staging helper validates and stages the five CLI binaries
+paired with the five legacy runtime transports. `--with-semantic` preserves
 those pairs and adds the ten exact Semantic assets. Linux inputs must carry
 their sealed per-platform completion identities; Semantic assets are instead
 validated directly through their manifests, checksums, and canonical catalog.
 
 Aggregate staging also writes a separate release-authority handoff directory;
 it does not add those files to the GitHub Release asset set or `SHA256SUMS`.
-The handoff retains all six canonical per-target candidate manifests and their
+The handoff retains all five canonical per-target candidate manifests and their
 digest sidecars. It also retains the Windows executable and candidate evidence
 under their exact construction names (`ctx.exe`, `ctx.exe.build-info.json`,
 `ctx.exe.cdx.json`, `ctx.exe.size.json`, and
 `ctx.exe.third-party-notices.txt`), plus exact copies of `SHA256SUMS` and the
 Windows runtime archive. `release_bundle.py` publishes this fresh, exact
-19-file directory atomically without replacement.
+17-file directory atomically without replacement.
 
 After the final `SHA256SUMS` exists, the Windows manifest is finalized to bind
 the literal `SHA256SUMS` and
@@ -321,10 +320,15 @@ remains optional for unsigned local qualification candidates.
 
 ## Platform boundary
 
-Construction requires the corresponding Bazel Rust/C++ toolchains and native
-runners. The Windows route selects a dedicated
+Release construction requires the corresponding Bazel Rust/C++ toolchains and
+native runners. The Windows route selects a dedicated
 `x86_64-pc-windows-gnu` target graph; it does not reuse or relabel the normal
 MSVC graph, and its native authority must provide the contracted MinGW linker
-and runtime. The FreeBSD route uses its native Bazel host with the pinned
-`rules_rust` host-detection patch and the checked-in FreeBSD lock factor.
-Host-Cargo builds remain diagnostic rather than authoritative.
+and runtime.
+
+FreeBSD is not a release route. On FreeBSD, build the normal
+`//crates/ctx-cli:ctx --config=release` target from source. The pinned
+`rules_rust` host-detection patch, FreeBSD Rust toolchain, and checked-in lock
+factor remain part of that best-effort source path. FreeBSD source
+compatibility does not block prebuilt releases. Host-Cargo builds remain
+diagnostic rather than authoritative.

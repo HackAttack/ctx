@@ -25,8 +25,7 @@ for platform in \
   linux-aarch64 \
   macos-arm64 \
   macos-x64 \
-  windows-x64-windowsml \
-  freebsd-x64
+  windows-x64-windowsml
 do
   case "${platform}" in
     linux-x64-cuda12)
@@ -53,7 +52,6 @@ artifacts=(
   "ctx-onnxruntime-macos-arm64.tar.zst"
   "ctx-onnxruntime-macos-x64.tar.zst"
   "ctx-windowsml-windows-x64.zip"
-  "ctx-onnxruntime-freebsd-x64.tar.zst"
 )
 record_args=()
 for artifact in "${artifacts[@]}"; do

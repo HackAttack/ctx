@@ -32,13 +32,12 @@ const RELEASE_BASE_PREFIX: &str = "https://cli.ctx.rs/storage/v1/object/public/r
 const RELEASE_METADATA_PUBLIC_KEY_DER_SHA256: &str =
     "f989f75ad5eb476db0606125746fa524edb0a02ea5a6dde3bc83a5ea4fa93a4c";
 const ONNXRUNTIME_METADATA_PREFIX: &str = "CTX_RELEASE_ONNXRUNTIME_";
-const SUPPORTED_PLATFORM_KEYS: [&str; 6] = [
+const SUPPORTED_PLATFORM_KEYS: [&str; 5] = [
     "linux_x64",
     "linux_aarch64",
     "macos_arm64",
     "macos_x64",
     "windows_x64",
-    "freebsd_x64",
 ];
 
 #[derive(Debug, Clone)]

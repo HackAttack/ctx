@@ -15,8 +15,8 @@ Outputs default to target/github-release-assets.
 Every ONNX Runtime sidecar is required. Release assembly fails closed when a
 platform runtime is absent.
 
-The additive --with-semantic mode validates and stages the ten signed Semantic
-assets after preserving the six legacy runtime assets.
+The additive --with-semantic mode validates and stages the nine signed Semantic
+assets after preserving the five prebuilt runtime assets.
 
 The transcode mode converts a validated builder-owned Unix .tar.zst sidecar
 to the deterministic .tar.gz transport consumed by release installers. It is
@@ -133,7 +133,7 @@ transcode_runtime_asset() {
   local source_name dest_name source_path dest_path
 
   case "${platform}" in
-    linux-x64|linux-aarch64|macos-arm64|macos-x64|freebsd-x64)
+    linux-x64|linux-aarch64|macos-arm64|macos-x64)
       source_name="ctx-onnxruntime-${platform}.tar.zst"
       dest_name="ctx-onnxruntime-${platform}.tar.gz"
       ;;
@@ -351,7 +351,6 @@ runtime_asset_name() {
     macos-arm64) printf 'ctx-onnxruntime-macos-arm64.tar.gz\n' ;;
     macos-x64) printf 'ctx-onnxruntime-macos-x64.tar.gz\n' ;;
     windows-x64) printf 'ctx-onnxruntime-windows-x64.zip\n' ;;
-    freebsd-x64) printf 'ctx-onnxruntime-freebsd-x64.tar.gz\n' ;;
     *)
       printf 'unknown platform for ONNX Runtime staging: %s\n' "${platform}" >&2
       exit 2
@@ -470,7 +469,6 @@ required_runtime_assets=(
   ctx-onnxruntime-macos-arm64.tar.gz
   ctx-onnxruntime-macos-x64.tar.gz
   ctx-onnxruntime-windows-x64.zip
-  ctx-onnxruntime-freebsd-x64.tar.gz
 )
 for required_runtime_asset in "${required_runtime_assets[@]}"; do
   require_regular_input \
@@ -584,8 +582,7 @@ for cli_dest in \
   ctx-linux-x64 \
   ctx-macos-arm64 \
   ctx-macos-x64 \
-  ctx-windows-x64.exe \
-  ctx-freebsd-x64; do
+  ctx-windows-x64.exe; do
   rm -f \
     "${out_dir%/}/${cli_dest}.cdx.json" \
     "${out_dir%/}/${cli_dest}.third-party-notices.txt"
@@ -596,13 +593,11 @@ rm -f \
   "${out_dir%/}/ctx-macos-arm64" \
   "${out_dir%/}/ctx-macos-x64" \
   "${out_dir%/}/ctx-windows-x64.exe" \
-  "${out_dir%/}/ctx-freebsd-x64" \
   "${out_dir%/}/ctx-onnxruntime-linux-x64.tar.gz" \
   "${out_dir%/}/ctx-onnxruntime-linux-aarch64.tar.gz" \
   "${out_dir%/}/ctx-onnxruntime-macos-arm64.tar.gz" \
   "${out_dir%/}/ctx-onnxruntime-macos-x64.tar.gz" \
   "${out_dir%/}/ctx-onnxruntime-windows-x64.zip" \
-  "${out_dir%/}/ctx-onnxruntime-freebsd-x64.tar.gz" \
   "${out_dir%/}/ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz" \
   "${out_dir%/}/ctx-multilingual-e5-small-onnx-o4-fp16-1.0.0.tar.xz" \
   "${out_dir%/}/ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz" \
@@ -611,7 +606,6 @@ rm -f \
   "${out_dir%/}/ctx-onnxruntime-macos-arm64.tar.zst" \
   "${out_dir%/}/ctx-onnxruntime-macos-x64.tar.zst" \
   "${out_dir%/}/ctx-windowsml-windows-x64.zip" \
-  "${out_dir%/}/ctx-onnxruntime-freebsd-x64.tar.zst" \
   "${out_dir%/}/ctx-onnxruntime-linux-x64-cuda12.tar.zst" \
   "${out_dir%/}/SHA256SUMS"
 
@@ -625,14 +619,11 @@ stage_asset ctx-macos-x64 ctx-macos-x64
 stage_cli_evidence ctx-macos-x64 ctx-macos-x64
 stage_asset ctx.exe ctx-windows-x64.exe
 stage_cli_evidence ctx.exe ctx-windows-x64.exe
-stage_asset ctx-freebsd-x64 ctx-freebsd-x64
-stage_cli_evidence ctx-freebsd-x64 ctx-freebsd-x64
 stage_runtime_asset linux-x64
 stage_runtime_asset linux-aarch64
 stage_runtime_asset macos-arm64
 stage_runtime_asset macos-x64
 stage_runtime_asset windows-x64
-stage_runtime_asset freebsd-x64
 
 if [[ "${include_semantic}" == "1" ]]; then
   semantic_fields="$(mktemp "${TMPDIR:-/tmp}/ctx-semantic-release.XXXXXX")"
@@ -645,7 +636,6 @@ if [[ "${include_semantic}" == "1" ]]; then
     ctx-onnxruntime-macos-arm64.tar.zst
     ctx-onnxruntime-macos-x64.tar.zst
     ctx-windowsml-windows-x64.zip
-    ctx-onnxruntime-freebsd-x64.tar.zst
     ctx-onnxruntime-linux-x64-cuda12.tar.zst
   )
   for semantic_asset in "${semantic_assets[@]}"; do
@@ -670,7 +660,6 @@ authority_candidates=(
   ctx-macos-arm64.candidate.json
   ctx-macos-x64.candidate.json
   ctx.exe.candidate.json
-  ctx-freebsd-x64.candidate.json
 )
 for authority_candidate in "${authority_candidates[@]}"; do
   authority_source="${artifact_dir%/}/${authority_candidate}"
@@ -715,15 +704,11 @@ validate_staged_cli_evidence \
   ctx.exe ctx-windows-x64.exe windows-x64 \
   "${authority_dir%/}/.ctx.exe.candidate.base.json" \
   ctx.exe "${authority_dir}"
-validate_staged_cli_evidence \
-  ctx-freebsd-x64 ctx-freebsd-x64 freebsd-x64 \
-  "${authority_dir%/}/ctx-freebsd-x64.candidate.json"
 validate_staged_runtime_asset linux-x64
 validate_staged_runtime_asset linux-aarch64
 validate_staged_runtime_asset macos-arm64
 validate_staged_runtime_asset macos-x64
 validate_staged_runtime_asset windows-x64
-validate_staged_runtime_asset freebsd-x64
 validate_macos_signing_evidence macos-arm64
 validate_macos_signing_evidence macos-x64
 

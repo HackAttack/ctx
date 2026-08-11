@@ -267,7 +267,7 @@ def expect_rejection(name, blocks):
 pipeline = open(sys.argv[1], encoding="utf-8").read()
 steps = split_steps(pipeline)
 require_route(
-    len(steps) == 21,
+    len(steps) == 20,
     "pipeline should include public validation and bounded release matrices",
 )
 validate_validation_routes(steps)
@@ -305,7 +305,7 @@ if command -v ruby >/dev/null 2>&1; then
     data = YAML.load_file(ARGV.fetch(0))
     abort "pipeline must have steps" unless data.is_a?(Hash) && data["steps"].is_a?(Array)
     steps = data["steps"]
-    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 21
+    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 20
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
     abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
@@ -320,7 +320,6 @@ if command -v ruby >/dev/null 2>&1; then
       public-cli-linux-x64
       public-cli-linux-aarch64
       public-cli-windows-x64
-      public-cli-freebsd-x64
       public-cli-macos-arm64
       public-cli-macos-x64
       public-cli-macos-x64-native-smoke
@@ -338,12 +337,11 @@ if command -v ruby >/dev/null 2>&1; then
       abort "missing required SDK step #{key}" unless actual_keys.include?(key)
     end
     required_keys.each { |key| abort "missing gated artifact step #{key}" unless actual_keys.include?(key) }
-    artifact_keys = required_keys.first(6)
+    artifact_keys = required_keys.first(5)
     artifact_bases = {
       "public-cli-linux-x64" => "ctx",
       "public-cli-linux-aarch64" => "ctx-linux-aarch64",
       "public-cli-windows-x64" => "ctx.exe",
-      "public-cli-freebsd-x64" => "ctx-freebsd-x64",
       "public-cli-macos-arm64" => "ctx-macos-arm64",
       "public-cli-macos-x64" => "ctx-macos-x64",
     }
@@ -375,7 +373,6 @@ if command -v ruby >/dev/null 2>&1; then
         "--platform linux-arm64",
       ],
       "public-cli-windows-x64" => ["//:ctx_release_windows_x64"],
-      "public-cli-freebsd-x64" => ["//:ctx_release_freebsd_x64"],
       "public-cli-macos-arm64" => ["//:ctx_release_macos_arm64"],
       "public-cli-macos-x64" => ["//:ctx_release_macos_x64"],
     }
@@ -410,7 +407,6 @@ if command -v ruby >/dev/null 2>&1; then
     end
     {
       "public-cli-windows-x64" => ["windows-x64", "windows", "ctx-public-cli-windows-native"],
-      "public-cli-freebsd-x64" => ["freebsd-x64", "freebsd", "ctx-public-cli-freebsd-native"],
     }.each do |key, values|
       queue, os, concurrency_group = values
       step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
@@ -442,7 +438,6 @@ if command -v ruby >/dev/null 2>&1; then
       "public-cli-linux-x64" => "linux-x64",
       "public-cli-linux-aarch64" => "linux-aarch64",
       "public-cli-macos-arm64" => "macos-arm64",
-      "public-cli-freebsd-x64" => "freebsd-x64",
     }
     inline_native_smokes.each do |key, platform|
       step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
@@ -518,7 +513,6 @@ if command -v ruby >/dev/null 2>&1; then
       "public-cli-linux-aarch64" => "linux-aarch64",
       "public-cli-windows-x64" => "windows-x64",
       "public-cli-macos-arm64" => "macos-arm64",
-      "public-cli-freebsd-x64" => "freebsd-x64",
     }
     runtime_builds.each do |key, platform|
       step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
@@ -555,7 +549,6 @@ if command -v ruby >/dev/null 2>&1; then
     candidate_dependencies = %w[
       public-cli-linux-x64
       public-cli-linux-aarch64
-      public-cli-freebsd-x64
       public-cli-macos-arm64
       public-cli-macos-x64-native-smoke
       public-cli-windows-x64-native-smoke
@@ -568,7 +561,6 @@ if command -v ruby >/dev/null 2>&1; then
     %w[
       public-cli-linux-x64
       public-cli-linux-aarch64
-      public-cli-freebsd-x64
       public-cli-macos-arm64
       public-cli-macos-x64
       public-cli-macos-x64-native-smoke
@@ -589,7 +581,6 @@ if command -v ruby >/dev/null 2>&1; then
       ctx-onnxruntime-macos-arm64.tar.zst
       ctx-onnxruntime-macos-x64.tar.zst
       ctx-windowsml-windows-x64.zip
-      ctx-onnxruntime-freebsd-x64.tar.zst
       ctx-onnxruntime-linux-x64-cuda12.tar.zst
     ]
     semantic_producer_keys = %w[
@@ -616,7 +607,6 @@ if command -v ruby >/dev/null 2>&1; then
     expected_dependencies = %w[
       public-cli-linux-x64
       public-cli-linux-aarch64
-      public-cli-freebsd-x64
       public-cli-macos-arm64
       semantic-model-archives
       semantic-coreml-archive
@@ -673,7 +663,6 @@ for required in \
   '--platform linux-x64' \
   '--platform linux-arm64' \
   '//:ctx_release_windows_x64' \
-  '//:ctx_release_freebsd_x64' \
   '//:ctx_release_macos_arm64' \
   '//:ctx_release_macos_x64' \
   '.cdx.json.sha256' \
@@ -834,7 +823,6 @@ semantic_artifacts = (
     "ctx-onnxruntime-macos-arm64.tar.zst",
     "ctx-onnxruntime-macos-x64.tar.zst",
     "ctx-windowsml-windows-x64.zip",
-    "ctx-onnxruntime-freebsd-x64.tar.zst",
     "ctx-onnxruntime-linux-x64-cuda12.tar.zst",
 )
 for artifact in semantic_artifacts:
@@ -872,10 +860,9 @@ for platform in (
     "macos-arm64",
     "macos-x64",
     "windows-x64",
-    "freebsd-x64",
 ):
     if f"stage_runtime_asset {platform}" not in staging:
-        raise SystemExit(f"legacy six-runtime staging lost {platform}")
+        raise SystemExit(f"prebuilt runtime staging lost {platform}")
 if "append-semantic-release-metadata.sh" in staging:
     raise SystemExit("public asset staging must not assume private signing authority")
 if "CTX_RELEASE_SEMANTIC_AUTHORITY_universal_ort_cpu" not in append:
@@ -893,6 +880,11 @@ fi
 
 if grep -Fq 'scripts/run-macos-release-signing.sh --preflight' "${pipeline}"; then
   printf 'macOS release lanes must not fetch signing values before construction\n' >&2
+  exit 1
+fi
+
+if grep -Eqi 'freebsd' "${pipeline}"; then
+  printf 'FreeBSD must not appear in the prebuilt or release-blocking Buildkite pipeline\n' >&2
   exit 1
 fi
 if grep -Fq -- '-certsout "${signer_cert}"' "${macos_attestation_script}" \

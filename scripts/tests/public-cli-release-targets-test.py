@@ -27,10 +27,9 @@ helper = load_helper()
 
 
 class PublicCliReleaseTargetsTest(unittest.TestCase):
-    def test_exact_six_target_names_and_raw_construction_names(self) -> None:
+    def test_exact_five_target_names_and_raw_construction_names(self) -> None:
         value = helper.load_matrix(MATRIX)
         expected = {
-            "freebsd-x64": ("ctx-freebsd-x64", "ctx-freebsd-x64"),
             "linux-arm64": ("ctx-linux-aarch64", "ctx-linux-aarch64"),
             "linux-x64": ("ctx", "ctx-linux-x64"),
             "macos-arm64": ("ctx-macos-arm64", "ctx-macos-arm64"),
@@ -45,6 +44,8 @@ class PublicCliReleaseTargetsTest(unittest.TestCase):
                 target["public_artifact"],
             )
         self.assertEqual(actual, expected)
+        with self.assertRaisesRegex(helper.ContractError, "unsupported release target"):
+            helper.find_target(value, "freebsd-x64")
 
     def test_linux_arm64_adapts_only_the_existing_hook_vocabulary(self) -> None:
         value = helper.load_matrix(MATRIX)

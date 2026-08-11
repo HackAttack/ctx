@@ -382,7 +382,6 @@ fn platform_key() -> Result<&'static str> {
         ("macos", "aarch64") => Ok("macos-arm64"),
         ("macos", "x86_64") => Ok("macos-x64"),
         ("windows", "x86_64") => Ok("windows-x64"),
-        ("freebsd", "x86_64") => Ok("freebsd-x64"),
         (os, arch) => Err(anyhow!("unsupported ctx upgrade platform: {os}-{arch}")),
     }
 }

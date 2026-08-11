@@ -81,9 +81,6 @@ sha256_check() {
 }
 
 expected_assets=(
-  ctx-freebsd-x64
-  ctx-freebsd-x64.cdx.json
-  ctx-freebsd-x64.third-party-notices.txt
   ctx-linux-aarch64
   ctx-linux-aarch64.cdx.json
   ctx-linux-aarch64.third-party-notices.txt
@@ -96,7 +93,6 @@ expected_assets=(
   ctx-macos-x64
   ctx-macos-x64.cdx.json
   ctx-macos-x64.third-party-notices.txt
-  ctx-onnxruntime-freebsd-x64.tar.gz
   ctx-onnxruntime-linux-aarch64.tar.gz
   ctx-onnxruntime-linux-x64.tar.gz
   ctx-onnxruntime-macos-arm64.tar.gz
@@ -169,6 +165,5 @@ bash "${repo_root}/scripts/check-release-binary-compat.sh" macos-arm64 ctx-macos
 bash "${repo_root}/scripts/check-release-binary-compat.sh" macos-x64 ctx-macos-x64 \
   "${macos_llvm_readobj}" "${macos_llvm_objdump}"
 bash "${repo_root}/scripts/check-release-binary-compat.sh" windows-x64 ctx-windows-x64.exe
-bash "${repo_root}/scripts/check-release-binary-compat.sh" freebsd-x64 ctx-freebsd-x64
 
 printf 'GitHub release assets ok: %s %s\n' "${repo}" "${tag}"

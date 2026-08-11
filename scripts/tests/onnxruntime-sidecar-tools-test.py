@@ -606,7 +606,6 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                     "macos_arm64_cpu",
                     "macos_x64_cpu",
                     "windows_ml",
-                    "freebsd_x64_cpu",
                 ],
             )
 

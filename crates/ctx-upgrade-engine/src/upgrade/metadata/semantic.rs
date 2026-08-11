@@ -37,13 +37,12 @@ const WINDOWS_ML_FILES: [&str; 5] = [
     "lib/Microsoft.Windows.AI.MachineLearning.dll",
     "lib/onnxruntime.dll",
 ];
-const CPU_PLATFORMS: [&str; 6] = [
+const CPU_PLATFORMS: [&str; 5] = [
     "linux-x64",
     "linux-aarch64",
     "macos-arm64",
     "macos-x64",
     "windows-x64",
-    "freebsd-x64",
 ];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -761,11 +760,6 @@ mod tests {
                 "ctx-ort-macos-arm64.tar.zst",
             ),
             ("macos_x64_cpu", "macos-x64", "ctx-ort-macos-x64.tar.zst"),
-            (
-                "freebsd_x64_cpu",
-                "freebsd-x64",
-                "ctx-ort-freebsd-x64.tar.zst",
-            ),
         ] {
             assets.insert(
                 id.to_owned(),
@@ -876,7 +870,6 @@ mod tests {
                         "macos_arm64_cpu",
                         "macos_x64_cpu",
                         "windows_x64_windows_ml",
-                        "freebsd_x64_cpu",
                     ],
                 ),
             ),
@@ -895,7 +888,7 @@ mod tests {
             parse_semantic_metadata(&valid_metadata(), &crate::upgrade::TEST_SEMANTIC_LAYOUT)
                 .unwrap()
                 .unwrap();
-        assert_eq!(metadata.assets.len(), 10);
+        assert_eq!(metadata.assets.len(), 9);
         let selected = metadata.select("linux-x64", None).unwrap();
         assert_eq!(selected.target, "universal");
         assert_eq!(selected.backend, "ort-cpu");

@@ -63,7 +63,6 @@ MODEL_VARIANTS = {
 }
 EXPECTED_ASSET_IDS = {
     "apple_coreml",
-    "freebsd_x64_cpu",
     "linux_aarch64_cpu",
     "linux_x64_cpu",
     "linux_cuda12",
@@ -209,18 +208,6 @@ EXPECTED_ASSETS = {
         "max_expanded_bytes": 50_331_648,
         "max_files": 5,
         "files": WINDOWS_ML_FILES,
-    },
-    "freebsd_x64_cpu": {
-        "role": "cpu-runtime",
-        "backend": "ort-cpu",
-        "version": "1.27.0",
-        "platform": "freebsd-x64",
-        "artifact": "ctx-onnxruntime-freebsd-x64.tar.zst",
-        "archive_format": "tar.zst",
-        "archive_path_prefix": "",
-        "max_expanded_bytes": 67_108_864,
-        "max_files": 8,
-        "files": (*CPU_RUNTIME_FILES, "lib/libonnxruntime.so"),
     },
     "linux_cuda12": {
         "role": "accelerator",
@@ -893,7 +880,6 @@ def build_catalog(args: argparse.Namespace) -> None:
                     "macos_arm64_cpu",
                     "macos_x64_cpu",
                     "windows_ml",
-                    "freebsd_x64_cpu",
                 ],
             )
         ),

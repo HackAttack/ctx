@@ -31,7 +31,7 @@ case "${1:-}" in
     if [ -n "${CTX_FAKE_CATALOG_INPUT_LOG:-}" ]; then
       printf '%s\n' "$2" >"${CTX_FAKE_CATALOG_INPUT_LOG}"
     fi
-    printf 'SEMANTIC_ASSET_COUNT=10\n' >"$3"
+    printf 'SEMANTIC_ASSET_COUNT=9\n' >"$3"
     exit 0
     ;;
 esac
@@ -61,7 +61,6 @@ semantic_assets=(
   ctx-onnxruntime-macos-arm64.tar.zst
   ctx-onnxruntime-macos-x64.tar.zst
   ctx-windowsml-windows-x64.zip
-  ctx-onnxruntime-freebsd-x64.tar.zst
   ctx-onnxruntime-linux-x64-cuda12.tar.zst
 )
 for asset in "${semantic_assets[@]}"; do
@@ -80,9 +79,9 @@ CTX_RELEASE_PINNED_CONSUMER=irrelevant \
   CTX_PUBLIC_RELEASE_SOURCE_COMMIT="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
   CTX_FAKE_CATALOG_INPUT_LOG="${tmp_dir}/catalog-input.log" \
   run_stage "${matrix}" "${success_output}"
-test "$(find "${success_output}" -maxdepth 1 -type f | wc -l)" -eq 32
-test "$(wc -l <"${success_output}/SHA256SUMS")" -eq 10
-grep -Fx 'SEMANTIC_ASSET_COUNT=10' "${success_output}/semantic-release.env"
+test "$(find "${success_output}" -maxdepth 1 -type f | wc -l)" -eq 29
+test "$(wc -l <"${success_output}/SHA256SUMS")" -eq 9
+grep -Fx 'SEMANTIC_ASSET_COUNT=9' "${success_output}/semantic-release.env"
 test "$(cat "${tmp_dir}/catalog-input.log")" != "${matrix}"
 for asset in "${semantic_assets[@]}"; do
   cmp "${matrix}/${asset}" "${success_output}/${asset}"

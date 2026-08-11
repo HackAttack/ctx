@@ -144,13 +144,17 @@ python3 scripts/write-public-cli-build-info.py \
   --static-status passed \
   --local-runtime-status passed \
   --local-runtime-authority authoritative
-test "$(
-  python3 -I scripts/check-public-cli-build-info.py \
-    --artifact "${tmp_dir}/artifact" \
-    --build-info "${tmp_dir}/freebsd-artifact.build-info.json" \
-    --matrix "${release_target_matrix}" \
-    --platform freebsd-x64
-)" = "$(sha256sum "${tmp_dir}/freebsd-artifact.build-info.json" | awk '{ print $1 }')"
+if python3 -I scripts/check-public-cli-build-info.py \
+  --artifact "${tmp_dir}/artifact" \
+  --build-info "${tmp_dir}/freebsd-artifact.build-info.json" \
+  --matrix "${release_target_matrix}" \
+  --platform freebsd-x64 \
+  >"${tmp_dir}/freebsd-release.out" 2>"${tmp_dir}/freebsd-release.err"; then
+  echo "FreeBSD unexpectedly remained a prebuilt release target" >&2
+  exit 1
+fi
+grep -Fq 'release-target matrix does not contain the exact target' \
+  "${tmp_dir}/freebsd-release.err"
 
 ln -s "${release_target_matrix}" "${tmp_dir}/release-targets-link.json"
 if python3 -I scripts/check-public-cli-build-info.py \
@@ -246,11 +250,6 @@ test "$(scripts/public-cli-runtime-authority.sh windows-x64 Windows_NT AMD64 pas
 test "$(scripts/public-cli-runtime-authority.sh windows-x64 Windows_NT AMD64 passed X64 0 generic none present 1 "" "Microsoft Windows 10 Pro" 10.0.22631 1)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh windows-x64 Windows_NT AMD64 passed X64 0 generic none present 1 "" "Microsoft Windows 11 Server" 10.0.26100 3)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh windows-x64 Windows_NT AMD64 passed X64 0 generic none present 1 "" unknown unknown unknown)" = non_authoritative
-test "$(scripts/public-cli-runtime-authority.sh freebsd-x64 FreeBSD amd64 passed amd64 0 generic none present 1 "" freebsd 14.4-RELEASE unknown)" = authoritative
-test "$(scripts/public-cli-runtime-authority.sh freebsd-x64 FreeBSD amd64 passed amd64 0 generic none present 1 "" freebsd 14.4-RELEASE-p3 unknown)" = authoritative
-test "$(scripts/public-cli-runtime-authority.sh freebsd-x64 FreeBSD amd64 passed amd64 0 generic none present 1 "" freebsd 14.3-RELEASE unknown)" = non_authoritative
-test "$(scripts/public-cli-runtime-authority.sh freebsd-x64 FreeBSD amd64 passed amd64 0 generic none present 1 "" freebsd 14.4-STABLE unknown)" = non_authoritative
-test "$(scripts/public-cli-runtime-authority.sh freebsd-x64 FreeBSD amd64 passed amd64 0 generic none present 1 "" unknown unknown unknown)" = non_authoritative
 test "$(CTX_HARDWARE_IDENTITY=apple CTX_EXECUTION_EMULATION=none scripts/public-cli-runtime-authority.sh macos-x64 Darwin x86_64 passed x86_64 0 generic qemu-kvm present 1)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh linux-x64 Darwin arm64 passed arm64 0 apple none absent 1)" = non_authoritative
 test "$(scripts/public-cli-runtime-authority.sh windows-x64 Windows_NT AMD64 not_run)" = not_run
@@ -441,12 +440,18 @@ grep -F 'require_authoritative=1' \
   scripts/smoke-daemon-semantic-release.sh >/dev/null
 grep -F -- '--source-commit "${source_commit}"' \
   scripts/stage-github-release-assets.sh >/dev/null
-grep -F 'ctx-freebsd-x64 ctx-freebsd-x64 freebsd-x64' \
-  scripts/stage-github-release-assets.sh >/dev/null
+if grep -Fq 'ctx-freebsd-x64 ctx-freebsd-x64 freebsd-x64' \
+  scripts/stage-github-release-assets.sh; then
+  echo "GitHub staging unexpectedly retains the FreeBSD prebuilt CLI" >&2
+  exit 1
+fi
 grep -F 'required ONNX Runtime sidecar' \
   scripts/stage-github-release-assets.sh >/dev/null
-grep -F 'ctx-onnxruntime-freebsd-x64.tar.gz' \
-  scripts/check-github-release-assets.sh >/dev/null
+if grep -Fq 'ctx-onnxruntime-freebsd-x64.tar.gz' \
+  scripts/check-github-release-assets.sh; then
+  echo "GitHub release validation unexpectedly requires the FreeBSD runtime" >&2
+  exit 1
+fi
 grep -F '[System.IO.File]::WriteAllText(' \
   scripts/smoke-daemon-semantic-release.ps1 >/dev/null
 grep -F 'function Get-BoundWindowsBuildInfoSha256' \
