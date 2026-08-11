@@ -38,6 +38,9 @@ HISTORY_TEST_SUPPORT_DEPS = (
 )
 HISTORY_LABEL = "//crates/ctx-history-cli:lib"
 HISTORY_TEST_SUPPORT_LABEL = "//crates/ctx-history-cli:test_support_lib"
+HISTORY_CARGO_DATA_LABEL = "//crates/ctx-history-cli:cargo_package_data"
+HISTORY_BUILD_LABEL = "//crates/ctx-history-cli:BUILD.bazel"
+HISTORY_CARGO_LABEL = "//crates/ctx-history-cli:Cargo.toml"
 DEPENDENCY_TABLES = {"dependencies", "dev-dependencies", "build-dependencies"}
 HISTORY_LOADS = {
     "@crates//:defs.bzl": {"aliases", "all_crate_deps", "crate_edition"},
@@ -86,6 +89,22 @@ def _workspace_dependencies(manifest: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(dependencies, dict):
         raise BoundaryError("root Cargo workspace.dependencies must be a table")
     return dependencies
+
+
+def _workspace_members(manifest: dict[str, Any]) -> tuple[str, ...]:
+    workspace = manifest.get("workspace")
+    if not isinstance(workspace, dict):
+        raise BoundaryError("root Cargo manifest must define a workspace table")
+    members = workspace.get("members")
+    if not isinstance(members, list) or not all(
+        isinstance(member, str) and member for member in members
+    ):
+        raise BoundaryError(
+            "root Cargo workspace.members must be a list of non-empty strings"
+        )
+    if len(members) != len(set(members)):
+        raise BoundaryError("root Cargo workspace.members has duplicate entries")
+    return tuple(members)
 
 
 def _dependency_tables(manifest: dict[str, Any], package: str) -> Iterator[tuple[str, dict[str, Any]]]:
@@ -171,12 +190,10 @@ def _validate_cargo(workspace_path: Path, history_path: Path, final_path: Path, 
     if forbidden:
         raise BoundaryError("ctx-history-cli has forbidden Cargo dependencies: " + ", ".join(forbidden))
 
-    members = workspace_manifest.get("workspace", {}).get("members")
-    if not isinstance(members, list) or not all(isinstance(member, str) and member for member in members):
-        raise BoundaryError("root Cargo workspace.members must be a list of non-empty strings")
+    members = _workspace_members(workspace_manifest)
     expected = {(workspace_path.parent / member / "Cargo.toml").resolve() for member in members}
     supplied = {path.resolve() for path in member_paths}
-    if expected != supplied:
+    if expected != supplied or len(supplied) != len(member_paths):
         raise BoundaryError("Cargo member manifest inputs drifted")
     reverse: list[tuple[str, str]] = []
     for path in member_paths:
@@ -430,7 +447,19 @@ def _validate_history_build(path: Path) -> None:
     seen_libraries: set[str] = set()
     for call in libraries:
         name = _rule_name(call, package, "rust_library")
-        dependencies = ("HISTORY_CLI_DEPS",) if name == "lib" else ("HISTORY_CLI_TEST_SUPPORT_DEPS",)
+        arguments = _named(call, package)
+        if name == "test_support_lib":
+            if [token.value for token in arguments.get("testonly", [])] != ["True"]:
+                raise BoundaryError(
+                    f"{package} Bazel test_support_lib must set testonly = True"
+                )
+            dependencies = ("HISTORY_CLI_TEST_SUPPORT_DEPS",)
+        else:
+            if "testonly" in arguments:
+                raise BoundaryError(
+                    f"{package} Bazel production lib must not be testonly"
+                )
+            dependencies = ("HISTORY_CLI_DEPS",)
         seen_libraries.add(_validate_rule(call, package, "rust_library", {"normal": "True"}, {"proc_macro": "True"}, dependencies))
     if seen_libraries != {"lib", "test_support_lib"}:
         raise BoundaryError(f"{package} Bazel rust_library names drifted")
@@ -465,18 +494,27 @@ def _validate_final_build(path: Path) -> None:
     _validate_loads(tokens, package, FINAL_LOADS, {"CTX_CLI_DEPS", "CTX_CLI_TEST_DEPS", "CTX_CLI_PRO_TEST_HOST_DEPS", "CTX_CLI_QUALIFICATION_DEPS"})
     _validate_call_surface(tokens, package, {"aliases", "all_crate_deps", "cargo_toml_env_vars", "crate_deps", "crate_edition", "ctx_cli_integration_test", "ctx_cli_test_data", "ctx_rust_binary", "ctx_rust_test", "dict", "exports_files", "filegroup", "glob", "load", "loc_check_inputs", "package", "select"})
     expected_labels = {
-        "CTX_CLI_DEPS": HISTORY_LABEL,
-        "CTX_CLI_TEST_DEPS": HISTORY_TEST_SUPPORT_LABEL,
-        "CTX_CLI_PRO_TEST_HOST_DEPS": HISTORY_LABEL,
-        "CTX_CLI_QUALIFICATION_DEPS": HISTORY_LABEL,
+        "CTX_CLI_DEPS": (HISTORY_LABEL, 2),
+        "CTX_CLI_TEST_DEPS": (HISTORY_TEST_SUPPORT_LABEL, 2),
+        "CTX_CLI_PRO_TEST_HOST_DEPS": (HISTORY_LABEL, 2),
+        "CTX_CLI_QUALIFICATION_DEPS": (HISTORY_LABEL, 4),
     }
-    for variable, label in expected_labels.items():
+    for variable, (label, expected_uses) in expected_labels.items():
         values = _assignment(tokens, variable, package)
         if len(values) != 1:
             raise BoundaryError(f"{package} Bazel {variable} must be assigned exactly once")
         labels = _literal_list(values[0], package, variable)
         if labels.count(label) != 1:
             raise BoundaryError(f"{package} Bazel {variable} reverse history-cli edge drifted")
+        actual_uses = sum(
+            token.kind == "identifier" and token.value == variable
+            for token in tokens
+        )
+        if actual_uses != expected_uses:
+            raise BoundaryError(
+                f"{package} Bazel {variable} may only be assigned and used by "
+                "its reviewed Rust targets"
+            )
     history_strings = [token.value for token in tokens if token.kind == "string" and "ctx-history-cli" in token.value]
     if sorted(history_strings) != sorted([HISTORY_LABEL, HISTORY_LABEL, HISTORY_LABEL, HISTORY_TEST_SUPPORT_LABEL]):
         raise BoundaryError(f"{package} Bazel reverse history-cli labels drifted")
@@ -503,19 +541,109 @@ def _validate_final_build(path: Path) -> None:
         raise BoundaryError(f"{package} Bazel Rust test inventory drifted")
 
 
-def _rust_identifiers(source: str) -> list[str]:
-    identifiers: list[str] = []
+def _validate_reverse_build_inventory(
+    workspace_path: Path,
+    history_build: Path,
+    final_build: Path,
+    build_paths: Sequence[Path],
+) -> None:
+    workspace_manifest = _read_manifest(workspace_path)
+    expected_paths = {
+        workspace_path.parent.resolve() / "BUILD.bazel",
+        *(
+            workspace_path.parent.resolve() / member / "BUILD.bazel"
+            for member in _workspace_members(workspace_manifest)
+        ),
+    }
+    supplied_paths = {path.resolve() for path in build_paths}
+    if supplied_paths != expected_paths or len(supplied_paths) != len(build_paths):
+        raise BoundaryError("Cargo workspace BUILD input inventory drifted")
+
+    root_build = workspace_path.parent.resolve() / "BUILD.bazel"
+    terminal_build = workspace_path.parent.resolve() / "crates/ctx-terminal/BUILD.bazel"
+    expected_labels = {
+        root_build: (
+            HISTORY_CARGO_DATA_LABEL,
+            HISTORY_CARGO_DATA_LABEL,
+            HISTORY_BUILD_LABEL,
+            HISTORY_CARGO_LABEL,
+            HISTORY_CARGO_LABEL,
+        ),
+        history_build.resolve(): (HISTORY_LABEL,),
+        final_build.resolve(): (
+            HISTORY_LABEL,
+            HISTORY_TEST_SUPPORT_LABEL,
+            HISTORY_LABEL,
+            HISTORY_LABEL,
+        ),
+        terminal_build: (HISTORY_CARGO_DATA_LABEL,),
+    }
+    for path in build_paths:
+        tokens = _tokenize(path.read_text(encoding="utf-8"), str(path))
+        actual = tuple(
+            token.value
+            for token in tokens
+            if token.kind == "string"
+            and token.value.startswith("//crates/ctx-history-cli:")
+        )
+        expected = expected_labels.get(path.resolve(), ())
+        if sorted(actual) != sorted(expected):
+            raise BoundaryError(
+                f"unexpected reverse ctx-history-cli Bazel consumer in {path}: "
+                f"expected={sorted(expected)} actual={sorted(actual)}"
+            )
+
+
+def _raw_rust_string_end(source: str, index: int) -> int | None:
+    marker = index
+    if source.startswith(("br", "cr"), marker):
+        marker += 1
+    if marker >= len(source) or source[marker] != "r":
+        return None
+    marker += 1
+    hashes = 0
+    while marker < len(source) and source[marker] == "#":
+        hashes += 1
+        marker += 1
+    if marker >= len(source) or source[marker] != '"':
+        return None
+    terminator = '"' + ("#" * hashes)
+    end = source.find(terminator, marker + 1)
+    if end < 0:
+        raise BoundaryError("Rust source has an unterminated raw string")
+    return end + len(terminator)
+
+
+def _rust_tokens(source: str) -> list[Token]:
+    """Tokenize identifiers and paths while honoring Rust comments and strings."""
+    tokens: list[Token] = []
     index = 0
     while index < len(source):
         if source.startswith("//", index):
-            newline = source.find("\n", index)
+            newline = source.find("\n", index + 2)
             index = len(source) if newline < 0 else newline + 1
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            if end < 0:
+            continue
+        if source.startswith("/*", index):
+            depth = 1
+            index += 2
+            while index < len(source) and depth:
+                if source.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif source.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if depth:
                 raise BoundaryError("Rust source has an unterminated block comment")
-            index = end + 2
-        elif source[index] == '"':
+            continue
+        raw_end = _raw_rust_string_end(source, index)
+        if raw_end is not None:
+            tokens.append(Token("literal", "<raw-string>"))
+            index = raw_end
+            continue
+        if source[index] == '"':
             index += 1
             escaped = False
             while index < len(source):
@@ -529,92 +657,104 @@ def _rust_identifiers(source: str) -> list[str]:
                     break
             else:
                 raise BoundaryError("Rust source has an unterminated string")
-        elif source[index].isalpha() or source[index] == "_":
+            tokens.append(Token("literal", "<string>"))
+            continue
+        if source[index].isalpha() or source[index] == "_":
             start = index
             index += 1
-            while index < len(source) and (source[index].isalnum() or source[index] == "_"):
+            while index < len(source) and (
+                source[index].isalnum() or source[index] == "_"
+            ):
                 index += 1
-            identifiers.append(source[start:index])
-        else:
-            index += 1
-    return identifiers
+            tokens.append(Token("identifier", source[start:index]))
+            continue
+        if not source[index].isspace():
+            tokens.append(Token("symbol", source[index]))
+        index += 1
+    return tokens
 
 
-def _rust_code(source: str) -> str:
-    """Erase comments and strings while retaining Rust punctuation for boundary scans."""
-    result: list[str] = []
-    index = 0
-    while index < len(source):
-        if source.startswith("//", index):
-            newline = source.find("\n", index)
-            index = len(source) if newline < 0 else newline
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            if end < 0:
-                raise BoundaryError("Rust source has an unterminated block comment")
-            index = end + 2
-        elif source[index] == '"':
-            index += 1
-            escaped = False
-            while index < len(source):
-                character = source[index]
-                index += 1
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == '"':
-                    break
-            else:
-                raise BoundaryError("Rust source has an unterminated string")
-        else:
-            result.append(source[index])
-            index += 1
-    return "".join(result)
+def _rust_identifiers(source: str) -> list[str]:
+    return [
+        token.value for token in _rust_tokens(source) if token.kind == "identifier"
+    ]
+
+
+def _qualified_rust_paths(tokens: Sequence[Token]) -> Iterator[tuple[str, str]]:
+    for index in range(len(tokens) - 3):
+        path = tokens[index : index + 4]
+        if (
+            path[0].kind == "identifier"
+            and path[1].value == ":"
+            and path[2].value == ":"
+            and path[3].kind == "identifier"
+        ):
+            yield path[0].value, path[3].value
 
 
 def _validate_rust_sources(history_source_root: Path, provider_args: Path, provider_sources: Path) -> None:
     for path in sorted(history_source_root.rglob("*.rs")):
-        code = _rust_code(path.read_text(encoding="utf-8"))
-        forbidden: set[str] = set()
-        for prefix in ("clap", "ctx_cli", "ctx_agent_", "ctx_pro_"):
-            offset = 0
-            while (position := code.find(prefix, offset)) >= 0:
-                end = position + len(prefix)
-                if prefix.endswith("_"):
-                    while end < len(code) and (code[end].isalnum() or code[end] == "_"):
-                        end += 1
-                if (position == 0 or not (code[position - 1].isalnum() or code[position - 1] == "_")) and code[end:].lstrip().startswith("::"):
-                    forbidden.add(code[position:end])
-                offset = end
+        tokens = _rust_tokens(path.read_text(encoding="utf-8"))
+        forbidden = {
+            f"{namespace}::{member}"
+            for namespace, member in _qualified_rust_paths(tokens)
+            if namespace in {"clap", "ctx_cli"}
+            or namespace.startswith("ctx_agent_")
+            or namespace.startswith("ctx_pro_")
+            or (namespace == "identity" and member == "home_dir")
+            or (namespace == "CaptureProvider" and member == "Unknown")
+        }
         if forbidden:
             raise BoundaryError(f"ctx-history-cli Rust source has prohibited identifiers in {path.name}: {', '.join(sorted(forbidden))}")
-    provider_arg_code = _rust_code(provider_args.read_text(encoding="utf-8"))
-    marker = "CaptureProvider::"
-    offset = 0
-    while (position := provider_arg_code.find(marker, offset)) >= 0:
-        remainder = provider_arg_code[position + len(marker):].lstrip()
-        if remainder and remainder[0].isupper():
+    provider_arg_tokens = _rust_tokens(provider_args.read_text(encoding="utf-8"))
+    for namespace, member in _qualified_rust_paths(provider_arg_tokens):
+        if namespace == "CaptureProvider" and member[:1].isupper():
             raise BoundaryError("provider vocabulary must not be duplicated in the final Clap/value-parser shell")
-        offset = position + len(marker)
     provider_source_words = _rust_identifiers(provider_sources.read_text(encoding="utf-8"))
     if "discover_provider_sources" in provider_source_words or "discover_provider_sources_for_provider_report" in provider_source_words or "discover_provider_sources_report" in provider_source_words:
         raise BoundaryError("native discovery must be owned by ctx-history-cli, not its final compatibility wrapper")
 
 
-def validate(workspace: Path, history_cargo: Path, history_build: Path, final_cargo: Path, final_build: Path, history_source_root: Path, provider_args: Path, provider_sources: Path, member_cargos: Sequence[Path]) -> None:
+def validate(
+    workspace: Path,
+    history_cargo: Path,
+    history_build: Path,
+    final_cargo: Path,
+    final_build: Path,
+    history_source_root: Path,
+    provider_args: Path,
+    provider_sources: Path,
+    member_cargos: Sequence[Path],
+    member_builds: Sequence[Path],
+) -> None:
     _validate_cargo(workspace, history_cargo, final_cargo, member_cargos)
     _validate_history_build(history_build)
     _validate_final_build(final_build)
+    _validate_reverse_build_inventory(
+        workspace, history_build, final_build, member_builds
+    )
     _validate_rust_sources(history_source_root, provider_args, provider_sources)
 
 
 def main() -> int:
-    if len(sys.argv) < 10:
-        print("usage: check_history_cli_boundary.py WORKSPACE_CARGO HISTORY_CARGO HISTORY_BUILD FINAL_CARGO FINAL_BUILD HISTORY_SRC PROVIDER_ARGS PROVIDER_SOURCES MEMBER_CARGO...", file=sys.stderr)
+    if sys.argv.count("--member-builds") != 1:
+        print(
+            "usage: check_history_cli_boundary.py WORKSPACE_CARGO HISTORY_CARGO "
+            "HISTORY_BUILD FINAL_CARGO FINAL_BUILD HISTORY_SRC PROVIDER_ARGS "
+            "PROVIDER_SOURCES MEMBER_CARGO... --member-builds BUILD...",
+            file=sys.stderr,
+        )
+        return 64
+    build_separator = sys.argv.index("--member-builds")
+    if build_separator < 10 or build_separator == len(sys.argv) - 1:
+        print("history CLI boundary requires Cargo and BUILD inventories", file=sys.stderr)
         return 64
     try:
-        validate(*(Path(argument) for argument in sys.argv[1:9]), tuple(Path(argument) for argument in sys.argv[9:]))
+        validate(
+            *(Path(argument) for argument in sys.argv[1:9]),
+            tuple(Path(argument) for argument in sys.argv[9:build_separator]),
+            tuple(Path(argument) for argument in sys.argv[build_separator + 1 :]),
+        )
     except (BoundaryError, OSError, tomllib.TOMLDecodeError) as error:
         print(error, file=sys.stderr)
         return 1
