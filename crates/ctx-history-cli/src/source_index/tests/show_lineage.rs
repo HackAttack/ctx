@@ -87,11 +87,9 @@ fn copied_event_show_list_and_search_models_share_typed_lineage() {
     let copied = fixture_core_event(&copied, "copied body remains directly visible");
 
     let shown = render_event_value(&copied);
-    let listed = crate::commands::list::events::render_event(
-        &copied,
-        crate::commands::list::events::EventContentProjection::Full,
-    )
-    .unwrap();
+    let listed =
+        crate::list_events::render_event(&copied, crate::list_events::EventContentProjection::Full)
+            .unwrap();
     let search = SearchEventMetadata::from(&copied.event);
 
     for value in [&shown, &listed] {

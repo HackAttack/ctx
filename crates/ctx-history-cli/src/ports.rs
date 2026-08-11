@@ -1,12 +1,5 @@
-use std::{io, path::Path, time::Duration};
-
-use anyhow::Result;
-use ctx_daemon_cli::{
-    PinnedSourceBackedGeneration, SourceBackedRefreshMode, SourceBackedRefreshObservation,
-};
 use ctx_terminal::{Document, RenderContext, StreamKind, Ui};
-
-use crate::HistoryCliConfig;
+use std::{io, time::Duration};
 
 /// The output channel selected by a command body. The final adapter decides
 /// how terminal styling and stream handles are implemented.
@@ -44,8 +37,6 @@ impl TerminalPort for Ui {
     }
 
     fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
-        use std::io::Write as _;
-
         match stream {
             OutputStream::Stdout => self.stdout_writer().write_all(bytes),
             OutputStream::Stderr => self.stderr_writer().write_all(bytes),
@@ -57,29 +48,40 @@ impl TerminalPort for Ui {
     }
 }
 
-/// The daemon-facing capability required by the read/source-index command
-/// family. The final binary supplies its already-read configuration snapshot;
-/// this application never reaches back into final configuration or analytics.
-pub trait HistoryCliRuntimePort {
-    fn config(&self) -> HistoryCliConfig;
-
-    fn coordinate_refresh(
-        &self,
-        data_root: &Path,
-        mode: SourceBackedRefreshMode,
-    ) -> Result<SourceBackedRefreshObservation>;
-
-    fn wait_for_query_service(&self, data_root: &Path, timeout: Duration) -> bool;
-
-    fn pin_active_generation(&self, data_root: &Path) -> Result<PinnedSourceBackedGeneration>;
-}
-
 /// Bounded local-usage facts computed by a read command. The final adapter
 /// decides whether and how to persist or deliver them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchContextObservation {
     delivered_bytes: Option<usize>,
     matched_bytes: Option<usize>,
+}
+
+/// Complete facts from one successful search. This crate measures the command
+/// execution; the final binary alone maps and delivers its analytics schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchExecutionObservation {
+    pub refresh_mode: crate::RefreshMode,
+    pub refresh_status: SearchRefreshStatus,
+    pub refresh_source_count: u64,
+    pub refresh_duration: Duration,
+    pub query_duration: Duration,
+    pub render_duration: Duration,
+    pub backend_requested: ctx_history_read_application::SearchBackend,
+    pub backend_effective: ctx_history_read_application::SearchBackend,
+    pub result_count: u64,
+    pub citation_count: u64,
+    pub zero_result: bool,
+    pub has_indexed_content_after: bool,
+    pub query_length: u64,
+    pub query_term_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchRefreshStatus {
+    ExistingGeneration,
+    DaemonBackground,
+    DaemonUnavailable,
+    Completed,
 }
 
 impl SearchContextObservation {
@@ -103,92 +105,6 @@ impl SearchContextObservation {
             _ => None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryCliOperation {
-    Search,
-    Show,
-    Locate,
-    List,
-    Import,
-    Setup,
-    Sources,
-}
-
-/// Values captured at the command boundary. The final binary maps these to
-/// its release telemetry schemas and remains the sole delivery/finalization
-/// authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HistoryCliObservationValue {
-    Text(String),
-    Count(u64),
-    Flag(bool),
-    DurationMillis(u64),
-}
-
-/// Cardinality-free observation values emitted by history command bodies.
-/// Delivery, batching, and product telemetry schemas remain final-adapter
-/// responsibilities.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HistoryCliObservation {
-    pub operation: HistoryCliOperation,
-    pub succeeded: bool,
-    pub result_count: Option<u64>,
-    pub output_bytes: Option<u64>,
-    pub fields: Vec<(&'static str, HistoryCliObservationValue)>,
-    pub search: Option<SearchExecutionObservation>,
-}
-
-/// Complete, bounded facts produced by one search execution. These retain the
-/// command's measured outcomes without exposing the final product event
-/// schema or delivery client.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchExecutionObservation {
-    pub refresh_mode: RefreshObservationMode,
-    pub refresh_status: RefreshObservationStatus,
-    pub refresh_source_count: u64,
-    pub refresh_duration: Duration,
-    pub query_duration: Duration,
-    pub render_duration: Duration,
-    pub backend_requested: crate::SearchBackend,
-    pub backend_effective: crate::SearchBackend,
-    pub result_count: u64,
-    pub citation_count: u64,
-    pub zero_result: bool,
-    pub has_indexed_content_after: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshObservationMode {
-    Background,
-    Off,
-    Wait,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshObservationStatus {
-    ExistingGeneration,
-    DaemonBackground,
-    DaemonUnavailable,
-    Completed,
-}
-
-impl HistoryCliObservation {
-    pub fn search(facts: SearchExecutionObservation, output_bytes: u64) -> Self {
-        Self {
-            operation: HistoryCliOperation::Search,
-            succeeded: true,
-            result_count: Some(facts.result_count),
-            output_bytes: Some(output_bytes),
-            fields: Vec::new(),
-            search: Some(facts),
-        }
-    }
-}
-
-pub trait ObservabilityPort {
-    fn observe(&mut self, observation: HistoryCliObservation);
 }
 
 #[cfg(test)]

@@ -24,6 +24,11 @@ mod source_index;
 mod transcript;
 mod ui;
 
+// Publication-authority fixtures exercise the lower query contract.  They are
+// deliberately test-only: final command composition must not depend on them.
+#[cfg(test)]
+mod test_query_authority;
+
 pub use cli::{
     ContentScopeArg, LocateArgs, LocateEventArgs, LocateSessionArgs, LocateTarget, SearchArgs,
     SearchBackendArg, ShowArgs, ShowEventArgs, ShowSessionArgs, ShowTarget,
@@ -41,8 +46,8 @@ pub use provider_args::ProviderArg;
 pub use source_index::{
     copied_lineage_summary, generation_query_authority_error_json, mcp_search_with_compact,
     mcp_show_event_application, mcp_show_session_application, normalize_mcp_search_request,
-    run_locate, run_search, run_search_with_observations, run_show, source_search_request,
-    validate_explicit_semantic_scope, McpSearchError, ShowApplicationError, SourceSearchRequest,
+    run_locate, run_search, run_show, source_search_request, validate_explicit_semantic_scope,
+    McpSearchError, ShowApplicationError, SourceSearchRequest,
 };
 
 pub use config::{ConfigPortError, HistoryCliConfig, HistoryCliConfigPort};
@@ -58,9 +63,8 @@ pub use mcp_tool_call::{
 };
 pub use output::JsonOutputFormat;
 pub use ports::{
-    HistoryCliObservation, HistoryCliObservationValue, HistoryCliOperation, HistoryCliRuntimePort,
-    ObservabilityPort, OutputStream, RefreshObservationMode, RefreshObservationStatus,
-    SearchContextObservation, SearchExecutionObservation, TerminalPort,
+    OutputStream, SearchContextObservation, SearchExecutionObservation, SearchRefreshStatus,
+    TerminalPort,
 };
 pub use request::{
     HistoryProvider, ImportFormat, ImportRequest, ListEventsContentProjection, ListEventsDirection,

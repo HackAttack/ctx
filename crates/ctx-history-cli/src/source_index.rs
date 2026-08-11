@@ -14,8 +14,7 @@ use search::mcp_search;
 pub use search::source_search_request;
 pub use search::{
     mcp_search_with_compact, normalize_mcp_search_request, run_search,
-    run_search_with_observations, validate_explicit_semantic_scope, McpSearchError,
-    SourceSearchRequest,
+    validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
 };
 pub use shared::generation_query_authority_error_json;
 #[cfg(test)]
@@ -38,14 +37,12 @@ use ctx_history_core::CaptureProvider;
 use ctx_history_index::{CoreEventRecord, EventRecord, EventSearchCandidate};
 
 #[cfg(test)]
-use crate::{
-    config,
-    semantic::{
-        PinnedSourceBackedGeneration, SemanticNotReady, SourceBackedRefreshMode,
-        SourceBackedRefreshObservation,
-    },
-    RefreshArg, SearchBackendArg,
-};
+use crate::{config, semantic::SemanticNotReady, RefreshMode};
+
+#[cfg(test)]
+type RefreshArg = RefreshMode;
+#[cfg(test)]
+type SearchBackendArg = ctx_history_read_application::SearchBackend;
 
 #[cfg(test)]
 use render::{enforce_json_output_limit, pretty_json_stdout_bytes, stdout_body_bytes};
@@ -60,4 +57,5 @@ use shared::{externalize_query_error, index_root, open_index};
 #[cfg(test)]
 use show::resolve_show_session;
 
-include!("source_index/tests.rs");
+#[cfg(test)]
+mod tests;

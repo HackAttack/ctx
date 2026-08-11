@@ -3,7 +3,7 @@
 
 pub use ctx_client_observability::analytics::{
     count_bucket, duration_bucket, text_length_bucket, LocateTelemetry, RefreshMode, RefreshStatus,
-    SearchTelemetry, ShowTelemetry,
+    RenderFormat, SearchTelemetry, ShowTelemetry, TargetKind,
 };
 
 pub const fn search_backend(

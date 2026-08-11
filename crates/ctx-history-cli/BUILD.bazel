@@ -36,14 +36,10 @@ HISTORY_CLI_DEPS = [
 
 RUST_SRCS = glob(["src/**/*.rs"])
 
-# `source_index.rs` unconditionally includes this file, whose contents are
-# test-gated to keep the production crate free of the final CLI harness.
-PROD_INCLUDE_SRCS = ["src/source_index/tests.rs"]
-
 PROD_SRCS = glob(
     ["src/**/*.rs"],
     exclude = RUST_PROD_SRC_EXCLUDES,
-) + PROD_INCLUDE_SRCS
+)
 
 rust_library(
     name = "lib",

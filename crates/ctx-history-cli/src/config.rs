@@ -32,18 +32,19 @@ pub(crate) struct LocalUsageConfig {
 }
 
 impl AppConfig {
-    pub(crate) fn load(data_root: &Path) -> Result<Self> {
-        let config = ctx_daemon_cli::AppConfig::load(data_root)?;
-        Ok(Self {
+    pub(crate) const fn from_snapshot(config: HistoryCliConfig) -> Self {
+        Self {
             daemon: DaemonConfig {
-                enabled: config.daemon.enabled,
+                enabled: config.daemon_enabled,
             },
             // Usage persistence is final-binary-owned; this only permits the
             // existing bounded draft computation before that adapter decides
             // whether to retain it.
-            local_usage: LocalUsageConfig { enabled: true },
-            semantic_enabled: config.semantic_search_enabled(),
-        })
+            local_usage: LocalUsageConfig {
+                enabled: config.local_usage_enabled,
+            },
+            semantic_enabled: config.semantic_search_enabled,
+        }
     }
 
     pub(crate) const fn semantic_search_enabled(&self) -> bool {
@@ -82,4 +83,35 @@ pub trait HistoryCliConfigPort {
         data_root: &Path,
         enabled: bool,
     ) -> Result<HistoryCliConfig, ConfigPortError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppConfig, HistoryCliConfig};
+
+    #[test]
+    fn snapshot_preserves_disabled_local_usage() {
+        let config = AppConfig::from_snapshot(HistoryCliConfig {
+            daemon_enabled: false,
+            semantic_search_enabled: true,
+            local_usage_enabled: false,
+        });
+
+        assert!(!config.daemon.enabled);
+        assert!(config.semantic_search_enabled());
+        assert!(!config.local_usage.enabled);
+    }
+
+    #[test]
+    fn snapshot_preserves_enabled_local_usage() {
+        let config = AppConfig::from_snapshot(HistoryCliConfig {
+            daemon_enabled: true,
+            semantic_search_enabled: false,
+            local_usage_enabled: true,
+        });
+
+        assert!(config.daemon.enabled);
+        assert!(!config.semantic_search_enabled());
+        assert!(config.local_usage.enabled);
+    }
 }

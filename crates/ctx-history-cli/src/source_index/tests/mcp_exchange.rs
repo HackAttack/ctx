@@ -4,7 +4,7 @@ use ctx_history_core::{
 };
 
 use super::*;
-use crate::commands::source_index::{mcp_show_event, mcp_show_event_with_compact};
+use crate::source_index::show::{mcp_show_event, mcp_show_event_with_compact};
 
 const ARGUMENT_SEARCH_CANARY: &str = "zzargumentcanary8h63";
 const CALL_ID_SEARCH_CANARY: &str = "zzcallidcanary7g52";
@@ -48,7 +48,7 @@ fn lineage_models(root: &Path, selected: &CoreEventRecord) -> (Value, Value, Val
         0,
         0,
         None,
-        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        crate::presentation_limit::CLI_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap();
     (cli, mcp, compact)
@@ -93,7 +93,7 @@ fn full_show_surfaces_mcp_exchange_losslessly_and_accounts_for_its_output_bytes(
         TranscriptMode::Log,
         10,
         None,
-        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+        crate::presentation_limit::CLI_PRESENTATION_MAX_OUTPUT_BYTES,
     )
     .unwrap();
     assert_eq!(shown_session["events"][0]["mcp_exchange"], exact_exchange);
@@ -200,7 +200,8 @@ fn search_snippets_use_mcp_invocation_arguments_but_exclude_response_and_call_id
     assert!(!snippet.contains(CALL_ID_SEARCH_CANARY));
     assert!(!snippet.contains(RESPONSE_SEARCH_CANARY));
 
-    let (mcp_value, _) = mcp_search(argument_request, temp.path()).unwrap();
+    let (mcp_value, _) =
+        mcp_search(argument_request, temp.path(), history_snapshot(true, true)).unwrap();
     assert_eq!(mcp_value["results"][0]["snippet"], snippet);
     assert_eq!(
         mcp_value["results"][0]["session_relationship"],
@@ -248,16 +249,16 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
     search.query = COPIED_SEARCH_CANARY.to_owned();
     search.events = true;
     search.limit = 10;
-    let (searched, _) = mcp_search(search, temp.path()).unwrap();
+    let (searched, _) = mcp_search(search, temp.path(), history_snapshot(true, true)).unwrap();
     assert!(searched["results"].as_array().unwrap().is_empty());
 
     let mut canonical_search = request(RefreshArg::Off);
     canonical_search.query = "ancestor body".to_owned();
     canonical_search.events = true;
     canonical_search.limit = 10;
-    let config = config::AppConfig::load(temp.path()).unwrap();
     let (canonical_results, _, compact_results) =
-        mcp_search_with_compact(canonical_search, temp.path(), &config).unwrap();
+        mcp_search_with_compact(canonical_search, temp.path(), history_snapshot(true, true))
+            .unwrap();
     let lineage = &canonical_results["results"][0]["copied_lineage"];
     let lineage = lineage.as_object().unwrap();
     assert_eq!(lineage["schema_version"], 2);
@@ -320,19 +321,6 @@ fn copied_text_stays_unranked_while_search_and_show_return_full_id_lineage() {
         shown["copied_lineage"]["occurrences"][0]["ctx_event_id"],
         copied_event_id
     );
-
-    let queried =
-        crate::mcp::query_events_for_test(&json!({"content": "full", "limit": 100}), temp.path())
-            .unwrap();
-    let queried_event = queried["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|event| event["ctx_event_id"] == json!(copied.event_id.as_uuid()))
-        .expect("copied event remains addressable through query_events");
-    assert_eq!(queried_event["session_relationship"], "forked");
-    assert_eq!(queried_event["event_origin"], shown_event["event_origin"]);
-    assert_eq!(queried_event["text"], COPIED_SEARCH_CANARY);
 }
 
 #[test]
@@ -362,8 +350,6 @@ fn cli_and_mcp_lineage_contracts_report_unresolved_and_cyclic() {
         compact_unresolved["copied_lineage"]["occurrences"][0]["copied_from_ctx_event_id"],
         absent_event_id
     );
-    assert!(crate::mcp::render_tool_text_for_test(&compact_unresolved)
-        .contains("resolution: unresolved, selected_depth=1"));
 
     let cyclic_root = tempdir().unwrap();
     write_test_generation(cyclic_root.path());
@@ -384,6 +370,4 @@ fn cli_and_mcp_lineage_contracts_report_unresolved_and_cyclic() {
         compact_cyclic["copied_lineage"]["occurrences"][0]["claimed_root_ctx_session_id"],
         claimed_root.session_id.as_uuid().to_string()
     );
-    assert!(crate::mcp::render_tool_text_for_test(&compact_cyclic)
-        .contains("resolution: cyclic, selected_depth=2"));
 }

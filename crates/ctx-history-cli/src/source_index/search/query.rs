@@ -53,6 +53,47 @@ pub fn source_search_request(args: &SearchRequest) -> SourceSearchRequest {
     }
 }
 
+impl From<SearchRequest> for SourceSearchRequest {
+    fn from(args: SearchRequest) -> Self {
+        Self {
+            query: args.query.unwrap_or_default(),
+            terms: args.terms,
+            limit: args.limit,
+            provider: args.provider.map(|provider| match provider {
+                crate::HistoryProvider::Native(value) => value
+                    .parse()
+                    .unwrap_or(ctx_history_core::CaptureProvider::Unknown),
+                crate::HistoryProvider::Custom => ctx_history_core::CaptureProvider::Custom,
+            }),
+            history_source: args.history_source,
+            provider_key: args.provider_key,
+            source_id: args.source_id,
+            source_format: args.source_format,
+            workspace: args.workspace,
+            since: args.since,
+            primary_only: args.primary_only,
+            include_subagents: args.include_subagents,
+            content_scope: match args.content_scope {
+                SearchContentScope::All => ctx_history_index::SearchContentScope::All,
+                SearchContentScope::Transcript => ctx_history_index::SearchContentScope::Transcript,
+                SearchContentScope::Calls => ctx_history_index::SearchContentScope::Calls,
+                SearchContentScope::Outputs => ctx_history_index::SearchContentScope::Outputs,
+            },
+            event_type: args.event_type,
+            file: args.file,
+            events: args.events || args.session.is_some(),
+            session: args.session,
+            include_current_session: args.include_current_session,
+            backend: args.backend.map(|backend| match backend {
+                HistorySearchBackend::Hybrid => SearchBackend::Hybrid,
+                HistorySearchBackend::Lexical => SearchBackend::Lexical,
+                HistorySearchBackend::Semantic => SearchBackend::Semantic,
+            }),
+            semantic_weight: args.semantic_weight,
+        }
+    }
+}
+
 pub(in crate::source_index) fn source_search_policy(config: &config::AppConfig) -> SearchPolicy {
     let semantic_enabled = config.semantic_search_enabled();
     let semantic = if !semantic_enabled {

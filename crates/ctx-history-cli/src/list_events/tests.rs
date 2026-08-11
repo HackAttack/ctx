@@ -6,7 +6,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use clap::{CommandFactory, Parser};
 use ctx_history_core::{
     derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
     McpExchangeContent, McpFailureKind, McpInvocationContent, McpJsonCapture,
@@ -20,161 +19,9 @@ use serde_json::{json, Value};
 use super::*;
 use crate::{
     analytics::{RenderFormat, ShowTelemetry, TargetKind},
-    cli::CommandRoot,
-    commands::test_support_query_authority::{publish_empty_generation, EmptyPublicationAuthority},
+    test_query_authority::{publish_empty_generation, EmptyPublicationAuthority},
     ui::{RenderContext, StreamKind, TestContext},
-    Cli, ListTarget,
 };
-
-fn parse_events(arguments: &[&str]) -> ListEventsArgs {
-    let cli = Cli::try_parse_from(arguments).expect("event query arguments should parse");
-    let CommandRoot::List(list) = cli.command else {
-        panic!("expected list command");
-    };
-    let ListTarget::Events(events) = list.target;
-    *events
-}
-
-#[test]
-fn all_domain_is_explicit_and_defaults_when_omitted() {
-    let defaulted = parse_events(&["ctx", "list", "events"]);
-    assert!(defaulted.since.is_none() && defaulted.until.is_none());
-    assert_eq!(defaulted.limit, DEFAULT_EVENT_QUERY_LIMIT);
-}
-
-#[test]
-fn wire_receipt_uses_the_normalized_selection() {
-    let args = parse_events(&[
-        "ctx",
-        "list",
-        "events",
-        "--since",
-        "2026-08-01T00:00:00+00:00",
-        "--until",
-        "2026-08-02T00:00:00Z",
-        "--provider",
-        " codex ",
-        "--provider",
-        "codex",
-        "--workspace",
-        " CTX ",
-        "--scope",
-        "subagent",
-        "--direction",
-        "descending",
-    ]);
-    let selection = selection_from_args(&args).unwrap();
-    let request = EventQueryWireRequest::from_selection(&selection, args.content.into(), 10);
-
-    assert_eq!(
-        request.domain,
-        json!({
-            "kind": "range",
-            "range": {
-                "since": "2026-08-01T00:00:00.000Z",
-                "until": "2026-08-02T00:00:00.000Z",
-            },
-        })
-    );
-    assert_eq!(
-        request.filters,
-        json!({
-            "providers": ["codex"],
-            "workspace": "ctx",
-            "scope": "subagent",
-        })
-    );
-    assert_eq!(request.direction, "descending");
-}
-
-#[test]
-fn unreleased_aliases_and_page_budget_flags_are_rejected() {
-    for flag in [
-        "--all",
-        "--parent",
-        "--root",
-        "--max-items",
-        "--page-items",
-        "--max-bytes",
-        "--byte-budget",
-    ] {
-        assert!(
-            Cli::try_parse_from(["ctx", "list", "events", flag]).is_err(),
-            "unexpectedly accepted {flag}"
-        );
-    }
-}
-
-#[test]
-fn every_core_filter_and_canonical_relationship_flag_maps_to_selection() {
-    let id = "01234567-89ab-4def-8123-456789abcdef";
-    let args = parse_events(&[
-        "ctx",
-        "list",
-        "events",
-        "--provider",
-        "codex",
-        "--provider",
-        "claude",
-        "--source",
-        id,
-        "--history-source",
-        "plugin/source",
-        "--provider-key",
-        "plugin",
-        "--source-id",
-        "source",
-        "--source-format",
-        "future-format",
-        "--provider-session",
-        "native-session",
-        "--session",
-        id,
-        "--parent-session",
-        id,
-        "--root-session",
-        id,
-        "--branch",
-        "main",
-        "--workspace",
-        "workspace",
-        "--event-type",
-        "future-event",
-        "--role",
-        "assistant",
-        "--agent-type",
-        "future-agent",
-        "--scope",
-        "subagent",
-        "--file",
-        "src/lib.rs",
-        "--direction",
-        "descending",
-    ]);
-    let selection = selection_from_args(&args).unwrap();
-    let filters = selection.filters();
-    assert_eq!(filters.providers, ["claude", "codex"]);
-    assert_eq!(filters.source_identity.unwrap().to_string(), id);
-    assert_eq!(filters.history_source.as_deref(), Some("plugin/source"));
-    assert_eq!(filters.provider_key.as_deref(), Some("plugin"));
-    assert_eq!(filters.source_id.as_deref(), Some("source"));
-    assert_eq!(filters.source_format.as_deref(), Some("future-format"));
-    assert_eq!(
-        filters.provider_session_id.as_deref(),
-        Some("native-session")
-    );
-    assert_eq!(filters.session_id.unwrap().to_string(), id);
-    assert_eq!(filters.parent_session_id.unwrap().to_string(), id);
-    assert_eq!(filters.root_session_id.unwrap().to_string(), id);
-    assert_eq!(filters.branch.as_deref(), Some("main"));
-    assert_eq!(filters.workspace.as_deref(), Some("workspace"));
-    assert_eq!(filters.event_type.as_deref(), Some("future-event"));
-    assert_eq!(filters.role.as_deref(), Some("assistant"));
-    assert_eq!(filters.agent_type.as_deref(), Some("future-agent"));
-    assert_eq!(filters.scope, CoreEventRangeScope::Subagent);
-    assert_eq!(filters.file.as_deref(), Some("src/lib.rs"));
-    assert_eq!(filters.direction, CoreEventRangeDirection::Descending);
-}
 
 #[test]
 fn wire_cap_covers_worst_case_core_json_expansion() {
@@ -295,32 +142,6 @@ fn query_authority_list_cursor_rechecks_the_retained_generation() {
         event_query_error_value(&error)["error_code"],
         "source_unavailable"
     );
-}
-
-#[test]
-fn help_exposes_only_the_compact_list_events_route() {
-    let command = Cli::command();
-    assert!(command
-        .get_subcommands()
-        .all(|subcommand| subcommand.get_name() != "export"));
-    assert!(Cli::try_parse_from(["ctx", "show", "events"]).is_err());
-    let help = Cli::try_parse_from(["ctx", "list", "events", "--help"])
-        .unwrap_err()
-        .to_string();
-    for expected in ["--since", "--until", "--parent-session", "--root-session"] {
-        assert!(help.contains(expected), "missing {expected} from help");
-    }
-    for removed in [
-        "--all",
-        "--parent ",
-        "--root ",
-        "--max-items",
-        "--page-items",
-        "--max-bytes",
-        "--byte-budget",
-    ] {
-        assert!(!help.contains(removed), "unexpected {removed} in help");
-    }
 }
 
 fn test_source() -> SourceKey {
@@ -647,7 +468,15 @@ fn mcp_tool_call_is_exact_omitted_when_absent_and_projection_independent() {
         );
 
         let mut jsonl = Vec::new();
-        write_jsonl_pages(temp.path(), &selection, None, &request, &mut jsonl, || {}).unwrap();
+        write_jsonl_pages(
+            temp.path(),
+            selection.clone(),
+            None,
+            &request,
+            &mut jsonl,
+            || {},
+        )
+        .unwrap();
         let lines = jsonl
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
@@ -659,14 +488,6 @@ fn mcp_tool_call_is_exact_omitted_when_absent_and_projection_independent() {
             lines.last().unwrap()["usage"]["bytes"].as_u64().unwrap() as usize,
             jsonl.len()
         );
-
-        let mcp_page = crate::mcp::query_events_for_test(
-            &json!({"content": projection.as_str()}),
-            temp.path(),
-        )
-        .unwrap();
-        assert_eq!(mcp_page["events"][0]["mcp_tool_call"], exact_value);
-        assert!(mcp_page["events"][1].get("mcp_tool_call").is_none());
     }
 }
 
@@ -720,26 +541,20 @@ fn mcp_exchange_is_lossless_and_full_projection_only_across_cli_and_mcp() {
         }
 
         let mut jsonl = Vec::new();
-        write_jsonl_pages(temp.path(), &selection, None, &request, &mut jsonl, || {}).unwrap();
+        write_jsonl_pages(
+            temp.path(),
+            selection.clone(),
+            None,
+            &request,
+            &mut jsonl,
+            || {},
+        )
+        .unwrap();
         let first_line: Value =
             serde_json::from_slice(jsonl.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
         assert_eq!(
             first_line["event"].get("mcp_exchange"),
             (projection == EventContentProjection::Full).then_some(&exact_exchange)
-        );
-
-        let mcp_page = crate::mcp::query_events_for_test(
-            &json!({"content": projection.as_str()}),
-            temp.path(),
-        )
-        .unwrap();
-        assert_eq!(
-            mcp_page["events"][0].get("mcp_exchange"),
-            (projection == EventContentProjection::Full).then_some(&exact_exchange)
-        );
-        assert_eq!(
-            mcp_page["events"][0]["mcp_tool_call"],
-            serde_json::to_value(&attribution).unwrap()
         );
     }
 }
@@ -781,9 +596,14 @@ fn jsonl_flushes_each_event_before_fetching_the_next_page_and_completes_once() {
     let mut writer = TrackingWriter::default();
     let observed = Rc::clone(&writer.0);
     let mut page_flush_counts = Vec::new();
-    let count = write_jsonl_pages(temp.path(), &selection, None, &request, &mut writer, || {
-        page_flush_counts.push(observed.borrow().flush_offsets.len())
-    })
+    let count = write_jsonl_pages(
+        temp.path(),
+        selection.clone(),
+        None,
+        &request,
+        &mut writer,
+        || page_flush_counts.push(observed.borrow().flush_offsets.len()),
+    )
     .unwrap();
     assert_eq!(count, 101);
     assert_eq!(page_flush_counts, [100, 101]);
@@ -837,17 +657,6 @@ fn cursor_direction_filters_and_mcp_page_share_one_wire_shape() {
         .collect::<Vec<_>>();
     assert_eq!(sequences, [2, 1, 0]);
 
-    let mcp_page = crate::mcp::query_events_for_test(
-        &json!({
-            "direction": "descending",
-            "content": "text",
-            "limit": DEFAULT_EVENT_QUERY_LIMIT,
-        }),
-        temp.path(),
-    )
-    .unwrap();
-    assert_eq!(mcp_page, cli_page);
-
     let first_request = request(
         CoreEventRangeDirection::Ascending,
         1,
@@ -900,31 +709,6 @@ fn full_projection_admits_a_valid_oversized_singleton_under_the_wire_cap() {
     assert!(value["usage"]["bytes"].as_u64().unwrap() as usize > EVENT_QUERY_PAGE_BYTES);
     assert!(
         value["usage"]["bytes"].as_u64().unwrap() as usize <= MAX_EVENT_QUERY_WIRE_RECORD_BYTES
-    );
-}
-
-#[test]
-fn mcp_rejects_near_limit_escape_heavy_record_with_typed_error() {
-    let temp = tempfile::tempdir().unwrap();
-    let hard_cap = mcp_event_query_core_record_bytes(
-        ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
-    );
-    let body = "\0".repeat(hard_cap / 6);
-    let encoded_core_bytes = test_record(&test_source(), 0, &body)
-        .encode_stored()
-        .unwrap()
-        .len();
-    assert!(encoded_core_bytes > hard_cap);
-    assert!(encoded_core_bytes < hard_cap + 4_096);
-    publish_fixture(temp.path(), std::slice::from_ref(&body));
-
-    let error = crate::mcp::query_events_for_test(&json!({}), temp.path()).unwrap_err();
-    let value: Value = serde_json::from_str(&error.to_string()).unwrap();
-    assert_eq!(value["error_code"], "output_limit_exceeded");
-    assert_eq!(value["retryable"], true);
-    assert_eq!(
-        value["recommendation"],
-        "use CLI JSONL with ctx list events"
     );
 }
 
@@ -982,7 +766,10 @@ fn broken_pipe_is_quiet_and_successful() {
         events_returned: None,
     };
     let mut usage = crate::local_usage::CliUsage::excluded();
-    let args = parse_events(&["ctx", "list", "events", "--format", "jsonl"]);
+    let args = ListEventsArgs {
+        format: EventQueryFormat::Jsonl,
+        ..ListEventsArgs::default()
+    };
     assert!(run(
         args,
         temp.path().to_path_buf(),
@@ -1017,7 +804,10 @@ fn run_writes_typed_resource_errors_only_to_the_selected_machine_stderr() {
         events_returned: None,
     };
     let mut usage = crate::local_usage::CliUsage::excluded();
-    let args = parse_events(&["ctx", "list", "events", "--limit", "0"]);
+    let args = ListEventsArgs {
+        limit: 0,
+        ..ListEventsArgs::default()
+    };
 
     assert!(run(
         args,

@@ -74,7 +74,7 @@ fn cli_and_mcp_show_adapters_share_event_selection_and_projection() {
             mode,
             10,
             None,
-            ctx_agent_integrations::mcp::MCP_PRESENTATION_MAX_OUTPUT_BYTES,
+            crate::presentation_limit::CLI_PRESENTATION_MAX_OUTPUT_BYTES,
         )
         .unwrap();
         assert_eq!(mcp_session["events"], transcript["events"]);

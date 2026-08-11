@@ -1,7 +1,5 @@
 use std::io::Write as _;
 
-use clap::Parser as _;
-use ctx_history_cli::{MCP_TOOL_CALL_DISPLAY_MAX_CHARS, MCP_TOOL_CALL_JSON_GUIDANCE};
 use ctx_history_core::MAX_CORE_CONTENT_BYTES;
 use serde_json::{json, Value};
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -13,11 +11,11 @@ use super::{
     SEARCH_SNIPPET_MAX_CHARS,
 };
 use crate::{
-    cli::Cli,
     ui::{
         canonical_human_output_bytes, is_copyable_atom, ColorMode, Document, RenderContext,
         StreamKind, TestContext, Token,
     },
+    MCP_TOOL_CALL_DISPLAY_MAX_CHARS, MCP_TOOL_CALL_JSON_GUIDANCE,
 };
 
 const SESSION_ID: &str = "01900000-0000-7000-8000-000000000001";
@@ -420,9 +418,20 @@ fn assert_value_survives_layout(rendered: &str, value: &str) {
 }
 
 fn strip_ansi(rendered: &str) -> String {
-    let mut stream = anstream::StripStream::new(Vec::new());
-    stream.write_all(rendered.as_bytes()).unwrap();
-    String::from_utf8(stream.into_inner()).unwrap()
+    let mut plain = String::with_capacity(rendered.len());
+    let mut characters = rendered.chars();
+    while let Some(character) = characters.next() {
+        if character == '\u{1b}' && matches!(characters.next(), Some('[')) {
+            for control in characters.by_ref() {
+                if ('@'..='~').contains(&control) {
+                    break;
+                }
+            }
+        } else {
+            plain.push(character);
+        }
+    }
+    plain
 }
 
 #[test]
@@ -782,14 +791,12 @@ fn no_results_is_an_actionable_empty_state() {
 }
 
 #[test]
-fn empty_search_action_is_a_valid_positional_query() {
+fn empty_search_action_displays_a_positional_query() {
     let rendered =
         render_search_document(&empty_search_value(), false, &context(80, ColorMode::Never))
             .render_plain();
     assert!(rendered.contains("ctx search \"<term>\""));
     assert!(!rendered.contains("--term"));
-    Cli::try_parse_from(["ctx", "search", "<term>"])
-        .expect("empty-state action must be a valid positional search invocation");
 }
 
 #[test]

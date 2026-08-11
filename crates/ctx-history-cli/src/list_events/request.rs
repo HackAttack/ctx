@@ -162,3 +162,73 @@ impl From<&ListEventsArgs> for ListEventsRequest {
         }
     }
 }
+
+impl From<ListEventsArgs> for ListEventsRequest {
+    fn from(args: ListEventsArgs) -> Self {
+        Self {
+            since: args.since,
+            until: args.until,
+            providers: args.provider,
+            source: args.source,
+            history_source: args.history_source,
+            provider_key: args.provider_key,
+            source_id: args.source_id,
+            source_format: args.source_format,
+            provider_session: args.provider_session,
+            session: args.session,
+            parent_session: args.parent_session,
+            root_session: args.root_session,
+            branch: args.branch,
+            workspace: args.workspace,
+            event_type: args.event_type,
+            role: args.role,
+            agent_type: args.agent_type,
+            file: args.file,
+            cursor: args.cursor,
+            limit: args.limit,
+            format: match args.format {
+                EventQueryFormat::Json => OutputFormat::Json,
+                EventQueryFormat::Jsonl => OutputFormat::Jsonl,
+            },
+            scope: match args.scope {
+                EventQueryScope::All => ListEventsScope::All,
+                EventQueryScope::Primary => ListEventsScope::Primary,
+                EventQueryScope::Subagent => ListEventsScope::Subagent,
+            },
+            direction: match args.direction {
+                EventQueryDirection::Ascending => ListEventsDirection::Ascending,
+                EventQueryDirection::Descending => ListEventsDirection::Descending,
+            },
+            content: match args.content {
+                EventContentProjectionArg::Full => ListEventsContentProjection::Full,
+                EventContentProjectionArg::Text => ListEventsContentProjection::Text,
+                EventContentProjectionArg::None => ListEventsContentProjection::None,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ListEventsArgs;
+    use crate::ListEventsRequest;
+
+    #[test]
+    fn owned_list_conversion_reuses_request_buffers() {
+        let provider = "codex provider".to_owned();
+        let provider_pointer = provider.as_ptr();
+        let workspace = "workspace buffer".to_owned();
+        let workspace_pointer = workspace.as_ptr();
+        let request = ListEventsRequest::from(ListEventsArgs {
+            provider: vec![provider],
+            workspace: Some(workspace),
+            ..ListEventsArgs::default()
+        });
+
+        assert_eq!(request.providers[0].as_ptr(), provider_pointer);
+        assert_eq!(
+            request.workspace.as_deref().unwrap().as_ptr(),
+            workspace_pointer
+        );
+    }
+}

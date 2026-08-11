@@ -93,7 +93,7 @@ fn execute(
     data_root: &Path,
     writer: &mut dyn Write,
 ) -> std::result::Result<usize, EventQueryError> {
-    let args = crate::ListEventsRequest::from(&args);
+    let args = crate::ListEventsRequest::from(args);
     let selection = selection_from_request(&args)?;
     let cursor = args.cursor.as_deref().map(decode_cursor).transpose()?;
     let limit = validated_limit(args.limit)?;
@@ -109,7 +109,7 @@ fn execute(
                 open_event_range_generation(data_root, read)
             };
             let application = ctx_history_read_application::execute_list_events_page(
-                list_page_request(&selection, cursor, &request, None),
+                list_page_request(selection, cursor, &request, None),
                 &mut generation,
             )
             .map_err(list_page_application_error)?;
@@ -120,7 +120,7 @@ fn execute(
             Ok(page.items)
         }
         crate::OutputFormat::Jsonl => {
-            write_jsonl_pages(data_root, &selection, cursor, &request, writer, || {})
+            write_jsonl_pages(data_root, selection, cursor, &request, writer, || {})
         }
         _ => unreachable!("list-events execution accepts only JSON and JSONL formats"),
     }
@@ -175,13 +175,6 @@ pub fn selection_from_request(
 }
 
 #[cfg(test)]
-fn selection_from_args(
-    args: &ListEventsArgs,
-) -> std::result::Result<CoreEventRangeSelection, EventQueryError> {
-    selection_from_request(&crate::ListEventsRequest::from(args))
-}
-
-#[cfg(test)]
 pub(crate) fn open_event_range_index(
     data_root: &Path,
     cursor: Option<&CoreEventRangeCursor>,
@@ -219,13 +212,13 @@ fn open_event_range_generation(
 }
 
 fn list_page_request(
-    selection: &CoreEventRangeSelection,
+    selection: CoreEventRangeSelection,
     cursor: Option<CoreEventRangeCursor>,
     request: &EventQueryWireRequest,
     strict_budget: Option<CoreEventPageBudget>,
 ) -> ctx_history_read_application::ListEventsPageRequest {
     ctx_history_read_application::ListEventsPageRequest {
-        selection: selection.clone(),
+        selection,
         cursor,
         limit: u64::try_from(request.limit).unwrap_or(u64::MAX),
         page_items: request.page_items(),
@@ -268,7 +261,7 @@ pub fn event_range_page_value(
         open_event_range_generation(data_root, read)
     };
     let application = ctx_history_read_application::execute_list_events_page(
-        list_page_request(selection, cursor.cloned(), request, strict_budget),
+        list_page_request(selection.clone(), cursor.cloned(), request, strict_budget),
         &mut generation,
     )
     .map_err(list_page_application_error)?;
@@ -437,7 +430,7 @@ fn global_limit_truncated(request: &EventQueryWireRequest, items: usize, termina
 
 fn write_jsonl_pages<F>(
     data_root: &Path,
-    selection: &CoreEventRangeSelection,
+    selection: CoreEventRangeSelection,
     cursor: Option<CoreEventRangeCursor>,
     request: &EventQueryWireRequest,
     writer: &mut dyn Write,
@@ -456,7 +449,7 @@ where
     };
     let result = ctx_history_read_application::execute_list_events_stream(
         ctx_history_read_application::ListEventsPageRequest {
-            selection: selection.clone(),
+            selection,
             cursor,
             limit: u64::try_from(request.limit).unwrap_or(u64::MAX),
             page_items: EVENT_QUERY_PAGE_ITEMS,

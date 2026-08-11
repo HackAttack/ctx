@@ -185,3 +185,175 @@ fn adapt(args: ListEventsArgs) -> ctx_history_cli::ListEventsArgs {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+    use serde_json::json;
+
+    use super::*;
+    use crate::{cli::CommandRoot, Cli};
+
+    fn parse_events(arguments: &[&str]) -> ListEventsArgs {
+        let cli = Cli::try_parse_from(arguments).expect("event query arguments should parse");
+        let CommandRoot::List(list) = cli.command else {
+            panic!("expected list command");
+        };
+        let ListTarget::Events(events) = list.target;
+        *events
+    }
+
+    #[test]
+    fn all_domain_is_explicit_and_defaults_when_omitted() {
+        let defaulted = parse_events(&["ctx", "list", "events"]);
+        assert!(defaulted.since.is_none() && defaulted.until.is_none());
+        assert_eq!(defaulted.limit, ctx_history_cli::DEFAULT_EVENT_QUERY_LIMIT);
+    }
+
+    #[test]
+    fn wire_receipt_uses_the_normalized_selection() {
+        let args = adapt(parse_events(&[
+            "ctx",
+            "list",
+            "events",
+            "--since",
+            "2026-08-01T00:00:00+00:00",
+            "--until",
+            "2026-08-02T00:00:00Z",
+            "--provider",
+            " codex ",
+            "--provider",
+            "codex",
+            "--workspace",
+            " CTX ",
+            "--scope",
+            "subagent",
+            "--direction",
+            "descending",
+        ]));
+        let selection = ctx_history_cli::list_events_selection_from_request(
+            &ctx_history_cli::ListEventsRequest::from(&args),
+        )
+        .unwrap();
+        let request = ctx_history_cli::EventQueryWireRequest::from_selection(
+            &selection,
+            args.content.into(),
+            10,
+        );
+
+        assert_eq!(request.domain["range"]["since"], "2026-08-01T00:00:00.000Z");
+        assert_eq!(
+            request.filters,
+            json!({"providers": ["codex"], "workspace": "ctx", "scope": "subagent"})
+        );
+        assert_eq!(request.direction, "descending");
+    }
+
+    #[test]
+    fn unreleased_aliases_and_page_budget_flags_are_rejected() {
+        for flag in [
+            "--all",
+            "--parent",
+            "--root",
+            "--max-items",
+            "--page-items",
+            "--max-bytes",
+            "--byte-budget",
+        ] {
+            assert!(
+                Cli::try_parse_from(["ctx", "list", "events", flag]).is_err(),
+                "unexpectedly accepted {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_core_filter_and_canonical_relationship_flag_maps_to_selection() {
+        let id = "01234567-89ab-4def-8123-456789abcdef";
+        let args = adapt(parse_events(&[
+            "ctx",
+            "list",
+            "events",
+            "--provider",
+            "codex",
+            "--provider",
+            "claude",
+            "--source",
+            id,
+            "--history-source",
+            "plugin/source",
+            "--provider-key",
+            "plugin",
+            "--source-id",
+            "source",
+            "--source-format",
+            "future-format",
+            "--provider-session",
+            "native-session",
+            "--session",
+            id,
+            "--parent-session",
+            id,
+            "--root-session",
+            id,
+            "--branch",
+            "main",
+            "--workspace",
+            "workspace",
+            "--event-type",
+            "future-event",
+            "--role",
+            "assistant",
+            "--agent-type",
+            "future-agent",
+            "--scope",
+            "subagent",
+            "--file",
+            "src/lib.rs",
+            "--direction",
+            "descending",
+        ]));
+        let selection = ctx_history_cli::list_events_selection_from_request(
+            &ctx_history_cli::ListEventsRequest::from(&args),
+        )
+        .unwrap();
+        let filters = selection.filters();
+        assert_eq!(filters.providers, ["claude", "codex"]);
+        assert_eq!(filters.source_identity.unwrap().to_string(), id);
+        assert_eq!(filters.history_source.as_deref(), Some("plugin/source"));
+        assert_eq!(
+            filters.scope,
+            ctx_history_index::CoreEventRangeScope::Subagent
+        );
+        assert_eq!(
+            filters.direction,
+            ctx_history_index::CoreEventRangeDirection::Descending
+        );
+    }
+
+    #[test]
+    fn help_exposes_only_the_compact_list_events_route() {
+        let command = Cli::command();
+        assert!(command
+            .get_subcommands()
+            .all(|subcommand| subcommand.get_name() != "export"));
+        assert!(Cli::try_parse_from(["ctx", "show", "events"]).is_err());
+        let help = Cli::try_parse_from(["ctx", "list", "events", "--help"])
+            .unwrap_err()
+            .to_string();
+        for expected in ["--since", "--until", "--parent-session", "--root-session"] {
+            assert!(help.contains(expected), "missing {expected} from help");
+        }
+        for removed in [
+            "--all",
+            "--parent ",
+            "--root ",
+            "--max-items",
+            "--page-items",
+            "--max-bytes",
+            "--byte-budget",
+        ] {
+            assert!(!help.contains(removed), "unexpected {removed} in help");
+        }
+    }
+}

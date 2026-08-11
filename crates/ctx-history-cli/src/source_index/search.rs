@@ -17,19 +17,16 @@ use ctx_history_index::VerifiedIndex;
 use serde_json::Value;
 
 use crate::{
-    analytics::{
-        count_bucket, duration_bucket, text_length_bucket, RefreshStatus, SearchTelemetry,
-    },
     cli::SearchArgs,
     config,
     local_usage::{CliUsage, ResultObservationAction, SearchContextObservation},
     output::{print_json, JsonOutputFormat},
-    semantic::{coordinate_source_backed_refresh, pin_active_verified_generation},
+    semantic::coordinate_source_backed_refresh,
     ui::{
         canonical_human_output_bytes, diagnostic, Action, Diagnostic, DiagnosticLevel, Document,
         RenderContext, Ui,
     },
-    RefreshMode,
+    HistoryCliConfig, RefreshMode, SearchExecutionObservation, SearchRefreshStatus,
 };
 use ctx_daemon_cli::{
     wait_for_daemon_query_service, PinnedSourceBackedGeneration, SemanticNotReady,
@@ -289,38 +286,18 @@ pub(super) struct RefreshOutcome {
 pub fn run_search(
     args: SearchArgs,
     data_root: PathBuf,
-    telemetry: &mut SearchTelemetry,
+    config: HistoryCliConfig,
     local_usage: &mut CliUsage,
     ui: &mut Ui,
-) -> Result<()> {
-    let mut observations = NoopObservability;
-    run_search_with_observations(
-        args,
-        data_root,
-        telemetry,
-        local_usage,
-        ui,
-        &mut observations,
-    )
-}
-
-pub fn run_search_with_observations(
-    args: SearchArgs,
-    data_root: PathBuf,
-    telemetry: &mut SearchTelemetry,
-    local_usage: &mut CliUsage,
-    ui: &mut Ui,
-    observations: &mut dyn crate::ObservabilityPort,
-) -> Result<()> {
+) -> Result<SearchExecutionObservation> {
     let human_output = args.format != JsonOutputFormat::Json;
     let semantic_port = crate::semantic::SemanticQueryAdapter::new(&data_root);
     let result = run_search_inner(
         args,
         data_root.clone(),
-        telemetry,
+        config,
         local_usage,
         ui,
-        observations,
         &semantic_port,
     )
     .map_err(SourceSearchFailure::into_anyhow);
@@ -330,18 +307,18 @@ pub fn run_search_with_observations(
 fn run_search_inner<P: HistorySemanticPort>(
     args: SearchArgs,
     data_root: PathBuf,
-    telemetry: &mut SearchTelemetry,
+    config: HistoryCliConfig,
     local_usage: &mut CliUsage,
     ui: &mut Ui,
-    observations: &mut dyn crate::ObservabilityPort,
     semantic_port: &P,
-) -> SourceSearchResult<()> {
-    let config = config::AppConfig::load(&data_root)?;
-    let refresh_mode = args.refresh;
+) -> SourceSearchResult<SearchExecutionObservation> {
+    let config = config::AppConfig::from_snapshot(config);
+    let request = crate::SearchRequest::from(args);
+    let refresh_mode = request.refresh;
+    let json_output = request.format == crate::OutputFormat::Json;
+    let verbose = request.verbose;
     let policy = source_search_policy(&config);
-    let request = crate::SearchRequest::from(&args);
-    let plan =
-        ctx_history_read_application::plan_search(query::source_search_request(&request), policy)?;
+    let plan = ctx_history_read_application::plan_search(request.into(), policy)?;
     let request = plan.request();
     let requested_backend = request.backend.unwrap_or(policy.default_backend);
     let semantic_weight = request.semantic_weight;
@@ -351,7 +328,6 @@ fn run_search_inner<P: HistorySemanticPort>(
         .split_whitespace()
         .filter(|term| !term.is_empty())
         .count();
-    let json_output = args.format == JsonOutputFormat::Json;
     if refresh_mode == RefreshArg::Background
         && policy.semantic == SemanticAvailability::Available
         && matches!(
@@ -366,12 +342,6 @@ fn run_search_inner<P: HistorySemanticPort>(
     let refresh_started = Instant::now();
     let refresh = refresh_for_search(request, refresh_mode, &data_root)?;
     let initial_refresh_duration = refresh_started.elapsed();
-    telemetry.refresh_mode = Some(match refresh_mode {
-        RefreshArg::Background => crate::analytics::RefreshMode::Background,
-        RefreshArg::Off => crate::analytics::RefreshMode::Off,
-        RefreshArg::Wait => crate::analytics::RefreshMode::Wait,
-    });
-
     let query_started = Instant::now();
     let (value, application, refresh_status, refresh_source_count) = search_pinned_generation(
         plan,
@@ -390,23 +360,6 @@ fn run_search_inner<P: HistorySemanticPort>(
         }
     }
     let query_duration = query_started.elapsed();
-    telemetry.refresh_duration = Some(duration_bucket(initial_refresh_duration));
-    telemetry.refresh_status = Some(RefreshStatus::from_safe_summary(refresh_status));
-    telemetry.refresh_source_count = Some(count_bucket(refresh_source_count as u64));
-    telemetry.query_duration = Some(duration_bucket(query_duration));
-    telemetry.query_length = Some(text_length_bucket(query_length));
-    telemetry.query_term_count = Some(count_bucket(query_terms as u64));
-    telemetry.backend_requested = Some(crate::analytics::search_backend(
-        collection.requested_backend,
-    ));
-    telemetry.backend_effective = Some(crate::analytics::search_backend(
-        collection.effective_backend,
-    ));
-    telemetry.has_indexed_content_after = Some(index.document_count() > 0);
-    telemetry.result_count = Some(count_bucket(collection.result_window.hits.len() as u64));
-    telemetry.citation_count = Some(count_bucket(collection.result_window.hits.len() as u64));
-    telemetry.zero_result = Some(collection.result_window.hits.is_empty());
-
     let results = value["results"]
         .as_array()
         .map(Vec::as_slice)
@@ -422,64 +375,43 @@ fn run_search_inner<P: HistorySemanticPort>(
         .then(|| application.project_read_model(&value))
         .transpose()?;
     let render_value = compact_value.as_ref().unwrap_or(&value);
-    let output_bytes = if args.format == JsonOutputFormat::Json {
+    let output_bytes = if json_output {
         let output_bytes = pretty_json_stdout_bytes(&value)?;
         print_json(value)?;
         output_bytes
     } else {
-        let document = render_search_document(render_value, args.verbose, ui.stdout_context());
+        let document = render_search_document(render_value, verbose, ui.stdout_context());
         let output_bytes = canonical_human_output_bytes(|context| {
-            render_search_document(render_value, args.verbose, context)
+            render_search_document(render_value, verbose, context)
         });
         ui.write_stdout(&document)?;
         output_bytes
     };
-    telemetry.render_duration = Some(duration_bucket(render_started.elapsed()));
     let render_duration = render_started.elapsed();
     local_usage.set_result_observation(ResultObservationAction::Search, result_count, 0, 0);
     local_usage.set_search_context_observation(search_context);
     local_usage.set_measured_output_bytes(output_bytes);
-    observations.observe(crate::HistoryCliObservation::search(
-        crate::SearchExecutionObservation {
-            refresh_mode: match refresh_mode {
-                RefreshArg::Background => crate::RefreshObservationMode::Background,
-                RefreshArg::Off => crate::RefreshObservationMode::Off,
-                RefreshArg::Wait => crate::RefreshObservationMode::Wait,
-            },
-            refresh_status: match refresh_status {
-                "existing_generation" => crate::RefreshObservationStatus::ExistingGeneration,
-                "daemon_background" => crate::RefreshObservationStatus::DaemonBackground,
-                "daemon_unavailable" => crate::RefreshObservationStatus::DaemonUnavailable,
-                _ => crate::RefreshObservationStatus::Completed,
-            },
-            refresh_source_count: refresh_source_count as u64,
-            refresh_duration: initial_refresh_duration,
-            query_duration,
-            render_duration,
-            backend_requested: match collection.requested_backend {
-                SearchBackend::Hybrid => crate::SearchBackend::Hybrid,
-                SearchBackend::Lexical => crate::SearchBackend::Lexical,
-                SearchBackend::Semantic => crate::SearchBackend::Semantic,
-            },
-            backend_effective: match collection.effective_backend {
-                SearchBackend::Hybrid => crate::SearchBackend::Hybrid,
-                SearchBackend::Lexical => crate::SearchBackend::Lexical,
-                SearchBackend::Semantic => crate::SearchBackend::Semantic,
-            },
-            result_count: result_count as u64,
-            citation_count: collection.result_window.hits.len() as u64,
-            zero_result: collection.result_window.hits.is_empty(),
-            has_indexed_content_after: index.document_count() > 0,
+    Ok(SearchExecutionObservation {
+        refresh_mode,
+        refresh_status: match refresh_status {
+            "existing_generation" => SearchRefreshStatus::ExistingGeneration,
+            "daemon_background" => SearchRefreshStatus::DaemonBackground,
+            "daemon_unavailable" => SearchRefreshStatus::DaemonUnavailable,
+            _ => SearchRefreshStatus::Completed,
         },
-        output_bytes as u64,
-    ));
-    Ok(())
-}
-
-struct NoopObservability;
-
-impl crate::ObservabilityPort for NoopObservability {
-    fn observe(&mut self, _observation: crate::HistoryCliObservation) {}
+        refresh_source_count: refresh_source_count as u64,
+        refresh_duration: initial_refresh_duration,
+        query_duration,
+        render_duration,
+        backend_requested: collection.requested_backend,
+        backend_effective: collection.effective_backend,
+        result_count: result_count as u64,
+        citation_count: collection.result_window.hits.len() as u64,
+        zero_result: collection.result_window.hits.is_empty(),
+        has_indexed_content_after: index.document_count() > 0,
+        query_length: query_length as u64,
+        query_term_count: query_terms as u64,
+    })
 }
 
 pub(super) fn render_search_error<T>(
@@ -561,16 +493,18 @@ pub(super) fn render_semantic_fallback_warning(
 pub(crate) fn mcp_search(
     request: SourceSearchRequest,
     data_root: &Path,
+    config: HistoryCliConfig,
 ) -> std::result::Result<(Value, SearchContextObservation), McpSearchError> {
-    mcp_search_with_compact(request, data_root).map(|(value, observation, _)| (value, observation))
+    mcp_search_with_compact(request, data_root, config)
+        .map(|(value, observation, _)| (value, observation))
 }
 
 pub fn mcp_search_with_compact(
     request: SourceSearchRequest,
     data_root: &Path,
+    config: HistoryCliConfig,
 ) -> std::result::Result<(Value, SearchContextObservation, Value), McpSearchError> {
-    let config = config::AppConfig::load(data_root)
-        .map_err(|error| SourceSearchFailure::from(error).into_mcp())?;
+    let config = config::AppConfig::from_snapshot(config);
     let semantic_port = crate::semantic::SemanticQueryAdapter::new(data_root);
     mcp_search_inner(request, data_root, &config, &semantic_port)
         .map_err(SourceSearchFailure::into_mcp)
