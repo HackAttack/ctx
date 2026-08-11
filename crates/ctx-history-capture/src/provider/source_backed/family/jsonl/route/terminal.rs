@@ -201,7 +201,7 @@ impl JsonlFamilyTerminalProof {
         prefix_sha256: [u8; 32],
         hash_kind: JsonlFamilyTerminalPrefixHash,
     ) -> Result<Self> {
-        if prefix_length > leaf.observation.length {
+        if prefix_length > leaf.observation.length() {
             return Err(CaptureError::SourceChangedDuringCapture);
         }
         let opened = leaf.authority.open_file(&leaf.authority_path)?;

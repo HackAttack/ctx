@@ -5,7 +5,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::{JsonlFileObservation, JsonlObservedTime};
+use super::JsonlFileObservation;
 #[cfg(target_os = "windows")]
 use crate::CaptureError;
 use crate::Result;
@@ -38,13 +38,13 @@ pub(super) fn observe_metadata(
     metadata: &Metadata,
 ) -> Result<JsonlFileObservation> {
     let identity = retained_file_identity(path, file, metadata, JsonlFileIdentityPolicy::SharedV1)?;
-    Ok(JsonlFileObservation {
-        length: metadata.len(),
-        modified: JsonlObservedTime::from_system_time(metadata.modified()?),
-        readonly: metadata.permissions().readonly(),
-        stable_identity: identity.map(JsonlRetainedFileIdentity::stable),
-        change_identity: identity.map(JsonlRetainedFileIdentity::change),
-    })
+    Ok(JsonlFileObservation::new(
+        metadata.len(),
+        metadata.modified()?,
+        metadata.permissions().readonly(),
+        identity.map(JsonlRetainedFileIdentity::stable),
+        identity.map(JsonlRetainedFileIdentity::change),
+    ))
 }
 
 #[cfg(unix)]

@@ -1,0 +1,17 @@
+[package]
+name = "ctx-history-jsonl"
+version = "0.26.0"
+description = "Provider-neutral JSONL ingestion semantics for ctx agent history"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-index = { path = "../ctx-history-index" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

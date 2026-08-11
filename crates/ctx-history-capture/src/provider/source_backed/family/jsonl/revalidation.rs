@@ -194,7 +194,7 @@ fn revalidate_frozen_prefix_with_hasher(
     expected_prefix_digest: [u8; 32],
     prefix_hasher: Sha256,
 ) -> Result<JsonlFileObservation> {
-    if prefix_length > frozen.length {
+    if prefix_length > frozen.length() {
         return Err(CaptureError::SourceChangedDuringCapture);
     }
     let before = observe_metadata(

@@ -7,11 +7,12 @@ use std::{
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CoreRecord, CoreRecordError,
-    EventIdentityInput, McpExchangeContent, McpJsonCapture, McpPayloadOmissionReason,
-    NativeItemKey, NativeSessionKey, PositionStability, ProjectionContractError,
-    SessionIdentityInput, SessionRelationshipKind, SourceAnchor, SourceKey, StableEntityId,
-    SubrecordSelector, TypedKey, MAX_CORE_CONTENT_BYTES,
+    EventIdentityInput, NativeItemKey, NativeSessionKey, PositionStability,
+    ProjectionContractError, SessionIdentityInput, SessionRelationshipKind, SourceAnchor,
+    SourceKey, StableEntityId, SubrecordSelector, TypedKey, MAX_CORE_CONTENT_BYTES,
 };
+#[cfg(test)]
+use ctx_history_core::{McpJsonCapture, McpPayloadOmissionReason};
 use ctx_history_index::BaseEventIdentityLookup;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -27,9 +28,10 @@ use crate::{
     },
     provider::source_backed::{
         family::jsonl::{
-            observe_opened_file, probe_first_record, JsonlFamilyAdapter, JsonlFamilyAppendMode,
-            JsonlFamilyInventory, JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector,
-            JsonlFamilyRejectedLeaf, JsonlFamilyWorkerContext, JsonlOversizedRecordPolicy,
+            fit_jsonl_mcp_exchange, observe_opened_file, probe_first_record, JsonlFamilyAdapter,
+            JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
+            JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyRejectedLeaf,
+            JsonlFamilyWorkerContext, JsonlMcpObservedEncodedBytes, JsonlOversizedRecordPolicy,
             JsonlRecordRef,
         },
         FallbackEventIdentityState,
@@ -829,89 +831,20 @@ fn fit_mcp_exchange_within_content_budget(
         return Ok(());
     }
 
-    let exchange = record
-        .content
-        .mcp_exchange
-        .as_ref()
-        .ok_or(DirectJsonlAdapterError::CountMismatch)?;
-    let arguments_candidate = omission_candidate(exchange, McpJsonCaptureTarget::Arguments)?;
-    let payload_candidate = omission_candidate(exchange, McpJsonCaptureTarget::Payload)?;
-    record.content.mcp_exchange = match (arguments_candidate, payload_candidate) {
-        (Some(arguments), Some(payload)) if arguments.encoded_bytes <= payload.encoded_bytes => {
-            Some(arguments.exchange)
-        }
-        (Some(_), Some(payload)) => Some(payload.exchange),
-        (Some(arguments), None) => Some(arguments.exchange),
-        (None, Some(payload)) => Some(payload.exchange),
-        (None, None) => None,
-    };
-
-    if record.content.mcp_exchange.is_none()
-        || record.content.encoded_content_bytes()? <= maximum_bytes
-    {
-        return Ok(());
-    }
-
-    let exchange = record
-        .content
-        .mcp_exchange
-        .as_mut()
-        .ok_or(DirectJsonlAdapterError::CountMismatch)?;
-    if let Some(invocation) = exchange.invocation.as_mut() {
-        omit_present_json(&mut invocation.arguments)?;
-    }
-    if let Some(response) = exchange.response.as_mut() {
-        omit_present_json(&mut response.payload)?;
-    }
-
-    if record.content.encoded_content_bytes()? > maximum_bytes {
-        // The normalized body and structured content remain authoritative. If
-        // even the compact explicit-omission shape cannot coexist with them,
-        // drop only the optional exchange annotation.
-        record.content.mcp_exchange = None;
-    }
+    let content = &mut record.content;
+    let body = content.normalized_body.as_deref().unwrap_or("");
+    let structured_content = content.structured_content.as_ref();
+    fit_jsonl_mcp_exchange(
+        body,
+        structured_content,
+        &mut content.mcp_exchange,
+        JsonlMcpObservedEncodedBytes::infer_from_present(),
+        maximum_bytes,
+    );
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum McpJsonCaptureTarget {
-    Arguments,
-    Payload,
-}
-
-struct McpExchangeOmissionCandidate {
-    exchange: McpExchangeContent,
-    encoded_bytes: usize,
-}
-
-fn omission_candidate(
-    exchange: &McpExchangeContent,
-    target: McpJsonCaptureTarget,
-) -> DirectJsonlAdapterResult<Option<McpExchangeOmissionCandidate>> {
-    let mut candidate = exchange.clone();
-    let capture = match target {
-        McpJsonCaptureTarget::Arguments => candidate
-            .invocation
-            .as_mut()
-            .map(|invocation| &mut invocation.arguments),
-        McpJsonCaptureTarget::Payload => candidate
-            .response
-            .as_mut()
-            .map(|response| &mut response.payload),
-    };
-    let Some(capture) = capture else {
-        return Ok(None);
-    };
-    if !omit_present_json(capture)? {
-        return Ok(None);
-    }
-    let encoded_bytes = serde_json::to_vec(&candidate)?.len();
-    Ok(Some(McpExchangeOmissionCandidate {
-        exchange: candidate,
-        encoded_bytes,
-    }))
-}
-
+#[cfg(test)]
 fn omit_present_json(capture: &mut McpJsonCapture) -> DirectJsonlAdapterResult<bool> {
     let McpJsonCapture::Present { value } = capture else {
         return Ok(false);

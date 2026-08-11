@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+    restore_hash_pending_exchange_entries, sorted_pending_exchange_entries,
 };
 
 pub(super) const MAX_PROJECTOR_CHECKPOINT_BYTES: usize = 40 * 1024;
@@ -23,16 +24,10 @@ struct ProjectorCheckpoint {
 }
 
 fn checkpoint_value(projector: &ClaudeProjector) -> ProjectorCheckpoint {
-    let mut pending_calls = projector
-        .pending_calls
-        .iter()
-        .map(|(call_id, state)| (call_id.clone(), state.clone()))
-        .collect::<Vec<_>>();
-    pending_calls.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     ProjectorCheckpoint {
         version: PROJECTOR_CHECKPOINT_VERSION,
         session: projector.session.clone(),
-        pending_calls,
+        pending_calls: sorted_pending_exchange_entries(&projector.pending_calls),
         linkage_capacity_exceeded: projector.linkage_capacity_exceeded,
     }
 }
@@ -70,14 +65,12 @@ pub(super) fn decode_projector_checkpoint(
             "Claude projector checkpoint exceeds its state capacity".to_owned(),
         ));
     }
-    let mut pending_calls = HashMap::with_capacity(checkpoint.pending_calls.len());
-    for (call_id, state) in checkpoint.pending_calls {
-        if call_id.is_empty() || pending_calls.insert(call_id, state).is_some() {
-            return Err(CaptureError::InvalidPayload(
+    let pending_calls = restore_hash_pending_exchange_entries(checkpoint.pending_calls)
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload(
                 "Claude projector checkpoint repeats a call identity".to_owned(),
-            ));
-        }
-    }
+            )
+        })?;
     Ok(RestoredProjectorCheckpoint {
         session: checkpoint.session,
         pending_calls,

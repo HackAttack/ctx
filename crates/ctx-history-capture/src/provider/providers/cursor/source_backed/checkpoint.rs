@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+    ordered_pending_exchange_entries, restore_ordered_pending_exchange_entries,
 };
 
 pub(super) const MAX_CURSOR_CHECKPOINT_BYTES: usize = 40 * 1024;
@@ -26,11 +27,7 @@ fn checkpoint_value(projector: &CursorProjector) -> CursorCheckpoint {
     CursorCheckpoint {
         version: CURSOR_CHECKPOINT_VERSION,
         native_session_id: projector.native_session_id.clone(),
-        tool_contexts: projector
-            .tool_contexts
-            .iter()
-            .map(|(call_id, state)| (call_id.clone(), state.clone()))
-            .collect(),
+        tool_contexts: ordered_pending_exchange_entries(&projector.tool_contexts),
         linkage_capacity_exceeded: projector.linkage_capacity_exceeded,
     }
 }
@@ -66,14 +63,12 @@ pub(super) fn decode_cursor_checkpoint(
             "Cursor projector checkpoint does not match its source binding or capacity".to_owned(),
         ));
     }
-    let mut tool_contexts = BTreeMap::new();
-    for (call_id, state) in checkpoint.tool_contexts {
-        if call_id.is_empty() || tool_contexts.insert(call_id, state).is_some() {
-            return Err(CaptureError::InvalidPayload(
+    let tool_contexts = restore_ordered_pending_exchange_entries(checkpoint.tool_contexts)
+        .ok_or_else(|| {
+            CaptureError::InvalidPayload(
                 "Cursor projector checkpoint repeats a call identity".to_owned(),
-            ));
-        }
-    }
+            )
+        })?;
     Ok(RestoredCursorCheckpoint {
         tool_contexts,
         linkage_capacity_exceeded: checkpoint.linkage_capacity_exceeded,

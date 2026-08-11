@@ -1,12 +1,10 @@
 use std::{
     fs::File,
     io::{BufReader, Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -22,6 +20,18 @@ mod route;
 
 pub(crate) use checkpoint::{
     bounded_checkpoint_fits, decode_bounded_checkpoint, encode_bounded_checkpoint,
+};
+pub(crate) use ctx_history_jsonl::{
+    fit_jsonl_mcp_exchange, jsonl_prefix_digest as prefix_digest, jsonl_terminal_call_id_digest,
+    new_jsonl_prefix_hasher as new_prefix_hasher, ordered_pending_exchange_entries,
+    remember_pending_exchange, restore_hash_pending_exchange_entries,
+    restore_ordered_pending_exchange_entries, selected_content_fits as jsonl_selected_content_fits,
+    sorted_pending_exchange_entries, take_pending_exchange, JsonlAppendOccurrenceState,
+    JsonlCheckpoint, JsonlCheckpointedTerminalAuthority, JsonlFileObservation,
+    JsonlMcpObservedEncodedBytes, JsonlOrderedAppendOccurrenceState, JsonlOversizedRecordPolicy,
+    JsonlPage, JsonlPendingExchangeLookup, JsonlPendingExchangeRemember, JsonlPendingExchangeState,
+    JsonlRecordEvidence, JsonlRecordRef, JsonlScanOutcome, JsonlSourceChange, JsonlSourceIdentity,
+    JsonlTerminalAuthority, JsonlTerminalObservationRegion,
 };
 use framing::read_bounded_record_complete_sha256;
 pub(crate) use framing::{
@@ -51,106 +61,8 @@ pub(crate) use route::{
     JsonlFamilyProjector, JsonlFamilyPublication, JsonlFamilyRejectedLeaf,
     JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
 };
-const PREFIX_HASH_DOMAIN: &[u8] = b"ctx-direct-jsonl-nativepath-prefix-v1\0";
 const PAGE_MAX_RECORDS: usize = 64;
 const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct JsonlSourceIdentity {
-    provider: String,
-    parser_revision: String,
-    policy_revision: String,
-    source_descriptor_digest: [u8; 32],
-    source_path: PathBuf,
-}
-
-impl JsonlSourceIdentity {
-    pub(crate) fn new(
-        provider: impl Into<String>,
-        parser_revision: impl Into<String>,
-        policy_revision: impl Into<String>,
-        source_descriptor_digest: [u8; 32],
-        source_path: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            provider: provider.into(),
-            parser_revision: parser_revision.into(),
-            policy_revision: policy_revision.into(),
-            source_descriptor_digest,
-            source_path: source_path.into(),
-        }
-    }
-
-    pub(crate) fn source_descriptor_digest(&self) -> &[u8; 32] {
-        &self.source_descriptor_digest
-    }
-
-    pub(crate) fn source_path(&self) -> &PathBuf {
-        &self.source_path
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct JsonlObservedTime {
-    before_epoch: bool,
-    seconds: u64,
-    nanos: u32,
-}
-
-impl JsonlObservedTime {
-    fn from_system_time(value: SystemTime) -> Self {
-        match value.duration_since(UNIX_EPOCH) {
-            Ok(duration) => Self {
-                before_epoch: false,
-                seconds: duration.as_secs(),
-                nanos: duration.subsec_nanos(),
-            },
-            Err(error) => {
-                let duration = error.duration();
-                Self {
-                    before_epoch: true,
-                    seconds: duration.as_secs(),
-                    nanos: duration.subsec_nanos(),
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct JsonlFileObservation {
-    length: u64,
-    modified: JsonlObservedTime,
-    readonly: bool,
-    stable_identity: Option<[u8; 32]>,
-    change_identity: Option<[u8; 32]>,
-}
-
-impl JsonlFileObservation {
-    fn same_stable_file(&self, current: &Self) -> bool {
-        match (self.stable_identity, current.stable_identity) {
-            (Some(previous), Some(current)) => previous == current,
-            _ => false,
-        }
-    }
-
-    pub(crate) fn supports_exact_revalidation(&self) -> bool {
-        self.stable_identity.is_some() && self.change_identity.is_some()
-    }
-
-    /// Whether `current` can still contain the exact frozen bytes represented
-    /// by this observation. Content is not trusted until the caller separately
-    /// verifies its certified prefix digest.
-    pub(crate) fn admits_frozen_prefix_in(&self, current: &Self) -> bool {
-        self == current
-            || (current.length >= self.length
-                && self.supports_exact_revalidation()
-                && self.same_stable_file(current))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct JsonlProbe {
@@ -167,155 +79,6 @@ impl JsonlProbe {
 
     pub(crate) fn observation(&self) -> &JsonlFileObservation {
         &self.observation
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct JsonlCheckpoint {
-    version: u32,
-    identity: JsonlSourceIdentity,
-    source_observation: JsonlFileObservation,
-    complete_prefix_end: u64,
-    complete_prefix_sha256: [u8; 32],
-    next_physical_ordinal: u64,
-    terminal: bool,
-}
-
-impl JsonlCheckpoint {
-    const VERSION: u32 = 1;
-
-    pub(crate) fn identity(&self) -> &JsonlSourceIdentity {
-        &self.identity
-    }
-
-    pub(crate) fn source_observation(&self) -> &JsonlFileObservation {
-        &self.source_observation
-    }
-
-    pub(crate) fn complete_prefix_end(&self) -> u64 {
-        self.complete_prefix_end
-    }
-
-    pub(crate) fn complete_prefix_sha256(&self) -> &[u8; 32] {
-        &self.complete_prefix_sha256
-    }
-
-    pub(crate) fn next_physical_ordinal(&self) -> u64 {
-        self.next_physical_ordinal
-    }
-
-    pub(crate) fn terminal(&self) -> bool {
-        self.terminal
-    }
-
-    pub(crate) fn is_internally_consistent(&self) -> bool {
-        let empty_prefix = self.complete_prefix_end == 0;
-        let empty_prefix_is_exact = self.next_physical_ordinal == 0
-            && self.complete_prefix_sha256 == prefix_digest(&new_prefix_hasher());
-        let nonempty_prefix_is_possible = self.next_physical_ordinal > 0
-            && self.next_physical_ordinal <= self.complete_prefix_end;
-        self.version == Self::VERSION
-            && self.complete_prefix_end <= self.source_observation.length
-            && if empty_prefix {
-                empty_prefix_is_exact
-            } else {
-                nonempty_prefix_is_possible
-            }
-            && (!self.terminal || self.complete_prefix_end == self.source_observation.length)
-    }
-
-    fn supports(&self, identity: &JsonlSourceIdentity) -> bool {
-        self.is_internally_consistent() && self.identity == *identity
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlSourceChange {
-    Cold,
-    Unchanged,
-    Append,
-    Replace,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonlOversizedRecordPolicy {
-    RejectSource,
-    RejectRecord,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JsonlRecordEvidence {
-    physical_ordinal: u64,
-    byte_start: u64,
-    byte_end_exclusive: u64,
-    record_digest: [u8; 32],
-}
-
-impl JsonlRecordEvidence {
-    pub(crate) fn physical_ordinal(self) -> u64 {
-        self.physical_ordinal
-    }
-
-    pub(crate) fn byte_start(self) -> u64 {
-        self.byte_start
-    }
-
-    pub(crate) fn byte_end_exclusive(self) -> u64 {
-        self.byte_end_exclusive
-    }
-
-    pub(crate) fn record_digest(self) -> [u8; 32] {
-        self.record_digest
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct JsonlRecordRef<'record> {
-    bytes: &'record [u8],
-    evidence: JsonlRecordEvidence,
-    oversized: bool,
-}
-
-impl<'record> JsonlRecordRef<'record> {
-    #[cfg(test)]
-    pub(crate) fn for_test(bytes: &'record [u8], physical_ordinal: u64) -> Self {
-        Self {
-            bytes,
-            evidence: JsonlRecordEvidence {
-                physical_ordinal,
-                byte_start: 0,
-                byte_end_exclusive: bytes.len() as u64,
-                record_digest: Sha256::digest(bytes).into(),
-            },
-            oversized: false,
-        }
-    }
-
-    pub(crate) fn bytes(self) -> &'record [u8] {
-        self.bytes
-    }
-
-    pub(crate) fn evidence(self) -> JsonlRecordEvidence {
-        self.evidence
-    }
-
-    pub(crate) fn oversized(self) -> bool {
-        self.oversized
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JsonlPage;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct JsonlScanOutcome {
-    checkpoint: JsonlCheckpoint,
-}
-
-impl JsonlScanOutcome {
-    pub(crate) fn checkpoint(&self) -> &JsonlCheckpoint {
-        &self.checkpoint
     }
 }
 
@@ -403,7 +166,7 @@ impl JsonlReader {
                 source_change = JsonlSourceChange::Unchanged;
                 skip_scan = true;
                 unchanged_checkpoint = Some(previous.clone());
-            } else if same_file && observation.length >= previous.complete_prefix_end() {
+            } else if same_file && observation.length() >= previous.complete_prefix_end() {
                 let observed_prefix = hash_prefix(
                     &mut file,
                     previous.complete_prefix_end(),
@@ -413,7 +176,8 @@ impl JsonlReader {
                     prefix_hasher = observed_prefix;
                     complete_prefix_end = previous.complete_prefix_end();
                     next_physical_ordinal = previous.next_physical_ordinal();
-                    if previous.terminal() && observation.length == previous.complete_prefix_end() {
+                    if previous.terminal() && observation.length() == previous.complete_prefix_end()
+                    {
                         source_change = JsonlSourceChange::Unchanged;
                         skip_scan = true;
                         unchanged_checkpoint = Some(previous.clone());
@@ -454,7 +218,7 @@ impl JsonlReader {
                 None,
                 Some(JsonlPhysicalStream::open(
                     file,
-                    observation.length,
+                    observation.length(),
                     complete_prefix_end,
                     next_physical_ordinal,
                     JsonlRecordFraming::ordinary(),
@@ -555,7 +319,7 @@ impl JsonlReader {
             {
                 return Err(E::from(CaptureError::InvalidPayload(format!(
                     "{}:{} exceeds the {} byte JSONL record limit",
-                    self.identity.source_path.display(),
+                    self.identity.source_path().display(),
                     record.physical_ordinal.saturating_add(1),
                     MAX_PROVIDER_JSONL_LINE_BYTES
                 ))));
@@ -574,12 +338,12 @@ impl JsonlReader {
                 break;
             }
 
-            let evidence = JsonlRecordEvidence {
-                physical_ordinal: record.physical_ordinal,
-                byte_start: record.byte_start,
-                byte_end_exclusive: record.byte_end_exclusive,
-                record_digest: record.sha256,
-            };
+            let evidence = JsonlRecordEvidence::new(
+                record.physical_ordinal,
+                record.byte_start,
+                record.byte_end_exclusive,
+                record.sha256,
+            );
             let record_bytes = self
                 .physical
                 .as_ref()
@@ -590,11 +354,7 @@ impl JsonlReader {
                 })?
                 .record_bytes(record);
             let record_bytes = record_bytes.strip_suffix(b"\r").unwrap_or(record_bytes);
-            visit(JsonlRecordRef {
-                bytes: record_bytes,
-                evidence,
-                oversized,
-            })?;
+            visit(JsonlRecordRef::new(record_bytes, evidence, oversized))?;
             records = records.saturating_add(1);
             page_bytes = page_bytes.saturating_add(wire_bytes);
         }
@@ -617,11 +377,11 @@ impl JsonlReader {
                 "whole-record JSON source has a non-empty scan frontier".to_owned(),
             )));
         }
-        if self.observation.length == 0 {
+        if self.observation.length() == 0 {
             self.finish(true).map_err(E::from)?;
             return Ok(None);
         }
-        let length = usize::try_from(self.observation.length).map_err(|_| {
+        let length = usize::try_from(self.observation.length()).map_err(|_| {
             E::from(CaptureError::InvalidPayload(
                 "whole-record JSON source exceeds platform limits".to_owned(),
             ))
@@ -629,7 +389,7 @@ impl JsonlReader {
         if length > MAX_PROVIDER_JSONL_LINE_BYTES {
             return Err(E::from(CaptureError::InvalidPayload(format!(
                 "{} exceeds the {} byte whole-record JSON limit",
-                self.identity.source_path.display(),
+                self.identity.source_path().display(),
                 MAX_PROVIDER_JSONL_LINE_BYTES
             ))));
         }
@@ -645,18 +405,14 @@ impl JsonlReader {
             .map_err(CaptureError::from)
             .map_err(E::from)?;
         self.prefix_hasher.update(&self.record_buffer);
-        let evidence = JsonlRecordEvidence {
-            physical_ordinal: 0,
-            byte_start: 0,
-            byte_end_exclusive: self.observation.length,
-            record_digest: Sha256::digest(&self.record_buffer).into(),
-        };
-        visit(JsonlRecordRef {
-            bytes: &self.record_buffer,
-            evidence,
-            oversized: false,
-        })?;
-        self.complete_prefix_end = self.observation.length;
+        let evidence = JsonlRecordEvidence::new(
+            0,
+            0,
+            self.observation.length(),
+            Sha256::digest(&self.record_buffer).into(),
+        );
+        visit(JsonlRecordRef::new(&self.record_buffer, evidence, false))?;
+        self.complete_prefix_end = self.observation.length();
         self.next_physical_ordinal = 1;
         self.finish(true).map_err(E::from)?;
         Ok(Some(JsonlPage))
@@ -676,15 +432,14 @@ impl JsonlReader {
                     self.next_physical_ordinal,
                 ),
             };
-        JsonlCheckpoint {
-            version: JsonlCheckpoint::VERSION,
-            identity: self.identity.clone(),
-            source_observation: self.observation.clone(),
+        JsonlCheckpoint::new(
+            self.identity.clone(),
+            self.observation.clone(),
             complete_prefix_end,
             complete_prefix_sha256,
             next_physical_ordinal,
             terminal,
-        }
+        )
     }
 
     fn finish(&mut self, terminal: bool) -> Result<()> {
@@ -713,13 +468,13 @@ impl JsonlReader {
                 self.identity.source_path(),
                 self.source_file.as_ref(),
                 &self.observation,
-                checkpoint.complete_prefix_end,
-                checkpoint.complete_prefix_sha256,
+                checkpoint.complete_prefix_end(),
+                *checkpoint.complete_prefix_sha256(),
             )?;
         }
-        self.outcome = Some(JsonlScanOutcome {
-            checkpoint: self.unchanged_checkpoint.clone().unwrap_or(checkpoint),
-        });
+        self.outcome = Some(JsonlScanOutcome::new(
+            self.unchanged_checkpoint.clone().unwrap_or(checkpoint),
+        ));
         self.finished = true;
         Ok(())
     }
@@ -792,7 +547,7 @@ where
             &mut reader,
             &mut buffer,
             &mut hasher,
-            observation.length,
+            observation.length(),
             start,
         )
         .map_err(E::from)?
@@ -815,16 +570,11 @@ where
                 "provider identity probe ordinal exceeds u64",
             ))
         })?;
-        if let Some(value) = visit(JsonlRecordRef {
-            bytes: &buffer,
-            evidence: JsonlRecordEvidence {
-                physical_ordinal,
-                byte_start: start,
-                byte_end_exclusive: end,
-                record_digest,
-            },
-            oversized: false,
-        })? {
+        if let Some(value) = visit(JsonlRecordRef::new(
+            &buffer,
+            JsonlRecordEvidence::new(physical_ordinal, start, end, record_digest),
+            false,
+        ))? {
             let closing = revalidate_frozen_prefix(
                 source_path,
                 source_file.as_ref(),
@@ -910,16 +660,6 @@ fn read_bounded_line(
         record_digest: record.sha256,
         wire_bytes,
     })
-}
-
-fn new_prefix_hasher() -> Sha256 {
-    let mut hasher = Sha256::new();
-    hasher.update(PREFIX_HASH_DOMAIN);
-    hasher
-}
-
-fn prefix_digest(hasher: &Sha256) -> [u8; 32] {
-    hasher.clone().finalize().into()
 }
 
 #[cfg(test)]

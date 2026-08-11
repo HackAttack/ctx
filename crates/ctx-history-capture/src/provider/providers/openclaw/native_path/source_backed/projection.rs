@@ -27,15 +27,14 @@ impl OpenClawProjector {
                 StateBucket::Pending => &mut self.pending_calls,
                 StateBucket::Running => &mut self.running_processes,
             };
-            if let Some(existing) = states.get_mut(identity) {
-                *existing = PendingCallState::Ambiguous;
-                return;
+            match remember_pending_exchange(states, identity, state, capacity) {
+                JsonlPendingExchangeRemember::Inserted => {}
+                JsonlPendingExchangeRemember::BecameAmbiguous => return,
+                JsonlPendingExchangeRemember::CapacityExceeded => {
+                    self.linkage_capacity_exceeded = true;
+                    return;
+                }
             }
-            if states.len() >= capacity {
-                self.linkage_capacity_exceeded = true;
-                return;
-            }
-            states.insert(identity.to_owned(), state);
         }
         if !projector_checkpoint_fits(self) {
             match bucket {
@@ -255,13 +254,7 @@ impl OpenClawProjector {
                 structured_commit_oid: result.structured_commit_oid,
                 output_repository_path: result.output_workdir,
             }) {
-                input.provider_native_repository_aliases =
-                    linked.provider_native_repository_aliases;
-                input.outcome_operation_repository_path = linked.outcome_operation_repository_path;
-                input.outcome_output_repository_path = linked.outcome_output_repository_path;
-                input.outcome_observations = linked.outcomes;
-                input.pull_request_associations = linked.pull_request_associations;
-                input.outcome_abstentions = linked.abstentions;
+                input.apply_linked_outcome(linked);
             }
         }
         None
