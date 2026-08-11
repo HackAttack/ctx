@@ -22,6 +22,7 @@ mod request;
 mod search_filters;
 mod semantic;
 mod source_index;
+mod sources;
 mod transcript;
 mod ui;
 
@@ -63,6 +64,7 @@ pub use source_index::{
     run_locate, run_search, run_show, validate_explicit_semantic_scope, McpSearchError,
     ShowApplicationError, SourceSearchRequest,
 };
+pub use sources::{run_sources, SourcesDiscoveryObservation, SourcesExecutionObservation};
 
 pub use config::HistoryCliConfig;
 pub use history_source_plugins::{

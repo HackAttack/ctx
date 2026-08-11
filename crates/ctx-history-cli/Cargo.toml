@@ -28,6 +28,7 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+anstream.workspace = true
 rusqlite.workspace = true
 tempfile.workspace = true
 
