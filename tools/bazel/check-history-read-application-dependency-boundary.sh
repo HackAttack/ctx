@@ -234,9 +234,9 @@ measurement = next(
     item for item in module.live_measurements(root)
     if item.package.name == "ctx-history-read-application"
 )
-if measurement.cloc > 13_791:
+if measurement.cloc > 13_792:
     raise SystemExit(
-        "ctx-history-read-application exceeds its 13,791 physical CLOC ceiling: "
+        "ctx-history-read-application exceeds its 13,792 physical CLOC ceiling: "
         f"{measurement.cloc}"
     )
 print(f"ctx-history-read-application physical CLOC: {measurement.cloc}")

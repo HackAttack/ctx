@@ -5,11 +5,6 @@
   "admission_sha": "562c21c6d9d9ffedea93ddea30bbf0c11dc3aebe",
   "offenders": [
     {
-      "package": "ctx",
-      "manifest": "crates/ctx-cli/Cargo.toml",
-      "ratchet": 69376
-    },
-    {
       "package": "ctx-history-capture",
       "manifest": "crates/ctx-history-capture/Cargo.toml",
       "ratchet": 172303
