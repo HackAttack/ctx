@@ -11,6 +11,9 @@ use std::{
     sync::Arc,
 };
 
+use ctx_history_capture_model::file_touches::{
+    event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+};
 use ctx_history_core::{
     derive_event_id, derive_session_id, AgentType, CaptureProvider, CertifiedSource, CoreRecord,
     CoreRecordError, EventIdentityInput, EventOrigin, NativeItemKey, NativeSessionKey,
@@ -33,9 +36,6 @@ use super::{
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     fnv1a64,
-    provider::file_touches::{
-        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-    },
     provider::source_backed::{family::document::ChangedDocumentSink, SourceBackedRouteError},
     provider_sources::{
         retain_sqlite_source_directory_authority, SqliteFailurePhase, SqliteLogicalSnapshot,

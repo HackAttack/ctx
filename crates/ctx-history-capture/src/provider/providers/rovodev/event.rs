@@ -1,7 +1,7 @@
 use ctx_history_core::EventType;
 use serde_json::Value;
 
-use crate::provider::normalization::provider_block_event_type;
+use ctx_history_capture_model::normalization::provider_block_event_type;
 
 pub(super) fn rovodev_event_type(message: &Value, role_text: Option<&str>) -> EventType {
     if role_text.is_some_and(|role| {

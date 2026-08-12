@@ -5,14 +5,14 @@ use ctx_history_core::{Confidence, EventRole, EventType, FileChangeKind};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::provider::file_touches::normalized_key;
-use crate::provider::normalization::{
+use crate::provider::providers::goose::goose_timestamp;
+use crate::{compute_payload_hash, FORGECODE_SQLITE_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
+use ctx_history_capture_model::file_touches::normalized_key;
+use ctx_history_capture_model::normalization::{
     provider_capped_json_value, provider_line_from_index, provider_normalized_result_value,
     provider_policy_body, provider_policy_event_text, provider_result_identifier_evidence,
     provider_result_outcome_evidence, provider_role, provider_timestamp_value, provider_value_text,
 };
-use crate::provider::providers::goose::goose_timestamp;
-use crate::{compute_payload_hash, FORGECODE_SQLITE_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ForgeCodeMessageParts<'a> {

@@ -7,6 +7,7 @@ use std::{
 
 use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::provider_explicit_result_value_text;
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
     NativeItemKey, PositionStability, SessionRelationshipKind, SourceKey, StableEntityId,
@@ -19,7 +20,6 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    provider::normalization::provider_explicit_result_value_text,
     provider::source_backed::{
         family::jsonl::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
@@ -351,7 +351,7 @@ fn core_record(
         subrecord_selector: collision_selector.as_ref(),
     })
     .map_err(contract)?;
-    let role = crate::provider::normalization::provider_role(Some(role));
+    let role = ctx_history_capture_model::normalization::provider_role(Some(role));
     let touched_files = collect_touched_paths(&value)?;
     let linkage = output
         .as_ref()

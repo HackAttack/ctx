@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
+use ctx_history_capture_model::time::parse_rfc3339_utc;
+
 use crate::{
-    common::time::parse_rfc3339_utc,
     native_source::NativeSqliteValue,
     provider::sqlite::{
         ensure_sqlite_table_columns, optional_column_expr, sqlite_table_columns,

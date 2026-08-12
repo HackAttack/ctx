@@ -1,13 +1,11 @@
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::{provider_local_preview, provider_timestamp_millis};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 
 use crate::{
-    provider::{
-        normalization::{provider_local_preview, provider_timestamp_millis},
-        source_backed::family::jsonl::JsonlRecordRef,
-    },
-    CaptureError, Result, PROVIDER_MAX_PREVIEW_CHARS,
+    provider::source_backed::family::jsonl::JsonlRecordRef, CaptureError, Result,
+    PROVIDER_MAX_PREVIEW_CHARS,
 };
 
 use super::super::{

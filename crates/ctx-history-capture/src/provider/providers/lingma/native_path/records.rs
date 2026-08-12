@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::provider_timestamp_seconds;
 use ctx_history_core::EventType;
 use sha2::{Digest, Sha256};
 
-use crate::{
-    native_source::NativeSqliteValue, provider::normalization::provider_timestamp_seconds,
-};
+use crate::native_source::NativeSqliteValue;
 
 use super::LingmaRow;
 

@@ -7,8 +7,10 @@ use std::{
 use ctx_history_core::CaptureProvider;
 use serde::{Deserialize, Serialize};
 
+use ctx_history_capture_model::time::system_time_ms;
+
 use crate::{
-    common::{io::ProviderSourceRoot, time::system_time_ms},
+    common::io::ProviderSourceRoot,
     provider::codex::catalog::CatalogSession,
     provider::source_backed::family::jsonl::JsonlFileObservation,
     CODEX_SESSION_SOURCE_FORMAT,

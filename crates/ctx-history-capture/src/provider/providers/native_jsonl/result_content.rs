@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use ctx_history_core::CaptureProvider;
 use serde_json::Value;
 
-use crate::provider::normalization::provider_output_event_is_failure;
 use crate::{OutputOutcome, OutputOutcomeMetadata};
+use ctx_history_capture_model::normalization::provider_output_event_is_failure;
 
 pub(crate) const GEMINI_RESULT_PROFILE: &str = "gemini-jsonl.result-body.v1";
 pub(crate) const TABNINE_RESULT_PROFILE: &str = "tabnine.result-body.v2";

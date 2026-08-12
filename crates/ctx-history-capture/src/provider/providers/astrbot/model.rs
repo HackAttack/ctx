@@ -1,9 +1,9 @@
+use ctx_history_capture_model::normalization::{provider_role, provider_value_text};
 use ctx_history_core::EventRole;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::native_source::NativeSqliteValue;
-use crate::provider::normalization::{provider_role, provider_value_text};
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct ConversationRow {

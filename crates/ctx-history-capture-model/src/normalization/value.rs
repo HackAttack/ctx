@@ -2,10 +2,9 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::{fnv1a64, CaptureError, Result};
+use crate::{fnv1a64, time::parse_rfc3339_utc};
 
-pub(crate) fn provider_capped_json(value: &Value, max_chars: usize) -> Value {
+pub fn provider_capped_json(value: &Value, max_chars: usize) -> Value {
     match value {
         Value::Null => Value::Null,
         Value::String(text) => {
@@ -20,7 +19,7 @@ pub(crate) fn provider_capped_json(value: &Value, max_chars: usize) -> Value {
     }
 }
 
-pub(crate) fn provider_capped_json_value(value: &Value, max_string_chars: usize) -> Value {
+pub fn provider_capped_json_value(value: &Value, max_string_chars: usize) -> Value {
     match value {
         Value::String(text) => {
             let (text, truncated) = provider_local_preview(text, max_string_chars);
@@ -51,17 +50,11 @@ pub(crate) fn provider_capped_json_value(value: &Value, max_string_chars: usize)
     }
 }
 
-pub(crate) fn provider_line_from_index(index: u64) -> usize {
+pub fn provider_line_from_index(index: u64) -> usize {
     index.min(usize::MAX as u64) as usize
 }
 
-pub(crate) fn provider_nonnegative_i64_to_u64(value: i64, field: &'static str) -> Result<u64> {
-    u64::try_from(value).map_err(|_| {
-        CaptureError::InvalidPayload(format!("{field} must be nonnegative, got {value}"))
-    })
-}
-
-pub(crate) fn provider_timestamp_seconds_to_datetime(value: f64) -> Option<DateTime<Utc>> {
+pub fn provider_timestamp_seconds_to_datetime(value: f64) -> Option<DateTime<Utc>> {
     if !value.is_finite() {
         return None;
     }
@@ -76,50 +69,19 @@ pub(crate) fn provider_timestamp_seconds_to_datetime(value: f64) -> Option<DateT
     DateTime::<Utc>::from_timestamp_millis(millis as i64)
 }
 
-pub(crate) fn provider_timestamp_seconds(
-    value: Option<f64>,
-    fallback: DateTime<Utc>,
-) -> DateTime<Utc> {
+pub fn provider_timestamp_seconds(value: Option<f64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
     value
         .and_then(provider_timestamp_seconds_to_datetime)
         .unwrap_or(fallback)
 }
 
-pub(crate) fn provider_required_timestamp_seconds(
-    value: f64,
-    field: &'static str,
-) -> Result<DateTime<Utc>> {
-    provider_timestamp_seconds_to_datetime(value).ok_or_else(|| {
-        CaptureError::InvalidPayload(format!(
-            "{field} is outside representable timestamp range: {value}"
-        ))
-    })
-}
-
-pub(crate) fn provider_timestamp_millis(
-    value: Option<i64>,
-    fallback: DateTime<Utc>,
-) -> DateTime<Utc> {
+pub fn provider_timestamp_millis(value: Option<i64>, fallback: DateTime<Utc>) -> DateTime<Utc> {
     value
         .and_then(DateTime::<Utc>::from_timestamp_millis)
         .unwrap_or(fallback)
 }
 
-pub(crate) fn provider_required_timestamp_millis(
-    value: i64,
-    field: &'static str,
-) -> Result<DateTime<Utc>> {
-    DateTime::<Utc>::from_timestamp_millis(value).ok_or_else(|| {
-        CaptureError::InvalidPayload(format!(
-            "{field} is outside representable timestamp range: {value}"
-        ))
-    })
-}
-
-pub(crate) fn provider_timestamp_value(
-    value: Option<&Value>,
-    fallback: DateTime<Utc>,
-) -> DateTime<Utc> {
+pub fn provider_timestamp_value(value: Option<&Value>, fallback: DateTime<Utc>) -> DateTime<Utc> {
     match value {
         Some(Value::String(raw)) => parse_rfc3339_utc(raw)
             .or_else(|| {
@@ -136,15 +98,15 @@ pub(crate) fn provider_timestamp_value(
     }
 }
 
-pub(crate) fn text_id_index(seed: &str, offset: u64) -> u64 {
+pub fn text_id_index(seed: &str, offset: u64) -> u64 {
     offset.saturating_add(fnv1a64(seed.as_bytes()) & 0x0fff_ffff)
 }
 
-pub(crate) fn provider_json_text(raw: &str) -> Value {
+pub fn provider_json_text(raw: &str) -> Value {
     serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
 }
 
-pub(crate) fn provider_value_text(value: &Value) -> Option<String> {
+pub fn provider_value_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
         Value::Array(blocks) => {
@@ -186,7 +148,7 @@ pub(crate) fn provider_value_text(value: &Value) -> Option<String> {
 
 /// Normalizes an explicitly selected provider result value without inventing
 /// labels for tool calls, results, images, or other structural blocks.
-pub(crate) fn provider_explicit_result_value_text(value: &Value) -> Option<String> {
+pub fn provider_explicit_result_value_text(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
         Value::String(text) => Some(text.clone()),
@@ -209,7 +171,7 @@ pub(crate) fn provider_explicit_result_value_text(value: &Value) -> Option<Strin
     }
 }
 
-pub(crate) fn provider_role(value: Option<&str>) -> EventRole {
+pub fn provider_role(value: Option<&str>) -> EventRole {
     match value {
         Some("user") => EventRole::User,
         Some("assistant") => EventRole::Assistant,
@@ -219,7 +181,7 @@ pub(crate) fn provider_role(value: Option<&str>) -> EventRole {
     }
 }
 
-pub(crate) fn capped_text(value: &str, max_chars: usize) -> (String, bool) {
+pub fn capped_text(value: &str, max_chars: usize) -> (String, bool) {
     let mut out = String::new();
     let mut truncated = false;
     for (index, ch) in value.chars().enumerate() {
@@ -232,11 +194,11 @@ pub(crate) fn capped_text(value: &str, max_chars: usize) -> (String, bool) {
     (out, truncated)
 }
 
-pub(crate) fn provider_local_preview(value: &str, max_chars: usize) -> (String, bool) {
+pub fn provider_local_preview(value: &str, max_chars: usize) -> (String, bool) {
     capped_text(value, max_chars)
 }
 
-pub(crate) fn provider_string_field(value: &Value, fields: &[&str]) -> Option<String> {
+pub fn provider_string_field(value: &Value, fields: &[&str]) -> Option<String> {
     fields.iter().find_map(|field| {
         value
             .get(*field)
@@ -246,10 +208,7 @@ pub(crate) fn provider_string_field(value: &Value, fields: &[&str]) -> Option<St
     })
 }
 
-pub(crate) fn provider_timestamp_from_fields(
-    value: &Value,
-    fields: &[&str],
-) -> Option<DateTime<Utc>> {
+pub fn provider_timestamp_from_fields(value: &Value, fields: &[&str]) -> Option<DateTime<Utc>> {
     fields.iter().find_map(|field| {
         let raw = value.get(*field)?;
         match raw {
@@ -266,7 +225,7 @@ pub(crate) fn provider_timestamp_from_fields(
     })
 }
 
-pub(crate) fn provider_message_id(value: &Value, fallback_index: u64) -> String {
+pub fn provider_message_id(value: &Value, fallback_index: u64) -> String {
     value
         .get("id")
         .or_else(|| value.get("message_id"))
@@ -279,7 +238,7 @@ pub(crate) fn provider_message_id(value: &Value, fallback_index: u64) -> String 
         .unwrap_or_else(|| format!("message-{fallback_index}"))
 }
 
-pub(crate) fn provider_role_from_message(value: &Value, role_text: Option<&str>) -> EventRole {
+pub fn provider_role_from_message(value: &Value, role_text: Option<&str>) -> EventRole {
     let role = role_text.or_else(|| value.get("kind").and_then(Value::as_str));
     match role {
         Some("user" | "human" | "user_prompt" | "user-prompt") => EventRole::User,
@@ -290,7 +249,7 @@ pub(crate) fn provider_role_from_message(value: &Value, role_text: Option<&str>)
     }
 }
 
-pub(crate) fn provider_block_event_type(value: &Value, role_text: Option<&str>) -> EventType {
+pub fn provider_block_event_type(value: &Value, role_text: Option<&str>) -> EventType {
     let role = role_text.unwrap_or_default();
     if role.contains("tool_result")
         || role.contains("tool-result")
@@ -315,7 +274,7 @@ pub(crate) fn provider_block_event_type(value: &Value, role_text: Option<&str>) 
     }
 }
 
-pub(crate) fn provider_message_has_part_kind(value: &Value, kinds: &[&str]) -> bool {
+pub fn provider_message_has_part_kind(value: &Value, kinds: &[&str]) -> bool {
     provider_message_parts(value)
         .map(|parts| {
             parts.iter().any(|part| {
@@ -328,7 +287,7 @@ pub(crate) fn provider_message_has_part_kind(value: &Value, kinds: &[&str]) -> b
         .unwrap_or(false)
 }
 
-pub(crate) fn provider_block_text(value: &Value) -> Option<String> {
+pub fn provider_block_text(value: &Value) -> Option<String> {
     for key in [
         "text", "content", "message", "prompt", "response", "output", "summary",
     ] {
@@ -348,7 +307,7 @@ pub(crate) fn provider_block_text(value: &Value) -> Option<String> {
     (!rendered.is_empty()).then(|| rendered.join("\n"))
 }
 
-pub(crate) fn provider_message_parts(value: &Value) -> Option<&Vec<Value>> {
+pub fn provider_message_parts(value: &Value) -> Option<&Vec<Value>> {
     value
         .get("parts")
         .or_else(|| value.get("content"))
@@ -356,7 +315,7 @@ pub(crate) fn provider_message_parts(value: &Value) -> Option<&Vec<Value>> {
         .and_then(Value::as_array)
 }
 
-pub(crate) fn provider_part_text(part: &Value) -> Option<String> {
+pub fn provider_part_text(part: &Value) -> Option<String> {
     let kind = part
         .get("type")
         .or_else(|| part.get("kind"))

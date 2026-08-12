@@ -11,7 +11,7 @@ pub(super) const MAX_RESULT_EVIDENCE_CALL_ID_CHARS: usize = 256;
 
 /// Extracts only bounded, allowlisted artifact identifiers from successful output.
 /// Arbitrary stdout remains absent from both the canonical payload and local FTS.
-pub(crate) fn provider_result_identifier_evidence(
+pub fn provider_result_identifier_evidence(
     event_type: EventType,
     text: &str,
     body: &Value,
@@ -199,7 +199,7 @@ fn provider_forge_artifact_url(token: &str) -> Option<String> {
     (is_known_host && is_artifact).then(|| candidate.to_owned())
 }
 
-pub(crate) fn provider_output_event_is_failure(body: &Value) -> bool {
+pub fn provider_output_event_is_failure(body: &Value) -> bool {
     match body {
         Value::Object(object) => {
             provider_output_object_indicates_failure(object)
@@ -300,7 +300,7 @@ struct ProviderResultOutcome {
     exhausted: bool,
 }
 
-pub(crate) fn provider_result_outcome_evidence(event_type: EventType, body: &Value) -> Value {
+pub fn provider_result_outcome_evidence(event_type: EventType, body: &Value) -> Value {
     if !matches!(
         event_type,
         EventType::ToolOutput | EventType::CommandOutput | EventType::CommandFinished

@@ -265,13 +265,13 @@ pub(super) fn cli_message_time(value: &Value, fallback: DateTime<Utc>) -> Option
             value
                 .get("timestamp")
                 .and_then(Value::as_str)
-                .and_then(crate::common::time::parse_rfc3339_utc)
+                .and_then(ctx_history_capture_model::time::parse_rfc3339_utc)
         })
         .or_else(|| {
             value
                 .get("__timestamp")
                 .and_then(Value::as_str)
-                .and_then(crate::common::time::parse_rfc3339_utc)
+                .and_then(ctx_history_capture_model::time::parse_rfc3339_utc)
         })
         .or(Some(fallback))
 }

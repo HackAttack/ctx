@@ -1,9 +1,9 @@
 use serde_json::Value;
 
-use crate::provider::file_touches::visit_all_file_touch_drafts;
-use crate::provider::normalization::capped_text;
-use crate::provider::tool_input;
 use crate::PROVIDER_MAX_PREVIEW_CHARS;
+use ctx_history_capture_model::{
+    file_touches::visit_all_file_touch_drafts, normalization::capped_text, tool_input,
+};
 
 pub(crate) fn codex_tool_name(payload: &Value, item_type: &str) -> String {
     payload

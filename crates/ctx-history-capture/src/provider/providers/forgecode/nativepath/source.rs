@@ -9,23 +9,22 @@ use std::{
 };
 
 use chrono::Duration;
+use ctx_history_capture_model::{
+    file_touches::{
+        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+        MAX_PACKED_PROVIDER_EVENT_INDEX, PROVIDER_FILE_TOUCH_LIMIT_REJECTION,
+    },
+    normalization::{provider_capped_json_value, provider_line_from_index},
+};
 use rusqlite::Connection;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
     common::io::{ProviderSourceDirectory, ProviderSourceRoot},
-    provider::{
-        file_touches::{
-            event_type_supports_structured_file_touches,
-            visit_provider_file_touch_drafts_with_limit, MAX_PACKED_PROVIDER_EVENT_INDEX,
-            PROVIDER_FILE_TOUCH_LIMIT_REJECTION,
-        },
-        normalization::{provider_capped_json_value, provider_line_from_index},
-        sqlite::{
-            ensure_sqlite_table_columns, optional_column_expr, sqlite_schema_fingerprint,
-            sqlite_table_columns, SqliteLengthPreflightGuard,
-        },
+    provider::sqlite::{
+        ensure_sqlite_table_columns, optional_column_expr, sqlite_schema_fingerprint,
+        sqlite_table_columns, SqliteLengthPreflightGuard,
     },
     provider_sources::{
         open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,

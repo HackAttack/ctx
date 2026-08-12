@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::EventType;
 use serde_json::{json, Value};
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::provider::normalization::provider_value_text;
 use crate::{CaptureError, Result, PROVIDER_MAX_PREVIEW_CHARS};
+use ctx_history_capture_model::normalization::provider_value_text;
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 use super::source::MistralVibeSessionSource;
 use super::MISTRAL_VIBE_MAX_ID_BYTES;

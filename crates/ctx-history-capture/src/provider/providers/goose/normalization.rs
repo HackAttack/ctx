@@ -1,17 +1,19 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
+use ctx_history_capture_model::{
+    file_touches::{
+        inferred_file_change_kind, normalize_file_path, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+    },
+    normalization::{
+        provider_normalized_result_value, provider_timestamp_seconds, provider_value_text,
+    },
+    time::parse_rfc3339_utc,
+};
 use ctx_history_core::FileChangeKind;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::provider::file_touches::{
-    inferred_file_change_kind, normalize_file_path, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-};
-use crate::provider::normalization::{
-    provider_normalized_result_value, provider_timestamp_seconds, provider_value_text,
-};
 use crate::{OutputOutcome, OutputOutcomeMetadata, Result};
 
 use super::stream::{GooseRetainedContentClass, GooseRetainedMessage};

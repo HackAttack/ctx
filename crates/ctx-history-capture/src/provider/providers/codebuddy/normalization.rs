@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 
-use crate::provider::normalization::provider_role;
+use ctx_history_capture_model::normalization::provider_role;
 
 pub(super) fn codebuddy_title_from_text(text: &str) -> Option<String> {
     let title = text.replace('\n', " ").chars().take(50).collect::<String>();

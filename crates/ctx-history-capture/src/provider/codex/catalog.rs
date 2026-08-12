@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use crate::common::io::{
     read_provider_jsonl_line_or_skip_oversized, OpenedProviderSourceFile, ProviderJsonlLineRead,
 };
-use crate::common::time::{parse_rfc3339_utc, system_time_ms};
 use crate::{CaptureError, Result, CODEX_SESSION_SOURCE_FORMAT};
+use ctx_history_capture_model::time::{parse_rfc3339_utc, system_time_ms};
 
 use crate::provider::codex::nativepath::{opened_codex_file_observation, CodexFileObservation};
 use crate::provider::codex::{CODEX_CAPTURE_REVISION, CODEX_POLICY_REVISION};

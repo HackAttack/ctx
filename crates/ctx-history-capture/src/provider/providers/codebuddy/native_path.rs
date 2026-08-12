@@ -13,6 +13,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::{provider_role, provider_value_text};
 use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType, SourceKey};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -22,10 +23,7 @@ use crate::{
         open_provider_source_path, OpenedProviderSourceFile, OpenedProviderSourcePath,
         ProviderSourceDirectory, ProviderSourceRoot,
     },
-    provider::{
-        normalization::{provider_role, provider_value_text},
-        provider_safe_path_segment,
-    },
+    provider::provider_safe_path_segment,
     CaptureError, ProviderAdapterContext, Result, CODEBUDDY_SOURCE_FORMAT,
     MAX_PROVIDER_JSONL_LINE_BYTES,
 };

@@ -46,6 +46,15 @@ pub struct ProviderImportFailure {
     pub error: String,
 }
 
+pub fn push_provider_import_failure(
+    summary: &mut ProviderImportSummary,
+    line: usize,
+    error: String,
+) {
+    summary.failed += 1;
+    summary.failures.push(ProviderImportFailure { line, error });
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogSummary {
     pub source_files: usize,
@@ -127,6 +136,29 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<CatalogSummary>(&json).unwrap(),
             summary
+        );
+    }
+
+    #[test]
+    fn import_failure_accumulator_preserves_count_and_insertion_order() {
+        let mut summary = ProviderImportSummary::default();
+
+        push_provider_import_failure(&mut summary, 7, "first".to_owned());
+        push_provider_import_failure(&mut summary, 3, "second".to_owned());
+
+        assert_eq!(summary.failed, 2);
+        assert_eq!(
+            summary.failures,
+            vec![
+                ProviderImportFailure {
+                    line: 7,
+                    error: "first".to_owned(),
+                },
+                ProviderImportFailure {
+                    line: 3,
+                    error: "second".to_owned(),
+                },
+            ]
         );
     }
 

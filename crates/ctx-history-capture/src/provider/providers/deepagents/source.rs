@@ -10,12 +10,12 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::common::time::parse_rfc3339_utc;
 use crate::provider::sqlite::{
     ensure_sqlite_table_columns, sqlite_table_columns, sqlite_table_exists,
     SqliteLengthPreflightGuard,
 };
 use crate::{CaptureError, ProviderAdapterContext, Result, MAX_PROVIDER_SQLITE_VALUE_BYTES};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 const DEEPAGENTS_SQLITE_VALUE_OVERHEAD_BYTES: u64 = 32 * 16;
 

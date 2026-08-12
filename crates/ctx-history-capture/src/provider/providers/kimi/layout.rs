@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 #[cfg(test)]
 use crate::common::io::{ensure_regular_provider_transcript_file, read_text_file_limited};
 use crate::common::io::{read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead};
-use crate::provider::normalization::provider_local_preview;
 use crate::{CaptureError, Result};
+use ctx_history_capture_model::normalization::provider_local_preview;
 
 pub(super) const KIMI_WIRE_LAYOUT_MAX_AGGREGATE_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const KIMI_WIRE_LAYOUT_MAX_INDEX_ENTRIES: usize = 65_536;

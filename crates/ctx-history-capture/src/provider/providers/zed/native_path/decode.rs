@@ -8,7 +8,9 @@ use serde::{
 };
 use serde_json::{json, Value};
 
-use crate::{common::time::parse_rfc3339_utc, MAX_PROVIDER_SQLITE_VALUE_BYTES};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
+
+use crate::MAX_PROVIDER_SQLITE_VALUE_BYTES;
 
 use super::{
     dto::{ZedNativeEncoding, ZedNativeRejectionKind},

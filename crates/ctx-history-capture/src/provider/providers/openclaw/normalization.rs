@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 
-use crate::provider::normalization::{provider_role, provider_value_text};
+use ctx_history_capture_model::normalization::{provider_role, provider_value_text};
 
 pub(crate) struct OpenClawEventFact {
     pub(crate) provider_event_index: u64,

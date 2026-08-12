@@ -4,14 +4,16 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::provider::normalization::{
-    provider_json_text, provider_nonnegative_i64_to_u64, provider_policy_body,
-    provider_policy_event_text, provider_required_timestamp_seconds,
-    provider_result_identifier_evidence, provider_result_outcome_evidence, provider_role,
-    provider_value_text,
+    provider_nonnegative_i64_to_u64, provider_required_timestamp_seconds,
 };
 use crate::{
     record_evidence::RecordDigest, OutputOutcome, OutputOutcomeMetadata, Result,
     HERMES_SQLITE_SOURCE_FORMAT,
+};
+use ctx_history_capture_model::normalization::{
+    provider_json_text, provider_policy_body, provider_policy_event_text,
+    provider_result_identifier_evidence, provider_result_outcome_evidence, provider_role,
+    provider_value_text,
 };
 
 mod layout;

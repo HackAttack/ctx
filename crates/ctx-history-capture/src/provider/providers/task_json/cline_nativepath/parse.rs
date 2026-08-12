@@ -7,6 +7,13 @@ use std::{
 };
 
 use chrono::DateTime;
+use ctx_history_capture_model::{
+    file_touches::{
+        visit_provider_file_touch_drafts_with_limit, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+        PROVIDER_FILE_TOUCH_LIMIT_REJECTION,
+    },
+    normalization::provider_normalized_result_value,
+};
 use serde::{
     de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
@@ -15,13 +22,8 @@ use serde_json::{value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    common::io::OpenedProviderSourceFile,
-    provider::file_touches::{
-        visit_provider_file_touch_drafts_with_limit, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-        PROVIDER_FILE_TOUCH_LIMIT_REJECTION,
-    },
-    provider::normalization::provider_normalized_result_value,
-    OutputObservationKind, OutputOutcome, OutputOutcomeMetadata,
+    common::io::OpenedProviderSourceFile, OutputObservationKind, OutputOutcome,
+    OutputOutcomeMetadata,
 };
 
 use super::{

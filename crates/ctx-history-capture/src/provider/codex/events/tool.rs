@@ -6,9 +6,9 @@ use serde_json::{Map, Value};
 #[cfg(test)]
 use super::retention::{codex_exit_code, codex_wall_time_ms};
 #[cfg(test)]
-use crate::provider::normalization::provider_output_event_is_failure;
-#[cfg(test)]
 use crate::{OutputOutcome, OutputOutcomeMetadata};
+#[cfg(test)]
+use ctx_history_capture_model::normalization::provider_output_event_is_failure;
 
 const MAX_CODEX_EXEC_RESULT_ENVELOPE_BYTES: usize = 1024 * 1024;
 

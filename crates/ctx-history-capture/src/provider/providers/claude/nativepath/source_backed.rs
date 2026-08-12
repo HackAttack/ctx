@@ -8,6 +8,13 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    ctx_retrieval::{
+        classify_direct_cli_tool_input, classify_linked_result, classify_mcp_invocation,
+        discovery_exclusion_for, ContributionClass, ResultAtom, ResultTerminalStatus,
+    },
+    normalization::provider_explicit_result_value_text,
+};
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, EventHydrationRequest, EventIdentityInput,
     HydratedProviderRecord, HydrationFailure, HydrationFailureKind, LocatorRevisionPolicy,

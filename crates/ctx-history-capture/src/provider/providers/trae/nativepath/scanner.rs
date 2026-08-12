@@ -7,6 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::provider_role;
 use ctx_history_core::{CaptureProvider, EventRole, EventType};
 use rusqlite::Connection;
 use serde::de::IgnoredAny;
@@ -17,7 +18,6 @@ use crate::{
     common::io::{ProviderSourceDirectory, ProviderSourceRoot},
     provider::{
         native_ingestion::{NATIVE_INGESTION_PAGE_MAX_BYTES, NATIVE_INGESTION_PAGE_MAX_UNITS},
-        normalization::provider_role,
         sqlite::{
             sqlite_schema_fingerprint, sqlite_table_columns, sqlite_table_exists,
             SqliteLengthPreflightGuard,

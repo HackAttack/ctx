@@ -7,6 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::{provider_role, provider_timestamp_seconds};
 use ctx_history_core::{
     derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
     EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, ProjectionContractError,
@@ -32,16 +33,12 @@ use super::{
 };
 use crate::{
     common::io::{OpenedProviderSourcePath, ProviderSourceDirectory, ProviderSourceRoot},
-    provider::{
-        normalization::{provider_role, provider_timestamp_seconds},
-        source_backed::{
-            family::document::{
-                ChangedDocumentSink, CompleteDocumentTree, DocumentLeafFingerprint,
-                DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
-            },
-            route_error, SourceBackedRouteError, SourceBackedRouteErrorKind,
-            SourceBackedRouteResult,
+    provider::source_backed::{
+        family::document::{
+            ChangedDocumentSink, CompleteDocumentTree, DocumentLeafFingerprint,
+            DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
         },
+        route_error, SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
     },
     provider_sources::{
         open_root_handle_sqlite_source_snapshot, retain_sqlite_source_directory_authority,

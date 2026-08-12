@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use ctx_history_capture_model::normalization::{
+    provider_explicit_result_value_text, provider_json_text, text_id_index,
+};
 use ctx_history_core::{EventRole, EventType};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::native_source::NativeSqliteValue;
-use crate::provider::normalization::{
-    provider_explicit_result_value_text, provider_json_text, text_id_index,
-};
 use crate::{CaptureError, Result};
 
 use super::{SHELLEY_CONVERSATION_VALUE_COUNT, SHELLEY_MESSAGE_VALUE_COUNT};

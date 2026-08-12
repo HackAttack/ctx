@@ -3,6 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use ctx_history_capture_model::normalization::provider_result_outcome_evidence;
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
     EventIdentityInput, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
@@ -16,13 +17,10 @@ use crate::provider::source_backed::family::document::{
     DocumentLeafFingerprint, DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
 };
 use crate::{
-    provider::{
-        normalization::provider_result_outcome_evidence,
-        source_backed::{
-            SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
-            SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
-            SourceBackedRouteResult,
-        },
+    provider::source_backed::{
+        SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
+        SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
+        SourceBackedRouteResult,
     },
     provider_sources::{
         EventFileCoordinates, EventFileGroup, EventFileInventory, EventFileInventoryError,

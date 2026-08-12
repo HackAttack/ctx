@@ -18,10 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use ctx_history_capture_model::file_touches::visit_provider_file_touch_drafts_with_limit;
+
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::{
-        file_touches::visit_provider_file_touch_drafts_with_limit,
         providers::native_jsonl::visit_native_jsonl_files,
         source_backed::{
             family::jsonl::{
@@ -633,8 +634,10 @@ fn result_outcome(value: &Value, event_type: EventType) -> ResultOutcome {
     if timed_out {
         return ResultOutcome::Timeout;
     }
-    match crate::provider::normalization::provider_result_outcome_evidence(event_type, value)
-        .as_str()
+    match ctx_history_capture_model::normalization::provider_result_outcome_evidence(
+        event_type, value,
+    )
+    .as_str()
     {
         Some("success") => ResultOutcome::Success,
         Some("failure") => ResultOutcome::Failure,

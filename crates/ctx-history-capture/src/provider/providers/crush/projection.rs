@@ -2,9 +2,10 @@ use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 
 use crate::native_source::NativeSqliteValue;
-use crate::provider::normalization::provider_normalized_result_value;
-use crate::provider::normalization::{provider_role, provider_value_text};
 use crate::{CaptureError, OutputOutcome, OutputOutcomeMetadata, Result};
+use ctx_history_capture_model::normalization::{
+    provider_normalized_result_value, provider_role, provider_value_text,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct CrushSessionRow {

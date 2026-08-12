@@ -14,6 +14,13 @@ use std::{
 
 use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    file_touches::{
+        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+    },
+    tool_input,
+};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
     CoreRecordError, EventIdentityInput, EventType, ProjectionContractError, SourceKey,
@@ -33,13 +40,6 @@ use crate::{
             JsonlRecordRef,
         },
         FallbackEventIdentityState,
-    },
-    provider::{
-        file_touches::{
-            event_type_supports_structured_file_touches,
-            visit_provider_file_touch_drafts_with_limit, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
-        },
-        tool_input,
     },
     CaptureError, OutputObservationKind, KIMI_CODE_CLI_SOURCE_FORMAT,
 };

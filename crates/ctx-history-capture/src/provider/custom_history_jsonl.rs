@@ -3,22 +3,15 @@ use serde_json::{json, Value};
 
 use crate::stable_capture_uuid;
 
-use crate::{ProviderImportFailure, ProviderImportSummary};
+use ctx_history_capture_model::push_provider_import_failure;
+
+use crate::ProviderImportSummary;
 
 pub(crate) const CUSTOM_HISTORY_IDENTIFIER_MAX_BYTES: usize = 512;
 
 mod nativepath;
 
 pub(crate) use nativepath::{custom_history_jsonl_family_adapter, CustomHistorySourceBackedInput};
-
-pub(crate) fn push_provider_import_failure(
-    summary: &mut ProviderImportSummary,
-    line: usize,
-    error: String,
-) {
-    summary.failed += 1;
-    summary.failures.push(ProviderImportFailure { line, error });
-}
 
 pub(crate) fn validate_custom_source_record(
     summary: &mut ProviderImportSummary,

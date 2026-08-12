@@ -2,8 +2,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use ctx_history_core::EventType;
 use serde_json::Value;
 
-use crate::common::time::parse_rfc3339_utc;
 use crate::OutputOutcome;
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 use super::relationships::{shelley_event_type, shelley_message_body, ShelleyMessageRow};
 

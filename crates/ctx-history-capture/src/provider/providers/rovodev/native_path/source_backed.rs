@@ -11,6 +11,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ctx_history_capture_model::{
+    file_touches::{
+        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+    },
+    normalization::{
+        provider_block_text, provider_explicit_result_value_text, provider_message_id,
+        provider_output_event_is_failure, provider_result_outcome_evidence,
+        provider_role_from_message, provider_string_field, provider_timestamp_from_fields,
+    },
+    tool_input,
+};
 use ctx_history_core::{
     derive_event_id, derive_session_id, AgentType, CaptureProvider, CoreRecord, CoreRecordError,
     EventIdentityInput, EventRole, EventType, NativeItemKey, NativeSessionKey,
@@ -29,25 +41,13 @@ use super::super::{
 };
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    provider::{
-        file_touches::{
-            event_type_supports_structured_file_touches,
-            visit_provider_file_touch_drafts_with_limit, MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+    provider::source_backed::{
+        family::document::{
+            ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,
+            DocumentLeafFingerprint, DocumentSourceTerminal, ObservedDocumentLeaf,
+            ReplacementDocumentTree,
         },
-        normalization::{
-            provider_block_text, provider_explicit_result_value_text, provider_message_id,
-            provider_output_event_is_failure, provider_result_outcome_evidence,
-            provider_role_from_message, provider_string_field, provider_timestamp_from_fields,
-        },
-        source_backed::{
-            family::document::{
-                ChangedDocumentSink, CompleteDocumentTree, DocumentLeafExecutionPolicy,
-                DocumentLeafFingerprint, DocumentSourceTerminal, ObservedDocumentLeaf,
-                ReplacementDocumentTree,
-            },
-            SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
-        },
-        tool_input,
+        SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
     },
     CaptureError, OutputObservationKind, OutputOutcome, ProviderAdapterContext,
     MAX_PROVIDER_JSONL_LINE_BYTES, ROVODEV_SOURCE_FORMAT,

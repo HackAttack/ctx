@@ -28,6 +28,10 @@ use crate::{
     },
     CaptureError, Result, CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT, MAX_PROVIDER_JSONL_LINE_BYTES,
 };
+use ctx_history_capture_model::ctx_retrieval::{
+    classify_direct_cli_command, classify_linked_result, classify_mcp_invocation,
+    discovery_exclusion_for, ContributionClass, ResultAtom, ResultTerminalStatus,
+};
 
 const SOURCE_ANCHOR_NAMESPACE: &str = "cursor.session";
 const NATIVE_SESSION_NAMESPACE: &str = "cursor.session";

@@ -4,9 +4,11 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType, SessionStatus};
 use serde_json::{json, Value};
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::provider::normalization::{provider_capped_json, provider_role, provider_value_text};
 use crate::PROVIDER_MAX_PREVIEW_CHARS;
+use ctx_history_capture_model::normalization::{
+    provider_capped_json, provider_role, provider_value_text,
+};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 use super::native_path::{
     factory_droid_event_text, factory_droid_event_type, factory_droid_header_cwd,

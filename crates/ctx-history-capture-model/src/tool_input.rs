@@ -36,7 +36,7 @@ pub fn command(value: &Value) -> Option<String> {
 /// Shell composition, redirection, expansion, comments, and malformed quoting
 /// abstain. This is lexical decoding for provider-supplied tool input; it does
 /// not resolve executables, source profiles, or emulate a shell.
-pub(crate) fn direct_argv(value: &Value) -> Option<Vec<String>> {
+pub fn direct_argv(value: &Value) -> Option<Vec<String>> {
     direct_command_argv(&direct_command(value)?)
 }
 
@@ -96,7 +96,7 @@ fn bounded_command(command: &str) -> Option<String> {
         .then(|| command.to_owned())
 }
 
-pub(crate) fn direct_command_argv(command: &str) -> Option<Vec<String>> {
+pub fn direct_command_argv(command: &str) -> Option<Vec<String>> {
     if command.is_empty() || command.len() > MAX_COMMAND_BYTES || command.contains('\0') {
         return None;
     }

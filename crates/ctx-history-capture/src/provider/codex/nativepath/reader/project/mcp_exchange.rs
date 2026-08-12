@@ -74,7 +74,7 @@ impl ProjectedMcpExchange {
                 .then_some(invocation)
                 .flatten()
                 .map(|invocation| {
-                    crate::provider::ctx_retrieval::classify_mcp_invocation(
+                    ctx_history_capture_model::ctx_retrieval::classify_mcp_invocation(
                         &invocation.server,
                         &invocation.tool,
                     )
@@ -85,29 +85,29 @@ impl ProjectedMcpExchange {
             .as_ref()
             .map(|response| match response.status {
                 ctx_history_core::McpTerminalStatus::Succeeded => {
-                    crate::provider::ctx_retrieval::ResultTerminalStatus::Succeeded
+                    ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Succeeded
                 }
                 ctx_history_core::McpTerminalStatus::Failed
                 | ctx_history_core::McpTerminalStatus::Cancelled
                 | ctx_history_core::McpTerminalStatus::TimedOut => {
-                    crate::provider::ctx_retrieval::ResultTerminalStatus::Failed
+                    ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Failed
                 }
                 ctx_history_core::McpTerminalStatus::Unknown => {
-                    crate::provider::ctx_retrieval::ResultTerminalStatus::Unknown
+                    ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Unknown
                 }
             })
-            .unwrap_or(crate::provider::ctx_retrieval::ResultTerminalStatus::Unknown);
+            .unwrap_or(ctx_history_capture_model::ctx_retrieval::ResultTerminalStatus::Unknown);
         let atom = if self.strict_discovery_payload {
-            crate::provider::ctx_retrieval::ResultAtom::Payload
+            ctx_history_capture_model::ctx_retrieval::ResultAtom::Payload
         } else {
-            crate::provider::ctx_retrieval::ResultAtom::Unknown
+            ctx_history_capture_model::ctx_retrieval::ResultAtom::Unknown
         };
-        let contribution = crate::provider::ctx_retrieval::classify_linked_result(
+        let contribution = ctx_history_capture_model::ctx_retrieval::classify_linked_result(
             linked_invocation,
             terminal_status,
             [atom],
         );
-        crate::provider::ctx_retrieval::discovery_exclusion_for([contribution])
+        ctx_history_capture_model::ctx_retrieval::discovery_exclusion_for([contribution])
     }
 }
 

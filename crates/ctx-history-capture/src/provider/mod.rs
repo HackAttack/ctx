@@ -1,14 +1,11 @@
 pub(crate) mod adapter;
 pub(crate) mod codex;
 pub(crate) mod custom_history_jsonl;
-pub(crate) mod file_touches;
 pub(crate) mod native_ingestion;
 pub(crate) mod normalization;
 pub(crate) mod providers;
 pub mod source_backed;
 pub(crate) mod sqlite;
-
-pub(crate) use ctx_history_capture_model::{ctx_retrieval, tool_input};
 
 const MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES: usize = 7 * 1024;
 

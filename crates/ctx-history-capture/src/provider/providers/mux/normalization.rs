@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
-use ctx_history_core::{EventRole, EventType};
-use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-
-use crate::provider::normalization::{
+use ctx_history_capture_model::normalization::{
     provider_local_preview, provider_policy_body, provider_policy_event_text,
     provider_result_identifier_evidence, provider_result_outcome_evidence, provider_role,
     provider_value_text,
 };
+use ctx_history_core::{EventRole, EventType};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
 use crate::{MUX_SOURCE_FORMAT, PROVIDER_MAX_PREVIEW_CHARS};
 
 use super::metadata::mux_value_timestamp;

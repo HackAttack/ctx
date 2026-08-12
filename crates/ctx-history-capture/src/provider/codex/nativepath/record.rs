@@ -11,10 +11,10 @@ use super::rows::{
     CodexSessionGitMetadata, CodexSessionRow, MAX_CODEX_DURABLE_CWD_BYTES,
     MAX_CODEX_DURABLE_METADATA_BYTES, MAX_CODEX_DURABLE_SESSION_ID_BYTES,
 };
-use crate::common::time::parse_rfc3339_utc;
 use crate::provider::codex::catalog::{codex_session_relationship, codex_source_kind};
 use crate::provider::codex::events::{CodexExitCodeParser, CodexWallTimeParser};
 use crate::{OutputOutcome, OutputOutcomeMetadata};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CodexRetainedKind {

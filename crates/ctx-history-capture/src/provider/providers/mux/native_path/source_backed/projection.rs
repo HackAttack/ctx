@@ -2,6 +2,12 @@ use std::sync::Arc;
 
 use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    file_touches::{
+        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+    },
+    normalization::provider_value_text,
+};
 use ctx_history_core::{
     derive_event_id, CoreContentPolicyStatus, CoreRecord, EventIdentityInput, EventOrigin,
     NativeItemKey, SessionRelationshipKind, SourceKey, TypedKey,
@@ -12,11 +18,6 @@ use sha2::{Digest, Sha256};
 use crate::{
     common::io::ProviderSourceRoot,
     provider::{
-        file_touches::{
-            event_type_supports_structured_file_touches,
-            visit_provider_file_touch_drafts_with_limit,
-        },
-        normalization::provider_value_text,
         providers::mux::normalization::{
             apply_mux_core_output_diagnostic, mux_core_event, mux_event_text, mux_event_type,
             mux_message_timestamp_opt, mux_output_projection, mux_partial_event_index,

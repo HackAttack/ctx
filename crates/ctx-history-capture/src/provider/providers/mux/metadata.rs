@@ -1,14 +1,14 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    normalization::{provider_local_preview, provider_timestamp_seconds_to_datetime},
+    push_provider_import_failure,
+    time::parse_rfc3339_utc,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::provider::custom_history_jsonl::push_provider_import_failure;
-use crate::provider::normalization::{
-    provider_local_preview, provider_timestamp_seconds_to_datetime,
-};
 use crate::{CaptureError, ProviderImportSummary, Result, PROVIDER_MAX_PREVIEW_CHARS};
 
 use super::source::MuxSessionSource;

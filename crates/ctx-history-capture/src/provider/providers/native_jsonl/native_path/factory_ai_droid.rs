@@ -3,12 +3,11 @@ use std::path::Path;
 use ctx_history_core::{AgentType, CaptureProvider, EventRole, EventType};
 use serde_json::Value;
 
-use crate::{
-    provider::normalization::{
-        provider_output_event_is_failure, provider_role, provider_value_text,
-    },
-    OutputOutcome, OutputOutcomeMetadata, FACTORY_DROID_SOURCE_FORMAT,
+use ctx_history_capture_model::normalization::{
+    provider_output_event_is_failure, provider_role, provider_value_text,
 };
+
+use crate::{OutputOutcome, OutputOutcomeMetadata, FACTORY_DROID_SOURCE_FORMAT};
 
 use super::super::result_content::{
     extract_direct_result_content, NativeJsonlResultExtractionError, NativeJsonlResultSubrecord,

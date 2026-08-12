@@ -1,6 +1,6 @@
 //! OpenClaw source-backed legacy JSONL capture.
 
-use crate::provider::normalization::provider_local_preview;
+use ctx_history_capture_model::normalization::provider_local_preview;
 
 use super::{normalization, openclaw_output_metadata};
 

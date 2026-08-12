@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 
-use crate::provider::normalization::{
+use ctx_history_capture_model::normalization::{
     provider_timestamp_millis, provider_timestamp_value, provider_value_text,
 };
 

@@ -24,6 +24,8 @@ use super::{
     discover_gemini_transcripts, GeminiEventIdentity, GeminiFileObservation, GeminiScanError,
     GeminiSession, GeminiTranscriptSource,
 };
+use ctx_history_capture_model::ctx_retrieval;
+
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     provider::source_backed::{

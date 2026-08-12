@@ -23,10 +23,12 @@ use std::cell::Cell;
 #[cfg(test)]
 use crate::Result;
 use crate::{
-    provider::ctx_retrieval::{ContributionClass, ResultAtom, ResultTerminalStatus},
     provider::source_backed::family::jsonl::{read_bounded_record_unhashed, JsonlRecordFraming},
     CaptureError, OutputOutcome, OutputOutcomeMetadata, MAX_PROVIDER_JSONL_LINE_BYTES,
     PROVIDER_MAX_PREVIEW_CHARS,
+};
+use ctx_history_capture_model::ctx_retrieval::{
+    ContributionClass, ResultAtom, ResultTerminalStatus,
 };
 
 #[cfg(test)]

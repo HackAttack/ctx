@@ -7,6 +7,7 @@ use std::{
 
 use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::provider_local_preview;
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, AgentType, CaptureProvider, CoreRecord,
     EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId, TypedKey,
@@ -16,16 +17,13 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
-    provider::{
-        normalization::provider_local_preview,
-        source_backed::{
-            family::jsonl::{
-                JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
-                JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
-                JsonlRecordRef,
-            },
-            FallbackEventIdentityState,
+    provider::source_backed::{
+        family::jsonl::{
+            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
+            JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
+            JsonlRecordRef,
         },
+        FallbackEventIdentityState,
     },
     CaptureError, Result, JUNIE_SESSION_EVENTS_SOURCE_FORMAT,
 };

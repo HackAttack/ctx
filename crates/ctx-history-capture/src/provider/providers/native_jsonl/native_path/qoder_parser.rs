@@ -1,12 +1,10 @@
+use ctx_history_capture_model::normalization::{
+    provider_output_event_is_failure, provider_role, provider_value_text,
+};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 
-use crate::{
-    provider::normalization::{
-        provider_output_event_is_failure, provider_role, provider_value_text,
-    },
-    OutputOutcome, OutputOutcomeMetadata,
-};
+use crate::{OutputOutcome, OutputOutcomeMetadata};
 
 use super::super::{
     normalization::native_jsonl_content_has,

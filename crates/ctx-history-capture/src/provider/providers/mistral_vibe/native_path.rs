@@ -6,18 +6,18 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{
+    file_touches::visit_all_file_touch_drafts,
+    normalization::{provider_output_event_is_failure, provider_result_outcome_evidence},
+    tool_input,
+};
 use ctx_history_core::{AgentType, EventType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    provider::{
-        file_touches::visit_all_file_touch_drafts,
-        normalization::{provider_output_event_is_failure, provider_result_outcome_evidence},
-        providers::native_jsonl::native_jsonl_timestamp,
-        tool_input,
-    },
-    CaptureError, OutputObservationKind, OutputOutcome, Result, MISTRAL_VIBE_SOURCE_FORMAT,
+    provider::providers::native_jsonl::native_jsonl_timestamp, CaptureError, OutputObservationKind,
+    OutputOutcome, Result, MISTRAL_VIBE_SOURCE_FORMAT,
 };
 
 use super::{
@@ -157,7 +157,7 @@ fn valid_mistral_vibe_record_role(value: &Value) -> std::result::Result<&str, &'
         .any(|field| {
             value
                 .get(*field)
-                .and_then(crate::provider::normalization::provider_value_text)
+                .and_then(ctx_history_capture_model::normalization::provider_value_text)
                 .is_some()
         });
     let carries_tool_call = value

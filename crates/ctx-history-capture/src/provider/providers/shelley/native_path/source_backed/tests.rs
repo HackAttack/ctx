@@ -335,12 +335,12 @@ fn shelley_scan_queries_are_bounded_by_row_sets_with_exact_core_replay() {
     let database = create_fixture(temp.path(), "message-1");
     let connection = Connection::open(&database).unwrap();
     let collision_ids = ["collision-507bc35f-9bs", "collision-a084ee59-mhm"];
-    let released_bucket = crate::provider::normalization::text_id_index(
+    let released_bucket = ctx_history_capture_model::normalization::text_id_index(
         &format!("conversation-1:{}", collision_ids[0]),
         4_096,
     );
     assert_eq!(
-        crate::provider::normalization::text_id_index(
+        ctx_history_capture_model::normalization::text_id_index(
             &format!("conversation-1:{}", collision_ids[1]),
             4_096,
         ),

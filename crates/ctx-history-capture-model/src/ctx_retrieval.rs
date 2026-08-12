@@ -11,7 +11,7 @@ pub enum ContributionClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CtxRetrievalRoute {
+pub enum CtxRetrievalRoute {
     Search,
     ShowEvent,
     ShowSession,
@@ -76,7 +76,7 @@ pub fn classify_direct_cli_command(command: &str) -> ContributionClass {
     })
 }
 
-pub(crate) fn classify_direct_cli_argv<T: AsRef<str>>(argv: &[T]) -> ContributionClass {
+pub fn classify_direct_cli_argv<T: AsRef<str>>(argv: &[T]) -> ContributionClass {
     let Some(executable) = argv.first().map(AsRef::as_ref) else {
         return ContributionClass::Unknown;
     };
@@ -131,7 +131,7 @@ pub fn classify_mcp_invocation(server: &str, tool: &str) -> ContributionClass {
     }
 }
 
-pub(crate) fn canonical_mcp_route(server: &str, tool: &str) -> Option<CtxRetrievalRoute> {
+pub fn canonical_mcp_route(server: &str, tool: &str) -> Option<CtxRetrievalRoute> {
     if server != "ctx" {
         return None;
     }

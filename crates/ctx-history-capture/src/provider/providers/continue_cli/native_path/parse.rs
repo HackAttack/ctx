@@ -3,10 +3,9 @@ use std::{ops::Range, path::PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{
-    provider::file_touches::visit_provider_file_touch_drafts_with_limit,
-    MAX_PROVIDER_JSONL_LINE_BYTES,
-};
+use ctx_history_capture_model::file_touches::visit_provider_file_touch_drafts_with_limit;
+
+use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 use super::{
     decode::{

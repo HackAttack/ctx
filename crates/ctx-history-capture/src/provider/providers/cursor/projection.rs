@@ -3,7 +3,7 @@ use ctx_history_core::{EventRole, EventType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::common::time::parse_rfc3339_utc;
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 use super::parser::{
     CursorDiscoveryResultEvidence, CursorInputPathEvidence, CursorSafePart, CursorSanitizedRecord,

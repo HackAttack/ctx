@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::common::time::parse_rfc3339_utc;
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 pub(crate) fn task_json_string_field(value: &Value, fields: &[&str]) -> Option<String> {
     fields

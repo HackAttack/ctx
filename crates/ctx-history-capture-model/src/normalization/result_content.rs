@@ -6,7 +6,7 @@ use serde_json::Value;
 /// Provider adapters must select the native result field explicitly before
 /// calling this helper. The renderer itself is deliberately unbounded: callers
 /// that retain or return the content own their byte limit.
-pub(crate) fn provider_normalized_result_value(value: &Value) -> String {
+pub fn provider_normalized_result_value(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::Null => String::new(),

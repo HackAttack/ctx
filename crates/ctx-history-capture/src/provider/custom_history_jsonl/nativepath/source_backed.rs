@@ -17,6 +17,7 @@ use std::{
 
 use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::{provider_policy_event_text, provider_value_text};
 use ctx_history_core::{
     derive_session_id, CaptureProvider, CertifiedSource, CertifiedSourceAppend,
     CertifiedSourceDeletion, CertifiedSourceInventory, CoreRecord,
@@ -34,12 +35,10 @@ use super::reader::{
     emit_projection_pages, write_spooled_event, CatalogBudget, CustomHistoryCatalogLimits,
     CUSTOM_HISTORY_CATALOG_ENTRY_OVERHEAD_BYTES,
 };
-use crate::provider::custom_history_jsonl::push_provider_import_failure;
 use crate::{
     common::io::OpenedProviderSourceFile,
     provider::{
         custom_history_jsonl::{validate_custom_history_identifier, validate_custom_source_record},
-        normalization::{provider_policy_event_text, provider_value_text},
         source_backed::family::jsonl::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
             JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector,
@@ -49,6 +48,7 @@ use crate::{
     },
     CaptureError, ProviderImportSummary, ProviderSourceFailureKind, MAX_PROVIDER_JSONL_LINE_BYTES,
 };
+use ctx_history_capture_model::push_provider_import_failure;
 
 mod inventory;
 mod parser;

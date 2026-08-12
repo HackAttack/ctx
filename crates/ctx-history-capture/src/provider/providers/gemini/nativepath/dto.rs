@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::provider::ctx_retrieval::{ContributionClass, ResultAtom, ResultTerminalStatus};
 use crate::{common::io::ProviderSourceRoot, CaptureError};
+use ctx_history_capture_model::ctx_retrieval::{
+    ContributionClass, ResultAtom, ResultTerminalStatus,
+};
 
 #[cfg(test)]
 pub(crate) const GEMINI_NATIVEPATH_PARSER_REVISION: u32 = 8;

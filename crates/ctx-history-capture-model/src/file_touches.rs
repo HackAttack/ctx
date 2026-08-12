@@ -6,18 +6,18 @@ use serde_json::{json, Value};
 // Legacy packed provider touch identity reserves the low 16 bits for a touch within one event.
 // The same bound keeps exact per-event deduplication independent of source cardinality; full-width
 // event identities retain this per-event ordinal separately in the imported UUID key.
-pub(crate) const MAX_PROVIDER_FILE_TOUCHES_PER_EVENT: usize = 1 << 16;
-pub(crate) const MAX_PACKED_PROVIDER_EVENT_INDEX: u64 = u64::MAX >> 16;
+pub const MAX_PROVIDER_FILE_TOUCHES_PER_EVENT: usize = 1 << 16;
+pub const MAX_PACKED_PROVIDER_EVENT_INDEX: u64 = u64::MAX >> 16;
 const MAX_PROVIDER_FILE_TOUCH_FIELD_NAME_BYTES: usize = 256;
-pub(crate) const PROVIDER_FILE_TOUCH_LIMIT_REJECTION: &str =
+pub const PROVIDER_FILE_TOUCH_LIMIT_REJECTION: &str =
     "provider event exceeds the 65,536 unique file-touch limit";
 
-pub(crate) struct FileTouchDraft {
-    pub(crate) path: String,
-    pub(crate) old_path: Option<String>,
-    pub(crate) change_kind: Option<FileChangeKind>,
-    pub(crate) confidence: Confidence,
-    pub(crate) metadata: Value,
+pub struct FileTouchDraft {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub change_kind: Option<FileChangeKind>,
+    pub confidence: Confidence,
+    pub metadata: Value,
 }
 
 enum ProviderFileTouchTraversalError<E> {
@@ -26,23 +26,23 @@ enum ProviderFileTouchTraversalError<E> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProviderFileTouchVisitOutcome {
+pub struct ProviderFileTouchVisitOutcome {
     emitted: usize,
     limit_exceeded: bool,
 }
 
 impl ProviderFileTouchVisitOutcome {
     #[allow(dead_code)]
-    pub(crate) fn emitted(self) -> usize {
+    pub fn emitted(self) -> usize {
         self.emitted
     }
 
-    pub(crate) fn limit_exceeded(self) -> bool {
+    pub fn limit_exceeded(self) -> bool {
         self.limit_exceeded
     }
 }
 
-pub(crate) fn visit_all_file_touch_drafts<E>(
+pub fn visit_all_file_touch_drafts<E>(
     raw_value: &Value,
     mut visit: impl FnMut(FileTouchDraft) -> std::result::Result<(), E>,
 ) -> std::result::Result<(), E> {
@@ -50,7 +50,7 @@ pub(crate) fn visit_all_file_touch_drafts<E>(
     visit_structured_file_touch_drafts(raw_value, &mut visit)
 }
 
-pub(crate) fn visit_provider_file_touch_drafts_with_limit<E>(
+pub fn visit_provider_file_touch_drafts_with_limit<E>(
     raw_value: &Value,
     include_structured_touches: bool,
     touch_limit: usize,
@@ -99,7 +99,7 @@ pub(crate) fn visit_provider_file_touch_drafts_with_limit<E>(
     })
 }
 
-pub(crate) fn event_type_supports_structured_file_touches(event_type: EventType) -> bool {
+pub fn event_type_supports_structured_file_touches(event_type: EventType) -> bool {
     matches!(event_type, EventType::ToolCall | EventType::FileTouched)
 }
 
@@ -274,7 +274,7 @@ fn visit_structured_file_touch_object<E>(
     Ok(())
 }
 
-pub(crate) fn object_operation_hint_kind(
+pub fn object_operation_hint_kind(
     object: &serde_json::Map<String, Value>,
 ) -> Option<FileChangeKind> {
     object
@@ -289,7 +289,7 @@ pub(crate) fn object_operation_hint_kind(
         .filter(|kind| *kind != FileChangeKind::Unknown)
 }
 
-pub(crate) fn inferred_file_change_kind(object: &serde_json::Map<String, Value>) -> FileChangeKind {
+pub fn inferred_file_change_kind(object: &serde_json::Map<String, Value>) -> FileChangeKind {
     let mut haystack = String::new();
     for (key, value) in object {
         let Some(normalized_key) = bounded_normalized_key(key, 64) else {
@@ -328,7 +328,7 @@ pub(crate) fn inferred_file_change_kind(object: &serde_json::Map<String, Value>)
     }
 }
 
-pub(crate) fn value_looks_like_file_content(value: &Value) -> bool {
+pub fn value_looks_like_file_content(value: &Value) -> bool {
     value.as_str().is_some_and(|text| {
         text.contains('\n')
             || text.len() > 120
@@ -379,14 +379,14 @@ fn bounded_normalized_key(key: &str, max_bytes: usize) -> Option<String> {
     Some(normalized)
 }
 
-pub(crate) fn normalized_key(key: &str) -> String {
+pub fn normalized_key(key: &str) -> String {
     key.chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .flat_map(|ch| ch.to_lowercase())
         .collect()
 }
 
-pub(crate) fn normalize_file_path(value: &str) -> Option<String> {
+pub fn normalize_file_path(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_matches('"').trim_matches('\'');
     let trimmed = trimmed.strip_prefix("file://").unwrap_or(trimmed);
     if !looks_like_file_path(trimmed) {
@@ -395,7 +395,7 @@ pub(crate) fn normalize_file_path(value: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-pub(crate) fn looks_like_file_path(value: &str) -> bool {
+pub fn looks_like_file_path(value: &str) -> bool {
     if value.is_empty()
         || value.len() > 512
         || value.contains('\n')
@@ -419,7 +419,7 @@ pub(crate) fn looks_like_file_path(value: &str) -> bool {
         })
 }
 
-pub(crate) fn file_touch_draft(
+pub fn file_touch_draft(
     path: String,
     old_path: Option<String>,
     change_kind: FileChangeKind,

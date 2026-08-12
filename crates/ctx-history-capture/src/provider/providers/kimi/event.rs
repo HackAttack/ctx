@@ -2,11 +2,11 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::Value;
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::provider::normalization::{
+use ctx_history_capture_model::normalization::{
     provider_explicit_result_value_text, provider_role, provider_timestamp_seconds_to_datetime,
     provider_value_text,
 };
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 pub(crate) fn kimi_event_type(record_type: &str, value: &Value) -> EventType {
     match record_type {

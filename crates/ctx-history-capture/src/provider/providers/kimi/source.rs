@@ -7,11 +7,11 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::AgentType;
 use serde_json::{json, Value};
 
-use crate::common::time::parse_rfc3339_utc;
-use crate::provider::normalization::{
+use crate::{fnv1a64, Result, PROVIDER_MAX_PREVIEW_CHARS};
+use ctx_history_capture_model::normalization::{
     provider_capped_json, provider_local_preview, provider_timestamp_seconds_to_datetime,
 };
-use crate::{fnv1a64, Result, PROVIDER_MAX_PREVIEW_CHARS};
+use ctx_history_capture_model::time::parse_rfc3339_utc;
 
 use super::layout::KimiWireLayout;
 

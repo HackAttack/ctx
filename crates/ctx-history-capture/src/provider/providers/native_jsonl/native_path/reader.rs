@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{CaptureProvider, EventType};
 use serde_json::{json, Value};
 
-use crate::provider::file_touches::visit_all_file_touch_drafts;
 use crate::provider::source_backed::family::jsonl::JsonlRecordRef;
 use crate::{CaptureError, OutputOutcome, Result};
+use ctx_history_capture_model::file_touches::visit_all_file_touch_drafts;
 
 use super::super::{
     dialect::{native_jsonl_record_starts_session, validate_direct_native_jsonl_provider},

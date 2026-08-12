@@ -1,8 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::provider::normalization::{provider_string_field, provider_timestamp_from_fields};
 use crate::{CaptureError, ProviderAdapterContext, Result};
+use ctx_history_capture_model::normalization::{
+    provider_string_field, provider_timestamp_from_fields,
+};
 
 pub(crate) mod native_path;
 

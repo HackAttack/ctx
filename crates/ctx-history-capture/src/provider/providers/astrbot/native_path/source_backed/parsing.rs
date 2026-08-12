@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::{
+    provider_json_text, provider_timestamp_millis, provider_value_text,
+};
 use ctx_history_core::{CertifiedSource, CoreRecord, EventRole, EventType, ScannedSourceCounts};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    provider::normalization::{provider_json_text, provider_timestamp_millis, provider_value_text},
     provider::sqlite::sqlite_schema_fingerprint,
     provider_sources::{SqliteLogicalSnapshot, SqliteSourceReadSnapshot},
     CaptureError, MAX_PROVIDER_SQLITE_VALUE_BYTES,

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::normalization::provider_timestamp_millis;
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CoreRecord, CoreRecordError,
     EventIdentityInput, EventType, NativeItemKey, NativeSessionKey, PositionStability,
@@ -14,10 +15,7 @@ use super::super::{
     firebender_result_content, FirebenderOutputEvidence,
 };
 use super::FirebenderRow;
-use crate::{
-    native_source::NativeSqliteValue, provider::normalization::provider_timestamp_millis,
-    CaptureError, FIREBENDER_SQLITE_SOURCE_FORMAT,
-};
+use crate::{native_source::NativeSqliteValue, CaptureError, FIREBENDER_SQLITE_SOURCE_FORMAT};
 
 mod direct;
 mod direct_snapshot;

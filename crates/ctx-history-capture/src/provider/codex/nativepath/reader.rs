@@ -2,6 +2,10 @@ use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
 use crate::provider::source_backed::IndexBaseEventLookup;
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::file_touches::{
+    event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
+    MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
+};
 use ctx_history_core::{CoreRecord, SourceKey, StableEntityId};
 use serde_json::Value;
 
@@ -34,10 +38,6 @@ use crate::{
     provider::codex::events::{
         codex_exact_successful_function_output, codex_output_content, codex_result_value,
         CodexInvocationOriginV0, CodexToolCallContext,
-    },
-    provider::file_touches::{
-        event_type_supports_structured_file_touches, visit_provider_file_touch_drafts_with_limit,
-        MAX_PROVIDER_FILE_TOUCHES_PER_EVENT,
     },
     provider::source_backed::family::jsonl::{
         JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,

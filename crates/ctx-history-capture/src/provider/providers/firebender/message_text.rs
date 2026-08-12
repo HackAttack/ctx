@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use crate::provider::normalization::{provider_normalized_result_value, provider_value_text};
+use ctx_history_capture_model::normalization::{
+    provider_normalized_result_value, provider_value_text,
+};
 
 /// Returns complete content from Firebender's native tool-result field.
 ///
