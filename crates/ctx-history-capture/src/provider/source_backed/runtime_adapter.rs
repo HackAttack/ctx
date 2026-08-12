@@ -1,7 +1,7 @@
 use ctx_history_capture_runtime::{
     BaseEventLookup, CoreMaterialization, CorePreparationError, CorePreparationFailureKind,
     CorePreparationPort, CorePreparedBatch, CorePreparedBatchBuilder, CorePreparedCapture,
-    CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind, CoreRouteResources,
+    CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind,
     CORE_RECORD_BATCH_MAX_RECORDS,
 };
 use ctx_history_core::{CoreRecord, SourceKey};
@@ -111,7 +111,6 @@ fn index_preparation_failure_kind(failure: &IndexError) -> CorePreparationFailur
     }
 }
 
-pub(crate) type SourceBackedRouteResources = CoreRouteResources;
 pub(crate) type SourceBackedRouteResourceKind = CoreRouteResourceKind;
 pub(crate) type SourceBackedRouteByteReservation = CoreRouteByteLease;
 pub(crate) type CoreRecordEmission = CorePreparedCapture<IndexCorePreparation>;
