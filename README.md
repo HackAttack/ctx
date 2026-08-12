@@ -23,10 +23,6 @@ Windows PowerShell:
 irm https://ctx.rs/install.ps1 | iex
 ```
 
-FreeBSD does not receive a prebuilt release binary. Build it from source with
-the repository's Bazel target; FreeBSD support is best effort and does not
-block releases. See [source builds](docs/unmanaged-installs.md#source-builds).
-
 or prompt your agent:
 ```
 Please install and set up ctx CLI (see github.com/ctxrs/ctx)
