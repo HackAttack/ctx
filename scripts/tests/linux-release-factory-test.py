@@ -67,6 +67,8 @@ class LinuxReleaseFactoryTest(unittest.TestCase):
             self.assertIn(value, source)
         self.assertIn("--diagnostic-unsigned", source)
         self.assertIn("official release requires", source)
+        self.assertIn("llvm-strip -S -x", source)
+        self.assertIn("/usr/bin/llvm-readobj", source)
         self.assertIn("ctx-release-factory.json", source)
 
 

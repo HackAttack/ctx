@@ -34,6 +34,7 @@ authoritative_llvm_root() {
 declared_llvm_readobj="${3:-}"
 declared_llvm_objdump="${4:-}"
 declared_macos_llvm=0
+declared_linux_llvm=0
 if [[ -n "${declared_llvm_readobj}" || -n "${declared_llvm_objdump}" ]]; then
   case "${1:-}" in
     windows-x64)
@@ -47,7 +48,13 @@ if [[ -n "${declared_llvm_readobj}" || -n "${declared_llvm_objdump}" ]]; then
         echo "error: macos-x64 requires a declared LLVM reader and objdump pair" >&2
         exit 2
       }
-      declared_macos_llvm=1
+      if [[ "$(/usr/bin/uname -s)" == "Linux" \
+        && "${declared_llvm_readobj}" == "/usr/bin/llvm-readobj" \
+        && "${declared_llvm_objdump}" == "/usr/bin/llvm-objdump" ]]; then
+        declared_linux_llvm=1
+      else
+        declared_macos_llvm=1
+      fi
       ;;
     *)
       echo "error: declared LLVM tools are supported only for macos-x64 and windows-x64" >&2
@@ -443,9 +450,12 @@ check_macos() {
   # Core ML support, the native Keychain credential adapter, and the persistent
   # daemon's FSEvents watcher are compiled into both macOS artifacts.
   # Security.framework and CoreServices.framework are the exact native API
-  # dependencies of those adapters. Keep the complete reviewed system-library
-  # set exact so an accidental third-party dylib or new framework still fails.
-  assert_exact_lines "Mach-O dylibs" "$(macho_dylibs)" "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+  # dependencies of those adapters. The C++ runtime is retained when a native
+  # linker records it, but Zig can correctly omit that unused load command
+  # after linking the same static esaxx object. Keep every other system-library
+  # entry exact so an accidental third-party dylib still fails.
+  local expected_macos_dylibs expected_macos_dylibs_with_cxx actual_macos_dylibs
+  expected_macos_dylibs="/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
 /System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics
 /System/Library/Frameworks/CoreML.framework/Versions/A/CoreML
 /System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices
@@ -455,9 +465,19 @@ check_macos() {
 /System/Library/Frameworks/Metal.framework/Versions/A/Metal
 /System/Library/Frameworks/Security.framework/Versions/A/Security
 /usr/lib/libSystem.B.dylib
-/usr/lib/libc++.1.dylib
+/usr/lib/libcharset.1.dylib
 /usr/lib/libiconv.2.dylib
 /usr/lib/libobjc.A.dylib"
+  expected_macos_dylibs_with_cxx="${expected_macos_dylibs}
+/usr/lib/libc++.1.dylib"
+  actual_macos_dylibs="$(macho_dylibs)"
+  actual_macos_dylibs="$(printf '%s\n' "${actual_macos_dylibs}" | sorted_lines)"
+  if [[ "${actual_macos_dylibs}" != "$(printf '%s\n' "${expected_macos_dylibs}" | sorted_lines)" \
+    && "${actual_macos_dylibs}" != "$(printf '%s\n' "${expected_macos_dylibs_with_cxx}" | sorted_lines)" ]]; then
+    printf 'expected Mach-O dylibs (with optional libc++):\n%s\nactual Mach-O dylibs:\n%s\n' \
+      "${expected_macos_dylibs_with_cxx}" "${actual_macos_dylibs}" >&2
+    fail "unexpected Mach-O dylibs"
+  fi
 }
 
 pe_imports() {
@@ -584,6 +604,8 @@ esac
 scanner_authority="authoritative-package-root:${LLVM_TOOL_ROOT:-declared-release-runfile}"
 if [[ "${declared_macos_llvm}" == "1" ]]; then
   scanner_authority="approved-task-snapshot:homebrew-core/llvm-22.1.8-sonoma-x86_64@sha256:2f07536754d0854565f9ac37436681bb3d04a4fbb15c45c51896933262df5e48"
+elif [[ "${declared_linux_llvm}" == "1" ]]; then
+  scanner_authority="authoritative-package-root:/usr/bin"
 fi
 scanner_inputs="llvm-readobj=${LLVM_READOBJ}"
 if [[ -n "${LLVM_OBJDUMP}" ]]; then

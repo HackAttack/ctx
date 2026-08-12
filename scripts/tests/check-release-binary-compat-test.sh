@@ -313,8 +313,11 @@ Load command 11
      name /usr/lib/libc++.1.dylib (offset 24)
 Load command 12
       cmd LC_LOAD_DYLIB
-     name /usr/lib/libiconv.2.dylib (offset 24)
+     name /usr/lib/libcharset.1.dylib (offset 24)
 Load command 13
+      cmd LC_LOAD_DYLIB
+     name /usr/lib/libiconv.2.dylib (offset 24)
+Load command 14
       cmd LC_LOAD_DYLIB
      name /usr/lib/libobjc.A.dylib (offset 24)
 EOF

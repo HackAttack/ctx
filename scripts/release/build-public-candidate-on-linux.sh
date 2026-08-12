@@ -105,7 +105,8 @@ source_commit="${source_commit:-$(git rev-parse --verify HEAD^{commit})}"
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || \
   die "official release factory requires a clean checkout"
 
-for command_name in cargo curl file git openssl python3 rustc rustup sha256sum tar xz; do
+for command_name in cargo curl file git llvm-objdump llvm-readobj llvm-strip \
+  openssl python3 rustc rustup sha256sum tar xz; do
   require_command "${command_name}"
 done
 rust_release="$(rustc --version --verbose | sed -n 's/^release: //p')"
@@ -242,6 +243,12 @@ build_target() {
     CTX_RELEASE_BUILD_TARGET="${triple}" \
     cargo zigbuild --manifest-path "${repo_root}/Cargo.toml" \
       -p ctx --bin ctx --release --locked --target "${build_triple}" -j "${cargo_jobs}"
+  if [[ "${target_id}" == macos-* ]]; then
+    # Cargo's release profile strips debug data, but the Linux cross-link can
+    # retain Mach-O private nlist entries. Remove those before signing and
+    # before the static artifact contract; keep the UUID for native symbols.
+    llvm-strip -S -x "${target_dir}/${triple}/release/${raw}"
+  fi
   install -m 0755 "${target_dir}/${triple}/release/${raw}" "${artifact_stage}/${binary}"
   if [[ "${target_id}" == "linux-x64" ]]; then
     "${artifact_stage}/${binary}" --version >"${artifact_stage}/${binary}.version"
@@ -281,7 +288,10 @@ for target_id in "${target_ids[@]}"; do
   sha256_file "${artifact}" >"${artifact}.sha256"
   llvm_args=()
   if [[ "${platform}" == "macos-x64" ]]; then
-    llvm_args=("${CTX_RELEASE_LLVM_READOBJ:-$(command -v llvm-readobj-18 || true)}" "${CTX_RELEASE_LLVM_OBJDUMP:-$(command -v llvm-objdump-18 || true)}")
+    # Linux is the construction authority for every target. The macOS x64
+    # native validator/published-release checker may use its approved Darwin
+    # snapshot, but this factory uses the fixed Linux package-root pair.
+    llvm_args=(/usr/bin/llvm-readobj /usr/bin/llvm-objdump)
   fi
   CTX_PUBLIC_CLI_EXPECTED_VERSION="${version}" \
     scripts/check-public-cli-artifact.sh "${platform}" "${artifact_stage}" "${llvm_args[@]}"
