@@ -107,7 +107,7 @@ documented private local-data boundary.
 ## Mode Placement
 
 Security-sensitive product changes should run the focused owning targets and
-`//:ci` as described in
+`bash scripts/check.sh --mode=ci` as described in
 [`docs/testing-taxonomy.md`](testing-taxonomy.md).
 
 The default retrieval boundary remains local provider-history search. Security

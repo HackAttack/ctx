@@ -43,6 +43,7 @@ test:test --test_timeout=300,900,1800,3600
 
 build:ci --compilation_mode=fastbuild
 build:ci --stamp=false
+build:ci --config=lint
 build:ci --color=yes
 build:ci --curses=no
 test:ci --build_tests_only

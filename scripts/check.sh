@@ -73,15 +73,15 @@ run_rust_crate_size_preflight
 
 case "${mode}" in
   ci)
-    run_bazel build //... --config=ci --config=lint
-    run_bazel test //:ci --config=ci
+    run_bazel build //... --config=ci
+    run_bazel test //:ci_tests --config=test
     ;;
   nightly)
-    run_bazel build //... --config=ci --config=lint
-    run_bazel test //:nightly --config=ci
+    run_bazel build //... --config=ci
+    run_bazel test //:nightly_tests --config=test
     ;;
   release)
-    run_bazel build //... --config=ci --config=lint
-    run_bazel test //:release --config=ci
+    run_bazel build //... --config=ci
+    run_bazel test //:release_tests --config=test
     ;;
 esac

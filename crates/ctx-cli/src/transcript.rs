@@ -7,7 +7,7 @@ pub(crate) enum TranscriptMode {
     Log,
 }
 
-pub(crate) use ctx_history_cli::{shell_quote_arg, write_output, TranscriptOutput};
+pub(crate) use ctx_history_cli::shell_quote_arg;
 
 #[cfg(test)]
 pub(crate) fn normalize_uuid_prefix(value: &str, kind: &str) -> anyhow::Result<String> {

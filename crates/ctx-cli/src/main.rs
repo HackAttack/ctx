@@ -69,17 +69,13 @@ mod value_parsers;
 #[cfg(test)]
 mod parser_prop_tests;
 
-#[cfg(test)]
-pub(crate) use cli::MAX_SEARCH_LIMIT;
 pub(crate) use cli::{
     Cli, DaemonArgs, DaemonCommand, DaemonStartModeArg, DaemonTriggerCommandArg, DoctorArgs,
     ImportArgs, ListArgs, ListTarget, SearchArgs, SetupArgs, ShowArgs, ShowTarget, SourcesArgs,
     StatsArgs, StatusArgs, UsageStatusMode, MAX_EVENT_WINDOW,
 };
 pub(crate) use commands::locate::LocateTarget;
-pub(crate) use commands::search::CliRefreshArg as RefreshArg;
 pub(crate) use ctx_history_read_application::SearchBackend as SearchBackendArg;
-pub(crate) use output::compact_json;
 pub(crate) use provider_args::{parse_provider_arg, ProviderArg};
 pub(crate) use provider_sources::{discovered_plugin_sources_json, sources_json};
 pub(crate) use transcript::TranscriptMode;

@@ -163,8 +163,14 @@ scripts/bazel-affected.sh origin/main
 
 Run focused tests repeatedly while editing, then run the affected selector
 against the comparison base. Build-configuration changes, uncertain ownership,
-unmapped changes, and selector failures all expand to `ci`, the complete public
-repository check.
+unmapped changes, and selector failures all expand to `//:ci_tests`, the
+complete deterministic test suite. The complete public merge gate remains
+`scripts/check.sh --mode=ci`.
+The named check first builds `//...` under `--config=ci`; that configuration
+inherits the strict Clippy aspect and `-Dwarnings`. It then runs the owning
+`//:ci_tests`, `//:nightly_tests`, or `//:release_tests` suite under the
+deterministic test configuration, so test execution does not reapply the lint
+aspect.
 Performance sanity, serialized auto-upgrade acceptance, persistent-daemon soak,
 and process/fault injection run in `nightly` and `release`; they are
 intentionally outside the per-change `ci` loop.
@@ -172,8 +178,8 @@ intentionally outside the per-change `ci` loop.
 The affected command uses pinned bazel-diff, an ephemeral detached base
 worktree, a commit-keyed cached base hash, and complete target-graph hashes for
 both graphs. BUILD, `.bzl`, module, lock, and configuration changes select the full
-`ci` suite. A diff/query/filter failure or a changed file with no mapped test
-also fails closed to `ci`. Non-routine external, manual, network,
+`//:ci_tests` suite. A diff/query/filter failure or a changed file with no mapped
+test also fails closed to `//:ci_tests`. Non-routine external, manual, network,
 platform, stress, and release targets stay outside affected execution.
 
 `tools/bazel/rust-target-inventory.json` records native ownership for every

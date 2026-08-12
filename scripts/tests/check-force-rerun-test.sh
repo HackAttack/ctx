@@ -139,14 +139,23 @@ for removed_mode in fast presubmit smoke; do
   fi
 done
 
-for mode in nightly release; do
+for mode in ci nightly release; do
   : >"${CTX_FAKE_BAZEL_LOG}"
   "${repo_root}/scripts/check.sh" --mode "${mode}" \
     >"${test_root}/${mode}.out" 2>"${test_root}/${mode}.err"
   [[ "$(grep -c '^preflight=' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
     || fail "${mode} mode did not run exactly one local preflight"
-  grep -Fqx "arg=//:${mode}" "${CTX_FAKE_BAZEL_LOG}" \
+  grep -Fqx 'arg=//...' "${CTX_FAKE_BAZEL_LOG}" \
+    || fail "${mode} mode did not lint the full workspace"
+  grep -Fqx "arg=//:${mode}_tests" "${CTX_FAKE_BAZEL_LOG}" \
     || fail "${mode} mode did not execute its owning suite"
+  [[ "$(grep -c '^arg=--config=ci$' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+    || fail "${mode} mode did not use the inherited lint config exactly once"
+  [[ "$(grep -c '^arg=--config=test$' "${CTX_FAKE_BAZEL_LOG}")" == "1" ]] \
+    || fail "${mode} mode did not isolate deterministic tests from lint aspects"
+  if grep -Fqx 'arg=--config=lint' "${CTX_FAKE_BAZEL_LOG}"; then
+    fail "${mode} mode applied the lint aspect explicitly"
+  fi
 done
 
 if grep -Eq '^test:ci --test_env=(BUILDKITE|BUILDKITE_BUILD_ID|CI|GITHUB_ACTIONS)$' \

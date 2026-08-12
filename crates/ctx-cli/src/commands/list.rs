@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Args, ValueEnum};
 
 use crate::{analytics::ShowTelemetry, local_usage::CliUsage, ui::Ui, ListArgs, ListTarget};
 
@@ -111,7 +110,7 @@ pub(crate) mod events {
 
     pub(crate) use ctx_history_cli::{
         decode_cursor, event_query_error_value, event_range_page_value,
-        list_events_selection as selection, mcp_event_query_core_record_bytes, render_event,
+        list_events_selection as selection, mcp_event_query_core_record_bytes,
         validated_event_limit as validated_limit, EventContentProjection, EventQueryError,
         EventQueryWireRequest,
     };
