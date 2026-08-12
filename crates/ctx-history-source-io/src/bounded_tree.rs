@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     ffi::OsString,
     fs::{self, File},
     io::{self, BufReader, BufWriter, Read, Write},
@@ -198,74 +199,250 @@ where
     // spill only native filenames into fixed runs so wide fanout stays bounded
     // without changing the byte-stable provider visitation order.
     traversal_stats(|stats| stats.directory_read_passes += 1);
-    let mut names = Vec::with_capacity(BOUNDED_TREE_DIRECTORY_RUN_ENTRIES);
-    let mut spill = None;
+    let mut names = BoundedTreeNames::new(native_bounded_tree_run_order());
     directory.visit_entries(
         PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
         |name| -> std::result::Result<(), E> {
             traversal_stats(|stats| stats.directory_entries_read += 1);
-            if names.len() == BOUNDED_TREE_DIRECTORY_RUN_ENTRIES {
-                let runs = spill.get_or_insert(
-                    BoundedTreeDirectoryRuns::new()
-                        .map_err(|error| E::from(SourceIoError::Io(error)))?,
-                );
-                runs.write_initial_run(&mut names)
-                    .map_err(|error| E::from(SourceIoError::Io(error)))?;
-            }
-            names.push(native_filename_order_key(name));
-            traversal_stats(|stats| {
-                stats.max_retained_names = stats.max_retained_names.max(names.len())
-            });
+            names
+                .push(name)
+                .map_err(|error| E::from(SourceIoError::Io(error)))?;
             Ok(())
         },
     )?;
+    names.visit(visit)
+}
 
-    let Some(mut spill) = spill else {
-        names.sort_unstable();
-        for name in names {
-            traversal_stats(|stats| stats.final_names_read += 1);
+struct BoundedTreeNames {
+    order: BoundedTreeRunOrder,
+    names: Vec<Vec<u8>>,
+    spill: Option<BoundedTreeDirectoryRuns>,
+}
+
+impl BoundedTreeNames {
+    fn new(order: BoundedTreeRunOrder) -> Self {
+        Self {
+            order,
+            names: Vec::with_capacity(BOUNDED_TREE_DIRECTORY_RUN_ENTRIES),
+            spill: None,
+        }
+    }
+
+    fn push(&mut self, name: OsString) -> io::Result<()> {
+        self.push_key(native_filename_order_key(name))
+    }
+
+    fn push_key(&mut self, name: Vec<u8>) -> io::Result<()> {
+        if self.names.len() == BOUNDED_TREE_DIRECTORY_RUN_ENTRIES {
+            let runs = match self.spill.as_mut() {
+                Some(runs) => runs,
+                None => self
+                    .spill
+                    .insert(BoundedTreeDirectoryRuns::new(self.order)?),
+            };
+            runs.write_initial_run(&mut self.names)?;
+        }
+        self.names.push(name);
+        traversal_stats(|stats| {
+            stats.max_retained_names = stats.max_retained_names.max(self.names.len())
+        });
+        Ok(())
+    }
+
+    fn visit<E>(
+        self,
+        visit: &mut dyn FnMut(OsString) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        E: From<SourceIoError>,
+    {
+        self.visit_keys(&mut |name| {
             visit(
                 native_filename_from_order_key(name)
                     .map_err(|error| E::from(SourceIoError::Io(error)))?,
-            )?;
-        }
-        return Ok(());
-    };
-    if !names.is_empty() {
-        spill
-            .write_initial_run(&mut names)
-            .map_err(|error| E::from(SourceIoError::Io(error)))?;
+            )
+        })
     }
-    let final_run = spill
-        .merge_to_one()
-        .map_err(|error| E::from(SourceIoError::Io(error)))?;
-    let mut reader =
-        BoundedTreeRunReader::open(final_run).map_err(|error| E::from(SourceIoError::Io(error)))?;
-    while let Some(name) = reader
-        .next_name()
-        .map_err(|error| E::from(SourceIoError::Io(error)))?
+
+    fn visit_keys<E>(
+        mut self,
+        visit: &mut dyn FnMut(Vec<u8>) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        E: From<SourceIoError>,
     {
-        traversal_stats(|stats| stats.final_names_read += 1);
-        visit(
-            native_filename_from_order_key(name)
-                .map_err(|error| E::from(SourceIoError::Io(error)))?,
-        )?;
+        let Some(mut spill) = self.spill else {
+            self.order.sort_and_deduplicate(&mut self.names);
+            if self.order.requires_native_resort() {
+                self.names.sort_unstable();
+            }
+            for name in self.names {
+                traversal_stats(|stats| stats.final_names_read += 1);
+                visit(name)?;
+            }
+            return Ok(());
+        };
+
+        if !self.names.is_empty() {
+            spill
+                .write_initial_run(&mut self.names)
+                .map_err(|error| E::from(SourceIoError::Io(error)))?;
+        }
+        let final_run = spill
+            .merge_to_one()
+            .map_err(|error| E::from(SourceIoError::Io(error)))?;
+        let mut reader = BoundedTreeRunReader::open(&final_run)
+            .map_err(|error| E::from(SourceIoError::Io(error)))?;
+        if self.order.requires_native_resort() {
+            // Windows aliases must first become one authority under folded
+            // order, then retained representatives regain native traversal
+            // order through the same bounded sorter. The directory is not
+            // enumerated again.
+            let mut native_names = Self {
+                order: BoundedTreeRunOrder::Native,
+                names: self.names,
+                spill: None,
+            };
+            let mut reusable_spill = Some(spill);
+            let resort_result = (|| -> std::result::Result<(), E> {
+                while let Some(name) = reader
+                    .next_name()
+                    .map_err(|error| E::from(SourceIoError::Io(error)))?
+                {
+                    if native_names.names.len() == BOUNDED_TREE_DIRECTORY_RUN_ENTRIES
+                        && native_names.spill.is_none()
+                    {
+                        let mut native_spill = reusable_spill.take().ok_or_else(|| {
+                            E::from(SourceIoError::SystemInvariant(
+                                "bounded Windows filename spill is unavailable",
+                            ))
+                        })?;
+                        native_spill.restart(BoundedTreeRunOrder::Native);
+                        native_names.spill = Some(native_spill);
+                    }
+                    native_names
+                        .push_key(name)
+                        .map_err(|error| E::from(SourceIoError::Io(error)))?;
+                }
+                Ok(())
+            })();
+            drop(reader);
+            resort_result?;
+            if native_names.spill.is_some() {
+                fs::remove_file(final_run).map_err(|error| E::from(SourceIoError::Io(error)))?;
+            }
+            drop(reusable_spill);
+            return native_names.visit_keys(visit);
+        }
+        while let Some(name) = reader
+            .next_name()
+            .map_err(|error| E::from(SourceIoError::Io(error)))?
+        {
+            traversal_stats(|stats| stats.final_names_read += 1);
+            visit(name)?;
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedTreeRunOrder {
+    Native,
+    #[cfg(any(windows, test))]
+    WindowsAsciiCaseEquivalent,
+}
+
+impl BoundedTreeRunOrder {
+    fn compare(self, left: &[u8], right: &[u8]) -> Ordering {
+        match self {
+            Self::Native => left.cmp(right),
+            #[cfg(any(windows, test))]
+            Self::WindowsAsciiCaseEquivalent => windows_ascii_case_cmp(left, right),
+        }
+    }
+
+    fn equivalent(self, _left: &[u8], _right: &[u8]) -> bool {
+        match self {
+            Self::Native => false,
+            #[cfg(any(windows, test))]
+            Self::WindowsAsciiCaseEquivalent => {
+                windows_ascii_case_cmp(_left, _right) == Ordering::Equal
+            }
+        }
+    }
+
+    fn requires_native_resort(self) -> bool {
+        self != Self::Native
+    }
+
+    fn sort_and_deduplicate(self, names: &mut Vec<Vec<u8>>) {
+        if self.requires_native_resort() {
+            // The former Windows collector used a stable folded-name sort, so
+            // the first enumerated spelling represented each alias class.
+            // Preserve that choice before the bounded run is reordered.
+            let mut current = 0;
+            while current < names.len() {
+                if names[..current]
+                    .iter()
+                    .any(|name| self.equivalent(name, &names[current]))
+                {
+                    names.remove(current);
+                } else {
+                    current += 1;
+                }
+            }
+        }
+        names.sort_unstable_by(|left, right| self.compare(left, right));
+    }
+}
+
+fn native_bounded_tree_run_order() -> BoundedTreeRunOrder {
+    #[cfg(windows)]
+    {
+        BoundedTreeRunOrder::WindowsAsciiCaseEquivalent
+    }
+    #[cfg(not(windows))]
+    {
+        BoundedTreeRunOrder::Native
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_ascii_case_cmp(left: &[u8], right: &[u8]) -> Ordering {
+    windows_filename_units(left)
+        .map(windows_ascii_lower_u16)
+        .cmp(windows_filename_units(right).map(windows_ascii_lower_u16))
+}
+
+#[cfg(any(windows, test))]
+fn windows_filename_units(name: &[u8]) -> impl Iterator<Item = u16> + '_ {
+    name.chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+}
+
+#[cfg(any(windows, test))]
+fn windows_ascii_lower_u16(value: u16) -> u16 {
+    if (b'A' as u16..=b'Z' as u16).contains(&value) {
+        value + u16::from(b'a' - b'A')
+    } else {
+        value
+    }
 }
 
 struct BoundedTreeDirectoryRuns {
     directory: TempDir,
     initial_runs: usize,
+    order: BoundedTreeRunOrder,
 }
 
 impl BoundedTreeDirectoryRuns {
-    fn new() -> io::Result<Self> {
+    fn new(order: BoundedTreeRunOrder) -> io::Result<Self> {
         Ok(Self {
             directory: tempfile::Builder::new()
                 .prefix("ctx-native-jsonl-order-")
                 .tempdir()?,
             initial_runs: 0,
+            order,
         })
     }
 
@@ -273,8 +450,13 @@ impl BoundedTreeDirectoryRuns {
         self.directory.path().join(format!("pass-{pass}-run-{run}"))
     }
 
+    fn restart(&mut self, order: BoundedTreeRunOrder) {
+        self.initial_runs = 0;
+        self.order = order;
+    }
+
     fn write_initial_run(&mut self, names: &mut Vec<Vec<u8>>) -> io::Result<()> {
-        names.sort_unstable();
+        self.order.sort_and_deduplicate(names);
         let path = self.run_path(0, self.initial_runs);
         write_native_jsonl_run(&path, names.drain(..))?;
         self.initial_runs += 1;
@@ -315,6 +497,7 @@ impl BoundedTreeDirectoryRuns {
             stats.max_merge_readers = stats.max_merge_readers.max(inputs.len());
         });
         let mut writer = BufWriter::new(File::create(output)?);
+        let mut previous: Option<Vec<u8>> = None;
         loop {
             let mut selected: Option<usize> = None;
             for (index, input) in inputs.iter().enumerate() {
@@ -322,9 +505,9 @@ impl BoundedTreeDirectoryRuns {
                     continue;
                 };
                 if selected.is_none_or(|current| {
-                    inputs[current]
-                        .head()
-                        .is_some_and(|current_name| name < current_name)
+                    inputs[current].head().is_some_and(|current_name| {
+                        self.order.compare(name, current_name) == Ordering::Less
+                    })
                 }) {
                     selected = Some(index);
                 }
@@ -335,8 +518,16 @@ impl BoundedTreeDirectoryRuns {
             let name = inputs[selected]
                 .take_head()?
                 .ok_or_else(|| io::Error::other("selected native JSONL run is empty"))?;
-            write_native_jsonl_run_name(&mut writer, &name)?;
             traversal_stats(|stats| stats.merge_names_read += 1);
+            let duplicate = previous
+                .as_ref()
+                .is_some_and(|previous| self.order.equivalent(previous, &name));
+            if !duplicate {
+                write_native_jsonl_run_name(&mut writer, &name)?;
+                if self.order.requires_native_resort() {
+                    previous = Some(name);
+                }
+            }
         }
         writer.flush()?;
         drop(writer);
@@ -546,10 +737,68 @@ mod tests {
         assert_eq!(stats.directory_read_passes, 1);
         assert_eq!(stats.directory_entries_read, ENTRY_COUNT);
         assert_eq!(stats.max_retained_names, 64);
-        assert_eq!(stats.initial_runs, 17);
+        assert_eq!(stats.initial_runs, if cfg!(windows) { 34 } else { 17 });
         assert_eq!(stats.max_merge_readers, 16);
-        assert_eq!(stats.merge_names_read, ENTRY_COUNT * 2);
+        assert_eq!(
+            stats.merge_names_read,
+            ENTRY_COUNT * if cfg!(windows) { 4 } else { 2 }
+        );
         assert_eq!(stats.final_names_read, ENTRY_COUNT);
+    }
+
+    #[test]
+    fn windows_aliases_across_runs_are_deduplicated_before_selection() {
+        let mut visited = Vec::new();
+        let mut selected = Vec::new();
+        let (result, stats) = count_bounded_tree_traversal_work(|| {
+            let mut names = BoundedTreeNames::new(BoundedTreeRunOrder::WindowsAsciiCaseEquivalent);
+            names
+                .push_key(windows_test_filename_key("a.jsonl"))
+                .unwrap();
+            for index in 0..63 {
+                names
+                    .push_key(windows_test_filename_key(&format!("m-{index:02}.txt")))
+                    .unwrap();
+            }
+            // The alias starts the next 64-name run, so only the bounded merge
+            // can retain the first spelling before child selection.
+            names
+                .push_key(windows_test_filename_key("A.jsonl"))
+                .unwrap();
+            names
+                .push_key(windows_test_filename_key("B.jsonl"))
+                .unwrap();
+            names.visit_keys(&mut |key| {
+                let name = windows_test_filename_from_key(&key);
+                if name.ends_with(".jsonl") {
+                    selected.push(name.clone());
+                }
+                visited.push(name);
+                Ok::<(), SourceIoError>(())
+            })
+        });
+
+        result.unwrap();
+        let mut expected = (0..63)
+            .map(|index| format!("m-{index:02}.txt"))
+            .chain(["a.jsonl".to_owned(), "B.jsonl".to_owned()])
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|name| windows_test_filename_key(name));
+        assert_eq!(visited, expected);
+        assert_eq!(selected, ["B.jsonl", "a.jsonl"]);
+        assert_eq!(stats.max_retained_names, 64);
+        assert_eq!(stats.initial_runs, 4);
+        assert_eq!(stats.max_merge_readers, 2);
+        assert_eq!(stats.merge_names_read, 131);
+        assert_eq!(stats.final_names_read, 65);
+    }
+
+    fn windows_test_filename_key(name: &str) -> Vec<u8> {
+        name.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    fn windows_test_filename_from_key(key: &[u8]) -> String {
+        String::from_utf16(&windows_filename_units(key).collect::<Vec<_>>()).unwrap()
     }
 
     #[test]
