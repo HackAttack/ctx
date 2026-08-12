@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::AuthorityOpenError;
+use super::{AuthorityOpenError, DirectoryEntryVisitError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ObjectStamp;
@@ -52,6 +52,17 @@ pub(super) fn directory_entries(
 ) -> Result<Vec<OsString>, AuthorityOpenError> {
     Err(AuthorityOpenError::Rejected(
         "provider source authority handles are unsupported on this platform",
+    ))
+}
+
+pub(super) fn visit_directory_entries<E>(
+    _directory: &File,
+    _visit: &mut impl FnMut(OsString) -> Result<(), E>,
+) -> Result<(), DirectoryEntryVisitError<E>> {
+    Err(DirectoryEntryVisitError::Authority(
+        AuthorityOpenError::Rejected(
+            "provider source authority handles are unsupported on this platform",
+        ),
     ))
 }
 

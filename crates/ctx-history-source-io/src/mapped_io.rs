@@ -383,6 +383,14 @@ where
         self.0.entries(maximum).map_err(Into::into)
     }
 
+    pub fn visit_entries(
+        &self,
+        maximum: usize,
+        visit: impl FnMut(OsString) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.0.visit_entries(maximum, visit)
+    }
+
     pub fn open_child(&self, name: &OsStr) -> Result<MappedOpenedProviderSourcePath<E>, E> {
         self.0.open_child(name).map(Into::into).map_err(Into::into)
     }

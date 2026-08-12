@@ -16,7 +16,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::AuthorityOpenError;
+use super::{AuthorityOpenError, DirectoryEntryVisitError};
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 use std::mem::size_of;
@@ -138,9 +138,32 @@ pub(super) fn directory_entries(
     directory: &File,
     maximum_entries: usize,
 ) -> Result<Vec<OsString>, AuthorityOpenError> {
+    let mut names = BTreeSet::new();
+    match visit_directory_entries(directory, &mut |name| {
+        if !names.contains(&name) && names.len() >= maximum_entries {
+            return Err(AuthorityOpenError::Rejected(
+                "provider source directory exceeds its bounded entry budget",
+            ));
+        }
+        names.insert(name);
+        Ok(())
+    }) {
+        Ok(()) => {}
+        Err(DirectoryEntryVisitError::Authority(error))
+        | Err(DirectoryEntryVisitError::Visitor(error)) => return Err(error),
+    }
+    Ok(names.into_iter().collect())
+}
+
+pub(super) fn visit_directory_entries<E>(
+    directory: &File,
+    visit: &mut impl FnMut(OsString) -> Result<(), E>,
+) -> Result<(), DirectoryEntryVisitError<E>> {
     let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
     if duplicate < 0 {
-        return Err(io::Error::last_os_error().into());
+        return Err(DirectoryEntryVisitError::Authority(
+            io::Error::last_os_error().into(),
+        ));
     }
     let stream = unsafe { libc::fdopendir(duplicate) };
     if stream.is_null() {
@@ -148,13 +171,12 @@ pub(super) fn directory_entries(
         unsafe {
             libc::close(duplicate);
         }
-        return Err(cause.into());
+        return Err(DirectoryEntryVisitError::Authority(cause.into()));
     }
     unsafe {
         libc::rewinddir(stream);
     }
 
-    let mut names = BTreeSet::new();
     let result = loop {
         clear_errno();
         let entry = unsafe { libc::readdir(stream) };
@@ -163,26 +185,26 @@ pub(super) fn directory_entries(
             if errno == 0 {
                 break Ok(());
             }
-            break Err(AuthorityOpenError::Io(io::Error::from_raw_os_error(errno)));
+            break Err(DirectoryEntryVisitError::Authority(
+                io::Error::from_raw_os_error(errno).into(),
+            ));
         }
         let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
         if name == b"." || name == b".." {
             continue;
         }
-        let name = OsString::from_vec(name.to_vec());
-        if !names.contains(&name) && names.len() >= maximum_entries {
-            break Err(AuthorityOpenError::Rejected(
-                "provider source directory exceeds its bounded entry budget",
-            ));
+        if let Err(error) = visit(OsString::from_vec(name.to_vec())) {
+            break Err(DirectoryEntryVisitError::Visitor(error));
         }
-        names.insert(name);
     };
     let close_result = unsafe { libc::closedir(stream) };
-    result?;
-    if close_result != 0 {
-        return Err(io::Error::last_os_error().into());
+    match result {
+        Err(error) => Err(error),
+        Ok(()) if close_result != 0 => Err(DirectoryEntryVisitError::Authority(
+            io::Error::last_os_error().into(),
+        )),
+        Ok(()) => Ok(()),
     }
-    Ok(names.into_iter().collect())
 }
 
 pub(super) fn object_stamp(_file: &File, metadata: &Metadata) -> io::Result<ObjectStamp> {

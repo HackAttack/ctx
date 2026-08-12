@@ -6,35 +6,59 @@ const MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES: usize = 7 * 1024;
 
 /// Encodes one native provider path as its stable durable TEXT identity.
 pub fn provider_path_identity(path: &Path) -> Result<String> {
-    if path.to_str().is_none() {
-        return Err(SourceIoError::InvalidProviderTranscriptPath {
-            path: path.to_path_buf(),
-            reason:
-                "provider transcript path is not Unicode and cannot share durable TEXT authority",
-        });
-    }
+    ensure_provider_path_identity_unicode(path, path.to_str().is_some())?;
     #[cfg(unix)]
-    let (platform, raw) = {
+    {
         use std::os::unix::ffi::OsStrExt;
 
-        ("unix-bytes", path.as_os_str().as_bytes().to_vec())
-    };
+        return provider_path_identity_from_raw(
+            path,
+            "unix-bytes",
+            path.as_os_str().as_bytes().to_vec(),
+        );
+    }
     #[cfg(windows)]
-    let (platform, raw) = {
+    {
         use std::os::windows::ffi::OsStrExt;
 
-        let mut raw = Vec::new();
-        for unit in path.as_os_str().encode_wide() {
-            raw.extend_from_slice(&unit.to_le_bytes());
-        }
-        ("windows-wtf16le", raw)
-    };
+        return windows_provider_path_identity(path, true, path.as_os_str().encode_wide());
+    }
     #[cfg(not(any(unix, windows)))]
-    let (platform, raw) = (
-        "platform-encoded-bytes",
-        path.as_os_str().as_encoded_bytes().to_vec(),
-    );
+    {
+        provider_path_identity_from_raw(
+            path,
+            "platform-encoded-bytes",
+            path.as_os_str().as_encoded_bytes().to_vec(),
+        )
+    }
+}
 
+#[cfg(any(windows, test))]
+fn windows_wtf16le_bytes(units: impl IntoIterator<Item = u16>) -> Vec<u8> {
+    units.into_iter().flat_map(u16::to_le_bytes).collect()
+}
+
+#[cfg(any(windows, test))]
+fn windows_provider_path_identity(
+    path: &Path,
+    unicode: bool,
+    units: impl IntoIterator<Item = u16>,
+) -> Result<String> {
+    ensure_provider_path_identity_unicode(path, unicode)?;
+    provider_path_identity_from_raw(path, "windows-wtf16le", windows_wtf16le_bytes(units))
+}
+
+fn ensure_provider_path_identity_unicode(path: &Path, unicode: bool) -> Result<()> {
+    if unicode {
+        return Ok(());
+    }
+    Err(SourceIoError::InvalidProviderTranscriptPath {
+        path: path.to_path_buf(),
+        reason: "provider transcript path is not Unicode and cannot share durable TEXT authority",
+    })
+}
+
+fn provider_path_identity_from_raw(path: &Path, platform: &str, raw: Vec<u8>) -> Result<String> {
     if raw.len() > MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES {
         return Err(SourceIoError::InvalidProviderTranscriptPath {
             path: path.to_path_buf(),
@@ -101,5 +125,73 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn windows_identity_is_exact_wtf16_little_endian() {
+        assert_eq!(
+            windows_provider_path_identity(
+                Path::new("windows-test-path"),
+                true,
+                [
+                    b'C' as u16,
+                    b':' as u16,
+                    b'\\' as u16,
+                    0xd83d,
+                    0xde80,
+                    b'.' as u16,
+                    b'j' as u16,
+                ],
+            )
+            .unwrap(),
+            "provider-path-v1:windows-wtf16le:43003a005c003dd880de2e006a00"
+        );
+    }
+
+    #[test]
+    fn windows_non_unicode_identity_keeps_the_existing_diagnostic() {
+        let error = windows_provider_path_identity(Path::new("windows-test-path"), false, [0xd800])
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SourceIoError::InvalidProviderTranscriptPath {
+                reason: "provider transcript path is not Unicode and cannot share durable TEXT authority",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn windows_identity_rejects_wtf16_bytes_above_the_durable_limit() {
+        let error = windows_provider_path_identity(
+            Path::new("windows-test-path"),
+            true,
+            std::iter::repeat_n(b'x' as u16, MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES / 2 + 1),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SourceIoError::InvalidProviderTranscriptPath {
+                reason: "provider transcript path exceeds the durable identity limit",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn windows_identity_accepts_the_exact_wtf16_byte_limit() {
+        let identity = windows_provider_path_identity(
+            Path::new("windows-test-path"),
+            true,
+            std::iter::repeat_n(b'x' as u16, MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES / 2),
+        )
+        .unwrap();
+
+        assert_eq!(
+            identity.len(),
+            "provider-path-v1:windows-wtf16le:".len() + MAX_PROVIDER_PATH_IDENTITY_RAW_BYTES * 2
+        );
     }
 }

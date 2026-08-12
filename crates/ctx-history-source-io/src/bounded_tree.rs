@@ -1,5 +1,5 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{self, File},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
@@ -50,13 +50,14 @@ impl BoundedTreeSourceFile {
     }
 }
 
-pub fn visit_bounded_tree_files<E>(
+pub fn visit_bounded_tree_files<E, Selected>(
     root: &Path,
-    selected: &mut dyn FnMut(BoundedTreeFileCandidate<'_>) -> bool,
+    selected: &mut Selected,
     visit: &mut dyn FnMut(BoundedTreeSourceFile) -> std::result::Result<(), E>,
 ) -> std::result::Result<usize, E>
 where
     E: From<SourceIoError>,
+    Selected: FnMut(BoundedTreeFileCandidate<'_>) -> bool,
 {
     visit_bounded_tree_files_isolating_selected(root, selected, visit, &mut |_path, error| {
         Err(error)
@@ -66,14 +67,15 @@ where
 /// Visits a tree while containing admission/read failures for selected child
 /// files. Root and directory-enumeration failures remain fatal because no
 /// independent source boundary has been established for them.
-pub fn visit_bounded_tree_files_isolating_selected<E>(
+pub fn visit_bounded_tree_files_isolating_selected<E, Selected>(
     root: &Path,
-    selected: &mut dyn FnMut(BoundedTreeFileCandidate<'_>) -> bool,
+    selected: &mut Selected,
     visit: &mut dyn FnMut(BoundedTreeSourceFile) -> std::result::Result<(), E>,
     selected_file_error: &mut dyn FnMut(&Path, E) -> std::result::Result<(), E>,
 ) -> std::result::Result<usize, E>
 where
     E: From<SourceIoError>,
+    Selected: FnMut(BoundedTreeFileCandidate<'_>) -> bool,
 {
     match open_provider_source_path(root).map_err(E::from) {
         Ok(OpenedProviderSourcePath::File(file)) => {
@@ -117,16 +119,17 @@ where
     }
 }
 
-fn visit_bounded_tree_files_at_depth<E>(
+fn visit_bounded_tree_files_at_depth<E, Selected>(
     path: &Path,
     directory: ProviderSourceDirectory,
-    selected: &mut dyn FnMut(BoundedTreeFileCandidate<'_>) -> bool,
+    selected: &mut Selected,
     visit: &mut dyn FnMut(BoundedTreeSourceFile) -> std::result::Result<(), E>,
     selected_file_error: &mut dyn FnMut(&Path, E) -> std::result::Result<(), E>,
     depth: usize,
 ) -> std::result::Result<usize, E>
 where
     E: From<SourceIoError>,
+    Selected: FnMut(BoundedTreeFileCandidate<'_>) -> bool,
 {
     if depth > BOUNDED_TREE_MAX_DIRECTORY_DEPTH {
         return Err(SourceIoError::InvalidProviderTranscriptPath {
@@ -197,24 +200,25 @@ where
     traversal_stats(|stats| stats.directory_read_passes += 1);
     let mut names = Vec::with_capacity(BOUNDED_TREE_DIRECTORY_RUN_ENTRIES);
     let mut spill = None;
-    for name in directory
-        .entries(PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES)
-        .map_err(E::from)?
-    {
-        traversal_stats(|stats| stats.directory_entries_read += 1);
-        if names.len() == BOUNDED_TREE_DIRECTORY_RUN_ENTRIES {
-            let runs = spill.get_or_insert(
-                BoundedTreeDirectoryRuns::new()
-                    .map_err(|error| E::from(SourceIoError::Io(error)))?,
-            );
-            runs.write_initial_run(&mut names)
-                .map_err(|error| E::from(SourceIoError::Io(error)))?;
-        }
-        names.push(native_filename_order_key(&name));
-        traversal_stats(|stats| {
-            stats.max_retained_names = stats.max_retained_names.max(names.len())
-        });
-    }
+    directory.visit_entries(
+        PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+        |name| -> std::result::Result<(), E> {
+            traversal_stats(|stats| stats.directory_entries_read += 1);
+            if names.len() == BOUNDED_TREE_DIRECTORY_RUN_ENTRIES {
+                let runs = spill.get_or_insert(
+                    BoundedTreeDirectoryRuns::new()
+                        .map_err(|error| E::from(SourceIoError::Io(error)))?,
+                );
+                runs.write_initial_run(&mut names)
+                    .map_err(|error| E::from(SourceIoError::Io(error)))?;
+            }
+            names.push(native_filename_order_key(name));
+            traversal_stats(|stats| {
+                stats.max_retained_names = stats.max_retained_names.max(names.len())
+            });
+            Ok(())
+        },
+    )?;
 
     let Some(mut spill) = spill else {
         names.sort_unstable();
@@ -403,12 +407,12 @@ fn write_native_jsonl_run_name(writer: &mut impl Write, name: &[u8]) -> io::Resu
     writer.write_all(name)
 }
 
-fn native_filename_order_key(name: &OsStr) -> Vec<u8> {
+fn native_filename_order_key(name: OsString) -> Vec<u8> {
     #[cfg(unix)]
     {
-        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::ffi::OsStringExt;
 
-        name.as_bytes().to_vec()
+        name.into_vec()
     }
     #[cfg(windows)]
     {
@@ -495,6 +499,8 @@ fn count_bounded_tree_traversal_work<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 

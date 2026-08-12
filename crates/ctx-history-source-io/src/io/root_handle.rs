@@ -8,7 +8,8 @@
 //! Migration pattern for ordinary provider callsites:
 //!
 //! 1. open the discovered tree once with [`ProviderSourceRoot::open`];
-//! 2. enumerate with [`ProviderSourceDirectory::entries`] and
+//! 2. enumerate with [`ProviderSourceDirectory::visit_entries`] or
+//!    [`ProviderSourceDirectory::entries`], then use
 //!    [`ProviderSourceDirectory::open_child`];
 //! 3. parse through [`OpenedProviderSourceFile::bounded_reader`] or one of the
 //!    bounded read helpers;
@@ -57,6 +58,11 @@ impl From<io::Error> for AuthorityOpenError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+pub(super) enum DirectoryEntryVisitError<E> {
+    Authority(AuthorityOpenError),
+    Visitor(E),
 }
 
 #[derive(Debug)]
@@ -280,6 +286,40 @@ impl ProviderSourceDirectory {
     /// directory.
     pub fn try_clone_authority_handle(&self) -> io::Result<File> {
         self.directory.try_clone()
+    }
+
+    /// Streams at most `maximum_entries` child names from the retained
+    /// directory handle in its native enumeration order.
+    ///
+    /// Unlike [`Self::entries`], this does not retain or sort the directory's
+    /// complete fanout. Consumers that need deterministic order can build
+    /// bounded sorted runs in the callback without reopening the directory.
+    pub fn visit_entries<E>(
+        &self,
+        maximum_entries: usize,
+        mut visit: impl FnMut(OsString) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        E: From<SourceIoError>,
+    {
+        let mut observed = 0_usize;
+        let result = platform::visit_directory_entries(&self.directory, &mut |name| {
+            if observed >= maximum_entries {
+                return Err(E::from(invalid_path(
+                    self.display_path(),
+                    "provider source directory exceeds its bounded entry budget",
+                )));
+            }
+            observed = observed.saturating_add(1);
+            visit(name)
+        });
+        match result {
+            Ok(()) => Ok(()),
+            Err(DirectoryEntryVisitError::Authority(error)) => {
+                Err(E::from(map_open_error(self.display_path(), error)))
+            }
+            Err(DirectoryEntryVisitError::Visitor(error)) => Err(error),
+        }
     }
 
     /// Returns at most `maximum_entries` sorted child names from the retained
@@ -881,6 +921,74 @@ mod tests {
     use std::{fs, io::Read, time::Duration};
 
     use super::*;
+
+    #[test]
+    fn streaming_entries_stop_at_the_existing_bounded_entry_diagnostic() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir(&root).unwrap();
+        for index in 0..65 {
+            fs::write(root.join(format!("entry-{index:02}")), b"entry").unwrap();
+        }
+        let directory = ProviderSourceRoot::open(&root)
+            .unwrap()
+            .directory()
+            .unwrap();
+        let mut visited = 0_usize;
+
+        let error = directory
+            .visit_entries(64, |_name| {
+                visited += 1;
+                Ok::<(), SourceIoError>(())
+            })
+            .unwrap_err();
+
+        assert_eq!(visited, 64);
+        assert!(matches!(
+            error,
+            SourceIoError::InvalidProviderTranscriptPath {
+                reason: "provider source directory exceeds its bounded entry budget",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn streaming_entries_use_retained_authority_and_preserve_visitor_errors() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let moved = temp.path().join("moved-root");
+        let replacement = temp.path().join("replacement");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(root.join("original.jsonl"), b"original").unwrap();
+        fs::write(replacement.join("replacement.jsonl"), b"replacement").unwrap();
+        let authority = ProviderSourceRoot::open(&root).unwrap();
+        let directory = authority.directory().unwrap();
+
+        fs::rename(&root, &moved).unwrap();
+        fs::rename(&replacement, &root).unwrap();
+
+        let mut names = Vec::new();
+        directory
+            .visit_entries(64, |name| {
+                names.push(name);
+                Ok::<(), SourceIoError>(())
+            })
+            .unwrap();
+        assert_eq!(names, [OsString::from("original.jsonl")]);
+        assert!(authority.revalidate().is_err());
+
+        let error = directory
+            .visit_entries(64, |_name| {
+                Err(SourceIoError::InvalidPayload("visitor stopped".to_owned()))
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SourceIoError::InvalidPayload(detail) if detail == "visitor stopped"
+        ));
+    }
 
     #[test]
     fn retained_root_reads_the_original_tree_after_named_root_replacement() {

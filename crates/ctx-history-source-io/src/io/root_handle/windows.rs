@@ -31,7 +31,7 @@ use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
 use sha2::{Digest, Sha256};
 
-use super::AuthorityOpenError;
+use super::{AuthorityOpenError, DirectoryEntryVisitError};
 
 const DIRECTORY_QUERY_BUFFER_BYTES: usize = 64 * 1024;
 const ERROR_NO_MORE_FILES: i32 = 18;
@@ -196,9 +196,31 @@ pub(super) fn directory_entries(
     maximum_entries: usize,
 ) -> Result<Vec<OsString>, AuthorityOpenError> {
     let mut entries = Vec::new();
+    match visit_directory_entries(directory, &mut |name| {
+        if entries.len() >= maximum_entries {
+            return Err(AuthorityOpenError::Rejected(
+                "provider source directory exceeds its bounded entry budget",
+            ));
+        }
+        entries.push(name);
+        Ok(())
+    }) {
+        Ok(()) => {}
+        Err(DirectoryEntryVisitError::Authority(error))
+        | Err(DirectoryEntryVisitError::Visitor(error)) => return Err(error),
+    }
+    entries.sort_by(|left, right| comparable_name(left).cmp(&comparable_name(right)));
+    entries.dedup_by(|left, right| comparable_name(left) == comparable_name(right));
+    Ok(entries)
+}
+
+pub(super) fn visit_directory_entries<E>(
+    directory: &File,
+    visit: &mut impl FnMut(OsString) -> Result<(), E>,
+) -> Result<(), DirectoryEntryVisitError<E>> {
     let mut restart = true;
+    let mut buffer = vec![0_u64; DIRECTORY_QUERY_BUFFER_BYTES / size_of::<u64>()];
     loop {
-        let mut buffer = vec![0_u64; DIRECTORY_QUERY_BUFFER_BYTES / size_of::<u64>()];
         let class = if restart {
             FileIdBothDirectoryRestartInfo
         } else {
@@ -217,14 +239,12 @@ pub(super) fn directory_entries(
             if cause.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
                 break;
             }
-            return Err(cause.into());
+            return Err(DirectoryEntryVisitError::Authority(cause.into()));
         }
         restart = false;
-        parse_directory_buffer(&buffer, &mut entries, maximum_entries)?;
+        visit_directory_buffer(&buffer, visit)?;
     }
-    entries.sort_by(|left, right| comparable_name(left).cmp(&comparable_name(right)));
-    entries.dedup_by(|left, right| comparable_name(left) == comparable_name(right));
-    Ok(entries)
+    Ok(())
 }
 
 pub(super) fn object_stamp(file: &File, metadata: &Metadata) -> io::Result<ObjectStamp> {
@@ -757,11 +777,10 @@ fn verify_root_drive(opened: &OpenedPath, expected_drive: u8) -> Result<(), Auth
     Ok(())
 }
 
-fn parse_directory_buffer(
+fn visit_directory_buffer<E>(
     buffer: &[u64],
-    output: &mut Vec<OsString>,
-    maximum_entries: usize,
-) -> Result<(), AuthorityOpenError> {
+    visit: &mut impl FnMut(OsString) -> Result<(), E>,
+) -> Result<(), DirectoryEntryVisitError<E>> {
     let fixed = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
     let buffer_bytes = std::mem::size_of_val(buffer);
     let buffer_pointer = buffer.as_ptr().cast::<u8>();
@@ -770,22 +789,28 @@ fn parse_directory_buffer(
         let header_end = offset
             .checked_add(fixed)
             .filter(|end| *end <= buffer_bytes)
-            .ok_or(AuthorityOpenError::Rejected(
-                "Windows returned an invalid provider directory entry",
-            ))?;
+            .ok_or_else(|| {
+                DirectoryEntryVisitError::Authority(AuthorityOpenError::Rejected(
+                    "Windows returned an invalid provider directory entry",
+                ))
+            })?;
         let entry = unsafe { &*buffer_pointer.add(offset).cast::<FILE_ID_BOTH_DIR_INFO>() };
         let name_bytes = usize::try_from(entry.FileNameLength)
             .ok()
             .filter(|length| length % size_of::<u16>() == 0)
-            .ok_or(AuthorityOpenError::Rejected(
-                "Windows returned an invalid provider directory name",
-            ))?;
+            .ok_or_else(|| {
+                DirectoryEntryVisitError::Authority(AuthorityOpenError::Rejected(
+                    "Windows returned an invalid provider directory name",
+                ))
+            })?;
         header_end
             .checked_add(name_bytes)
             .filter(|end| *end <= buffer_bytes)
-            .ok_or(AuthorityOpenError::Rejected(
-                "Windows returned an invalid provider directory entry",
-            ))?;
+            .ok_or_else(|| {
+                DirectoryEntryVisitError::Authority(AuthorityOpenError::Rejected(
+                    "Windows returned an invalid provider directory entry",
+                ))
+            })?;
         let name_units = unsafe {
             std::slice::from_raw_parts(
                 buffer_pointer.add(header_end).cast::<u16>(),
@@ -794,13 +819,8 @@ fn parse_directory_buffer(
         };
         let name = OsString::from_wide(name_units);
         if name != "." && name != ".." {
-            if output.len() >= maximum_entries {
-                return Err(AuthorityOpenError::Rejected(
-                    "provider source directory exceeds its bounded entry budget",
-                ));
-            }
-            validate_child_name(&name)?;
-            output.push(name);
+            validate_child_name(&name).map_err(DirectoryEntryVisitError::Authority)?;
+            visit(name).map_err(DirectoryEntryVisitError::Visitor)?;
         }
         if entry.NextEntryOffset == 0 {
             break;
@@ -809,9 +829,11 @@ fn parse_directory_buffer(
             .ok()
             .and_then(|next| offset.checked_add(next))
             .filter(|next| *next > offset && *next < buffer_bytes)
-            .ok_or(AuthorityOpenError::Rejected(
-                "Windows returned an invalid provider directory offset",
-            ))?;
+            .ok_or_else(|| {
+                DirectoryEntryVisitError::Authority(AuthorityOpenError::Rejected(
+                    "Windows returned an invalid provider directory offset",
+                ))
+            })?;
     }
     Ok(())
 }
