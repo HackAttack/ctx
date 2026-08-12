@@ -47,6 +47,8 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-22.04"
+      ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
     concurrency: 1
@@ -91,6 +93,8 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-22.04"
+      ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
     timeout_in_minutes: 60
@@ -469,6 +473,8 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-22.04"
+      ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
     timeout_in_minutes: 30
@@ -498,6 +504,8 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-22.04"
+      ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
     timeout_in_minutes: 60
@@ -547,6 +555,8 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-22.04"
+      ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
     timeout_in_minutes: 60
@@ -642,6 +652,8 @@ steps:
     agents:
       queue: "release-linux-managed"
       ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-22.04"
+      ctx-release-nested-docker: "true"
       os: "linux"
       arch: "x86_64"
     timeout_in_minutes: 30

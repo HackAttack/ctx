@@ -77,6 +77,24 @@ class ValidationRouteError(Exception):
     pass
 
 
+LINUX_X64_RELEASE_KEYS = (
+    "public-release",
+    "public-cli-linux-x64",
+    "github-release-candidate",
+    "semantic-model-archives",
+    "semantic-runtime-linux-cuda12",
+    "semantic-release-handoff",
+)
+LINUX_X64_RELEASE_SELECTOR = {
+    "queue": "release-linux-managed",
+    "ctx-runner-class": "release-linux-control",
+    "ctx-release-os": "ubuntu-22.04",
+    "ctx-release-nested-docker": "true",
+    "os": "linux",
+    "arch": "x86_64",
+}
+
+
 def require_route(condition, message):
     if not condition:
         raise ValidationRouteError(message)
@@ -175,6 +193,26 @@ def split_steps(source):
     ]
 
 
+def validate_linux_x64_release_routes(blocks):
+    for block in blocks:
+        key = step_key(block)
+        actual = {
+            tag: scalar(block, tag, indent=6, required=False)
+            for tag in LINUX_X64_RELEASE_SELECTOR
+        }
+        if key in LINUX_X64_RELEASE_KEYS:
+            require_route(
+                actual == LINUX_X64_RELEASE_SELECTOR,
+                f"{key} must require the exact Linux x64 release authority selector",
+            )
+        else:
+            for tag in ("ctx-release-os", "ctx-release-nested-docker"):
+                require_route(
+                    actual[tag] is None,
+                    f"{key or 'unkeyed step'} must not require Linux x64 release authority tag {tag}",
+                )
+
+
 def validate_validation_routes(blocks):
     release_condition = 'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"'
     specs = {
@@ -201,12 +239,7 @@ def validate_validation_routes(blocks):
         "public-release": {
             "condition": release_condition,
             "command": "bash scripts/buildkite-public-ci.sh --mode=release",
-            "agents": {
-                "queue": "release-linux-managed",
-                "ctx-runner-class": "release-linux-control",
-                "os": "linux",
-                "arch": "x86_64",
-            },
+            "agents": LINUX_X64_RELEASE_SELECTOR,
             "concurrency_group": "ctx/public-release/release-linux-managed",
             "timeout": "120",
         },
@@ -233,7 +266,7 @@ def validate_validation_routes(blocks):
             command(block) == spec["command"],
             f"{key} must invoke exactly {spec['command']}",
         )
-        for tag in ("queue", "ctx-runner-class", "os", "arch"):
+        for tag in LINUX_X64_RELEASE_SELECTOR:
             expected = spec["agents"].get(tag)
             require_route(
                 scalar(block, tag, indent=6, required=False) == expected,
@@ -484,6 +517,7 @@ require_route(
     "pipeline should include public validation and bounded release matrices",
 )
 validate_validation_routes(steps)
+validate_linux_x64_release_routes(steps)
 validate_fail_slow_release_graph(steps)
 validate_windows_release_output_root(steps)
 validate_linux_smoke_arg_escaping(steps)
@@ -523,6 +557,23 @@ expect_rejection(
     "public release without managed capability",
     release_without_managed_capability,
 )
+for linux_key in LINUX_X64_RELEASE_KEYS:
+    for tag in ("ctx-release-os", "ctx-release-nested-docker"):
+        selector_without_capability = [
+            block.replace(
+                f'      {tag}: "{LINUX_X64_RELEASE_SELECTOR[tag]}"\n',
+                "",
+                1,
+            )
+            if step_key(block) == linux_key
+            else block
+            for block in steps
+        ]
+        expect_rejection(
+            f"{linux_key} without {tag}",
+            selector_without_capability,
+            validate_linux_x64_release_routes,
+        )
 serialized_diagnostic = [
     block.replace(
         '    key: "public-cli-linux-x64"\n',
@@ -673,13 +724,29 @@ if command -v ruby >/dev/null 2>&1; then
     macos_x64_kvm_runner_id = ARGV.fetch(3)
     macos_x64_llvm_task_root_env = ARGV.fetch(4)
     macos_x64_intel_concurrency_group = ARGV.fetch(5)
+    linux_x64_release_selector = {
+      "queue" => "release-linux-managed",
+      "ctx-runner-class" => "release-linux-control",
+      "ctx-release-os" => "ubuntu-22.04",
+      "ctx-release-nested-docker" => "true",
+      "os" => "linux",
+      "arch" => "x86_64",
+    }
+    linux_x64_release_keys = %w[
+      public-release
+      public-cli-linux-x64
+      github-release-candidate
+      semantic-model-archives
+      semantic-runtime-linux-cuda12
+      semantic-release-handoff
+    ]
     abort "pipeline should include public validation and bounded release matrices" unless steps.length == 18
     smoke = steps.fetch(0)
     abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
     abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
     abort "missing public-smoke step" unless smoke["key"] == "public-smoke"
     abort "public-smoke must use the Buildkite hosted default queue" unless smoke.dig("agents", "queue") == "default"
-    abort "public-smoke must not require self-hosted runner tags" if smoke.dig("agents", "ctx-runner-class") || smoke.dig("agents", "os") || smoke.dig("agents", "arch")
+    abort "public-smoke must not require self-hosted runner tags" if smoke.dig("agents", "ctx-runner-class") || smoke.dig("agents", "ctx-release-os") || smoke.dig("agents", "ctx-release-nested-docker") || smoke.dig("agents", "os") || smoke.dig("agents", "arch")
     abort "public-smoke should run one hosted Linux job at a time" unless smoke["concurrency"] == 1 && smoke["concurrency_group"].to_s.include?("default-hosted")
     command = smoke["command"].to_s
     abort "public-smoke must run the Buildkite public CI script" unless command.include?("scripts/buildkite-public-ci.sh")
@@ -701,6 +768,16 @@ if command -v ruby >/dev/null 2>&1; then
       semantic-release-handoff
     ]
     actual_keys = steps.filter_map { |step| step["key"] if step.is_a?(Hash) }
+    linux_x64_release_keys.each do |key|
+      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
+      abort "missing Linux x64 release step #{key}" unless step
+      abort "#{key} must require the exact Linux x64 release authority selector" unless step["agents"] == linux_x64_release_selector
+    end
+    steps.each do |step|
+      next unless step.is_a?(Hash) && !linux_x64_release_keys.include?(step["key"])
+      agents = step["agents"] || {}
+      abort "#{step["key"] || "unkeyed step"} must not require Linux x64 release authority tags" if agents.key?("ctx-release-os") || agents.key?("ctx-release-nested-docker")
+    end
     %w[sdk-swift-required].each do |key|
       abort "missing required SDK step #{key}" unless actual_keys.include?(key)
     end
@@ -1083,6 +1160,8 @@ for required in \
   'bash scripts/check.sh "${check_args[@]}"' \
   'queue: "release-linux-managed"' \
   'ctx-runner-class: "release-linux-control"' \
+  'ctx-release-os: "ubuntu-22.04"' \
+  'ctx-release-nested-docker: "true"' \
   'CTX_PUBLIC_CLI_ARTIFACT_MATRIX' \
   'scripts/release/build-linux-bazel-release.sh' \
   '$${smoke_args[@]}' \
