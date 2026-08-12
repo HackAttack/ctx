@@ -316,6 +316,19 @@ class ManifestTests(unittest.TestCase):
             self.assertNotIn("macos-release-signing-evidence.py", text, path.name)
             self.assertNotIn("temporary_output", text, path.name)
 
+    def test_macos_x64_validation_consumes_the_finalized_runtime_producer(self) -> None:
+        pipeline = (REPO_ROOT / ".buildkite" / "pipeline.yml").read_text()
+        producer = pipeline.index('key: "public-cli-macos-x64-runtime-producer"')
+        validator = pipeline.index('key: "public-cli-macos-x64-native-smoke"')
+        producer_block = pipeline[producer:]
+        validator_block = pipeline[validator:producer] if validator < producer else pipeline[validator:]
+        self.assertIn("build-onnxruntime-sidecar.sh macos-x64", producer_block)
+        self.assertIn("stage-github-release-assets.sh --transcode-runtime macos-x64", producer_block)
+        self.assertIn("--step public-cli-macos-x64-runtime-producer", validator_block)
+        self.assertIn('"public-cli-macos-x64-runtime-producer"', validator_block)
+        self.assertNotIn("build-onnxruntime-sidecar.sh macos-x64", validator_block)
+        self.assertNotIn("stage-github-release-assets.sh --transcode-runtime macos-x64", validator_block)
+
     def test_archive_tool_defers_annotations_for_macos_python(self) -> None:
         source = (TOOLS / "archive_tool.py").read_text().splitlines()
         self.assertIn("from __future__ import annotations", source[:6])

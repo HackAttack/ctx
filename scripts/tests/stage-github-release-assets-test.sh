@@ -27,6 +27,7 @@ for dependency in \
   check-macos-release-signing.sh \
   check-public-cli-build-info.py \
   macos-release-signing-evidence.py \
+  native-execution-proof.py \
   macos-release-publisher-policy.sh \
   release-sbom.py \
   verify-macos-release-attestation.sh; do
@@ -265,6 +266,19 @@ for platform in macos-arm64 macos-x64; do
     > "${matrix}/ctx-onnxruntime-${platform}.release-attestation.json"
   printf 'cms\n' \
     > "${matrix}/ctx-onnxruntime-${platform}.release-attestation.cms"
+done
+for platform in linux-x64 linux-aarch64 macos-arm64 macos-x64 windows-x64; do
+  binary="ctx-${platform}"
+  [[ "${platform}" == "linux-x64" ]] && binary="ctx"
+  [[ "${platform}" == "windows-x64" ]] && binary="ctx.exe"
+  printf '%s\n' '{"kind":"ctx-native-candidate-smoke","schema_version":1,"status":"passed"}' \
+    > "${matrix}/native-smoke-${platform}.json"
+  CTX_NATIVE_PROOF_ARTIFACT="${matrix}/${binary}" \
+    "${real_python3}" -I "${source_root}/scripts/native-execution-proof.py" create \
+      --platform "${platform}" \
+      --artifact "${matrix}/${binary}" \
+      --smoke-result "${matrix}/native-smoke-${platform}.json" \
+      --output "${matrix}/ctx-${platform}.native-execution.json" >/dev/null
 done
 
 seal_linux_fixture() {

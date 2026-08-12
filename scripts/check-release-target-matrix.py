@@ -75,12 +75,12 @@ def validate_target(target: dict[str, Any]) -> None:
         raise ValueError("diagnostic authorities must be unique non-empty strings")
     if target["runtime_authority"] in diagnostics:
         raise ValueError(f"authoritative runner is also diagnostic for {target['id']}")
-    if target["public_construction_authority"] != "bazel-release-route-v1":
-        raise ValueError("public construction authority must be Bazel release V1")
+    if target["public_construction_authority"] != "linux-cross-cargo-zigbuild-v1":
+        raise ValueError("public construction authority must be Linux cross factory V1")
     if target["public_construction_label"] != (
-        f"//:ctx_release_{target['id'].replace('-', '_')}"
+        "scripts/release/build-public-candidate-on-linux.sh"
     ):
-        raise ValueError("public construction label does not match target ID")
+        raise ValueError("public construction label must name the Linux factory")
     suffix = ".exe" if target["os"] == "windows" else ""
     expected_public = f"ctx-{target['id']}{suffix}"
     if target["id"] == "linux-arm64":
@@ -131,37 +131,17 @@ def validate_advisory_policy_coverage(
 ) -> None:
     policy = json.loads(path.read_text(encoding="utf-8"))
     scanner = policy.get("scanner")
-    scanner_hashes = (
-        scanner.get("sha256_by_target") if isinstance(scanner, dict) else None
-    )
-    if not isinstance(scanner_hashes, dict):
-        raise ValueError("release advisory scanner target map is missing")
-    release_targets = {target["id"] for target in value["targets"]}
-    scanner_targets = set(scanner_hashes)
-    if scanner_targets != release_targets:
-        missing = sorted(release_targets - scanner_targets)
-        unexpected = sorted(scanner_targets - release_targets)
-        details = []
-        if missing:
-            details.append("missing: " + ", ".join(missing))
-        if unexpected:
-            details.append("unexpected: " + ", ".join(unexpected))
-        raise ValueError(
-            "release advisory scanner targets do not match release matrix ("
-            + "; ".join(details)
-            + ")"
-        )
-    malformed = sorted(
-        target
-        for target, digest in scanner_hashes.items()
-        if not isinstance(digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-    )
-    if malformed:
-        raise ValueError(
-            "release advisory scanner has malformed SHA-256 for: "
-            + ", ".join(malformed)
-        )
+    if (
+        not isinstance(scanner, dict)
+        or scanner.get("authority") != "ctx-release-osv-linux-x64-v1"
+        or scanner.get("name") != "osv-scanner"
+        or scanner.get("platform") != "linux-x64"
+        or not isinstance(scanner.get("version"), str)
+        or not isinstance(scanner.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", scanner["sha256"]) is None
+    ):
+        raise ValueError("release advisory scanner authority is not the pinned Linux-x64 input")
+    return None
 
 
 def generated_bazel_consumer(value: dict[str, Any]) -> str:

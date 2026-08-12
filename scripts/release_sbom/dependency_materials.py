@@ -208,9 +208,25 @@ def target_package_identities(
     root_package: str,
 ) -> set[Identity]:
     try:
-        labels = inventory_bytes.decode().splitlines()
+        inventory_text = inventory_bytes.decode()
     except UnicodeDecodeError as error:
         raise ValueError("target dependency inventory is malformed") from error
+    if inventory_text.lstrip().startswith("{"):
+        try:
+            inventory = json.loads(inventory_text)
+            records = inventory["packages"]
+            labels = [record["label"] for record in records]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise ValueError("Cargo target dependency inventory is malformed") from error
+        if (
+            inventory.get("schema_version") != 1
+            or inventory.get("kind") != "ctx-cargo-release-inventory"
+            or not isinstance(records, list)
+            or any(not isinstance(record, dict) for record in records)
+        ):
+            raise ValueError("Cargo target dependency inventory is malformed")
+    else:
+        labels = inventory_text.splitlines()
     if (
         not labels
         or labels != sorted(set(labels))
@@ -280,14 +296,81 @@ def target_package_identities(
 
 def parse_material_inventory(
     inventory_bytes: bytes,
-) -> tuple[list[tuple[str, str]], dict[str, set[str]]]:
+) -> tuple[list[tuple[str, str, Path | None]], dict[str, set[str]], bytes]:
     try:
-        lines = inventory_bytes.decode().splitlines()
+        inventory_text = inventory_bytes.decode()
     except UnicodeDecodeError as error:
         raise ValueError("license material inventory is malformed") from error
+    if inventory_text.lstrip().startswith("{"):
+        try:
+            inventory = json.loads(inventory_text)
+            material_records = inventory["materials"]
+            feature_records = inventory["features"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise ValueError("Cargo license material inventory is malformed") from error
+        if (
+            inventory.get("schema_version") != 1
+            or inventory.get("kind") != "ctx-cargo-release-inventory"
+            or not isinstance(material_records, list)
+            or not isinstance(feature_records, list)
+        ):
+            raise ValueError("Cargo license material inventory is malformed")
+        files = []
+        features: dict[str, set[str]] = {}
+        for record in material_records:
+            if not isinstance(record, dict) or set(record) != {"kind", "logical"}:
+                raise ValueError("Cargo license material record is malformed")
+            kind = record["kind"]
+            logical = record["logical"]
+            if kind not in {"external", "main"}:
+                raise ValueError("Cargo license material record is malformed")
+            path = PurePosixPath(logical) if isinstance(logical, str) else None
+            if (
+                path is None
+                or not logical
+                or path.is_absolute()
+                or ".." in path.parts
+                or str(path) != logical
+            ):
+                raise ValueError("Cargo license material path is unsafe")
+            files.append((kind, logical, None))
+        for record in feature_records:
+            if not isinstance(record, dict) or set(record) != {"feature", "label"}:
+                raise ValueError("Cargo configured feature record is malformed")
+            label = record["label"]
+            feature = record["feature"]
+            if (
+                not isinstance(label, str)
+                or not label
+                or not isinstance(feature, str)
+                or not feature
+                or any(character.isspace() for character in feature)
+            ):
+                raise ValueError("Cargo configured feature record is malformed")
+            features.setdefault(label, set()).add(feature)
+        if files != sorted(files, key=lambda item: (item[0], item[1])):
+            raise ValueError("Cargo license materials must be sorted")
+        portable = canonical(
+            {
+                "schema_version": 1,
+                "kind": "ctx-cargo-release-materials",
+                "materials": [
+                    {"kind": kind, "logical": logical}
+                    for kind, logical, _ in files
+                ],
+                "features": [
+                    {"label": label, "feature": feature}
+                    for label in sorted(features)
+                    for feature in sorted(features[label])
+                ],
+            }
+        )
+        return files, features, portable
+
+    lines = inventory_text.splitlines()
     if not lines or lines != sorted(set(lines)):
         raise ValueError("license material inventory must be sorted and unique")
-    files: list[tuple[str, str]] = []
+    files: list[tuple[str, str, Path | None]] = []
     features: dict[str, set[str]] = {}
     for line in lines:
         fields = line.split("\t")
@@ -303,7 +386,7 @@ def parse_material_inventory(
                 raise ValueError(f"license material path is unsafe: {logical}")
             if kind == "external" and len(path.parts) < 2:
                 raise ValueError(f"external license material path is invalid: {logical}")
-            files.append((kind, logical))
+            files.append((kind, logical, None))
         elif len(fields) == 3 and fields[0] == "feature":
             _, label, feature = fields
             if (
@@ -315,7 +398,7 @@ def parse_material_inventory(
             features.setdefault(label, set()).add(feature)
         else:
             raise ValueError(f"license material inventory record is malformed: {line}")
-    return files, features
+    return files, features, inventory_bytes
 
 
 def runfiles_manifest() -> dict[str, Path]:
@@ -392,14 +475,19 @@ def package_metadata(
     material_inventory_bytes: bytes,
     runfiles_root: Path | None,
 ) -> tuple[dict[Identity, dict[str, Any]], dict[str, set[str]], str]:
-    file_records, configured_features = parse_material_inventory(
+    file_records, configured_features, portable_inventory_bytes = parse_material_inventory(
         material_inventory_bytes
     )
     manifest_map = runfiles_manifest()
     material_bytes: dict[tuple[str, str], bytes] = {}
-    for kind, logical in file_records:
+    for kind, logical, physical in file_records:
+        material_path = (
+            physical
+            if physical is not None
+            else resolve_material(kind, logical, runfiles_root, manifest_map)
+        )
         material_bytes[(kind, logical)] = resolved_regular_bytes(
-            resolve_material(kind, logical, runfiles_root, manifest_map),
+            material_path,
             f"release license material {logical}",
             4 * 1024 * 1024,
         )
@@ -497,7 +585,7 @@ def package_metadata(
             notice_files.get(group, []),
             key=lambda item: str(item["logical"]),
         )
-    return manifests, configured_features, sha256_bytes(material_inventory_bytes)
+    return manifests, configured_features, sha256_bytes(portable_inventory_bytes)
 
 
 def assert_tantivy_contract(

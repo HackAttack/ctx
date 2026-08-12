@@ -217,60 +217,37 @@ Do not revive a parallel Rust development wrapper or enable `sccache` by
 default. Either change would require separate measured evidence and an explicit
 repository policy change.
 
-## Bazel release candidates
+## Public release candidates
 
-The public Core release routes compile and package the target-configured
-`//crates/ctx-cli:ctx --config=release` graph. They do not invoke Cargo,
-publish, or promote. Each route declares its artifact, pinned rustc,
-`Cargo.lock`, target matrix, and target platform as non-overridable runfiles.
-The packager verifies the binary's stamped source commit, `Cargo.lock` digest,
-and Rust target identity, requires a clean matching checkout, applies the
-existing format/ABI and native candidate-smoke hooks, uses the existing macOS
-signing hooks when signing is required, and installs the artifact, `.sha256`,
-`.version`, and `.build-info.json` files without replacing existing leaves.
-
-Build and package with the same release configuration:
+Bazel remains the development, test, and release-qualification authority. It
+does not construct the downloadable CLI binaries. One Linux x86_64 factory
+cross-builds all five public binaries from the same clean commit and writes one
+candidate directory:
 
 ```bash
-scripts/bazelw run //:ctx_release_linux_x64 --config=release -- \
-  --build-info /secure/ctx-linux-x64.build-info.json \
+scripts/release/build-public-candidate-on-linux.sh \
+  --source-commit "$(git rev-parse HEAD)" \
+  --macos-sdk /private/path/MacOSX.sdk.tar.gz \
   --output-dir target/public-cli-artifacts
 ```
 
-The route labels are `//:ctx_release_linux_x64`,
-`//:ctx_release_linux_arm64`, `//:ctx_release_macos_arm64`,
-`//:ctx_release_macos_x64`, and `//:ctx_release_windows_x64`. Their distribution
-names come only from `contracts/release-targets-v1.json`; the packager preserves
-the raw construction names consumed by `scripts/stage-github-release-assets.sh`.
+The factory pins Rust, Zig, cargo-zigbuild, and rcodesign. Official mode also
+requires the offline OSV inputs and the existing five Apple signing values. It
+signs and notarizes the two macOS binaries from Linux. `--diagnostic-unsigned`
+is available for local cross-build diagnostics, but its output is explicitly
+non-releasable.
 
-Linux release lanes use the tracked native builder rather than hand-authoring
-the Linux `--build-info` input:
+Buildkite runs this command once, uploads the resulting directory, and fans the
+exact bytes out to Linux x64, Linux arm64, macOS arm64, macOS x64, and Windows
+x64. Those jobs execute native smoke and signature checks; they never rebuild
+the candidate. The old `//:ctx_release_*` programs remain only as diagnostic
+compatibility tools and are not wired into production release construction.
 
-```bash
-source_commit="$(git rev-parse --verify HEAD^{commit})"
-scripts/release/build-linux-bazel-release.sh \
-  --platform linux-x64 \
-  --source-commit "${source_commit}" \
-  --output-dir /secure/build/ctx-linux-x64
-```
-
-The command requires a clean checkout at exactly `source_commit`, native host
-and Docker architectures, and the pinned offline advisory inputs named in its
-usage. It builds the matching Bazel route with compilation networking
-disabled, stages the complete CLI/runtime/evidence bundle beside the final
-destination, seals it, smokes those final candidate bytes once, verifies the
-seal, and atomically commits the directory without replacement. Private debug
-symbols use the same no-replace publication rule when requested. The command
-never signs, uploads, deploys, or updates a release channel.
-
-`ctx.build-info.json` is canonical, timestamp-free JSON. It binds the exact
-artifact, clean source commit, 0.26.0 source and executable versions,
-`Cargo.lock`, release target matrix, `MODULE.bazel`, `MODULE.bazel.lock`,
-Bazel version, configured Rust toolchain, builder recipe, and immutable
-builder/runtime/inspector image IDs. The producer writes it only after the
-pinned static-ABI and native-runtime gates pass. The release packager
-reconstructs those source/version/target/toolchain bindings from its declared
-runfiles and rejects any changed or non-canonical build-info bytes.
+Each `.build-info.json` is canonical, timestamp-free JSON. It binds the exact
+artifact, clean source commit, Cargo lock, target, Rust/Zig/cargo-zigbuild
+versions, factory recipe, and macOS SDK digest where applicable. It records
+static inspection in the factory and deliberately leaves native runtime proof
+to the five fan-out jobs.
 
 With no mode flag, the staging helper validates and stages the five CLI binaries
 paired with the five legacy runtime transports. `--with-semantic` preserves
@@ -317,20 +294,16 @@ scripts/stage-github-release-assets.sh \
   target/github-release-authority
 ```
 
-Linux must also pass `--build-info PATH` from the pinned Ubuntu 22.04 builder.
-For Linux x64 staging dogfood, the tracked builder above owns that producer and
-passes its output to the generic packager. Other Linux release lanes must
-provide equivalently validated builder-authored evidence. Set
-`CTX_MACOS_RELEASE_SIGNING=required` on trusted macOS release workers; signing
-remains optional for unsigned local qualification candidates.
+The staging command consumes the factory-authored build information directly.
+Mac signing is mandatory in official mode; unsigned diagnostic factory output
+cannot be staged as a candidate.
 
 ## Platform boundary
 
-Release construction requires the corresponding Bazel Rust/C++ toolchains and
-native runners. The Windows route selects a dedicated
-`x86_64-pc-windows-gnu` target graph; it does not reuse or relabel the normal
-MSVC graph, and its native authority must provide the contracted MinGW linker
-and runtime.
+Release construction requires one Linux x86_64 host, the pinned Rust targets,
+Zig, and a private macOS SDK. Native runners are validation authorities only.
+The Windows binary uses the dedicated `x86_64-pc-windows-gnu` Cargo graph and
+is executed later on the Windows x64 validation host.
 
 FreeBSD is not a release route. On FreeBSD, build the normal
 `//crates/ctx-cli:ctx --config=release` target from source. The pinned

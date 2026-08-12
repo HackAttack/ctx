@@ -2,90 +2,92 @@
 set -euo pipefail
 
 pipeline=".buildkite/pipeline.yml"
-macos_arm64_hosted_queue="ctx-release-macos-arm64"
-macos_x64_kvm_queue="ctx-mac-gui-shared-x64"
-macos_x64_kvm_runner_id="ctx-mac-gui-shared-x64"
-macos_x64_llvm_task_root_env="CTX_RELEASE_MACOS_X64_LLVM_TASK_ROOT"
-macos_x64_intel_concurrency_group="ctx-public-cli-macos-intel-native"
-public_ci_script="scripts/buildkite-public-ci.sh"
-public_ci_cache_test="scripts/tests/buildkite-public-ci-cache-test.sh"
-release_advisory_inputs="scripts/release/run-with-release-advisory-inputs.py"
-release_advisory_inputs_test="scripts/tests/run-with-release-advisory-inputs-test.py"
-sdk_check_script="scripts/check-sdks.sh"
-sdk_pipeline_check_script="scripts/check-sdk-ci-pipeline.py"
-sdk_required_groups_test="scripts/tests/check-sdks-required-groups-test.sh"
-packager_script="scripts/package-public-cli-bazel-release.sh"
-artifact_check_script="scripts/check-public-cli-artifact.sh"
-compat_check_script="scripts/check-release-binary-compat.sh"
-macos_sign_script="scripts/sign-notarize-macos-release-artifact.sh"
-macos_check_script="scripts/check-macos-release-signing.sh"
-macos_launcher_script="scripts/run-macos-release-signing.sh"
-macos_trust_script="scripts/check-macos-signing-trusted-ref.sh"
-macos_attestation_script="scripts/verify-macos-release-attestation.sh"
-macos_archive_attester_script="scripts/attest-macos-runtime-release-archive.sh"
-macos_execution_script="scripts/verify-macos-signed-cli.sh"
-macos_evidence_script="scripts/macos-release-signing-evidence.py"
-macos_precommand_script="scripts/buildkite/macos_agent_pre_command.sh"
-macos_ca_file="scripts/apple-developer-id-g2-ca.pem"
-semantic_handoff_script="scripts/stage-semantic-release-handoff.sh"
-semantic_append_script="scripts/append-semantic-release-metadata.sh"
-staging_script="scripts/stage-github-release-assets.sh"
-test -f "${pipeline}"
-test -f "${public_ci_script}"
-test -f "${public_ci_cache_test}"
-test -f "${release_advisory_inputs}"
-test -f "${release_advisory_inputs_test}"
-test -f "${sdk_check_script}"
-test -f "${sdk_pipeline_check_script}"
-test -f "${sdk_required_groups_test}"
-test -f "${packager_script}"
-test -f "${artifact_check_script}"
-test -f "${compat_check_script}"
-test -f "${macos_sign_script}"
-test -f "${macos_check_script}"
-test -f "${macos_launcher_script}"
-test -f "${macos_trust_script}"
-test -f "${macos_attestation_script}"
-test -f "${macos_archive_attester_script}"
-test -f "${macos_execution_script}"
-test -f "${macos_evidence_script}"
-test -f "${macos_precommand_script}"
-test -f "${macos_ca_file}"
-test -f "${semantic_handoff_script}"
-test -f "${semantic_append_script}"
-test -f "${staging_script}"
-
-if [[ -e ".github/workflows/public-ci.yml" ]]; then
-  printf 'public GitHub Actions CI workflow should be migrated to Buildkite\n' >&2
-  exit 1
-fi
-
-bash "${sdk_required_groups_test}"
-bash "${public_ci_cache_test}"
-python3 "${release_advisory_inputs_test}"
-python3 "${sdk_pipeline_check_script}" \
-  "${pipeline}" "${public_ci_script}" "${sdk_check_script}"
+for required in \
+  "${pipeline}" \
+  scripts/buildkite-public-ci.sh \
+  scripts/buildkite/download-linux-factory-artifacts.sh \
+  scripts/release/build-public-candidate-on-linux.sh \
+  scripts/validate-public-cli-factory-artifact.sh \
+  scripts/stage-github-release-assets.sh \
+  scripts/check-sdks.sh; do
+  [[ -f "${required}" ]] || {
+    printf 'Buildkite release input missing: %s\n' "${required}" >&2
+    exit 1
+  }
+done
 
 python3 - "${pipeline}" <<'PY'
-from collections import Counter
-import ast
+from __future__ import annotations
+
+import json
 import re
+import subprocess
 import sys
 
 
-class ValidationRouteError(Exception):
-    pass
+def fail(message: str) -> None:
+    raise SystemExit(f"Buildkite release pipeline: {message}")
 
 
-LINUX_X64_RELEASE_KEYS = (
+try:
+    encoded = subprocess.check_output(
+        [
+            "ruby",
+            "-rjson",
+            "-ryaml",
+            "-e",
+            "print JSON.generate(YAML.load_file(ARGV.fetch(0)))",
+            sys.argv[1],
+        ],
+        text=True,
+    )
+except (OSError, subprocess.CalledProcessError) as error:
+    fail("Ruby YAML parser is required for the pipeline contract")
+value = json.loads(encoded)
+steps = value.get("steps") if isinstance(value, dict) else None
+if not isinstance(steps, list):
+    fail("steps are missing")
+keyed = {
+    step.get("key"): step
+    for step in steps
+    if isinstance(step, dict) and isinstance(step.get("key"), str)
+}
+required = {
+    "public-smoke",
+    "public-nightly",
     "public-release",
-    "public-cli-linux-x64",
+    "sdk-swift-required",
+    "public-cli-linux-factory",
+    "public-cli-linux-x64-native-smoke",
+    "public-cli-linux-aarch64-native-smoke",
+    "public-cli-macos-arm64-native-smoke",
+    "public-cli-macos-x64-runtime-producer",
+    "public-cli-macos-x64-native-smoke",
+    "public-cli-windows-x64-native-smoke",
     "github-release-candidate",
     "semantic-model-archives",
+    "semantic-coreml-archive",
     "semantic-runtime-linux-cuda12",
+    "semantic-runtime-windows-ml",
     "semantic-release-handoff",
-)
-LINUX_X64_RELEASE_SELECTOR = {
+}
+if set(keyed) != required:
+    fail(
+        f"unexpected step keys: missing={sorted(required-set(keyed))} "
+        f"extra={sorted(set(keyed)-required)}"
+    )
+
+for key, mode in (
+    ("public-smoke", "ci"),
+    ("public-nightly", "nightly"),
+    ("public-release", "release"),
+):
+    if keyed[key].get("command", "").strip() != (
+        f"bash scripts/buildkite-public-ci.sh --mode={mode}"
+    ):
+        fail(f"{key} does not own the exact {mode} validation route")
+
+linux_x64_selector = {
     "queue": "release-linux-managed",
     "ctx-runner-class": "release-linux-control",
     "ctx-release-os": "ubuntu-22.04",
@@ -93,1450 +95,146 @@ LINUX_X64_RELEASE_SELECTOR = {
     "os": "linux",
     "arch": "x86_64",
 }
+linux_x64_keys = {
+    "public-release",
+    "public-cli-linux-factory",
+    "public-cli-linux-x64-native-smoke",
+    "github-release-candidate",
+    "semantic-model-archives",
+    "semantic-runtime-linux-cuda12",
+    "semantic-release-handoff",
+}
+for key, step in keyed.items():
+    agents = step.get("agents", {})
+    if key in linux_x64_keys:
+        if agents != linux_x64_selector:
+            fail(f"{key} must require the exact Linux x86_64 release authority selector")
+    elif any(tag in agents for tag in ("ctx-release-os", "ctx-release-nested-docker")):
+        fail(f"{key} must not require Linux x86_64 release authority tags")
 
+factory = keyed["public-cli-linux-factory"]
+factory_command = factory.get("command", "")
+agents = factory.get("agents", {})
+if agents != linux_x64_selector:
+    fail("factory must use the managed Linux x86_64 release queue")
+if (
+    "build-public-candidate-on-linux.sh" not in factory_command
+    or "--macos-sdk" not in factory_command
+):
+    fail("factory must invoke the one Linux construction entry point with an SDK")
+if factory.get("secrets"):
+    fail("factory must acquire Apple signing values only at the signing boundary")
+if factory.get("artifact_paths") != ["target/public-cli-artifacts/*"]:
+    fail("factory must upload its complete candidate directory")
 
-def require_route(condition, message):
-    if not condition:
-        raise ValidationRouteError(message)
-
-
-def scalar(block, name, indent=4, required=True):
-    prefix = " " * indent
-    matches = re.findall(
-        rf"^{re.escape(prefix + name)}:[ \t]*(.+?)[ \t]*$",
-        block,
-        flags=re.MULTILINE,
+native = {
+    "public-cli-linux-x64-native-smoke": (
+        "linux-x64", "release-linux-managed", "linux", "x86_64"
+    ),
+    "public-cli-linux-aarch64-native-smoke": (
+        "linux-aarch64", "linux-arm64", "linux", "arm64"
+    ),
+    "public-cli-macos-arm64-native-smoke": (
+        "macos-arm64", "ctx-release-macos-arm64", "darwin", "arm64"
+    ),
+    "public-cli-macos-x64-native-smoke": (
+        "macos-x64", "ctx-mac-gui-shared-x64", "darwin", "x86_64"
+    ),
+    "public-cli-windows-x64-native-smoke": (
+        "windows-x64", "windows-x64", "windows", "x86_64"
+    ),
+}
+for key, (platform, queue, os_name, arch) in native.items():
+    step = keyed[key]
+    expected_dependency = (
+        ["public-cli-linux-factory", "public-cli-macos-x64-runtime-producer"]
+        if key == "public-cli-macos-x64-native-smoke"
+        else "public-cli-linux-factory"
     )
-    if not matches and not required:
-        return None
-    require_route(len(matches) == 1, f"step must define exactly one {name}")
-    value = matches[0]
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        value = value[1:-1]
-    return value
-
-
-def command(block):
-    match = re.search(
-        r"^    command: \|\n((?:^      .*(?:\n|$))*)",
-        block,
-        flags=re.MULTILINE,
-    )
-    require_route(match is not None, "validation step must define a block command")
-    return "\n".join(
-        line[6:] for line in match.group(1).splitlines()
-    ).strip()
-
-
-def artifact_paths(block):
-    match = re.search(
-        r"^    artifact_paths:\n((?:^      - .*(?:\n|$))*)",
-        block,
-        flags=re.MULTILINE,
-    )
-    require_route(match is not None, "validation step must retain artifact paths")
-    paths = []
-    for line in match.group(1).splitlines():
-        value = line.removeprefix("      - ").strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        paths.append(value)
-    return paths
-
-
-def step_key(block):
-    return scalar(block, "key", required=False)
-
-
-def dependencies(block):
-    inline = scalar(block, "depends_on", required=False)
-    if inline is not None:
-        try:
-            value = ast.literal_eval(inline)
-        except (SyntaxError, ValueError):
-            value = inline
-        return [value] if isinstance(value, str) else list(value)
-    match = re.search(
-        r"^    depends_on:\n((?:^      - .*(?:\n|$))*)",
-        block,
-        flags=re.MULTILINE,
-    )
-    if match is None:
-        return []
-    values = []
-    for line in match.group(1).splitlines():
-        value = line.removeprefix("      - ").strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values.append(value)
-    return values
-
-
-def split_steps(source):
-    lines = source.splitlines(keepends=True)
-    try:
-        steps_line = next(
-            index for index, line in enumerate(lines) if line.rstrip() == "steps:"
-        )
-    except StopIteration as error:
-        raise ValidationRouteError("pipeline must define top-level steps") from error
-    starts = [
-        index
-        for index in range(steps_line + 1, len(lines))
-        if lines[index].startswith("  - ")
-    ]
-    require_route(starts, "pipeline must define top-level steps")
-    starts.append(len(lines))
-    return [
-        "".join(lines[start:end])
-        for start, end in zip(starts, starts[1:])
-    ]
-
-
-def validate_linux_x64_release_routes(blocks):
-    for block in blocks:
-        key = step_key(block)
-        actual = {
-            tag: scalar(block, tag, indent=6, required=False)
-            for tag in LINUX_X64_RELEASE_SELECTOR
-        }
-        if key in LINUX_X64_RELEASE_KEYS:
-            require_route(
-                actual == LINUX_X64_RELEASE_SELECTOR,
-                f"{key} must require the exact Linux x64 release authority selector",
-            )
-        else:
-            for tag in ("ctx-release-os", "ctx-release-nested-docker"):
-                require_route(
-                    actual[tag] is None,
-                    f"{key or 'unkeyed step'} must not require Linux x64 release authority tag {tag}",
-                )
-
-
-def validate_validation_routes(blocks):
-    release_condition = 'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"'
-    specs = {
-        "public-smoke": {
-            "condition": (
-                'build.source != "schedule" && '
-                'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") != "1"'
-            ),
-            "command": "bash scripts/buildkite-public-ci.sh --mode=ci",
-            "agents": {"queue": "default"},
-            "concurrency_group": "ctx/public-smoke/default-hosted",
-            "timeout": "60",
-        },
-        "public-nightly": {
-            "condition": (
-                'build.source == "schedule" && '
-                'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") != "1"'
-            ),
-            "command": "bash scripts/buildkite-public-ci.sh --mode=nightly",
-            "agents": {"queue": "default"},
-            "concurrency_group": "ctx/public-nightly/default-hosted",
-            "timeout": "120",
-        },
-        "public-release": {
-            "condition": release_condition,
-            "command": "bash scripts/buildkite-public-ci.sh --mode=release",
-            "agents": LINUX_X64_RELEASE_SELECTOR,
-            "concurrency_group": "ctx/public-release/release-linux-managed",
-            "timeout": "120",
-        },
-    }
-    expected_artifacts = [
-        "bazel-testlogs/**/*.log",
-        "bazel-testlogs/**/test.outputs/**/*",
-        "bazel-testlogs/**/*.zip",
-        "target/ctx-artifacts/check/**",
-    ]
-
-    for key, spec in specs.items():
-        matches = [block for block in blocks if step_key(block) == key]
-        require_route(
-            len(matches) == 1,
-            f"pipeline must define exactly one {key} validation route",
-        )
-        block = matches[0]
-        require_route(
-            scalar(block, "if") == spec["condition"],
-            f"{key} has a non-exclusive or unexpected condition",
-        )
-        require_route(
-            command(block) == spec["command"],
-            f"{key} must invoke exactly {spec['command']}",
-        )
-        for tag in LINUX_X64_RELEASE_SELECTOR:
-            expected = spec["agents"].get(tag)
-            require_route(
-                scalar(block, tag, indent=6, required=False) == expected,
-                f"{key} must use the exact declared runner selector",
-            )
-        require_route(
-            scalar(block, "concurrency") == "1"
-            and scalar(block, "concurrency_group")
-            == spec["concurrency_group"],
-            f"{key} must have its dedicated single-job concurrency group",
-        )
-        require_route(
-            scalar(block, "timeout_in_minutes") == spec["timeout"],
-            f"{key} has an unexpected timeout",
-        )
-        require_route(
-            artifact_paths(block) == expected_artifacts,
-            f"{key} must preserve validation diagnostics",
-        )
-
-    invocations = re.findall(
-        r"bash scripts/buildkite-public-ci[.]sh --mode=(ci|nightly|release)\b",
-        "\n".join(blocks),
-    )
-    require_route(
-        Counter(invocations) == Counter({"ci": 1, "nightly": 1, "release": 1}),
-        "pipeline must contain exactly one ci, nightly, and release invocation",
-    )
-
-
-
-def validate_fail_slow_release_graph(blocks):
-    keyed = {step_key(block): block for block in blocks if step_key(block)}
-    require_route(
-        not any(block.startswith("  - wait:") for block in blocks),
-        "release diagnostics must not be hidden behind a global wait",
-    )
-
-    independent_diagnostics = (
-        "public-cli-linux-x64",
-        "public-cli-linux-aarch64",
-        "public-cli-windows-x64",
-        "public-cli-macos-arm64",
-        "public-cli-macos-x64",
-        "semantic-model-archives",
-        "semantic-coreml-archive",
-        "semantic-runtime-linux-cuda12",
-        "semantic-runtime-windows-ml",
-        "semantic-runtime-macos-x64",
-    )
-    for key in independent_diagnostics:
-        require_route(key in keyed, f"pipeline must define {key}")
-        require_route(
-            dependencies(keyed[key]) == [],
-            f"independent release diagnostic {key} must start without qualification dependencies",
-        )
-
-    branch_dependencies = {
-        "public-cli-macos-x64-native-smoke": ["public-cli-macos-x64"],
-        "public-cli-windows-x64-native-smoke": ["public-cli-windows-x64"],
-    }
-    for key, expected in branch_dependencies.items():
-        require_route(
-            dependencies(keyed[key]) == expected,
-            f"{key} must depend only on its own artifact producer",
-        )
-
-    strict_aggregates = {
-        "github-release-candidate": [
-            "public-release",
-            "sdk-swift-required",
-            "public-cli-linux-x64",
-            "public-cli-linux-aarch64",
-            "public-cli-macos-arm64",
-            "public-cli-macos-x64-native-smoke",
-            "public-cli-windows-x64-native-smoke",
-        ],
-        "semantic-release-handoff": [
-            "public-release",
-            "sdk-swift-required",
-            "public-cli-linux-x64",
-            "public-cli-linux-aarch64",
-            "public-cli-macos-arm64",
-            "semantic-model-archives",
-            "semantic-coreml-archive",
-            "semantic-runtime-linux-cuda12",
-            "semantic-runtime-windows-ml",
-            "semantic-runtime-macos-x64",
-        ],
-    }
-    for key, expected in strict_aggregates.items():
-        block = keyed[key]
-        require_route(
-            dependencies(block) == expected,
-            f"strict aggregate {key} has the wrong dependency set",
-        )
-        for field_name in ("soft_fail", "allow_dependency_failure"):
-            require_route(
-                scalar(block, field_name, required=False) is None,
-                f"strict aggregate {key} must fail closed",
-            )
-
-
-def validate_windows_release_output_root(blocks):
-    matches = [
-        block for block in blocks if step_key(block) == "public-cli-windows-x64"
-    ]
-    require_route(
-        len(matches) == 1,
-        "pipeline must define exactly one public-cli-windows-x64 artifact route",
-    )
-    source = command(matches[0])
-    output_user_root = "/c/b"
-    output_root = f"export BAZEL_OUTPUT_USER_ROOT={output_user_root}"
-    release_command = "bash scripts/bazelw run //:ctx_release_windows_x64"
-    require_route(
-        source.splitlines().count(output_root) == 1,
-        "Windows release must pin one MAX_PATH-safe Bazel output-user-root",
-    )
-    require_route(
-        source.find(output_root) < source.find(release_command),
-        "Windows release must select its short Bazel output root before bazelw",
-    )
-    # Buildkite #152 exposed this generated rules_rust proc-macro object at 261
-    # characters beneath C:\b\o. The contracted C:\b root keeps that same path
-    # at 259 characters, the longest legacy-MAX_PATH filename (excluding NUL).
-    failed_object_suffix = (
-        r"\hlnacinz\execroot\_main\bazel-out"
-        r"\x64_windows-opt-exec-ST-d9e1ce4bc537\bin\external"
-        r"\rules_rust++crate+crates__macro_rules_attribute-proc_macro-0.2.3"
-        r"\macro_rules_attribute_proc_macro-356258450."
-        r"macro_rules_attribute_proc_macro.b57f60d88f8c307e-cgu.0.rcgu.o"
-    )
-    require_route(
-        len(r"C:\b" + failed_object_suffix) == 259,
-        "Windows release output root must retain the #152 MSVC path margin",
-    )
-
-
-def validate_linux_smoke_arg_escaping(blocks):
-    escaped = '"$${smoke_args[@]}"'
-    unescaped = '"${smoke_args[@]}"'
-    for key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
-        matches = [block for block in blocks if step_key(block) == key]
-        require_route(
-            len(matches) == 1,
-            f"pipeline must define exactly one {key} artifact route",
-        )
-        source = command(matches[0])
-        require_route(
-            escaped in source,
-            f"{key} must escape Bash array expansion for Buildkite upload",
-        )
-        require_route(
-            unescaped not in source,
-            f"{key} must not expose Bash array expansion to Buildkite interpolation",
-        )
-
-
-def validate_runtime_parameter_escaping(blocks):
-    unescaped_parameter = re.compile(
-        r"(?<![$])[$](?:[{][^}\n]+[}]|[A-Za-z_][A-Za-z0-9_]*)"
-    )
-    for index, block in enumerate(blocks):
-        if "    command: |\n" not in block:
-            continue
-        match = unescaped_parameter.search(command(block))
-        key = step_key(block) or f"step-{index}"
-        require_route(
-            match is None,
-            f"{key} exposes step-runtime shell parameter {match.group(0) if match else ''} "
-            "to Buildkite upload interpolation",
-        )
-
-
-def validate_semantic_input_preparation(blocks):
-    ambient_inputs = (
-        "CTX_SEMANTIC_MODEL_CPU_SOURCE",
-        "CTX_SEMANTIC_MODEL_ACCELERATOR_SOURCE",
-        "CTX_SEMANTIC_COREML_TOKENIZER",
-        "CTX_SEMANTIC_COREML_DOCUMENT_MODEL",
-        "CTX_SEMANTIC_COREML_QUERY_MODEL",
-        "CTX_SEMANTIC_COREML_MODEL_LICENSE",
-    )
-    pipeline_source = "\n".join(blocks)
-    for name in ambient_inputs:
-        require_route(
-            name not in pipeline_source,
-            f"pipeline retains ambient Semantic input {name}",
-        )
-    contracts = {
-        "semantic-model-archives": (
-            "prepare-model \\\n  --variant cpu-fp32 \\\n"
-            "  --output-dir target/semantic-model-sources/cpu-fp32",
-            "build-model \\\n  --variant cpu-fp32 \\\n"
-            "  --source target/semantic-model-sources/cpu-fp32",
-            "prepare-model \\\n  --variant accelerator-o4-fp16 \\\n"
-            "  --output-dir target/semantic-model-sources/accelerator-o4-fp16",
-            "build-model \\\n  --variant accelerator-o4-fp16 \\\n"
-            "  --source target/semantic-model-sources/accelerator-o4-fp16",
-        ),
-        "semantic-coreml-archive": (
-            "prepare-coreml \\\n  --output-dir target/semantic-coreml-source",
-            "semantic-model-bundle/run-pinned-producer.sh",
-            "--tokenizer target/semantic-coreml-source/tokenizer.json",
-            "--document-model target/semantic-coreml-source/document.mlpackage",
-            "--query-model target/semantic-coreml-source/query.mlpackage",
-            "--model-license target/semantic-coreml-source/LICENSES/MODEL_LICENSE.txt",
-        ),
-    }
-    for key, snippets in contracts.items():
-        matches = [block for block in blocks if step_key(block) == key]
-        require_route(len(matches) == 1, f"pipeline must define exactly one {key}")
-        source = command(matches[0])
-        positions = [source.find(snippet) for snippet in snippets]
-        require_route(
-            all(position >= 0 for position in positions) and positions == sorted(positions),
-            f"{key} must prepare pinned inputs before offline packaging",
-        )
-    coreml = next(block for block in blocks if step_key(block) == "semantic-coreml-archive")
-    require_route(
-        "python3 scripts/semantic-model-bundle/produce.py" not in command(coreml),
-        "semantic-coreml-archive must not use ambient Python",
-    )
-    require_route(
-        'queue: "ctx-release-macos-arm64"' in coreml
-        and 'os: "darwin"' in coreml
-        and 'arch: "arm64"' in coreml,
-        "semantic-coreml-archive must use the pinned hosted Apple Silicon queue",
-    )
-
-
-def expect_rejection(name, blocks, validator=validate_validation_routes):
-    try:
-        validator(blocks)
-    except ValidationRouteError as error:
-        print(f"Buildkite route parser self-test ok: {name} rejected ({error})")
-        return
-    raise SystemExit(
-        f"Buildkite route parser self-test failed: {name} was accepted"
-    )
-
-
-pipeline = open(sys.argv[1], encoding="utf-8").read()
-steps = split_steps(pipeline)
-require_route(
-    len(steps) == 18,
-    "pipeline should include public validation and bounded release matrices",
-)
-validate_validation_routes(steps)
-validate_linux_x64_release_routes(steps)
-validate_fail_slow_release_graph(steps)
-validate_windows_release_output_root(steps)
-validate_linux_smoke_arg_escaping(steps)
-validate_runtime_parameter_escaping(steps)
-validate_semantic_input_preparation(steps)
-expect_rejection(
-    "missing nightly route",
-    [block for block in steps if step_key(block) != "public-nightly"],
-)
-expect_rejection(
-    "missing release route",
-    [block for block in steps if step_key(block) != "public-release"],
-)
-expect_rejection(
-    "global release wait",
-    [
-        *steps[:4],
-        '  - wait: ~\n    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"\n',
-        *steps[4:],
-    ],
-    validate_fail_slow_release_graph,
-)
-hosted_release = [
-    block.replace('queue: "release-linux-managed"', 'queue: "default"', 1)
-    if step_key(block) == "public-release"
-    else block
-    for block in steps
-]
-expect_rejection("hosted public release route", hosted_release)
-release_without_managed_capability = [
-    block.replace('      ctx-runner-class: "release-linux-control"\n', "", 1)
-    if step_key(block) == "public-release"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "public release without managed capability",
-    release_without_managed_capability,
-)
-for linux_key in LINUX_X64_RELEASE_KEYS:
-    for tag in ("ctx-release-os", "ctx-release-nested-docker"):
-        selector_without_capability = [
-            block.replace(
-                f'      {tag}: "{LINUX_X64_RELEASE_SELECTOR[tag]}"\n',
-                "",
-                1,
-            )
-            if step_key(block) == linux_key
-            else block
-            for block in steps
-        ]
-        expect_rejection(
-            f"{linux_key} without {tag}",
-            selector_without_capability,
-            validate_linux_x64_release_routes,
-        )
-serialized_diagnostic = [
-    block.replace(
-        '    key: "public-cli-linux-x64"\n',
-        '    key: "public-cli-linux-x64"\n    depends_on: "public-release"\n',
-        1,
-    )
-    if step_key(block) == "public-cli-linux-x64"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "artifact diagnostic serialized behind release qualification",
-    serialized_diagnostic,
-    validate_fail_slow_release_graph,
-)
-long_windows_output_root = [
-    block.replace(
-        "export BAZEL_OUTPUT_USER_ROOT=/c/b",
-        "export BAZEL_OUTPUT_USER_ROOT=$${HOME}/.cache/ctx/bazel/output-root",
-        1,
-    )
-    if step_key(block) == "public-cli-windows-x64"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "MAX_PATH-unsafe Windows Bazel output-user-root",
-    long_windows_output_root,
-    validate_windows_release_output_root,
-)
-nested_windows_output_root = [
-    block.replace(
-        "export BAZEL_OUTPUT_USER_ROOT=/c/b",
-        "export BAZEL_OUTPUT_USER_ROOT=/c/b/o",
-        1,
-    )
-    if step_key(block) == "public-cli-windows-x64"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "nested Windows Bazel output-user-root",
-    nested_windows_output_root,
-    validate_windows_release_output_root,
-)
-open_candidate_gate = [
-    block.replace('      - "public-release"\n', "", 1)
-    if step_key(block) == "github-release-candidate"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "candidate staging without public qualification",
-    open_candidate_gate,
-    validate_fail_slow_release_graph,
-)
-soft_candidate_gate = [
-    block.replace(
-        '    key: "github-release-candidate"\n',
-        '    key: "github-release-candidate"\n    allow_dependency_failure: true\n',
-        1,
-    )
-    if step_key(block) == "github-release-candidate"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "candidate staging with failed dependencies allowed",
-    soft_candidate_gate,
-    validate_fail_slow_release_graph,
-)
-for linux_key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
-    mutated = [
-        block.replace('"$${smoke_args[@]}"', '"${smoke_args[@]}"', 1)
-        if step_key(block) == linux_key
-        else block
-        for block in steps
-    ]
-    expect_rejection(
-        f"unescaped {linux_key} smoke args",
-        mutated,
-        validate_linux_smoke_arg_escaping,
-    )
-mutated_ambient_semantic_input = [
-    block.replace(
-        "--source target/semantic-model-sources/cpu-fp32",
-        "--source $${CTX_SEMANTIC_MODEL_CPU_SOURCE}",
-        1,
-    )
-    if step_key(block) == "semantic-model-archives"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "ambient Semantic model input",
-    mutated_ambient_semantic_input,
-    validate_semantic_input_preparation,
-)
-mutated_missing_preparation = [
-    block.replace("prepare-model", "skip-model-preparation", 1)
-    if step_key(block) == "semantic-model-archives"
-    else block
-    for block in steps
-]
-expect_rejection(
-    "missing pinned Semantic preparation",
-    mutated_missing_preparation,
-    validate_semantic_input_preparation,
-)
-expect_rejection(
-    "ambient Semantic Core ML Python",
-    [
-        block.replace(
-            "scripts/semantic-model-bundle/run-pinned-producer.sh",
-            "python3 scripts/semantic-model-bundle/produce.py",
-            1,
-        )
-        if step_key(block) == "semantic-coreml-archive"
-        else block
-        for block in steps
-    ],
-    validate_semantic_input_preparation,
-)
-expect_rejection(
-    "unbound Semantic Core ML queue",
-    [
-        block.replace('queue: "ctx-release-macos-arm64"', 'queue: "mac-shared"', 1)
-        if step_key(block) == "semantic-coreml-archive"
-        else block
-        for block in steps
-    ],
-    validate_semantic_input_preparation,
-)
-print(
-    "Buildkite route parser ok: dormant ci/nightly routes, fail-slow release "
-    "diagnostics, and strict terminal aggregates"
-)
-PY
-
-if command -v ruby >/dev/null 2>&1; then
-  ruby -e '
-    require "yaml"
-    data = YAML.load_file(ARGV.fetch(0))
-    abort "pipeline must have steps" unless data.is_a?(Hash) && data["steps"].is_a?(Array)
-    steps = data["steps"]
-    macos_arm64_hosted_queue = ARGV.fetch(1)
-    macos_x64_kvm_queue = ARGV.fetch(2)
-    macos_x64_kvm_runner_id = ARGV.fetch(3)
-    macos_x64_llvm_task_root_env = ARGV.fetch(4)
-    macos_x64_intel_concurrency_group = ARGV.fetch(5)
-    linux_x64_release_selector = {
-      "queue" => "release-linux-managed",
-      "ctx-runner-class" => "release-linux-control",
-      "ctx-release-os" => "ubuntu-22.04",
-      "ctx-release-nested-docker" => "true",
-      "os" => "linux",
-      "arch" => "x86_64",
-    }
-    linux_x64_release_keys = %w[
-      public-release
-      public-cli-linux-x64
-      github-release-candidate
-      semantic-model-archives
-      semantic-runtime-linux-cuda12
-      semantic-release-handoff
-    ]
-    abort "pipeline should include public validation and bounded release matrices" unless steps.length == 18
-    smoke = steps.fetch(0)
-    abort "pipeline step must be a mapping" unless smoke.is_a?(Hash)
-    abort "pipeline public smoke step must be keyed" unless smoke.key?("key")
-    abort "missing public-smoke step" unless smoke["key"] == "public-smoke"
-    abort "public-smoke must use the Buildkite hosted default queue" unless smoke.dig("agents", "queue") == "default"
-    abort "public-smoke must not require self-hosted runner tags" if smoke.dig("agents", "ctx-runner-class") || smoke.dig("agents", "ctx-release-os") || smoke.dig("agents", "ctx-release-nested-docker") || smoke.dig("agents", "os") || smoke.dig("agents", "arch")
-    abort "public-smoke should run one hosted Linux job at a time" unless smoke["concurrency"] == 1 && smoke["concurrency_group"].to_s.include?("default-hosted")
-    command = smoke["command"].to_s
-    abort "public-smoke must run the Buildkite public CI script" unless command.include?("scripts/buildkite-public-ci.sh")
-    abort "public-smoke must run the authoritative native CI mode" unless command.include?("scripts/buildkite-public-ci.sh --mode=ci")
-    required_keys = %w[
-      public-cli-linux-x64
-      public-cli-linux-aarch64
-      public-cli-windows-x64
-      public-cli-macos-arm64
-      public-cli-macos-x64
-      public-cli-macos-x64-native-smoke
-      public-cli-windows-x64-native-smoke
-      github-release-candidate
-      semantic-model-archives
-      semantic-coreml-archive
-      semantic-runtime-linux-cuda12
-      semantic-runtime-windows-ml
-      semantic-runtime-macos-x64
-      semantic-release-handoff
-    ]
-    actual_keys = steps.filter_map { |step| step["key"] if step.is_a?(Hash) }
-    linux_x64_release_keys.each do |key|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing Linux x64 release step #{key}" unless step
-      abort "#{key} must require the exact Linux x64 release authority selector" unless step["agents"] == linux_x64_release_selector
-    end
-    steps.each do |step|
-      next unless step.is_a?(Hash) && !linux_x64_release_keys.include?(step["key"])
-      agents = step["agents"] || {}
-      abort "#{step["key"] || "unkeyed step"} must not require Linux x64 release authority tags" if agents.key?("ctx-release-os") || agents.key?("ctx-release-nested-docker")
-    end
-    %w[sdk-swift-required].each do |key|
-      abort "missing required SDK step #{key}" unless actual_keys.include?(key)
-    end
-    required_keys.each { |key| abort "missing gated artifact step #{key}" unless actual_keys.include?(key) }
-    artifact_keys = required_keys.first(5)
-    artifact_bases = {
-      "public-cli-linux-x64" => "ctx",
-      "public-cli-linux-aarch64" => "ctx-linux-aarch64",
-      "public-cli-windows-x64" => "ctx.exe",
-      "public-cli-macos-arm64" => "ctx-macos-arm64",
-      "public-cli-macos-x64" => "ctx-macos-x64",
-    }
-    steps.drop(4).each do |step|
-      next unless step.is_a?(Hash) && artifact_keys.include?(step["key"])
-      abort "artifact step #{step["key"]} must be gated" unless step["if"].to_s.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX")
-      artifact_paths = Array(step["artifact_paths"]).map(&:to_s)
-      artifact_base = "target/public-cli-artifacts/#{artifact_bases.fetch(step["key"])}"
-      %w[
-        .build-info.json
-        .cdx.json
-        .cdx.json.sha256
-        .third-party-notices.txt
-        .third-party-notices.txt.sha256
-        .size.json
-        .candidate.json
-      ].each do |suffix|
-        evidence_path = artifact_base + suffix
-        abort "artifact step #{step["key"]} must upload #{evidence_path}" unless artifact_paths.include?(evidence_path)
-      end
-    end
-    authorities = {
-      "public-cli-linux-x64" => [
-        "scripts/release/build-linux-bazel-release.sh",
-        "--platform linux-x64",
-      ],
-      "public-cli-linux-aarch64" => [
-        "scripts/release/build-linux-bazel-release.sh",
-        "--platform linux-arm64",
-      ],
-      "public-cli-windows-x64" => ["//:ctx_release_windows_x64"],
-      "public-cli-macos-arm64" => ["//:ctx_release_macos_arm64"],
-      "public-cli-macos-x64" => ["//:ctx_release_macos_x64"],
-    }
-    authorities.each do |key, snippets|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      command = step["command"].to_s
-      snippets.each do |snippet|
-        abort "#{key} does not use its authoritative Bazel route" unless command.include?(snippet)
-      end
-      abort "#{key} still uses the Cargo artifact constructor" if command.include?("build-public-cli-artifact.sh")
-    end
-    macos_arm64_release_steps = {
-      "public-cli-macos-arm64" => "ctx-public-cli-macos-native",
-      "semantic-coreml-archive" => "ctx-public-semantic-coreml",
-    }
-    macos_arm64_physical_queue_markers = %w[mac-shared ctx-m1-mini ctxrunner]
-    macos_arm64_release_steps.each do |key, concurrency_group|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing macOS ARM64 release step #{key}" unless step
-      abort "#{key} must use hosted queue #{macos_arm64_hosted_queue}" unless step.dig("agents", "queue") == macos_arm64_hosted_queue
-      abort "#{key} must run on Darwin" unless step.dig("agents", "os") == "darwin"
-      abort "#{key} must run on Apple Silicon" unless step.dig("agents", "arch") == "arm64"
-      abort "#{key} must not require a self-hosted runner class" if step.dig("agents", "ctx-runner-class")
-      macos_arm64_physical_queue_markers.each do |marker|
-        abort "#{key} must not retain physical-M1 marker #{marker}" if step.to_s.include?(marker)
-      end
-      abort "#{key} must serialize hosted Apple Silicon work" unless step["concurrency"] == 1 && step["concurrency_group"] == concurrency_group
-    end
-    macos_x64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64" }
-    abort "missing macOS x64 artifact step" unless macos_x64
-    macos_x64_release_steps = %w[
-      public-cli-macos-x64
-      public-cli-macos-x64-native-smoke
-      semantic-runtime-macos-x64
-    ]
-    macos_x64_release_steps.each do |key|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing macOS x64 release step #{key}" unless step
-      abort "#{key} must use native x86_64 KVM queue #{macos_x64_kvm_queue}" unless step.dig("agents", "queue") == macos_x64_kvm_queue
-      abort "#{key} must run on Darwin" unless step.dig("agents", "os") == "darwin"
-      abort "#{key} must run as x86_64" unless step.dig("agents", "arch") == "x86_64"
-      abort "#{key} must serialize on the Intel concurrency group" unless step["concurrency"] == 1 && step["concurrency_group"] == macos_x64_intel_concurrency_group
-      abort "#{key} must not depend on offline mac-shared" if step.to_s.include?("mac-shared")
-    end
-    macos_x64_command = macos_x64["command"].to_s
-    runner_binding = "CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID=#{macos_x64_kvm_runner_id}"
-    llvm_task_root = %Q{--macos-llvm-task-root "$${#{macos_x64_llvm_task_root_env}:?}"}
-    abort "macos-x64 construction must bind the exact KVM runner identity" unless macos_x64_command.include?(runner_binding)
-    abort "macos-x64 construction must pass its verified LLVM task root" unless macos_x64_command.include?(llvm_task_root)
-    runner_binding_position = macos_x64_command.index(runner_binding)
-    packaging_position = macos_x64_command.index("//:ctx_release_macos_x64")
-    llvm_task_root_position = macos_x64_command.index(llvm_task_root)
-    abort "macos-x64 runner and LLVM authorities must be bound to construction" unless runner_binding_position && packaging_position && llvm_task_root_position && runner_binding_position < packaging_position && packaging_position < llvm_task_root_position
-    {
-      "public-cli-macos-arm64" => "injected",
-      "public-cli-macos-x64" => "infisical",
-    }.each do |key, secret_source|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      command = step["command"].to_s
-      condition = step["if"].to_s
-      abort "#{key} must be restricted to trusted main builds" unless condition.include?(%q{build.branch == "main"}) && condition.include?("build.pull_request.id == null")
-      abort "#{key} must require macOS release signing" unless command.include?("CTX_MACOS_RELEASE_SIGNING=required")
-      abort "#{key} must use #{secret_source} signing values" unless command.include?("CTX_MACOS_SIGNING_SECRET_SOURCE=#{secret_source}")
-      abort "#{key} must not access signing secrets before construction" if command.include?("scripts/run-macos-release-signing.sh --preflight")
-      abort "#{key} must not inject secrets around a whole build" if command.include?("infisical run")
-      evidence = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.signing.json"
-      abort "#{key} must upload CLI signing evidence" unless Array(step["artifact_paths"]).include?(evidence)
-      attestation = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.attestation.cms"
-      abort "#{key} must upload the CLI cryptographic attestation" unless Array(step["artifact_paths"]).include?(attestation)
-      execution = "target/public-cli-artifacts/ctx-#{key.delete_prefix("public-cli-")}.execution.txt"
-      abort "#{key} must upload signed CLI execution evidence" unless Array(step["artifact_paths"]).include?(execution)
-    end
-    {
-      "public-cli-windows-x64" => ["windows-x64", "windows", "ctx-public-cli-windows-native"],
-    }.each do |key, values|
-      queue, os, concurrency_group = values
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing native artifact step #{key}" unless step
-      abort "#{key} must use queue #{queue}" unless step.dig("agents", "queue") == queue
-      abort "#{key} must require #{os}" unless step.dig("agents", "os") == os
-      abort "#{key} must require x86_64" unless step.dig("agents", "arch") == "x86_64"
-      abort "#{key} must serialize native construction" unless step["concurrency"] == 1 && step["concurrency_group"] == concurrency_group
-    end
-    macos_arm64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-arm64" }
-    expected_macos_arm64_secrets = %w[
-      APPLE_CODESIGN_CERT_P12_B64
-      APPLE_CODESIGN_CERT_PASSWORD
-      NOTARY_ISSUER
-      NOTARY_KEY_ID
-      NOTARY_KEY_P8_B64
-    ]
-    abort "missing macos-arm64 hosted release step" unless macos_arm64
-    abort "macos-arm64 must declare the exact hosted signing secret set" unless macos_arm64["secrets"] == expected_macos_arm64_secrets
-    abort "macos-x64 construction lane must not claim native smoke" if macos_x64["command"].to_s.include?("smoke-daemon-semantic-release")
-    macos_arm64_paths = Array(macos_arm64["artifact_paths"])
-    abort "macos-arm64 must upload runtime signing evidence" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.signing.json")
-    abort "macos-arm64 must upload runtime cryptographic attestation" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.attestation.cms")
-    abort "macos-arm64 must upload final runtime archive authorization" unless macos_arm64_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.release-attestation.cms")
-    arm_command = macos_arm64["command"].to_s
-    arm_runtime_build = arm_command.index("scripts/build-onnxruntime-sidecar.sh macos-arm64")
-    arm_transcode = arm_command.index("scripts/stage-github-release-assets.sh --transcode-runtime macos-arm64")
-    arm_smoke = arm_command.index("--runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz")
-    abort "macos-arm64 native runtime smoke must follow signed final packaging" unless arm_runtime_build && arm_transcode && arm_smoke && arm_runtime_build < arm_transcode && arm_transcode < arm_smoke
-    abort "macos-arm64 must run native package smoke" unless arm_command.include?("scripts/run-native-candidate-smoke.sh")
-    abort "macos-arm64 must run CoreML smoke" unless arm_command.include?("--coreml")
-    abort "macos-arm64 smokes must require authoritative execution" unless arm_command.scan("--require-authoritative").length == 2
-    abort "macos-arm64 must upload package smoke result" unless macos_arm64_paths.include?("target/public-cli-native-smoke/macos-arm64/candidate-smoke.json")
-    abort "macos-arm64 must upload daemon diagnostics" unless macos_arm64_paths.include?("target/public-cli-native-smoke/macos-arm64/**/daemon-smoke.log")
-    abort "macos-arm64 must allow two bounded notarizations" unless macos_arm64["timeout_in_minutes"].to_i >= 120
-    inline_native_smokes = {
-      "public-cli-linux-x64" => "linux-x64",
-      "public-cli-linux-aarch64" => "linux-aarch64",
-      "public-cli-macos-arm64" => "macos-arm64",
-    }
-    inline_native_smokes.each do |key, platform|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      command = step["command"].to_s
-      if key.start_with?("public-cli-linux-")
-        abort "#{key} must gate builder-owned final-byte smoke" unless command.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") && command.include?("--native-smoke-dir target/public-cli-native-smoke/#{platform}")
-        abort "#{key} must escape smoke args for Buildkite interpolation" unless command.include?(%q{"$${smoke_args[@]}"})
-        abort "#{key} exposes smoke args to Buildkite interpolation" if command.include?(%q{"${smoke_args[@]}"})
-      else
-        abort "#{key} must gate packaged ONNX smoke" unless command.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") && command.include?("--runtime-archive")
-        abort "#{key} must run the native package smoke" unless command.include?("scripts/run-native-candidate-smoke.sh")
-        abort "#{key} must require authoritative execution" unless command.include?("--require-authoritative")
-      end
-      smoke_path = "target/public-cli-native-smoke/#{platform}/candidate-smoke.json"
-      abort "#{key} must publish #{smoke_path}" unless Array(step["artifact_paths"]).include?(smoke_path)
-    end
-    native_steps = {
-      "public-cli-macos-x64-native-smoke" => ["ctx-mac-gui-shared-x64", "macos-x64-native"],
-      "public-cli-windows-x64-native-smoke" => ["windows-x64", "windows-x64"],
-    }
-    native_steps.each do |key, values|
-      queue, smoke_directory = values
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing native semantic smoke step #{key}" unless step
-      condition = step["if"].to_s
-      abort "#{key} must require both artifact and native smoke gates" unless condition.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") && condition.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
-      abort "#{key} must use #{queue}" unless step.dig("agents", "queue") == queue
-      command = step["command"].to_s
-      abort "#{key} must consume or build an ONNX runtime archive" unless command.include?("onnxruntime")
-      abort "#{key} must run the native package smoke" unless command.include?("run-native-candidate-smoke")
-      abort "#{key} must require authoritative execution" unless command.include?("--require-authoritative") || command.include?("RequireAuthoritative")
-      smoke_path = "target/public-cli-native-smoke/#{smoke_directory}/candidate-smoke.json"
-      abort "#{key} must publish #{smoke_path}" unless Array(step["artifact_paths"]).include?(smoke_path)
-    end
-    macos_x64_native = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-macos-x64-native-smoke" }
-    native_command = macos_x64_native["command"].to_s
-    native_condition = macos_x64_native["if"].to_s
-    abort "macos-x64 native lane must be restricted to trusted main builds" unless native_condition.include?(%q{build.branch == "main"}) && native_condition.include?("build.pull_request.id == null")
-    abort "macos-x64 native lane must verify the downloaded signed CLI" unless native_command.include?("scripts/check-macos-release-signing.sh") && native_command.include?("macos-x64 cli")
-    abort "macos-x64 native lane must rerun the exact signed default candidate smoke" unless native_command.include?("scripts/run-native-candidate-smoke.sh")
-    abort "macos-x64 native lane must configure narrow Infisical signing" unless native_command.include?("CTX_MACOS_SIGNING_SECRET_SOURCE=infisical")
-    abort "macos-x64 native lane must not access signing secrets before construction" if native_command.include?("scripts/run-macos-release-signing.sh --preflight")
-    abort "macos-x64 native lane must not inject secrets around a whole build" if native_command.include?("infisical run")
-    abort "macos-x64 native lane must build its signed runtime" unless native_command.include?("scripts/build-onnxruntime-sidecar.sh macos-x64")
-    native_paths = Array(macos_x64_native["artifact_paths"])
-    abort "macos-x64 native lane must upload runtime signing evidence" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.signing.json")
-    abort "macos-x64 native lane must upload runtime cryptographic attestation" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.attestation.cms")
-    abort "macos-x64 native lane must upload final runtime archive authorization" unless native_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-macos-x64.release-attestation.cms")
-    native_runtime_build = native_command.index("scripts/build-onnxruntime-sidecar.sh macos-x64")
-    native_transcode = native_command.index("scripts/stage-github-release-assets.sh --transcode-runtime macos-x64")
-    native_runtime_smoke = native_command.index("--runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz")
-    abort "macos-x64 native runtime smoke must follow signed final packaging" unless native_runtime_build && native_transcode && native_runtime_smoke && native_runtime_build < native_transcode && native_transcode < native_runtime_smoke
-    abort "macos-x64 native lane must upload default smoke evidence" unless native_paths.include?("target/public-cli-native-smoke/macos-x64-native/candidate-smoke.json")
-    windows_native = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-windows-x64-native-smoke" }
-    windows_native_command = windows_native["command"].to_s
-    rust_toolchain = data.dig("env", "CTX_RUST_TOOLCHAIN").to_s
-    abort "windows-x64 native lane must use the pinned Rust toolchain without POSIX expansion" unless !rust_toolchain.empty? && windows_native_command.include?("rustup toolchain install #{rust_toolchain} ") && windows_native_command.include?("rustup run #{rust_toolchain} cargo check")
-    abort "windows-x64 native lane must run the PowerShell 5 candidate contract" unless windows_native_command.include?("scripts/tests/run-native-candidate-smoke-test.ps1")
-    abort "legacy Windows native lane must explicitly select ONNX Runtime" unless windows_native_command.include?("-RuntimeMode onnxruntime")
-    abort "legacy Windows native lane must retain its ORT archive" unless windows_native_command.include?("-RuntimeArchive target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip")
-    abort "windows-x64 native lane must require authoritative execution" unless windows_native_command.include?("-RequireAuthoritative")
-
-    windows_ml = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "semantic-runtime-windows-ml" }
-    abort "missing Windows ML runtime producer" unless windows_ml
-    abort "unsigned Windows ML runtime production must not depend on the CLI candidate" unless windows_ml["depends_on"].nil?
-    windows_ml_command = windows_ml["command"].to_s
-    abort "Windows ML lane must build the exact native candidate archive" unless windows_ml_command.include?("scripts/build-onnxruntime-sidecar.sh windows-x64-windowsml")
-    abort "Windows ML lane must run the PowerShell smoke contract" unless windows_ml_command.include?("scripts/test-windows-semantic-smoke-contract.ps1")
-    abort "unsigned Windows ML runtime lane must not claim native product qualification" if windows_ml_command.include?("scripts/smoke-daemon-semantic-release.ps1")
-    all_commands = steps.filter_map { |step| step["command"].to_s if step.is_a?(Hash) }
-    all_paths = steps.flat_map { |step| step.is_a?(Hash) ? Array(step["artifact_paths"]).map(&:to_s) : [] }
-    abort "pipeline must not emit retired native proof artifacts" if all_commands.any? { |value| value.match?(/proof-output|ProofOutput|native-runtime-proof/) } || all_paths.any? { |value| value.match?(/packaged-runtime-proof|native-runtime-proof/) }
-    runtime_builds = {
-      "public-cli-linux-x64" => "linux-x64",
-      "public-cli-linux-aarch64" => "linux-aarch64",
-      "public-cli-windows-x64" => "windows-x64",
-      "public-cli-macos-arm64" => "macos-arm64",
-    }
-    runtime_builds.each do |key, platform|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      abort "missing runtime-producing artifact step #{key}" unless step
-      command = step["command"].to_s
-      if key.start_with?("public-cli-linux-")
-        abort "#{key} must use the complete Linux release transaction" unless command.include?("scripts/release/build-linux-bazel-release.sh")
-        abort "#{key} must not write runtime leaves after public commit" if command.include?("scripts/build-onnxruntime-sidecar.sh") || command.include?("--transcode-runtime")
-        abort "#{key} must request the builder-owned final-byte smoke" unless command.include?("--native-smoke-dir target/public-cli-native-smoke/#{platform}")
-        abort "#{key} must not expose the retired completed-candidate process protocol" if command.include?("publish-linux-bazel-release.py") || command.include?("/proc/self/fd")
-        binary = key == "public-cli-linux-x64" ? "ctx" : "ctx-linux-aarch64"
-        marker = "target/public-cli-artifacts/ctx-#{platform}.release-complete.json"
-        abort "#{key} must upload #{marker}" unless Array(step["artifact_paths"]).include?(marker)
-        advisory = "target/public-cli-artifacts/#{binary}.dependency-advisory.json"
-        abort "#{key} must upload #{advisory}" unless Array(step["artifact_paths"]).include?(advisory)
-      else
-        abort "#{key} must build its ONNX Runtime sidecar" unless command.include?("scripts/build-onnxruntime-sidecar.sh #{platform}")
-      end
-      archive = platform == "windows-x64" ? "ctx-onnxruntime-windows-x64.zip" : "ctx-onnxruntime-#{platform}.tar.gz"
-      abort "#{key} must upload #{archive}" unless Array(step["artifact_paths"]).include?("target/public-cli-artifacts/#{archive}")
-      abort "#{key} must upload #{archive}.sha256" unless Array(step["artifact_paths"]).include?("target/public-cli-artifacts/#{archive}.sha256")
-    end
-    linux_aarch64 = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-linux-aarch64" }
-    abort "missing linux-aarch64 artifact step" unless linux_aarch64
-    abort "linux-aarch64 must build on linux-arm64" unless linux_aarch64.dig("agents", "queue") == "linux-arm64"
-    abort "linux-aarch64 must run on linux" unless linux_aarch64.dig("agents", "os") == "linux"
-    abort "linux-aarch64 must run on arm64" unless linux_aarch64.dig("agents", "arch") == "arm64"
-    legacy_windows = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "public-cli-windows-x64" }
-    legacy_windows_command = legacy_windows["command"].to_s
-    abort "legacy windows-x64 invocation changed" unless legacy_windows_command.include?("bash scripts/build-onnxruntime-sidecar.sh windows-x64")
-    legacy_windows_paths = Array(legacy_windows["artifact_paths"])
-    abort "legacy windows-x64 archive must remain staged" unless legacy_windows_paths.include?("target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip")
-    candidate = steps.find { |step| step.is_a?(Hash) && step["key"] == "github-release-candidate" }
-    candidate_dependencies = %w[
-      public-release
-      sdk-swift-required
-      public-cli-linux-x64
-      public-cli-linux-aarch64
-      public-cli-macos-arm64
-      public-cli-macos-x64-native-smoke
-      public-cli-windows-x64-native-smoke
-    ]
-    abort "release candidate staging has the wrong native dependency set" unless Array(candidate["depends_on"]) == candidate_dependencies
-    abort "release candidate staging must fail closed" if candidate["soft_fail"] || candidate["allow_dependency_failure"]
-    candidate_condition = candidate["if"].to_s
-    abort "release candidate staging must require artifact and native matrices" unless candidate_condition.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") && candidate_condition.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
-    abort "release candidate staging must be restricted to trusted main" unless candidate_condition.include?(%q{build.branch == "main"}) && candidate_condition.include?("build.pull_request.id == null")
-    candidate_command = candidate["command"].to_s
-    %w[
-      public-cli-linux-x64
-      public-cli-linux-aarch64
-      public-cli-macos-arm64
-      public-cli-macos-x64
-      public-cli-macos-x64-native-smoke
-      public-cli-windows-x64
-    ].each do |producer|
-      abort "release candidate staging does not bind artifacts from #{producer}" unless candidate_command.include?("--step #{producer}")
-    end
-    abort "release candidate staging must run exact-byte public assembly" unless candidate_command.include?("scripts/stage-github-release-assets.sh") && candidate_command.include?("target/github-release-assets") && candidate_command.include?("target/github-release-authority")
-    abort "GitHub staging must bind the public source commit to checkout HEAD" unless candidate_command.include?("CTX_PUBLIC_RELEASE_SOURCE_COMMIT") && candidate_command.include?("git rev-parse --verify HEAD^{commit}")
-    abort "release candidate staging must upload the immutable manifest" unless Array(candidate["artifact_paths"]).include?("target/github-release-assets/*")
-    abort "release candidate staging must upload the manifest-authority handoff" unless Array(candidate["artifact_paths"]).include?("target/github-release-authority/*")
-    semantic_assets = %w[
-      ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz
-      ctx-multilingual-e5-small-onnx-o4-fp16-1.0.0.tar.xz
-      ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz
-      ctx-onnxruntime-linux-x64.tar.zst
-      ctx-onnxruntime-linux-aarch64.tar.zst
-      ctx-onnxruntime-macos-arm64.tar.zst
-      ctx-onnxruntime-macos-x64.tar.zst
-      ctx-windowsml-windows-x64.zip
-      ctx-onnxruntime-linux-x64-cuda12.tar.zst
-    ]
-    semantic_producer_keys = %w[
-      semantic-model-archives
-      semantic-coreml-archive
-      semantic-runtime-linux-cuda12
-      semantic-runtime-windows-ml
-      semantic-runtime-macos-x64
-    ]
-    semantic_producer_keys.each do |key|
-      step = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == key }
-      condition = step["if"].to_s
-      abort "#{key} must use the standard artifact gate" unless condition.include?("CTX_PUBLIC_CLI_ARTIFACT_MATRIX")
-      abort "#{key} must be restricted to trusted main" unless condition.include?(%q{build.branch == "main"}) && condition.include?("build.pull_request.id == null")
-    end
-    all_artifact_paths = steps.flat_map { |step| step.is_a?(Hash) ? Array(step["artifact_paths"]).map(&:to_s) : [] }
-    semantic_assets.each do |artifact|
-      path = "target/public-cli-artifacts/#{artifact}"
-      abort "Semantic producer does not retain #{artifact}" unless all_artifact_paths.include?(path)
-      abort "Semantic producer does not retain #{artifact}.asset.json" unless all_artifact_paths.include?("#{path}.asset.json")
-      abort "Semantic producer does not retain #{artifact}.sha256" unless all_artifact_paths.include?("#{path}.sha256")
-    end
-    gather = steps.find { |candidate| candidate.is_a?(Hash) && candidate["key"] == "semantic-release-handoff" }
-    expected_dependencies = %w[
-      public-release
-      sdk-swift-required
-      public-cli-linux-x64
-      public-cli-linux-aarch64
-      public-cli-macos-arm64
-      semantic-model-archives
-      semantic-coreml-archive
-      semantic-runtime-linux-cuda12
-      semantic-runtime-windows-ml
-      semantic-runtime-macos-x64
-    ]
-    abort "Semantic gather has the wrong bounded producer set" unless Array(gather["depends_on"]) == expected_dependencies
-    abort "Semantic gather must fail closed" if gather["soft_fail"] || gather["allow_dependency_failure"]
-    abort "Semantic gather must require native qualification" unless gather["if"].to_s.include?("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX")
-    gather_command = gather["command"].to_s
-    semantic_assets.each do |artifact|
-      stem = artifact.sub(/\.(tar\.xz|tar\.zst|zip)\z/, "")
-      abort "Semantic gather does not download #{artifact}" unless gather_command.include?(stem)
-    end
-    abort "Semantic gather must not download Linux completion identities" if gather_command.include?("release-complete.json")
-    abort "Semantic gather must not bind unrelated CLI source state" if gather_command.include?("CTX_PUBLIC_RELEASE_SOURCE_COMMIT") || gather_command.include?("git rev-parse --verify HEAD^{commit}")
-    abort "Semantic gather must construct and stage the unsigned handoff" unless gather_command.include?("scripts/stage-semantic-release-handoff.sh")
-    abort "public Semantic gather must not sign release metadata" if gather_command.match?(/sign|private/i)
-  ' "${pipeline}" "${macos_arm64_hosted_queue}" \
-    "${macos_x64_kvm_queue}" "${macos_x64_kvm_runner_id}" \
-    "${macos_x64_llvm_task_root_env}" "${macos_x64_intel_concurrency_group}"
-fi
-
-for required in \
-  'key: "public-smoke"' \
-  'build.source != "schedule"' \
-  'queue: "default"' \
-  'bash scripts/buildkite-public-ci.sh --mode=ci' \
-  'key: "sdk-swift-required"' \
-  'CTX_SDK_RUN_LOCAL_SMOKE=0 bash scripts/check-sdks.sh --groups=swift --required-groups=swift' \
-  'bash scripts/check-sdks.sh --groups=contracts,typescript,python,go,jvm,dotnet --required-groups=contracts,typescript,python,go,jvm,dotnet' \
-  'target/ctx-artifacts/check/**' \
-  'concurrency_group: "ctx/public-smoke/default-hosted"' \
-  'CTX_RUST_TOOLCHAIN: "1.97.1"' \
-  'CTX_BAZELISK_VERSION: "v1.29.0"' \
-  'BUILDKITE_JOB_ID' \
-  'BUILDKITE_BUILD_PATH' \
-  'CTX_PUBLIC_CI_TOOL_ROOT' \
-  'CTX_PUBLIC_CI_REPOSITORY_CACHE' \
-  'ctx-public-ci-cache' \
-  'repository contents cache must be outside checkout' \
-  'CTX_BAZEL_REPOSITORY_CACHE' \
-  'dpkg-query' \
-  'default-jdk-headless' \
-  'public artifact checksum mismatch' \
-  'python3-build' \
-  'python3-venv' \
-  'ctx_bootstrap_bazelisk' \
-  'check_args=(--mode=ci)' \
-  'bash scripts/check.sh "${check_args[@]}"' \
-  'queue: "release-linux-managed"' \
-  'ctx-runner-class: "release-linux-control"' \
-  'ctx-release-os: "ubuntu-22.04"' \
-  'ctx-release-nested-docker: "true"' \
-  'CTX_PUBLIC_CLI_ARTIFACT_MATRIX' \
-  'scripts/release/build-linux-bazel-release.sh' \
-  '$${smoke_args[@]}' \
-  '--platform linux-x64' \
-  '--platform linux-arm64' \
-  '//:ctx_release_windows_x64' \
-  'export BAZEL_OUTPUT_USER_ROOT=/c/b' \
-  '//:ctx_release_macos_arm64' \
-  '//:ctx_release_macos_x64' \
-  '.cdx.json.sha256' \
-  '.third-party-notices.txt.sha256' \
-  '.size.json' \
-  '.candidate.json' \
-  'scripts/build-onnxruntime-sidecar.sh windows-x64-windowsml' \
-  'scripts/build-onnxruntime-sidecar.sh linux-x64-cuda12' \
-  'key: "github-release-candidate"' \
-  'target/github-release-assets/*' \
-  'target/github-release-authority/*' \
-  'scripts/stage-semantic-release-handoff.sh' \
-  'target/semantic-release-handoff/*' \
-  'CTX_MACOS_RELEASE_SIGNING=required' \
-  'CTX_MACOS_SIGNING_SECRET_SOURCE=injected' \
-  'CTX_MACOS_SIGNING_SECRET_SOURCE=infisical' \
-  'scripts/run-macos-release-signing.sh --attest-runtime-archive' \
-  'CTX_MACOS_SIGNING_SECRET_DIR' \
-  '590927ab-758e-41b0-9e15-4cf070e87cf4' \
-  'scripts/sign-notarize-macos-release-artifact.sh' \
-  'scripts/check-macos-release-signing.sh' \
-  'scripts/check-macos-signing-trusted-ref.sh' \
-  'scripts/verify-macos-release-attestation.sh' \
-  'scripts/attest-macos-runtime-release-archive.sh' \
-  'scripts/verify-macos-signed-cli.sh' \
-  'signed-exact-byte-version-execution' \
-  'accepted-notary-strict-codesign-attestation' \
-  'refs/remotes/origin/main' \
-  'BUILDKITE_PULL_REQUEST' \
-  'CTX_LOCAL_MACOS_SIGNING_LIVE_TEST' \
-  'F1:6C:D3:C5:4C:7F:83:CE:A4:BF:1A:3E:6A:08:19:C8:AA:A8:E4:A1:52:8F:D1:44:71:5F:35:06:43:D2:DF:3A' \
-  '--codesign-authority' \
-  '-no-CApath' \
-  '-no-CAstore' \
-  '-ignore_critical' \
-  'Code Signing EKU' \
-  'Digital Signature key usage' \
-  '1.2.840.113635.100.6.1.13: critical' \
-  'APPLE_CODESIGN_CERT_P12_B64' \
-  'APPLE_CODESIGN_CERT_PASSWORD' \
-  'NOTARY_ISSUER' \
-  'NOTARY_KEY_ID' \
-  'NOTARY_KEY_P8_B64' \
-  'scripts/check-release-binary-compat.sh' \
-  'check_symbol_ceiling GLIBC 2.35' \
-  '.build-info.json'; do
-  found=0
-  for checked_file in \
-    "${pipeline}" \
-    "${public_ci_script}" \
-    "${sdk_check_script}" \
-    "${sdk_pipeline_check_script}" \
-    "${sdk_required_groups_test}" \
-    "${packager_script}" \
-    "${artifact_check_script}" \
-    "${compat_check_script}" \
-    "${macos_sign_script}" \
-    "${macos_check_script}" \
-    "${macos_launcher_script}" \
-    "${macos_trust_script}" \
-    "${macos_attestation_script}" \
-    "${macos_archive_attester_script}" \
-    "${macos_execution_script}" \
-    "${macos_evidence_script}" \
-    "${macos_precommand_script}" \
-    "${semantic_handoff_script}" \
-    "${semantic_append_script}" \
-    "${staging_script}"; do
-    if grep -F -q -- "${required}" "${checked_file}"; then
-      found=1
-      break
-    fi
-  done
-  if [[ "${found}" != "1" ]]; then
-    printf 'pipeline or release scripts missing required snippet: %s\n' "${required}" >&2
-    exit 1
-  fi
-done
-
-for release_step in \
-  public-cli-linux-x64:linux-x64 \
-  public-cli-linux-aarch64:linux-arm64 \
-  public-cli-macos-arm64:macos-arm64 \
-  public-cli-macos-x64:macos-x64; do
-  step_key="${release_step%%:*}"
-  target_id="${release_step#*:}"
-  if ! awk '
-      index($0, "key: \"" step "\"") { in_step = 1 }
-      in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
-      in_step && index($0, "scripts/release/run-with-release-advisory-inputs.py") { wrapper = 1 }
-      in_step && index($0, "--target " target " --") { target_arg = 1 }
-      END { exit wrapper && target_arg ? 0 : 1 }
-    ' step="${step_key}" target="${target_id}" "${pipeline}"; then
-    printf '%s must acquire exact %s release advisory inputs\n' \
-      "${step_key}" "${target_id}" >&2
-    exit 1
-  fi
-done
-
-if grep -Fq 'build-public-cli-artifact.sh' "${pipeline}"; then
-  echo "Buildkite release candidates still use the Cargo artifact helper" >&2
-  exit 1
-fi
-
-python3 - \
-  "${packager_script}" \
-  "scripts/build-onnxruntime-sidecar.sh" \
-  "scripts/stage-github-release-assets.sh" \
-  "${semantic_handoff_script}" \
-  "${semantic_append_script}" <<'PY'
-import sys
-
-cli, runtime, staging, handoff, append = [
-    open(path, encoding="utf-8").read() for path in sys.argv[1:]
-]
-
-
-def require_order(label, source, *needles):
-    cursor = 0
-    for needle in needles:
-        position = source.find(needle, cursor)
-        if position < 0:
-            raise SystemExit(
-                f"{label} ordering contract is missing or out of order: {needles}"
-            )
-        cursor = position + len(needle)
-
-
-require_order(
-    "macOS CLI signing/hash/build-info",
-    cli,
-    'scripts/run-macos-release-signing.sh',
-    'scripts/verify-macos-signed-cli.sh',
-    'packaged_sha="$(sha256_file "${staged}")"',
-    'scripts/run-native-candidate-smoke.sh',
-    'scripts/check-macos-release-signing.sh',
-    'scripts/write-public-cli-build-info.py',
-)
-require_order(
-    "macOS runtime signing/archive/checksum evidence",
-    runtime,
-    '"${script_dir}/run-macos-release-signing.sh"',
-    'python3 "${sidecar_tools}/archive_tool.py" create',
-    'sha256_file "${output_dir%/}/${asset_name}"',
-    'python3 "${script_dir}/macos-release-signing-evidence.py" bind-archive',
-    '"${script_dir}/check-macos-release-signing.sh"',
-)
-require_order(
-    "macOS release transport checksum evidence",
-    staging,
-    'sha256_file "${dest_path}" > "${dest_path}.sha256"',
-    'python3 scripts/macos-release-signing-evidence.py bind-archive',
-    'scripts/check-macos-release-signing.sh',
-    'scripts/run-macos-release-signing.sh --attest-runtime-archive',
-)
-for source, label in ((cli, "CLI"), (runtime, "runtime")):
-    if 'CTX_PUBLIC_CLI_ARTIFACT_MATRIX:-0' not in source:
-        raise SystemExit(f"macOS {label} release matrix must fail closed into required signing")
-if "scripts/verify-macos-release-attestation.sh" not in staging:
-    raise SystemExit("final release assembly must cryptographically verify macOS attestations")
-if '--source-commit "${source_commit}"' not in staging:
-    raise SystemExit("final release assembly must bind every build-info record to the checkout commit")
-if "native-candidate" in staging or "validate_runtime_proof" in staging:
-    raise SystemExit("release staging must not re-collect native proof artifacts")
-require_order(
-    "native macOS final-transcode verification",
-    staging,
-    'mv "${dest_path}.tmp" "${dest_path}"',
-    '"${platform}" runtime "${dest_path}"',
-    '"${platform}" cli "${artifact_dir%/}/ctx-${platform}"',
-    'scripts/run-macos-release-signing.sh --attest-runtime-archive',
-)
-semantic_artifacts = (
-    "ctx-multilingual-e5-small-onnx-fp32-1.0.0.tar.xz",
-    "ctx-multilingual-e5-small-onnx-o4-fp16-1.0.0.tar.xz",
-    "ctx-multilingual-e5-small-coreml-fp16-1.0.0.tar.xz",
-    "ctx-onnxruntime-linux-x64.tar.zst",
-    "ctx-onnxruntime-linux-aarch64.tar.zst",
-    "ctx-onnxruntime-macos-arm64.tar.zst",
-    "ctx-onnxruntime-macos-x64.tar.zst",
-    "ctx-windowsml-windows-x64.zip",
-    "ctx-onnxruntime-linux-x64-cuda12.tar.zst",
-)
-for artifact in semantic_artifacts:
-    if artifact not in handoff or artifact not in staging:
-        raise SystemExit(f"Semantic handoff/publication contract is missing {artifact}")
-if "construct-semantic-release-catalog.sh" not in handoff:
-    raise SystemExit("Semantic handoff must construct the six public metadata fields")
-for required in ("release_bundle.py", "commit-directory", "SHA256SUMS"):
-    if required not in handoff:
-        raise SystemExit(f"Semantic handoff is missing direct asset contract {required}")
-for required in ("release_bundle.py", "commit-directory", "HEAD^{commit}"):
-    if required not in staging:
-        raise SystemExit(f"GitHub staging is missing release bundle contract {required}")
-for source, label in ((staging, "GitHub"), (handoff, "Semantic")):
-    for forbidden in (
-        "publish-linux-bazel-release.py",
-        "consume-complete",
-        "worker_program",
-        "--ctx-pinned-worker",
-        "/proc/self/fd",
-        "CTX_RELEASE_PINNED_CONSUMER",
+    if step.get("depends_on") != expected_dependency:
+        fail(f"{key} must depend only on the factory")
+    agents = step.get("agents", {})
+    if (agents.get("queue"), agents.get("os"), agents.get("arch")) != (
+        queue,
+        os_name,
+        arch,
     ):
-        if forbidden in source:
-            raise SystemExit(f"{label} staging retains retired protocol {forbidden}")
-for platform in ("linux-x64", "linux-aarch64"):
-    if f"--platform {platform}" not in staging:
-        raise SystemExit(f"GitHub staging must verify {platform} completion identity")
-    if f"ctx-{platform}.release-complete.json" in handoff:
-        raise SystemExit(f"Semantic handoff must not depend on {platform} completion identity")
-if "--with-semantic" not in staging:
-    raise SystemExit("release staging must have an explicit additive Semantic mode")
-for platform in (
+        fail(f"{key} has the wrong native runner")
+    command = step.get("command", "")
+    if "download-linux-factory-artifacts.sh" not in command:
+        fail(f"{key} must download factory artifacts")
+    if "validate-public-cli-factory-artifact.sh" not in command or platform not in command:
+        fail(f"{key} must run exact-byte native validation")
+    if re.search(r"cargo (?:build|zigbuild)|bazelw run //:ctx_release", command):
+        fail(f"{key} must never rebuild the candidate")
+
+producer = keyed["public-cli-macos-x64-runtime-producer"]
+if (
+    "build-onnxruntime-sidecar.sh macos-x64" not in producer.get("command", "")
+    or "stage-github-release-assets.sh --transcode-runtime macos-x64" not in producer.get("command", "")
+    or producer.get("depends_on") != "public-cli-linux-factory"
+):
+    fail("macos-x64 runtime producer must own source construction")
+if producer.get("secrets"):
+    fail("macos-x64 producer must acquire Apple values only at signing")
+if "build-onnxruntime-sidecar.sh macos-x64" in keyed[
+    "public-cli-macos-x64-native-smoke"
+].get("command", ""):
+    fail("macos-x64 native lane must not source-build its runtime")
+handoff = keyed["semantic-release-handoff"]
+if "public-cli-macos-x64-runtime-producer" not in handoff.get("depends_on", []):
+    fail("Semantic handoff must reuse the macos-x64 native runtime")
+
+candidate = keyed["github-release-candidate"]
+expected_dependencies = [
+    "public-release",
+    "sdk-swift-required",
+    "public-cli-linux-factory",
+    "public-cli-linux-x64-native-smoke",
+    "public-cli-linux-aarch64-native-smoke",
+    "public-cli-macos-arm64-native-smoke",
+    "public-cli-macos-x64-runtime-producer",
+    "public-cli-macos-x64-native-smoke",
+    "public-cli-windows-x64-native-smoke",
+]
+if candidate.get("depends_on") != expected_dependencies:
+    fail("candidate staging has the wrong strict dependency set")
+if candidate.get("allow_dependency_failure") or candidate.get("soft_fail"):
+    fail("candidate staging must fail closed")
+candidate_command = candidate.get("command", "")
+if (
+    'download-linux-factory-artifacts.sh "*"' not in candidate_command
+    or "stage-github-release-assets.sh" not in candidate_command
+    or "CTX_PUBLIC_RELEASE_SOURCE_COMMIT" not in candidate_command
+):
+    fail("candidate staging must consume the complete factory output and bind HEAD")
+for proof in (
     "linux-x64",
     "linux-aarch64",
     "macos-arm64",
     "macos-x64",
     "windows-x64",
 ):
-    if f"stage_runtime_asset {platform}" not in staging:
-        raise SystemExit(f"prebuilt runtime staging lost {platform}")
-if "append-semantic-release-metadata.sh" in staging:
-    raise SystemExit("public asset staging must not assume private signing authority")
-if "CTX_RELEASE_SEMANTIC_AUTHORITY_universal_ort_cpu" not in append:
-    raise SystemExit("metadata append handoff must require all six Semantic fields")
-for source, label in ((handoff, "handoff"), (append, "metadata append")):
-    if "PRIVATE_KEY" in source or "SIGNING_KEY" in source:
-        raise SystemExit(f"public Semantic {label} must not access signing material")
+    if f"ctx-{proof}.native-execution.json" not in candidate_command:
+        fail(f"candidate staging must consume native {proof} proof")
+
+for step in steps:
+    if not isinstance(step, dict):
+        continue
+    command = str(step.get("command", ""))
+    match = re.search(
+        r"(?<![$])[$](?:[{][^}\n]+[}]|[A-Za-z_][A-Za-z0-9_]*)", command
+    )
+    if match:
+        fail(f"{step.get('key')} exposes {match.group(0)} to Buildkite interpolation")
+
+print(
+    "Buildkite release pipeline: one Linux factory, five exact-byte native "
+    "validators, strict staging"
+)
 PY
 
-if grep -Fq 'spctl ' "${macos_sign_script}" \
-  || grep -Fq 'spctl ' "${macos_check_script}"; then
-  printf 'standalone macOS Mach-O verification must not require spctl app classification\n' >&2
-  exit 1
-fi
-
-if grep -Fq 'scripts/run-macos-release-signing.sh --preflight' "${pipeline}"; then
-  printf 'macOS release lanes must not fetch signing values before construction\n' >&2
-  exit 1
-fi
-
-if grep -Eqi 'freebsd' "${pipeline}"; then
-  printf 'FreeBSD must not appear in the prebuilt or release-blocking Buildkite pipeline\n' >&2
-  exit 1
-fi
-if grep -Fq -- '-certsout "${signer_cert}"' "${macos_attestation_script}" \
-  || ! grep -Fq -- '-signer "${signer_cert}"' "${macos_attestation_script}"; then
-  printf 'macOS CMS verification must validate the actual signer, not embedded certificate decoys\n' >&2
-  exit 1
-fi
-if grep -Fq 'infisical run' "${pipeline}"; then
-  printf 'macOS release builds must not run under broad Infisical injection\n' >&2
-  exit 1
-fi
-if grep -Fq 'minimal_env+=("${secret_name}=' "${macos_launcher_script}" \
-  || grep -Fq '$(cat "${secret_root}/${secret_name}")' "${macos_launcher_script}"; then
-  printf 'macOS signing launcher must pass file paths, never secret values, to env -i\n' >&2
-  exit 1
-fi
-
-if grep -E -q 'install_go|go\.dev/dl|\.local/go' "${public_ci_script}"; then
-  printf 'Buildkite hosted public CI must use Bazel-managed Go without a local bootstrap\n' >&2
-  exit 1
-fi
-
-if awk '
-    index($0, "key: \"public-smoke\"") { in_step = 1 }
-    in_step && /^  - label:/ && index($0, "public smoke gate") == 0 { in_step = 0 }
-    in_step && /release-linux-managed|ctx-runner-class|arch:|os:/ { found = 1 }
-    END { exit found ? 0 : 1 }
-  ' "${pipeline}"; then
-  printf 'public-smoke must not target self-hosted runner tags\n' >&2
-  exit 1
-fi
-
-for required in \
-  'queue: "linux-arm64"' \
-  'os: "linux"' \
-  'arch: "arm64"'; do
-  if ! awk '
-      index($0, "key: \"public-cli-linux-aarch64\"") { in_step = 1 }
-      in_step && /^  - label:/ && index($0, "public-cli-linux-aarch64") == 0 { in_step = 0 }
-      in_step && index($0, needle) { found = 1 }
-      END { exit found ? 0 : 1 }
-    ' needle="${required}" "${pipeline}"; then
-    printf 'linux-aarch64 artifact step missing required runner snippet: %s\n' "${required}" >&2
-    exit 1
-  fi
-done
-
-if grep -F -q 'ctx-mac-gui-shared-arm64' "${pipeline}"; then
-  printf 'public CLI artifact matrix must not use the scarce Mac GUI queue\n' >&2
-  exit 1
-fi
-
-if grep -Fq 'public-cli-macos-arm64' "${macos_precommand_script}"; then
-  printf 'hosted macOS ARM64 release work must not rely on a self-hosted pre-command hook\n' >&2
-  exit 1
-fi
-
-for mac_step in public-cli-macos-arm64 semantic-coreml-archive; do
-  for required in \
-    "queue: \"${macos_arm64_hosted_queue}\"" \
-    'os: "darwin"' \
-    'arch: "arm64"' \
-    'concurrency: 1'; do
-    if ! awk '
-        index($0, "key: \"" step "\"") { in_step = 1 }
-        in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
-        in_step && index($0, needle) { found = 1 }
-        END { exit found ? 0 : 1 }
-      ' step="${mac_step}" needle="${required}" "${pipeline}"; then
-      printf '%s missing required hosted Apple Silicon runner snippet: %s\n' "${mac_step}" "${required}" >&2
-      exit 1
-    fi
-  done
-done
-
-for mac_step in \
-  public-cli-macos-x64 \
-  public-cli-macos-x64-native-smoke \
-  semantic-runtime-macos-x64; do
-  for required in \
-    "queue: \"${macos_x64_kvm_queue}\"" \
-    'os: "darwin"' \
-    'arch: "x86_64"' \
-    'concurrency: 1' \
-    "concurrency_group: \"${macos_x64_intel_concurrency_group}\""; do
-    if ! awk '
-        index($0, "key: \"" step "\"") { in_step = 1 }
-        in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
-        in_step && index($0, needle) { found = 1 }
-        END { exit found ? 0 : 1 }
-      ' step="${mac_step}" needle="${required}" "${pipeline}"; then
-      printf '%s changed native x86_64 KVM runner snippet: %s\n' \
-        "${mac_step}" "${required}" >&2
-      exit 1
-    fi
-  done
-  if awk '
-      index($0, "key: \"" step "\"") { in_step = 1 }
-      in_step && /^  - label:/ && index($0, step) == 0 { in_step = 0 }
-      in_step && index($0, "mac-shared") { found = 1 }
-      END { exit found ? 0 : 1 }
-    ' step="${mac_step}" "${pipeline}"; then
-    printf '%s must not depend on offline mac-shared\n' "${mac_step}" >&2
-    exit 1
-  fi
-done
-
-for required in \
-  "CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID=${macos_x64_kvm_runner_id}" \
-  "--macos-llvm-task-root \"\$\${${macos_x64_llvm_task_root_env}:?}\""; do
-  if ! awk '
-      index($0, "key: \"public-cli-macos-x64\"") { in_step = 1 }
-      in_step && /^  - label:/ && index($0, "public-cli-macos-x64") == 0 { in_step = 0 }
-      in_step && index($0, needle) { found = 1 }
-      END { exit found ? 0 : 1 }
-    ' needle="${required}" "${pipeline}"; then
-    printf 'macos-x64 artifact construction changed authority snippet: %s\n' \
-      "${required}" >&2
-    exit 1
-  fi
-done
-
-if grep -E -q 'release-artifact|r2-|provider-live|OpenRouter|completion-certificate|freebsd-native-release-proof|CTX_PUBLIC_CLI_PERF_GATES|--mode=perf|public-perf' "${pipeline}"; then
-  printf 'pipeline contains non-smoke release or provider-live wiring\n' >&2
-  exit 1
-fi
-
-printf 'Buildkite pipeline check ok\n'
+bash scripts/tests/buildkite-public-ci-cache-test.sh
+bash scripts/tests/check-sdks-required-groups-test.sh
+python3 scripts/check-sdk-ci-pipeline.py \
+  "${pipeline}" scripts/buildkite-public-ci.sh scripts/check-sdks.sh

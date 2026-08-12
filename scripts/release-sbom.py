@@ -297,6 +297,9 @@ def load_core_build_info(
         "ctx:builder:image-id": (
             builder.get("image_id") if isinstance(builder, dict) else None
         ),
+        "ctx:builder:authority": (
+            builder.get("authority") if isinstance(builder, dict) else None
+        ),
         "ctx:builder:recipe-sha256": (
             builder.get("recipe_sha256") if isinstance(builder, dict) else None
         ),
@@ -310,10 +313,35 @@ def load_core_build_info(
             if isinstance(value.get("inspector"), dict)
             else None
         ),
+        "ctx:builder:inspector-authority": (
+            value.get("inspector", {}).get("authority")
+            if isinstance(value.get("inspector"), dict)
+            else None
+        ),
+        "ctx:builder:inspector-tool": (
+            value.get("inspector", {}).get("tool")
+            if isinstance(value.get("inspector"), dict)
+            else None
+        ),
+        "ctx:builder:runtime-authority": (
+            value.get("runtime", {}).get("authority")
+            if isinstance(value.get("runtime"), dict)
+            else None
+        ),
         "ctx:platform": platform,
         "ctx:source:public-commit": source["commit"],
         "ctx:target": value["target"],
         "ctx:toolchain:rust-version": value.get("rust_version"),
+        "ctx:toolchain:macos-sdk-authority": (
+            value.get("release_factory", {}).get("macos_sdk_authority")
+            if isinstance(value.get("release_factory"), dict)
+            else None
+        ),
+        "ctx:toolchain:macos-sdk-sha256": (
+            value.get("release_factory", {}).get("macos_sdk_sha256")
+            if isinstance(value.get("release_factory"), dict)
+            else None
+        ),
     }
     return value, facts
 
@@ -339,17 +367,25 @@ def target_contract(
         else []
     )
     expected_platform = "linux-aarch64" if target_id == "linux-arm64" else target_id
+    authority = matches[0].get("public_construction_authority") if matches else None
+    label = matches[0].get("public_construction_label") if matches else None
+    expected_label = (
+        f"//:ctx_release_{target_id.replace('-', '_')}"
+        if authority == "bazel-release-route-v1"
+        else "scripts/release/build-public-candidate-on-linux.sh"
+        if authority == "linux-cross-cargo-zigbuild-v1"
+        else None
+    )
     if (
         value.get("schema_version") != 1
         or len(matches) != 1
         or platform != expected_platform
         or matches[0].get("public_rust_target") != rust_target
         or matches[0].get("public_construction_authority")
-        != "bazel-release-route-v1"
-        or matches[0].get("public_construction_label")
-        != f"//:ctx_release_{target_id.replace('-', '_')}"
+        not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
+        or label != expected_label
     ):
-        raise ValueError("release target matrix does not bind the Bazel candidate route")
+        raise ValueError("release target matrix does not bind the candidate route")
     return matches[0]
 
 
@@ -847,9 +883,9 @@ def verify_bundle_only(
             "size_bytes": artifact_size,
         }
         or candidate.get("construction", {}).get("authority")
-        != "bazel-release-route-v1"
+        not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
     ):
-        raise ValueError("candidate manifest does not bind the exact Bazel artifact")
+        raise ValueError("candidate manifest does not bind the exact construction artifact")
     target = candidate.get("target")
     if (
         not isinstance(target, dict)
@@ -864,10 +900,18 @@ def verify_bundle_only(
         != ("linux-aarch64" if target["id"] == "linux-arm64" else target["id"])
     ):
         raise ValueError("candidate manifest target is malformed")
-    if candidate.get("construction", {}).get("label") != (
+    construction = candidate.get("construction")
+    authority = construction.get("authority") if isinstance(construction, dict) else None
+    label = construction.get("label") if isinstance(construction, dict) else None
+    expected_label = (
         f"//:ctx_release_{str(target['id']).replace('-', '_')}"
-    ):
-        raise ValueError("candidate manifest does not bind its target Bazel route")
+        if authority == "bazel-release-route-v1"
+        else "scripts/release/build-public-candidate-on-linux.sh"
+        if authority == "linux-cross-cargo-zigbuild-v1"
+        else None
+    )
+    if expected_label is None or label != expected_label:
+        raise ValueError("candidate manifest does not bind its target construction route")
     build_info_bytes = regular_bytes(args.build_info, "build-info", 64 * 1024)
     build_info, _ = load_core_build_info(
         build_info_bytes,

@@ -190,10 +190,9 @@ DynamicSection [
 ]
 Interpreter: /lib64/ld-linux-x86-64.so.2
 NeededLibraries [
-  libgcc_s.so.1
+  ld-linux-x86-64.so.2
   libm.so.6
   libc.so.6
-  ld-linux-x86-64.so.2
 ]
 Name: GLIBC_2.35
 Name: GCC_4.2.0
@@ -236,10 +235,8 @@ DynamicSection [
 ]
 Interpreter: /lib/ld-linux-aarch64.so.1
 NeededLibraries [
-  libgcc_s.so.1
   libm.so.6
   libc.so.6
-  ld-linux-aarch64.so.1
 ]
 Name: GLIBC_2.35
 Name: GCC_4.2.0
@@ -316,8 +313,11 @@ Load command 11
      name /usr/lib/libc++.1.dylib (offset 24)
 Load command 12
       cmd LC_LOAD_DYLIB
-     name /usr/lib/libiconv.2.dylib (offset 24)
+     name /usr/lib/libcharset.1.dylib (offset 24)
 Load command 13
+      cmd LC_LOAD_DYLIB
+     name /usr/lib/libiconv.2.dylib (offset 24)
+Load command 14
       cmd LC_LOAD_DYLIB
      name /usr/lib/libobjc.A.dylib (offset 24)
 EOF
@@ -347,6 +347,33 @@ Import {
   Name: ADVAPI32.dll
 }
 Import {
+  Name: api-ms-win-crt-environment-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-heap-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-math-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-private-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-runtime-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-stdio-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-string-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-time-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-utility-l1-1-0.dll
+}
+Import {
   Name: api-ms-win-core-synch-l1-2-0.dll
 }
 Import {
@@ -356,16 +383,13 @@ Import {
   Name: bcryptprimitives.dll
 }
 Import {
-  Name: combase.dll
-}
-Import {
   Name: KERNEL32.dll
 }
 Import {
-  Name: msvcrt.dll
+  Name: ntdll.dll
 }
 Import {
-  Name: ntdll.dll
+  Name: ole32.dll
 }
 Import {
   Name: shell32.dll

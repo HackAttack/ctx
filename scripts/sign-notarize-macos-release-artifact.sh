@@ -8,9 +8,9 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/sign-notarize-macos-release-artifact.sh PLATFORM KIND ARTIFACT [EVIDENCE_DIR]
 
-Signs one standalone macOS release Mach-O with Developer ID, submits a
-temporary ZIP to Apple notarization, and records sanitized verification
-evidence. KIND is cli or runtime.
+Signs one standalone macOS release Mach-O with Developer ID, submits it to
+Apple notarization, and records sanitized verification evidence. The same
+worker runs on Linux or macOS. KIND is cli or runtime.
 USAGE
 }
 
@@ -214,16 +214,23 @@ esac
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${root_dir}/scripts/macos-release-publisher-policy.sh"
 "${root_dir}/scripts/check-macos-signing-trusted-ref.sh" >/dev/null
+host_system="$(uname -s)"
 if [[ "${CTX_TEST_ONLY_MACOS_HOST:-}" == "Darwin" ]]; then
   [[ "${CTX_LOCAL_MACOS_SIGNING_LIVE_TEST:-0}" == "1" ]] || \
     die "CTX_TEST_ONLY_MACOS_HOST is restricted to non-CI local contract tests"
-elif [[ "$(uname -s)" != "Darwin" ]]; then
-  die "macOS release signing requires a native Darwin host"
+  host_system=Darwin
+elif [[ "${host_system}" != "Darwin" && "${host_system}" != "Linux" ]]; then
+  die "macOS release signing requires Linux or Darwin"
 fi
 
-for command_name in base64 codesign ditto find openssl python3 rcodesign stat xcrun; do
+for command_name in base64 find openssl python3 rcodesign stat; do
   require_command "${command_name}"
 done
+if [[ "${host_system}" == "Darwin" ]]; then
+  for command_name in codesign ditto xcrun; do
+    require_command "${command_name}"
+  done
+fi
 
 secret_dir="${CTX_MACOS_SIGNING_SECRET_DIR:-}"
 [[ "${secret_dir}" == /* && -d "${secret_dir}" && ! -L "${secret_dir}" && -O "${secret_dir}" ]] || \
@@ -286,7 +293,7 @@ cert_path="${secret_root}/codesign-cert.p12"
 cert_pem_path="${secret_root}/codesign-cert.pem"
 cert_private_key_path="${secret_root}/codesign-cert.key"
 notary_key_path="${secret_root}/AuthKey.p8"
-notary_zip="${secret_root}/${evidence_prefix}.zip"
+notary_api_key="${secret_root}/notary-api-key.json"
 
 decode_b64_file APPLE_CODESIGN_CERT_P12_B64 "${cert_b64_path}" "${cert_path}"
 extract_codesign_certificate "${cert_path}" "${cert_password_path}" "${cert_pem_path}"
@@ -338,43 +345,77 @@ if ! rcodesign sign \
   "${artifact}"; then
   die "Developer ID signing failed for ${platform} ${kind}"
 fi
-codesign --verify --strict --verbose=4 "${artifact}" >/dev/null 2>&1 || \
-  die "strict codesign verification failed for ${platform} ${kind}"
-codesign -d --verbose=4 "${artifact}" >"${codesign_details}" 2>&1 || \
-  die "could not inspect Developer ID signature for ${platform} ${kind}"
+if [[ "${host_system}" == "Darwin" ]]; then
+  codesign --verify --strict --verbose=4 "${artifact}" >/dev/null 2>&1 || \
+    die "strict codesign verification failed for ${platform} ${kind}"
+  codesign -d --verbose=4 "${artifact}" >"${codesign_details}" 2>&1 || \
+    die "could not inspect Developer ID signature for ${platform} ${kind}"
+  grep -Fqx "Authority=${certificate_authority}" "${codesign_details}" || \
+    die "signed ${platform} ${kind} does not have the pinned ctx Apple authority"
+  grep -Fqx "TeamIdentifier=${certificate_team_id}" "${codesign_details}" || \
+    die "signed ${platform} ${kind} does not match the verified certificate Team ID"
+  codesign_details_have_runtime "${codesign_details}" || \
+    die "signed ${platform} ${kind} is missing hardened runtime flags"
+  grep -Eq '^Timestamp=.+$' "${codesign_details}" || \
+    die "signed ${platform} ${kind} is missing a secure timestamp"
+else
+  rcodesign print-signature-info "${artifact}" >"${codesign_details}" 2>&1 || \
+    die "rcodesign could not inspect ${platform} ${kind}"
+  grep -Fq "${certificate_team_id}" "${codesign_details}" || \
+    die "signed ${platform} ${kind} does not bind the verified Apple Team ID"
+fi
 chmod 0644 "${codesign_details}"
-grep -Fqx "Authority=${certificate_authority}" "${codesign_details}" || \
-  die "signed ${platform} ${kind} does not have the pinned ctx Apple authority"
-grep -Fqx "TeamIdentifier=${certificate_team_id}" "${codesign_details}" || \
-  die "signed ${platform} ${kind} does not match the verified certificate Team ID"
-codesign_details_have_runtime "${codesign_details}" || \
-  die "signed ${platform} ${kind} is missing hardened runtime flags"
-grep -Eq '^Timestamp=.+$' "${codesign_details}" || \
-  die "signed ${platform} ${kind} is missing a secure timestamp"
 signed_sha256="$(sha256_file "${artifact}")"
 
-ditto -c -k --keepParent "${artifact}" "${notary_zip}" || \
-  die "failed to create temporary notarization ZIP for ${platform} ${kind}"
-set +e
-xcrun notarytool submit "${notary_zip}" \
-  --key "${notary_key_path}" \
-  --key-id "${notary_key_id}" \
-  --issuer "${notary_issuer}" \
-  --wait \
-  --timeout "${notary_timeout}" \
-  --output-format json >"${submit_json}" 2>"${submit_stderr}"
-submit_status=$?
-set -e
+if [[ "${host_system}" == "Darwin" ]]; then
+  notary_zip="${secret_root}/${evidence_prefix}.zip"
+  ditto -c -k --keepParent "${artifact}" "${notary_zip}" || \
+    die "failed to create temporary notarization ZIP for ${platform} ${kind}"
+  set +e
+  xcrun notarytool submit "${notary_zip}" \
+    --key "${notary_key_path}" --key-id "${notary_key_id}" \
+    --issuer "${notary_issuer}" --wait --timeout "${notary_timeout}" \
+    --output-format json >"${submit_json}" 2>"${submit_stderr}"
+  submit_status=$?
+  set -e
+else
+  timeout_value="${notary_timeout%[smh]}"
+  case "${notary_timeout}" in
+    *s) timeout_seconds="${timeout_value}" ;;
+    *m) timeout_seconds="$((timeout_value * 60))" ;;
+    *h) timeout_seconds="$((timeout_value * 3600))" ;;
+  esac
+  rcodesign encode-app-store-connect-api-key \
+    --output-path "${notary_api_key}" \
+    "${notary_issuer}" "${notary_key_id}" "${notary_key_path}" \
+    >/dev/null 2>&1 || die "could not prepare the App Store Connect API key"
+  set +e
+  rcodesign notary-submit --wait --max-wait-seconds "${timeout_seconds}" \
+    --api-key-file "${notary_api_key}" "${artifact}" \
+    >"${log_json}" 2>"${submit_stderr}"
+  submit_status=$?
+  set -e
+  submission_id="$(sed -n 's/.*created submission ID: \([0-9A-Fa-f-][0-9A-Fa-f-]*\).*/\1/p' "${submit_stderr}" | head -n 1)"
+  if [[ "${submit_status}" -eq 0 && -n "${submission_id}" ]]; then
+    printf '{"id":"%s","status":"Accepted"}\n' "${submission_id}" >"${submit_json}"
+    rcodesign notary-log --api-key-file "${notary_api_key}" "${submission_id}" \
+      >"${log_json}" 2>"${log_stderr}" || true
+  fi
+fi
 chmod 0644 "${submit_json}" "${submit_stderr}" 2>/dev/null || true
 notary_status="$(json_field "${submit_json}" status || true)"
 submission_id="$(json_field "${submit_json}" id || true)"
 if [[ "${submit_status}" -ne 0 || "${notary_status}" != "Accepted" ]]; then
   if [[ -n "${submission_id}" ]]; then
-    xcrun notarytool log "${submission_id}" \
-      --key "${notary_key_path}" \
-      --key-id "${notary_key_id}" \
-      --issuer "${notary_issuer}" \
-      --output-format json >"${log_json}" 2>"${log_stderr}" || true
+    if [[ "${host_system}" == "Darwin" ]]; then
+      xcrun notarytool log "${submission_id}" \
+        --key "${notary_key_path}" --key-id "${notary_key_id}" \
+        --issuer "${notary_issuer}" --output-format json \
+        >"${log_json}" 2>"${log_stderr}" || true
+    else
+      rcodesign notary-log --api-key-file "${notary_api_key}" "${submission_id}" \
+        >"${log_json}" 2>"${log_stderr}" || true
+    fi
     chmod 0644 "${log_json}" "${log_stderr}" 2>/dev/null || true
   fi
   print_notary_diagnostics "${submit_stderr}" "${log_json}" "${log_stderr}"
@@ -384,19 +425,26 @@ if [[ "${submit_status}" -ne 0 || "${notary_status}" != "Accepted" ]]; then
   die "Apple notarization failed for ${platform} ${kind} with status ${notary_status:-unknown}"
 fi
 
-codesign --verify --strict --verbose=4 "${artifact}" >/dev/null 2>&1 || \
-  die "post-notarization codesign verification failed for ${platform} ${kind}"
+if [[ "${host_system}" == "Darwin" ]]; then
+  codesign --verify --strict --verbose=4 "${artifact}" >/dev/null 2>&1 || \
+    die "post-notarization codesign verification failed for ${platform} ${kind}"
+fi
 final_sha256="$(sha256_file "${artifact}")"
 [[ "${final_sha256}" == "${signed_sha256}" ]] || \
   die "${platform} ${kind} mutated after Developer ID signing"
 
-python3 "${root_dir}/scripts/macos-release-signing-evidence.py" write \
-  --output "${evidence_json}" \
-  --platform "${platform}" \
-  --kind "${kind}" \
-  --artifact "${artifact}" \
-  --codesign-details "${codesign_details}" \
-  --notary-submit "${submit_json}"
+if [[ "${host_system}" == "Darwin" ]]; then
+  python3 "${root_dir}/scripts/macos-release-signing-evidence.py" write \
+    --output "${evidence_json}" --platform "${platform}" --kind "${kind}" \
+    --artifact "${artifact}" --codesign-details "${codesign_details}" \
+    --notary-submit "${submit_json}"
+else
+  python3 "${root_dir}/scripts/macos-release-signing-evidence.py" write-linux \
+    --output "${evidence_json}" --platform "${platform}" --kind "${kind}" \
+    --artifact "${artifact}" --rcodesign-details "${codesign_details}" \
+    --notary-submit "${submit_json}" --codesign-authority "${certificate_authority}" \
+    --team-identifier "${certificate_team_id}" --identifier ctx
+fi
 python3 "${root_dir}/scripts/macos-release-signing-evidence.py" create-attestation \
   --output "${attestation_json}" \
   --platform "${platform}" \
@@ -417,8 +465,9 @@ if ! openssl cms -sign \
   die "failed to create Developer ID CMS attestation for ${platform} ${kind}"
 fi
 chmod 0644 "${attestation_json}" "${attestation_cms}"
-"${root_dir}/scripts/verify-macos-release-attestation.sh" \
-  "${platform}" "${kind}" "${artifact}" "${attestation_json}" "${attestation_cms}" \
-  >/dev/null
+CTX_MACOS_RELEASE_SOURCE_COMMIT="$(git -C "${root_dir}" rev-parse --verify HEAD)" \
+  "${root_dir}/scripts/verify-macos-release-attestation.sh" \
+    "${platform}" "${kind}" "${artifact}" "${attestation_json}" "${attestation_cms}" \
+    >/dev/null
 printf 'signed and notarized %s %s sha256=%s evidence=%s\n' \
   "${platform}" "${kind}" "${final_sha256}" "${evidence_json}"

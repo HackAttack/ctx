@@ -170,29 +170,18 @@ def validate_policy(
     lockfiles = policy.get("lockfiles")
     if not isinstance(scanner, dict) or not isinstance(lockfiles, list) or not lockfiles:
         raise GateError("tool_failure", "advisory policy is incomplete")
-    scanner_hashes = scanner.get("sha256_by_target")
+    scanner_hash = scanner.get("sha256")
     if (
-        scanner.get("name") != "osv-scanner"
+        scanner.get("authority") != "ctx-release-osv-linux-x64-v1"
+        or scanner.get("name") != "osv-scanner"
+        or scanner.get("platform") != "linux-x64"
         or not isinstance(scanner.get("version"), str)
-        or not isinstance(scanner_hashes, dict)
-        or not scanner_hashes
-        or any(
-            not isinstance(target, str)
-            or not target
-            or HEX_64.fullmatch(digest or "") is None
-            for target, digest in scanner_hashes.items()
-        )
+        or HEX_64.fullmatch(scanner_hash or "") is None
         or not isinstance(scanner.get("max_database_age_hours"), int)
         or scanner["max_database_age_hours"] < 1
     ):
         raise GateError("tool_failure", "advisory scanner policy is invalid")
-    selected_scanner_hash = scanner_hashes.get(target_id)
-    if selected_scanner_hash is None:
-        raise GateError(
-            "tool_failure",
-            f"advisory scanner policy does not support target: {target_id}",
-        )
-    scanner = {**scanner, "selected_sha256": selected_scanner_hash}
+    scanner = {**scanner, "selected_sha256": scanner_hash}
 
     declared: dict[str, dict[str, Any]] = {}
     for index, entry in enumerate(lockfiles):
@@ -422,11 +411,24 @@ def bazel_release_inventory(
     inventory_path: Path, scanner_packages: set[tuple[str, str, str]]
 ) -> set[tuple[str, str, str]]:
     try:
-        labels = inventory_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise GateError("tool_failure", "Bazel dependency inventory is unavailable") from error
+        inventory_text = inventory_path.read_text(encoding="utf-8")
+        if inventory_text.lstrip().startswith("{"):
+            value = json.loads(inventory_text)
+            records = value["packages"]
+            if (
+                value.get("schema_version") != 1
+                or value.get("kind") != "ctx-cargo-release-inventory"
+                or not isinstance(records, list)
+                or any(not isinstance(record, dict) for record in records)
+            ):
+                raise ValueError
+            labels = [record["label"] for record in records]
+        else:
+            labels = inventory_text.splitlines()
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise GateError("tool_failure", "release dependency inventory is unavailable") from error
     if not labels or labels != sorted(set(labels)):
-        raise GateError("tool_failure", "Bazel dependency inventory is malformed")
+        raise GateError("tool_failure", "release dependency inventory is malformed")
     selected: set[tuple[str, str, str]] = set()
     crate_labels = [label for label in labels if "crates__" in label]
     for label in crate_labels:
@@ -439,10 +441,10 @@ def bazel_release_inventory(
             and f"crates__{package[1]}-{package[2].replace('+', '-')}//" in label
         ]
         if len(candidates) != 1:
-            raise GateError("tool_failure", f"Bazel inventory label is ambiguous: {label}")
+            raise GateError("tool_failure", f"release inventory label is ambiguous: {label}")
         selected.add(candidates[0])
     if not selected:
-        raise GateError("tool_failure", "Bazel inventory selected no registry crates")
+        raise GateError("tool_failure", "release inventory selected no registry crates")
     return selected
 
 
