@@ -103,13 +103,15 @@ Already use ctx? Set up pro:
 ctx pro
 ```
 
-## How is it so fast?
+## Why is ctx so fast?
 
-ctx is written in Rust, but that's not the main reason why it's fast. It turns provider history directly into one immutable, self-contained [Tantivy](https://github.com/quickwit-oss/tantivy) Core: the full-text search index and the complete normalized local record in the same generation. There is no relational database on the history-search path, and ordinary reads never need to reopen or reparse provider transcripts.
+ctx is written in Rust, but the bigger reason is that it uses a search engine for a search problem. It reads the history files and databases your agents already write and writes each session and event directly into a [Tantivy](https://github.com/quickwit-oss/tantivy) search index. It does not first copy everything into relational SQLite tables.
 
-Tantivy builds the index in parallel and searches memory-mapped segments with BM25. A script-aware tokenizer keeps CJK and other dense-script history searchable. In our benchmark, ctx indexed 10 GB of agent history (740,008 records) in under 80 seconds and kept unfiltered top-20 searches below 100 ms at p95.
+Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record behind every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
 
-When semantic search is enabled, ctx embeds history locally with `multilingual-e5-small` and stores normalized vectors in memory-mapped flat-F32 segments. It scans those vectors exactly, with no vector database or HNSW graph to build or tune.
+On a 10 GB corpus containing 740,008 agent-history events, ctx built a new index in under 80 seconds and kept unfiltered top-20 searches below 100 ms at p95.
+
+Semantic search follows the same local-first approach. ctx stores embeddings in memory-mapped flat-F32 files and scans them exactly. At the scale of personal agent history, that avoids a vector database and an approximate HNSW index to build or tune.
 
 ## How it works
 
