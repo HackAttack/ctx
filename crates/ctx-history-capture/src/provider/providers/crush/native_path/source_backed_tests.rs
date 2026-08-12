@@ -92,6 +92,7 @@ fn query_time_corrupt_and_notadb_keep_provider_content_provenance() {
             ctx_history_source_io::SqliteSourceSnapshotStrategy::CopiedFamily => {
                 crate::provider_sources::SqliteArtifactKind::PrivateSourceCopy
             }
+            #[cfg(target_os = "linux")]
             ctx_history_source_io::SqliteSourceSnapshotStrategy::PinnedReadOnlyWal => {
                 crate::provider_sources::SqliteArtifactKind::ProviderDatabase
             }

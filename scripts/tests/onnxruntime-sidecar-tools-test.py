@@ -586,6 +586,33 @@ class SemanticReleaseAssetTests(unittest.TestCase):
                     )
                 self.assertFalse(output.exists())
 
+    def test_downloader_uses_explicit_public_release_identity(self) -> None:
+        expected = b"good"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "download"
+            with mock.patch.object(
+                semantic_release_assets.urllib.request,
+                "urlopen",
+                return_value=io.BytesIO(expected),
+            ) as urlopen:
+                semantic_release_assets.download_exact_url(
+                    "https://example.invalid/input",
+                    output,
+                    len(expected),
+                    hashlib.sha256(expected).hexdigest(),
+                )
+
+            request = urlopen.call_args.args[0]
+            self.assertIsInstance(request, semantic_release_assets.urllib.request.Request)
+            self.assertEqual(request.full_url, "https://example.invalid/input")
+            self.assertEqual(request.get_method(), "GET")
+            self.assertEqual(
+                request.get_header("User-agent"),
+                "ctx-semantic-release-assets/1 (+https://ctx.rs)",
+            )
+            self.assertNotIn("Authorization", request.headers)
+            self.assertEqual(output.read_bytes(), expected)
+
     def test_coreml_preparation_safely_derives_all_offline_inputs(self) -> None:
         archive, payloads = coreml_archive_fixture()
         archive_sha256 = hashlib.sha256(archive).hexdigest()
