@@ -69,15 +69,13 @@ fn windows_task_registration_matches(
     user_sid: &str,
     task_name: &str,
 ) -> Result<bool> {
+    let input = ManagedSupervisorInput::new(&TestHost, data_root, executable)?;
     windows_task_registration_matches_with_environment(
         xml,
-        executable,
-        data_root,
         system_root,
         user_sid,
         task_name,
-        &supervisor_environment_snapshot(&TestHost)?,
-        &supervisor_manager_environment(&TestHost)?,
+        &input,
     )
 }
 

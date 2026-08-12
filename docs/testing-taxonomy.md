@@ -12,12 +12,19 @@ routine entry points.
 | `nightly` | `ci` plus performance sanity, serialized upgrade acceptance, persistent-daemon soak, and injected crash/ENOSPC qualification. |
 | `release` | `nightly`, named explicitly for release-candidate qualification. |
 
+Each named mode first builds `//...` with `--config=ci`, whose checked-in
+configuration inherits the strict Clippy aspect with `-Dwarnings`. It then runs
+the corresponding `//:ci_tests`, `//:nightly_tests`, or `//:release_tests`
+suite with the deterministic test configuration, without applying the lint
+aspect a second time.
+
 During editing, run the smallest owning test and then the affected selector.
 Build-graph changes, unresolved comparison bases, selector failures, and
-unmapped changes fail closed to `ci`. Use `nightly` or `release` for performance
-sanity and the serialized upgrade, daemon-soak, and fault-injection
-qualification that is too expensive for each source change. Network-dependent,
-external, platform-native, and manual checks remain separate.
+unmapped changes fail closed to the complete deterministic `//:ci_tests` suite;
+the full merge gate remains `scripts/check.sh --mode=ci`. Use `nightly` or
+`release` for performance sanity and the serialized upgrade, daemon-soak, and
+fault-injection qualification that is too expensive for each source change.
+Network-dependent, external, platform-native, and manual checks remain separate.
 
 ## Commands
 

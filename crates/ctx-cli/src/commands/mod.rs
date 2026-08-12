@@ -21,6 +21,3 @@ pub(crate) mod source_index {
 pub(crate) mod sources;
 pub(crate) mod stats;
 pub(crate) mod status;
-
-#[cfg(test)]
-mod test_support_query_authority;

@@ -10,7 +10,7 @@ from select_affected_tests import FULL_SUITE, select
 
 class SelectionMutationTests(unittest.TestCase):
     def test_full_suite_is_canonical_ci(self) -> None:
-        self.assertEqual(FULL_SUITE, "//:ci")
+        self.assertEqual(FULL_SUITE, "//:ci_tests")
 
     def mutate(self, relative: str) -> str:
         with tempfile.TemporaryDirectory() as directory:

@@ -6,13 +6,13 @@ use std::{collections::BTreeMap, ffi::OsString};
 use anyhow::Result;
 #[cfg(windows)]
 use ctx_daemon_runtime::NormalizedLaunch;
-use ctx_daemon_runtime::SupervisorManagerEnvironment;
 
 #[cfg(windows)]
 use super::environment::SUPERVISOR_DESCRIPTION;
 use super::environment::{
     supervisor_artifact_spec, windows_supervisor_identity, SupervisorEnvironmentSnapshot,
 };
+use super::ManagedSupervisorInput;
 
 #[cfg(windows)]
 pub(super) use ctx_daemon_runtime::current_windows_user_sid;
@@ -91,24 +91,26 @@ pub(super) fn windows_task_xml_with_script(
 
 pub(super) fn windows_task_registration_matches_with_environment(
     xml: &str,
-    executable: &Path,
-    data_root: &Path,
     system_root: &Path,
     user_sid: &str,
     task_name: &str,
-    daemon_environment: &SupervisorEnvironmentSnapshot,
-    manager_environment: &SupervisorManagerEnvironment,
+    input: &ManagedSupervisorInput,
 ) -> Result<bool> {
     let identity = ctx_daemon_runtime::SupervisorIdentity::new(
         task_name,
-        ctx_daemon_runtime::daemon_root_path(data_root).join("windows-task.xml"),
+        ctx_daemon_runtime::daemon_root_path(&input.data_root).join("windows-task.xml"),
     )?;
-    let spec = supervisor_artifact_spec(identity, executable, data_root, daemon_environment)?;
+    let spec = supervisor_artifact_spec(
+        identity,
+        &input.executable,
+        &input.data_root,
+        &input.daemon_environment,
+    )?;
     ctx_daemon_runtime::windows_task_registration_matches(
         xml,
         &spec,
         system_root,
         user_sid,
-        manager_environment,
+        &input.manager_environment,
     )
 }

@@ -6,7 +6,7 @@ from __future__ import annotations
 import pathlib
 import sys
 
-FULL_SUITE = "//:ci"
+FULL_SUITE = "//:ci_tests"
 GLOBAL_FILES = {
     ".bazelrc",
     ".bazelversion",
@@ -56,7 +56,6 @@ def is_runnable_test(label: str) -> bool:
         return False
     return label.startswith("//") and (
         name.endswith(("_test", "_tests", "_check", "_e2e", "_smoke"))
-        or name == "ci"
         or "audit" in name
     )
 

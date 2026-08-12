@@ -22,16 +22,6 @@ pub(crate) enum CliRefreshArg {
     Wait,
 }
 
-impl CliRefreshArg {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Background => "background",
-            Self::Off => "off",
-            Self::Wait => "wait",
-        }
-    }
-}
-
 pub(crate) fn run_search(
     args: SearchArgs,
     data_root: PathBuf,
