@@ -13,6 +13,8 @@ If you give your agents fast, easy access to search and retrieve these transcrip
 - audit previous sessions in detail
 - pick up where previous work left off, even across multiple threads
 
+That means less repeated agent work, lower token spend, and better task outcomes because each new session can use the history already on your machine.
+
 ctx also understands how parent sessions, subagents, and forks relate to one another, so agents can recover the whole chain of work no matter how aggressively you orchestrate.
 
 This is different from “agent memory,” which usually compacts what happened into facts or summaries that can become stale. ctx gives agents instant recall of the real record without a lossy memory step.
