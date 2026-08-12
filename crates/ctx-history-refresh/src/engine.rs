@@ -675,11 +675,12 @@ impl CoreRefreshEngine {
         let routes = overdue_hermes_exact_routes(
             &index,
             i64::try_from(now_ms).unwrap_or(i64::MAX),
-            |route| match catalog.route_control_expectation(route) {
-                Some(SourceBackedRouteControlExpectation::Hermes {
-                    profile_source_descriptor,
-                }) => Some(*profile_source_descriptor),
-                None => None,
+            |route| {
+                catalog.route_control_expectation(route).map(
+                    |SourceBackedRouteControlExpectation::Hermes {
+                         profile_source_descriptor,
+                     }| *profile_source_descriptor,
+                )
             },
         );
         if routes.is_empty() {
