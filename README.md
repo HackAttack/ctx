@@ -103,18 +103,6 @@ Already use ctx? Set up pro:
 ctx pro
 ```
 
-## Why is ctx so fast?
-
-ctx is written in Rust, but that's not the main reason why it's fast. Instead of ingesting your history into a local relational database like SQLite, ctx scans it with parallel workers and writes searchable records directly to [Tantivy](https://github.com/quickwit-oss/tantivy). That removes an entire database ingest step while still supporting structured filtering and complete record retrieval.
-
-Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record behind every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
-
-In our benchmark, this was 16x faster than ctx's previous optimized SQLite implementation.
-
-<img src="docs/assets/ctx-cold-indexing-chart.png" alt="Cold indexing time: ctx with Tantivy, 9.65 seconds; previous ctx SQLite pipeline, 155.09 seconds. Lower is better." width="100%">
-
-Semantic search takes a similarly direct approach. ctx embeds your history locally with `multilingual-e5-small` and stores the vectors in memory-mapped flat-F32 segments. At the scale of personal agent history, scanning those vectors exactly is fast, so there is no vector database or approximate HNSW graph to build, tune, or maintain.
-
 ## How it works
 
 Your past coding agent sessions already live on your machine, usually in JSONL files or SQLite databases under directories such as `~/.claude` and `~/.codex`.
@@ -152,23 +140,33 @@ ctx does not send your prompts, transcripts, or indexed history to a cloud servi
 
 For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works). For a quick first run, see [Quickstart](https://ctx.rs/first-search).
 
-## Refer a dev to ctx pro and we'll buy you $120 in LLM tokens
+## Why is ctx so fast?
 
-Coding agents aren't cheap. For each developer you refer who becomes a ctx pro subscriber, you earn $10 cash per month for each of their first 12 paid months.
+ctx is written in Rust, but that's not the main reason why it's fast. Instead of ingesting your history into a local relational database like SQLite, ctx scans it with parallel workers and writes searchable records directly to [Tantivy](https://github.com/quickwit-oss/tantivy). That removes an entire database ingest step while still supporting structured filtering and complete record retrieval.
 
-Two active referrals earn you $20 per month; ten earn you $100 per month.
+Tantivy builds the index in parallel. It creates a compact map from each term to the records containing it, searches memory-mapped segments without loading your entire history into memory, and ranks the results with BM25. The same index stores the complete record behind every result, so `ctx search`, `ctx show`, and `ctx locate` can read it without a second database or reopening and reparsing the original agent logs.
 
-The dev you refer gets a 30-day pro trial instead of the standard 14 days.
+In our benchmark, this was 16x faster than ctx's previous optimized SQLite implementation.
 
-```bash
-# Claim your referral codename
-ctx referral create <codename>
+<img src="docs/assets/ctx-cold-indexing-chart.png" alt="Cold indexing time: ctx with Tantivy, 9.65 seconds; previous ctx SQLite pipeline, 155.09 seconds. Lower is better." width="100%">
 
-# Share this command with another developer
-ctx pro --referral <codename>
-```
+Semantic search takes a similarly direct approach. ctx embeds your history locally with `multilingual-e5-small` and stores the vectors in memory-mapped flat-F32 segments. At the scale of personal agent history, scanning those vectors exactly is fast, so there is no vector database or approximate HNSW graph to build, tune, or maintain.
 
-[See referral details](https://ctx.rs/pro/referrals) for eligibility, payouts, and terms.
+## Agent memory, codebase intelligence, and coding-agent history
+
+These tools start from different records and answer different questions.
+
+| Category | Starts from | Answers |
+| --- | --- | --- |
+| Agent memory ([Mem0](https://mem0.ai), [Zep](https://www.getzep.com/)) | Extracted facts, summaries, conversation-derived memories, or graph nodes | “What should the agent remember?” |
+| Codebase intelligence ([Graphify](https://github.com/Graphify-Labs/graphify), [Sourcegraph](https://sourcegraph.com/)) | The current repository's code, symbols, documents, and relationships | “What is in this codebase, and how does it fit together?” |
+| Coding-agent history and provenance (ctx) | Original sessions, messages, tool calls, and local Git history | “What actually happened, and which session produced this code?” |
+
+ctx gives coding agents exact recall of prior work. They can search the original history, retrieve the cited transcript or tool call, and use ctx pro to map a line, file, commit, or PR back to the session that produced it.
+
+An agent might use all three in one investigation: memory for a durable rule, codebase intelligence to find the relevant subsystem, and ctx to recover the historical work that explains the change.
+
+Read more about [agent memory](https://ctx.rs/comparisons/agent-memory), [codebase graphs](https://ctx.rs/comparisons/codebase-graphs), and [grep or log search](https://ctx.rs/comparisons/grep-log-search).
 
 ## Supported agent histories
 
@@ -216,13 +214,23 @@ ctx pro --referral <codename>
 | Windsurf | Supported |
 | Zed | Supported |
 
-## How ctx compares
+## Refer a dev to ctx pro and we'll buy you $120 in LLM tokens
 
-Agent memory tools help agents carry useful state into future interactions, often through extracted facts, summaries, vectors, or graph nodes. ctx retrieves what actually happened: the original sessions, commands, tool calls, and cited evidence. `ctx blame` adds agent work provenance by connecting committed code back to those records.
+Coding agents aren't cheap. For each developer you refer who becomes a ctx pro subscriber, you earn $10 cash per month for each of their first 12 paid months.
 
-Graphify-style tools answer a different question. They map the current repository: files, symbols, imports, folders, and relationships. ctx searches the prior agent sessions that explain what happened while people and agents changed that repository.
+Two active referrals earn you $20 per month; ten earn you $100 per month.
 
-ctx keeps retrieval tied to sessions and events, so another agent can inspect the source before using it. Read more about [agent memory](https://ctx.rs/comparisons/agent-memory), [Graphify-style codebase graphs](https://ctx.rs/comparisons/codebase-graphs), and [grep or log search](https://ctx.rs/comparisons/grep-log-search).
+The dev you refer gets a 30-day pro trial instead of the standard 14 days.
+
+```bash
+# Claim your referral codename
+ctx referral create <codename>
+
+# Share this command with another developer
+ctx pro --referral <codename>
+```
+
+[See referral details](https://ctx.rs/pro/referrals) for eligibility, payouts, and terms.
 
 ## Explore the docs
 
