@@ -136,7 +136,7 @@
       ]
     },
     {
-      "path": "crates/ctx-cli/tests/upgrade.rs",
+      "path": "crates/ctx-upgrade-engine/tests/contracts/upgrade.rs",
       "purpose": "Remove retired ambient release-authority variables from hermetic upgrade test processes.",
       "controls": [
         "CTX_FUNCTIONS_BASE",

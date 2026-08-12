@@ -548,7 +548,6 @@ def _validate_final_build(path: Path) -> None:
         "ctx_pro_test_host": ("CTX_CLI_PRO_TEST_HOST_DEPS",),
         "ctx_auto_upgrade_acceptance_fixture": ("CTX_CLI_QUALIFICATION_DEPS",),
         "ctx_hosted_uninstall_test_host": ("CTX_CLI_QUALIFICATION_DEPS",),
-        "ctx_v025_upgrade_fixture": (),
         "ctx_upgrade_test_harness": ("CTX_CLI_QUALIFICATION_DEPS",),
     }
     seen: set[str] = set()
