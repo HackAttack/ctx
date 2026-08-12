@@ -504,7 +504,7 @@ steps:
       mkdir -p target/public-cli-artifacts
       python3 scripts/semantic-release-assets.py prepare-coreml \
         --output-dir target/semantic-coreml-source
-      python3 scripts/semantic-model-bundle/produce.py \
+      scripts/semantic-model-bundle/run-pinned-producer.sh \
         --tokenizer target/semantic-coreml-source/tokenizer.json \
         --document-model target/semantic-coreml-source/document.mlpackage \
         --query-model target/semantic-coreml-source/query.mlpackage \

@@ -1,5 +1,5 @@
 {
-  "macos": "26.2",
+  "macos": "26.3.1",
   "python": "3.11.9",
   "python_distributions": {
     "coremltools": "8.3.0",

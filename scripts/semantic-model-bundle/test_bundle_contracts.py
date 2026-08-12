@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 import types
@@ -99,6 +100,12 @@ class BundleContractTest(unittest.TestCase):
 
 
 class ProducerContractTest(unittest.TestCase):
+    def test_toolchain_lock_matches_pinned_hosted_image(self) -> None:
+        lock = json.loads(produce.TOOLCHAIN_LOCK.read_text(encoding="utf-8"))
+        self.assertEqual(lock["macos"], "26.3.1")
+        self.assertEqual(lock["xcode"], "26.2")
+        self.assertEqual(lock["python"], "3.11.9")
+
     def test_role_batch_arguments_are_conditional_and_exact(self) -> None:
         produce._validate_role_batches(_role_args(query_model=None, query_batch_size=None))
         produce._validate_role_batches(
