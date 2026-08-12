@@ -1,15 +1,21 @@
 <img src="docs/assets/ctx-readme-banner.png" alt="You have months of coding agent history on your machine. Search it with ctx. Blame it with ctx pro." width="100%">
 
-ctx is an open-source CLI for fast local search across your past coding agent sessions. Give ctx Pro any committed line of code and it surfaces the original transcript of the agent session that produced it.
+ctx is an open-source CLI for fast local search across your past coding agent sessions. You can search both messages and tool calls and retrieve full transcripts and logs.
 
-Coding agents usually start from zero. They can inspect the current repo, but they often cannot recover the discussions, decisions, failed attempts, commands, and test results from earlier work.
+ctx pro is a paid add-on for “git blame, but for agent sessions.” Take any line, file, commit, or PR and surface the original transcript of the agent session that produced it. Your agents can use that transcript to recover the decisions, assumptions, and tool calls behind the code.
 
-Those sessions are full of useful context:
+Coding agents have git history, but their own session transcripts and tool call records remain sequestered away in verbose log files. Those log files are a treasure trove of useful data, but they aren't accessible in a legible format for agents.
 
-- decisions, constraints, intent, and rejected approaches from you
-- bug investigations, refactors, file paths, commands, patches, and notes from previous agents
+If you give your agents fast, easy access to search and retrieve these transcripts, your agents can:
 
-ctx indexes those logs into a local search index on your machine, then gives current and future agents a CLI for finding the prior discussion, command, or failed attempt before they repeat it.
+- surface decisions, constraints, and assumptions from earlier work
+- find investigations, solutions, and failed approaches already explored in previous sessions
+- audit previous sessions in detail
+- pick up where previous work left off, even across multiple threads
+
+ctx also understands how parent sessions, subagents, and forks relate to one another, so agents can recover the whole chain of work no matter how aggressively you orchestrate.
+
+This is different from “agent memory,” which usually compacts what happened into facts or summaries that can become stale. ctx gives agents instant recall of the real record without a lossy memory step.
 
 ## Install and set up ctx
 
@@ -48,7 +54,7 @@ This helps agents:
 - resume work without relying on lossy compaction summaries
 - audit past agent work to improve instructions, tools, and workflows
 
-Every attribution includes supporting evidence. ctx distinguishes proven producers from possible ones and can return no producer instead of inventing an attribution.
+Every attribution includes citations back to the original transcript and tool calls. If the session is not on your machine (for example, because a teammate’s agent produced the code), ctx says it cannot prove the attribution.
 
 ```bash
 # Your agent is investigating why customized cart items
@@ -81,9 +87,9 @@ ctx blame commit <sha>
 ctx blame pr https://github.com/your-org/your-repo/pull/42
 ```
 
-Blame computation and evidence retrieval run locally. ctx's commercial service handles trial, account, billing, and referral state; your transcripts, tool calls, source code, Git data, and derived Pro graph never leave your machine.
+Like ctx indexing and search capabilities, blame runs locally, so your code and history never leave your machine.
 
-Try ctx Pro free for 14 days—no account or credit card required. After the trial, ctx Pro is $20 USD per month with no annual plan.
+ctx pro is $20 USD per month, but you can try it for free for two weeks with no account or credit card required.
 
 Install ctx and start the trial:
 
@@ -91,7 +97,7 @@ Install ctx and start the trial:
 curl -fsSL https://ctx.rs/install | sh -s -- --pro-trial
 ```
 
-Already use ctx?
+Already use ctx? Set up pro:
 
 ```bash
 ctx pro
