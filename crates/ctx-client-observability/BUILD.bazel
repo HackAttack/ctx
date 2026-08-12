@@ -3,12 +3,17 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
 load("//tools/bazel:gates.bzl", "loc_check_inputs")
+load(":test_targets.bzl", "observability_binary_contract")
 
 package(default_visibility = ["//visibility:public"])
 
 loc_check_inputs(name = "loc_check_inputs")
 
-exports_files(["BUILD.bazel", "Cargo.toml"])
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "test_targets.bzl",
+])
 
 filegroup(
     name = "cargo_package_data",
@@ -63,4 +68,36 @@ ctx_rust_test(
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     rustc_env = COMMON_RUSTC_ENV,
     rustc_flags = CTX_CLIENT_OBSERVABILITY_RUSTC_FLAGS,
+)
+
+observability_binary_contract(
+    name = "analytics_tests",
+    binary = "//crates/ctx-cli:ctx_upgrade_test_harness",
+    fixtures = True,
+    src = "tests/contracts/analytics.rs",
+    upgrade = True,
+)
+
+observability_binary_contract(
+    name = "analytics_identity_tests",
+    src = "tests/contracts/analytics_identity.rs",
+)
+
+observability_binary_contract(
+    name = "analytics_policy_tests",
+    src = "tests/contracts/analytics_policy.rs",
+)
+
+observability_binary_contract(
+    name = "local_usage_tests",
+    extra_deps = ["@crates//:rusqlite-0.32.1"],
+    src = "tests/contracts/local_usage.rs",
+    tags = ["privacy"],
+)
+
+observability_binary_contract(
+    name = "upgrade_analytics_tests",
+    binary = "//crates/ctx-cli:ctx_upgrade_test_harness",
+    src = "tests/contracts/upgrade_analytics.rs",
+    upgrade = True,
 )
