@@ -7,6 +7,7 @@ use crate::CoreError;
 text_enum! {
     pub enum CaptureProvider {
         Codex => "codex",
+        GrokBuild => "grok_build",
         Claude => "claude",
         Pi => "pi",
         OpenCode => "opencode",

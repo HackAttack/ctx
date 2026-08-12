@@ -38,9 +38,11 @@ interactive approval.
 ```bash
 ctx integrations install mcp
 ctx integrations install mcp --agent codex
+ctx integrations install mcp --agent grok-build
 ctx integrations install mcp --provider cursor --project
 ctx integrations install mcp --all-agents --format json
 ctx integrations status mcp --format json
+ctx integrations status mcp --agent grok-build --project
 ```
 
 ## Support Matrix
@@ -54,6 +56,7 @@ location/schema was verified during implementation research.
 | Harness | MCP support | User/global config | Project config | Format | Safest add/update/remove strategy | Detection signal | Source | Notes/risks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Codex | Yes, implemented | `~/.codex/config.toml`, or `CODEX_HOME/config.toml` | `.codex/config.toml` | TOML `[mcp_servers.ctx]`, `command`, `args` | Parse TOML and upsert only `mcp_servers.ctx`; use `--force` for conflicting `ctx`; remove by deleting that table | `CODEX_HOME`, `~/.codex`, or `/etc/codex` | [OpenAI Codex config](https://developers.openai.com/codex/config-reference), [ctx providers](provider-support.md) | Project config is loaded only where Codex trusts the project. |
+| Grok Build | Yes, implemented | `~/.grok/config.toml`, or absolute `GROK_HOME/config.toml` | `.grok/config.toml` | TOML `[mcp_servers.ctx]`, `command`, `args` | Parse TOML and upsert only `mcp_servers.ctx`; use `--force` for a conflicting `ctx` entry | `GROK_HOME` or `~/.grok` | [Grok Build MCP guide](https://github.com/xai-org/grok-build/blob/be713136d2a69080743a3f6b3c72077057e5948f/crates/codegen/xai-grok-pager/docs/user-guide/07-mcp-servers.md), [ctx providers](provider-support.md) | Uses the canonical agent id `grok-build` (`grok` alias) and the native server-table shape. ctx does not run the `grok` executable. |
 | Pi | Unknown | Unknown | Unknown | Unknown | Do not write MCP config | ctx history source under Pi session defaults | [ctx providers](provider-support.md) | ctx can import history; MCP config support was not verified from official docs. |
 | Claude Code | Yes, implemented | `~/.claude.json`, or `CLAUDE_CONFIG_DIR/.claude.json` | `.mcp.json` | JSON `mcpServers.ctx`, `type: "stdio"`, `command`, `args` | Prefer `claude mcp add/remove` when interactive; ctx merges only the `ctx` server key | `CLAUDE_CONFIG_DIR`, `~/.claude`, or `~/.claude.json` | [Claude Code MCP](https://code.claude.com/docs/en/mcp-quickstart), [ctx providers](provider-support.md) | User/local/project scopes can coexist; approval may still be required in Claude Code. |
 | OpenCode | Yes, implemented | `~/.config/opencode/opencode.json` | `opencode.json` | JSON/JSONC-style config with `mcp.ctx`, local server uses `type: "local"` and command argv array | Parse JSON and upsert `mcp.ctx`; remove by deleting that key | `~/.config/opencode` | [OpenCode config](https://opencode.ai/docs/config/), [OpenCode CLI](https://opencode.ai/docs/cli/), [ctx providers](provider-support.md) | ctx currently writes strict JSON; JSONC comments in an existing file are reported as invalid. |
@@ -100,7 +103,7 @@ location/schema was verified during implementation research.
 These snippets show the `ctx` server entry in the major config shapes. They are
 for manual review, recovery, or clients that ctx does not write automatically.
 
-Codex TOML:
+Codex and Grok Build TOML:
 
 ```toml
 [mcp_servers.ctx]

@@ -120,6 +120,8 @@ pub fn dedupe_agents(agents: impl IntoIterator<Item = SkillAgentArg>) -> Vec<Ski
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -127,6 +129,22 @@ mod tests {
         assert_eq!(
             parse_picker_selection("codex,1,codex", picker_agents()).unwrap(),
             vec![SkillAgentArg::Codex, SkillAgentArg::Universal]
+        );
+    }
+
+    #[test]
+    fn detected_grok_build_uses_the_universal_default_without_a_duplicate_native_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir_all(home.join(".grok")).unwrap();
+        let context = PathContext::for_tests(home, temp.path().join("repo"));
+
+        assert_eq!(
+            default_noninteractive_agents(&context),
+            (
+                vec![SkillAgentArg::Universal],
+                SkillSelectionSource::Fallback
+            )
         );
     }
 }

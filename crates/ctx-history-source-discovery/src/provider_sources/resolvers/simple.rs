@@ -35,7 +35,7 @@ const CODEX_COMPRESSION_SCAN_REASON: &str =
     "bounded Codex compressed-history detection could not complete; use an exact --path for compressed rollouts";
 const MAX_CODEX_COMPRESSION_ENTRIES: usize = 10_000;
 
-/// Winner-only custom-root policy for the fourteen scalar/fixed-root
+/// Winner-only custom-root policy for the scalar/fixed-root
 /// providers owned by the simple resolver lane.
 pub(super) fn resolve(
     probes: &StaticProviderProbeCatalog,
@@ -44,6 +44,7 @@ pub(super) fn resolve(
 ) -> DiscoveryReport {
     match spec.provider {
         CaptureProvider::Codex => resolve_codex(probes, context, spec),
+        CaptureProvider::GrokBuild => resolve_grok_build(probes, context, spec),
         CaptureProvider::Claude => resolve_claude(probes, context, spec),
         CaptureProvider::OpenCode => resolve_open_code(probes, context, spec),
         CaptureProvider::Kilo => resolve_kilo(probes, context, spec),
@@ -59,6 +60,32 @@ pub(super) fn resolve(
         CaptureProvider::ForgeCode => resolve_forgecode(probes, context, spec),
         _ => DiscoveryReport::default(),
     }
+}
+
+fn resolve_grok_build(
+    probes: &StaticProviderProbeCatalog,
+    context: &DiscoveryContext,
+    spec: &ProviderSourceSpec,
+) -> DiscoveryReport {
+    let root = match context.env("GROK_HOME") {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            if value.is_empty() || !path.is_absolute() {
+                return manual_report(spec, safe_issue_path(&path), MANUAL_PATH_REASON);
+            }
+            path
+        }
+        _ => match supported_default(context, spec) {
+            Ok(()) => context.home().join(".grok"),
+            Err(report) => return report,
+        },
+    };
+    one_source(
+        probes,
+        spec,
+        root.join("sessions"),
+        "grok_build_session_updates_jsonl_tree",
+    )
 }
 
 fn resolve_codex(

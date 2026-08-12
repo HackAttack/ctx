@@ -82,6 +82,17 @@ ROUTE_SCHEMA_CONTRACTS = (
         sha256="26d3031938e30649641397cdd37d4384f3a704e7f042e61c62005af5c02dd683",
     ),
     RouteSchemaContract(
+        provider="grok_build",
+        route="native_import",
+        source_format="grok_build_session_updates_jsonl_tree",
+        format_schema=_structural(1),
+        producer_domain=_discrete(_unversioned(1)),
+        path="crates/ctx-history-capture/tests/contracts/mcp-attribution/grok_build/grok_build_session_updates_jsonl_tree/shape-contract.json",
+        allowed_subtree="crates/ctx-history-capture/tests/contracts/mcp-attribution/grok_build/grok_build_session_updates_jsonl_tree",
+        classification=ROUTE_CONTRACT_CLASSIFICATION,
+        sha256="6ab6838309999c32190e5d152983d7774bd6e50920d88b00b6f408fe6fcc6c58",
+    ),
+    RouteSchemaContract(
         provider="pi",
         route="native_import",
         source_format="pi_session_jsonl",

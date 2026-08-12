@@ -67,6 +67,7 @@ fn register_landed_source_backed_route_inner(
 ) -> SourceBackedCoordinatorResult<()> {
     match source.provider {
         CaptureProvider::Codex
+        | CaptureProvider::GrokBuild
         | CaptureProvider::Claude
         | CaptureProvider::Pi
         | CaptureProvider::Antigravity

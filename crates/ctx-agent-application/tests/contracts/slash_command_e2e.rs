@@ -6,6 +6,7 @@ const COMMAND_NAME: &str = "ctx-history";
 const QUERY: &str = "needle topic with spaces";
 const ALL_SLASH_COMMAND_AGENTS: &[&str] = &[
     "codex",
+    "grok-build",
     "claude-code",
     "cursor",
     "opencode",
@@ -21,6 +22,7 @@ const ALL_SLASH_COMMAND_AGENTS: &[&str] = &[
 ];
 const SKILL_ONLY_SLASH_COMMAND_AGENTS: &[&str] = &[
     "codex",
+    "grok-build",
     "claude-code",
     "cursor",
     "antigravity",

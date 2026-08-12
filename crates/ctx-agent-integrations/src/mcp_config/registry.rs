@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -28,6 +29,9 @@ impl McpPathContext {
         }
         if let Some(path) = non_empty_absolute_env_path("MIMOCODE_HOME")? {
             env_overrides.insert("MIMOCODE_HOME".to_owned(), path);
+        }
+        if let Some(path) = absolute_env_path_if_present("GROK_HOME")? {
+            env_overrides.insert("GROK_HOME".to_owned(), path);
         }
         if let Some(path) = non_empty_env_path("MIMOCODE_CONFIG_DIR") {
             env_overrides.insert("MIMOCODE_CONFIG_DIR".to_owned(), path);
@@ -132,6 +136,27 @@ fn non_empty_absolute_env_path(key: &str) -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
+fn absolute_env_path_if_present(key: &str) -> Result<Option<PathBuf>> {
+    validate_absolute_env_path(key, env::var_os(key))
+}
+
+fn validate_absolute_env_path(key: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(anyhow!("{key} must be nonempty and absolute"));
+    }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(anyhow!(
+            "{key} must be an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
+}
+
 fn existing_or_default(paths: impl IntoIterator<Item = PathBuf>, default: PathBuf) -> PathBuf {
     paths
         .into_iter()
@@ -142,6 +167,7 @@ fn existing_or_default(paths: impl IntoIterator<Item = PathBuf>, default: PathBu
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpAgentArg {
     Codex,
+    GrokBuild,
     ClaudeCode,
     Cursor,
     OpenCode,
@@ -162,6 +188,7 @@ pub enum McpAgentArg {
 pub fn parse_mcp_agent(value: &str) -> std::result::Result<McpAgentArg, String> {
     match value {
         "codex" => Ok(McpAgentArg::Codex),
+        "grok-build" | "grok" => Ok(McpAgentArg::GrokBuild),
         "claude-code" | "claude" => Ok(McpAgentArg::ClaudeCode),
         "cursor" => Ok(McpAgentArg::Cursor),
         "opencode" | "open-code" => Ok(McpAgentArg::OpenCode),
@@ -184,6 +211,7 @@ pub fn parse_mcp_agent(value: &str) -> std::result::Result<McpAgentArg, String> 
 impl McpAgentArg {
     pub const ALL: &'static [Self] = &[
         Self::Codex,
+        Self::GrokBuild,
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
@@ -201,6 +229,7 @@ impl McpAgentArg {
     ];
     pub const PROJECT_CAPABLE: &'static [Self] = &[
         Self::Codex,
+        Self::GrokBuild,
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
@@ -217,6 +246,7 @@ impl McpAgentArg {
     pub fn id(self) -> &'static str {
         match self {
             Self::Codex => "codex",
+            Self::GrokBuild => "grok-build",
             Self::ClaudeCode => "claude-code",
             Self::Cursor => "cursor",
             Self::OpenCode => "opencode",
@@ -238,6 +268,7 @@ impl McpAgentArg {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
+            Self::GrokBuild => "Grok Build",
             Self::ClaudeCode => "Claude Code",
             Self::Cursor => "Cursor",
             Self::OpenCode => "OpenCode",
@@ -262,6 +293,10 @@ impl McpAgentArg {
                 context.env_overrides.contains_key("CODEX_HOME")
                     || context.home.join(".codex").exists()
                     || Path::new("/etc/codex").exists()
+            }
+            Self::GrokBuild => {
+                context.env_overrides.contains_key("GROK_HOME")
+                    || context.home.join(".grok").exists()
             }
             Self::ClaudeCode => {
                 context.env_overrides.contains_key("CLAUDE_CONFIG_DIR")
@@ -306,6 +341,12 @@ impl McpAgentArg {
             Self::Codex => (
                 context
                     .env_or_home_child("CODEX_HOME", ".codex")
+                    .join("config.toml"),
+                ConfigKind::CodexToml,
+            ),
+            Self::GrokBuild => (
+                context
+                    .env_or_home_child("GROK_HOME", ".grok")
                     .join("config.toml"),
                 ConfigKind::CodexToml,
             ),
@@ -417,6 +458,10 @@ impl McpAgentArg {
                 context.cwd.join(".codex").join("config.toml"),
                 ConfigKind::CodexToml,
             )),
+            Self::GrokBuild => Some((
+                context.cwd.join(".grok").join("config.toml"),
+                ConfigKind::CodexToml,
+            )),
             Self::ClaudeCode => Some((
                 context.cwd.join(".mcp.json"),
                 ConfigKind::Json {
@@ -511,6 +556,7 @@ impl McpAgentArg {
 pub fn project_detection_path(agent: McpAgentArg, context: &McpPathContext) -> PathBuf {
     match agent {
         McpAgentArg::Codex => context.cwd.join(".codex"),
+        McpAgentArg::GrokBuild => context.cwd.join(".grok"),
         McpAgentArg::ClaudeCode => context.cwd.join(".mcp.json"),
         McpAgentArg::Cursor => context.cwd.join(".cursor"),
         McpAgentArg::OpenCode => context.cwd.join("opencode.json"),
@@ -589,6 +635,69 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn grok_build_parser_uses_canonical_id_and_only_documented_alias() {
+        assert_eq!(parse_mcp_agent("grok-build"), Ok(McpAgentArg::GrokBuild));
+        assert_eq!(parse_mcp_agent("grok"), Ok(McpAgentArg::GrokBuild));
+        assert!(parse_mcp_agent("grokbuild").is_err());
+        assert!(parse_mcp_agent("grok_build").is_err());
+        assert_eq!(McpAgentArg::GrokBuild.id(), "grok-build");
+        assert_eq!(McpAgentArg::GrokBuild.display_name(), "Grok Build");
+    }
+
+    #[test]
+    fn grok_home_contract_rejects_empty_and_relative_values() {
+        assert!(validate_absolute_env_path("GROK_HOME", Some(OsString::new())).is_err());
+        assert!(validate_absolute_env_path("GROK_HOME", Some("relative".into())).is_err());
+        assert_eq!(
+            validate_absolute_env_path("GROK_HOME", Some("/grok-home".into())).unwrap(),
+            Some(PathBuf::from("/grok-home"))
+        );
+        assert_eq!(validate_absolute_env_path("GROK_HOME", None).unwrap(), None);
+    }
+
+    #[test]
+    fn grok_build_targets_use_native_paths_and_codex_compatible_toml() {
+        let context =
+            McpPathContext::for_tests(PathBuf::from("/home/tester"), PathBuf::from("/repo"));
+        let global = McpAgentArg::GrokBuild.target(false, &context);
+        assert_eq!(
+            global.path,
+            Some(PathBuf::from("/home/tester/.grok/config.toml"))
+        );
+        assert!(matches!(global.kind, Some(ConfigKind::CodexToml)));
+
+        let project = McpAgentArg::GrokBuild.target(true, &context);
+        assert_eq!(project.path, Some(PathBuf::from("/repo/.grok/config.toml")));
+        assert!(matches!(project.kind, Some(ConfigKind::CodexToml)));
+
+        let override_context = context.with_env_override("GROK_HOME", PathBuf::from("/grok-home"));
+        let overridden = McpAgentArg::GrokBuild.target(false, &override_context);
+        assert_eq!(
+            overridden.path,
+            Some(PathBuf::from("/grok-home/config.toml"))
+        );
+        assert!(McpAgentArg::GrokBuild.detected(&override_context));
+    }
+
+    #[test]
+    fn grok_build_install_writes_the_codex_compatible_server_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = McpPathContext::for_tests(temp.path().join("home"), temp.path().join("repo"));
+        let target = McpAgentArg::GrokBuild.target(true, &context);
+
+        let result = super::super::install_target(&target, false);
+        assert!(result.success, "{:?}", result.error);
+        let body = fs::read_to_string(target.path.as_ref().unwrap()).unwrap();
+        assert!(body.contains("[mcp_servers.ctx]"));
+        assert!(body.contains("command = \"ctx\""));
+        assert!(body.contains("args = [\"mcp\", \"serve\"]"));
+        assert_eq!(
+            super::super::status_target(&target).status,
+            super::super::ConfigStatus::Current
+        );
+    }
 
     #[test]
     fn detection_uses_home_xdg_and_env_paths() {

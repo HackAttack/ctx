@@ -22,6 +22,10 @@ fn enum_string_roundtrips_and_defaults() {
         CaptureProvider::CopilotCli
     );
     assert_eq!(
+        serde_json::from_str::<CaptureProvider>("\"grok_build\"").unwrap(),
+        CaptureProvider::GrokBuild
+    );
+    assert_eq!(
         serde_json::from_str::<CaptureProvider>("\"factory_ai_droid\"").unwrap(),
         CaptureProvider::FactoryAiDroid
     );

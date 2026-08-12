@@ -2,13 +2,13 @@
   "schema_version": 6,
   "capability": "mcp_tool_call_attribution",
   "capability_revision": 5,
-  "expected_provider_count": 41,
-  "expected_base_route_count": 43,
-  "expected_schema_generation_count": 42,
-  "expected_capability_lane_count": 46,
+  "expected_provider_count": 42,
+  "expected_base_route_count": 44,
+  "expected_schema_generation_count": 43,
+  "expected_capability_lane_count": 47,
   "expected_status_rows": {
     "supported": 3,
-    "not_qualified": 42,
+    "not_qualified": 43,
     "excluded": 1
   },
   "required_supported_evidence_classes": [
@@ -33,6 +33,11 @@
       "provider": "codex",
       "route": "native_import",
       "source_format": "codex_history_jsonl"
+    },
+    {
+      "provider": "grok_build",
+      "route": "native_import",
+      "source_format": "grok_build_session_updates_jsonl_tree"
     },
     {
       "provider": "pi",
@@ -301,6 +306,31 @@
         "classification": "route_schema_contract",
         "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/codex/codex_history_jsonl/shape-contract.json",
         "sha256": "26d3031938e30649641397cdd37d4384f3a704e7f042e61c62005af5c02dd683"
+      }
+    },
+    {
+      "provider": "grok_build",
+      "route": "native_import",
+      "source_format": "grok_build_session_updates_jsonl_tree",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "6ab6838309999c32190e5d152983d7774bd6e50920d88b00b6f408fe6fcc6c58"
+      },
+      "producer_domain": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "provenance": {
+        "kind": "route_schema_contract",
+        "classification": "route_schema_contract",
+        "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/grok_build/grok_build_session_updates_jsonl_tree/shape-contract.json",
+        "sha256": "6ab6838309999c32190e5d152983d7774bd6e50920d88b00b6f408fe6fcc6c58"
       }
     },
     {
@@ -1435,8 +1465,8 @@
         "kind": "discrete",
         "versions": [
           {
-            "kind": "unversioned_generation",
-            "generation": 1
+            "kind": "semver",
+            "version": "1.0.3"
           }
         ]
       },
@@ -1594,6 +1624,45 @@
       "producer_bound": {
         "kind": "unversioned",
         "generation": 1,
+        "unknown_generations": "not-qualified"
+      }
+    },
+    {
+      "provider": "grok_build",
+      "route": "native_import",
+      "source_format": "grok_build_session_updates_jsonl_tree",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "6ab6838309999c32190e5d152983d7774bd6e50920d88b00b6f408fe6fcc6c58"
+      },
+      "producer_partition": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "status": {
+        "kind": "not_qualified",
+        "reason": {
+          "kind": "format_not_audited",
+          "evidence_ref": "provider-support-matrix:grok_build/grok_build_session_updates_jsonl_tree"
+        }
+      },
+      "evidence": [],
+      "source_schema": "grok-build-acp-updates-jsonl-v1",
+      "producer_bound": {
+        "kind": "versions",
+        "versions": [
+          "1.0.3"
+        ],
+        "ranges": [],
+        "source_commits": [
+          "1a29d5bc12d45a1b44c6fa3893f9c9e2a4671dec"
+        ],
         "unknown_generations": "not-qualified"
       }
     },
@@ -3319,7 +3388,7 @@
   ],
   "expected_provider_status_rows": {
     "supported": 3,
-    "not_qualified": 38,
+    "not_qualified": 39,
     "excluded": 0
   }
 }

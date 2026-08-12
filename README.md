@@ -100,6 +100,7 @@ Support means ctx can discover or read that harness's persisted local history an
 | --- | --- |
 | Claude Code | Supported |
 | Codex | Supported |
+| Grok Build | Supported |
 | Cursor | Supported |
 | Pi | Supported |
 | GitHub Copilot CLI | Supported |

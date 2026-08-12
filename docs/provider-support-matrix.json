@@ -81,6 +81,50 @@
       "public_docs": "docs/providers.md"
     },
     {
+      "id": "grok_build",
+      "display_name": "Grok Build",
+      "status": "supported",
+      "capture_provider": "grok_build",
+      "implemented_paths": [
+        {
+          "kind": "native_import",
+          "source_format": "grok_build_session_updates_jsonl_tree",
+          "fidelity": "imported",
+          "notes": [
+            "Reads authoritative updates.jsonl files under the selected Grok Build sessions root.",
+            "An exact updates.jsonl path remains importable as grok_build_session_updates_jsonl."
+          ]
+        }
+      ],
+      "history_locations": [
+        "Winner: absolute `$GROK_HOME/sessions` or `~/.grok/sessions`; the override replaces the default."
+      ],
+      "imports_existing_history": true,
+      "captures_new_runs_passively": false,
+      "child_sessions_supported": false,
+      "lineage_support": {
+        "session_relationship": "unknown",
+        "event_origin": "unknown"
+      },
+      "fidelity": {
+        "user_prompts": true,
+        "assistant_messages": true,
+        "tool_calls": true,
+        "tool_output": true,
+        "command_output": true,
+        "files_touched": true,
+        "artifacts": false,
+        "model_identity": false,
+        "costs": false,
+        "token_usage": false,
+        "parent_child_session_edges": false
+      },
+      "limitations": [
+        "A present `GROK_HOME` must be nonempty and absolute. Discovery and import authority come from `updates.jsonl`; derived session sidecars are excluded."
+      ],
+      "public_docs": "docs/providers.md"
+    },
+    {
       "id": "pi",
       "display_name": "Pi",
       "status": "supported",

@@ -37,8 +37,8 @@ event-local capability has its own provider + route + source format + format
 version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 3 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 43 base routes and 46 capability lanes:
-three exact, 42 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 44 base routes and 47 capability lanes:
+three exact, 43 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -56,6 +56,7 @@ support matrix is:
 | Provider | Support | Source format |
 | --- | --- | --- |
 | Codex | Supported | `codex_session_jsonl_tree`, `codex_history_jsonl` |
+| Grok Build | Supported | `grok_build_session_updates_jsonl_tree` |
 | Pi | Supported | `pi_session_jsonl` |
 | Claude | Supported | `claude_projects_jsonl_tree` |
 | OpenCode | Supported | `opencode_sqlite` |
@@ -108,6 +109,12 @@ roughly 60–80 minutes with a healthy daemon, or on
 Factory AI Droid history is discovered automatically at `~/.factory/sessions`.
 An exact path remains available, for example
 `ctx import --provider factory-ai-droid --path /path/to/factory/sessions`.
+
+Grok Build history is discovered at absolute `$GROK_HOME/sessions` when the
+override is set, or `~/.grok/sessions` otherwise. Each admitted session
+directory requires authoritative `updates.jsonl`; derived session sidecars
+are not import authority. Exact `updates.jsonl` files can be selected with
+`ctx import --provider grok-build --path /path/to/updates.jsonl`.
 
 Trae's current platform application-data database
 (`Trae/ModularData/ai-agent/database.db`) is located automatically on Linux,

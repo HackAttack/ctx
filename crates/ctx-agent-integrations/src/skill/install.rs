@@ -305,6 +305,31 @@ fn metadata_manages_hash(metadata: Option<&SkillMetadata>, hash: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn grok_build_native_install_is_current_at_the_override_path() {
+        let root = tempfile::tempdir().unwrap();
+        let grok_home = root.path().join("grok-home");
+        let context = super::super::PathContext::for_tests(
+            root.path().join("home"),
+            root.path().join("repo"),
+        )
+        .with_env_override("GROK_HOME", grok_home.clone());
+        let target =
+            super::super::single_target(super::super::SkillAgentArg::GrokBuild, false, &context)
+                .unwrap();
+
+        assert_eq!(
+            target.skill_dir,
+            grok_home.join("skills").join(BUNDLED_SKILL_NAME)
+        );
+        let result = install_target(&target, false, true, "1.0.0-test").unwrap();
+        assert!(result.success);
+        assert_eq!(
+            status_target(&target).unwrap().status,
+            SkillInstallStatus::Current
+        );
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn force_update_preserves_unrelated_skill_files() {

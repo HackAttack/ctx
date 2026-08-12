@@ -14,6 +14,7 @@ fn adapter(provider: CaptureProvider) -> DirectJsonlFamilyAdapter {
         CaptureProvider::Antigravity => super::super::antigravity_source_backed_adapter(),
         CaptureProvider::Tabnine => super::super::tabnine_source_backed_adapter(),
         CaptureProvider::FactoryAiDroid => super::super::factory_droid_source_backed_adapter(),
+        CaptureProvider::GrokBuild => super::super::grok_build_source_backed_adapter(),
         CaptureProvider::Windsurf => super::super::windsurf_source_backed_adapter(),
         CaptureProvider::Qoder => super::super::qoder_source_backed_adapter(),
         CaptureProvider::CopilotCli => super::super::copilot_source_backed_adapter(),

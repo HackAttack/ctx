@@ -56,6 +56,9 @@ pub(super) fn default_location_import_probe(
             path_is_file_probe(path)
         }
         CaptureProvider::Codex => has_jsonl_file_under_matching(path, 10_000, |_| true),
+        CaptureProvider::GrokBuild => has_jsonl_file_under_matching(path, 10_000, |candidate| {
+            candidate.file_name().and_then(|name| name.to_str()) == Some("updates.jsonl")
+        }),
         CaptureProvider::Pi => has_jsonl_file_under_matching(path, 10_000, |_| true),
         CaptureProvider::OpenCode => path_is_file_probe(path),
         CaptureProvider::Kilo => path_is_file_probe(path),
