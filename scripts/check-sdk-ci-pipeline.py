@@ -89,21 +89,14 @@ SDK_SPECS = {
 
 
 def validate_sdk_steps(blocks) -> None:
-    release_waits = [
-        index
-        for index, block in enumerate(blocks)
-        if block.startswith("  - wait:")
-        and scalar(block, "if", required=False)
-        == 'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"'
-    ]
-    require(len(release_waits) == 1, "required SDK routes need one release wait")
-    release_wait = release_waits[0]
+    require(
+        not any(block.startswith("  - wait:") for block in blocks),
+        "required SDK and platform diagnostics must not use a global wait",
+    )
     for key, spec in SDK_SPECS.items():
         indexes = [index for index, block in enumerate(blocks) if step_key(block) == key]
         require(len(indexes) == 1, f"pipeline must define exactly one {key} route")
-        index = indexes[0]
-        block = blocks[index]
-        require(index < release_wait, f"{key} must complete before release promotion")
+        block = blocks[indexes[0]]
         require(
             scalar(block, "if") == REQUIRED_CONDITION,
             f"{key} must run on every PR, merge, and release build",
@@ -137,6 +130,15 @@ def validate_sdk_steps(blocks) -> None:
                     marker not in block,
                     f"{key} must not retain physical-M1 marker {marker}",
                 )
+
+    for aggregate_key in ("github-release-candidate", "semantic-release-handoff"):
+        aggregate = [block for block in blocks if step_key(block) == aggregate_key]
+        require(len(aggregate) == 1, f"pipeline must define exactly one {aggregate_key}")
+        require(
+            re.search(r'^      - "sdk-swift-required"$', aggregate[0], re.MULTILINE)
+            is not None,
+            f"{aggregate_key} must fail closed on required Swift SDK qualification",
+        )
 
 
 def validate_linux_route(source: str) -> None:
@@ -330,6 +332,17 @@ def main() -> None:
             public_ci,
             sdk_runner,
         )
+    wait_blocks = [
+        *blocks[:4],
+        '  - wait: ~\n    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1"\n',
+        *blocks[4:],
+    ]
+    expect_rejection(
+        "global release wait",
+        join_steps(wait_blocks),
+        public_ci,
+        sdk_runner,
+    )
     expect_rejection(
         "TypeScript removed from Linux requirements",
         pipeline,
