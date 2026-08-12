@@ -63,7 +63,7 @@ pub(super) fn run_install(
     }
     if receipt.failed > 0 {
         if !args.format.is_json() {
-            return Err(crate::dispatch::rendered_cli_error());
+            return Err(crate::rendered_cli_error());
         }
         return Err(anyhow!(
             "failed to install MCP integration for {} target(s)",

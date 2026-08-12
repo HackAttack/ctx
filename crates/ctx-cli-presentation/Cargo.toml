@@ -1,0 +1,29 @@
+[package]
+name = "ctx-cli-presentation"
+version = "1.0.0"
+description = "Non-Pro command adapters and CLI presentation for ctx"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+anstream.workspace = true
+clap.workspace = true
+clap_mangen.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true
+ctx-agent-application = { path = "../ctx-agent-application" }
+ctx-agent-integrations = { path = "../ctx-agent-integrations" }
+ctx-client-observability = { path = "../ctx-client-observability" }
+ctx-history-cli = { path = "../ctx-history-cli" }
+ctx-history-core = { path = "../ctx-history-core" }
+ctx-history-read-application = { path = "../ctx-history-read-application" }
+ctx-terminal = { path = "../ctx-terminal" }
+
+[dev-dependencies]
+tempfile.workspace = true

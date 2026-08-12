@@ -153,7 +153,7 @@ pub(crate) fn run_install(
     }
     if receipt.failed > 0 {
         if !json_output {
-            return Err(crate::dispatch::rendered_cli_error());
+            return Err(crate::rendered_cli_error());
         }
         return Err(anyhow!(
             "failed to install slash commands for {} target(s)",
