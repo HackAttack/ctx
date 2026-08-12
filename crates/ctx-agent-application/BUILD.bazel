@@ -10,6 +10,7 @@ package(default_visibility = ["//visibility:public"])
 exports_files([
     "BUILD.bazel",
     "Cargo.toml",
+    "pro_test_support.bzl",
     "test_targets.bzl",
 ])
 
@@ -117,6 +118,16 @@ agent_application_binary_contract(
     src = "tests/contracts/mcp_local_usage_v2.rs",
     fixtures = True,
     tags = ["privacy"],
+)
+
+agent_application_binary_contract(
+    name = "pro_mcp_tests",
+    src = "tests/contracts/pro_mcp.rs",
+    binary = "//crates/ctx-cli:ctx_pro_test_host",
+    extra_deps = ["//crates/ctx-history-core:lib"],
+    fixtures = True,
+    pro = True,
+    tags = ["protocol"],
 )
 
 agent_application_binary_contract(

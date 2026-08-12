@@ -20,8 +20,13 @@ use tempfile::TempPath;
 
 #[path = "support/mcp.rs"]
 mod mcp;
+#[cfg(ctx_agent_application_contract_pro)]
+#[path = "../../../ctx-cli-contract-tests/tests/contracts/support/pro.rs"]
+mod pro;
 
 pub(crate) use mcp::*;
+#[cfg(ctx_agent_application_contract_pro)]
+pub(crate) use pro::*;
 
 const BOUND_CTX_BINARY_TEST_ROOT_MARKER: &str = ".ctx-test-bound-binary";
 const READY_CTX_BINARY_TEST_ROOT_MARKER: &str = ".ctx-test-copy-ready";
