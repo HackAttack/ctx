@@ -1,13 +1,12 @@
 use clap::{error::ErrorKind, Parser as _, ValueEnum as _};
 use sha2::{Digest as _, Sha256};
 
-use super::super::IndexWatchOutput;
 use super::*;
 use crate::{
     cli::CliColorMode,
-    commands::index_dashboard::IndexDashboard,
     ui::{ColorMode, StreamKind, TestContext},
 };
+use ctx_cli_presentation::commands::index::{render_dashboard_for_fixture, IndexWatchOutput};
 
 fn args(case: FixtureCase, columns: usize) -> IndexDashboardFixtureArgs {
     IndexDashboardFixtureArgs {
@@ -24,16 +23,13 @@ fn render(case: FixtureCase, columns: usize) -> String {
     let context = RenderContext::for_test(
         TestContext::tty(StreamKind::Stdout, columns).color(ColorMode::Never),
     );
-    let mut dashboard = IndexDashboard;
-    dashboard
-        .render(&case.status().unwrap(), &context)
-        .render_plain()
+    render_dashboard_for_fixture(&case.status().unwrap(), &context).render_plain()
 }
 
 fn redraw(case: FixtureCase, columns: usize) -> Vec<u8> {
     let mut output = IndexWatchOutput::for_test(Vec::new(), true, columns);
     for status in case.status_sequence().unwrap() {
-        output.dashboard = Default::default();
+        output.reset_dashboard();
         output.print_human(&status).unwrap();
     }
     output.into_writer()

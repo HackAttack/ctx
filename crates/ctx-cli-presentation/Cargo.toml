@@ -23,6 +23,7 @@ ctx-client-observability = { path = "../ctx-client-observability" }
 ctx-history-cli = { path = "../ctx-history-cli" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-read-application = { path = "../ctx-history-read-application" }
+ctx-history-refresh = { path = "../ctx-history-refresh" }
 ctx-terminal = { path = "../ctx-terminal" }
 
 [dev-dependencies]

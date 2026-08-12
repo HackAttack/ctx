@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context as _, Result};
 use clap::ValueEnum;
+use ctx_cli_presentation::commands::index::IndexWatchOutput;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -70,11 +71,11 @@ pub(crate) fn run(args: IndexDashboardFixtureArgs, ui: &mut Ui) -> Result<ExitCo
     let context = *ui.stdout_context();
     validate_terminal(&context, args.columns, args.rows, detected_stdout_size())?;
 
-    let mut output = super::index_watch_output(ui);
+    let mut output = IndexWatchOutput::new(ui.stdout_live_output());
     for status in args.case.status_sequence()? {
         // Each fixture frame is an independent production snapshot while
         // preserving IndexWatchOutput's real redraw state.
-        output.dashboard = Default::default();
+        output.reset_dashboard();
         output.print_human(&status)?;
     }
     Ok(args.case.exit_code())

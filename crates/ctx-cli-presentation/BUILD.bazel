@@ -29,6 +29,7 @@ CTX_CLI_PRESENTATION_DEPS = [
     "//crates/ctx-history-cli:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:lib",
     "//crates/ctx-terminal:lib",
 ]
 
@@ -39,6 +40,7 @@ CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS = [
     "//crates/ctx-history-cli:test_support_lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:test_support_lib",
     "//crates/ctx-terminal:lib",
 ]
 

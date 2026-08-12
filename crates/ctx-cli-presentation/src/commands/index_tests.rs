@@ -1,13 +1,13 @@
 use std::{
-    fs, io,
+    io,
     sync::{Arc, Mutex},
 };
 
 use serde_json::json;
 
 use super::{
-    index_readiness_snapshot, index_ready, index_terminal_error, index_wait_json,
-    index_watch_output, IndexSelection, IndexWaitArgs, IndexWaitHumanOutput, IndexWatchOutput,
+    index_ready, index_terminal_error, index_wait_json, index_watch_output, IndexSelection,
+    IndexWaitArgs, IndexWaitHumanOutput, IndexWatchOutput,
 };
 use crate::output::JsonOutputFormat;
 use crate::ui::{ColorMode, RenderContext, StreamKind, TestContext, Ui};
@@ -159,67 +159,6 @@ fn machine_snapshot_contains_only_authoritative_readiness_units() {
     ] {
         assert!(!rendered.to_string().contains(obsolete), "{rendered:#}");
     }
-}
-
-#[test]
-fn index_readiness_preserves_exact_engine_logical_and_physical_status() {
-    crate::semantic::initialize().unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let data_root = temp.path().join("data");
-    let status_path = data_root.join("daemon/jobs/core-refresh.json");
-    fs::create_dir_all(status_path.parent().unwrap()).unwrap();
-    let structured_outcome = json!({
-        "code": "source_refresh_failed",
-        "class": "internal",
-        "retryable": false,
-        "affected_routes": [],
-        "retryable_routes": [],
-        "blocked_routes": [],
-        "physical_attempt_id": "physical-attempt",
-    });
-    fs::write(
-        &status_path,
-        serde_json::to_vec(&json!({
-            "request_id": "logical-request",
-            "request_state": "failed",
-            "logical_request_id": "logical-request",
-            "logical_phase": "terminal",
-            "physical_attempt_id": "physical-attempt",
-            "physical_attempt_state": "failed",
-            "progress_owner_request_id": "progress-owner",
-            "progress_owner_attempt_state": "failed",
-            "structured_outcome": structured_outcome,
-            "progress": {
-                "phase": "committed",
-                "completed_sources": 0,
-                "total_sources": 0,
-                "total_sources_known": true,
-            }
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let snapshot = index_readiness_snapshot(&data_root).unwrap();
-    assert_eq!(snapshot["refresh"]["logical_request_id"], "logical-request");
-    assert_eq!(snapshot["refresh"]["logical_phase"], "terminal");
-    assert_eq!(
-        snapshot["refresh"]["physical_attempt_id"],
-        "physical-attempt"
-    );
-    assert_eq!(snapshot["refresh"]["physical_attempt_state"], "failed");
-    assert_eq!(
-        snapshot["refresh"]["progress_owner_request_id"],
-        "progress-owner"
-    );
-    assert_eq!(
-        snapshot["refresh"]["progress_owner_attempt_state"],
-        "failed"
-    );
-    assert_eq!(
-        snapshot["refresh"]["structured_outcome"],
-        structured_outcome
-    );
 }
 
 #[test]

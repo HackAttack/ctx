@@ -58,7 +58,6 @@ mod release_build_identity;
 #[cfg(test)]
 mod search_filters;
 mod semantic;
-mod skill;
 mod tool_backend;
 mod transcript;
 #[allow(dead_code, unused_imports)]
@@ -71,7 +70,7 @@ mod parser_prop_tests;
 
 pub(crate) use cli::{
     Cli, DaemonArgs, DaemonCommand, DaemonStartModeArg, DaemonTriggerCommandArg, DoctorArgs,
-    ImportArgs, SetupArgs, StatusArgs, UsageStatusMode, MAX_EVENT_WINDOW,
+    ImportArgs, SetupArgs, StatusArgs, UsageStatusMode,
 };
 pub(crate) use commands::locate::LocateTarget;
 pub(crate) use ctx_history_read_application::SearchBackend as SearchBackendArg;

@@ -2,7 +2,6 @@ pub(crate) mod blame;
 pub(crate) mod doctor;
 pub(crate) mod import;
 pub(crate) mod index;
-mod index_dashboard;
 pub(crate) mod list;
 pub(crate) mod locate;
 pub(crate) mod search;
@@ -12,8 +11,8 @@ pub(crate) mod show;
 /// execution itself lives in `ctx-history-cli`.
 pub(crate) mod source_index {
     pub(crate) use ctx_history_cli::{
-        copied_lineage_summary, generation_query_authority_error_json, mcp_search_with_compact,
-        mcp_show_event_application, mcp_show_session_application, normalize_mcp_search_request,
+        generation_query_authority_error_json, mcp_search_with_compact, mcp_show_event_application,
+        mcp_show_session_application, normalize_mcp_search_request,
         validate_explicit_semantic_scope, McpSearchError, ShowApplicationError,
         SourceSearchRequest,
     };

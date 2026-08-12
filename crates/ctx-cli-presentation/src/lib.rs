@@ -33,6 +33,7 @@ macro_rules! eprintln {
 
 pub mod docs;
 pub mod integrations;
+pub mod mcp_text;
 pub mod analytics {
     pub use ctx_client_observability::analytics::*;
 }
