@@ -38,24 +38,6 @@ fn install_result(status: SlashCommandInstallStatus) -> InstallResult {
     }
 }
 
-#[test]
-fn grok_build_parser_uses_canonical_id_and_only_documented_alias() {
-    assert_eq!(
-        <SlashCommandAgentArg as ValueEnum>::from_str("grok-build", false),
-        Ok(SlashCommandAgentArg::GrokBuild)
-    );
-    assert_eq!(
-        <SlashCommandAgentArg as ValueEnum>::from_str("grok", false),
-        Ok(SlashCommandAgentArg::GrokBuild)
-    );
-    assert!(<SlashCommandAgentArg as ValueEnum>::from_str("grokbuild", false).is_err());
-    assert!(<SlashCommandAgentArg as ValueEnum>::from_str("grok_build", false).is_err());
-    assert_eq!(
-        SlashCommandAgentArg::GrokBuild.integration(),
-        SlashCommandAgent::GrokBuild
-    );
-}
-
 fn assert_fits(document: &Document, context: &RenderContext) {
     let width = context.content_width().unwrap_or(1);
     for line in document.render_plain().lines() {

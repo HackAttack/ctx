@@ -5,8 +5,6 @@ use tempfile::TempDir;
 
 use crate::support::{copy_dir_all, provider_history_fixture};
 
-use super::write_native_grok_build_fixture;
-
 use super::json_tree::{
     write_native_auggie_fixture, write_native_claude_fixture, write_native_continue_fixture,
     write_native_cursor_fixture, write_native_junie_fixture, write_native_mistral_vibe_fixture,
@@ -23,15 +21,6 @@ use super::sqlite::{
 pub(crate) fn install_default_claude_fixture(temp: &TempDir, query: &str) {
     let source = PathBuf::from(write_native_claude_fixture(temp, query));
     copy_dir_all(&source, &temp.path().join(".claude").join("projects"));
-}
-
-pub(crate) fn install_default_grok_build_fixture(temp: &TempDir, query: &str) {
-    let source = PathBuf::from(write_native_grok_build_fixture(temp, query));
-    let target = temp
-        .path()
-        .join(".grok/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001");
-    fs::create_dir_all(&target).unwrap();
-    fs::copy(source, target.join("updates.jsonl")).unwrap();
 }
 
 pub(crate) fn install_default_pi_fixture(temp: &TempDir, query: &str) {

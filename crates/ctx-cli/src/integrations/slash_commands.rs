@@ -63,23 +63,6 @@ enum SlashCommandAgentArg {
 }
 
 impl SlashCommandAgentArg {
-    const ALL: &'static [Self] = &[
-        Self::Codex,
-        Self::GrokBuild,
-        Self::ClaudeCode,
-        Self::Cursor,
-        Self::OpenCode,
-        Self::MiMoCode,
-        Self::GeminiCli,
-        Self::QwenCode,
-        Self::Antigravity,
-        Self::GitHubCopilot,
-        Self::Pi,
-        Self::Goose,
-        Self::Continue,
-        Self::Windsurf,
-    ];
-
     const fn integration(self) -> SlashCommandAgent {
         match self {
             Self::Codex => SlashCommandAgent::Codex,
@@ -118,7 +101,7 @@ pub(crate) fn insert_install_analytics(
     });
     telemetry.force = Some(args.force);
     telemetry.target_agents = Some(count_bucket(if args.all_agents {
-        SlashCommandAgentArg::ALL.len() as u64
+        SlashCommandAgentArg::value_variants().len() as u64
     } else {
         args.agent.len() as u64
     }));

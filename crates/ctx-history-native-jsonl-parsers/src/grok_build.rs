@@ -1,12 +1,18 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::{OutputOutcome, OutputOutcomeMetadata};
 use ctx_history_core::{EventRole, EventType};
 use serde_json::{json, Value};
 
-use crate::{OutputOutcome, OutputOutcomeMetadata};
-
-use super::super::result_content::{NativeJsonlResultExtractionError, NativeJsonlResultSubrecord};
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrokBuildResultSubrecord<'a> {
+    pub subrecord_index: u32,
+    pub content: Option<Cow<'a, str>>,
+    pub call_id: Option<&'a str>,
+    pub tool_name: Option<&'a str>,
+    pub outcome: OutputOutcomeMetadata,
+}
 
 fn update(value: &Value) -> &Value {
     value
@@ -25,7 +31,7 @@ fn update_kind(value: &Value) -> Option<&str> {
     update(value).get("sessionUpdate").and_then(Value::as_str)
 }
 
-pub(crate) fn grok_build_header_session_id(value: &Value) -> Option<String> {
+pub fn header_session_id(value: &Value) -> Option<String> {
     value
         .pointer("/params/sessionId")
         .or_else(|| value.get("sessionId"))
@@ -34,14 +40,14 @@ pub(crate) fn grok_build_header_session_id(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(crate) fn grok_build_event_identity(value: &Value) -> Option<&str> {
+pub fn event_identity(value: &Value) -> Option<&str> {
     envelope_meta(value)
         .and_then(|meta| meta.get("eventId"))
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
 }
 
-pub(crate) fn grok_build_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+pub fn timestamp(value: &Value) -> Option<DateTime<Utc>> {
     envelope_meta(value)
         .and_then(|meta| meta.get("agentTimestampMs"))
         .and_then(Value::as_i64)
@@ -54,7 +60,7 @@ pub(crate) fn grok_build_timestamp(value: &Value) -> Option<DateTime<Utc>> {
         })
 }
 
-pub(crate) fn grok_build_event_type(value: &Value) -> EventType {
+pub fn event_type(value: &Value) -> EventType {
     match update_kind(value) {
         Some("user_message_chunk" | "agent_message_chunk") => EventType::Message,
         Some("agent_thought_chunk" | "plan" | "rewind_marker") => EventType::Summary,
@@ -70,7 +76,7 @@ pub(crate) fn grok_build_event_type(value: &Value) -> EventType {
     }
 }
 
-pub(crate) fn grok_build_role(value: &Value) -> EventRole {
+pub fn role(value: &Value) -> EventRole {
     match update_kind(value) {
         Some("user_message_chunk") => EventRole::User,
         Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call") => EventRole::Assistant,
@@ -79,14 +85,14 @@ pub(crate) fn grok_build_role(value: &Value) -> EventRole {
     }
 }
 
-pub(crate) fn grok_build_event_text(value: &Value) -> String {
+pub fn event_text(value: &Value) -> String {
     let update = update(value);
     match update_kind(value) {
         Some("user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk") => update
             .get("content")
             .and_then(visible_text)
             .unwrap_or_default(),
-        Some("tool_call") => grok_build_structured_tool_call_text(value).unwrap_or_default(),
+        Some("tool_call") => structured_tool_call_text(value).unwrap_or_default(),
         Some("plan" | "rewind_marker" | "tool_call_update") => update
             .get("content")
             .and_then(visible_text)
@@ -99,7 +105,7 @@ pub(crate) fn grok_build_event_text(value: &Value) -> String {
     }
 }
 
-pub(crate) fn grok_build_structured_tool_call_text(value: &Value) -> Option<String> {
+pub fn structured_tool_call_text(value: &Value) -> Option<String> {
     let update = update(value);
     (update_kind(value) == Some("tool_call")).then(|| {
         json!({
@@ -111,14 +117,12 @@ pub(crate) fn grok_build_structured_tool_call_text(value: &Value) -> Option<Stri
     })
 }
 
-pub(crate) fn enumerate_grok_build_results(
-    value: &Value,
-) -> std::result::Result<Vec<NativeJsonlResultSubrecord<'_>>, NativeJsonlResultExtractionError> {
+pub fn enumerate_results(value: &Value) -> Vec<GrokBuildResultSubrecord<'_>> {
     if update_kind(value) != Some("tool_call_update") {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let Some(status) = terminal_status(value) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let update = update(value);
     let content = grok_build_result_content(update)
@@ -128,7 +132,7 @@ pub(crate) fn enumerate_grok_build_results(
         .get("toolCallId")
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty());
-    Ok(vec![NativeJsonlResultSubrecord {
+    vec![GrokBuildResultSubrecord {
         subrecord_index: 0,
         content,
         call_id,
@@ -138,14 +142,14 @@ pub(crate) fn enumerate_grok_build_results(
             exit_code: terminal_exit_code(update),
             duration_ms: None,
         },
-    }])
+    }]
 }
 
 fn terminal_status(value: &Value) -> Option<&str> {
     update(value)
         .get("status")
         .and_then(Value::as_str)
-        .filter(|status| matches!(*status, "completed" | "failed" | "cancelled" | "timed_out"))
+        .filter(|status| matches!(*status, "completed" | "failed"))
 }
 
 fn grok_build_tool_kind(value: &Value) -> Option<&str> {
@@ -178,8 +182,7 @@ fn terminal_outcome(update: &Value, status: &str) -> OutputOutcome {
         || raw_output
             .and_then(|raw| raw.get("is_timeout"))
             .and_then(Value::as_bool)
-            == Some(true)
-        || status == "timed_out";
+            == Some(true);
     if timed_out {
         return OutputOutcome::Timeout;
     }
@@ -197,11 +200,7 @@ fn terminal_outcome(update: &Value, status: &str) -> OutputOutcome {
         .and_then(|raw| raw.get("is_error"))
         .and_then(Value::as_bool)
         == Some(true);
-    if nonzero_bash_exit
-        || fatal_bash_signal
-        || explicit_error
-        || matches!(status, "failed" | "cancelled")
-    {
+    if nonzero_bash_exit || fatal_bash_signal || explicit_error || status == "failed" {
         OutputOutcome::Failure
     } else if status == "completed" {
         OutputOutcome::Success
@@ -212,9 +211,7 @@ fn terminal_outcome(update: &Value, status: &str) -> OutputOutcome {
 
 fn grok_build_result_content(update: &Value) -> Option<String> {
     if let Some(content) = update.get("content").filter(|content| !content.is_null()) {
-        return visible_text(content)
-            .or_else(|| serde_json::to_string(content).ok())
-            .filter(|content| !content.trim().is_empty());
+        return visible_text(content).filter(|content| !content.trim().is_empty());
     }
     raw_output_visible_text(update.get("rawOutput")?)
 }
@@ -262,11 +259,17 @@ fn visible_text(value: &Value) -> Option<String> {
             let parts = items.iter().map(visible_text).collect::<Option<Vec<_>>>()?;
             (!parts.is_empty()).then(|| parts.join("\n"))
         }
-        Value::Object(object) => object
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| object.get("content").and_then(visible_text)),
+        Value::Object(object) => match object.get("type").and_then(Value::as_str) {
+            Some("text") => object
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            Some("content") => object.get("content").and_then(visible_text),
+            Some("diff") => serde_json::to_string(value).ok(),
+            // ACP content unions are closed here. Image/resource blocks and
+            // future variants stay contentless until their schema is audited.
+            Some(_) | None => None,
+        },
         Value::Null | Value::Bool(_) | Value::Number(_) => None,
     }
 }
@@ -274,6 +277,65 @@ fn visible_text(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitized_real_fixture_preserves_audited_projection_shapes() {
+        let fixture = std::path::Path::new(
+            "tests/fixtures/provider-history/grok-build/v1.0.3/sessions/synthetic-workspace/01990000-0000-7000-8000-000000000001/updates.jsonl",
+        );
+        let values = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture.display()))
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid sanitized Grok JSONL"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(values.len(), 21);
+        assert!(values.iter().all(|value| {
+            header_session_id(value).as_deref() == Some("01990000-0000-7000-8000-000000000001")
+        }));
+        assert_eq!(
+            values
+                .iter()
+                .filter(|value| event_type(value) == EventType::Message)
+                .count(),
+            2
+        );
+        assert_eq!(
+            values
+                .iter()
+                .filter(|value| event_type(value) == EventType::ToolCall)
+                .count(),
+            6
+        );
+        let results = values
+            .iter()
+            .flat_map(enumerate_results)
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 6);
+        assert!(results.iter().any(|result| {
+            result.outcome.outcome == OutputOutcome::Failure
+                && result
+                    .content
+                    .as_deref()
+                    .is_some_and(|text| text.contains("string to replace was not found"))
+        }));
+        assert!(results.iter().any(|result| {
+            result
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("\"type\":\"diff\""))
+        }));
+        assert!(values.iter().any(|value| {
+            event_type(value) == EventType::CommandOutput
+                && enumerate_results(value)[0]
+                    .content
+                    .as_deref()
+                    .is_some_and(|text| text.contains("# pass 2"))
+        }));
+        assert!(values.iter().all(|value| {
+            timestamp(value).is_some_and(|time| time.timestamp_millis() == 1_786_547_760_000)
+        }));
+    }
 
     #[test]
     fn nested_terminal_text_and_failure_are_retained() {
@@ -291,8 +353,8 @@ mod tests {
                 "_meta": {"eventId": "event", "agentTimestampMs": 1_700_000_000_000_i64}
             }
         });
-        assert_eq!(grok_build_event_type(&value), EventType::ToolOutput);
-        let results = enumerate_grok_build_results(&value).unwrap();
+        assert_eq!(event_type(&value), EventType::ToolOutput);
+        let results = enumerate_results(&value);
         assert_eq!(results[0].content.as_deref(), Some("failed safely"));
         assert_eq!(results[0].outcome.outcome, OutputOutcome::Failure);
     }
@@ -310,9 +372,7 @@ mod tests {
                 }
             }
         });
-        assert!(enumerate_grok_build_results(&value).unwrap()[0]
-            .content
-            .is_none());
+        assert!(enumerate_results(&value)[0].content.is_none());
     }
 
     #[test]
@@ -329,7 +389,7 @@ mod tests {
                 }
             }
         });
-        assert_eq!(grok_build_event_type(&value), EventType::CommandOutput);
+        assert_eq!(event_type(&value), EventType::CommandOutput);
     }
 
     #[test]
@@ -346,7 +406,7 @@ mod tests {
                 }
             }
         });
-        let results = enumerate_grok_build_results(&value).unwrap();
+        let results = enumerate_results(&value);
         assert_eq!(results[0].outcome.outcome, OutputOutcome::Timeout);
 
         let nonzero = json!({
@@ -361,7 +421,7 @@ mod tests {
                 }
             }
         });
-        let results = enumerate_grok_build_results(&nonzero).unwrap();
+        let results = enumerate_results(&nonzero);
         assert_eq!(results[0].outcome.outcome, OutputOutcome::Failure);
         assert_eq!(results[0].outcome.exit_code, Some(17));
     }
@@ -380,7 +440,7 @@ mod tests {
                 }
             }
         });
-        let diff_result = enumerate_grok_build_results(&diff).unwrap();
+        let diff_result = enumerate_results(&diff);
         assert!(diff_result[0]
             .content
             .as_deref()
@@ -397,7 +457,7 @@ mod tests {
                 }
             }
         });
-        let list_result = enumerate_grok_build_results(&list).unwrap();
+        let list_result = enumerate_results(&list);
         assert_eq!(list_result[0].content.as_deref(), Some("src/\\nCargo.toml"));
     }
 
@@ -408,13 +468,13 @@ mod tests {
             "params": {"_meta": {"agentTimestampMs": 1_700_000_000_123_i64}}
         });
         assert_eq!(
-            grok_build_timestamp(&preferred).unwrap().timestamp_millis(),
+            timestamp(&preferred).unwrap().timestamp_millis(),
             1_700_000_000_123
         );
 
         let fallback = json!({"timestamp": 1_700_000_001_i64});
         assert_eq!(
-            grok_build_timestamp(&fallback).unwrap().timestamp_millis(),
+            timestamp(&fallback).unwrap().timestamp_millis(),
             1_700_000_001_000
         );
     }
@@ -431,8 +491,51 @@ mod tests {
                 }
             }
         });
-        assert_eq!(grok_build_event_type(&value), EventType::Notice);
-        assert!(grok_build_event_text(&value).is_empty());
-        assert!(enumerate_grok_build_results(&value).unwrap().is_empty());
+        assert_eq!(event_type(&value), EventType::Notice);
+        assert!(event_text(&value).is_empty());
+        assert!(enumerate_results(&value).is_empty());
+    }
+
+    #[test]
+    fn unknown_terminal_content_union_variants_stay_contentless() {
+        for content in [
+            json!([{"type": "image", "data": "future-sensitive-image-marker"}]),
+            json!([{"type": "resource", "uri": "future-sensitive-resource-marker"}]),
+            json!([{"type": "future_v2", "secret": "future-sensitive-v2-marker"}]),
+        ] {
+            let value = json!({
+                "params": {
+                    "sessionId": "session",
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "call",
+                        "status": "completed",
+                        "content": content
+                    }
+                }
+            });
+            let results = enumerate_results(&value);
+            assert_eq!(results.len(), 1);
+            assert!(results[0].content.is_none());
+        }
+    }
+
+    #[test]
+    fn unpinned_terminal_statuses_are_not_projected() {
+        for status in ["cancelled", "timed_out", "future_terminal"] {
+            let value = json!({
+                "params": {
+                    "sessionId": "session",
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "call",
+                        "status": status,
+                        "content": "must not be retained"
+                    }
+                }
+            });
+            assert!(enumerate_results(&value).is_empty());
+            assert_eq!(event_type(&value), EventType::Notice);
+        }
     }
 }

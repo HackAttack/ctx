@@ -1465,8 +1465,8 @@
         "kind": "discrete",
         "versions": [
           {
-            "kind": "unversioned_generation",
-            "generation": 1
+            "kind": "semver",
+            "version": "1.0.3"
           }
         ]
       },
@@ -1655,9 +1655,13 @@
       "evidence": [],
       "source_schema": "grok-build-acp-updates-jsonl-v1",
       "producer_bound": {
-        "kind": "source_commits",
-        "commits": [
-          "be713136d2a69080743a3f6b3c72077057e5948f"
+        "kind": "versions",
+        "versions": [
+          "1.0.3"
+        ],
+        "ranges": [],
+        "source_commits": [
+          "1a29d5bc12d45a1b44c6fa3893f9c9e2a4671dec"
         ],
         "unknown_generations": "not-qualified"
       }

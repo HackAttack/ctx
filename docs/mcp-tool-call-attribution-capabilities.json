@@ -144,10 +144,10 @@
     },
     {
       "provider_id": "grok_build", "route": "native_import", "source_format": "grok_build_session_updates_jsonl_tree", "source_schema": "grok-build-acp-updates-jsonl-v1",
-      "producer_bound": {"kind": "source_commits", "commits": ["be713136d2a69080743a3f6b3c72077057e5948f"], "unknown_generations": "not-qualified"},
+      "producer_bound": {"kind": "versions", "versions": ["1.0.3"], "ranges": [], "source_commits": ["1a29d5bc12d45a1b44c6fa3893f9c9e2a4671dec"], "unknown_generations": "not-qualified"},
       "status": "not-qualified", "reason": "no_server_field",
       "detail": "The authoritative updates stream retains tool activity, but ordinary terminal rawOutput is intentionally excluded and no audited event-local server field remains. Ctx does not infer one from tool names or configuration.",
-      "evidence": ["https://github.com/xai-org/grok-build/tree/be713136d2a69080743a3f6b3c72077057e5948f"]
+      "evidence": ["https://www.npmjs.com/package/@xai-official/grok/v/1.0.3", "https://github.com/xai-org/grok-build/tree/be713136d2a69080743a3f6b3c72077057e5948f"]
     },
     {
       "provider_id": "pi", "route": "native_import", "source_format": "pi_session_jsonl", "source_schema": "pi-session-v1-v3",

@@ -28,10 +28,11 @@ impl DirectJsonlProjector {
             }
         };
 
+        let observed_grok_session_id = (self.provider == CaptureProvider::GrokBuild)
+            .then(|| super::grok_build::grok_build_header_session_id(&value))
+            .flatten();
         let starts_session = match self.provider {
-            CaptureProvider::GrokBuild => {
-                super::grok_build::grok_build_header_session_id(&value).is_some()
-            }
+            CaptureProvider::GrokBuild => observed_grok_session_id.is_some(),
             CaptureProvider::Qoder => {
                 super::qoder_parser::qoder_header_session_id(&value).is_some()
             }
@@ -61,6 +62,18 @@ impl DirectJsonlProjector {
                 self.imported_at,
                 &value,
             ));
+        } else if self.provider == CaptureProvider::GrokBuild && observed_grok_session_id.is_none()
+        {
+            return Ok(ProjectedLine::rejection(DirectJsonlRejection {
+                raw_ordinal: ordinal,
+                byte_start,
+                byte_end_exclusive,
+                reason: format!(
+                    "{}:{} Grok Build record is missing a nonempty sessionId",
+                    self.path.display(),
+                    ordinal.saturating_add(1)
+                ),
+            }));
         } else if starts_session {
             let observed = session_from_header(
                 self.provider,

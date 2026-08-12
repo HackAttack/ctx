@@ -2,30 +2,6 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path};
 
-pub(crate) fn append_native_grok_build_event(path: &str, query: &str) {
-    let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
-    writeln!(
-        file,
-        "{}",
-        json!({
-            "timestamp": 1_786_547_761_i64,
-            "method": "session/update",
-            "params": {
-                "sessionId": "01990000-0000-7000-8000-000000000001",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": query}
-                },
-                "_meta": {
-                    "eventId": "01990000-0000-7000-8000-000000000001-incremental",
-                    "agentTimestampMs": 1_786_547_761_000_i64
-                }
-            }
-        })
-    )
-    .unwrap();
-}
-
 pub(crate) fn append_native_openclaw_event(path: &str, query: &str) {
     let transcript =
         Path::new(path).join("agents/personal-agent/sessions/openclaw-cli-native.jsonl");

@@ -535,12 +535,6 @@ fn unknown_native_providers_are_rejected_by_public_cli() {
 fn native_provider_cli_flow_imports_supported_provider_paths() {
     for (cli_provider, stored_provider, expected_format, fixture) in [
         (
-            "grok-build",
-            "grok_build",
-            "grok_build_session_updates_jsonl",
-            write_native_grok_build_fixture as fn(&TempDir, &str) -> String,
-        ),
-        (
             "claude",
             "claude",
             "claude_projects_jsonl_tree",
@@ -746,65 +740,6 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
 }
 
 #[test]
-fn grok_build_tree_import_keeps_independent_native_sessions_searchable() {
-    let temp = tempdir();
-    let first_query = "grokbuildtreefirstzebrahex";
-    let second_query = "grokbuildtreesecondotterhex";
-    let generated = PathBuf::from(write_native_grok_build_fixture(&temp, first_query));
-    let tree = temp.path().join("grok-build-tree");
-    let first = tree.join("synthetic-workspace/session-one/updates.jsonl");
-    let second = tree.join("synthetic-workspace/session-two/updates.jsonl");
-    clone_native_grok_build_session(
-        &generated,
-        &first,
-        "01990000-0000-7000-8000-000000000011",
-        first_query,
-    );
-    clone_native_grok_build_session(
-        &generated,
-        &second,
-        "01990000-0000-7000-8000-000000000022",
-        second_query,
-    );
-    let _daemon = start_isolated_provider_daemon(&temp);
-
-    let imported = json_output(ctx(&temp).args([
-        "import",
-        "--provider",
-        "grok-build",
-        "--path",
-        tree.to_str().unwrap(),
-        "--no-daemon",
-        "--format=json",
-    ]));
-    assert_explicit_source_publication(
-        &imported,
-        "grok_build",
-        "grok_build_session_updates_jsonl_tree",
-    );
-    assert_eq!(imported["sources"][0]["source_files"], 2, "{imported:#}");
-    assert_eq!(
-        imported["sources"][0]["current_source_count"], 2,
-        "{imported:#}"
-    );
-    wait_for_imported_core(&temp, &imported);
-    assert_eq!(provider_core_counts(&data_root(&temp), "grok_build").0, 2);
-
-    for query in [first_query, second_query] {
-        let search = json_output(ctx(&temp).args([
-            "search",
-            query,
-            "--provider",
-            "grok-build",
-            "--refresh",
-            "off",
-            "--format=json",
-        ]));
-        assert_search_provider_oracle(&search, "grok_build", query, 1, "message");
-    }
-}
-
-#[test]
 fn discovery_only_sqlite_explicit_paths_are_rejected_without_fallback() {
     for (provider, fixture, reason) in [
         (
@@ -949,13 +884,6 @@ fn native_provider_cli_preserves_complete_tool_outputs_without_legacy_payloads()
 #[test]
 fn personal_agent_provider_imports_are_idempotent_and_incremental() {
     for (cli_provider, stored_provider, source_format, fixture, append_event) in [
-        (
-            "grok-build",
-            "grok_build",
-            "grok_build_session_updates_jsonl",
-            write_native_grok_build_fixture as fn(&TempDir, &str) -> String,
-            append_native_grok_build_event as fn(&str, &str),
-        ),
         (
             "openclaw",
             "openclaw",
