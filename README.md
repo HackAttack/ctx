@@ -113,9 +113,13 @@ When semantic search is enabled, ctx embeds history locally with `multilingual-e
 
 ## How it works
 
-Your past agent sessions begin in local provider history files. `ctx setup` discovers supported sources, reads those records without modifying them, and publishes complete normalized sessions and events into an immutable Core generation. Search, show, locate, MCP, semantic indexing, and ctx pro all start from that same verified local history.
+Your past coding agent sessions already live on your machine, usually in JSONL files or SQLite databases under directories such as `~/.claude` and `~/.codex`.
 
-Core is local and private by default. Transcript text is preserved rather than hiding local paths or secret-shaped strings, so review copied output before sharing it outside the machine.
+`ctx setup` discovers those sources and reads them without modifying them. It converts each provider’s format into consistent local records for sessions, messages, tool calls, relationships, and repository activity, then stores and indexes those records locally.
+
+ctx does not require hooks or any code running inside the agent process. After setup, a local background daemon watches the history sources your agents already write and keeps the index current as they change. Each update is completed before it becomes visible, so commands never read a partially built index.
+
+Every session and event receives a stable ctx ID and retains its complete transcript content and source information. `ctx search` finds the relevant history, `ctx show` retrieves the exact event or full transcript, and `ctx locate` identifies where it came from. Semantic search and ctx pro use those same records.
 
 ```bash
 # Index all of your existing local agent sessions
@@ -124,7 +128,7 @@ ctx setup
 # Your agent can search prior work with normal language
 ctx search "failed migration"
 
-# Search sessions/events that touched a file
+# Search sessions and events that touched a file
 ctx search --file crates/foo/src/lib.rs
 
 # Or search multiple terms
@@ -140,26 +144,7 @@ ctx show event <ctx-event-id> --window 3
 ctx show session <ctx-session-id>
 ```
 
-Those IDs let your current agent recover as much context from previous sessions as it needs.
-
-ctx does not send your prompts, transcripts, or indexed history to a cloud service, call model APIs, require API keys, or write into your source repositories.
-
-The installed binary also includes local docs and man-page generation:
-
-```bash
-ctx docs search "upgrade"
-ctx docs show cli-reference
-ctx docs man --print ctx
-```
-
-Official installer-managed binaries support signed self-upgrades:
-
-```bash
-ctx upgrade status
-ctx upgrade check
-```
-
-Source builds and package-manager installs remain unmanaged and do not self-upgrade.
+ctx does not send your prompts, transcripts, or indexed history to a cloud service, call model APIs, require API keys, or write into your source repositories. Transcript text is preserved rather than automatically redacted, so review copied output before sharing it outside your machine.
 
 For the full pipeline, see [How ctx works](https://ctx.rs/concepts/how-it-works). For a quick first run, see [Quickstart](https://ctx.rs/first-search).
 
