@@ -65,7 +65,7 @@ impl CodexSessionSemanticExecutorV0 {
         state: Arc<Mutex<CodexSessionJsonlFamilyStateV0>>,
         leaf: &JsonlFamilyLeaf,
         _checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<CaptureBaseEventLookup>,
         projection_mode: JsonlFamilyProjectionMode,
     ) -> Result<Self> {
         let plan = {
@@ -102,7 +102,7 @@ impl CodexSessionSemanticExecutorV0 {
 }
 
 impl JsonlFamilySemanticExecutor for CodexSessionSemanticExecutorV0 {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
 
     fn preflight(
         &mut self,
@@ -184,7 +184,7 @@ fn codex_family_state_error() -> CaptureError {
 
 fn prepare_codex_session_jsonl_scans_v0(
     adapter: &dyn JsonlFamilyAdapter<
-        Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+        Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
     >,
     state: &Mutex<CodexSessionJsonlFamilyStateV0>,
     leaves: &[JsonlFamilyLeaf],
@@ -414,7 +414,7 @@ impl CodexSessionJsonlFamilyAdapterV0 {
 }
 
 impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
@@ -539,13 +539,13 @@ impl JsonlFamilyAdapter for CodexSessionJsonlFamilyAdapterV0 {
         &self,
         leaf: &JsonlFamilyLeaf,
         checkpoint: Option<&TypedKey>,
-        base_event_lookup: Option<IndexBaseEventLookup>,
+        base_event_lookup: Option<CaptureBaseEventLookup>,
         mode: JsonlFamilyProjectionMode,
     ) -> Result<
         Option<
             Box<
                 dyn JsonlFamilySemanticExecutor<
-                    Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+                    Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
                 >,
             >,
         >,

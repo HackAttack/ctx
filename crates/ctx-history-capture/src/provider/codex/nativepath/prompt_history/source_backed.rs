@@ -103,7 +103,7 @@ impl CodexPromptHistoryJsonlFamilyAdapterV0 {
 }
 
 impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
 
     fn provider(&self) -> CaptureProvider {
         CaptureProvider::Codex
@@ -158,7 +158,7 @@ impl JsonlFamilyAdapter for CodexPromptHistoryJsonlFamilyAdapterV0 {
     ) -> crate::Result<
         Box<
             dyn JsonlFamilyProjector<
-                Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime,
+                Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime,
             >,
         >,
     > {
@@ -184,7 +184,7 @@ impl CodexPromptHistoryProjector {
 }
 
 impl JsonlFamilyProjector for CodexPromptHistoryProjector {
-    type Runtime = crate::provider::source_backed::family::jsonl::CaptureJsonlRuntime;
+    type Runtime = crate::provider::source_backed::family::jsonl::JsonlFamilyRuntime;
 
     fn project(
         &mut self,

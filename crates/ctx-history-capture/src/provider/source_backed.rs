@@ -104,6 +104,7 @@ pub use driver::*;
 #[cfg(test)]
 pub(crate) use family::jsonl::FallbackEventIdentityMode;
 pub(crate) use family::jsonl::FallbackEventIdentityState;
+pub(crate) use family::jsonl::{CaptureBaseEventLookup, CaptureBaseEventLookupError};
 #[doc(hidden)]
 pub use family::{CaptureDocumentSpool, CaptureProviderRuntime};
 pub use inventory::*;
