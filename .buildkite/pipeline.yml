@@ -204,17 +204,18 @@ steps:
 
   - label: ":test_tube: public CLI macos-x64 exact-byte validation"
     key: "public-cli-macos-x64-native-smoke"
-    depends_on: "public-cli-linux-factory"
+    depends_on:
+      - "public-cli-linux-factory"
+      - "public-cli-macos-x64-runtime-producer"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
       scripts/buildkite/download-linux-factory-artifacts.sh "ctx-macos-x64*"
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*" . \
+        --step public-cli-macos-x64-runtime-producer
       scripts/validate-public-cli-factory-artifact.sh \
         macos-x64 target/public-cli-artifacts \
         target/public-cli-native-smoke/macos-x64
-      export CTX_MACOS_RELEASE_SIGNING=required
-      export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
-      scripts/build-onnxruntime-sidecar.sh macos-x64
-      scripts/stage-github-release-assets.sh --transcode-runtime macos-x64
       smoke_root="target/public-cli-native-smoke/macos-x64/onnxruntime"
       mkdir -p "$${smoke_root}"
       if ! scripts/smoke-daemon-semantic-release.sh \
@@ -236,6 +237,31 @@ steps:
     artifact_paths:
       - "target/public-cli-native-smoke/macos-x64/candidate-smoke.json"
       - "target/public-cli-native-smoke/macos-x64/**/smoke.log"
+      - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*"
+
+  - label: ":package: public CLI macos-x64 runtime producer"
+    key: "public-cli-macos-x64-runtime-producer"
+    depends_on: "public-cli-linux-factory"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
+    command: |
+      export CTX_MACOS_RELEASE_SIGNING=required
+      export CTX_MACOS_SIGNING_SECRET_SOURCE=infisical
+      scripts/build-onnxruntime-sidecar.sh macos-x64
+      scripts/stage-github-release-assets.sh --transcode-runtime macos-x64
+    secrets:
+      - "APPLE_CODESIGN_CERT_P12_B64"
+      - "APPLE_CODESIGN_CERT_PASSWORD"
+      - "NOTARY_ISSUER"
+      - "NOTARY_KEY_ID"
+      - "NOTARY_KEY_P8_B64"
+    agents:
+      queue: "ctx-mac-gui-shared-x64"
+      os: "darwin"
+      arch: "x86_64"
+    concurrency: 1
+    concurrency_group: "ctx/public-cli-macos-x64-runtime-producer"
+    timeout_in_minutes: 180
+    artifact_paths:
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*"
 
   - label: ":test_tube: public CLI windows-x64 exact-byte validation"
@@ -282,7 +308,7 @@ steps:
       scripts/buildkite/download-linux-factory-artifacts.sh "*"
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*" . \
-        --step public-cli-macos-x64-native-smoke
+        --step public-cli-macos-x64-runtime-producer
       CTX_PUBLIC_RELEASE_SOURCE_COMMIT="$${source_commit}" \
         scripts/stage-github-release-assets.sh \
           target/public-cli-artifacts \
@@ -441,7 +467,7 @@ steps:
         --step semantic-runtime-windows-ml
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.zst*" . \
-        --step public-cli-macos-x64-native-smoke
+        --step public-cli-macos-x64-runtime-producer
       scripts/stage-semantic-release-handoff.sh \
         target/public-cli-artifacts target/semantic-release-handoff
     agents:
