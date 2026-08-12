@@ -1,6 +1,6 @@
 <img src="docs/assets/ctx-readme-banner.png" alt="You have months of coding agent history on your machine. Search it with ctx. Blame it with ctx pro." width="100%">
 
-ctx is an open-source CLI for fast local search across your past coding agent sessions. You can search both messages and tool calls and retrieve full transcripts and logs.
+ctx is an open-source CLI for fast local search across your past coding agent sessions. You can search messages and tool calls across agents and sessions, then jump straight to the exact event or full transcript behind each result.
 
 ctx pro is a paid add-on for “git blame, but for agent sessions.” Take any line, file, commit, or PR and surface the original transcript of the agent session that produced it. Your agents can use that transcript to recover the decisions, assumptions, and tool calls behind the code.
 
