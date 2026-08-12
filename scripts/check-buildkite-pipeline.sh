@@ -154,6 +154,7 @@ def validate_validation_routes(blocks):
                 'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") != "1"'
             ),
             "command": "bash scripts/buildkite-public-ci.sh --mode=ci",
+            "agents": {"queue": "default"},
             "concurrency_group": "ctx/public-smoke/default-hosted",
             "timeout": "60",
         },
@@ -163,13 +164,20 @@ def validate_validation_routes(blocks):
                 'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") != "1"'
             ),
             "command": "bash scripts/buildkite-public-ci.sh --mode=nightly",
+            "agents": {"queue": "default"},
             "concurrency_group": "ctx/public-nightly/default-hosted",
             "timeout": "120",
         },
         "public-release": {
             "condition": release_condition,
             "command": "bash scripts/buildkite-public-ci.sh --mode=release",
-            "concurrency_group": "ctx/public-release/default-hosted",
+            "agents": {
+                "queue": "release-linux-managed",
+                "ctx-runner-class": "release-linux-control",
+                "os": "linux",
+                "arch": "x86_64",
+            },
+            "concurrency_group": "ctx/public-release/release-linux-managed",
             "timeout": "120",
         },
     }
@@ -195,14 +203,11 @@ def validate_validation_routes(blocks):
             command(block) == spec["command"],
             f"{key} must invoke exactly {spec['command']}",
         )
-        require_route(
-            scalar(block, "queue", indent=6) == "default",
-            f"{key} must use the Buildkite hosted default queue",
-        )
-        for tag in ("ctx-runner-class", "os", "arch"):
+        for tag in ("queue", "ctx-runner-class", "os", "arch"):
+            expected = spec["agents"].get(tag)
             require_route(
-                scalar(block, tag, indent=6, required=False) is None,
-                f"{key} must not require self-hosted runner tags",
+                scalar(block, tag, indent=6, required=False) == expected,
+                f"{key} must use the exact declared runner selector",
             )
         require_route(
             scalar(block, "concurrency") == "1"
@@ -386,6 +391,36 @@ for block in steps:
     else:
         without_release_wait.append(block)
 expect_rejection("missing release prerequisite wait", without_release_wait)
+hosted_release = [
+    block.replace('queue: "release-linux-managed"', 'queue: "default"', 1)
+    if step_key(block) == "public-release"
+    else block
+    for block in steps
+]
+expect_rejection("hosted public release route", hosted_release)
+release_without_managed_capability = [
+    block.replace('      ctx-runner-class: "release-linux-control"\n', "", 1)
+    if step_key(block) == "public-release"
+    else block
+    for block in steps
+]
+expect_rejection(
+    "public release without managed capability",
+    release_without_managed_capability,
+)
+fanout_before_wait = list(steps)
+fanout_index = next(
+    index
+    for index, block in enumerate(fanout_before_wait)
+    if step_key(block) == "public-cli-linux-x64"
+)
+fanout_block = fanout_before_wait.pop(fanout_index)
+wait_index = next(
+    index for index, block in enumerate(fanout_before_wait)
+    if block.startswith("  - wait:")
+)
+fanout_before_wait.insert(wait_index, fanout_block)
+expect_rejection("artifact fan-out before release prerequisite", fanout_before_wait)
 for linux_key in ("public-cli-linux-x64", "public-cli-linux-aarch64"):
     mutated = [
         block.replace('"$${smoke_args[@]}"', '"${smoke_args[@]}"', 1)
