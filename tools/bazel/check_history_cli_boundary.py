@@ -517,7 +517,7 @@ def _validate_final_build(path: Path) -> None:
     package = "ctx-cli"
     tokens = _tokenize(path.read_text(encoding="utf-8"), package)
     _validate_loads(tokens, package, FINAL_LOADS, {"CTX_CLI_DEPS", "CTX_CLI_TEST_DEPS", "CTX_CLI_PRO_TEST_HOST_DEPS", "CTX_CLI_QUALIFICATION_DEPS"})
-    _validate_call_surface(tokens, package, {"aliases", "all_crate_deps", "cargo_toml_env_vars", "crate_deps", "crate_edition", "ctx_cli_integration_test", "ctx_cli_test_data", "ctx_rust_binary", "ctx_rust_test", "dict", "exports_files", "filegroup", "glob", "load", "loc_check_inputs", "package", "select"})
+    _validate_call_surface(tokens, package, {"aliases", "all_crate_deps", "cargo_toml_env_vars", "crate_deps", "crate_edition", "ctx_cli_integration_test", "ctx_cli_test_data", "ctx_rust_binary", "ctx_rust_test", "dict", "exports_files", "filegroup", "glob", "load", "loc_check_inputs", "package", "select", "test_suite"})
     expected_labels = {
         "CTX_CLI_DEPS": (HISTORY_LABEL, 2),
         "CTX_CLI_TEST_DEPS": (HISTORY_TEST_SUPPORT_LABEL, 2),
