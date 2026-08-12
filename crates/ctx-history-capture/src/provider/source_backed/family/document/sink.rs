@@ -436,7 +436,7 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
         mut self,
         terminal: DocumentSourceTerminal,
         replay_fingerprint: Option<DocumentLeafFingerprint>,
-        append_base: Option<CertifiedSource>,
+        append_base: Option<DocumentAppendBase>,
     ) -> SourceBackedRouteResult<CertifiedSource> {
         let source = self.source()?.clone();
         if !terminal.source.exact_descriptor_eq(&source)
@@ -451,6 +451,7 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
             append_base
                 .as_ref()
                 .map_or(Some(terminal.counts.indexed_documents), |base| {
+                    let base = base.certificate();
                     terminal
                         .counts
                         .indexed_documents
@@ -461,15 +462,18 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
                 "document terminal indexed count did not match forwarded Core records",
             ));
         }
-        let logical_base = self
-            .logical_base
-            .clone()
-            .or_else(|| match &mut self.target {
-                ChangedDocumentTarget::Generation(sink) => {
-                    sink.base_source(&terminal.source).cloned()
-                }
-                ChangedDocumentTarget::Parallel(_) => None,
-            });
+        let logical_base = self.deferred.as_ref().and_then(|_| {
+            append_base
+                .as_ref()
+                .map(|base| base.certificate().clone())
+                .or_else(|| self.logical_base.clone())
+                .or_else(|| match &mut self.target {
+                    ChangedDocumentTarget::Generation(sink) => {
+                        sink.base_source(&terminal.source).cloned()
+                    }
+                    ChangedDocumentTarget::Parallel(_) => None,
+                })
+        });
         let retain_core_records = self.deferred.is_some()
             && logical_base.as_ref().is_some_and(|base| {
                 terminal_matches_base(base, &terminal)
@@ -480,11 +484,12 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
         let certificate = terminal.certify(replay_fingerprint)?;
         if let Some(deferred) = self.deferred.take() {
             if let Some(base) = append_base {
-                let frontier = base.frontier().ok_or_else(|| {
+                let certificate_base = base.certificate();
+                let frontier = certificate_base.frontier().ok_or_else(|| {
                     document_changed("document append base has no certified frontier")
                 })?;
                 let append = CertifiedSourceAppend::certify(
-                    &base,
+                    certificate_base,
                     certificate.clone(),
                     frontier.certified_prefix_bytes(),
                     *frontier.certified_prefix_digest(),
@@ -492,8 +497,14 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
                 .map_err(document_contract_error)?;
                 match &mut self.target {
                     ChangedDocumentTarget::Generation(sink) => {
-                        sink.begin_source_append(source.clone())
-                            .map_err(route_coordinator_error)?;
+                        match base {
+                            DocumentAppendBase::Generation(base) => sink
+                                .begin_source_append_from_base(base)
+                                .map_err(route_coordinator_error)?,
+                            DocumentAppendBase::Certificate(_) => sink
+                                .begin_source_append(source.clone())
+                                .map_err(route_coordinator_error)?,
+                        };
                         deferred.replay(|record| {
                             sink.add_core_record(record)
                                 .map_err(route_coordinator_error)
@@ -503,7 +514,10 @@ impl<'sink, 'writer> ChangedDocumentSink<'sink, 'writer> {
                     }
                     ChangedDocumentTarget::Parallel(emitter) => {
                         emitter
-                            .begin(ParallelLeafScanBegin::append(source.clone(), base))
+                            .begin(ParallelLeafScanBegin::append(
+                                source.clone(),
+                                certificate_base.clone(),
+                            ))
                             .map_err(|_| {
                                 document_internal("independent document leaf scan was cancelled")
                             })?;

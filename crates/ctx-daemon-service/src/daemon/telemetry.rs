@@ -254,3 +254,51 @@ pub(super) fn send_daemon_events(
     }
     observation.deliver(data_root, events);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safety_reconciliation_admits_a_sixty_minute_hermes_deadline_within_eighty_minutes() {
+        const MINUTE_MS: i64 = 60_000;
+        let profile_source_descriptor = [4_u8; 32];
+        let database_identity = [1_u8; 32];
+        let schema_evidence = [2_u8; 32];
+        let control = serde_json::to_vec(&serde_json::json!({
+            "kind": "hermes-route-control-v1",
+            "version": 2,
+            "profile_source_descriptor": profile_source_descriptor,
+            "database_identity": database_identity,
+            "schema_evidence": schema_evidence,
+            "session_rowid": 4,
+            "message_rowid": 9,
+            "last_successful_exhaustive_at_ms": 0,
+            "exact_due_at_ms": 60 * MINUTE_MS,
+            "exhaustive_sequence": 1,
+            "mode": "exhaustive",
+            "outcome": "successful",
+        }))
+        .unwrap();
+        let mut fake_now_ms = 0_i64;
+
+        assert_eq!(
+            ctx_history_capture::hermes_route_control_exact_due(&control, fake_now_ms),
+            Some(false)
+        );
+        for sequence in 0_u64..8 {
+            let interval = daemon_safety_reconcile_interval(sequence);
+            assert!(interval >= StdDuration::from_secs(15 * 60));
+            assert!(interval < StdDuration::from_secs(20 * 60));
+            fake_now_ms += i64::try_from(interval.as_millis()).unwrap();
+            if ctx_history_capture::hermes_route_control_exact_due(&control, fake_now_ms)
+                == Some(true)
+            {
+                break;
+            }
+        }
+
+        assert!(fake_now_ms >= 60 * MINUTE_MS);
+        assert!(fake_now_ms < 80 * MINUTE_MS);
+    }
+}

@@ -197,28 +197,29 @@ pub(super) fn observe_hermes_session_inventory_with_schema(
         ))?;
     }
     drop(session_reader);
+    let mut message_spool = HermesExactMessageSpool::new()
+        .map_err(HermesSourceBackedError::from)
+        .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
+    let mut message_ranges = BTreeMap::<String, HermesMessageSpoolRange>::new();
     let mut after_message_rowid = None;
     let mut message_reader = HermesRowReader::new(conn, &schema)
         .map_err(HermesSourceBackedError::from)
         .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
-    let mut frontier = super::super::sqlite::HermesFrontier::initial();
+    let mut next_message_ordinal = 0;
     loop {
         let page = message_reader
-            .next_page(frontier)
+            .next_message_inventory_page(after_message_rowid, next_message_ordinal)
             .map_err(HermesSourceBackedError::from)
             .map_err(|error| diagnose_hermes_query_error(error, SqliteFailurePhase::Projection))?;
         if page.is_empty() {
             break;
         }
-        frontier = page
-            .last()
-            .map(|native| native.next_frontier)
-            .unwrap_or(frontier);
+        let last = page.last().ok_or(CaptureError::SystemInvariant(
+            "Hermes message inventory returned an empty nonterminal page",
+        ))?;
+        after_message_rowid = Some(last.locator.rowid);
+        next_message_ordinal = last.next_frontier.next_ordinal;
         for native in page {
-            if native.locator.phase == HermesPhase::Sessions {
-                continue;
-            }
-            after_message_rowid = Some(native.locator.rowid);
             observed_rows = checked_add(observed_rows, 1)?;
             let provider_session_id = match &native.record {
                 HermesNativeRecord::Message { row, .. } => row.session_id.clone(),
@@ -233,6 +234,14 @@ pub(super) fn observe_hermes_session_inventory_with_schema(
                 }
             };
             hermes_session_source_key(&candidate.source, &provider_session_id)?;
+            message_spool
+                .push(
+                    message_ranges
+                        .entry(provider_session_id.clone())
+                        .or_insert_with(HermesMessageSpoolRange::empty),
+                    native.locator.rowid,
+                )
+                .map_err(HermesSourceBackedError::from)?;
             builders
                 .entry(provider_session_id)
                 .or_insert_with(HermesSessionObservationBuilder::new)
@@ -248,6 +257,7 @@ pub(super) fn observe_hermes_session_inventory_with_schema(
     for (provider_session_id, builder) in builders {
         let source = hermes_session_source_key(&candidate.source, &provider_session_id)?;
         let (observation_revision, fingerprint) = builder.finish(&source, &schema_evidence);
+        let exact_message_range = message_ranges.get(&provider_session_id).copied();
         leaves.push(ObservedDocumentLeaf::new(
             fingerprint,
             HermesSessionLeaf {
@@ -255,6 +265,7 @@ pub(super) fn observe_hermes_session_inventory_with_schema(
                 source,
                 observation_revision: observation_revision.to_vec(),
                 incremental: None,
+                exact_message_range,
             },
         ));
     }
@@ -274,5 +285,6 @@ pub(super) fn observe_hermes_session_inventory_with_schema(
         max_message_rowid: after_message_rowid.unwrap_or(0),
         reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
         publication_receipt: None,
+        message_spool: Some(message_spool),
     })
 }

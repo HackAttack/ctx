@@ -3,8 +3,8 @@ use std::sync::Mutex;
 use super::*;
 use crate::provider::source_backed::{
     family::document::{
-        ChangedDocumentSink, CompleteDocumentTree, DocumentBaseRoute, DocumentSourceTerminal,
-        ReplacementDocumentTree,
+        ChangedDocumentSink, CompleteDocumentTree, DocumentAppendBase, DocumentBaseRoute,
+        DocumentSourceTerminal, ReplacementDocumentTree,
     },
     route_error as default_route_error, SourceBackedRouteError, SourceBackedRouteErrorKind,
     SourceBackedRouteResult,
@@ -16,6 +16,7 @@ pub(crate) struct HermesTreeAuthority {
     _schema_evidence: Vec<u8>,
     _sqlite_authority: Option<SqliteSourceDirectoryAuthority>,
     snapshot: Mutex<Option<SqliteSourceReadSnapshot>>,
+    message_spool: Option<Mutex<HermesExactMessageSpool>>,
     publication_receipt: HermesRefreshReceipt,
     terminal_revalidate:
         Option<Box<dyn Fn() -> Result<(), SqliteSourceAccessError> + Send + Sync + 'static>>,
@@ -39,11 +40,12 @@ impl HermesReconciliationContext for HermesCompleteReconciliationContext<'_> {
         self.route_control
     }
 
-    fn exact_base_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+    fn exact_base_source(&self, source: &SourceKey) -> Option<DocumentAppendBase> {
         self.base_sources
             .iter()
             .find(|base| base.observation().source().exact_descriptor_eq(source))
             .cloned()
+            .map(DocumentAppendBase::Certificate)
     }
 
     fn report_progress(
@@ -63,7 +65,7 @@ impl HermesReconciliationContext for DocumentBaseRoute<'_, '_> {
         DocumentBaseRoute::route_control(self)
     }
 
-    fn exact_base_source(&self, source: &SourceKey) -> Option<CertifiedSource> {
+    fn exact_base_source(&self, source: &SourceKey) -> Option<DocumentAppendBase> {
         DocumentBaseRoute::exact_source(self, source)
     }
 
@@ -208,6 +210,12 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
             let scan = if let Some(incremental) = leaf.incremental.as_ref() {
                 project_hermes_incremental_leaf_with_progress(self, leaf, incremental, &mut project)
             } else {
+                let mut message_spool = authority
+                    .message_spool
+                    .as_ref()
+                    .ok_or_else(|| hermes_internal("Hermes exact message spool is unavailable"))?
+                    .lock()
+                    .map_err(|_| hermes_internal("Hermes exact message spool lock is poisoned"))?;
                 project_hermes_session_snapshot_with_progress(
                     self,
                     leaf,
@@ -216,6 +224,7 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
                         .as_ref()
                         .ok_or_else(|| hermes_internal("Hermes snapshot schema is unavailable"))?,
                     snapshot.connection().map_err(hermes_sqlite_route_error)?,
+                    &mut message_spool,
                     &mut project,
                 )
             };
@@ -258,7 +267,7 @@ impl ReplacementDocumentTree for HermesSourceCandidate {
         &self,
         _authority: &Self::TreeAuthority,
         leaf: &Self::Leaf,
-    ) -> Option<CertifiedSource> {
+    ) -> Option<DocumentAppendBase> {
         leaf.incremental
             .as_ref()
             .and_then(|incremental| incremental.base.clone())
@@ -354,6 +363,7 @@ fn discover_hermes_tree(
                         _schema_evidence: Vec::new(),
                         _sqlite_authority: None,
                         snapshot: Mutex::new(None),
+                        message_spool: None,
                         publication_receipt,
                         terminal_revalidate: None,
                         deferred_incremental: true,
@@ -431,6 +441,7 @@ fn discover_hermes_tree(
         _sqlite_authority: Some(sqlite_authority),
         terminal_revalidate: Some(snapshot.terminal_revalidator()),
         snapshot: Mutex::new(Some(snapshot)),
+        message_spool: inventory.message_spool.map(Mutex::new),
         publication_receipt,
         deferred_incremental: false,
     };

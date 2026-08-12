@@ -97,7 +97,7 @@ fn query_authority_list_gateway_accepts_authoritative_empty_and_rejects_invalid_
     let authoritative = tempfile::tempdir().unwrap();
     let generation_id = publish_empty_generation(
         authoritative.path(),
-        EmptyPublicationAuthority::AuthoritativeV2,
+        EmptyPublicationAuthority::AuthoritativeCurrent,
     );
     let index = open_event_range_index(authoritative.path(), None).unwrap();
     assert_eq!(index.generation_id(), generation_id);

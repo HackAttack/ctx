@@ -200,7 +200,7 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
     let MergedSourceBackedRegistry {
-        build,
+        mut build,
         previous_explicit_source_catalog,
         previous_catalog_route_bindings,
         requested_explicit_source_catalog,
@@ -215,6 +215,16 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         explicit_source_catalog,
         published_state,
     )?;
+    if scope == SourceBackedRefreshScope::All
+        && reconciliation_demand == SourceBackedReconciliationDemand::Exhaustive
+    {
+        register_automatic_hermes_profile_rename_retirements(
+            &mut build,
+            retained_generation.as_ref(),
+            &previous_catalog_route_bindings,
+            &previous_route_controls,
+        )?;
+    }
     let registry_failures = if matches!(scope, SourceBackedRefreshScope::All) {
         reject_blocking_automatic_registry_issues(&build.issues)?;
         automatic_registry_route_failures(&build.issues, retained_generation.as_ref())?
@@ -541,6 +551,52 @@ fn refresh_all_provider_sources_route_local_with_reconciliation(
         publication.verified_index = Some(recertified);
     }
     Ok(publication)
+}
+
+fn register_automatic_hermes_profile_rename_retirements(
+    build: &mut ctx_history_capture::SourceBackedAutomaticRegistryBuild,
+    retained_generation: Option<&VerifiedIndex>,
+    previous_catalog_route_bindings: &[ExplicitSourceCatalogRouteBinding],
+    previous_route_controls: &BTreeMap<SourceRouteIdentity, Vec<u8>>,
+) -> Result<()> {
+    let Some(retained_generation) = retained_generation else {
+        return Ok(());
+    };
+    let explicit_route_ids = previous_catalog_route_bindings
+        .iter()
+        .map(|binding| binding.route_identity.as_str())
+        .collect::<BTreeSet<_>>();
+    let current_automatic_hermes = build
+        .registry
+        .routes()
+        .filter(|route| {
+            route.source.provider == CaptureProvider::Hermes
+                && route.selection == Some(SourceBackedRouteSelection::Automatic)
+                && route.selector_authority == SourceBackedSelectorAuthority::DiscoveredWinner
+        })
+        .filter_map(|route| route.route_identity.clone())
+        .collect::<BTreeSet<_>>();
+    let stale = previous_route_controls
+        .iter()
+        .filter(|(route, _)| {
+            !current_automatic_hermes.contains(*route)
+                && !explicit_route_ids.contains(route.as_str())
+                && retained_generation.manifest().source_route(route).is_some()
+        })
+        .filter_map(|(route, control)| {
+            ctx_history_capture::hermes_route_control_database_identity(control)
+                .map(|database_identity| (route.clone(), database_identity))
+        })
+        .collect::<Vec<_>>();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    for replacement in current_automatic_hermes {
+        build
+            .registry
+            .retire_hermes_routes_after_success(&replacement, stale.clone())?;
+    }
+    Ok(())
 }
 
 fn classify_inventory_disposition(

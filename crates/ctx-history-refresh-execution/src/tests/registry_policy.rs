@@ -2,6 +2,7 @@
 
 use super::*;
 use super::{discovery_fixture, run_report};
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 fn registry_policy_source(
@@ -40,6 +41,81 @@ fn registry_policy_unsupported_warp_source(path: PathBuf) -> ProviderSource {
 
 fn registry_policy_nanoclaw_source(path: PathBuf) -> ProviderSource {
     registry_policy_source(CaptureProvider::NanoClaw, path, "nanoclaw_project", true)
+}
+
+fn write_hermes_profile(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    Connection::open(path)
+        .unwrap()
+        .execute_batch(
+            "create table sessions (
+                 id text primary key, source text not null, started_at real not null,
+                 message_count integer default 0
+             );
+             create table messages (
+                 id integer primary key, session_id text not null, role text not null,
+                 content text, timestamp real not null, active integer not null default 1,
+                 compacted integer not null default 0
+             );
+             insert into sessions (id, source, started_at, message_count)
+                 values ('profile-session', 'acp', 1782259200.0, 1);
+             insert into messages (id, session_id, role, content, timestamp)
+                 values (1, 'profile-session', 'assistant', 'profile rename needle', 1782259201.0);",
+        )
+        .unwrap();
+}
+
+#[test]
+fn warm_automatic_hermes_profile_rename_retires_the_old_route_and_remains_refreshable() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_core::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, _, discovery) = discovery_fixture(temp.path());
+    let profiles = temp.path().join("profiles");
+    let alpha = profiles.join("alpha/state.db");
+    let beta = profiles.join("beta/state.db");
+    write_hermes_profile(&alpha);
+    let alpha_source = provider_source_for_path(CaptureProvider::Hermes, alpha.clone());
+    let alpha_route = automatic_source_backed_route_identity(&alpha_source).unwrap();
+
+    let cold = run_report(
+        &discovery,
+        DiscoveryReport {
+            sources: vec![alpha_source],
+            issues: Vec::new(),
+        },
+        &data_root,
+        &index_root,
+    )
+    .unwrap();
+    assert!(cold
+        .verified_index
+        .as_ref()
+        .unwrap()
+        .manifest()
+        .source_route(&alpha_route)
+        .is_some());
+
+    std::fs::rename(alpha.parent().unwrap(), beta.parent().unwrap()).unwrap();
+    let beta_source = provider_source_for_path(CaptureProvider::Hermes, beta);
+    let beta_route = automatic_source_backed_route_identity(&beta_source).unwrap();
+    let warm_report = || DiscoveryReport {
+        sources: vec![beta_source.clone()],
+        issues: Vec::new(),
+    };
+    let warm = run_report(&discovery, warm_report(), &data_root, &index_root).unwrap();
+    let warm_index = warm.verified_index.as_ref().unwrap();
+    assert!(warm_index.manifest().source_route(&alpha_route).is_none());
+    assert!(warm_index.manifest().source_route(&beta_route).is_some());
+    let warm_metadata = SourceBackedPublicationMetadata::decode(warm_index).unwrap();
+    assert!(!warm_metadata.route_controls.contains_key(&alpha_route));
+    assert!(warm_metadata.route_controls.contains_key(&beta_route));
+
+    let subsequent = run_report(&discovery, warm_report(), &data_root, &index_root).unwrap();
+    let subsequent = subsequent.verified_index.as_ref().unwrap();
+    assert!(subsequent.manifest().source_route(&alpha_route).is_none());
+    assert!(subsequent.manifest().source_route(&beta_route).is_some());
 }
 
 fn registry_policy_automatic_route_identity(source: &ProviderSource) -> SourceRouteIdentity {

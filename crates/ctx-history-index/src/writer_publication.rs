@@ -7,6 +7,26 @@ use ctx_history_index_format::{
 };
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+thread_local! {
+    static BASE_MANIFEST_SOURCE_MATERIALIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_manifest_materialization_visits() {
+    BASE_MANIFEST_SOURCE_MATERIALIZATIONS.with(|visits| visits.set(0));
+    PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn manifest_materialization_visits() -> (u64, u64) {
+    (
+        BASE_MANIFEST_SOURCE_MATERIALIZATIONS.with(std::cell::Cell::get),
+        PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS.with(std::cell::Cell::get),
+    )
+}
+
 struct CommitGenerationOutcome {
     receipt: CommitReceipt,
     disposition: PublicationDisposition,
@@ -693,28 +713,45 @@ impl GenerationWriter {
 
     fn next_manifest(&self) -> Result<GenerationManifest> {
         self.validate_source_route_plan_complete()?;
-        let mut sources = HashMap::<SourceKey, CertifiedSource>::new();
-        if let Some(base) = self.base_manifest() {
-            for source in &base.sources {
-                sources.insert(source.observation().source().clone(), source.clone());
-            }
-        }
-        for source in self.deletions.keys().chain(&self.route_deletions) {
-            sources.remove(source);
-        }
+        let deleted_sources = self
+            .deletions
+            .keys()
+            .chain(&self.route_deletions)
+            .map(|source| source.identity().digest())
+            .collect::<BTreeSet<_>>();
+        let mut source_upserts = BTreeMap::<[u8; 32], CertifiedSource>::new();
         for pending in self.pending.values() {
             let certificate = pending.certificate.as_ref().ok_or_else(|| {
                 IndexError::SourceNotCertified(pending.source.identity().to_string())
             })?;
-            sources.insert(pending.source.clone(), certificate.clone());
+            source_upserts.insert(pending.source.identity().digest(), certificate.clone());
         }
-        let sources = sources.into_values().collect::<Vec<_>>();
+        let sources = merge_manifest_sources(
+            self.base_manifest().map_or(&[][..], |base| &base.sources),
+            source_upserts,
+            &deleted_sources,
+        );
         let record_aggregates = staging::manifest_record_aggregates(self, &sources)?;
         let mut source_routes = if let Some(routes) = &self.present_source_routes {
             routes.clone()
         } else {
             implicit_source_routes(&sources)?
         };
+        for route in &mut source_routes {
+            let Some(delta) = self.partial_source_route_deltas.get(route.route_identity()) else {
+                continue;
+            };
+            if route.missing_state().is_some() {
+                return Err(IndexError::InvalidSourceRoutePlan(format!(
+                    "partial route {} cannot carry missing state",
+                    route.route_identity().as_str()
+                )));
+            }
+            *route = SourceRouteSnapshot::present(
+                route.route_identity().clone(),
+                merge_partial_route_members(route.sources(), delta),
+            )?;
+        }
         source_routes.extend(self.observed_missing_routes.values().cloned());
         GenerationManifest::from_parts_with_record_aggregates(
             sources,
@@ -722,4 +759,46 @@ impl GenerationWriter {
             source_routes,
         )
     }
+}
+
+fn merge_manifest_sources(
+    base: &[CertifiedSource],
+    mut upserts: BTreeMap<[u8; 32], CertifiedSource>,
+    deletions: &BTreeSet<[u8; 32]>,
+) -> Vec<CertifiedSource> {
+    let mut sources = Vec::with_capacity(base.len().saturating_add(upserts.len()));
+    for certificate in base {
+        #[cfg(test)]
+        BASE_MANIFEST_SOURCE_MATERIALIZATIONS
+            .with(|visits| visits.set(visits.get().saturating_add(1)));
+        let digest = source_sort_key(certificate.observation().source());
+        if let Some(replacement) = upserts.remove(&digest) {
+            sources.push(replacement);
+        } else if !deletions.contains(&digest) {
+            sources.push(certificate.clone());
+        }
+    }
+    sources.extend(upserts.into_values());
+    sources
+}
+
+fn merge_partial_route_members(
+    base: &[SourceKey],
+    delta: &PartialSourceRouteDelta,
+) -> Vec<SourceKey> {
+    let mut upserts = delta.upserts.clone();
+    let mut members = Vec::with_capacity(base.len().saturating_add(upserts.len()));
+    for member in base {
+        #[cfg(test)]
+        PARTIAL_BASE_ROUTE_MEMBER_MATERIALIZATIONS
+            .with(|visits| visits.set(visits.get().saturating_add(1)));
+        let digest = member.identity().digest();
+        if let Some(replacement) = upserts.remove(&digest) {
+            members.push(replacement);
+        } else if !delta.deletions.contains(&digest) {
+            members.push(member.clone());
+        }
+    }
+    members.extend(upserts.into_values());
+    members
 }

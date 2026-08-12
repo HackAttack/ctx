@@ -199,6 +199,71 @@ mod tests {
         VerifiedIndex::open(root).unwrap()
     }
 
+    fn empty_hermes_route_index(
+        root: &Path,
+        route: &SourceRouteIdentity,
+        control: Option<Vec<u8>>,
+    ) -> VerifiedIndex {
+        let mut writer = GenerationWriter::open(root, WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        writer
+            .set_present_source_routes(vec![SourceRouteSnapshot::present(
+                route.clone(),
+                Vec::new(),
+            )
+            .unwrap()])
+            .unwrap();
+        let request_route = route.clone();
+        writer
+            .commit_with_publication_metadata(
+                |_| true,
+                move |context| {
+                    let publication = SourceBackedRefreshPublication {
+                        generation_id: context.generation_id().to_owned(),
+                        published_explicit_source_catalog: None,
+                        unsupported_routes: 0,
+                        certified_source_count: 0,
+                        certified_source_bytes: 0,
+                        current: SourceBackedRefreshCurrent::default(),
+                        timings: SourceBackedRefreshTimings::default(),
+                        route_results: vec![SourceBackedRefreshRouteResult::succeeded(
+                            request_route.as_str().to_owned(),
+                            true,
+                        )],
+                        zero_source_authority: vec![SourceBackedZeroSourceAuthority {
+                            generation_id: context.generation_id().to_owned(),
+                            route_identity: request_route.clone(),
+                            kind: SourceBackedZeroSourceAuthorityKind::CompleteEmptyInventory,
+                        }],
+                        catalog_route_bindings: Vec::new(),
+                        verified_index: None,
+                    };
+                    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
+                        None,
+                        context.generation_id().to_owned(),
+                        &publication,
+                    )
+                    .map_err(|error| IndexError::PublicationMetadata(format!("{error:#}")))?;
+                    SourceBackedPublicationMetadata {
+                        version: SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+                        request_id: "empty-hermes-route-control-test".to_owned(),
+                        operation: SourceBackedRefreshOperation::Refresh,
+                        refresh_scope: SourceBackedRefreshScope::All,
+                        receipt: receipt.to_json(),
+                        route_observations: BTreeMap::new(),
+                        route_controls: control
+                            .map(|control| BTreeMap::from([(request_route.clone(), control)]))
+                            .unwrap_or_default(),
+                    }
+                    .encode()
+                },
+            )
+            .unwrap();
+        VerifiedIndex::open(root).unwrap()
+    }
+
     #[test]
     fn persisted_hermes_deadline_selects_only_overdue_exact_routes() {
         let temp = tempfile::tempdir().unwrap();
@@ -255,12 +320,31 @@ mod tests {
         let catalog = build.registry.watch_catalog();
         let route = catalog.route_ids().next().cloned().expect("Hermes route");
 
-        for controls in [
-            BTreeMap::new(),
-            BTreeMap::from([(route.clone(), b"malformed".to_vec())]),
+        for (case, control) in [
+            ("missing", None),
+            ("malformed", Some(b"malformed".to_vec())),
         ] {
+            let persisted = empty_hermes_route_index(&temp.path().join(case), &route, control);
+            let persisted_route = persisted.manifest().source_route(&route).unwrap();
+            assert!(persisted_route.sources().is_empty());
+            let controls = SourceBackedPublicationMetadata::decode(&persisted)
+                .unwrap()
+                .route_controls;
             let recovery = hermes_routes_requiring_control_recovery(&catalog, &controls, 1_000);
             assert_eq!(recovery, BTreeSet::from([route.clone()]));
+            assert_eq!(
+                overdue_hermes_exact_routes(&persisted, 1_000, |_| {
+                    catalog
+                        .route_control_expectation(&route)
+                        .map(|expectation| {
+                            let SourceBackedRouteControlExpectation::Hermes {
+                                profile_source_descriptor,
+                            } = expectation;
+                            *profile_source_descriptor
+                        })
+                }),
+                BTreeSet::from([route.clone()])
+            );
         }
         let engine = test_refresh_engine();
         engine.initialize_watch_route_authority([route.clone()]);

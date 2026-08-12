@@ -3,6 +3,21 @@ mod diagnostics;
 mod refresh_control_plane;
 pub use diagnostics::*;
 
+#[cfg(test)]
+thread_local! {
+    static BASE_SOURCE_MANIFEST_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_base_source_manifest_visits() {
+    BASE_SOURCE_MANIFEST_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn base_source_manifest_visits() -> u64 {
+    BASE_SOURCE_MANIFEST_VISITS.with(std::cell::Cell::get)
+}
+
 pub const MAX_RECORDED_SOURCE_BACKED_FAILURES: usize = 64;
 pub const MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES: usize = 512;
 pub const MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES: usize = 512;
@@ -222,10 +237,13 @@ impl SourceBackedGenerationSink<'_> {
 
     pub fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
         self.writer.base_manifest().and_then(|manifest| {
-            manifest
-                .sources
-                .iter()
-                .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
+            manifest.sources.iter().find(|candidate| {
+                #[cfg(test)]
+                BASE_SOURCE_MANIFEST_VISITS.with(|visits| {
+                    visits.set(visits.get().saturating_add(1));
+                });
+                candidate.observation().source().exact_descriptor_eq(source)
+            })
         })
     }
 
@@ -287,6 +305,15 @@ impl SourceBackedGenerationSink<'_> {
     ) -> SourceBackedCoordinatorResult<&CertifiedSource> {
         self.claim_present(&source)?;
         Ok(self.writer.begin_source_append(source)?)
+    }
+
+    pub(crate) fn begin_source_append_from_base(
+        &mut self,
+        base: GenerationBaseCertifiedSource,
+    ) -> SourceBackedCoordinatorResult<&CertifiedSource> {
+        let source = base.certificate().observation().source().clone();
+        self.claim_present(&source)?;
+        Ok(self.writer.begin_source_append_from_base(base)?)
     }
 
     pub fn add_core_record(&mut self, record: CoreRecord) -> SourceBackedCoordinatorResult<()> {
@@ -737,11 +764,18 @@ impl SourceBackedRouteDriver {
 }
 
 #[derive(Debug, Clone)]
+pub(in super::super) struct HermesRouteRetirement {
+    pub(in super::super) route_identity: SourceRouteIdentity,
+    pub(in super::super) database_identity: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
 pub struct SourceBackedRoute {
     pub(in super::super) metadata: SourceBackedRouteMetadata,
     pub(in super::super) driver: Option<SourceBackedRouteDriver>,
     pub(in super::super) certified_missing_paths: Vec<PathBuf>,
     pub(in super::super) retire_after_success: Vec<SourceRouteIdentity>,
+    pub(in super::super) hermes_retire_after_success: Vec<HermesRouteRetirement>,
     pub(in super::super) codex_generation_participant: Option<usize>,
 }
 
@@ -773,6 +807,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            hermes_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -801,6 +836,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            hermes_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -834,6 +870,7 @@ impl SourceBackedRoute {
             driver: Some(driver),
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            hermes_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -862,6 +899,7 @@ impl SourceBackedRoute {
             driver: None,
             certified_missing_paths: vec![path],
             retire_after_success: Vec::new(),
+            hermes_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         })
     }
@@ -882,6 +920,7 @@ impl SourceBackedRoute {
             driver: None,
             certified_missing_paths: Vec::new(),
             retire_after_success: Vec::new(),
+            hermes_retire_after_success: Vec::new(),
             codex_generation_participant: None,
         }
     }
@@ -954,6 +993,62 @@ impl SourceBackedProviderRegistry {
             .retire_after_success
             .binary_search(replacement)
             .is_ok()
+        {
+            return Err(SourceBackedCoordinatorError::InvalidRefreshScope {
+                route_id: replacement.as_str().to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Registers stale automatic Hermes routes as conditional retirement
+    /// candidates. A candidate is authorized only when the replacement's
+    /// successful control reports the same stable physical database identity.
+    pub fn retire_hermes_routes_after_success(
+        &mut self,
+        replacement: &SourceRouteIdentity,
+        retired: impl IntoIterator<Item = (SourceRouteIdentity, [u8; 32])>,
+    ) -> SourceBackedCoordinatorResult<()> {
+        let route = self
+            .routes
+            .iter_mut()
+            .find(|route| route.metadata.route_identity.as_ref() == Some(replacement))
+            .ok_or_else(|| SourceBackedCoordinatorError::InvalidRefreshScope {
+                route_id: replacement.as_str().to_owned(),
+            })?;
+        if route.driver.is_none()
+            || route.metadata.source.provider != CaptureProvider::Hermes
+            || route.metadata.selection != Some(SourceBackedRouteSelection::Automatic)
+        {
+            return Err(SourceBackedCoordinatorError::InvalidRefreshScope {
+                route_id: replacement.as_str().to_owned(),
+            });
+        }
+        route
+            .hermes_retire_after_success
+            .extend(
+                retired
+                    .into_iter()
+                    .map(
+                        |(route_identity, database_identity)| HermesRouteRetirement {
+                            route_identity,
+                            database_identity,
+                        },
+                    ),
+            );
+        route.hermes_retire_after_success.sort_by(|left, right| {
+            left.route_identity
+                .cmp(&right.route_identity)
+                .then(left.database_identity.cmp(&right.database_identity))
+        });
+        route.hermes_retire_after_success.dedup_by(|left, right| {
+            left.route_identity == right.route_identity
+                && left.database_identity == right.database_identity
+        });
+        if route
+            .hermes_retire_after_success
+            .iter()
+            .any(|candidate| &candidate.route_identity == replacement)
         {
             return Err(SourceBackedCoordinatorError::InvalidRefreshScope {
                 route_id: replacement.as_str().to_owned(),

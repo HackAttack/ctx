@@ -246,6 +246,98 @@ fn successful_route_atomically_retires_one_exact_carried_route() {
 }
 
 #[test]
+fn route_retirement_uses_logarithmic_canonical_member_lookup() {
+    const RETIRED_SOURCES: usize = 65;
+    const OTHER_ROUTE_SOURCES: usize = 513;
+
+    let temp = tempdir().unwrap();
+    let retired_route = SourceRouteIdentity::from_sha256("81".repeat(32)).unwrap();
+    let other_route = SourceRouteIdentity::from_sha256("82".repeat(32)).unwrap();
+    let replacement_route = SourceRouteIdentity::from_sha256("83".repeat(32)).unwrap();
+    let mut retired_sources = (0..RETIRED_SOURCES)
+        .map(|index| source(&format!("retirement-retired-{index:04}.jsonl")))
+        .collect::<Vec<_>>();
+    retired_sources.sort_by_key(source_sort_key);
+    let mut other_sources = (0..OTHER_ROUTE_SOURCES)
+        .map(|index| source(&format!("retirement-other-{index:04}.jsonl")))
+        .collect::<Vec<_>>();
+    other_sources.sort_by_key(source_sort_key);
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    for source in retired_sources.iter().chain(&other_sources) {
+        initial.begin_source(source.clone()).unwrap();
+        initial.certify_source(certificate(source, 1, 0)).unwrap();
+    }
+    initial
+        .set_present_source_routes(vec![
+            SourceRouteSnapshot::present(retired_route.clone(), retired_sources.clone()).unwrap(),
+            SourceRouteSnapshot::present(other_route.clone(), other_sources.clone()).unwrap(),
+        ])
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut replacement = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    replacement
+        .set_source_route_plan(
+            BTreeSet::from([replacement_route.clone()]),
+            BTreeSet::from([retired_route.clone(), other_route.clone()]),
+        )
+        .unwrap();
+    replacement
+        .begin_source_route_stage(replacement_route.clone())
+        .unwrap();
+    replacement
+        .authorize_carried_source_route_retirement(&replacement_route, &retired_route)
+        .unwrap();
+    crate::writer_routes::reset_route_retirement_membership_probes();
+    assert_eq!(
+        replacement
+            .retire_carried_source_route(&replacement_route, &retired_route)
+            .unwrap(),
+        retired_sources
+    );
+    let (lookups, comparisons) = crate::writer_routes::route_retirement_membership_probes();
+    assert_eq!(lookups, RETIRED_SOURCES as u64);
+    assert!(
+        comparisons <= (RETIRED_SOURCES * 11) as u64,
+        "canonical binary membership lookup made {comparisons} comparisons"
+    );
+    assert!(
+        comparisons < (RETIRED_SOURCES * OTHER_ROUTE_SOURCES) as u64,
+        "retirement regressed to a retired-sources by other-route-members scan"
+    );
+
+    replacement
+        .finish_source_route_stage(&replacement_route)
+        .unwrap();
+    replacement
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            replacement_route,
+            Vec::new(),
+        )
+        .unwrap()])
+        .unwrap();
+    replacement.commit(|_| true).unwrap();
+
+    let published = VerifiedIndex::open(temp.path()).unwrap();
+    assert!(published.manifest().source_route(&retired_route).is_none());
+    assert_eq!(
+        published
+            .manifest()
+            .source_route(&other_route)
+            .unwrap()
+            .sources(),
+        other_sources
+    );
+}
+
+#[test]
 fn failed_route_rollback_restores_its_carried_retirement() {
     let temp = tempdir().unwrap();
     let old_source = source("rollback-retired-route.jsonl");
@@ -370,5 +462,74 @@ fn unpublished_route_checkpoint_is_reclaimed_after_reopen() {
     assert_eq!(
         VerifiedIndex::open(temp.path()).unwrap().generation_id(),
         initial.generation_id
+    );
+}
+
+#[test]
+fn incremental_route_delta_exposes_full_manifest_materialization() {
+    let temp = tempdir().unwrap();
+    let route = SourceRouteIdentity::from_sha256("58".repeat(32)).unwrap();
+    let base_sources = (0_u8..3)
+        .map(|index| source(&format!("materialized-base-{index}.jsonl")))
+        .collect::<Vec<_>>();
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    for (index, current) in base_sources.iter().enumerate() {
+        initial.begin_source(current.clone()).unwrap();
+        initial
+            .add_core_record(document(current, index as u64 + 1, "base materialization"))
+            .unwrap();
+        initial
+            .certify_source(certificate(current, index as u8 + 1, 1))
+            .unwrap();
+    }
+    initial
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            route.clone(),
+            base_sources.clone(),
+        )
+        .unwrap()])
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let appended = source("materialized-append.jsonl");
+    let mut incremental = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    incremental
+        .set_source_route_plan(BTreeSet::from([route.clone()]), BTreeSet::new())
+        .unwrap();
+    incremental.begin_source_route_stage(route.clone()).unwrap();
+    incremental
+        .retain_unstaged_source_route_members(&route)
+        .unwrap();
+    incremental.begin_source(appended.clone()).unwrap();
+    incremental
+        .add_core_record(document(&appended, 4, "delta materialization"))
+        .unwrap();
+    incremental
+        .certify_source(certificate(&appended, 4, 1))
+        .unwrap();
+    incremental.finish_source_route_stage(&route).unwrap();
+    incremental.set_present_source_routes(Vec::new()).unwrap();
+
+    crate::writer_publication::reset_manifest_materialization_visits();
+    let published = incremental.commit(|_| true).unwrap();
+    assert_eq!(
+        crate::writer_publication::manifest_materialization_visits(),
+        (3, 3),
+        "the current self-contained manifest format still materializes every base certificate and partial-route member once"
+    );
+    assert_eq!(
+        published
+            .manifest()
+            .source_route(&route)
+            .unwrap()
+            .sources()
+            .len(),
+        4
     );
 }

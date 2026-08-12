@@ -145,6 +145,12 @@ pub fn hermes_route_control_exact_due_for_profile(
     )
 }
 
+/// Returns the stable physical database identity from one valid successful
+/// Hermes control without opening provider data.
+pub fn hermes_route_control_database_identity(control: &[u8]) -> Option<[u8; 32]> {
+    provider::providers::hermes::source_backed::hermes_route_control_database_identity(control)
+}
+
 pub use provider::adapter::{CaptureWorkLimit, ProviderAdapterContext, ProviderImportOptions};
 pub use provider::source_backed::register_nanoclaw_source_backed_route_with_base_sources;
 pub use provider::source_backed::{

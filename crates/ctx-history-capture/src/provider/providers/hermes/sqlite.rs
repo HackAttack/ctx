@@ -1,8 +1,54 @@
 //! Bounded provider-owned Hermes SQLite traversal.
 
-use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::VecDeque;
+use std::{
+    collections::BTreeMap,
+    io::{Read, Seek, SeekFrom, Write},
+};
+
+#[cfg(test)]
+thread_local! {
+    static EXACT_GLOBAL_MESSAGE_TRAVERSALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SESSION_SCOPED_MESSAGE_CANDIDATE_QUERIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static EXACT_MESSAGE_SPOOL_FILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ACTIVE_MESSAGE_REPLAYS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PEAK_ACTIVE_MESSAGE_REPLAYS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CREATED_MESSAGE_REPLAYS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static DROPPED_MESSAGE_REPLAYS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_exact_message_query_counters() {
+    EXACT_GLOBAL_MESSAGE_TRAVERSALS.with(|count| count.set(0));
+    SESSION_SCOPED_MESSAGE_CANDIDATE_QUERIES.with(|count| count.set(0));
+    EXACT_MESSAGE_SPOOL_FILES.with(|count| count.set(0));
+    ACTIVE_MESSAGE_REPLAYS.with(|count| {
+        assert_eq!(count.get(), 0, "Hermes message replay leaked across a scan");
+    });
+    PEAK_ACTIVE_MESSAGE_REPLAYS.with(|count| count.set(0));
+    CREATED_MESSAGE_REPLAYS.with(|count| count.set(0));
+    DROPPED_MESSAGE_REPLAYS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn exact_message_spool_counters() -> (u64, u64, u64, u64, u64) {
+    (
+        EXACT_MESSAGE_SPOOL_FILES.with(std::cell::Cell::get),
+        ACTIVE_MESSAGE_REPLAYS.with(std::cell::Cell::get),
+        PEAK_ACTIVE_MESSAGE_REPLAYS.with(std::cell::Cell::get),
+        CREATED_MESSAGE_REPLAYS.with(std::cell::Cell::get),
+        DROPPED_MESSAGE_REPLAYS.with(std::cell::Cell::get),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn exact_message_query_counters() -> (u64, u64) {
+    (
+        EXACT_GLOBAL_MESSAGE_TRAVERSALS.with(std::cell::Cell::get),
+        SESSION_SCOPED_MESSAGE_CANDIDATE_QUERIES.with(std::cell::Cell::get),
+    )
+}
 
 use rusqlite::{params_from_iter, Connection, Statement};
 
@@ -21,6 +67,148 @@ use super::layout::{
 const HERMES_FRONTIER_ACCOUNTING_BYTES: usize = 1 + 8 + 8;
 const HERMES_SQLITE_VALUE_OVERHEAD_BYTES: u64 = 64 * 9;
 const HERMES_NATIVE_ROW_BATCH: usize = 64;
+const HERMES_MESSAGE_SPOOL_RECORD_BYTES: u64 = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HermesMessageSpoolRange {
+    tail_offset: Option<u64>,
+    rowids: u64,
+}
+
+pub(super) struct HermesExactMessageSpool {
+    file: std::fs::File,
+    next_offset: u64,
+}
+
+pub(super) struct HermesMessageReplay {
+    file: std::fs::File,
+    rowids: u64,
+}
+
+impl HermesExactMessageSpool {
+    pub(super) fn new() -> Result<Self> {
+        #[cfg(test)]
+        EXACT_MESSAGE_SPOOL_FILES.with(|count| count.set(count.get().saturating_add(1)));
+        Ok(Self {
+            file: tempfile::tempfile()?,
+            next_offset: 0,
+        })
+    }
+
+    pub(super) fn push(&mut self, range: &mut HermesMessageSpoolRange, rowid: i64) -> Result<()> {
+        self.file.seek(SeekFrom::Start(self.next_offset))?;
+        self.file
+            .write_all(&range.tail_offset.unwrap_or(u64::MAX).to_be_bytes())?;
+        self.file.write_all(&rowid.to_be_bytes())?;
+        range.tail_offset = Some(self.next_offset);
+        range.rowids = range
+            .rowids
+            .checked_add(1)
+            .ok_or(CaptureError::SystemInvariant(
+                "Hermes message spool count overflowed",
+            ))?;
+        self.next_offset = self
+            .next_offset
+            .checked_add(HERMES_MESSAGE_SPOOL_RECORD_BYTES)
+            .ok_or(CaptureError::SystemInvariant(
+                "Hermes message spool offset overflowed",
+            ))?;
+        Ok(())
+    }
+
+    pub(super) fn prepare_replay(
+        &mut self,
+        range: HermesMessageSpoolRange,
+    ) -> Result<HermesMessageReplay> {
+        let mut replay = HermesMessageReplay {
+            file: tempfile::tempfile()?,
+            rowids: range.rowids,
+        };
+        #[cfg(test)]
+        {
+            CREATED_MESSAGE_REPLAYS.with(|count| count.set(count.get().saturating_add(1)));
+            ACTIVE_MESSAGE_REPLAYS.with(|active| {
+                let current = active.get().saturating_add(1);
+                active.set(current);
+                PEAK_ACTIVE_MESSAGE_REPLAYS.with(|peak| peak.set(peak.get().max(current)));
+            });
+        }
+        let mut offset = range.tail_offset;
+        let mut visited = 0_u64;
+        while let Some(current) = offset {
+            self.file.seek(SeekFrom::Start(current))?;
+            let mut previous = [0_u8; 8];
+            let mut rowid = [0_u8; 8];
+            self.file.read_exact(&mut previous)?;
+            self.file.read_exact(&mut rowid)?;
+            replay.file.write_all(&rowid)?;
+            let previous = u64::from_be_bytes(previous);
+            offset = (previous != u64::MAX).then_some(previous);
+            visited = visited.checked_add(1).ok_or(CaptureError::SystemInvariant(
+                "Hermes message replay count overflowed",
+            ))?;
+        }
+        if visited != range.rowids {
+            return Err(CaptureError::SystemInvariant(
+                "Hermes message spool chain length mismatch",
+            ));
+        }
+        Ok(replay)
+    }
+}
+
+#[cfg(test)]
+impl Drop for HermesMessageReplay {
+    fn drop(&mut self) {
+        ACTIVE_MESSAGE_REPLAYS.with(|active| {
+            active.set(
+                active
+                    .get()
+                    .checked_sub(1)
+                    .expect("Hermes message replay counter underflowed"),
+            );
+        });
+        DROPPED_MESSAGE_REPLAYS.with(|count| count.set(count.get().saturating_add(1)));
+    }
+}
+
+impl HermesMessageSpoolRange {
+    pub(super) const fn empty() -> Self {
+        Self {
+            tail_offset: None,
+            rowids: 0,
+        }
+    }
+}
+
+impl HermesMessageReplay {
+    fn rowid_page(&mut self, consumed: u64) -> Result<Vec<i64>> {
+        if consumed >= self.rowids {
+            return Ok(Vec::new());
+        }
+        let count = self
+            .rowids
+            .saturating_sub(consumed)
+            .min(HERMES_NATIVE_ROW_BATCH as u64);
+        let start = self
+            .rowids
+            .saturating_sub(consumed)
+            .saturating_sub(count)
+            .checked_mul(8)
+            .ok_or(CaptureError::SystemInvariant(
+                "Hermes message replay offset overflowed",
+            ))?;
+        self.file.seek(SeekFrom::Start(start))?;
+        let mut rowids = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let mut rowid = [0_u8; 8];
+            self.file.read_exact(&mut rowid)?;
+            rowids.push(i64::from_be_bytes(rowid));
+        }
+        rowids.reverse();
+        Ok(rowids)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HermesSessionIdentityRow {
@@ -321,6 +509,26 @@ impl<'connection> HermesRowReader<'connection> {
         self.hydrate_candidates(candidates, 0)
     }
 
+    pub(super) fn next_message_inventory_page(
+        &mut self,
+        after: Option<i64>,
+        first_ordinal: u64,
+    ) -> Result<Vec<HermesNativeRow>> {
+        let candidates = bounded_candidate_prefix(self.message_candidates(after)?)?;
+        self.hydrate_candidates(candidates, first_ordinal)
+    }
+
+    pub(super) fn exact_message_page(
+        &mut self,
+        replay: &mut HermesMessageReplay,
+        consumed: u64,
+        first_ordinal: u64,
+    ) -> Result<Vec<HermesNativeRow>> {
+        let rowids = replay.rowid_page(consumed)?;
+        let candidates = bounded_candidate_prefix(self.message_candidates_for_rowids(&rowids)?)?;
+        self.hydrate_candidates(candidates, first_ordinal)
+    }
+
     #[cfg(test)]
     pub(super) fn next(&mut self, frontier: HermesFrontier) -> Result<Option<HermesNativeRow>> {
         if self.buffered_frontier != Some(frontier) || self.buffered.is_empty() {
@@ -399,6 +607,13 @@ impl<'connection> HermesRowReader<'connection> {
     }
 
     fn message_candidates(&mut self, after: Option<i64>) -> Result<Vec<HermesCandidate>> {
+        #[cfg(test)]
+        if self.session_scope.is_some() {
+            SESSION_SCOPED_MESSAGE_CANDIDATE_QUERIES
+                .with(|count| count.set(count.get().saturating_add(1)));
+        } else if after.is_none() {
+            EXACT_GLOBAL_MESSAGE_TRAVERSALS.with(|count| count.set(count.get().saturating_add(1)));
+        }
         self.candidate_query_batches =
             checked_reader_counter(self.candidate_query_batches, "candidate query batches")?;
         let conn = self.conn;
@@ -426,6 +641,45 @@ impl<'connection> HermesRowReader<'connection> {
                     .collect(),
                 (None, None) => self.first_message_candidate.query_map([], read)?.collect(),
             }
+        })
+    }
+
+    fn message_candidates_for_rowids(&mut self, rowids: &[i64]) -> Result<Vec<HermesCandidate>> {
+        if rowids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.candidate_query_batches =
+            checked_reader_counter(self.candidate_query_batches, "candidate query batches")?;
+        let placeholders = (1..=rowids.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let messages = self.schema.messages();
+        let visibility = self.schema.message_visibility();
+        let visibility = if visibility.is_empty() {
+            String::new()
+        } else {
+            format!(" and {visibility}")
+        };
+        let sql = format!(
+            "select m.rowid, {}, {} from messages m \
+             where m.rowid in ({placeholders}){visibility} order by m.rowid",
+            messages.retained_length_expr(),
+            messages.storage_class_error_expr(),
+        );
+        with_length_preflight(self.conn, || {
+            let mut statement = self.conn.prepare(&sql)?;
+            let candidates = statement
+                .query_map(params_from_iter(rowids), |row| {
+                    Ok(HermesCandidate {
+                        phase: HermesPhase::Messages,
+                        rowid: row.get(0)?,
+                        retained_bytes: row.get(1)?,
+                        storage_error_code: row.get(2)?,
+                    })
+                })?
+                .collect();
+            candidates
         })
     }
 

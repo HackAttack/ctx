@@ -7,16 +7,20 @@ use ctx_history_core::{
 use ctx_history_index::{IndexError, VerifiedIndex, WriterOptions};
 use rusqlite::Connection;
 
+use super::super::sqlite::{
+    exact_message_query_counters, exact_message_spool_counters, hermes_message_candidate_sql,
+    reset_exact_message_query_counters,
+};
 use super::*;
 use crate::{
     automatic_source_backed_route_identity,
     provider::source_backed::{
-        build_automatic_source_backed_registry_from_report,
+        base_source_manifest_visits, build_automatic_source_backed_registry_from_report,
         family::document::{
             document_base_route_source_visits, reset_document_base_route_source_visits,
         },
         partial_base_route_member_visits, refresh_source_backed_generation,
-        refresh_source_backed_generation_with_detailed_progress,
+        refresh_source_backed_generation_with_detailed_progress, reset_base_source_manifest_visits,
         reset_partial_base_route_member_visits, SourceBackedCoordinatorError,
         SourceBackedCurrentSourceProgressStage, SourceBackedProviderRegistry,
         SourceBackedReconciliationDemand, SourceBackedRefreshExecutor, SourceBackedRefreshReceipt,
@@ -390,6 +394,7 @@ fn cold_fixture(
     let registry = fixture_registry(data_root, database);
     let candidate = candidate(data_root, database);
     reset_logical_row_traversals();
+    reset_exact_message_query_counters();
     let cold =
         refresh_source_backed_generation(index_root, &registry, fixture_writer_options()).unwrap();
     assert_eq!(cold.sources.len(), 2);
@@ -456,6 +461,7 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
 
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
+    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let noop = incremental_refresh(&index_root, &registry, &cold);
     assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
@@ -463,6 +469,7 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
     assert_eq!(inventory_observation_rows(), 0);
     assert_eq!(logical_row_traversals(), 0);
     assert_eq!(document_base_route_source_visits(), 0);
+    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
     assert!(session_scan_receipts().is_empty());
 
@@ -476,6 +483,7 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
         .unwrap();
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
+    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let appended = incremental_refresh(&index_root, &registry, &noop);
     assert_eq!(appended.sources.len(), 2);
@@ -486,6 +494,7 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
     assert_eq!(inventory_observation_rows(), 1);
     assert_eq!(logical_row_traversals(), 1);
     assert_eq!(document_base_route_source_visits(), 1);
+    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
     assert_eq!(
         session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
@@ -510,12 +519,14 @@ fn production_incremental_base_route_work_stays_touch_bounded_with_large_history
 
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
+    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let noop = incremental_refresh(&index_root, &registry, &cold);
     assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
     assert_eq!(inventory_observation_rows(), 0);
     assert_eq!(logical_row_traversals(), 0);
     assert_eq!(document_base_route_source_visits(), 0);
+    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
 
     Connection::open(&database)
@@ -528,12 +539,14 @@ fn production_incremental_base_route_work_stays_touch_bounded_with_large_history
         .unwrap();
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
+    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let appended = incremental_refresh(&index_root, &registry, &noop);
     assert_eq!(appended.sources.len(), SESSIONS);
     assert_eq!(inventory_observation_rows(), 1);
     assert_eq!(logical_row_traversals(), 1);
     assert_eq!(document_base_route_source_visits(), 1);
+    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
 }
 
@@ -558,11 +571,15 @@ fn production_incremental_new_and_empty_sessions_read_only_the_delta() {
         )
         .unwrap();
     reset_logical_row_traversals();
+    reset_base_source_manifest_visits();
+    reset_partial_base_route_member_visits();
     let refreshed = incremental_refresh(&index_root, &registry, &cold);
 
     assert_eq!(refreshed.sources.len(), 4);
     assert_eq!(inventory_observation_rows(), 3);
     assert_eq!(logical_row_traversals(), 2);
+    assert_eq!(base_source_manifest_visits(), 0);
+    assert_eq!(partial_base_route_member_visits(), 0);
     assert_eq!(
         session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
         vec!["new-empty".to_owned(), "new-full".to_owned()]
@@ -1342,19 +1359,28 @@ fn noop_and_one_changed_session_have_linear_inventory_and_changed_body_work() {
     let registry = fixture_registry(&data_root, &database);
 
     reset_logical_row_traversals();
+    reset_exact_message_query_counters();
     let cold =
         refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
     assert_eq!(cold.sources.len(), SESSIONS);
     assert_eq!(logical_row_traversals(), SESSIONS as u64);
     assert_eq!(inventory_observation_rows(), (SESSIONS * 2) as u64);
+    assert_eq!(exact_message_query_counters(), (1, 0));
+    assert_eq!(
+        exact_message_spool_counters(),
+        (1, 0, 1, SESSIONS as u64, SESSIONS as u64)
+    );
 
     reset_logical_row_traversals();
+    reset_exact_message_query_counters();
     let noop =
         refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
     assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
     assert_eq!(noop.sources, cold.sources);
     assert_eq!(inventory_observation_rows(), (SESSIONS * 2) as u64);
     assert_eq!(logical_row_traversals(), 0);
+    assert_eq!(exact_message_query_counters(), (1, 0));
+    assert_eq!(exact_message_spool_counters(), (1, 0, 0, 0, 0));
     assert!(session_scan_receipts().is_empty());
 
     Connection::open(&database)
@@ -1365,11 +1391,14 @@ fn noop_and_one_changed_session_have_linear_inventory_and_changed_body_work() {
         )
         .unwrap();
     reset_logical_row_traversals();
+    reset_exact_message_query_counters();
     let changed =
         refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
     assert_ne!(changed.commit.generation_id, cold.commit.generation_id);
     assert_eq!(inventory_observation_rows(), (SESSIONS * 2) as u64);
     assert_eq!(logical_row_traversals(), 1);
+    assert_eq!(exact_message_query_counters(), (1, 0));
+    assert_eq!(exact_message_spool_counters(), (1, 0, 1, 1, 1));
     assert_eq!(
         session_scan_receipts().keys().collect::<Vec<_>>(),
         vec!["session-0064"]
@@ -1379,12 +1408,118 @@ fn noop_and_one_changed_session_have_linear_inventory_and_changed_body_work() {
     assert!(body_queries > 0);
 }
 
+#[test]
+fn exhaustive_source_backed_projection_includes_minimum_message_rowid() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    create_fixture(&database);
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "drop table messages;
+             create table messages (
+                 id integer not null,
+                 session_id text not null,
+                 role text not null,
+                 content text,
+                 timestamp real not null,
+                 active integer not null default 1,
+                 compacted integer not null default 0
+             );",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "insert into messages (rowid, id, session_id, role, content, timestamp)
+             values (?1, 30, 'parent-session', 'assistant', 'minimum rowid needle', 1782259204.0)",
+            [i64::MIN],
+        )
+        .unwrap();
+    drop(connection);
+
+    let registry = fixture_registry(&data_root, &database);
+    let candidate = candidate(&data_root, &database);
+    reset_exact_message_query_counters();
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+
+    assert_eq!(receipt.sources.len(), 2);
+    assert_eq!(exact_message_query_counters(), (1, 0));
+    let parent_source = hermes_session_source_key(&candidate.source, PARENT).unwrap();
+    let record = indexed_record(&index_root, &parent_source, PARENT, 30);
+    assert_eq!(
+        record.content.normalized_body.as_deref(),
+        Some("minimum rowid needle")
+    );
+}
+
+#[test]
+fn exhaustive_source_backed_projection_replays_orphan_message_session() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let data_root = temp.path().join("data-root");
+    let index_root = temp.path().join("index");
+    let database = temp.path().join("source/state.db");
+    create_fixture(&database);
+    Connection::open(&database)
+        .unwrap()
+        .execute("delete from sessions where id = 'parent-session'", [])
+        .unwrap();
+
+    let registry = fixture_registry(&data_root, &database);
+    let candidate = candidate(&data_root, &database);
+    reset_logical_row_traversals();
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, fixture_writer_options()).unwrap();
+
+    assert_eq!(receipt.sources.len(), 2);
+    assert_eq!(
+        source_certificate(
+            &receipt,
+            &hermes_session_source_key(&candidate.source, PARENT).unwrap()
+        )
+        .counts()
+        .complete_records,
+        1
+    );
+    assert_eq!(session_scan_receipts()[PARENT].0, 1);
+}
+
+#[test]
+fn exact_message_traversal_uses_the_rowid_plan_without_a_session_index_or_sort() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let database = temp.path().join("source/state.db");
+    create_many_session_fixture(&database, 8);
+    let conn = Connection::open(&database).unwrap();
+    let schema = HermesSchema::detect(&conn).unwrap();
+    let sql = hermes_message_candidate_sql(
+        &schema.messages().retained_length_expr(),
+        &schema.messages().storage_class_error_expr(),
+        schema.message_visibility(),
+        true,
+        false,
+    );
+    let mut statement = conn.prepare(&format!("explain query plan {sql}")).unwrap();
+    let details = statement
+        .query_map([i64::MIN], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(details.iter().any(|detail| {
+        detail.contains("SEARCH m USING INTEGER PRIMARY KEY") && detail.contains("rowid>?")
+    }));
+    assert!(details
+        .iter()
+        .all(|detail| !detail.contains("USE TEMP B-TREE")));
+}
+
 fn projected_bodies(
     candidate: &HermesSourceCandidate,
     snapshot: &SqliteSourceReadSnapshot,
     session: &str,
 ) -> Vec<String> {
-    let inventory = observe_hermes_session_inventory(
+    let mut inventory = observe_hermes_session_inventory(
         candidate,
         snapshot.connection().unwrap(),
         &mut |_| Ok(()),
@@ -1394,13 +1529,16 @@ fn projected_bodies(
         .leaves
         .iter()
         .find(|leaf| leaf.provider_leaf.provider_session_id == session)
-        .unwrap();
+        .unwrap()
+        .provider_leaf
+        .clone();
     let mut bodies = Vec::new();
     project_hermes_session_snapshot(
         candidate,
-        &leaf.provider_leaf,
+        &leaf,
         &inventory.schema,
         snapshot.connection().unwrap(),
+        inventory.message_spool.as_mut().unwrap(),
         &mut |page| {
             bodies.extend(page.records.into_iter().filter_map(|record| match record {
                 HermesSourceBackedRecord::Event(event) => event.content.normalized_body,

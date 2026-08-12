@@ -35,7 +35,7 @@ pub(crate) use ctx_history_index_format::required_field;
 pub(crate) use ctx_history_index_format::source_token;
 pub(crate) use ctx_history_index_format::{
     accumulate_core_record, core_record_accumulator_leaf, core_record_leaf, implicit_source_routes,
-    INDEX_MEMORY_MIN_PER_THREAD,
+    source_sort_key, INDEX_MEMORY_MIN_PER_THREAD,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_format::{
@@ -112,7 +112,7 @@ pub use writer_support::{
 };
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -160,6 +160,26 @@ pub struct CertifiedMissingRouteOutcome {
     deleted: bool,
 }
 
+/// Opaque authority for one certificate borrowed from this writer's exact
+/// pinned base generation.
+///
+/// Carrying this value through a provider scan lets append staging consume the
+/// already-resolved certificate without searching the complete base manifest
+/// again. The generation binding prevents a certificate resolved by another
+/// writer (or an older base) from authorizing an append.
+#[derive(Debug, Clone)]
+pub struct GenerationBaseCertifiedSource {
+    generation_id: String,
+    route_identity: SourceRouteIdentity,
+    certificate: CertifiedSource,
+}
+
+impl GenerationBaseCertifiedSource {
+    pub fn certificate(&self) -> &CertifiedSource {
+        &self.certificate
+    }
+}
+
 impl CertifiedMissingRouteOutcome {
     pub fn retained_sources(&self) -> &[SourceKey] {
         &self.retained_sources
@@ -182,6 +202,12 @@ struct SourceRoutePlan {
     completed: BTreeSet<SourceRouteIdentity>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct PartialSourceRouteDelta {
+    upserts: BTreeMap<[u8; 32], SourceKey>,
+    deletions: BTreeSet<[u8; 32]>,
+}
+
 #[derive(Clone)]
 struct SourceRouteStageCheckpoint {
     route_identity: SourceRouteIdentity,
@@ -193,6 +219,7 @@ struct SourceRouteStageCheckpoint {
     observed_missing_routes: HashMap<SourceRouteIdentity, SourceRouteSnapshot>,
     route_publication_revalidation_len: usize,
     partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
+    partial_source_route_deltas: BTreeMap<SourceRouteIdentity, PartialSourceRouteDelta>,
     source_identities: HashMap<Uuid, [u8; 32]>,
 }
 
@@ -278,6 +305,7 @@ pub struct GenerationWriter {
     route_publication_revalidations:
         Vec<(SourceRouteIdentity, Box<dyn Fn() -> bool + Send + 'static>)>,
     partially_reconciled_routes: BTreeSet<SourceRouteIdentity>,
+    partial_source_route_deltas: BTreeMap<SourceRouteIdentity, PartialSourceRouteDelta>,
     source_identities: HashMap<Uuid, [u8; 32]>,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
@@ -549,6 +577,7 @@ impl GenerationWriter {
                 observed_missing_routes: HashMap::new(),
                 route_publication_revalidations: Vec::new(),
                 partially_reconciled_routes: BTreeSet::new(),
+                partial_source_route_deltas: BTreeMap::new(),
                 source_identities,
                 source_route_plan: None,
                 active_source_route_stage: None,
@@ -780,6 +809,75 @@ impl GenerationWriter {
     /// The provider must hash the entire previously certified prefix while it
     /// parses the delta and submit a matching [`CertifiedSourceAppend`].
     pub fn begin_source_append(&mut self, source: SourceKey) -> Result<&CertifiedSource> {
+        let base = self
+            .base_manifest()
+            .and_then(|manifest| {
+                manifest
+                    .sources
+                    .iter()
+                    .find(|candidate| candidate.observation().source() == &source)
+            })
+            .cloned()
+            .ok_or_else(|| IndexError::SourceNotAppendable(source.identity().to_string()))?;
+        self.begin_source_append_with_base(source, base)
+    }
+
+    /// Resolves one exact source from the immutable base and binds it to this
+    /// writer's pinned generation for later constant-time append admission.
+    pub fn generation_base_certified_source(
+        &self,
+        route_identity: &SourceRouteIdentity,
+        source: &SourceKey,
+    ) -> Option<GenerationBaseCertifiedSource> {
+        let generation_id = self.active_pointer.as_ref()?.active().generation_id();
+        let source_key = source.identity().digest();
+        let manifest = self.base_manifest()?;
+        let route = manifest.source_route(route_identity)?;
+        let member = route
+            .sources()
+            .binary_search_by_key(&source_key, |candidate| candidate.identity().digest())
+            .ok()
+            .and_then(|index| route.sources().get(index))
+            .filter(|candidate| candidate.exact_descriptor_eq(source))?;
+        let certificate = manifest
+            .sources
+            .binary_search_by_key(&source_key, |candidate| {
+                candidate.observation().source().identity().digest()
+            })
+            .ok()
+            .and_then(|index| manifest.sources.get(index))
+            .filter(|candidate| candidate.observation().source().exact_descriptor_eq(member))?
+            .clone();
+        Some(GenerationBaseCertifiedSource {
+            generation_id: generation_id.to_owned(),
+            route_identity: route_identity.clone(),
+            certificate,
+        })
+    }
+
+    /// Starts an exact append using a certificate previously resolved from
+    /// this writer's pinned base generation.
+    pub fn begin_source_append_from_base(
+        &mut self,
+        base: GenerationBaseCertifiedSource,
+    ) -> Result<&CertifiedSource> {
+        let expected_generation_id = self
+            .active_pointer
+            .as_ref()
+            .map(|pointer| pointer.active().generation_id());
+        if expected_generation_id != Some(base.generation_id.as_str()) {
+            return Err(IndexError::AppendBaseMismatch);
+        }
+        self.require_active_source_route(&base.route_identity)?;
+        let source = base.certificate.observation().source().clone();
+        self.begin_source_append_with_base(source, base.certificate)
+    }
+
+    fn begin_source_append_with_base(
+        &mut self,
+        source: SourceKey,
+        base: CertifiedSource,
+    ) -> Result<&CertifiedSource> {
         self.reject_carried_source_mutation(&source)?;
         register_compact_identity(
             &mut self.source_identities,
@@ -791,16 +889,6 @@ impl GenerationWriter {
         if self.pending.contains_key(&token) {
             return Err(IndexError::DuplicateSource(source.identity().to_string()));
         }
-        let base = self
-            .base_manifest()
-            .and_then(|manifest| {
-                manifest
-                    .sources
-                    .iter()
-                    .find(|candidate| candidate.observation().source() == &source)
-            })
-            .cloned()
-            .ok_or_else(|| IndexError::SourceNotAppendable(source.identity().to_string()))?;
         if base.frontier().is_none() || !base.observation().source().exact_descriptor_eq(&source) {
             return Err(IndexError::SourceNotAppendable(
                 source.identity().to_string(),
