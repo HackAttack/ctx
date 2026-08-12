@@ -15,7 +15,7 @@ import sys
 import tempfile
 from typing import Any
 
-# The Bazel release route carries this exact parser. Do not inherit a mutable
+# The release inventory carries this exact parser. Do not inherit a mutable
 # host package set or vary parsing behavior with the host Python minor version.
 import tomli as tomllib
 
@@ -200,7 +200,7 @@ def validate_policy(
             if not isinstance(entry.get("rationale"), str) or len(entry["rationale"]) < 20:
                 raise GateError("tool_failure", f"lockfile exclusion lacks rationale: {path}")
         elif entry.get("closure") not in {
-            "bazel-release-inventory",
+            "cargo-release-inventory",
             "cargo-release-union",
             "lockfile",
         }:
@@ -407,7 +407,7 @@ def cargo_release_union(
     return release
 
 
-def bazel_release_inventory(
+def cargo_release_inventory(
     inventory_path: Path, scanner_packages: set[tuple[str, str, str]]
 ) -> set[tuple[str, str, str]]:
     try:
@@ -640,10 +640,10 @@ def evaluate(
             raise GateError("tool_failure", f"OSV-Scanner found no packages: {entry['path']}")
         scanner_packages = {package_key(item.get("package", {})) for item in packages}
         package_counts[entry["path"]] = len(scanner_packages)
-        if entry["closure"] == "bazel-release-inventory":
+        if entry["closure"] == "cargo-release-inventory":
             if args.cargo_inventory is None:
-                raise GateError("tool_failure", "Bazel Cargo inventory was not supplied")
-            selected = bazel_release_inventory(args.cargo_inventory, scanner_packages)
+                raise GateError("tool_failure", "Cargo release inventory was not supplied")
+            selected = cargo_release_inventory(args.cargo_inventory, scanner_packages)
         elif entry["closure"] == "cargo-release-union":
             manifest = safe_relative(entry.get("manifest"), "Cargo release manifest")
             selected = cargo_release_union(

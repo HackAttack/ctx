@@ -115,9 +115,6 @@ case "${mode}" in
       run pwsh -NoLogo -NoProfile -File scripts/tests/run-native-candidate-smoke-test.ps1
     fi
     ;;
-  linux_release_construction_tests)
-    run bash scripts/test-linux-release-construction.sh
-    ;;
   macos_release_signing_tests)
     run bash scripts/tests/macos-release-signing-test.sh
     ;;

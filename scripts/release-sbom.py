@@ -369,20 +369,13 @@ def target_contract(
     expected_platform = "linux-aarch64" if target_id == "linux-arm64" else target_id
     authority = matches[0].get("public_construction_authority") if matches else None
     label = matches[0].get("public_construction_label") if matches else None
-    expected_label = (
-        f"//:ctx_release_{target_id.replace('-', '_')}"
-        if authority == "bazel-release-route-v1"
-        else "scripts/release/build-public-candidate-on-linux.sh"
-        if authority == "linux-cross-cargo-zigbuild-v1"
-        else None
-    )
+    expected_label = "scripts/release/build-public-candidate-on-linux.sh"
     if (
         value.get("schema_version") != 1
         or len(matches) != 1
         or platform != expected_platform
         or matches[0].get("public_rust_target") != rust_target
-        or matches[0].get("public_construction_authority")
-        not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
+        or authority != "linux-cross-cargo-zigbuild-v1"
         or label != expected_label
     ):
         raise ValueError("release target matrix does not bind the candidate route")
@@ -883,7 +876,7 @@ def verify_bundle_only(
             "size_bytes": artifact_size,
         }
         or candidate.get("construction", {}).get("authority")
-        not in {"bazel-release-route-v1", "linux-cross-cargo-zigbuild-v1"}
+        != "linux-cross-cargo-zigbuild-v1"
     ):
         raise ValueError("candidate manifest does not bind the exact construction artifact")
     target = candidate.get("target")
@@ -903,14 +896,9 @@ def verify_bundle_only(
     construction = candidate.get("construction")
     authority = construction.get("authority") if isinstance(construction, dict) else None
     label = construction.get("label") if isinstance(construction, dict) else None
-    expected_label = (
-        f"//:ctx_release_{str(target['id']).replace('-', '_')}"
-        if authority == "bazel-release-route-v1"
-        else "scripts/release/build-public-candidate-on-linux.sh"
-        if authority == "linux-cross-cargo-zigbuild-v1"
-        else None
-    )
-    if expected_label is None or label != expected_label:
+    if authority != "linux-cross-cargo-zigbuild-v1" or label != (
+        "scripts/release/build-public-candidate-on-linux.sh"
+    ):
         raise ValueError("candidate manifest does not bind its target construction route")
     build_info_bytes = regular_bytes(args.build_info, "build-info", 64 * 1024)
     build_info, _ = load_core_build_info(
@@ -1046,7 +1034,7 @@ def verify_bundle_only(
             or candidate["artifact"]["file"] != WINDOWS_CONSTRUCTION_ARTIFACT
         ):
             raise ValueError(
-                "release-bound candidate manifest is not the Windows construction candidate"
+                "release-bound candidate manifest is not the Windows factory candidate"
             )
         sums, sums_record = release_sums_record(args.release_sums)
         runtime_record = windows_runtime_record(args.runtime_archive)
@@ -1084,7 +1072,7 @@ def bind_release_candidate(args: argparse.Namespace) -> tuple[bytes, bytes]:
         or artifact.get("file") != WINDOWS_CONSTRUCTION_ARTIFACT
     ):
         raise ValueError(
-            "release binding requires the exact Windows Bazel construction candidate"
+            "release binding requires the exact Windows factory construction candidate"
         )
     sums, sums_record = release_sums_record(args.release_sums)
     runtime_record = windows_runtime_record(args.runtime_archive)

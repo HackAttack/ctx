@@ -111,9 +111,9 @@ def main() -> int:
                 "image_id": None,
                 "tool": args.inspector_tool,
             },
-            # The shared matrix still carries the legacy Bazel Linux route for
-            # old diagnostic consumers. Do not copy its image/sysroot claims
-            # into evidence for this Cargo/Zig factory, which did not use them.
+            # The shared matrix retains Linux ABI metadata for compatibility.
+            # Do not copy its image/sysroot claims into evidence for this
+            # Cargo/Zig factory, which did not use them.
             "linux_build": None,
             "platform": args.platform,
             "release_factory": {

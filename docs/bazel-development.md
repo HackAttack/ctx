@@ -21,9 +21,8 @@ CTX_BOOTSTRAP_BAZELISK=1 scripts/bazelw version
 
 This bootstrap is explicit so offline builds do not unexpectedly access the
 network. Buildkite enables the same bootstrap path in its isolated job tool
-environment. The Linux release container remains separately checksum-pinned to
-the same Bazel version for reproducible release construction and injects that
-binary explicitly into the wrapper.
+environment. Bazel is used for reproducible development, tests, and
+qualification; public CLI candidates are constructed by the Linux factory.
 
 ## Fast Linux loop
 
@@ -241,8 +240,8 @@ non-releasable.
 Buildkite runs this command once, uploads the resulting directory, and fans the
 exact bytes out to Linux x64, Linux arm64, macOS arm64, macOS x64, and Windows
 x64. Those jobs execute native smoke and signature checks; they never rebuild
-the candidate. The old `//:ctx_release_*` programs remain only as diagnostic
-compatibility tools and are not wired into production release construction.
+the candidate. Bazel remains available for hermetic development and
+qualification checks, but it is not a public CLI construction path.
 
 Each `.build-info.json` is canonical, timestamp-free JSON. It binds the exact
 artifact, clean source commit, Cargo lock, target, Rust/Zig/cargo-zigbuild

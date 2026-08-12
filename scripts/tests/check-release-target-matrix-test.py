@@ -104,7 +104,7 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
             dict(
                 value["targets"][-1],
                 id="windows-arm64",
-                public_construction_label="//:ctx_release_windows_arm64",
+                public_construction_label="scripts/release/build-public-candidate-on-linux.sh",
             )
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -123,7 +123,7 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
             helper_rust_target="x86_64-unknown-freebsd",
             public_artifact="ctx-freebsd-x64",
             helper_artifact="ctx-pro-freebsd-x64",
-            public_construction_label="//:ctx_release_freebsd_x64",
+            public_construction_label="scripts/release/build-public-candidate-on-linux.sh",
             bazel_platform="//tools/bazel/platforms:release_freebsd_x64",
             runtime_authority="native-freebsd-x86_64",
             linux_build=None,
@@ -163,21 +163,6 @@ class ReleaseTargetMatrixTest(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "malformed immutable pins"):
                 matrix.load_and_validate(path)
-
-    def test_generated_bazel_consumer_fails_closed_on_drift(self) -> None:
-        value = matrix.load_and_validate()
-        source = f"{matrix.generated_bazel_consumer(value)}\n"
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "release_inventory.bzl"
-            path.write_text(source, encoding="utf-8")
-            matrix.validate_bazel_consumer(path, value)
-            path.write_text(
-                source.replace("release_linux_x64", "release_linux_wrong"),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "consumer is stale"):
-                matrix.validate_bazel_consumer(path, value)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,11 +17,6 @@ for symbol_setting in \
     exit 1
   fi
 done
-grep -Fq 'detached-debug-symbols.py" prepare' \
-  "${repo_root}/scripts/package-public-cli-bazel-release.sh" || {
-  echo "release packaging does not extract and strip detached symbols" >&2
-  exit 1
-}
 macos_deployment_setting='build:release --action_env=MACOSX_DEPLOYMENT_TARGET=13.0'
 if [[ "$(grep -Fxc "${macos_deployment_setting}" "${repo_root}/.bazelrc")" != 1 ]]; then
   printf 'Bazel release configuration must contain exactly: %s\n' \

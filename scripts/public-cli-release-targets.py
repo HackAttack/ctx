@@ -29,7 +29,7 @@ class ContractError(ValueError):
 
 
 def load_checker(path: Path = CHECKER) -> ModuleType:
-    spec = importlib.util.spec_from_file_location("ctx_release_target_checker", path)
+    spec = importlib.util.spec_from_file_location("public_cli_release_target_checker", path)
     if spec is None or spec.loader is None:
         raise ContractError(f"cannot load release-target checker: {path}")
     module = importlib.util.module_from_spec(spec)
