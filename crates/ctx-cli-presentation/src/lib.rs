@@ -46,6 +46,7 @@ pub mod progress;
 pub mod provider_args;
 pub mod skill;
 pub mod transcript;
+pub mod upgrade;
 pub mod value_parsers;
 pub mod ui {
     pub use ctx_terminal::ui::*;

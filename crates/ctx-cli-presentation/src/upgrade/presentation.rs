@@ -1,7 +1,7 @@
 use ctx_upgrade_engine::{PathDiagnostics, PathResolverStatus};
 use serde_json::{json, Value};
 
-pub(super) fn path_diagnostics_json(diagnostics: &PathDiagnostics) -> Value {
+pub fn path_diagnostics_json(diagnostics: &PathDiagnostics) -> Value {
     let resolver_status = diagnostics.resolver_status();
     let block_reason = diagnostics.background_apply_block_reason();
     json!({

@@ -7,9 +7,9 @@ use crate::ui::{
     OutcomeState, RenderContext, Ui,
 };
 
-use super::UpgradeOutcome;
+use ctx_upgrade_engine::UpgradeOutcome;
 
-pub(super) fn render_auto_mode(enabled: bool, json_output: bool, ui: &mut Ui) -> Result<()> {
+pub fn render_auto_mode(enabled: bool, json_output: bool, ui: &mut Ui) -> Result<()> {
     if json_output {
         return print_json(auto_mode_json(enabled));
     }
@@ -44,11 +44,7 @@ fn auto_mode_json(enabled: bool) -> Value {
     })
 }
 
-pub(super) fn render_outcome(
-    upgrade: &UpgradeOutcome,
-    json_output: bool,
-    ui: &mut Ui,
-) -> Result<()> {
+pub fn render_outcome(upgrade: &UpgradeOutcome, json_output: bool, ui: &mut Ui) -> Result<()> {
     if json_output {
         println!("{}", serde_json::to_string_pretty(&outcome_json(upgrade))?);
         return Ok(());
@@ -96,7 +92,7 @@ fn outcome_json(upgrade: &UpgradeOutcome) -> Value {
         "artifact_url": plan.map(ctx_upgrade_engine::UpgradePlan::artifact_url),
         "install_path": plan.map(|plan| plan.install_path().display().to_string()),
         "managed": plan.map(ctx_upgrade_engine::UpgradePlan::managed).unwrap_or(false),
-        "path": plan.map(|plan| super::super::presentation::path_diagnostics_json(plan.path())),
+        "path": plan.map(|plan| super::path_diagnostics_json(plan.path())),
         "applied": upgrade.applied(),
         "dry_run": upgrade.dry_run(),
         "warnings": upgrade.warnings(),
@@ -104,7 +100,7 @@ fn outcome_json(upgrade: &UpgradeOutcome) -> Value {
     })
 }
 
-pub(super) fn render_error(result: Result<()>, human_output: bool, ui: &mut Ui) -> Result<()> {
+pub fn render_error(result: Result<()>, human_output: bool, ui: &mut Ui) -> Result<()> {
     if !human_output {
         return result;
     }
@@ -116,7 +112,7 @@ pub(super) fn render_error(result: Result<()>, human_output: bool, ui: &mut Ui) 
         return Err(error);
     };
     ui.write_stderr(&document)?;
-    Err(crate::dispatch::rendered_cli_error())
+    Err(crate::rendered_cli_error())
 }
 
 fn render_upgrade_integrity_error_human(

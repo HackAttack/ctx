@@ -31,6 +31,7 @@ CTX_CLI_PRESENTATION_DEPS = [
     "//crates/ctx-history-read-application:lib",
     "//crates/ctx-history-refresh:lib",
     "//crates/ctx-terminal:lib",
+    "//crates/ctx-upgrade-engine:lib",
 ]
 
 CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS = [
@@ -42,6 +43,7 @@ CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS = [
     "//crates/ctx-history-read-application:lib",
     "//crates/ctx-history-refresh:test_support_lib",
     "//crates/ctx-terminal:lib",
+    "//crates/ctx-upgrade-engine:test_support_lib",
 ]
 
 RUST_SRCS = glob(["src/**/*.rs"])
