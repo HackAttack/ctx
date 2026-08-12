@@ -11,7 +11,7 @@ import tomllib
 
 PACKAGE = "ctx-agent-application"
 EXPECTED_LOCAL_DEPS = {"ctx-agent-integrations", "ctx-client-observability"}
-ALLOWED_REVERSE_DEPENDENTS = {"ctx"}
+ALLOWED_REVERSE_DEPENDENTS = {"ctx", "ctx-cli-presentation"}
 REVIEW_CLOC_TARGET = 14_000
 HARD_CLOC_LIMIT = 19_500
 
@@ -200,24 +200,24 @@ def main() -> None:
         fail(f"stale CLI tool orchestration remains: {stale_cli_orchestration}")
 
     cli_workflow_checks = {
-        "crates/ctx-cli/src/integrations/mcp/operation.rs": [
+        "crates/ctx-cli-presentation/src/integrations/mcp/operation.rs": [
             "execute_install",
             "execute_status",
             "fn status_install_command(",
             "fn force_install_command(",
         ],
-        "crates/ctx-cli/src/integrations/slash_commands.rs": [
+        "crates/ctx-cli-presentation/src/integrations/slash_commands.rs": [
             "execute_install",
             'env!("CARGO_PKG_VERSION")',
         ],
-        "crates/ctx-cli/src/skill/install.rs": [
+        "crates/ctx-cli-presentation/src/skill/install.rs": [
             "execute_install",
             "execute_status",
             "fn insert_selection_analytics(",
             "fn status_install_command(",
             "fn force_install_command(",
         ],
-        "crates/ctx-cli/src/skill/selection.rs": [
+        "crates/ctx-cli-presentation/src/skill/selection.rs": [
             "default_agent_selection",
             "explicit_agent_selection",
             "picker_agent_selection",

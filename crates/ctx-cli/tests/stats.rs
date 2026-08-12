@@ -115,6 +115,27 @@ fn pristine_disabled_and_malformed_stats_are_truthful_and_create_nothing() {
     assert!(!encoded.contains(marker));
     assert!(!encoded.contains(malformed.path().to_string_lossy().as_ref()));
     assert!(!usage_db_path(&malformed).exists());
+
+    let malformed_human = tempdir();
+    fs::create_dir_all(data_root(&malformed_human)).unwrap();
+    fs::write(
+        data_root(&malformed_human).join("config.toml"),
+        "[local_usage]\nenabled = nope\n",
+    )
+    .unwrap();
+    let output = enabled(ctx(&malformed_human).args(["--color=never", "stats"]))
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr.matches("Local usage report is unavailable").count(),
+        1
+    );
+    assert!(!stderr.contains("Error:"), "{stderr}");
 }
 
 #[test]

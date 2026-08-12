@@ -107,16 +107,23 @@ fn run_index_watch(
         let status = readiness.snapshot(data_root)?;
         let selection = IndexSelection::default_for(&status);
         record_index_telemetry(telemetry, &status);
-        if jsonl_output {
-            output.print_json(&status)?;
-        } else if !quiet {
-            output.print_human(&status)?;
-        }
         if let Some(message) = index_terminal_error(&status, selection) {
+            if jsonl_output {
+                output.print_json(&status)?;
+            } else if !quiet {
+                drop(output);
+                let document = IndexDashboard.render(&status, ui.stderr_context());
+                ui.write_stderr(&document)?;
+            }
             return Err(forward_index_terminal_error(
                 message,
                 !jsonl_output && !quiet,
             ));
+        }
+        if jsonl_output {
+            output.print_json(&status)?;
+        } else if !quiet {
+            output.print_human(&status)?;
         }
         if index_ready(&status, selection) {
             break;
@@ -247,10 +254,11 @@ fn run_index_wait(
                     && !bool_at(&status, &["semantic", "enabled"])
                     && lexical_ready(&status)
                 {
-                    let document = render_semantic_disabled_wait(&status, ui.stdout_context());
-                    ui.write_stdout(&document)?;
+                    let document = render_semantic_disabled_wait(&status, ui.stderr_context());
+                    ui.write_stderr(&document)?;
                 } else {
-                    human_output.print(ui, &status)?;
+                    let document = IndexDashboard.render(&status, ui.stderr_context());
+                    ui.write_stderr(&document)?;
                 }
             }
             return Err(forward_index_terminal_error(

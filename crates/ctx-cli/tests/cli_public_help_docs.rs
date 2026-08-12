@@ -1034,7 +1034,19 @@ fn docs_commands_expose_embedded_docs_and_man_pages() {
     );
     assert!(unmanaged_body.contains("codesign -d --verbose=4 \"$(command -v ctx)\""));
 
-    let missing_topic = failure_stderr(ctx(&temp).args(["--color=always", "docs", "show", "cli"]));
+    let missing_topic = ctx(&temp)
+        .args(["--color=always", "docs", "show", "cli"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert_eq!(missing_topic.status.code(), Some(1));
+    assert!(missing_topic.stdout.is_empty());
+    let missing_topic = String::from_utf8(missing_topic.stderr).unwrap();
+    assert_eq!(
+        missing_topic.matches("Unknown ctx docs topic: cli").count(),
+        1
+    );
     assert!(missing_topic.contains("Unknown ctx docs topic: cli"));
     assert!(missing_topic.contains("Nearest topics"));
     assert!(missing_topic.contains("ctx docs list"));

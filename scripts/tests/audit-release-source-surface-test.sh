@@ -28,6 +28,7 @@ fi
 for retired_case in \
   retired-top-level-uninstall \
   retired-command-surfaces \
+  retired-presentation-command-surfaces \
   retired-capture-pro-output-authority \
   retired-capture-repository-authority \
   retired-misplaced-pro-uninstall \

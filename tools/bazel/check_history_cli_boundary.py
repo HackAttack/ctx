@@ -46,6 +46,8 @@ HISTORY_BUILD_LABEL = "//crates/ctx-history-cli:BUILD.bazel"
 HISTORY_CARGO_LABEL = "//crates/ctx-history-cli:Cargo.toml"
 EVALUATED_REVERSE_BAZEL_CONSUMERS = {
     HISTORY_LABEL: (
+        "//crates/ctx-cli-presentation:lib",
+        "//crates/ctx-cli-presentation:qualification_lib",
         "//crates/ctx-cli:ctx",
         "//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture",
         "//crates/ctx-cli:ctx_hosted_uninstall_test_host",
@@ -55,6 +57,8 @@ EVALUATED_REVERSE_BAZEL_CONSUMERS = {
         "//crates/ctx-history-cli:request_parity_tests",
     ),
     HISTORY_TEST_SUPPORT_LABEL: (
+        "//crates/ctx-cli-presentation:test_support_lib",
+        "//crates/ctx-cli-presentation:unit_tests",
         "//crates/ctx-cli:unit_tests",
         "//crates/ctx-history-cli:test_support_lib",
     ),
@@ -220,7 +224,10 @@ def _validate_cargo(workspace_path: Path, history_path: Path, final_path: Path, 
         for table, dependency in _resolved_dependencies(manifest, consumer, workspace):
             if dependency == HISTORY_PACKAGE:
                 reverse.append((consumer, table))
-    if sorted(reverse) != [(FINAL_PACKAGE, "dependencies")]:
+    if sorted(reverse) != [
+        (FINAL_PACKAGE, "dependencies"),
+        ("ctx-cli-presentation", "dependencies"),
+    ]:
         raise BoundaryError(f"ctx-history-cli reverse Cargo consumers drifted: {sorted(reverse)}")
 
 
@@ -579,6 +586,7 @@ def _validate_reverse_build_inventory(
 
     root_build = workspace_path.parent.resolve() / "BUILD.bazel"
     terminal_build = workspace_path.parent.resolve() / "crates/ctx-terminal/BUILD.bazel"
+    presentation_build = workspace_path.parent.resolve() / "crates/ctx-cli-presentation/BUILD.bazel"
     expected_labels = {
         root_build: (
             HISTORY_CARGO_DATA_LABEL,
@@ -594,6 +602,7 @@ def _validate_reverse_build_inventory(
             HISTORY_LABEL,
             HISTORY_LABEL,
         ),
+        presentation_build: (HISTORY_LABEL, HISTORY_TEST_SUPPORT_LABEL, HISTORY_LABEL),
         terminal_build: (HISTORY_CARGO_DATA_LABEL,),
     }
     for path in build_paths:

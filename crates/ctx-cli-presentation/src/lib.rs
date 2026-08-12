@@ -62,10 +62,10 @@ pub use transcript::TranscriptMode;
 pub use value_parsers::{parse_daemon_interval_seconds, parse_event_window_limit};
 
 /// Marks a command failure whose exact command-specific output was emitted.
-#[derive(Debug, thiserror::Error)]
-#[error("CLI error was already rendered")]
-pub struct RenderedCliError;
+///
+/// This is the shared lower CLI contract also recognized by final dispatch.
+pub use ctx_history_cli::RenderedCliError;
 
 pub fn rendered_cli_error() -> anyhow::Error {
-    RenderedCliError.into()
+    anyhow::Error::new(RenderedCliError)
 }

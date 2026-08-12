@@ -69,25 +69,26 @@ fn assert_single_human_diagnosis(
     expected_title: &str,
     expected_action: &str,
 ) {
+    assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        stdout.matches(expected_title).count(),
-        1,
-        "expected exactly one {expected_title:?} diagnosis: {stdout}"
+    assert!(
+        stdout.is_empty(),
+        "terminal failure must not write stdout: {stdout}"
     );
     assert_eq!(
-        stdout.matches(expected_action).count(),
+        stderr.matches(expected_title).count(),
         1,
-        "expected exactly one {expected_action:?} action: {stdout}"
+        "expected exactly one {expected_title:?} diagnosis: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches(expected_action).count(),
+        1,
+        "expected exactly one {expected_action:?} action: {stderr}"
     );
     assert!(
-        !stdout.contains("Error:"),
-        "human diagnosis must stay structured: {stdout}"
-    );
-    assert!(
-        stderr.is_empty(),
-        "structured human diagnosis must not be forwarded again: {stderr}"
+        !stderr.contains("Error:"),
+        "human diagnosis must stay structured and render once: {stderr}"
     );
 }
 
@@ -728,21 +729,19 @@ fn human_wait_semantic_disabled_renders_a_truthful_blocked_snapshot() {
         "Semantic indexing is blocked",
         "ctx setup --semantic",
     );
-    let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
 
     assert!(
-        stdout.starts_with("✗ Semantic indexing is blocked\n")
-            || stdout.starts_with("ERROR Semantic indexing is blocked\n"),
-        "{stdout}"
+        stderr.starts_with("✗ Semantic indexing is blocked\n")
+            || stderr.starts_with("ERROR Semantic indexing is blocked\n"),
+        "{stderr}"
     );
-    assert!(stdout.contains("Keyword search remains available."));
-    assert!(stdout.contains("\nKeyword search\n"));
-    assert!(stdout.contains("\nSemantic search\nStatus  Off\n"));
-    assert!(stdout.ends_with("\nNext\n  ctx setup --semantic\n"));
-    assert!(!stdout.contains("Your history is searchable"));
-    assert!(!stdout.contains("ctx doctor"));
-    assert!(stderr.is_empty(), "{stderr}");
+    assert!(stderr.contains("Keyword search remains available."));
+    assert!(stderr.contains("\nKeyword search\n"));
+    assert!(stderr.contains("\nSemantic search\nStatus  Off\n"));
+    assert!(stderr.ends_with("\nNext\n  ctx setup --semantic\n"));
+    assert!(!stderr.contains("Your history is searchable"));
+    assert!(!stderr.contains("ctx doctor"));
 }
 
 #[test]
@@ -783,10 +782,13 @@ fn human_wait_stops_when_selected_semantic_work_has_no_running_daemon() {
     assert!((1..=2).contains(&searchable_frames), "{stdout}");
     assert!(stdout.contains("Your history is searchable"), "{stdout}");
     assert!(stdout.contains("Embedded"));
-    assert!(stdout.contains("Background indexing stopped"), "{stdout}");
+    assert!(!stdout.contains("Background indexing stopped"), "{stdout}");
     assert!(!stdout.contains("Throughput"));
     assert!(!stdout.contains("Remaining"));
-    assert!(stderr.is_empty(), "{stderr}");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr.matches("Background indexing stopped").count(), 1);
+    assert_eq!(stderr.matches("ctx doctor").count(), 1);
+    assert!(!stderr.contains("Error:"), "{stderr}");
 }
 
 #[test]

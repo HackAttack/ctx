@@ -15,7 +15,6 @@ anstream.workspace = true
 clap.workspace = true
 clap_mangen.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 unicode-width.workspace = true
 ctx-agent-application = { path = "../ctx-agent-application" }
 ctx-agent-integrations = { path = "../ctx-agent-integrations" }

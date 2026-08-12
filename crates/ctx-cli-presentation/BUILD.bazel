@@ -46,6 +46,18 @@ CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS = [
     "//crates/ctx-upgrade-engine:test_support_lib",
 ]
 
+CTX_CLI_PRESENTATION_QUALIFICATION_DEPS = [
+    "//crates/ctx-agent-application:lib",
+    "//crates/ctx-agent-integrations:lib",
+    "//crates/ctx-client-observability:lib",
+    "//crates/ctx-history-cli:lib",
+    "//crates/ctx-history-core:lib",
+    "//crates/ctx-history-read-application:lib",
+    "//crates/ctx-history-refresh:lib",
+    "//crates/ctx-terminal:lib",
+    "//crates/ctx-upgrade-engine:qualification_lib",
+]
+
 RUST_SRCS = glob(["src/**/*.rs"])
 
 PROD_SRCS = glob(
@@ -75,6 +87,20 @@ rust_library(
     edition = crate_edition(),
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + CTX_CLI_PRESENTATION_TEST_SUPPORT_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    compile_data = ["//:ctx_embedded_docs"],
+    rustc_env = COMMON_RUSTC_ENV,
+)
+
+rust_library(
+    name = "qualification_lib",
+    testonly = True,
+    srcs = PROD_SRCS,
+    crate_name = "ctx_cli_presentation",
+    crate_root = "src/lib.rs",
+    edition = crate_edition(),
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + CTX_CLI_PRESENTATION_QUALIFICATION_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     compile_data = ["//:ctx_embedded_docs"],
     rustc_env = COMMON_RUSTC_ENV,

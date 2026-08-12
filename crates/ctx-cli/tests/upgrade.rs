@@ -445,7 +445,14 @@ fn upgrade_integrity_failure_has_safe_human_receipt_and_unchanged_machine_error(
         .get_output()
         .clone();
     assert_eq!(human_output.status.code(), Some(1));
+    assert!(human_output.stdout.is_empty());
     let human_stderr = String::from_utf8(human_output.stderr).unwrap();
+    assert_eq!(
+        human_stderr
+            .matches("Upgrade integrity check failed")
+            .count(),
+        1
+    );
     assert!(
         human_stderr.contains("Upgrade integrity check failed"),
         "{human_stderr}"
