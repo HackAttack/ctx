@@ -126,6 +126,10 @@ def validate(
         )
     build_info_sha256 = hashlib.sha256(build_info_bytes).hexdigest()
     release_factory = value.get("release_factory")
+    if target.get("public_construction_authority") != "linux-cross-cargo-zigbuild-v1":
+        raise ValueError(
+            f"{release_label} build-info uses a non-factory construction authority"
+        )
     if target.get("public_construction_authority") == "linux-cross-cargo-zigbuild-v1":
         expected_sdk_sha256 = None
         try:
@@ -198,76 +202,12 @@ def validate(
     if target.get("os") != "linux":
         return build_info_sha256
 
-    if target.get("public_construction_authority") == "linux-cross-cargo-zigbuild-v1":
-        if (
-            gates.get("local_runtime") != "not_run"
-            or gates.get("local_runtime_authority") != "not_run"
-        ):
-            raise ValueError(
-                "cross-built Linux build-info must leave native runtime proof to the fan-out"
-            )
-        return build_info_sha256
-
-    if not isinstance(linux_build, dict):
-        raise ValueError("Linux release build contract is malformed")
     if (
-        gates.get("local_runtime") != "passed"
-        or gates.get("local_runtime_authority") != "authoritative"
+        gates.get("local_runtime") != "not_run"
+        or gates.get("local_runtime_authority") != "not_run"
     ):
         raise ValueError(
-            "Linux release build-info does not record an authoritative runtime gate"
-        )
-
-    builder_image = linux_build.get("builder_image")
-    if (
-        not isinstance(builder_image, str)
-        or "@" not in builder_image
-        or not isinstance(builder, dict)
-    ):
-        raise ValueError("Linux release builder provenance is malformed")
-    expected_base = builder_image.rsplit("@", 1)[1]
-    base_image = builder.get("base_image")
-    if (
-        not isinstance(base_image, dict)
-        or base_image.get("expected") != expected_base
-        or base_image.get("actual") != expected_base
-        or not lower_hex(builder.get("recipe_sha256"), 64)
-        or not lower_hex(
-            builder.get("image_id")[7:]
-            if isinstance(builder.get("image_id"), str)
-            and builder.get("image_id").startswith("sha256:")
-            else None,
-            64,
-        )
-    ):
-        raise ValueError(
-            "Linux release build-info does not bind the exact builder image"
-        )
-    for label, image in (("runtime", runtime), ("inspector", inspector)):
-        image_id = image.get("image_id") if isinstance(image, dict) else None
-        if (
-            not isinstance(image_id, str)
-            or not image_id.startswith("sha256:")
-            or not lower_hex(image_id[7:], 64)
-        ):
-            raise ValueError(f"Linux release {label} image provenance is invalid")
-
-    rust_toolchain = linux_build.get("rust_toolchain")
-    rust_commit = linux_build.get("rust_commit")
-    rust_version = value.get("rust_version")
-    if (
-        not isinstance(rust_toolchain, str)
-        or not lower_hex(rust_commit, 40)
-        or not isinstance(rust_version, str)
-        or re.fullmatch(
-            rf"rustc {re.escape(rust_toolchain)} "
-            rf"\({re.escape(rust_commit[:9])} \d{{4}}-\d{{2}}-\d{{2}}\)",
-            rust_version,
-        )
-        is None
-    ):
-        raise ValueError(
-            "Linux release build-info does not bind the matrix Rust toolchain"
+            "cross-built Linux build-info must leave native runtime proof to the fan-out"
         )
     return build_info_sha256
 

@@ -24,7 +24,6 @@ assert_reaches_gate() {
 }
 
 assert_reaches_gate crates/ctx-history-capture/src/provider/source_backed/driver.rs
-assert_reaches_gate tools/bazel/release_routes_test.bzl
 assert_reaches_gate scripts/check-loc.py
 assert_reaches_gate scripts/check-loc-policy-v2.json
 
@@ -44,7 +43,6 @@ for path in \
   crates/ctx-history-capture/src/provider/source_backed/driver.rs \
   scripts/source-backed-recovery/fault_shim.c \
   scripts/source-backed-recovery/run-bazel-linux-fault-test.sh \
-  tools/bazel/release_routes_test.bzl \
   scripts/check-loc.py; do
   grep -Fxq "${path}" "${manifest}" || {
     printf 'LOC Bazel input contract failed: declared-source manifest omits %s\n' "${path}" >&2

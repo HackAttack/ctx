@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract tests for public CLI Bazel release target routing."""
+"""Contract tests for public CLI release target routing."""
 
 from __future__ import annotations
 

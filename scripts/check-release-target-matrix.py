@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the public release-target authority and its generated Bazel routes."""
+"""Validate the public release-target authority and its release matrix."""
 
 from __future__ import annotations
 
@@ -13,9 +13,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "contracts" / "release-targets-v1.json"
 ADVISORY_POLICY_PATH = ROOT / "security" / "release-advisory-policy-v1.json"
-BAZEL_CONSUMER_PATH = ROOT / "tools" / "bazel" / "release_inventory.bzl"
-GENERATED_BEGIN = "# BEGIN GENERATED: contracts/release-targets-v1.json"
-GENERATED_END = "# END GENERATED: contracts/release-targets-v1.json"
 SUPPORTED_TARGET_IDS = tuple(
     "linux-arm64 linux-x64 macos-arm64 macos-x64 windows-x64".split()
 )
@@ -144,48 +141,12 @@ def validate_advisory_policy_coverage(
     return None
 
 
-def generated_bazel_consumer(value: dict[str, Any]) -> str:
-    rows = [
-        f'    "{target["id"]}": ("{target["bazel_platform"]}", '
-        f'"{target["public_rust_target"]}"),'
-        for target in value["targets"]
-    ]
-    return "\n".join(
-        [GENERATED_BEGIN, "PUBLIC_RELEASE_ROUTES = {", *rows, "}", GENERATED_END]
-    )
-
-
-def updated_bazel_consumer(source: str, value: dict[str, Any]) -> str:
-    if source.count(GENERATED_BEGIN) != 1 or source.count(GENERATED_END) != 1:
-        raise ValueError("Bazel release consumer must contain one generated block")
-    before, remainder = source.split(GENERATED_BEGIN, 1)
-    _, after = remainder.split(GENERATED_END, 1)
-    return before + generated_bazel_consumer(value) + after
-
-
-def validate_bazel_consumer(path: Path, value: dict[str, Any]) -> None:
-    source = path.read_text(encoding="utf-8")
-    if updated_bazel_consumer(source, value) != source:
-        raise ValueError(
-            "Bazel release consumer is stale; run "
-            "scripts/check-release-target-matrix.py --write-bazel-consumer"
-        )
-
-
 def main() -> int:
     try:
-        if sys.argv[1:] not in ([], ["--write-bazel-consumer"]):
-            raise ValueError("usage: check-release-target-matrix.py [--write-bazel-consumer]")
+        if sys.argv[1:]:
+            raise ValueError("usage: check-release-target-matrix.py")
         value = load_and_validate()
         validate_advisory_policy_coverage(value)
-        if BAZEL_CONSUMER_PATH.is_file():
-            if sys.argv[1:]:
-                source = BAZEL_CONSUMER_PATH.read_text(encoding="utf-8")
-                BAZEL_CONSUMER_PATH.write_text(
-                    updated_bazel_consumer(source, value),
-                    encoding="utf-8",
-                )
-            validate_bazel_consumer(BAZEL_CONSUMER_PATH, value)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"release target matrix: {error}", file=sys.stderr)
         return 1

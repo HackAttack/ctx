@@ -13,7 +13,7 @@
       "path": "Cargo.lock",
       "ecosystem": "crates.io",
       "disposition": "scan",
-      "closure": "bazel-release-inventory",
+      "closure": "cargo-release-inventory",
       "role": "target-configured public CLI Rust release dependency closure"
     },
     {

@@ -66,7 +66,6 @@ checks that validation did not mutate it. macOS additionally performs strict
 native codesign verification. Semantic runtime smokes use the same CLI bytes.
 Only after all five jobs pass does the staging job assemble GitHub assets.
 
-The legacy Bazel qualification route may still use its digest-pinned Ubuntu
-22.04 nested controller and builder internally to preserve the glibc 2.35 ABI
-contract. Its Buildkite outer host selector is Ubuntu 24.04; it is not a second
-downloadable-CLI construction path.
+Bazel remains available for hermetic development and qualification checks. It
+does not construct or publish public CLI candidates; the Linux factory is the
+single public construction authority.
