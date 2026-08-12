@@ -347,6 +347,33 @@ Import {
   Name: ADVAPI32.dll
 }
 Import {
+  Name: api-ms-win-crt-environment-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-heap-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-math-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-private-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-runtime-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-stdio-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-string-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-time-l1-1-0.dll
+}
+Import {
+  Name: api-ms-win-crt-utility-l1-1-0.dll
+}
+Import {
   Name: api-ms-win-core-synch-l1-2-0.dll
 }
 Import {
@@ -356,16 +383,13 @@ Import {
   Name: bcryptprimitives.dll
 }
 Import {
-  Name: combase.dll
-}
-Import {
   Name: KERNEL32.dll
 }
 Import {
-  Name: msvcrt.dll
+  Name: ntdll.dll
 }
 Import {
-  Name: ntdll.dll
+  Name: ole32.dll
 }
 Import {
   Name: shell32.dll
