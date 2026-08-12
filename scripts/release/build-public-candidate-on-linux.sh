@@ -14,14 +14,15 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/release/build-public-candidate-on-linux.sh [OPTIONS]
 
-Builds all five public ctx CLI binaries on Linux x86_64, signs and notarizes
-the two macOS binaries, and writes one candidate directory. Native platform
+Builds the selected public ctx CLI binaries on Linux x86_64 and writes one
+candidate directory. By default all five targets are selected. Native platform
 jobs validate these exact bytes; they do not rebuild them.
 
 Options:
   --source-commit SHA      Required clean source commit (default: HEAD)
   --output-dir DIR         Candidate directory (default: target/public-cli-artifacts)
   --toolchain-dir DIR      Verified tool cache (default: target/release-toolchain)
+  --targets ID[,ID...]     Build selected target IDs; repeat for more (default: all)
   --macos-sdk PATH         Private regular macOS SDK archive
   --jobs N                 Cargo jobs per target (default: 2)
   --build-parallelism N    Concurrent target builds (default: 2)
@@ -29,8 +30,10 @@ Options:
   --skip-runtimes          Do not build the four Linux-hostable runtime sidecars
 
 Official mode requires CTX_OSV_SCANNER, CTX_OSV_DATABASE_DIR,
-CTX_OSV_DATABASE_METADATA, the five existing Apple signing variables, and the
-Ubuntu 24.04 x86_64 host declared in contracts/release-factory-inputs-v1.json.
+CTX_OSV_DATABASE_METADATA, and the Ubuntu 24.04 x86_64 host declared in
+contracts/release-factory-inputs-v1.json. Selecting a macOS target also
+requires --macos-sdk; official macOS selection signs and notarizes those
+selected binaries. A filtered or --skip-runtimes candidate is non-promotable.
 The host may be a direct installation, VM, container, or Buildkite image.
 USAGE
 }
@@ -76,6 +79,7 @@ toolchain_dir="target/release-toolchain"
 macos_sdk_input="${CTX_MACOS_SDK_ROOT:-}"
 cargo_jobs="${CTX_RELEASE_CARGO_JOBS:-2}"
 build_parallelism="${CTX_RELEASE_BUILD_PARALLELISM:-2}"
+target_specs=()
 official=1
 build_runtimes=1
 while [[ $# -gt 0 ]]; do
@@ -83,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     --source-commit) shift; source_commit="${1:-}" ;;
     --output-dir) shift; output_dir="${1:-}" ;;
     --toolchain-dir) shift; toolchain_dir="${1:-}" ;;
+    --targets)
+      shift
+      [[ $# -gt 0 ]] || die "--targets requires at least one target ID"
+      target_specs+=("$1")
+      ;;
     --macos-sdk) shift; macos_sdk_input="${1:-}" ;;
     --jobs) shift; cargo_jobs="${1:-}" ;;
     --build-parallelism) shift; build_parallelism="${1:-}" ;;
@@ -100,6 +109,61 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 [[ "$(uname -s)" == "Linux" ]] || die "release factory requires Linux"
 case "$(uname -m)" in x86_64|amd64) ;; *) die "release factory requires x86_64" ;; esac
+require_command python3
+all_target_ids_text="$(python3 scripts/public-cli-release-targets.py targets --field id)" || \
+  die "public CLI release-target matrix is unavailable"
+mapfile -t all_target_ids <<<"${all_target_ids_text}"
+[[ "${#all_target_ids[@]}" -gt 0 && -n "${all_target_ids[0]}" ]] || \
+  die "public CLI release-target matrix has no targets"
+declare -A known_target_ids=()
+for target_id in "${all_target_ids[@]}"; do
+  known_target_ids["${target_id}"]=1
+done
+target_ids=()
+declare -A selected_target_ids=()
+if [[ "${#target_specs[@]}" == "0" ]]; then
+  target_ids=("${all_target_ids[@]}")
+else
+  for target_spec in "${target_specs[@]}"; do
+    if [[ "${target_spec}" == "all" ]]; then
+      [[ "${#target_specs[@]}" == "1" ]] || \
+        die "--targets all cannot be combined with target IDs"
+      target_ids=("${all_target_ids[@]}")
+      break
+    fi
+    [[ "${target_spec}" != ,* && "${target_spec}" != *, && "${target_spec}" != *,,* ]] || \
+      die "--targets contains an empty target ID"
+    IFS=',' read -r -a requested_target_ids <<<"${target_spec}"
+    for target_id in "${requested_target_ids[@]}"; do
+      [[ -n "${target_id}" ]] || die "--targets contains an empty target ID"
+      [[ -n "${known_target_ids[${target_id}]+present}" ]] || \
+        die "unsupported release target: ${target_id}"
+      [[ -z "${selected_target_ids[${target_id}]+present}" ]] || \
+        die "duplicate release target: ${target_id}"
+      selected_target_ids["${target_id}"]=1
+      target_ids+=("${target_id}")
+    done
+  done
+  [[ "${#target_ids[@]}" -gt 0 ]] || die "--targets selected no targets"
+fi
+needs_macos=0
+for target_id in "${target_ids[@]}"; do
+  [[ "${target_id}" == macos-* ]] && needs_macos=1
+done
+selection_complete=1
+if [[ "${#target_ids[@]}" != "${#all_target_ids[@]}" ]]; then
+  selection_complete=0
+else
+  for target_id in "${all_target_ids[@]}"; do
+    if [[ "${#target_specs[@]}" == "0" || "${target_specs[0]}" == "all" ]]; then
+      break
+    fi
+    [[ -n "${selected_target_ids[${target_id}]+present}" ]] || {
+      selection_complete=0
+      break
+    }
+  done
+fi
 source_commit="${source_commit:-$(git rev-parse --verify HEAD^{commit})}"
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ && ! "${source_commit}" =~ ^0{40}$ ]] || \
   die "source commit must be nonzero lowercase 40-hex"
@@ -113,12 +177,17 @@ factory_host_arch="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.rea
 factory_host_authority="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["authority"])' <<<"${factory_input_json}")"
 factory_host_os_id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["os_id"])' <<<"${factory_input_json}")"
 factory_host_os_version="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["linux_host"]["os_version"])' <<<"${factory_input_json}")"
-macos_sdk_authority="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["authority"])' <<<"${factory_input_json}")"
-macos_sdk_expected_size="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_size_bytes"])' <<<"${factory_input_json}")"
-macos_sdk_expected_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_sha256"])' <<<"${factory_input_json}")"
-[[ "${macos_sdk_authority}" =~ ^[a-z0-9.-]+$ ]] || die "factory SDK authority is malformed"
-[[ "${macos_sdk_expected_size}" =~ ^[1-9][0-9]*$ ]] || die "factory SDK size is malformed"
-[[ "${macos_sdk_expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "factory SDK digest is malformed"
+macos_sdk_authority=""
+macos_sdk_expected_size=""
+macos_sdk_expected_sha256=""
+if [[ "${needs_macos}" == "1" ]]; then
+  macos_sdk_authority="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["authority"])' <<<"${factory_input_json}")"
+  macos_sdk_expected_size="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_size_bytes"])' <<<"${factory_input_json}")"
+  macos_sdk_expected_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["macos_sdk"]["archive_sha256"])' <<<"${factory_input_json}")"
+  [[ "${macos_sdk_authority}" =~ ^[a-z0-9.-]+$ ]] || die "factory SDK authority is malformed"
+  [[ "${macos_sdk_expected_size}" =~ ^[1-9][0-9]*$ ]] || die "factory SDK size is malformed"
+  [[ "${macos_sdk_expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "factory SDK digest is malformed"
+fi
 [[ "${factory_host_arch}" == "x86_64" ]] || die "factory host architecture is malformed"
 [[ "${factory_host_authority}" =~ ^[a-z0-9._-]+$ ]] || die "factory host authority is malformed"
 [[ "${factory_host_os_id}" == "ubuntu" ]] || die "factory host OS identity is malformed"
@@ -126,9 +195,12 @@ macos_sdk_expected_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.s
 factory_host_os="${factory_host_os_id}-${factory_host_os_version}-${factory_host_arch}"
 
 for command_name in cargo cat curl file git install llvm-objdump llvm-readobj llvm-strip \
-  openssl python3 rustc rustup sha256sum tar xz; do
+  python3 rustc rustup sha256sum tar xz; do
   require_command "${command_name}"
 done
+if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then
+  require_command openssl
+fi
 rust_release="$(rustc --version --verbose | sed -n 's/^release: //p')"
 rust_commit="$(rustc --version --verbose | sed -n 's/^commit-hash: //p')"
 [[ "${rust_release}" == "${RUST_VERSION}" && "${rust_commit}" == "${RUST_COMMIT}" ]] || \
@@ -165,53 +237,60 @@ cargo_zigbuild_bin="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.re
 cargo_zigbuild_observed_version="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["observed_version"])' \
   <<<"${cargo_zigbuild_resolution}")"
 
-rcodesign_dir="${toolchain_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
-if [[ ! -x "${rcodesign_dir}/rcodesign" ]]; then
-  rcodesign_archive="${toolchain_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-  download_verified \
-    "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign/${RCODESIGN_VERSION}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-    "${RCODESIGN_SHA256}" "${rcodesign_archive}"
-  mkdir -p "${rcodesign_dir}"
-  tar -C "${rcodesign_dir}" -xzf "${rcodesign_archive}"
-  nested_rcodesign="${rcodesign_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl/rcodesign"
-  [[ -x "${nested_rcodesign}" ]] || die "rcodesign archive has an unexpected layout"
-  mv "${nested_rcodesign}" "${rcodesign_dir}/rcodesign"
+if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then
+  rcodesign_dir="${toolchain_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
+  if [[ ! -x "${rcodesign_dir}/rcodesign" ]]; then
+    rcodesign_archive="${toolchain_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+    download_verified \
+      "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign/${RCODESIGN_VERSION}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+      "${RCODESIGN_SHA256}" "${rcodesign_archive}"
+    mkdir -p "${rcodesign_dir}"
+    tar -C "${rcodesign_dir}" -xzf "${rcodesign_archive}"
+    nested_rcodesign="${rcodesign_dir}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl/rcodesign"
+    [[ -x "${nested_rcodesign}" ]] || die "rcodesign archive has an unexpected layout"
+    mv "${nested_rcodesign}" "${rcodesign_dir}/rcodesign"
+  fi
+  export PATH="${repo_root}/${rcodesign_dir}:${PATH}"
+  rcodesign --version | grep -F "${RCODESIGN_VERSION}" >/dev/null || \
+    die "rcodesign version mismatch"
 fi
-export PATH="${repo_root}/${rcodesign_dir}:${PATH}"
-rcodesign --version | grep -F "${RCODESIGN_VERSION}" >/dev/null || \
-  die "rcodesign version mismatch"
 
 macos_sdk_root=""
 sdk_cleanup=""
-if [[ -n "${macos_sdk_input}" ]]; then
-  [[ "${macos_sdk_input}" == /* ]] || macos_sdk_input="${repo_root}/${macos_sdk_input}"
-  if [[ -f "${macos_sdk_input}" && ! -L "${macos_sdk_input}" ]]; then
-    sdk_cleanup="$(mktemp -d "${TMPDIR:-/tmp}/ctx-macos-sdk.XXXXXX")"
-    trap 'rm -rf "${sdk_cleanup:-}"' EXIT
-    sdk_archive="${sdk_cleanup}/MacOSX.sdk.archive"
-    install -m 0600 -- "${macos_sdk_input}" "${sdk_archive}"
-    [[ "$(stat -c '%s' "${sdk_archive}")" == "${macos_sdk_expected_size}" ]] || \
-      die "macOS SDK archive size mismatch: expected ${macos_sdk_expected_size}"
-    verify_sha256 "${sdk_archive}" "${macos_sdk_expected_sha256}"
-    sdk_extract="${sdk_cleanup}/extracted"
-    mkdir -p "${sdk_extract}"
-    tar --warning=no-unknown-keyword -C "${sdk_extract}" -xf "${sdk_archive}"
-    mapfile -t sdk_matches < <(find "${sdk_extract}" -type d -name 'MacOSX*.sdk' -print)
-    [[ "${#sdk_matches[@]}" == "1" ]] || die "macOS SDK archive must contain exactly one MacOSX*.sdk"
-    macos_sdk_root="${sdk_matches[0]}"
-  else
-    die "macOS SDK input must be a regular archive"
+macos_sdk_sha256=""
+if [[ "${needs_macos}" == "1" ]]; then
+  if [[ -n "${macos_sdk_input}" ]]; then
+    [[ "${macos_sdk_input}" == /* ]] || macos_sdk_input="${repo_root}/${macos_sdk_input}"
+    if [[ -f "${macos_sdk_input}" && ! -L "${macos_sdk_input}" ]]; then
+      sdk_cleanup="$(mktemp -d "${TMPDIR:-/tmp}/ctx-macos-sdk.XXXXXX")"
+      trap 'rm -rf "${sdk_cleanup:-}"' EXIT
+      sdk_archive="${sdk_cleanup}/MacOSX.sdk.archive"
+      install -m 0600 -- "${macos_sdk_input}" "${sdk_archive}"
+      [[ "$(stat -c '%s' "${sdk_archive}")" == "${macos_sdk_expected_size}" ]] || \
+        die "macOS SDK archive size mismatch: expected ${macos_sdk_expected_size}"
+      verify_sha256 "${sdk_archive}" "${macos_sdk_expected_sha256}"
+      sdk_extract="${sdk_cleanup}/extracted"
+      mkdir -p "${sdk_extract}"
+      tar --warning=no-unknown-keyword -C "${sdk_extract}" -xf "${sdk_archive}"
+      mapfile -t sdk_matches < <(find "${sdk_extract}" -type d -name 'MacOSX*.sdk' -print)
+      [[ "${#sdk_matches[@]}" == "1" ]] || die "macOS SDK archive must contain exactly one MacOSX*.sdk"
+      macos_sdk_root="${sdk_matches[0]}"
+    else
+      die "macOS SDK input must be a regular archive"
+    fi
   fi
+  [[ -n "${macos_sdk_root}" && -d "${macos_sdk_root}/System/Library/Frameworks" ]] || \
+    die "--macos-sdk must provide a complete MacOSX SDK"
+  macos_sdk_sha256="${macos_sdk_expected_sha256}"
 fi
-[[ -n "${macos_sdk_root}" && -d "${macos_sdk_root}/System/Library/Frameworks" ]] || \
-  die "--macos-sdk must provide a complete MacOSX SDK"
-macos_sdk_sha256="${macos_sdk_expected_sha256}"
-export SDKROOT="${macos_sdk_root}"
-export MACOSX_DEPLOYMENT_TARGET=13.0
 
-for triple in \
-  x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
-  aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-gnu; do
+selected_triples=()
+for target_id in "${target_ids[@]}"; do
+  target_values="$(python3 scripts/public-cli-release-targets.py shell "${target_id}")"
+  eval "${target_values}"
+  selected_triples+=("${CTX_PUBLIC_TARGET_TRIPLE}")
+done
+for triple in "${selected_triples[@]}"; do
   rustup target list --installed | grep -Fx "${triple}" >/dev/null || \
     die "Rust target ${triple} is not installed"
 done
@@ -244,6 +323,7 @@ version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json
 build_target() {
   local target_id="$1" platform triple build_triple binary raw target_dir
   local CTX_PUBLIC_TARGET_PLATFORM CTX_PUBLIC_TARGET_TRIPLE CTX_PUBLIC_TARGET_BINARY
+  local -a build_env
   eval "$(python3 "${repo_root}/scripts/public-cli-release-targets.py" shell "${target_id}")"
   platform="${CTX_PUBLIC_TARGET_PLATFORM}"
   triple="${CTX_PUBLIC_TARGET_TRIPLE}"
@@ -253,11 +333,16 @@ build_target() {
   raw="ctx"
   [[ "${target_id}" != "windows-x64" ]] || raw="ctx.exe"
   target_dir="${repo_root}/target/linux-release-factory/${target_id}"
-  env \
-    CARGO_TARGET_DIR="${target_dir}" \
-    CTX_RELEASE_BUILD_SOURCE_COMMIT="${source_commit}" \
-    CTX_RELEASE_BUILD_CARGO_LOCK_SHA256="${cargo_lock_sha256}" \
-    CTX_RELEASE_BUILD_TARGET="${triple}" \
+  build_env=(
+    "CARGO_TARGET_DIR=${target_dir}"
+    "CTX_RELEASE_BUILD_SOURCE_COMMIT=${source_commit}"
+    "CTX_RELEASE_BUILD_CARGO_LOCK_SHA256=${cargo_lock_sha256}"
+    "CTX_RELEASE_BUILD_TARGET=${triple}"
+  )
+  if [[ "${target_id}" == macos-* ]]; then
+    build_env+=("SDKROOT=${macos_sdk_root}" "MACOSX_DEPLOYMENT_TARGET=13.0")
+  fi
+  env "${build_env[@]}" \
     "${cargo_zigbuild_bin}" zigbuild --manifest-path "${repo_root}/Cargo.toml" \
       -p ctx --bin ctx --release --locked --target "${build_triple}" -j "${cargo_jobs}"
   if [[ "${target_id}" == macos-* ]]; then
@@ -274,7 +359,6 @@ build_target() {
     printf 'not run on this host: %s\n' "${platform}" >"${artifact_stage}/${binary}.version"
   fi
 }
-target_ids=(linux-arm64 linux-x64 macos-arm64 macos-x64 windows-x64)
 pids=()
 for target_id in "${target_ids[@]}"; do
   build_target "${target_id}" &
@@ -288,12 +372,17 @@ for pid in "${pids[@]}"; do
   wait "${pid}"
 done
 
-if [[ "${official}" == "1" ]]; then
+if [[ "${official}" == "1" && "${needs_macos}" == "1" ]]; then
   export CTX_MACOS_RELEASE_SOURCE_COMMIT="${source_commit}"
-  scripts/run-macos-release-signing.sh macos-arm64 cli \
-    "${artifact_stage}/ctx-macos-arm64" "${artifact_stage}"
-  scripts/run-macos-release-signing.sh macos-x64 cli \
-    "${artifact_stage}/ctx-macos-x64" "${artifact_stage}"
+  for target_id in "${target_ids[@]}"; do
+    case "${target_id}" in
+      macos-*)
+        eval "$(python3 scripts/public-cli-release-targets.py shell "${target_id}")"
+        scripts/run-macos-release-signing.sh "${target_id}" cli \
+          "${artifact_stage}/${CTX_PUBLIC_TARGET_BINARY}" "${artifact_stage}"
+        ;;
+    esac
+  done
 fi
 
 for target_id in "${target_ids[@]}"; do
@@ -371,7 +460,8 @@ for target_id in "${target_ids[@]}"; do
   fi
 done
 
-if [[ "${official}" == "1" && "${build_runtimes}" == "1" ]]; then
+runtimes_built=0
+if [[ "${official}" == "1" && "${selection_complete}" == "1" && "${build_runtimes}" == "1" ]]; then
   export CTX_MACOS_RELEASE_SIGNING=required
   for runtime_platform in linux-x64 linux-aarch64 macos-arm64 windows-x64; do
     scripts/build-onnxruntime-sidecar.sh "${runtime_platform}" "${artifact_stage}"
@@ -379,26 +469,51 @@ if [[ "${official}" == "1" && "${build_runtimes}" == "1" ]]; then
       linux-*|macos-*) scripts/stage-github-release-assets.sh --transcode-runtime "${runtime_platform}" "${artifact_stage}" ;;
     esac
   done
+  runtimes_built=1
 fi
 
-if [[ "${official}" == "1" && "${build_runtimes}" == "1" ]]; then
+if [[ "${runtimes_built}" == "1" ]]; then
   python3 -I scripts/release/seal-linux-factory-candidate.py \
     --candidate-dir "${artifact_stage}" --source-commit "${source_commit}"
 fi
 
-python3 - "${artifact_stage}" "${source_commit}" "${official}" <<'PY'
+candidate_releasable=0
+if [[ "${official}" == "1" && "${selection_complete}" == "1" && "${runtimes_built}" == "1" ]]; then
+  candidate_releasable=1
+fi
+
+python3 - "${artifact_stage}" "${source_commit}" "${official}" \
+  "${selection_complete}" "${runtimes_built}" "${target_ids[@]}" <<'PY'
 import hashlib, json, os, sys
 from pathlib import Path
-root, commit, official = Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1"
+root = Path(sys.argv[1])
+commit = sys.argv[2]
+official = sys.argv[3] == "1"
+selection_complete = sys.argv[4] == "1"
+runtimes_built = sys.argv[5] == "1"
+selected_targets = sys.argv[6:]
 files=[]
 for path in sorted(root.iterdir(), key=lambda item: item.name):
     if path.is_file() and not path.name.startswith("."):
         files.append({"file":path.name,"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),"size_bytes":path.stat().st_size})
-doc={"schema_version":1,"kind":"ctx-linux-release-factory","source_commit":commit,"releasable":official,"files":files}
+doc={
+    "schema_version": 1,
+    "kind": "ctx-linux-release-factory",
+    "source_commit": commit,
+    "selected_targets": selected_targets,
+    "releasable": official and selection_complete and runtimes_built,
+    "files": files,
+}
 (root/"ctx-release-factory.json").write_text(json.dumps(doc,sort_keys=True,separators=(",",":"))+"\n")
 PY
 mv "${artifact_stage}" "${output_dir}"
 trap - EXIT
 rm -rf "${stage_dir}" "${sdk_cleanup:-}"
+factory_status="non-promotable"
+if [[ "${official}" != "1" ]]; then
+  factory_status="diagnostic-unsigned"
+elif [[ "${candidate_releasable}" == "1" ]]; then
+  factory_status="releasable"
+fi
 printf 'Linux release factory complete: %s (%s)\n' \
-  "${output_dir}" "$([[ "${official}" == "1" ]] && printf releasable || printf diagnostic-unsigned)"
+  "${output_dir}" "${factory_status}"
