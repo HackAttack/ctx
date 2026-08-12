@@ -20,6 +20,7 @@ exports_files([
     "history_cli_boundary.bzl",
     "check-history-ingest-application-boundary.sh",
     "check-history-read-application-dependency-boundary.sh",
+    "check_history_application_contract_boundaries_test.py",
     "check-history-source-discovery-boundary.sh",
     "check_history_source_discovery_boundary.py",
     "check_history_source_discovery_boundary_test.py",

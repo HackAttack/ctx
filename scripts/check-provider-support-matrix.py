@@ -99,12 +99,12 @@ REDUNDANT_DEFAULT_CAPABILITY_FIELDS = {
 }
 SUPPORT_DOC_PATH = REPO_ROOT / "docs/provider-support.md"
 PUBLIC_COVERAGE_PATHS = {
-    "crates/ctx-cli/tests/native_providers.rs",
-    "crates/ctx-cli/tests/search_refresh.rs",
-    "crates/ctx-cli/tests/support/search_refresh/core_behaviors.rs",
-    "crates/ctx-cli/tests/support/search_refresh/generation_lifecycle.rs",
-    "crates/ctx-cli/tests/support/native_providers/workspace_sources.rs",
-    "crates/ctx-cli/tests/setup_sources_import.rs",
+    "crates/ctx-cli-contract-tests/tests/contracts/native_providers.rs",
+    "crates/ctx-history-read-application/tests/contracts/search_refresh.rs",
+    "crates/ctx-history-read-application/tests/support/search_refresh/core_behaviors.rs",
+    "crates/ctx-history-read-application/tests/support/search_refresh/generation_lifecycle.rs",
+    "crates/ctx-cli-contract-tests/tests/contracts/support/native_providers/workspace_sources.rs",
+    "crates/ctx-cli-contract-tests/tests/contracts/setup_sources_import.rs",
     "crates/ctx-history-capture/src/lib.rs",
 }
 

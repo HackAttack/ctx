@@ -40,6 +40,36 @@ for consumer in "${history_cli_query_consumers[@]}"; do
   fi
 done
 
+check_contract_inventory() {
+  local expected="$1"
+  query 'kind("rust_test rule", //crates/ctx-history-read-application:all)' | LC_ALL=C sort -u >"${tmp}/actual-contracts.txt"
+  if ! diff -u "${expected}" "${tmp}/actual-contracts.txt"; then
+    echo 'ctx-history-read-application final-binary contract inventory drifted' >&2
+    exit 1
+  fi
+
+  query 'kind("rust_test rule", //crates/ctx-history-read-application:all) intersect attr("data", ".*ctx-cli:ctx.*", //crates/ctx-history-read-application:all)' \
+    | LC_ALL=C sort -u >"${tmp}/actual-binary-data-contracts.txt"
+  sed '/:unit_tests$/d' "${expected}" >"${tmp}/expected-binary-data-contracts.txt"
+  if ! diff -u "${tmp}/expected-binary-data-contracts.txt" "${tmp}/actual-binary-data-contracts.txt"; then
+    echo 'ctx-history-read-application contracts must receive final ctx only as data' >&2
+    exit 1
+  fi
+
+  if [[ -n "$(query 'kind("rust_test rule", //crates/ctx-history-read-application:all) intersect attr("deps", ".*ctx-cli:ctx.*", //crates/ctx-history-read-application:all)')" ]]; then
+    echo 'ctx-history-read-application contracts must not compile against final ctx' >&2
+    exit 1
+  fi
+  if [[ -n "$(query 'kind("rust_test rule", //crates/ctx-history-read-application:all) intersect attr("deps", ".*//crates/(ctx-cli|ctx-cli-contract-tests|ctx-cli-presentation)(:|/).*", //crates/ctx-history-read-application:all)')" ]]; then
+    echo 'ctx-history-read-application contracts retain a ctx or shared-support Rust backedge' >&2
+    exit 1
+  fi
+  if [[ -n "$(query 'kind("rust_test rule", //crates/ctx-history-read-application:all) intersect attr("deps", ".*//crates/ctx-[^:]*shared[^:]*(:|/).*", //crates/ctx-history-read-application:all)')" ]]; then
+    echo 'ctx-history-read-application contracts retain a ctx or shared-support Rust backedge' >&2
+    exit 1
+  fi
+}
+
 expected_direct="${tmp}/expected-direct.txt"
 printf '%s\n' \
   '//crates/ctx-history-core:lib' \
@@ -81,6 +111,13 @@ if [[ -z "$(query 'somepath(//crates/ctx-cli:ctx, //crates/ctx-history-read-appl
   echo 'ctx-cli has no Bazel dependency path to ctx-history-read-application' >&2
   exit 1
 fi
+
+printf '%s\n' \
+  '//crates/ctx-history-read-application:search_refresh_tests' \
+  '//crates/ctx-history-read-application:search_show_tests' \
+  '//crates/ctx-history-read-application:search_source_identity_filters_tests' \
+  '//crates/ctx-history-read-application:unit_tests' >"${tmp}/expected-contracts.txt"
+check_contract_inventory "${tmp}/expected-contracts.txt"
 
 query_root="${repo_root}/crates/ctx-history-read-application"
 if grep -En 'ctx-(history-capture|history-refresh|semantic-index|cli)|clap' "${manifest}"; then
@@ -179,14 +216,30 @@ if grep -REn --include='*.rs' \
   exit 1
 fi
 
-physical_lines="$(find "${query_root}/src" -type f -name '*.rs' -print0 \
-  | xargs -0 awk 'END { print NR }')"
-expected_physical_lines=7304
-if (( physical_lines >= 20000 )); then
-  echo "ctx-history-read-application reached its 20,000-line hard stop: ${physical_lines}" >&2
-  exit 1
-fi
-if (( physical_lines != expected_physical_lines )); then
-  echo "ctx-history-read-application physical-line ratchet drifted: expected ${expected_physical_lines}, found ${physical_lines}" >&2
-  exit 1
-fi
+python3 - "${repo_root}" <<'PY'
+import importlib.util
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+sys.modules.setdefault("tomli", tomllib)
+spec = importlib.util.spec_from_file_location(
+    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+measurement = next(
+    item for item in module.live_measurements(root)
+    if item.package.name == "ctx-history-read-application"
+)
+if measurement.cloc > 13_791:
+    raise SystemExit(
+        "ctx-history-read-application exceeds its 13,791 physical CLOC ceiling: "
+        f"{measurement.cloc}"
+    )
+print(f"ctx-history-read-application physical CLOC: {measurement.cloc}")
+PY
+
+printf 'ctx-history-read-application dependency, contract, locality, and CLOC boundary ok\n'

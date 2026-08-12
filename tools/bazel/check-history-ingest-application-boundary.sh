@@ -32,6 +32,37 @@ check_labels() {
   fi
 }
 
+check_contract_inventory() {
+  local package="$1"
+  local expected="$2"
+  query "kind(\"rust_test rule\", //crates/${package}:all)" | LC_ALL=C sort -u >"${scratch}/actual-contracts.txt"
+  if ! diff -u "${expected}" "${scratch}/actual-contracts.txt"; then
+    echo "ctx-${package} final-binary contract inventory drifted" >&2
+    exit 1
+  fi
+
+  query "kind(\"rust_test rule\", //crates/${package}:all) intersect attr(\"data\", \".*ctx-cli:ctx.*\", //crates/${package}:all)" \
+    | LC_ALL=C sort -u >"${scratch}/actual-binary-data-contracts.txt"
+  sed '/:unit_tests$/d' "${expected}" >"${scratch}/expected-binary-data-contracts.txt"
+  if ! diff -u "${scratch}/expected-binary-data-contracts.txt" "${scratch}/actual-binary-data-contracts.txt"; then
+    echo "ctx-${package} contracts must receive final ctx only as data" >&2
+    exit 1
+  fi
+
+  if [[ -n "$(query "kind(\"rust_test rule\", //crates/${package}:all) intersect attr(\"deps\", \".*ctx-cli:ctx.*\", //crates/${package}:all)")" ]]; then
+    echo "ctx-${package} contracts must not compile against final ctx" >&2
+    exit 1
+  fi
+  if [[ -n "$(query "kind(\"rust_test rule\", //crates/${package}:all) intersect attr(\"deps\", \".*//crates/(ctx-cli|ctx-cli-contract-tests|ctx-cli-presentation)(:|/).*\", //crates/${package}:all)")" ]]; then
+    echo "ctx-${package} contracts retain a ctx or shared-support Rust backedge" >&2
+    exit 1
+  fi
+  if [[ -n "$(query "kind(\"rust_test rule\", //crates/${package}:all) intersect attr(\"deps\", \".*//crates/ctx-[^:]*shared[^:]*(:|/).*\", //crates/${package}:all)")" ]]; then
+    echo "ctx-${package} contracts retain a ctx or shared-support Rust backedge" >&2
+    exit 1
+  fi
+}
+
 printf '%s\n' \
   '//crates/ctx-history-capture-model:lib' \
   '//crates/ctx-history-core:lib' \
@@ -61,6 +92,8 @@ check_labels \
   "${scratch}/expected-test-support.txt"
 
 printf '%s\n' \
+  '//crates/ctx-cli-presentation:lib' \
+  '//crates/ctx-cli-presentation:qualification_lib' \
   '//crates/ctx-cli:ctx' \
   '//crates/ctx-cli:ctx_auto_upgrade_acceptance_fixture' \
   '//crates/ctx-cli:ctx_hosted_uninstall_test_host' \
@@ -81,6 +114,8 @@ check_labels \
   "${scratch}/expected-reverse-qualification.txt"
 
 printf '%s\n' \
+  '//crates/ctx-cli-presentation:test_support_lib' \
+  '//crates/ctx-cli-presentation:unit_tests' \
   '//crates/ctx-cli:unit_tests' \
   '//crates/ctx-history-cli:test_support_lib' \
   '//crates/ctx-history-ingest-application:test_support_lib' >"${scratch}/expected-reverse-test-support.txt"
@@ -88,6 +123,15 @@ check_labels \
   'test-support consumer set' \
   'kind("rust_library rule", rdeps(//crates/..., //crates/ctx-history-ingest-application:test_support_lib)) union kind("rust_test rule", rdeps(//crates/..., //crates/ctx-history-ingest-application:test_support_lib))' \
   "${scratch}/expected-reverse-test-support.txt"
+
+printf '%s\n' \
+  '//crates/ctx-history-ingest-application:custom_root_discovery_tests' \
+  '//crates/ctx-history-ingest-application:explicit_path_revision_upgrade_tests' \
+  '//crates/ctx-history-ingest-application:history_source_plugins_tests' \
+  '//crates/ctx-history-ingest-application:import_change_reporting_tests' \
+  '//crates/ctx-history-ingest-application:self_contained_core_content_tests' \
+  '//crates/ctx-history-ingest-application:unit_tests' >"${scratch}/expected-contracts.txt"
+check_contract_inventory 'ctx-history-ingest-application' "${scratch}/expected-contracts.txt"
 
 python3 - "${repo_root}" <<'PY'
 import pathlib
@@ -157,4 +201,30 @@ for port in SourceDiscoveryPort CaptureAdmissionPort IngestRefreshPort IngestPro
   fi
 done
 
-printf 'ctx-history-ingest-application normal, qualification, test-support, locality, and borrowed-port boundary ok\n'
+python3 - "${repo_root}" <<'PY'
+import importlib.util
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+sys.modules.setdefault("tomli", tomllib)
+spec = importlib.util.spec_from_file_location(
+    "check_rust_crate_size", root / "scripts/check-rust-crate-size.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+measurement = next(
+    item for item in module.live_measurements(root)
+    if item.package.name == "ctx-history-ingest-application"
+)
+if measurement.cloc > 6_089:
+    raise SystemExit(
+        "ctx-history-ingest-application exceeds its 6,089 physical CLOC ceiling: "
+        f"{measurement.cloc}"
+    )
+print(f"ctx-history-ingest-application physical CLOC: {measurement.cloc}")
+PY
+
+printf 'ctx-history-ingest-application normal, qualification, test-support, contract, locality, CLOC, and borrowed-port boundary ok\n'
