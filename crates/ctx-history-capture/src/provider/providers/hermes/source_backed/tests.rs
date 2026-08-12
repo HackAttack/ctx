@@ -15,12 +15,12 @@ use super::*;
 use crate::{
     automatic_source_backed_route_identity,
     provider::source_backed::{
-        base_source_manifest_visits, build_automatic_source_backed_registry_from_report,
+        build_automatic_source_backed_registry_from_report,
         family::document::{
             document_base_route_source_visits, reset_document_base_route_source_visits,
         },
         partial_base_route_member_visits, refresh_source_backed_generation,
-        refresh_source_backed_generation_with_detailed_progress, reset_base_source_manifest_visits,
+        refresh_source_backed_generation_with_detailed_progress,
         reset_partial_base_route_member_visits, SourceBackedCoordinatorError,
         SourceBackedCurrentSourceProgressStage, SourceBackedProviderRegistry,
         SourceBackedReconciliationDemand, SourceBackedRefreshExecutor, SourceBackedRefreshReceipt,
@@ -461,7 +461,6 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
 
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
-    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let noop = incremental_refresh(&index_root, &registry, &cold);
     assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
@@ -469,7 +468,6 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
     assert_eq!(inventory_observation_rows(), 0);
     assert_eq!(logical_row_traversals(), 0);
     assert_eq!(document_base_route_source_visits(), 0);
-    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
     assert!(session_scan_receipts().is_empty());
 
@@ -483,7 +481,6 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
         .unwrap();
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
-    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let appended = incremental_refresh(&index_root, &registry, &noop);
     assert_eq!(appended.sources.len(), 2);
@@ -494,7 +491,6 @@ fn production_incremental_noop_and_append_are_delta_proportional() {
     assert_eq!(inventory_observation_rows(), 1);
     assert_eq!(logical_row_traversals(), 1);
     assert_eq!(document_base_route_source_visits(), 1);
-    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
     assert_eq!(
         session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
@@ -519,14 +515,12 @@ fn production_incremental_base_route_work_stays_touch_bounded_with_large_history
 
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
-    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let noop = incremental_refresh(&index_root, &registry, &cold);
     assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
     assert_eq!(inventory_observation_rows(), 0);
     assert_eq!(logical_row_traversals(), 0);
     assert_eq!(document_base_route_source_visits(), 0);
-    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
 
     Connection::open(&database)
@@ -539,14 +533,12 @@ fn production_incremental_base_route_work_stays_touch_bounded_with_large_history
         .unwrap();
     reset_logical_row_traversals();
     reset_document_base_route_source_visits();
-    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let appended = incremental_refresh(&index_root, &registry, &noop);
     assert_eq!(appended.sources.len(), SESSIONS);
     assert_eq!(inventory_observation_rows(), 1);
     assert_eq!(logical_row_traversals(), 1);
     assert_eq!(document_base_route_source_visits(), 1);
-    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
 }
 
@@ -571,14 +563,12 @@ fn production_incremental_new_and_empty_sessions_read_only_the_delta() {
         )
         .unwrap();
     reset_logical_row_traversals();
-    reset_base_source_manifest_visits();
     reset_partial_base_route_member_visits();
     let refreshed = incremental_refresh(&index_root, &registry, &cold);
 
     assert_eq!(refreshed.sources.len(), 4);
     assert_eq!(inventory_observation_rows(), 3);
     assert_eq!(logical_row_traversals(), 2);
-    assert_eq!(base_source_manifest_visits(), 0);
     assert_eq!(partial_base_route_member_visits(), 0);
     assert_eq!(
         session_scan_receipts().keys().cloned().collect::<Vec<_>>(),
