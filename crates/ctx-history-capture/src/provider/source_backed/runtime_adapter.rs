@@ -2,10 +2,9 @@ use ctx_history_capture_runtime::{
     BaseEventLookup, CaptureCommitOutcome, CaptureCommitReceipt, CaptureLifecycleOpenOutcome,
     CaptureLifecycleRecovery, CaptureLifecycleSink, CapturePublicationContext,
     CapturePublicationDisposition, CaptureRevalidationTarget, CaptureRouteRef,
-    CaptureSourceAggregateRef, CoreMaterialization, CorePreparationError,
-    CorePreparationFailureKind, CorePreparationPort, CorePreparedBatch, CorePreparedBatchBuilder,
-    CorePreparedCapture, CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind,
-    ImmutableCaptureSnapshot, PresentCaptureRoute, VerifiedCapture, CORE_RECORD_BATCH_MAX_RECORDS,
+    CaptureSourceAggregateRef, CoreMaterialization, CorePreparationFailureKind,
+    CorePreparationPort, CorePreparedBatchBuilder, CoreRouteByteLease, CoreRouteResourceKind,
+    ImmutableCaptureSnapshot, PresentCaptureRoute, VerifiedCapture,
 };
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CertifiedSourceInventory,
@@ -13,7 +12,8 @@ use ctx_history_core::{
 };
 use ctx_history_index::{
     BaseEventIdentityLookup, CommitReceipt, CoreRecordPreparer, GenerationBaseCertifiedSource,
-    GenerationManifest, GenerationWriter, GenerationWriterOpenOutcome, IndexError, PreparedCoreRecord,
+    GenerationManifest,
+    GenerationWriter, GenerationWriterOpenOutcome, IndexError, PreparedCoreRecord,
     PreparedCoreRecordDraft, PreparedCoreRecordMaterialization, PublicationDisposition,
     PublicationMetadataContext, PublishedGeneration, RevalidationTarget, SourceRouteSnapshot,
     VerifiedIndex, WriterOptions,
@@ -21,14 +21,11 @@ use ctx_history_index::{
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use uuid::Uuid;
 
-use super::{SourceBackedRouteError, SourceBackedRouteErrorKind};
-
 pub(crate) type IndexCaptureResult<T> = Result<T, IndexError>;
 
 pub(crate) fn index_writer_invariant(detail: &'static str) -> IndexError {
     IndexError::WriterInvariant(detail)
 }
-
 pub(crate) fn invalid_source_route_identity() -> IndexError {
     IndexError::InvalidSourceRouteIdentity
 }
@@ -142,20 +139,17 @@ fn index_preparation_failure_kind(failure: &IndexError) -> CorePreparationFailur
 
 pub(crate) type SourceBackedRouteResourceKind = CoreRouteResourceKind;
 pub(crate) type SourceBackedRouteByteReservation = CoreRouteByteLease;
-pub(crate) type CoreRecordEmission = CorePreparedCapture<IndexCorePreparation>;
 pub(crate) type CoreRecordEmissionBatchBuilder = CorePreparedBatchBuilder<IndexCorePreparation>;
-pub(crate) type CoreRecordEmissionBatch = CorePreparedBatch<IndexCorePreparation>;
-pub(crate) const SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS: usize = CORE_RECORD_BATCH_MAX_RECORDS;
 
 /// The index owns automatic missing-route grace. Capture supplies the route
 /// observation and terminal callback, while this adapter binds the established
 /// policy without exposing an index-specific knob.
-const AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS: u32 =
+pub(crate) const AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS: u32 =
     ctx_history_index::policy::AUTOMATIC_ROUTE_DELETION_GRACE_OBSERVATIONS;
 
 /// Sole concrete lifecycle exchange between source-backed capture and index.
 #[repr(transparent)]
-pub(crate) struct IndexCaptureLifecycle(GenerationWriter);
+pub struct IndexCaptureLifecycle(GenerationWriter);
 
 impl CaptureLifecycleSink for IndexCaptureLifecycle {
     type Error = IndexError;
@@ -166,6 +160,10 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
     type CommittedSnapshot = CommittedIndexManifestView;
     type VerifiedPublication = IndexVerifiedCapture;
     type Snapshot<'a> = BorrowedIndexManifestView<'a>;
+
+    fn invariant_error(detail: &'static str) -> Self::Error {
+        index_writer_invariant(detail)
+    }
 
     fn open(
         root: &Path,
@@ -198,7 +196,11 @@ impl CaptureLifecycleSink for IndexCaptureLifecycle {
             manifest
                 .sources
                 .iter()
-                .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
+                .find(|candidate| {
+                    #[cfg(test)]
+                    super::driver::receipts::record_base_source_manifest_visit();
+                    candidate.observation().source().exact_descriptor_eq(source)
+                })
         })
     }
 
@@ -439,308 +441,6 @@ fn index_revalidation_target(target: RevalidationTarget<'_>) -> CaptureRevalidat
     match target {
         RevalidationTarget::Source(source) => CaptureRevalidationTarget::Source(source),
         RevalidationTarget::Deletion(deletion) => CaptureRevalidationTarget::Deletion(deletion),
-    }
-}
-
-// Direct writer fixtures remain useful for narrow capture tests. Production
-// construction is deliberately only `IndexCaptureLifecycle` above.
-#[cfg(test)]
-#[repr(transparent)]
-#[allow(dead_code)]
-pub(crate) struct TestIndexCaptureLifecycle(GenerationWriter);
-
-#[cfg(test)]
-impl From<GenerationWriter> for TestIndexCaptureLifecycle {
-    fn from(writer: GenerationWriter) -> Self {
-        Self(writer)
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Deref for TestIndexCaptureLifecycle {
-    type Target = GenerationWriter;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[cfg(test)]
-impl std::ops::DerefMut for TestIndexCaptureLifecycle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-#[cfg(test)]
-impl CaptureLifecycleSink for TestIndexCaptureLifecycle {
-    type Error = IndexError;
-    type BaseLookup = IndexBaseEventLookup;
-    type Preparation = IndexCorePreparation;
-    type PinnedAppendBase = GenerationBaseCertifiedSource;
-    type Commit = IndexCaptureCommitReceipt;
-    type CommitWithMetadata = IndexCaptureCommitOutcome;
-    type Snapshot<'a> = BorrowedIndexManifestView<'a>;
-
-    fn open(
-        root: &Path,
-        options: CaptureLifecycleOptions,
-    ) -> Result<CaptureLifecycleOpenOutcome<Self>, Self::Error> {
-        Ok(
-            match GenerationWriter::open(
-                root,
-                WriterOptions {
-                    indexer_threads: options.indexer_threads,
-                    memory_bytes: options.memory_bytes,
-                },
-            )? {
-                GenerationWriterOpenOutcome::Ready(writer) => {
-                    CaptureLifecycleOpenOutcome::Ready(Self(writer))
-                }
-                GenerationWriterOpenOutcome::RecoveredCommittedMigration { writer, recovery } => {
-                    CaptureLifecycleOpenOutcome::Recovered {
-                        lifecycle: Self(writer),
-                        recovery: CaptureLifecycleRecovery::new(
-                            recovery.generation_id().to_owned(),
-                            recovery.detail().to_owned(),
-                        ),
-                    }
-                }
-                GenerationWriterOpenOutcome::CommittedMigrationRecoveryRequired { recovery } => {
-                    CaptureLifecycleOpenOutcome::RecoveryRequired {
-                        recovery: CaptureLifecycleRecovery::new(
-                            recovery.generation_id().to_owned(),
-                            recovery.detail().to_owned(),
-                        ),
-                    }
-                }
-            },
-        )
-    }
-    fn base_snapshot(&self) -> Option<Self::Snapshot<'_>> {
-        self.base_manifest().map(IndexManifestView::borrowed)
-    }
-    fn base_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
-        self.base_manifest().and_then(|manifest| {
-            manifest
-                .sources
-                .iter()
-                .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
-        })
-    }
-    fn pinned_append_base(
-        &self,
-        route: &ctx_history_capture_model::SourceRouteIdentity,
-        source: &SourceKey,
-    ) -> Option<Self::PinnedAppendBase> {
-        self.generation_base_certified_source(route, source)
-    }
-    fn pinned_append_base_source(base: &Self::PinnedAppendBase) -> &CertifiedSource {
-        base.certificate()
-    }
-    fn base_event_lookup(&self) -> Self::BaseLookup {
-        self.base_event_identity_lookup().into()
-    }
-    fn core_preparation(&self) -> Self::Preparation {
-        self.core_record_preparer().into()
-    }
-    fn set_route_plan(
-        &mut self,
-        selected: BTreeSet<ctx_history_capture_model::SourceRouteIdentity>,
-        carried: BTreeSet<ctx_history_capture_model::SourceRouteIdentity>,
-    ) -> Result<(), Self::Error> {
-        self.set_source_route_plan(selected, carried)
-    }
-    fn begin_route_stage(
-        &mut self,
-        route: ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<(), Self::Error> {
-        self.begin_source_route_stage(route)
-    }
-    fn retain_unstaged_route_members(
-        &mut self,
-        route: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<(), Self::Error> {
-        self.retain_unstaged_source_route_members(route)
-    }
-    fn route_retains_unstaged_members(
-        &self,
-        route: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> bool {
-        self.source_route_retains_unstaged_members(route)
-    }
-    fn register_route_revalidation(
-        &mut self,
-        route: ctx_history_capture_model::SourceRouteIdentity,
-        revalidate: impl Fn() -> bool + Send + 'static,
-    ) -> Result<(), Self::Error> {
-        self.register_source_route_publication_revalidation(route, revalidate)
-    }
-    fn visit_revalidation_targets<E>(
-        &self,
-        mut visit: impl for<'a> FnMut(CaptureRevalidationTarget<'a>) -> Result<(), E>,
-    ) -> Result<Result<(), E>, Self::Error> {
-        for target in self.active_source_route_revalidation_targets()? {
-            if let Err(error) = visit(index_revalidation_target(target)) {
-                return Ok(Err(error));
-            }
-        }
-        Ok(Ok(()))
-    }
-    fn finish_route_stage(
-        &mut self,
-        route: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<(), Self::Error> {
-        self.finish_source_route_stage(route)
-    }
-    fn rollback_route_stage(
-        &mut self,
-        route: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<(), Self::Error> {
-        self.rollback_source_route_stage(route)
-    }
-    fn authorize_carried_route_retirement(
-        &mut self,
-        replacement: &ctx_history_capture_model::SourceRouteIdentity,
-        retired: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<(), Self::Error> {
-        self.authorize_carried_source_route_retirement(replacement, retired)
-    }
-    fn retire_carried_route(
-        &mut self,
-        replacement: &ctx_history_capture_model::SourceRouteIdentity,
-        retired: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<Vec<SourceKey>, Self::Error> {
-        self.retire_carried_source_route(replacement, retired)
-    }
-    fn begin_source_replace(&mut self, source: SourceKey) -> Result<(), Self::Error> {
-        self.begin_source(source)
-    }
-    fn begin_source_append(&mut self, source: SourceKey) -> Result<&CertifiedSource, Self::Error> {
-        self.0.begin_source_append(source)
-    }
-    fn begin_source_append_from_base(
-        &mut self,
-        base: Self::PinnedAppendBase,
-    ) -> Result<&CertifiedSource, Self::Error> {
-        self.0.begin_source_append_from_base(base)
-    }
-    fn add_prepared(&mut self, prepared: PreparedCoreRecord) -> Result<(), Self::Error> {
-        self.add_prepared_core_record(prepared)
-    }
-    fn certify_source(&mut self, certificate: CertifiedSource) -> Result<(), Self::Error> {
-        self.0.certify_source(certificate)
-    }
-    fn certify_source_append(&mut self, append: CertifiedSourceAppend) -> Result<(), Self::Error> {
-        self.0.certify_source_append(append)
-    }
-    fn retain_source(&mut self, certificate: CertifiedSource) -> Result<(), Self::Error> {
-        self.0.retain_source(certificate)
-    }
-    fn certify_complete_inventory(
-        &mut self,
-        inventory: CertifiedSourceInventory,
-    ) -> Result<(), Self::Error> {
-        self.0.certify_complete_inventory(inventory)
-    }
-    fn delete_source(
-        &mut self,
-        deletion: CertifiedSourceDeletion,
-        inventory: CertifiedSourceInventory,
-    ) -> Result<(), Self::Error> {
-        self.0.delete_source(deletion, inventory)
-    }
-    fn carry_failed_route(
-        &mut self,
-        route: &ctx_history_capture_model::SourceRouteIdentity,
-    ) -> Result<bool, Self::Error> {
-        self.carry_failed_source_route_from_base(route)
-    }
-    fn observe_missing_route(
-        &mut self,
-        route: ctx_history_capture_model::SourceRouteIdentity,
-        observed: u64,
-        revalidate: impl Fn() -> bool + Send + 'static,
-    ) -> Result<(), Self::Error> {
-        self.observe_certified_missing_route(
-            route,
-            observed,
-            AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS,
-            revalidate,
-        )
-        .map(|_| ())
-    }
-    fn set_present_routes(&mut self, routes: Vec<PresentCaptureRoute>) -> Result<(), Self::Error> {
-        let routes = routes
-            .into_iter()
-            .map(|route| {
-                let (identity, sources) = route.into_parts();
-                SourceRouteSnapshot::present(identity, sources)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.set_present_source_routes(routes)
-    }
-    fn commit<F, I>(self, mut revalidate: F, inventory: I) -> Result<Self::Commit, Self::Error>
-    where
-        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
-        I: FnMut(&CertifiedSourceInventory) -> bool,
-    {
-        self.0
-            .commit_with_complete_inventory_revalidation(
-                |target| revalidate(index_revalidation_target(target)),
-                inventory,
-            )
-            .map(capture_commit_receipt)
-    }
-    fn commit_with_metadata<F, I, M>(
-        self,
-        mut revalidate: F,
-        inventory: I,
-        metadata: M,
-    ) -> Result<Self::CommitWithMetadata, Self::Error>
-    where
-        F: FnMut(CaptureRevalidationTarget<'_>) -> bool,
-        I: FnMut(&CertifiedSourceInventory) -> bool,
-        M: for<'a> FnOnce(
-            CapturePublicationContext<'a, Self::Snapshot<'a>>,
-        ) -> Result<Vec<u8>, Self::Error>,
-    {
-        self.0
-            .commit_with_complete_inventory_revalidation_and_publication_metadata(
-                |target| revalidate(index_revalidation_target(target)),
-                inventory,
-                |context| metadata(capture_publication_context(context)),
-            )
-            .map(capture_commit_outcome)
-    }
-}
-
-impl From<CoreRouteResourceError> for SourceBackedRouteError {
-    fn from(error: CoreRouteResourceError) -> Self {
-        Self::new(
-            SourceBackedRouteErrorKind::ResourceUnavailable,
-            error.to_string(),
-        )
-    }
-}
-
-impl From<CorePreparationError<IndexError>> for SourceBackedRouteError {
-    fn from(error: CorePreparationError<IndexError>) -> Self {
-        match error {
-            CorePreparationError::Preparation { kind, failure } => Self::new(
-                match kind {
-                    CorePreparationFailureKind::InvalidSource => {
-                        SourceBackedRouteErrorKind::InvalidSource
-                    }
-                    CorePreparationFailureKind::Internal => SourceBackedRouteErrorKind::Internal,
-                },
-                failure.to_string(),
-            ),
-            CorePreparationError::Resource(error) => error.into(),
-            CorePreparationError::Internal(detail) => {
-                Self::new(SourceBackedRouteErrorKind::Internal, detail)
-            }
-        }
     }
 }
 

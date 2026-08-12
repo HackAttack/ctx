@@ -14,9 +14,11 @@ pub use ctx_history_capture_model::{
 };
 #[cfg(test)]
 pub use model::assert_carried_route_failure;
+pub(crate) use model::sqlite_source_progress;
+pub use ctx_history_capture_runtime::SourceBackedCertifiedRemoval;
 pub use model::{
-    SourceBackedCertifiedRemoval, SourceBackedPublicationMetadataContext,
-    SourceBackedRefreshReceipt, SourceBackedSuccessfulRouteOutcome,
+    SourceBackedPublicationMetadataContext, SourceBackedRefreshReceipt,
+    SourceBackedSuccessfulRouteOutcome,
 };
 use model::{SourceBackedRefreshPlan, SourceBackedVerifiedPublication};
 use route_content::source_route_content_fingerprints;
@@ -896,7 +898,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                         attempt_carried.insert(route_identity.clone());
                         failed_routes.insert(
                             route_identity.clone(),
-                            SourceBackedFailedRoute::from_route(
+                            source_backed_failed_route_from_route(
                                 route,
                                 SourceBackedSourceFailureClass::SourceChanged,
                                 carried_forward,
@@ -923,7 +925,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                     attempt_carried.insert(route_identity.clone());
                     failed_routes.insert(
                         route_identity.clone(),
-                        SourceBackedFailedRoute::from_route(
+                        source_backed_failed_route_from_route(
                             route,
                             class,
                             carried_forward,
@@ -976,7 +978,7 @@ fn refresh_source_backed_generation_with_detailed_progress_and_discovery_timing(
                 attempt_carried.insert(route_identity.clone());
                 failed_routes.insert(
                     route_identity.clone(),
-                    SourceBackedFailedRoute::from_route(
+                    source_backed_failed_route_from_route(
                         route,
                         SourceBackedSourceFailureClass::SourceChanged,
                         carried_forward,

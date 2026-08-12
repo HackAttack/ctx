@@ -1,13 +1,13 @@
 use std::error::Error as StdError;
 
-use ctx_history_capture_runtime::CorePreparationPort;
+use crate::{CaptureLifecycleSink, CorePreparationPort, CorePreparedBatch};
 use ctx_history_core::{CertifiedSource, SourceKey};
 
 use super::{
-    CoreRecordEmissionBatch, ParallelLeafProtocolMessage, ParallelLeafScanBegin,
-    ParallelLeafScanComplete, ParallelLeafScanError, ParallelLeafScanMessageKind,
-    ParallelLeafScanMode, ParallelLeafScanProtocolError, ParallelLeafSinkOperation,
-    SourceBackedCoordinatorError, SourceBackedGenerationSink, SourceBackedSourceOutcome,
+    ParallelLeafProtocolMessage, ParallelLeafScanBegin, ParallelLeafScanComplete,
+    ParallelLeafScanError, ParallelLeafScanMessageKind, ParallelLeafScanMode,
+    ParallelLeafScanProtocolError, ParallelLeafSinkOperation, SourceBackedCoordinatorError,
+    SourceBackedGenerationSink, SourceBackedSourceOutcome,
 };
 
 #[derive(Debug)]
@@ -46,25 +46,27 @@ impl ParallelLeafJobState {
     }
 }
 
-pub(in super::super) fn state_mut<E>(
+pub(in super::super) fn state_mut<E, LE>(
     states: &mut [ParallelLeafJobState],
     job_index: usize,
-) -> Result<&mut ParallelLeafJobState, ParallelLeafScanError<E>>
+) -> Result<&mut ParallelLeafJobState, ParallelLeafScanError<E, LE>>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     states.get_mut(job_index).ok_or_else(|| {
         ParallelLeafScanError::Protocol(ParallelLeafScanProtocolError::UnknownJob { job_index })
     })
 }
 
-pub(in super::super) fn validate_worker<E>(
+pub(in super::super) fn validate_worker<E, LE>(
     states: &[ParallelLeafJobState],
     job_index: usize,
     worker_index: usize,
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, LE>>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     let state = states.get(job_index).ok_or_else(|| {
         ParallelLeafScanError::Protocol(ParallelLeafScanProtocolError::UnknownJob { job_index })
@@ -80,15 +82,16 @@ where
     Ok(())
 }
 
-pub(in super::super) fn apply_parallel_leaf_message<R, E>(
-    sink: &mut SourceBackedGenerationSink<'_>,
+pub(in super::super) fn apply_parallel_leaf_message<R, E, L>(
+    sink: &mut SourceBackedGenerationSink<'_, L>,
     job_index: usize,
-    message: ParallelLeafProtocolMessage<R>,
+    message: ParallelLeafProtocolMessage<R, L::Preparation>,
     states: &mut [ParallelLeafJobState],
     results: &mut [Option<SourceBackedSourceOutcome<R>>],
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, L::Error>>
 where
     E: StdError + 'static,
+    L: CaptureLifecycleSink,
 {
     let state = state_mut(states, job_index)?;
     match message {
@@ -123,14 +126,15 @@ where
     }
 }
 
-fn apply_begin<E>(
-    sink: &mut SourceBackedGenerationSink<'_>,
+fn apply_begin<E, L>(
+    sink: &mut SourceBackedGenerationSink<'_, L>,
     job_index: usize,
     state: &mut ParallelLeafJobState,
     begin: ParallelLeafScanBegin,
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, L::Error>>
 where
     E: StdError + 'static,
+    L: CaptureLifecycleSink,
 {
     if state.begin.is_some() {
         return Err(ParallelLeafScanProtocolError::DuplicateBegin { job_index }.into());
@@ -188,15 +192,16 @@ where
     Ok(())
 }
 
-fn apply_core_record_batch<E>(
-    sink: &mut SourceBackedGenerationSink<'_>,
+fn apply_core_record_batch<E, L>(
+    sink: &mut SourceBackedGenerationSink<'_, L>,
     job_index: usize,
     state: &mut ParallelLeafJobState,
-    batch: Option<CoreRecordEmissionBatch>,
+    batch: Option<CorePreparedBatch<L::Preparation>>,
     completed_bytes: u64,
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, L::Error>>
 where
     E: StdError + 'static,
+    L: CaptureLifecycleSink,
 {
     if state.completion.is_some() {
         return Err(ParallelLeafScanProtocolError::CoreRecordAfterCompletion { job_index }.into());
@@ -233,14 +238,15 @@ where
     })
 }
 
-fn apply_completion<R, E>(
-    sink: &mut SourceBackedGenerationSink<'_>,
+fn apply_completion<R, E, L>(
+    sink: &mut SourceBackedGenerationSink<'_, L>,
     job_index: usize,
     state: &mut ParallelLeafJobState,
     completion: ParallelLeafScanComplete<R>,
-) -> Result<SourceBackedSourceOutcome<R>, ParallelLeafScanError<E>>
+) -> Result<SourceBackedSourceOutcome<R>, ParallelLeafScanError<E, L::Error>>
 where
     E: StdError + 'static,
+    L: CaptureLifecycleSink,
 {
     if state.completion.is_some() {
         return Err(ParallelLeafScanProtocolError::DuplicateCompletion { job_index }.into());
@@ -402,12 +408,13 @@ where
 /// events have been accepted. Results are indexed by input job, so this keeps
 /// the bounded diagnostic prefix in canonical scan order without serializing
 /// record ingestion behind a slow earlier worker.
-pub(in super::super) fn finalize_parallel_leaf_diagnostics<R, E>(
-    sink: &mut SourceBackedGenerationSink<'_>,
+pub(in super::super) fn finalize_parallel_leaf_diagnostics<R, E, L>(
+    sink: &mut SourceBackedGenerationSink<'_, L>,
     results: &[Option<SourceBackedSourceOutcome<R>>],
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, L::Error>>
 where
     E: StdError + 'static,
+    L: CaptureLifecycleSink,
 {
     for (job_index, result) in results.iter().enumerate() {
         let Some(SourceBackedSourceOutcome::Failed(failure)) = result.as_ref() else {
@@ -431,13 +438,14 @@ where
     Ok(())
 }
 
-fn require_begin_mode<E>(
+fn require_begin_mode<E, LE>(
     job_index: usize,
     state: &ParallelLeafJobState,
     completion: ParallelLeafScanMode,
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, LE>>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     let begin = state.begin.as_ref().ok_or_else(|| {
         ParallelLeafScanError::Protocol(ParallelLeafScanProtocolError::MissingBegin {
@@ -456,14 +464,15 @@ where
     Ok(())
 }
 
-fn bind_source<E>(
+fn bind_source<E, LE>(
     job_index: usize,
     message: ParallelLeafScanMessageKind,
     state: &mut ParallelLeafJobState,
     observed: &SourceKey,
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, LE>>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     if let Some(expected) = state.source.as_ref() {
         validate_source(job_index, message, expected, observed)
@@ -473,13 +482,14 @@ where
     }
 }
 
-fn bound_source<E>(
+fn bound_source<E, LE>(
     job_index: usize,
     message: ParallelLeafScanMessageKind,
     state: &ParallelLeafJobState,
-) -> Result<&SourceKey, ParallelLeafScanError<E>>
+) -> Result<&SourceKey, ParallelLeafScanError<E, LE>>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     state
         .source
@@ -487,14 +497,15 @@ where
         .ok_or_else(|| ParallelLeafScanProtocolError::SourceNotBound { job_index, message }.into())
 }
 
-fn validate_source<E>(
+fn validate_source<E, LE>(
     job_index: usize,
     message: ParallelLeafScanMessageKind,
     expected: &SourceKey,
     observed: &SourceKey,
-) -> Result<(), ParallelLeafScanError<E>>
+) -> Result<(), ParallelLeafScanError<E, LE>>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     if !expected.exact_descriptor_eq(observed) {
         return Err(ParallelLeafScanProtocolError::SourceMismatch {
@@ -508,14 +519,15 @@ where
     Ok(())
 }
 
-fn sink_error<E>(
+fn sink_error<E, LE>(
     job_index: usize,
     source: &SourceKey,
     operation: ParallelLeafSinkOperation,
-    error: SourceBackedCoordinatorError,
-) -> ParallelLeafScanError<E>
+    error: SourceBackedCoordinatorError<LE>,
+) -> ParallelLeafScanError<E, LE>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     ParallelLeafScanError::Sink {
         job_index,

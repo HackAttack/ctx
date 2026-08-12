@@ -1,14 +1,5 @@
 use super::*;
 
-impl SourceBackedRecordRejectionClass {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::MalformedRecord => "malformed_record",
-            Self::UnsupportedRecord => "unsupported_record",
-        }
-    }
-}
-
 impl SourceBackedProviderRegistry {
     /// Rebinds one newly constructed explicit route to a previously certified
     /// identity during an explicit relocation. Callers must establish exact

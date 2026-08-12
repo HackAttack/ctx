@@ -8,23 +8,23 @@ use std::{
     time::Duration,
 };
 
-use ctx_history_capture_model::CoreRecordProgress;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use ctx_history_capture_runtime::{
-    CoreMaterialization, CorePreparationError, CoreRouteResourceError,
+
+use crate::{
+    CoreMaterialization, CorePreparationError, CorePreparationPort, CorePreparedBatch,
+    CorePreparedBatchBuilder, CorePreparedCapture, CoreRouteResourceError,
 };
+use ctx_history_capture_model::CoreRecordProgress;
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, SourceKey, MAX_ENCODED_CORE_RECORD_BYTES,
 };
 use thiserror::Error;
 
 use super::super::{
-    CoreRecordEmission, CoreRecordEmissionBatch, CoreRecordEmissionBatchBuilder,
-    IndexCorePreparation, SourceBackedCoordinatorError, SourceBackedGenerationSink,
-    SourceBackedLogicalSourceFailureFact, SourceBackedRecordRejectionDrafts,
-    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResourceKind,
-    SourceBackedRouteResources, SourceBackedSourceOutcome,
+    SourceBackedCoordinatorError, SourceBackedGenerationSink, SourceBackedLogicalSourceFailureFact,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResourceKind, SourceBackedRouteResources, SourceBackedSourceOutcome,
     SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS,
 };
 
@@ -46,7 +46,7 @@ impl<L> ParallelLeafScanJob<L> {
         }
     }
 
-    pub(crate) fn with_worker_affinity(mut self, worker_affinity: u64) -> Self {
+    pub fn with_worker_affinity(mut self, worker_affinity: u64) -> Self {
         self.worker_affinity = Some(worker_affinity);
         self
     }
@@ -59,7 +59,7 @@ impl<L> ParallelLeafScanJob<L> {
         &self.leaf
     }
 
-    pub(crate) fn worker_affinity(&self) -> Option<u64> {
+    pub fn worker_affinity(&self) -> Option<u64> {
         self.worker_affinity
     }
 }
@@ -144,7 +144,7 @@ impl<R> ParallelLeafScanComplete<R> {
         Self::source_failure_with_rejections(source, base, failure, Default::default())
     }
 
-    pub(crate) fn source_failure_with_rejections(
+    pub fn source_failure_with_rejections(
         source: SourceKey,
         base: Option<CertifiedSource>,
         failure: SourceBackedRouteError,
@@ -362,9 +362,10 @@ impl std::fmt::Display for ParallelLeafSinkOperation {
 }
 
 #[derive(Debug, Error)]
-pub enum ParallelLeafScanError<E>
+pub enum ParallelLeafScanError<E, LE>
 where
     E: StdError + 'static,
+    LE: StdError + 'static,
 {
     #[error("parallel leaf scan requested zero workers for {job_count} jobs")]
     InvalidWorkerCount { job_count: usize },
@@ -405,29 +406,27 @@ where
         source_id: String,
         operation: ParallelLeafSinkOperation,
         #[source]
-        source: SourceBackedCoordinatorError,
+        source: SourceBackedCoordinatorError<LE>,
     },
 }
 
-#[derive(Debug)]
-pub(super) enum ParallelLeafProtocolMessage<R> {
+pub(super) enum ParallelLeafProtocolMessage<R, P: CorePreparationPort> {
     Begin {
         begin: Box<ParallelLeafScanBegin>,
         acknowledgement: ParallelLeafBeginAcknowledgement,
     },
     CoreRecordBatch {
-        batch: Option<Box<CoreRecordEmissionBatch>>,
+        batch: Option<Box<CorePreparedBatch<P>>>,
         completed_bytes: u64,
     },
     Complete(Box<ParallelLeafScanComplete<R>>),
 }
 
-#[derive(Debug)]
-pub(super) enum ParallelLeafWorkerEvent<R, E> {
+pub(super) enum ParallelLeafWorkerEvent<R, E, P: CorePreparationPort> {
     Protocol {
         worker_index: usize,
         job_index: usize,
-        message: Box<ParallelLeafProtocolMessage<R>>,
+        message: Box<ParallelLeafProtocolMessage<R, P>>,
     },
     Returned {
         worker_index: usize,
@@ -448,13 +447,13 @@ pub(super) enum ParallelLeafWorkerEvent<R, E> {
     },
 }
 
-pub struct ParallelLeafScanEmitter<'sender, R, E> {
+pub struct ParallelLeafScanEmitter<'sender, R, E, P: CorePreparationPort> {
     pub(super) worker_index: usize,
     pub(super) job_index: usize,
-    pub(super) sender: &'sender SyncSender<ParallelLeafWorkerEvent<R, E>>,
+    pub(super) sender: &'sender SyncSender<ParallelLeafWorkerEvent<R, E, P>>,
     pub(super) cancellation: &'sender AtomicBool,
     pub(super) resources: SourceBackedRouteResources,
-    pub(super) core_record_preparer: IndexCorePreparation,
+    pub(super) core_record_preparer: P,
     #[cfg(test)]
     pub(super) successful_resource_acquisitions: Option<&'sender AtomicUsize>,
 }
@@ -467,7 +466,7 @@ pub enum ParallelLeafScanEmitError {
     Route(#[from] SourceBackedRouteError),
 }
 
-impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
+impl<R, E, P: CorePreparationPort> ParallelLeafScanEmitter<'_, R, E, P> {
     pub fn begin(&mut self, begin: ParallelLeafScanBegin) -> Result<(), ParallelLeafScanCancelled> {
         let (acknowledgement, applied) = ParallelLeafBeginAcknowledgement::rendezvous();
         self.send(ParallelLeafProtocolMessage::Begin {
@@ -482,7 +481,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         &mut self,
         record: CoreRecord,
     ) -> Result<(), ParallelLeafScanEmitError> {
-        let mut emissions = CoreRecordEmissionBatchBuilder::default();
+        let mut emissions = CorePreparedBatchBuilder::<P>::default();
         self.emit_core_record_batched(&mut emissions, record)?;
         self.emit_core_record_batch(&mut emissions)
     }
@@ -498,7 +497,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         &mut self,
         records: Vec<CoreRecord>,
     ) -> Result<(), ParallelLeafScanEmitError> {
-        let mut emissions = CoreRecordEmissionBatchBuilder::default();
+        let mut emissions = CorePreparedBatchBuilder::<P>::default();
         for record in records {
             self.emit_core_record_batched(&mut emissions, record)?;
         }
@@ -506,9 +505,9 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         Ok(())
     }
 
-    pub(crate) fn emit_core_records_with_completed_bytes(
+    pub fn emit_core_records_with_completed_bytes(
         &mut self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
         records: Vec<CoreRecord>,
         completed_bytes: u64,
     ) -> Result<(), ParallelLeafScanEmitError> {
@@ -523,9 +522,9 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         self.emit_core_record_batch_with_completed_bytes(emissions, completed_bytes)
     }
 
-    pub(crate) fn emit_core_record_batched(
+    pub fn emit_core_record_batched(
         &mut self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
         record: CoreRecord,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.emit_core_record_batched_inner(emissions, record, true)
@@ -533,7 +532,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
 
     fn emit_final_core_record_batched(
         &mut self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
         record: CoreRecord,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.emit_core_record_batched_inner(emissions, record, false)
@@ -541,12 +540,13 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
 
     fn emit_core_record_batched_inner(
         &mut self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
         record: CoreRecord,
         flush_full_batch: bool,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.require_not_cancelled()?;
-        let mut draft = CoreRecordEmission::prepare_draft(record, &self.core_record_preparer)
+        let progress = CoreRecordProgress::from_record(&record);
+        let mut draft = CorePreparedCapture::<P>::prepare_draft(record, &self.core_record_preparer)
             .map_err(SourceBackedRouteError::from)?;
         self.require_not_cancelled()?;
         let route_maximum_bytes = self
@@ -575,7 +575,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
                     "Core-record materialization permit does not fit this platform",
                 )
             })?;
-            match CoreRecordEmission::materialize_draft(
+            match CorePreparedCapture::<P>::materialize_draft(
                 draft,
                 materialization_limit,
                 &self.core_record_preparer,
@@ -584,7 +584,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
             {
                 CoreMaterialization::Prepared(prepared) => {
                     emissions
-                        .push(prepared, &self.core_record_preparer)
+                        .push_with_progress(prepared, &self.core_record_preparer, progress)
                         .map_err(SourceBackedRouteError::from)?;
                     if flush_full_batch
                         && emissions.len() == SOURCE_BACKED_CORE_RECORD_BATCH_MAX_RECORDS
@@ -632,16 +632,16 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         }
     }
 
-    pub(crate) fn emit_core_record_batch(
+    pub fn emit_core_record_batch(
         &mut self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
     ) -> Result<(), ParallelLeafScanEmitError> {
         self.emit_core_record_batch_with_completed_bytes(emissions, 0)
     }
 
-    pub(crate) fn emit_core_record_batch_with_completed_bytes(
+    pub fn emit_core_record_batch_with_completed_bytes(
         &mut self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
         completed_bytes: u64,
     ) -> Result<(), ParallelLeafScanEmitError> {
         let batch = emissions
@@ -659,7 +659,7 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
 
     fn reserve_core_output_cancelably(
         &self,
-        emissions: &mut CoreRecordEmissionBatchBuilder,
+        emissions: &mut CorePreparedBatchBuilder<P>,
         reservation_bytes: u64,
     ) -> Result<(), ParallelLeafScanEmitError> {
         let route_maximum_bytes = self
@@ -708,13 +708,13 @@ impl<R, E> ParallelLeafScanEmitter<'_, R, E> {
         self.cancellation.load(Ordering::Acquire)
     }
 
-    pub(crate) fn route_resources(&self) -> SourceBackedRouteResources {
+    pub fn route_resources(&self) -> SourceBackedRouteResources {
         self.resources.clone()
     }
 
     fn send(
         &self,
-        message: ParallelLeafProtocolMessage<R>,
+        message: ParallelLeafProtocolMessage<R, P>,
     ) -> Result<(), ParallelLeafScanCancelled> {
         if self.is_cancelled() {
             return Err(ParallelLeafScanCancelled);

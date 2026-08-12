@@ -5,6 +5,10 @@
 //! preparation types at compile time, so this boundary adds neither dynamic
 //! dispatch nor storage.
 
+mod source_backed;
+
+pub use source_backed::*;
+
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -15,7 +19,7 @@ use std::{
     },
 };
 
-use ctx_history_capture_model::SourceRouteIdentity;
+use ctx_history_capture_model::{CoreRecordBatchProgress, CoreRecordProgress, SourceRouteIdentity};
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion, CertifiedSourceInventory,
     CoreRecord, SourceKey,
@@ -210,6 +214,8 @@ pub trait CaptureLifecycleSink: Sized {
     type Snapshot<'a>: ImmutableCaptureSnapshot
     where
         Self: 'a;
+
+    fn invariant_error(detail: &'static str) -> Self::Error;
 
     fn open(
         root: &Path,
@@ -910,6 +916,7 @@ pub struct CorePreparedBatchBuilder<P: CorePreparationPort> {
     prepared: Vec<P::Prepared>,
     lease: Option<CoreRouteByteLease>,
     prepared_bytes: u64,
+    progress: CoreRecordBatchProgress,
 }
 
 impl<P: CorePreparationPort> Default for CorePreparedBatchBuilder<P> {
@@ -918,6 +925,7 @@ impl<P: CorePreparationPort> Default for CorePreparedBatchBuilder<P> {
             prepared: Vec::new(),
             lease: None,
             prepared_bytes: 0,
+            progress: CoreRecordBatchProgress::default(),
         }
     }
 }
@@ -983,6 +991,15 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
         prepared: P::Prepared,
         port: &P,
     ) -> Result<(), CorePreparationError<P::Failure>> {
+        self.push_with_progress(prepared, port, CoreRecordProgress::default())
+    }
+
+    pub fn push_with_progress(
+        &mut self,
+        prepared: P::Prepared,
+        port: &P,
+        progress: CoreRecordProgress,
+    ) -> Result<(), CorePreparationError<P::Failure>> {
         let prepared_bytes = u64::try_from(port.encoded_bytes(&prepared)).map_err(|_| {
             CorePreparationError::Internal("prepared Core-record byte count overflowed")
         })?;
@@ -995,6 +1012,7 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
             CorePreparationError::Internal("prepared Core-record batch byte count overflowed"),
         )?;
         self.prepared.push(prepared);
+        self.progress.push(progress);
         Ok(())
     }
 
@@ -1004,6 +1022,7 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
         if self.is_empty() {
             self.lease = None;
             self.prepared_bytes = 0;
+            self.progress = CoreRecordBatchProgress::default();
             return Ok(None);
         }
         if self.prepared.len() > CORE_RECORD_BATCH_MAX_RECORDS {
@@ -1018,6 +1037,7 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
         Ok(Some(CorePreparedBatch {
             prepared: std::mem::take(&mut self.prepared),
             lease,
+            progress: std::mem::take(&mut self.progress),
         }))
     }
 }
@@ -1028,6 +1048,7 @@ impl<P: CorePreparationPort> CorePreparedBatchBuilder<P> {
 pub struct CorePreparedBatch<P: CorePreparationPort> {
     prepared: Vec<P::Prepared>,
     lease: CoreRouteByteLease,
+    progress: CoreRecordBatchProgress,
 }
 
 impl<P: CorePreparationPort> CorePreparedBatch<P> {
@@ -1037,6 +1058,10 @@ impl<P: CorePreparationPort> CorePreparedBatch<P> {
 
     pub fn iter(&self) -> impl Iterator<Item = &P::Prepared> {
         self.prepared.iter()
+    }
+
+    pub fn progress(&self) -> &CoreRecordBatchProgress {
+        &self.progress
     }
 
     pub fn into_prepared(self) -> (Vec<P::Prepared>, CoreRouteByteLease) {

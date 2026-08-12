@@ -1,5 +1,24 @@
 use super::*;
 
+pub(crate) fn sqlite_source_progress(
+    progress: ctx_history_source_io::SqliteSourceProgress,
+) -> SourceBackedCurrentSourceProgress {
+    let stage = match progress.stage {
+        ctx_history_source_io::SqliteSourceProgressStage::SourceFamilyCopy => {
+            SourceBackedCurrentSourceProgressStage::SourceFamilyCopy
+        }
+    };
+    SourceBackedCurrentSourceProgress {
+        stage,
+        snapshot_pages_completed: progress.snapshot_pages_completed,
+        snapshot_pages_total: progress.snapshot_pages_total,
+        snapshot_bytes_completed: progress.snapshot_bytes_completed,
+        snapshot_bytes_total: progress.snapshot_bytes_total,
+        logical_rows_scanned: None,
+        logical_certified_bytes: None,
+    }
+}
+
 pub(super) struct SourceBackedRefreshPlan {
     pub(super) scope: SourceBackedRefreshScope,
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
@@ -255,10 +274,4 @@ pub fn assert_carried_route_failure(
         receipt.carried_failed_route_ids,
         vec![failure.route_identity.clone()]
     );
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceBackedCertifiedRemoval {
-    pub deletion: CertifiedSourceDeletion,
-    pub inventory: CertifiedSourceInventory,
 }

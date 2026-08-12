@@ -21,12 +21,13 @@ use ctx_history_capture_runtime::{
 };
 use ctx_history_core::SourceAnchor;
 use ctx_history_core::{
-    CaptureProvider, CertifiedSource, CertifiedSourceAppend, CertifiedSourceDeletion,
-    CertifiedSourceInventory, CoreRecord, ScannedSourceCounts, SourceKey, TypedKey,
+    CaptureProvider, CertifiedSource, CertifiedSourceInventory, ScannedSourceCounts, SourceKey,
+    TypedKey,
 };
-use ctx_history_index::{GenerationBaseCertifiedSource, IndexError, WriterOptions};
+#[cfg(test)]
+use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion};
+use ctx_history_index::{IndexError, WriterOptions};
 use sha2::{Digest, Sha256};
-use thiserror::Error;
 
 use super::codex::nativepath::CodexGenerationNormalizationCoordinatorV0;
 pub use super::providers::crush::native_path::source_backed::{
@@ -114,7 +115,7 @@ pub use registration::*;
 pub(crate) use runtime_adapter::*;
 pub use runtime_adapter::{
     BorrowedIndexManifestView, CommittedIndexManifestView, IndexCaptureCommitReceipt,
-    IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
+    IndexCaptureLifecycle, IndexCaptureVerifiedPin, IndexManifestView, IndexVerifiedCapture,
 };
 pub use watch::*;
 

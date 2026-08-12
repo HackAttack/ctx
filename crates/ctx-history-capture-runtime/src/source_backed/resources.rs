@@ -1,32 +1,35 @@
 use std::ops::Deref;
 
-use ctx_history_capture_runtime::{
+use crate::{
     CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind, CoreRouteResources,
 };
 
 use super::SourceBackedReconciliationDemand;
 
-/// Capture-local route context layered over the provider-neutral byte budget.
+pub type SourceBackedRouteResourceKind = CoreRouteResourceKind;
+pub type SourceBackedRouteByteReservation = CoreRouteByteLease;
+
+/// Source-backed route context layered over the provider-neutral byte budget.
 ///
 /// Hermes chooses incremental versus exhaustive reconciliation at the capture
 /// boundary. The neutral runtime continues to own the exact shared byte and
 /// worker budgets without importing that provider policy.
 #[derive(Debug, Clone)]
-pub(crate) struct SourceBackedRouteResources {
+pub struct SourceBackedRouteResources {
     core: CoreRouteResources,
     reconciliation_demand: SourceBackedReconciliationDemand,
 }
 
 impl SourceBackedRouteResources {
-    pub(crate) fn production(leaf_worker_budget: usize) -> Self {
+    pub fn production(leaf_worker_budget: usize) -> Self {
         Self {
             core: CoreRouteResources::production(leaf_worker_budget),
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_test(
+    #[doc(hidden)]
+    pub fn for_test(
         leaf_worker_budget: usize,
         maximum_live_output_bytes: u64,
         maximum_physical_scratch_bytes: u64,
@@ -41,31 +44,28 @@ impl SourceBackedRouteResources {
         }
     }
 
-    pub(crate) fn with_reconciliation_demand(
-        mut self,
-        demand: SourceBackedReconciliationDemand,
-    ) -> Self {
+    pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
         self.reconciliation_demand = demand;
         self
     }
 
-    pub(crate) const fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
+    pub const fn reconciliation_demand(&self) -> SourceBackedReconciliationDemand {
         self.reconciliation_demand
     }
 
-    pub(crate) fn leaf_worker_budget(&self) -> usize {
+    pub fn leaf_worker_budget(&self) -> usize {
         self.core.leaf_worker_budget()
     }
 
-    pub(crate) fn maximum_bytes(&self, kind: CoreRouteResourceKind) -> u64 {
+    pub fn maximum_bytes(&self, kind: CoreRouteResourceKind) -> u64 {
         self.core.maximum_bytes(kind)
     }
 
-    pub(crate) fn core_output_batch_reservation_bytes(&self) -> u64 {
+    pub fn core_output_batch_reservation_bytes(&self) -> u64 {
         self.core.core_output_batch_reservation_bytes()
     }
 
-    pub(crate) fn reserve(
+    pub fn reserve(
         &self,
         kind: CoreRouteResourceKind,
         bytes: usize,
@@ -73,8 +73,8 @@ impl SourceBackedRouteResources {
         self.core.reserve(kind, bytes)
     }
 
-    #[cfg(test)]
-    pub(crate) fn live_bytes(&self, kind: CoreRouteResourceKind) -> u64 {
+    #[doc(hidden)]
+    pub fn live_bytes(&self, kind: CoreRouteResourceKind) -> u64 {
         self.core.live_bytes(kind)
     }
 }

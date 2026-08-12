@@ -1,19 +1,30 @@
-use super::*;
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
+
+use ctx_history_capture_model::SourceRouteIdentity;
+use ctx_history_core::{CaptureProvider, CertifiedSource, SourceKey};
+
+use super::driver::{
+    SourceBackedRouteError, MAX_RECORDED_SOURCE_BACKED_FAILURES,
+    MAX_RECORDED_SOURCE_BACKED_RECORD_REJECTIONS, MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
+    MAX_SOURCE_BACKED_FAILURE_SELECTOR_BYTES,
+};
 
 /// Typed result for one independently replaceable logical source.
 #[derive(Debug)]
-pub(crate) enum SourceBackedSourceOutcome<T> {
+pub enum SourceBackedSourceOutcome<T> {
     Success(T),
     Failed(Box<SourceBackedLogicalSourceFailureFact>),
 }
 
 #[derive(Debug)]
 pub struct SourceBackedLogicalSourceFailureFact {
-    pub(crate) source: SourceKey,
-    pub(crate) retained: Option<CertifiedSource>,
-    pub(crate) failure: SourceBackedRouteError,
-    pub(crate) record_rejections: SourceBackedRecordRejectionDrafts,
+    pub source: SourceKey,
+    pub retained: Option<CertifiedSource>,
+    pub failure: SourceBackedRouteError,
+    pub record_rejections: SourceBackedRecordRejectionDrafts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +34,15 @@ pub enum SourceBackedRecordRejectionClass {
     /// The record was well formed, but its payload shape is not projectable by
     /// the current provider parser revision.
     UnsupportedRecord,
+}
+
+impl SourceBackedRecordRejectionClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MalformedRecord => "malformed_record",
+            Self::UnsupportedRecord => "unsupported_record",
+        }
+    }
 }
 
 /// Record-level status for a refresh that otherwise completed and published.
@@ -46,24 +66,24 @@ impl SourceBackedRecordCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceBackedRecordRejectionDraft {
-    pub(crate) source: SourceKey,
-    pub(crate) provider: CaptureProvider,
-    pub(crate) source_selector: String,
-    pub(crate) line_number: u64,
-    pub(crate) payload_type: Option<String>,
-    pub(crate) class: SourceBackedRecordRejectionClass,
-    pub(crate) detail: String,
+pub struct SourceBackedRecordRejectionDraft {
+    pub source: SourceKey,
+    pub provider: CaptureProvider,
+    pub source_selector: String,
+    pub line_number: u64,
+    pub payload_type: Option<String>,
+    pub class: SourceBackedRecordRejectionClass,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct SourceBackedRecordRejectionDrafts {
+pub struct SourceBackedRecordRejectionDrafts {
     rejections: Vec<SourceBackedRecordRejectionDraft>,
     omitted: usize,
 }
 
 impl SourceBackedRecordRejectionDrafts {
-    pub(crate) fn record(&mut self, rejection: SourceBackedRecordRejectionDraft) {
+    pub fn record(&mut self, rejection: SourceBackedRecordRejectionDraft) {
         if self.rejections.len() < MAX_RECORDED_SOURCE_BACKED_RECORD_REJECTIONS {
             self.rejections.push(rejection);
         } else {
@@ -71,11 +91,11 @@ impl SourceBackedRecordRejectionDrafts {
         }
     }
 
-    pub(crate) fn first(&self) -> Option<&SourceBackedRecordRejectionDraft> {
+    pub fn first(&self) -> Option<&SourceBackedRecordRejectionDraft> {
         self.rejections.first()
     }
 
-    pub(crate) fn merge(&mut self, other: Self) {
+    pub fn merge(&mut self, other: Self) {
         let (rejections, omitted) = other.into_parts();
         for rejection in rejections {
             self.record(rejection);
@@ -83,14 +103,14 @@ impl SourceBackedRecordRejectionDrafts {
         self.omitted = self.omitted.saturating_add(omitted);
     }
 
-    pub(super) fn into_parts(self) -> (Vec<SourceBackedRecordRejectionDraft>, usize) {
+    pub fn into_parts(self) -> (Vec<SourceBackedRecordRejectionDraft>, usize) {
         (self.rejections, self.omitted)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceBackedRecordRejection {
-    pub(in super::super::super) route_index: usize,
+    pub route_index: usize,
     /// The successful route that published valid peers alongside this
     /// rejected provider record.
     pub route_identity: SourceRouteIdentity,
@@ -132,7 +152,7 @@ impl SourceBackedRecordRejections {
         self.total() == 0
     }
 
-    pub(in super::super::super) fn record(&mut self, rejection: SourceBackedRecordRejection) {
+    pub fn record(&mut self, rejection: SourceBackedRecordRejection) {
         if self.rejections.len() < MAX_RECORDED_SOURCE_BACKED_RECORD_REJECTIONS {
             self.rejections.push(rejection);
         } else {
@@ -140,24 +160,19 @@ impl SourceBackedRecordRejections {
         }
     }
 
-    pub(in super::super::super) fn record_omitted(&mut self, omitted: usize) {
+    pub fn record_omitted(&mut self, omitted: usize) {
         self.omitted = self.omitted.saturating_add(omitted);
     }
 
-    pub(in super::super::super) fn checkpoint(&self) -> (usize, usize) {
+    pub fn checkpoint(&self) -> (usize, usize) {
         (self.rejections.len(), self.omitted)
     }
 
-    pub(in super::super::super) fn truncate(&mut self, retained: usize, omitted: usize) {
+    pub fn truncate(&mut self, retained: usize, omitted: usize) {
         self.rejections.truncate(retained);
         self.omitted = omitted;
     }
 }
-
-/// Three independently committed certified whole-route absences bound grace.
-#[cfg(test)]
-pub const AUTOMATIC_ROUTE_DELETION_MISSING_OBSERVATIONS: u32 =
-    ctx_history_index::policy::AUTOMATIC_ROUTE_DELETION_GRACE_OBSERVATIONS;
 
 /// Selects the provider routes incorporated into one global generation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -327,38 +342,6 @@ impl SourceBackedFailedRoute {
             detail: bounded_text(detail.as_ref(), MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES),
         }
     }
-
-    pub(in super::super::super) fn from_route(
-        route: &SourceBackedRoute,
-        class: SourceBackedSourceFailureClass,
-        carried_forward: bool,
-        detail: impl AsRef<str>,
-    ) -> SourceBackedCoordinatorResult<Self> {
-        let route_identity = route.metadata.route_identity.clone().ok_or_else(|| {
-            SourceBackedCoordinatorError::InvalidRoute {
-                provider: route.metadata.source.provider,
-                detail: "failed executable route has no route identity".to_owned(),
-            }
-        })?;
-        let mut digest = Sha256::new();
-        digest.update(b"ctx.source-failure-identity-v1\0");
-        digest.update(route.metadata.source.provider.as_str().as_bytes());
-        digest.update([0]);
-        digest.update(route.metadata.certified_source_format.as_bytes());
-        digest.update([0]);
-        let path = route.metadata.source.path.as_os_str().as_encoded_bytes();
-        digest.update((path.len() as u64).to_be_bytes());
-        digest.update(path);
-        Ok(Self::new(
-            route_identity,
-            format!("{:x}", digest.finalize()),
-            route.metadata.source.provider,
-            class,
-            carried_forward,
-            route.metadata.source.path.display().to_string(),
-            detail,
-        ))
-    }
 }
 
 /// One independently owned logical source that could not be replaced during
@@ -366,7 +349,7 @@ impl SourceBackedFailedRoute {
 /// outcome is typed and deterministic without exposing a provider path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceBackedLogicalSourceFailure {
-    pub(in super::super::super) route_index: usize,
+    pub route_index: usize,
     /// The successful route whose independently owned logical source failed.
     pub route_identity: SourceRouteIdentity,
     pub source: SourceKey,
@@ -390,7 +373,7 @@ pub struct SourceBackedLogicalSourceFailures {
     route_totals: BTreeMap<SourceRouteIdentity, usize>,
 }
 
-pub(in super::super::super) struct SourceBackedLogicalSourceFailureCheckpoint {
+pub struct SourceBackedLogicalSourceFailureCheckpoint {
     retained: usize,
     omitted: usize,
     route_identity: SourceRouteIdentity,
@@ -414,7 +397,7 @@ impl SourceBackedLogicalSourceFailures {
         self.total() == 0
     }
 
-    pub(in super::super::super) fn record(&mut self, failure: SourceBackedLogicalSourceFailure) {
+    pub fn record(&mut self, failure: SourceBackedLogicalSourceFailure) {
         *self
             .route_totals
             .entry(failure.route_identity.clone())
@@ -426,17 +409,14 @@ impl SourceBackedLogicalSourceFailures {
         }
     }
 
-    pub(in super::super::super) fn route_total(
-        &self,
-        route_identity: &SourceRouteIdentity,
-    ) -> usize {
+    pub fn route_total(&self, route_identity: &SourceRouteIdentity) -> usize {
         self.route_totals
             .get(route_identity)
             .copied()
             .unwrap_or_default()
     }
 
-    pub(in super::super::super) fn checkpoint(
+    pub fn checkpoint(
         &self,
         route_identity: SourceRouteIdentity,
     ) -> SourceBackedLogicalSourceFailureCheckpoint {
@@ -448,10 +428,7 @@ impl SourceBackedLogicalSourceFailures {
         }
     }
 
-    pub(in super::super::super) fn truncate(
-        &mut self,
-        checkpoint: SourceBackedLogicalSourceFailureCheckpoint,
-    ) {
+    pub fn truncate(&mut self, checkpoint: SourceBackedLogicalSourceFailureCheckpoint) {
         self.failures.truncate(checkpoint.retained);
         self.omitted = checkpoint.omitted;
         if checkpoint.route_total == 0 {
@@ -463,7 +440,7 @@ impl SourceBackedLogicalSourceFailures {
     }
 }
 
-pub(super) fn bounded_text(value: &str, maximum_bytes: usize) -> String {
+pub fn bounded_text(value: &str, maximum_bytes: usize) -> String {
     if value.len() <= maximum_bytes {
         return value.to_owned();
     }
@@ -510,7 +487,7 @@ impl SourceBackedSourceFailures {
         self.total() == 0
     }
 
-    pub(in super::super::super) fn record(&mut self, failure: SourceBackedFailedRoute) {
+    pub fn record(&mut self, failure: SourceBackedFailedRoute) {
         self.class_totals[failure.class.index()] =
             self.class_totals[failure.class.index()].saturating_add(1);
         if self.failures.len() < MAX_RECORDED_SOURCE_BACKED_FAILURES {
