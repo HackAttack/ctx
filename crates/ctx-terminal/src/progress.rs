@@ -154,7 +154,14 @@ fn write_progress<W: Write>(
             );
             output.write_frame(&document, line.done)
         }
-        ProgressRenderMode::Plain => output.write_line(&line.message),
+        ProgressRenderMode::Plain => {
+            if let Some(snapshot) = line.refresh.as_ref() {
+                let document = refresh_progress(output.context(), snapshot);
+                output.write_line(document.render_plain().trim_end_matches('\n'))
+            } else {
+                output.write_line(&line.message)
+            }
+        }
         ProgressRenderMode::Json => output.write_line(&progress_json(operation, line, elapsed)),
     }
 }
@@ -539,6 +546,26 @@ mod tests {
                 assert_eq!(value["logical_phase"], "direct");
             }
         }
+    }
+
+    #[test]
+    fn plain_refresh_progress_is_the_stable_live_document_without_internal_routes() {
+        let stderr = SharedWriter::default();
+        let stderr_capture = stderr.clone();
+        let context = crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
+            crate::ui::StreamKind::Stderr,
+        ));
+        let expected = crate::ui::refresh_progress(&context, &active_status()).render_plain();
+        let (mut ui, stdout_capture) = ui_with_stderr(stderr, context);
+
+        let mut reporter = ProgressReporter::new(&mut ui, ProgressMode::Plain, false, "import", 0);
+        reporter.source_refresh(active_status()).unwrap();
+
+        assert_eq!(stderr_capture.text(), expected);
+        assert!(stdout_capture.text().is_empty());
+        assert!(!stderr_capture.text().contains("/tmp/history"));
+        assert!(!stderr_capture.text().contains("1 / 2"));
+        assert!(!stderr_capture.text().contains('\u{1b}'));
     }
 
     #[test]
