@@ -284,9 +284,10 @@ where
 }
 
 fn checked_add(left: usize, right: usize) -> Result<usize, ListEventsError> {
-    left.checked_add(right).ok_or_else(|| {
-        ListEventsError::Range(CoreEventRangeError::Index(IndexError::CountOverflow))
-    })
+    left.checked_add(right)
+        .ok_or(ListEventsError::Range(CoreEventRangeError::Index(
+            IndexError::CountOverflow,
+        )))
 }
 
 impl PinnedHistoryQuery<'_> {
