@@ -38,10 +38,12 @@ toml_edit.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-source-io = { path = "../ctx-history-source-io" }
+ctx-history-source-sqlite = { path = "../ctx-history-source-sqlite" }
 
 [dev-dependencies]
 tempfile.workspace = true
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
+ctx-history-source-sqlite = { path = "../ctx-history-source-sqlite", features = ["test-support"] }
 """
 
 SUPERVISOR_ENVIRONMENT = """\
@@ -102,6 +104,18 @@ class BoundaryMutationTests(unittest.TestCase):
             self.manifest.read_text(encoding="utf-8").replace(
                 'ctx-history-source-io = { path = "../ctx-history-source-io" }',
                 'ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(BoundaryError):
+            validate_manifest(self.manifest)
+
+    def test_production_source_sqlite_test_support_is_rejected(self) -> None:
+        self.manifest.write_text(
+            self.manifest.read_text(encoding="utf-8").replace(
+                'ctx-history-source-sqlite = { path = "../ctx-history-source-sqlite" }',
+                'ctx-history-source-sqlite = { path = "../ctx-history-source-sqlite", features = ["test-support"] }',
                 1,
             ),
             encoding="utf-8",

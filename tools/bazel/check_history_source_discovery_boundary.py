@@ -16,6 +16,7 @@ EXPECTED_DEPENDENCIES: dict[str, Any] = {
     "ctx-history-capture-model": {"path": "../ctx-history-capture-model"},
     "ctx-history-core": {"path": "../ctx-history-core"},
     "ctx-history-source-io": {"path": "../ctx-history-source-io"},
+    "ctx-history-source-sqlite": {"path": "../ctx-history-source-sqlite"},
     "directories": {"workspace": True},
     "json5": {"workspace": True},
     "jsonc-parser": {"workspace": True},
@@ -34,18 +35,24 @@ EXPECTED_DEV_DEPENDENCIES: dict[str, Any] = {
         "path": "../ctx-history-source-io",
         "features": ["test-support"],
     },
+    "ctx-history-source-sqlite": {
+        "path": "../ctx-history-source-sqlite",
+        "features": ["test-support"],
+    },
     "tempfile": {"workspace": True},
 }
 EXPECTED_INTERNAL_CARGO = {
     "ctx-history-capture-model",
     "ctx-history-core",
     "ctx-history-source-io",
+    "ctx-history-source-sqlite",
 }
 EXPECTED_INTERNAL_BAZEL = {
     "//crates/ctx-history-capture-model:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-source-discovery:lib",
     "//crates/ctx-history-source-io:lib",
+    "//crates/ctx-history-source-sqlite:lib",
 }
 
 
