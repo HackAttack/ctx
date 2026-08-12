@@ -74,6 +74,7 @@ run_check() {
   env \
     PATH="${fixture}/bin" \
     SDK_JVM_FAIL_STAGE="${SDK_JVM_FAIL_STAGE:-}" \
+    SDK_SWIFT_VERSION_OUTPUT="${SDK_SWIFT_VERSION_OUTPUT:-}" \
     SDK_TEST_LOG="${log}" \
     bash "${fixture}/scripts/check-sdks.sh" "$@" >"${output}" 2>&1
 }
@@ -86,6 +87,35 @@ expect_failure() {
   fi
   grep -Fq -- "${expected}" "${output}" \
     || fail "failure output did not contain: ${expected}"
+}
+
+expect_swift_version_success() {
+  local name="$1"
+  local version_output="$2"
+  make_fixture "${name}"
+  write_executable "${fixture}/bin/swift" \
+    'if [[ "${1:-}" == "--version" ]]; then printf "%s\n" "${SDK_SWIFT_VERSION_OUTPUT}"; else printf "swift %s\n" "$*" >>"${SDK_TEST_LOG}"; fi'
+  SDK_SWIFT_VERSION_OUTPUT="${version_output}" run_check \
+    --groups=swift --required-groups=swift
+  grep -Fq 'swift test --package-path sdks/swift --scratch-path ' "${log}" \
+    || fail "accepted Swift version did not execute tests: ${name}"
+}
+
+expect_swift_version_failure() {
+  local name="$1"
+  local version_output="$2"
+  make_fixture "${name}"
+  write_executable "${fixture}/bin/swift" \
+    'if [[ "${1:-}" == "--version" ]]; then printf "%s\n" "${SDK_SWIFT_VERSION_OUTPUT}"; else printf "swift %s\n" "$*" >>"${SDK_TEST_LOG}"; fi'
+  if SDK_SWIFT_VERSION_OUTPUT="${version_output}" run_check \
+    --groups=swift --required-groups=swift; then
+    fail "unsupported Swift version unexpectedly succeeded: ${name}"
+  fi
+  grep -Fq 'required SDK group unavailable: swift (Swift 5.9+ required; found ' "${output}" \
+    || fail "Swift version rejection did not fail closed: ${name}"
+  if [[ -e "${log}" ]] && grep -Fq 'swift test ' "${log}"; then
+    fail "rejected Swift version executed tests: ${name}"
+  fi
 }
 
 make_fixture required-missing
@@ -136,6 +166,31 @@ for failed_stage in compile tests example; do
     fail "JVM gate emitted completion for failed ${failed_stage} stage"
   fi
 done
+
+expect_swift_version_success \
+  swift-observed-apple-5-10 \
+  'swift-driver version: 1.90.11.1 Apple Swift version 5.10 (swiftlang-5.10.0.13 clang-1500.3.9.4)'
+expect_swift_version_success \
+  swift-upstream-5-9 \
+  'Swift version 5.9 (swift-5.9-RELEASE)'
+expect_swift_version_success \
+  swift-apple-5-10-patch \
+  'Apple Swift version 5.10.1 (swiftlang-5.10.1 clang-1500.3.9.4)'
+expect_swift_version_success \
+  swift-upstream-6-qualifier \
+  'Swift version 6.2-dev (LLVM abcdef)'
+expect_swift_version_failure \
+  swift-apple-5-8 \
+  'Apple Swift version 5.8.1 (swiftlang-5.8.1 clang-1403.0.22.11)'
+expect_swift_version_failure \
+  swift-malformed-version \
+  'Apple Swift version 5.x (swiftlang-malformed)'
+expect_swift_version_failure \
+  swift-missing-label \
+  'swift-driver version: 9.90.1'
+expect_swift_version_failure \
+  swift-misleading-driver-prefix \
+  'swift-driver version: 9.90.1 Apple Swift version 5.8.1 (swiftlang-5.8.1 clang-1403.0.22.11)'
 
 make_fixture contracts-without-rg
 write_executable "${fixture}/bin/python3" \

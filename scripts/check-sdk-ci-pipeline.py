@@ -250,7 +250,7 @@ def validate_sdk_runner(source: str) -> None:
         "jvm_test='sdks/jvm/scripts/test'",
         'run "${jvm_test}"',
         'run swift test --package-path sdks/swift --scratch-path "$tmp_dir/swift-build"',
-        "check_version swift Swift 5.9",
+        "check_swift_version 5.9",
         "check_version dotnet .NET 8.0",
         'run dotnet build "${dotnet_tests}" --configuration Release --nologo',
         'run dotnet run --project "${dotnet_tests}" --configuration Release --no-build',

@@ -149,6 +149,44 @@ version_meets() {
     || (actual_major == minimum_major && actual_minor >= minimum_minor) ))
 }
 
+swift_version_meets() {
+  local output="$1"
+  local minimum_major="$2"
+  local minimum_minor="$3"
+  local line
+  local version=""
+
+  # Apple toolchains may prefix the compiler version with an unrelated
+  # swift-driver version. Upstream toolchains emit a line beginning with the
+  # Swift version label instead.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == *"Apple Swift version"* ]]; then
+      if [[ ! "${line}" =~ Apple[[:space:]]+Swift[[:space:]]+version[[:space:]]+([^[:space:]]+) ]]; then
+        return 1
+      fi
+      version="${BASH_REMATCH[1]}"
+      break
+    fi
+  done <<<"${output}"
+
+  if [[ -z "${version}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" =~ ^Swift[[:space:]]+version[[:space:]]+([^[:space:]]+) ]]; then
+        version="${BASH_REMATCH[1]}"
+        break
+      fi
+    done <<<"${output}"
+  fi
+
+  if [[ ! "${version}" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)*([-+][[:alnum:]][[:alnum:].-]*)?$ ]]; then
+    return 1
+  fi
+  local actual_major=$((10#${BASH_REMATCH[1]}))
+  local actual_minor=$((10#${BASH_REMATCH[2]}))
+  (( actual_major > minimum_major \
+    || (actual_major == minimum_major && actual_minor >= minimum_minor) ))
+}
+
 check_version() {
   local group="$1"
   local label="$2"
@@ -160,6 +198,18 @@ check_version() {
     return 0
   fi
   unavailable "${group}" "${label} ${minimum}+ required; found ${output}"
+  return 1
+}
+
+check_swift_version() {
+  local minimum="$1"
+  local output="$2"
+  local minimum_major="${minimum%%.*}"
+  local minimum_minor="${minimum#*.}"
+  if swift_version_meets "${output}" "${minimum_major}" "${minimum_minor}"; then
+    return 0
+  fi
+  unavailable swift "Swift ${minimum}+ required; found ${output}"
   return 1
 }
 
@@ -256,7 +306,7 @@ if contains_group "${selected_groups}" swift; then
     unavailable swift 'sdks/swift/Package.swift absent'
   elif ! command -v swift >/dev/null 2>&1; then
     unavailable swift 'swift unavailable'
-  elif check_version swift Swift 5.9 "$(swift --version 2>&1 | head -n 1)"; then
+  elif check_swift_version 5.9 "$(swift --version 2>&1)"; then
     run swift test --package-path sdks/swift --scratch-path "$tmp_dir/swift-build"
   fi
 fi
