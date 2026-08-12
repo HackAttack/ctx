@@ -152,9 +152,7 @@ In our benchmark, this was 16x faster than ctx's previous optimized SQLite imple
 
 Semantic search takes a similarly direct approach. ctx embeds your history locally with `multilingual-e5-small` and stores the vectors in memory-mapped flat-F32 segments. At the scale of personal agent history, scanning those vectors exactly is fast, so there is no vector database or approximate HNSW graph to build, tune, or maintain.
 
-## Agent memory, codebase intelligence, and coding-agent history
-
-These tools start from different records and answer different questions.
+## How ctx differs from agent memory and codebase intelligence
 
 | Category | Starts from | Answers |
 | --- | --- | --- |
