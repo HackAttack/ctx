@@ -607,6 +607,7 @@ fn production_jsonl_scheduler_projects_multiple_sources_concurrently() {
         applied_removals: &mut Vec::new(),
         record_progress: None,
         current_source_progress: None,
+        last_progress_session_id: None,
     };
 
     with_family_scanner_workers(4, || {
@@ -1123,6 +1124,7 @@ fn serial_and_parallel_jsonl_emission_preserve_resource_unavailable() {
             applied_removals: &mut Vec::new(),
             record_progress: None,
             current_source_progress: None,
+            last_progress_session_id: None,
         };
 
         let error = with_family_scanner_workers(workers, || {

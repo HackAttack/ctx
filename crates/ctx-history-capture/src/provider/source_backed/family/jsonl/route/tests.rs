@@ -69,6 +69,7 @@ macro_rules! capture_test_generation {
                 applied_removals: &mut Vec::new(),
                 record_progress: None,
                 current_source_progress: None,
+                last_progress_session_id: None,
             };
             with_family_scanner_workers($workers, || $capture(&resident, &mut sink))
         };

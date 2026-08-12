@@ -1,5 +1,7 @@
 //! Neutral refresh-progress conversion and terminal reporting.
 
+use ctx_history_capture::provider_source_spec;
+use ctx_history_core::CaptureProvider;
 use ctx_history_refresh::{
     RefreshLogicalPhase as EngineLogicalPhase, RefreshRequestState as EngineRequestState,
     RefreshStatus, RefreshStatusKind as EngineStatusKind,
@@ -118,12 +120,33 @@ pub fn presentation_snapshot(status: &RefreshStatus) -> anyhow::Result<RefreshPr
             current_source: progress.current_source,
             completed_records: progress.completed_records,
             completed_bytes: progress.completed_bytes,
+            agent_histories: progress
+                .providers
+                .iter()
+                .map(|provider| provider_display_name(provider))
+                .collect(),
+            processed_sessions: progress.processed_sessions,
+            processed_messages: progress.processed_messages,
+            processed_tool_calls: progress.processed_tool_calls,
+            processed_bytes: progress.processed_bytes,
+            elapsed_millis: progress.elapsed_millis,
             current_source_progress: progress
                 .current_source_progress
                 .map(presentation_current_source_progress),
         },
         status.total_sources_known()?,
     ))
+}
+
+fn provider_display_name(provider: &str) -> String {
+    provider
+        .parse::<CaptureProvider>()
+        .ok()
+        .and_then(provider_source_spec)
+        .map_or_else(
+            || provider.replace('_', " "),
+            |spec| spec.display_name.to_owned(),
+        )
 }
 
 fn presentation_request_state(value: EngineRequestState) -> RefreshRequestState {

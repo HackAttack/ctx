@@ -219,6 +219,12 @@ fn update_progress(
         } else {
             (None, None, None)
         };
+    let previous_providers = attempt.progress.providers.clone();
+    let previous_processed_sessions = attempt.progress.processed_sessions;
+    let previous_processed_messages = attempt.progress.processed_messages;
+    let previous_processed_tool_calls = attempt.progress.processed_tool_calls;
+    let previous_processed_bytes = attempt.progress.processed_bytes;
+    let previous_elapsed_millis = attempt.progress.elapsed_millis;
     attempt.progress = SourceBackedRefreshProgress {
         phase: update.phase,
         completed_sources: update.completed_sources,
@@ -226,6 +232,18 @@ fn update_progress(
         current_source: update.current_source,
         completed_records: update.completed_records.or(previous_records),
         completed_bytes: update.completed_bytes.or(previous_bytes),
+        providers: if update.providers.is_empty() {
+            previous_providers
+        } else {
+            update.providers
+        },
+        processed_sessions: update.processed_sessions.max(previous_processed_sessions),
+        processed_messages: update.processed_messages.max(previous_processed_messages),
+        processed_tool_calls: update
+            .processed_tool_calls
+            .max(previous_processed_tool_calls),
+        processed_bytes: update.processed_bytes.max(previous_processed_bytes),
+        elapsed_millis: update.elapsed_millis.or(previous_elapsed_millis),
         current_source_progress: update.current_source_progress.or(previous_detail),
     };
     attempt.progress_total_sources_known = update.total_sources_known;

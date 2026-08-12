@@ -95,29 +95,30 @@ where
                 "validate requested explicit provider roots before source-refresh state writes",
             )?;
     }
-    execution.report_detailed_progress_with_total_state(
-        "discovering",
-        0,
-        0,
-        false,
-        None,
-        None,
-        None,
-        None,
-    )?;
     let mut report_progress = |update: CaptureSourceBackedDetailedRefreshProgress| {
         let progress = update.progress;
         execution
-            .report_detailed_progress(
+            .report_history_progress_with_total_state(
                 progress.phase,
                 progress.completed_sources,
                 progress.total_sources,
+                true,
                 progress.current_source,
                 progress.completed_records,
                 progress.completed_bytes,
                 update
                     .current_source_progress
                     .map(SourceBackedCurrentSourceProgress::from_capture),
+                progress
+                    .providers
+                    .into_iter()
+                    .map(|provider| provider.as_str().to_owned())
+                    .collect(),
+                progress.processed_sessions,
+                progress.processed_messages,
+                progress.processed_tool_calls,
+                progress.processed_bytes,
+                Some(u64::try_from(progress.elapsed.as_millis()).unwrap_or(u64::MAX)),
             )
             .map_err(|error| {
                 SourceBackedRouteError::new(

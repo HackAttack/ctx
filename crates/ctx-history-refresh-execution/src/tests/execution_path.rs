@@ -80,6 +80,12 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
             update.current_source,
             update.completed_records,
             update.completed_bytes,
+            update.providers,
+            update.processed_sessions,
+            update.processed_messages,
+            update.processed_tool_calls,
+            update.processed_bytes,
+            update.elapsed_millis,
         ));
         Ok(())
     };
@@ -140,10 +146,9 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     current_source: None,
                     completed_records: None,
                     completed_bytes: None,
-                    stage_duration: StdDuration::ZERO,
-                    elapsed: StdDuration::ZERO,
-                    certified_source_count: None,
-                    certified_source_bytes: None,
+                    providers: vec![CaptureProvider::Codex, CaptureProvider::Claude],
+                    elapsed: StdDuration::from_secs(1),
+                    ..Default::default()
                 },
                 current_source_progress: None,
             })?;
@@ -155,10 +160,13 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     current_source: Some("provider-wide-route".to_owned()),
                     completed_records: Some(11),
                     completed_bytes: Some(4_096),
-                    stage_duration: StdDuration::ZERO,
-                    elapsed: StdDuration::ZERO,
-                    certified_source_count: None,
-                    certified_source_bytes: None,
+                    providers: vec![CaptureProvider::Codex, CaptureProvider::Claude],
+                    processed_sessions: 3,
+                    processed_messages: 8,
+                    processed_tool_calls: 3,
+                    processed_bytes: 4_096,
+                    elapsed: StdDuration::from_millis(2_500),
+                    ..Default::default()
                 },
                 current_source_progress: None,
             })?;
@@ -170,10 +178,13 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                     current_source: None,
                     completed_records: None,
                     completed_bytes: None,
-                    stage_duration: StdDuration::ZERO,
-                    elapsed: StdDuration::ZERO,
-                    certified_source_count: None,
-                    certified_source_bytes: None,
+                    providers: vec![CaptureProvider::Codex, CaptureProvider::Claude],
+                    processed_sessions: 3,
+                    processed_messages: 8,
+                    processed_tool_calls: 3,
+                    processed_bytes: 4_096,
+                    elapsed: StdDuration::from_secs(3),
+                    ..Default::default()
                 },
                 current_source_progress: None,
             })?;
@@ -188,8 +199,20 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
     assert_eq!(
         updates.into_inner().unwrap(),
         vec![
-            ("discovering".to_owned(), 0, 0, None, None, None),
-            ("discovering".to_owned(), 0, 2, None, None, None),
+            (
+                "discovering".to_owned(),
+                0,
+                2,
+                None,
+                None,
+                None,
+                vec!["codex".to_owned(), "claude".to_owned()],
+                0,
+                0,
+                0,
+                0,
+                Some(1_000),
+            ),
             (
                 "refreshing".to_owned(),
                 1,
@@ -197,8 +220,27 @@ fn provider_wide_execution_discovers_once_and_preserves_progress_order() {
                 Some("provider-wide-route".to_owned()),
                 Some(11),
                 Some(4_096),
+                vec!["codex".to_owned(), "claude".to_owned()],
+                3,
+                8,
+                3,
+                4_096,
+                Some(2_500),
             ),
-            ("verifying".to_owned(), 2, 2, None, None, None),
+            (
+                "verifying".to_owned(),
+                2,
+                2,
+                None,
+                None,
+                None,
+                vec!["codex".to_owned(), "claude".to_owned()],
+                3,
+                8,
+                3,
+                4_096,
+                Some(3_000),
+            ),
         ]
     );
 }

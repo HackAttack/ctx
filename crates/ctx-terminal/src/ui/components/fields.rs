@@ -8,6 +8,7 @@ pub struct Field<'a> {
     pub label: &'a str,
     pub value: &'a str,
     value_token: Token,
+    continuation: bool,
 }
 
 impl<'a> Field<'a> {
@@ -16,6 +17,17 @@ impl<'a> Field<'a> {
             label,
             value,
             value_token: Token::Text,
+            continuation: false,
+        }
+    }
+
+    /// Continues the preceding field's value on another aligned row.
+    pub const fn continuation(value: &'a str) -> Self {
+        Self {
+            label: "",
+            value,
+            value_token: Token::Text,
+            continuation: true,
         }
     }
 
@@ -70,8 +82,12 @@ fn aligned_fields(context: &RenderContext, values: &[Field<'_>], label_width: us
         for (index, value) in wrapped.into_iter().enumerate() {
             let mut line = Line::new();
             if index == 0 {
-                line.push(Span::new(field.label, Token::Label));
-                line.push(Span::text(pad_after(field.label, label_width)));
+                if field.continuation {
+                    line.push(Span::text(" ".repeat(label_width)));
+                } else {
+                    line.push(Span::new(field.label, Token::Label));
+                    line.push(Span::text(pad_after(field.label, label_width)));
+                }
             } else {
                 line.push(Span::text(" ".repeat(label_width)));
             }
@@ -90,7 +106,9 @@ fn stacked_fields(context: &RenderContext, values: &[Field<'_>]) -> Document {
     let mut document = Document::new();
 
     for field in values {
-        document.push_line(Line::styled(field.label, Token::Label));
+        if !field.continuation {
+            document.push_line(Line::styled(field.label, Token::Label));
+        }
         for value in wrap_text(field.value, value_width) {
             document.push_line(
                 Line::new()

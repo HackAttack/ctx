@@ -29,6 +29,7 @@ fn failed_refresh_retains_the_previous_published_generation() {
                             logical_rows_scanned: Some(3),
                             logical_certified_bytes: Some(384),
                         }),
+                        ..Default::default()
                     },
                 );
                 Err(anyhow!("injected writer failure before publication"))
@@ -689,6 +690,7 @@ fn recovered_wait_after_restart_attaches_to_equivalent_running_attempt() {
                 completed_records: Some(5),
                 completed_bytes: Some(640),
                 current_source_progress: None,
+                ..Default::default()
             },
         )
         .expect("interrupted running job");

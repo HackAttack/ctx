@@ -7,7 +7,6 @@ pub(super) enum Glyph {
     Warning,
     Progress,
     Rule,
-    Ellipsis,
 }
 
 impl Glyph {
@@ -22,8 +21,6 @@ impl Glyph {
             (Self::Progress, false) => "=",
             (Self::Rule, true) => "─",
             (Self::Rule, false) => "-",
-            (Self::Ellipsis, true) => "…",
-            (Self::Ellipsis, false) => "...",
         }
     }
 }

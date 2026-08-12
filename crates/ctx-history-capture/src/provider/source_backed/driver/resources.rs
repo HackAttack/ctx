@@ -10,8 +10,8 @@ use ctx_history_index::{
 };
 
 use super::{
-    SourceBackedReconciliationDemand, SourceBackedRouteError, SourceBackedRouteErrorKind,
-    SourceBackedRouteResult,
+    CoreRecordProgress, SourceBackedReconciliationDemand, SourceBackedRouteError,
+    SourceBackedRouteErrorKind, SourceBackedRouteResult,
 };
 
 /// Prepared Core records may retain at most this many exact encoded bytes
@@ -329,6 +329,7 @@ impl CoreRecordEmission {
 #[derive(Debug, Default)]
 pub(crate) struct CoreRecordEmissionBatchBuilder {
     prepared: Vec<PreparedCoreRecord>,
+    progress: CoreRecordBatchProgress,
     reservation: Option<SourceBackedRouteByteReservation>,
     prepared_bytes: u64,
 }
@@ -388,7 +389,11 @@ impl CoreRecordEmissionBatchBuilder {
         self.prepared_bytes = 0;
     }
 
-    pub(crate) fn push(&mut self, prepared: PreparedCoreRecord) -> SourceBackedRouteResult<()> {
+    pub(crate) fn push(
+        &mut self,
+        prepared: PreparedCoreRecord,
+        progress: CoreRecordProgress,
+    ) -> SourceBackedRouteResult<()> {
         let prepared_bytes = u64::try_from(prepared.encoded_core_bytes()).map_err(|_| {
             SourceBackedRouteError::new(
                 SourceBackedRouteErrorKind::Internal,
@@ -411,6 +416,7 @@ impl CoreRecordEmissionBatchBuilder {
                 )
             })?;
         self.prepared.push(prepared);
+        self.progress.push(progress);
         Ok(())
     }
 
@@ -440,6 +446,7 @@ impl CoreRecordEmissionBatchBuilder {
         self.prepared_bytes = 0;
         Ok(Some(CoreRecordEmissionBatch {
             prepared: std::mem::take(&mut self.prepared),
+            progress: std::mem::take(&mut self.progress),
             reservation,
         }))
     }
@@ -451,6 +458,7 @@ impl CoreRecordEmissionBatchBuilder {
 #[derive(Debug)]
 pub(crate) struct CoreRecordEmissionBatch {
     prepared: Vec<PreparedCoreRecord>,
+    progress: CoreRecordBatchProgress,
     reservation: SourceBackedRouteByteReservation,
 }
 
@@ -463,10 +471,31 @@ impl CoreRecordEmissionBatch {
         self.prepared.iter()
     }
 
+    pub(crate) fn progress(&self) -> &CoreRecordBatchProgress {
+        &self.progress
+    }
+
     pub(crate) fn into_prepared(
         self,
     ) -> (Vec<PreparedCoreRecord>, SourceBackedRouteByteReservation) {
         (self.prepared, self.reservation)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CoreRecordBatchProgress {
+    pub(crate) session_ids: Vec<[u8; 32]>,
+    pub(crate) messages: u64,
+    pub(crate) tool_calls: u64,
+}
+
+impl CoreRecordBatchProgress {
+    pub(crate) fn push(&mut self, progress: CoreRecordProgress) {
+        if self.session_ids.last() != Some(&progress.session_id) {
+            self.session_ids.push(progress.session_id);
+        }
+        self.messages = self.messages.saturating_add(progress.messages);
+        self.tool_calls = self.tool_calls.saturating_add(progress.tool_calls);
     }
 }
 

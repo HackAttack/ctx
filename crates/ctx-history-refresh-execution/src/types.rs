@@ -317,6 +317,12 @@ pub struct SourceBackedRefreshProgressUpdate {
     pub current_source: Option<String>,
     pub completed_records: Option<u64>,
     pub completed_bytes: Option<u64>,
+    pub providers: Vec<String>,
+    pub processed_sessions: u64,
+    pub processed_messages: u64,
+    pub processed_tool_calls: u64,
+    pub processed_bytes: u64,
+    pub elapsed_millis: Option<u64>,
     pub current_source_progress: Option<SourceBackedCurrentSourceProgress>,
 }
 
@@ -389,6 +395,42 @@ impl<'a> SourceBackedRefreshExecution<'a> {
         completed_bytes: Option<u64>,
         current_source_progress: Option<SourceBackedCurrentSourceProgress>,
     ) -> Result<()> {
+        self.report_history_progress_with_total_state(
+            phase,
+            completed_sources,
+            total_sources,
+            total_sources_known,
+            current_source,
+            completed_records,
+            completed_bytes,
+            current_source_progress,
+            Vec::new(),
+            0,
+            0,
+            0,
+            0,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn report_history_progress_with_total_state(
+        &self,
+        phase: &str,
+        completed_sources: usize,
+        total_sources: usize,
+        total_sources_known: bool,
+        current_source: Option<String>,
+        completed_records: Option<u64>,
+        completed_bytes: Option<u64>,
+        current_source_progress: Option<SourceBackedCurrentSourceProgress>,
+        providers: Vec<String>,
+        processed_sessions: u64,
+        processed_messages: u64,
+        processed_tool_calls: u64,
+        processed_bytes: u64,
+        elapsed_millis: Option<u64>,
+    ) -> Result<()> {
         (self.report_progress)(SourceBackedRefreshProgressUpdate {
             phase: phase.to_owned(),
             completed_sources,
@@ -397,6 +439,12 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             current_source,
             completed_records,
             completed_bytes,
+            providers,
+            processed_sessions,
+            processed_messages,
+            processed_tool_calls,
+            processed_bytes,
+            elapsed_millis,
             current_source_progress,
         })
     }

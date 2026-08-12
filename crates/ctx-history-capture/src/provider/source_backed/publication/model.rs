@@ -10,6 +10,16 @@ pub struct SourceBackedRefreshProgress {
     pub completed_records: Option<u64>,
     /// Authoritative logical source bytes completed for the active route. No total is implied.
     pub completed_bytes: Option<u64>,
+    /// Stable provider identities represented by the selected executable routes.
+    pub providers: Vec<CaptureProvider>,
+    /// Distinct normalized sessions observed across this refresh attempt.
+    pub processed_sessions: u64,
+    /// Normalized message records accepted across this refresh attempt.
+    pub processed_messages: u64,
+    /// Normalized tool-call records accepted across this refresh attempt.
+    pub processed_tool_calls: u64,
+    /// Logical input bytes processed across this refresh attempt.
+    pub processed_bytes: u64,
     /// Time spent in the current phase when this event was emitted.
     pub stage_duration: Duration,
     /// Total measured discovery plus refresh time at this event.
@@ -18,6 +28,28 @@ pub struct SourceBackedRefreshProgress {
     pub certified_source_count: Option<usize>,
     /// Commit-derived byte evidence, available only after publication.
     pub certified_source_bytes: Option<u64>,
+}
+
+impl Default for SourceBackedRefreshProgress {
+    fn default() -> Self {
+        Self {
+            phase: "discovering",
+            completed_sources: 0,
+            total_sources: 0,
+            current_source: None,
+            completed_records: None,
+            completed_bytes: None,
+            providers: Vec::new(),
+            processed_sessions: 0,
+            processed_messages: 0,
+            processed_tool_calls: 0,
+            processed_bytes: 0,
+            stage_duration: Duration::ZERO,
+            elapsed: Duration::ZERO,
+            certified_source_count: None,
+            certified_source_bytes: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,12 +147,53 @@ pub(super) struct SourceRecordProgress {
     last_emitted_at: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SourceRecordProgressSnapshot {
+    pub(super) completed_records: u64,
+    pub(super) completed_bytes: u64,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct AttemptHistoryProgress {
+    processed_session_ids: HashSet<[u8; 32]>,
+    processed_messages: u64,
+    processed_tool_calls: u64,
+    processed_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct AttemptHistoryProgressSnapshot {
+    pub(super) processed_sessions: u64,
+    pub(super) processed_messages: u64,
+    pub(super) processed_tool_calls: u64,
+    pub(super) processed_bytes: u64,
+}
+
+impl AttemptHistoryProgress {
+    pub(super) fn advance(&mut self, delta: &SourceBackedRecordProgressDelta) {
+        self.processed_session_ids
+            .extend(delta.session_ids.iter().copied());
+        self.processed_messages = self.processed_messages.saturating_add(delta.messages);
+        self.processed_tool_calls = self.processed_tool_calls.saturating_add(delta.tool_calls);
+        self.processed_bytes = self.processed_bytes.saturating_add(delta.completed_bytes);
+    }
+
+    pub(super) fn snapshot(&self) -> AttemptHistoryProgressSnapshot {
+        AttemptHistoryProgressSnapshot {
+            processed_sessions: u64::try_from(self.processed_session_ids.len()).unwrap_or(u64::MAX),
+            processed_messages: self.processed_messages,
+            processed_tool_calls: self.processed_tool_calls,
+            processed_bytes: self.processed_bytes,
+        }
+    }
+}
+
 impl SourceRecordProgress {
     pub(super) fn advanced_at(
         &mut self,
         delta: SourceBackedRecordProgressDelta,
         now: Instant,
-    ) -> Option<(u64, u64)> {
+    ) -> Option<SourceRecordProgressSnapshot> {
         self.completed_records = self
             .completed_records
             .saturating_add(delta.accepted_records);
@@ -131,17 +204,24 @@ impl SourceRecordProgress {
         should_emit.then(|| self.mark_emitted(now))
     }
 
-    pub(super) fn flush_at(&mut self, now: Instant) -> Option<(u64, u64)> {
+    pub(super) fn flush_at(&mut self, now: Instant) -> Option<SourceRecordProgressSnapshot> {
         (self.completed_records != self.last_emitted_records
             || self.completed_bytes != self.last_emitted_bytes)
             .then(|| self.mark_emitted(now))
     }
 
-    fn mark_emitted(&mut self, now: Instant) -> (u64, u64) {
+    fn mark_emitted(&mut self, now: Instant) -> SourceRecordProgressSnapshot {
         self.last_emitted_at = Some(now);
         self.last_emitted_records = self.completed_records;
         self.last_emitted_bytes = self.completed_bytes;
-        (self.completed_records, self.completed_bytes)
+        self.snapshot()
+    }
+
+    pub(super) fn snapshot(&self) -> SourceRecordProgressSnapshot {
+        SourceRecordProgressSnapshot {
+            completed_records: self.completed_records,
+            completed_bytes: self.completed_bytes,
+        }
     }
 }
 
