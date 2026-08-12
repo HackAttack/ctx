@@ -210,11 +210,11 @@ pub(super) fn source_from_parts_with_data_root(
     source_format: &'static str,
     source_kind: ProviderSourceKind,
 ) -> ProviderSource {
-    let source_kind = spec
-        .import_support
-        .is_importable()
-        .then_some(source_kind)
-        .unwrap_or(ProviderSourceKind::DetectionOnly);
+    let source_kind = if spec.import_support.is_importable() {
+        source_kind
+    } else {
+        ProviderSourceKind::DetectionOnly
+    };
     let location = ProviderDefaultLocation {
         path_components: &[],
         source_format,

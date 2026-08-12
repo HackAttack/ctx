@@ -33,6 +33,12 @@ enum LingmaRootChoice {
     Unreconstructible(PathBuf),
 }
 
+struct LingmaVscodeSelection<'a> {
+    choice: Option<&'a LingmaRootChoice>,
+    default_db: &'a Path,
+    selected_lineage: LingmaDatabaseCatalogLineage,
+}
+
 pub(super) fn resolve_lingma(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
@@ -99,11 +105,13 @@ fn resolve_lingma_vscode(
                 report,
                 discovered,
                 spec,
-                base.as_ref(),
-                &default_db,
-                LingmaDatabaseCatalogLineage::VscodeSelected {
-                    client,
-                    profile: LingmaVscodeProfile::Base,
+                LingmaVscodeSelection {
+                    choice: base.as_ref(),
+                    default_db: &default_db,
+                    selected_lineage: LingmaDatabaseCatalogLineage::VscodeSelected {
+                        client,
+                        profile: LingmaVscodeProfile::Base,
+                    },
                 },
             );
         }
@@ -169,11 +177,13 @@ fn resolve_lingma_vscode(
                 report,
                 discovered,
                 spec,
-                effective,
-                &default_db,
-                LingmaDatabaseCatalogLineage::VscodeSelected {
-                    client,
-                    profile: profile_key,
+                LingmaVscodeSelection {
+                    choice: effective,
+                    default_db: &default_db,
+                    selected_lineage: LingmaDatabaseCatalogLineage::VscodeSelected {
+                        client,
+                        profile: profile_key,
+                    },
                 },
             );
         }
@@ -275,18 +285,16 @@ fn add_lingma_vscode_choice(
     report: &mut DiscoveryReport,
     discovered: &mut Vec<DiscoveredLingmaDatabase>,
     spec: &ProviderSourceSpec,
-    choice: Option<&LingmaRootChoice>,
-    default_db: &Path,
-    selected_lineage: LingmaDatabaseCatalogLineage,
+    selection: LingmaVscodeSelection<'_>,
 ) {
-    let (path, lineage) = match choice.unwrap_or(&LingmaRootChoice::Default) {
+    let (path, lineage) = match selection.choice.unwrap_or(&LingmaRootChoice::Default) {
         LingmaRootChoice::Absent | LingmaRootChoice::Default => (
-            default_db.to_path_buf(),
+            selection.default_db.to_path_buf(),
             LingmaDatabaseCatalogLineage::VscodeSharedDefault,
         ),
         LingmaRootChoice::Selected(root) => (
             root.join("sharedClientCache/cache/db/local.db"),
-            selected_lineage,
+            selection.selected_lineage,
         ),
         LingmaRootChoice::Unreconstructible(path) => {
             report.issues.push(issue(

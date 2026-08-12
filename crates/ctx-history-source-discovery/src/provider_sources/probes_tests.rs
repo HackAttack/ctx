@@ -411,7 +411,7 @@ fn sqlite_probe_connection_error_finalizes_and_preserves_cleanup_failure() {
     )
     .unwrap_err();
 
-    match error {
+    match *error {
         SqliteReadFinalizationError::PrimaryAndFinalization {
             primary: SqliteProbePrimaryError::Connection(primary),
             finalization,
@@ -449,7 +449,7 @@ fn sqlite_probe_configuration_error_finalizes_and_preserves_cleanup_failure() {
     )
     .unwrap_err();
 
-    match error {
+    match *error {
         SqliteReadFinalizationError::PrimaryAndFinalization {
             primary: SqliteProbePrimaryError::Configuration(rusqlite::Error::InvalidQuery),
             finalization,
@@ -481,7 +481,7 @@ fn sqlite_probe_query_error_finalizes_and_preserves_cleanup_failure() {
     )
     .unwrap_err();
 
-    match error {
+    match *error {
         SqliteReadFinalizationError::PrimaryAndFinalization {
             primary: SqliteProbePrimaryError::Query(rusqlite::Error::InvalidQuery),
             finalization,
@@ -522,7 +522,7 @@ fn sqlite_probe_budget_error_does_not_hide_simultaneous_finalization_failure() {
         })
         .unwrap_err();
 
-    match error {
+    match *error {
         SqliteReadFinalizationError::PrimaryAndFinalization {
             primary: SqliteProbePrimaryError::BudgetExhausted,
             finalization,
@@ -558,7 +558,7 @@ fn sqlite_probe_success_still_reports_terminal_revalidation_failure() {
     )
     .unwrap_err();
 
-    match error {
+    match *error {
         SqliteReadFinalizationError::Finalization(finalization) => {
             assert!(finalization.is_source_changed());
         }
