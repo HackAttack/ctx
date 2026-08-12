@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
 import json
@@ -15,6 +15,7 @@ import urllib.request
 import zipfile
 
 
+UTC = timezone.utc
 SOURCES = {
     "crates.io": "https://osv-vulnerabilities.storage.googleapis.com/crates.io/all.zip",
     "npm": "https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip",

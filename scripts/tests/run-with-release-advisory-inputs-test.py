@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
+import datetime
 import hashlib
 import importlib.util
 import io
@@ -15,6 +17,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/release/run-with-release-advisory-inputs.py"
+UPDATE_SCRIPT = ROOT / "scripts/update-release-advisory-db.py"
 SPEC = importlib.util.spec_from_file_location("release_advisory_inputs", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -30,6 +33,26 @@ class Response(io.BytesIO):
 
 
 class ReleaseAdvisoryInputsTest(unittest.TestCase):
+    def test_database_updater_uses_python_3_9_datetime_api(self) -> None:
+        source = UPDATE_SCRIPT.read_text(encoding="utf-8")
+        tree = ast.parse(
+            source,
+            filename=str(UPDATE_SCRIPT),
+            feature_version=(3, 9),
+        )
+        datetime_imports = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "datetime"
+            for alias in node.names
+        }
+        self.assertNotIn("UTC", datetime_imports)
+        self.assertIn("timezone", datetime_imports)
+
+        namespace = {"__name__": "release_advisory_database_update_test"}
+        exec(compile(tree, str(UPDATE_SCRIPT), "exec"), namespace)
+        self.assertIs(namespace["UTC"], datetime.timezone.utc)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
